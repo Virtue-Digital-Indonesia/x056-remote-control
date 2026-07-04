@@ -66,16 +66,19 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         resultText: undefined as string | undefined,
         resultOk: false,
         drainTimer: null as NodeJS.Timeout | null,
+        killRequested: false,
+        interruptRequested: false,
       };
 
-      let handle!: TurnHandle;
+      let handle: TurnHandle | undefined;
       const processEvent = (e: RawEvent) => {
         opts.tap?.(e);
         const v = classifyEvent(e);
         if (v.kind === 'limited' && !state.limited && !state.forced) {
           state.limited = v;
           log.append({ type: 'limit_detected', sessionId, account: account.name, source: v.source, resetsAt: v.resetsAt ?? null });
-          handle.kill();
+          state.killRequested = true;
+          handle?.kill();
           return;
         }
         if (v.kind === 'warning') {
@@ -89,7 +92,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         if (forceSwitchRequested && !state.forced && !state.limited && (e.type === 'user' || e.type === 'result')) {
           state.forced = true;
           log.append({ type: 'forced_switch', sessionId, account: account.name });
-          handle.interrupt();
+          state.interruptRequested = true;
+          handle?.interrupt();
         }
       };
 
@@ -100,10 +104,18 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         sessionId,
         mode,
         prompt,
-        onEvent: (e) => {
-          Promise.resolve().then(() => processEvent(e));
-        },
+        onEvent: (e) => processEvent(e),
       });
+
+      // The first scripted/streamed event can fire synchronously inside startTurnFn(...),
+      // before `handle` is assigned above — processEvent records the request via the
+      // state flags instead of calling handle.kill()/interrupt() directly. Apply it now
+      // that `handle` definitely exists.
+      if (state.killRequested) {
+        handle.kill();
+      } else if (state.interruptRequested) {
+        handle.interrupt();
+      }
 
       // forced-switch hard timeout: if requested but nothing drainable arrives, interrupt anyway
       const drainWatch = setInterval(() => {
@@ -112,7 +124,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
             if (!state.forced && !state.limited) {
               state.forced = true;
               log.append({ type: 'forced_switch_timeout', sessionId, account: account.name });
-              handle.interrupt();
+              state.interruptRequested = true;
+              handle?.interrupt();
             }
           }, drainTimeoutMs);
         }
@@ -132,10 +145,13 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       }
 
       // failover path (limit or forced)
+      // A force request that lost the race to a rate-limit verdict is moot — the
+      // session is switching anyway — so clear it unconditionally to avoid a stale
+      // flag triggering a spurious forced interrupt on the next account.
+      forceSwitchRequested = false;
       if (state.limited) {
         registry.markLimited(account.name, state.limited.resetsAt ?? now() + FIVE_HOURS);
       } else {
-        forceSwitchRequested = false;
         registry.markLimited(account.name, now() + FORCED_COOLDOWN);
       }
       failoverTimes.push(now());

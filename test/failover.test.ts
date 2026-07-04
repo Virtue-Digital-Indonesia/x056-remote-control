@@ -13,6 +13,8 @@ const REJECTED: RawEvent = {
   rate_limit_info: { status: 'rejected', resetsAt: 2000, rateLimitType: 'five_hour' },
 };
 const SUCCESS: RawEvent = { type: 'result', subtype: 'success', is_error: false, api_error_status: null, result: 'task done' };
+const ASSISTANT: RawEvent = { type: 'assistant', message: { content: [] } };
+const USER_EVENT: RawEvent = { type: 'user', message: { content: [] } };
 
 interface Recorded {
   configDir: string;
@@ -20,8 +22,18 @@ interface Recorded {
   prompt: string;
 }
 
+/** A marker interpreted by scriptTurns as "wait this long before dispatching the next event". */
+interface DelayMarker {
+  __delayMs: number;
+}
+type ScriptItem = RawEvent | DelayMarker;
+
+function isDelayMarker(e: ScriptItem): e is DelayMarker {
+  return typeof (e as DelayMarker).__delayMs === 'number';
+}
+
 /** Builds a startTurn stand-in that replays one scripted event list per call. */
-function scriptTurns(script: RawEvent[][], recorded: Recorded[]): (opts: TurnOptions) => TurnHandle {
+function scriptTurns(script: ScriptItem[][], recorded: Recorded[]): (opts: TurnOptions) => TurnHandle {
   let call = 0;
   return (opts: TurnOptions) => {
     recorded.push({ configDir: opts.configDir, mode: opts.mode, prompt: opts.prompt });
@@ -31,6 +43,10 @@ function scriptTurns(script: RawEvent[][], recorded: Recorded[]): (opts: TurnOpt
     const done = (async () => {
       for (const e of events) {
         if (killed) break;
+        if (isDelayMarker(e)) {
+          await new Promise((r) => setTimeout(r, e.__delayMs));
+          continue;
+        }
         opts.onEvent(e);
         await new Promise((r) => setTimeout(r, 1));
       }
@@ -110,5 +126,58 @@ describe('runSession', () => {
       startTurnFn: scriptTurns([[NO_RESET], [SUCCESS]], []),
     });
     expect(registry.get('a').state).toEqual({ kind: 'limited', until: 1000 + 5 * 3600 });
+  });
+
+  it('drains then interrupts on a forced switch (SIGUSR1), failing over with the 30m cooldown (D7)', async () => {
+    const { registry, log } = fixtures();
+    const recorded: Recorded[] = [];
+    const resultPromise = runSession({
+      ...base,
+      forceSwitchSignal: true,
+      registry,
+      log,
+      now: () => 100,
+      startTurnFn: scriptTurns(
+        [
+          [ASSISTANT, { __delayMs: 50 }, USER_EVENT],
+          [SUCCESS],
+        ],
+        recorded,
+      ),
+    });
+    process.kill(process.pid, 'SIGUSR1');
+    const res = await resultPromise;
+
+    expect(res).toMatchObject({ status: 'completed', finalAccount: 'b', failovers: 1 });
+    const types = log.read().map((r) => r.type);
+    expect(types).toContain('forced_switch');
+    expect(types).toContain('failover');
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 100 + 30 * 60 });
+  });
+
+  it('does not leave a stale forceSwitchRequested flag when a rate limit wins the SIGUSR1 race (Finding 2)', async () => {
+    const { registry, log } = fixtures();
+    const recorded: Recorded[] = [];
+    const resultPromise = runSession({
+      ...base,
+      forceSwitchSignal: true,
+      registry,
+      log,
+      now: () => 100,
+      startTurnFn: scriptTurns(
+        [
+          [ASSISTANT, { __delayMs: 50 }, REJECTED],
+          [USER_EVENT, SUCCESS],
+        ],
+        recorded,
+      ),
+    });
+    process.kill(process.pid, 'SIGUSR1');
+    const res = await resultPromise;
+
+    expect(res).toMatchObject({ status: 'completed', finalAccount: 'b', failovers: 1 });
+    expect(registry.get('b').state.kind).not.toBe('limited');
+    const types = log.read().map((r) => r.type);
+    expect(types).not.toContain('forced_switch');
   });
 });
