@@ -1,6 +1,7 @@
 services:
   x056:
     build: .
+    init: true
     restart: unless-stopped
     ports:
       - "4056:4056"

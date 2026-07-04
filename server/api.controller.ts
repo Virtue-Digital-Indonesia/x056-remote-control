@@ -76,7 +76,12 @@ export class ApiController {
 
   @Get('accounts')
   async accounts(): Promise<unknown[]> {
-    const registry = AccountRegistry.load(join(this.stateDir, 'accounts.json'));
+    let registry: AccountRegistry;
+    try {
+      registry = AccountRegistry.load(join(this.stateDir, 'accounts.json'));
+    } catch {
+      return [];
+    }
     return Promise.all(
       registry.list().map(async (acct) => {
         try {

@@ -162,3 +162,5 @@ docker compose up -d
 
 Compose will recreate the container with the new token; any previously
 issued token stops working immediately.
+
+> **SSE token caveat:** the stream endpoint authenticates via `?token=` (EventSource cannot send headers). If you ever put a reverse proxy in front, that token will appear in its access logs — scrub or disable query-string logging there, or stick to Tailscale-only exposure.
