@@ -1,0 +1,18 @@
+services:
+  x056:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4056:4056"
+    environment:
+      X056_TOKEN: ${X056_TOKEN:?generate one into .env — openssl rand -hex 32}
+      X056_WORKSPACE_ROOT: /home/efran/remote-development
+      X056_STATE_DIR: /app/state
+      PORT: "4056"
+    volumes:
+      - /home/efran/.claude-x056-a:/home/efran/.claude-x056-a
+      - /home/efran/.claude-x056-b:/home/efran/.claude-x056-b
+      - /home/efran/remote-development:/home/efran/remote-development
+      - x056-state:/app/state
+volumes:
+  x056-state:
