@@ -51,6 +51,39 @@ describe('AccountRegistry', () => {
   it('load without file throws a setup hint', () => {
     expect(() => AccountRegistry.load(freshFile())).toThrow(/setup/i);
   });
+
+  it('markOk sets state and persists across load', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    reg.markOk('a');
+    expect(reg.get('a').state).toEqual({ kind: 'ok' });
+    const reloaded = AccountRegistry.load(file);
+    expect(reloaded.get('a').state).toEqual({ kind: 'ok' });
+  });
+
+  it("get('nope') throws unknown account error", () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    expect(() => reg.get('nope')).toThrow(/unknown account/);
+  });
+
+  it('mutating get() result does not change registry state', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    const acct = reg.get('a');
+    acct.state = { kind: 'limited', until: 9999 };
+    expect(reg.get('a').state).toEqual({ kind: 'unknown' });
+    const reloaded = AccountRegistry.load(file);
+    expect(reloaded.get('a').state).toEqual({ kind: 'unknown' });
+  });
+
+  it('mutating list() result does not change registry state', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    const accounts = reg.list();
+    accounts[0].state = { kind: 'limited', until: 9999 };
+    expect(reg.get('a').state).toEqual({ kind: 'unknown' });
+  });
 });
 
 describe('EventLog', () => {
@@ -64,5 +97,11 @@ describe('EventLog', () => {
     expect(rows[0].type).toBe('failover');
     expect(typeof rows[0].ts).toBe('string');
     expect(readFileSync(file, 'utf8').trim().split('\n')).toHaveLength(2);
+  });
+
+  it('read() on a file that was never written returns empty array', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'x056-')), 'events.jsonl');
+    const log = new EventLog(file);
+    expect(log.read()).toEqual([]);
   });
 });

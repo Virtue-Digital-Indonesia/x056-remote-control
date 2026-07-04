@@ -37,14 +37,18 @@ export class AccountRegistry {
     return new AccountRegistry(file, JSON.parse(readFileSync(file, 'utf8')) as RegistryFile);
   }
 
-  list(): Account[] {
-    return this.data.accounts;
-  }
-
-  get(name: string): Account {
+  private find(name: string): Account {
     const acct = this.data.accounts.find((a) => a.name === name);
     if (!acct) throw new Error(`unknown account: ${name}`);
     return acct;
+  }
+
+  list(): Account[] {
+    return this.data.accounts.map((a) => structuredClone(a));
+  }
+
+  get(name: string): Account {
+    return structuredClone(this.find(name));
   }
 
   private usable(a: Account, now: number): boolean {
@@ -52,30 +56,30 @@ export class AccountRegistry {
   }
 
   pickActive(now: number): Account | null {
-    const preferred = this.get(this.data.active);
-    if (this.usable(preferred, now)) return preferred;
+    const preferred = this.find(this.data.active);
+    if (this.usable(preferred, now)) return structuredClone(preferred);
     const other = this.data.accounts.find((a) => a.name !== preferred.name && this.usable(a, now));
     if (other) {
       this.data.active = other.name;
       this.save();
-      return other;
+      return structuredClone(other);
     }
     return null;
   }
 
   setActive(name: string): void {
-    this.get(name);
+    this.find(name);
     this.data.active = name;
     this.save();
   }
 
   markLimited(name: string, until: number): void {
-    this.get(name).state = { kind: 'limited', until };
+    this.find(name).state = { kind: 'limited', until };
     this.save();
   }
 
   markOk(name: string): void {
-    this.get(name).state = { kind: 'ok' };
+    this.find(name).state = { kind: 'ok' };
     this.save();
   }
 
