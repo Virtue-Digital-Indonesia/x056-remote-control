@@ -1,0 +1,114 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { AccountRegistry } from '../src/accounts.js';
+import { EventLog } from '../src/eventlog.js';
+import { CONTINUE_PROMPT, runSession } from '../src/failover.js';
+import type { TurnHandle, TurnOptions } from '../src/turn.js';
+import type { RawEvent } from '../src/types.js';
+
+const REJECTED: RawEvent = {
+  type: 'rate_limit_event',
+  rate_limit_info: { status: 'rejected', resetsAt: 2000, rateLimitType: 'five_hour' },
+};
+const SUCCESS: RawEvent = { type: 'result', subtype: 'success', is_error: false, api_error_status: null, result: 'task done' };
+
+interface Recorded {
+  configDir: string;
+  mode: string;
+  prompt: string;
+}
+
+/** Builds a startTurn stand-in that replays one scripted event list per call. */
+function scriptTurns(script: RawEvent[][], recorded: Recorded[]): (opts: TurnOptions) => TurnHandle {
+  let call = 0;
+  return (opts: TurnOptions) => {
+    recorded.push({ configDir: opts.configDir, mode: opts.mode, prompt: opts.prompt });
+    const events = script[call];
+    call += 1;
+    let killed = false;
+    const done = (async () => {
+      for (const e of events) {
+        if (killed) break;
+        opts.onEvent(e);
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      return { code: killed ? null : 0, signal: killed ? ('SIGKILL' as const) : null };
+    })();
+    return { kill: () => { killed = true; }, interrupt: () => { killed = true; }, done };
+  };
+}
+
+function fixtures() {
+  const dir = mkdtempSync(join(tmpdir(), 'x056-fo-'));
+  const registry = AccountRegistry.init(join(dir, 'accounts.json'), [
+    { name: 'a', configDir: '/cfg/a' },
+    { name: 'b', configDir: '/cfg/b' },
+  ]);
+  const log = new EventLog(join(dir, 'events.jsonl'));
+  return { registry, log };
+}
+
+const base = { sessionId: 'sid-x', cwd: '/tmp', prompt: 'build the thing', forceSwitchSignal: false };
+
+describe('runSession', () => {
+  it('completes on the first account when no limit hits', async () => {
+    const { registry, log } = fixtures();
+    const recorded: Recorded[] = [];
+    const res = await runSession({
+      ...base, registry, log, now: () => 100,
+      startTurnFn: scriptTurns([[SUCCESS]], recorded),
+    });
+    expect(res).toMatchObject({ status: 'completed', finalAccount: 'a', failovers: 0, resultText: 'task done' });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ configDir: '/cfg/a', mode: 'new', prompt: 'build the thing' });
+  });
+
+  it('fails over to b on a rejected rate_limit_event and resumes with CONTINUE_PROMPT', async () => {
+    const { registry, log } = fixtures();
+    const recorded: Recorded[] = [];
+    const res = await runSession({
+      ...base, registry, log, now: () => 100,
+      startTurnFn: scriptTurns([[REJECTED], [SUCCESS]], recorded),
+    });
+    expect(res).toMatchObject({ status: 'completed', finalAccount: 'b', failovers: 1 });
+    expect(recorded[1]).toMatchObject({ configDir: '/cfg/b', mode: 'resume', prompt: CONTINUE_PROMPT });
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 2000 });
+    const types = log.read().map((r) => r.type);
+    expect(types).toContain('limit_detected');
+    expect(types).toContain('failover');
+  });
+
+  it('parks when both accounts are limited, with the earliest reset', async () => {
+    const { registry, log } = fixtures();
+    const res = await runSession({
+      ...base, registry, log, now: () => 100,
+      startTurnFn: scriptTurns([[REJECTED], [{ ...REJECTED, rate_limit_info: { status: 'rejected', resetsAt: 1500 } }]], []),
+    });
+    expect(res).toMatchObject({ status: 'parked', parkedUntil: 1500, failovers: 2 });
+  });
+
+  it('trips the flap guard after more than 3 failovers in an hour', async () => {
+    const { registry, log } = fixtures();
+    // accounts recover instantly: resetsAt in the past, so pickActive always finds one
+    const INSTANT: RawEvent = { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1 } };
+    const res = await runSession({
+      ...base, registry, log, now: () => 100, maxFailoversPerHour: 3,
+      startTurnFn: scriptTurns([[INSTANT], [INSTANT], [INSTANT], [INSTANT], [SUCCESS]], []),
+    });
+    expect(res.status).toBe('failed');
+    expect(res.failovers).toBe(4);
+    expect(log.read().map((r) => r.type)).toContain('flap_guard_tripped');
+  });
+
+  it('uses now+5h fallback when the limit signal has no resetsAt', async () => {
+    const { registry, log } = fixtures();
+    const NO_RESET: RawEvent = { type: 'system', subtype: 'api_retry', error: 'rate_limit', error_status: 429 };
+    await runSession({
+      ...base, registry, log, now: () => 1000,
+      startTurnFn: scriptTurns([[NO_RESET], [SUCCESS]], []),
+    });
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 1000 + 5 * 3600 });
+  });
+});

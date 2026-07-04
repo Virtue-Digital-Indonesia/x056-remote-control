@@ -1,0 +1,154 @@
+import type { AccountRegistry } from './accounts.js';
+import { classifyEvent } from './detector.js';
+import type { EventLog } from './eventlog.js';
+import { startTurn } from './turn.js';
+import type { TurnHandle } from './turn.js';
+import type { RawEvent, Verdict } from './types.js';
+
+export const CONTINUE_PROMPT =
+  'Continue exactly where you left off. If your last action was a command or edit that may have partially applied, verify its actual effect before re-running anything with side effects.';
+
+export interface SessionResult {
+  status: 'completed' | 'parked' | 'failed';
+  finalAccount?: string;
+  parkedUntil?: number;
+  failovers: number;
+  resultText?: string;
+}
+
+export interface RunSessionOptions {
+  registry: AccountRegistry;
+  log: EventLog;
+  sessionId: string;
+  cwd: string;
+  prompt: string;
+  resume?: boolean;
+  startTurnFn?: typeof startTurn;
+  now?: () => number;
+  maxFailoversPerHour?: number;
+  claudePath?: string;
+  tap?: (e: RawEvent) => void;
+  forceSwitchSignal?: boolean;
+  drainTimeoutMs?: number;
+}
+
+const FIVE_HOURS = 5 * 3600;
+const FORCED_COOLDOWN = 30 * 60;
+
+export async function runSession(opts: RunSessionOptions): Promise<SessionResult> {
+  const { registry, log, sessionId, cwd } = opts;
+  const startTurnFn = opts.startTurnFn ?? startTurn;
+  const now = opts.now ?? (() => Math.floor(Date.now() / 1000));
+  const maxPerHour = opts.maxFailoversPerHour ?? 3;
+  const drainTimeoutMs = opts.drainTimeoutMs ?? 30_000;
+  const failoverTimes: number[] = [];
+
+  let mode: 'new' | 'resume' = opts.resume ? 'resume' : 'new';
+  let prompt = opts.prompt;
+  let forceSwitchRequested = false;
+  const onSigusr1 = () => {
+    forceSwitchRequested = true;
+  };
+  if (opts.forceSwitchSignal !== false) process.on('SIGUSR1', onSigusr1);
+
+  try {
+    for (;;) {
+      const account = registry.pickActive(now());
+      if (!account) {
+        const until = registry.earliestReset();
+        log.append({ type: 'parked', sessionId, until });
+        return { status: 'parked', parkedUntil: until, failovers: failoverTimes.length };
+      }
+
+      const state = {
+        limited: null as Verdict | null,
+        forced: false,
+        resultText: undefined as string | undefined,
+        resultOk: false,
+        drainTimer: null as NodeJS.Timeout | null,
+      };
+
+      let handle!: TurnHandle;
+      const processEvent = (e: RawEvent) => {
+        opts.tap?.(e);
+        const v = classifyEvent(e);
+        if (v.kind === 'limited' && !state.limited && !state.forced) {
+          state.limited = v;
+          log.append({ type: 'limit_detected', sessionId, account: account.name, source: v.source, resetsAt: v.resetsAt ?? null });
+          handle.kill();
+          return;
+        }
+        if (v.kind === 'warning') {
+          log.append({ type: 'quota_warning', sessionId, account: account.name, resetsAt: v.resetsAt ?? null });
+        }
+        if (e.type === 'result' && e.is_error === false) {
+          state.resultOk = true;
+          state.resultText = typeof e.result === 'string' ? e.result : undefined;
+        }
+        // forced switch: drain until a tool-result-bearing user event or the result event (D7)
+        if (forceSwitchRequested && !state.forced && !state.limited && (e.type === 'user' || e.type === 'result')) {
+          state.forced = true;
+          log.append({ type: 'forced_switch', sessionId, account: account.name });
+          handle.interrupt();
+        }
+      };
+
+      handle = startTurnFn({
+        claudePath: opts.claudePath,
+        configDir: account.configDir,
+        cwd,
+        sessionId,
+        mode,
+        prompt,
+        onEvent: (e) => {
+          Promise.resolve().then(() => processEvent(e));
+        },
+      });
+
+      // forced-switch hard timeout: if requested but nothing drainable arrives, interrupt anyway
+      const drainWatch = setInterval(() => {
+        if (forceSwitchRequested && !state.forced && !state.limited && state.drainTimer === null) {
+          state.drainTimer = setTimeout(() => {
+            if (!state.forced && !state.limited) {
+              state.forced = true;
+              log.append({ type: 'forced_switch_timeout', sessionId, account: account.name });
+              handle.interrupt();
+            }
+          }, drainTimeoutMs);
+        }
+      }, 100);
+
+      await handle.done;
+      clearInterval(drainWatch);
+      if (state.drainTimer) clearTimeout(state.drainTimer);
+
+      if (!state.limited && !state.forced) {
+        if (state.resultOk) {
+          log.append({ type: 'turn_completed', sessionId, account: account.name });
+          return { status: 'completed', finalAccount: account.name, failovers: failoverTimes.length, resultText: state.resultText };
+        }
+        log.append({ type: 'turn_failed', sessionId, account: account.name });
+        return { status: 'failed', finalAccount: account.name, failovers: failoverTimes.length };
+      }
+
+      // failover path (limit or forced)
+      if (state.limited) {
+        registry.markLimited(account.name, state.limited.resetsAt ?? now() + FIVE_HOURS);
+      } else {
+        forceSwitchRequested = false;
+        registry.markLimited(account.name, now() + FORCED_COOLDOWN);
+      }
+      failoverTimes.push(now());
+      const recent = failoverTimes.filter((t) => t > now() - 3600);
+      if (recent.length > maxPerHour) {
+        log.append({ type: 'flap_guard_tripped', sessionId });
+        return { status: 'failed', failovers: failoverTimes.length };
+      }
+      log.append({ type: 'failover', sessionId, from: account.name });
+      mode = 'resume';
+      prompt = CONTINUE_PROMPT;
+    }
+  } finally {
+    if (opts.forceSwitchSignal !== false) process.off('SIGUSR1', onSigusr1);
+  }
+}
