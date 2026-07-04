@@ -61,9 +61,12 @@ export class SessionManager {
   }
 
   private loadState(): PersistedState {
-    return existsSync(this.stateFile)
-      ? (JSON.parse(readFileSync(this.stateFile, 'utf8')) as PersistedState)
-      : {};
+    if (!existsSync(this.stateFile)) return {};
+    try {
+      return JSON.parse(readFileSync(this.stateFile, 'utf8')) as PersistedState;
+    } catch {
+      return {};
+    }
   }
 
   private emit(kind: string, data: Record<string, unknown>): void {
@@ -108,41 +111,47 @@ export class SessionManager {
   private launch(sessionId: string, prompt: string, cwd: string, resume: boolean): void {
     this.running = true;
     this.currentSessionId = sessionId;
-    const runFn = this.opts.runSessionFn ?? runSession;
-    const registry = AccountRegistry.load(join(this.opts.stateDir, 'accounts.json'));
-    const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => this.emit(k, d));
-    let stateSaved = resume;
-    const saveStateOnce = () => {
-      if (!stateSaved) {
-        writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd }));
-        stateSaved = true;
-      }
-    };
-    this.emit('session_started', { sessionId, cwd, resume, prompt });
-    void runFn({
-      registry,
-      log,
-      sessionId,
-      cwd,
-      prompt,
-      resume,
-      claudePath: this.opts.claudePath,
-      tap: (e: RawEvent) => {
-        saveStateOnce();
-        this.tapToEvents(e);
-      },
-    })
-      .then((res) => {
-        this.lastResult = res;
-        this.emit('session_done', { sessionId, ...res });
+    try {
+      const runFn = this.opts.runSessionFn ?? runSession;
+      const registry = AccountRegistry.load(join(this.opts.stateDir, 'accounts.json'));
+      const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => this.emit(k, d));
+      let stateSaved = resume;
+      const saveStateOnce = () => {
+        if (!stateSaved) {
+          writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd }));
+          stateSaved = true;
+        }
+      };
+      this.emit('session_started', { sessionId, cwd, resume, prompt });
+      void runFn({
+        registry,
+        log,
+        sessionId,
+        cwd,
+        prompt,
+        resume,
+        claudePath: this.opts.claudePath,
+        tap: (e: RawEvent) => {
+          saveStateOnce();
+          this.tapToEvents(e);
+        },
       })
-      .catch((err: unknown) => {
-        this.emit('session_error', { sessionId, message: (err as Error).message });
-      })
-      .finally(() => {
-        this.running = false;
-        this.currentSessionId = null;
-      });
+        .then((res) => {
+          this.lastResult = res;
+          this.emit('session_done', { sessionId, ...res });
+        })
+        .catch((err: unknown) => {
+          this.emit('session_error', { sessionId, message: (err as Error).message });
+        })
+        .finally(() => {
+          this.running = false;
+          this.currentSessionId = null;
+        });
+    } catch (err) {
+      this.running = false;
+      this.currentSessionId = null;
+      throw err;
+    }
   }
 
   private tapToEvents(e: RawEvent): void {

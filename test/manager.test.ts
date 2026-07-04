@@ -94,4 +94,48 @@ describe('SessionManager', () => {
     const { mgr } = fixture(COMPLETED);
     expect(mgr.forceSwitch()).toBe(false);
   });
+
+  it('wedge regression: recovers from synchronous launch failure (missing accounts.json)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-mgr-'));
+    const stateDir = join(dir, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    // Deliberately DO NOT initialize accounts.json
+    const calls: RunSessionOptions[] = [];
+    const runSessionFn = (async (o: RunSessionOptions) => {
+      calls.push(o);
+      await new Promise((r) => setTimeout(r, 20));
+      return COMPLETED;
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+
+    // start('x') should throw because accounts.json doesn't exist
+    expect(() => mgr.start('x')).toThrow();
+    // manager should NOT be wedged: running must be false
+    expect(mgr.snapshot().running).toBe(false);
+    // create valid accounts.json
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [
+      { name: 'a', configDir: '/cfg/a' },
+    ]);
+    // now start('y') should succeed (not throw BusyError)
+    const sid = mgr.start('y');
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.prompt).toBe('y');
+    await waitFor(() => mgr.snapshot().running === false);
+  });
+
+  it('corrupt state.json: snapshot() degrades gracefully', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-mgr-'));
+    const stateDir = join(dir, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [
+      { name: 'a', configDir: '/cfg/a' },
+    ]);
+    // Write invalid JSON to state.json
+    writeFileSync(join(stateDir, 'state.json'), 'not-json');
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir });
+    // snapshot() should not throw, returns null for lastSessionId
+    const snap = mgr.snapshot();
+    expect(snap.lastSessionId).toBe(null);
+    expect(snap.running).toBe(false);
+  });
 });
