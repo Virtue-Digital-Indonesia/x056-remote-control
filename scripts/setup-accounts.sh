@@ -18,7 +18,13 @@ if emails[0] == emails[1]:
     sys.exit("ERROR: both config dirs are logged into the SAME account")
 EOF
 mkdir -p "$A/projects"
-# D2: one canonical transcript tree, account B reads/writes A's
+# D2: one canonical transcript tree, account B reads/writes A's.
+# A fresh login creates a real projects/ dir in B — migrate its contents into
+# A's tree, then replace it with the symlink.
+if [ -e "$B/projects" ] && [ ! -L "$B/projects" ]; then
+  cp -a --update=none "$B/projects/." "$A/projects/"
+  rm -rf "$B/projects"
+fi
 if [ ! -e "$B/projects" ]; then ln -s "$A/projects" "$B/projects"; fi
 [ "$(readlink -f "$B/projects")" = "$(readlink -f "$A/projects")" ] || { echo "B projects is not the shared tree"; exit 1; }
 npm run x056 -- init
