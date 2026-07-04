@@ -128,26 +128,64 @@
     if (usage.utilization > 1) pct = Math.round(usage.utilization);
     pct = Math.max(0, Math.min(100, pct));
     var cls = gaugeClass(pct);
-    return '<div class="gauge-label">' + label + ' ' + pct + '%</div>' +
-      '<div class="gauge"><i class="' + cls + '" style="width:' + pct + '%"></i></div>';
+
+    var container = document.createElement('div');
+
+    var labelEl = document.createElement('div');
+    labelEl.className = 'gauge-label';
+    labelEl.textContent = label + ' ' + pct + '%';
+    container.appendChild(labelEl);
+
+    var gaugeEl = document.createElement('div');
+    gaugeEl.className = 'gauge';
+    var i = document.createElement('i');
+    if (cls) i.classList.add(cls);
+    i.style.width = pct + '%';
+    gaugeEl.appendChild(i);
+    container.appendChild(gaugeEl);
+
+    return container;
   }
 
   function renderAccounts(list) {
-    accountsEl.innerHTML = list.map(function (a) {
+    accountsEl.innerHTML = '';
+    list.forEach(function (a) {
       var state = a.state || { kind: 'unknown' };
       var badgeText = state.kind === 'ok' ? 'ok' : state.kind === 'limited' ? 'limited until ' + fmtTime(state.until) : 'unknown';
       var badgeClass = state.kind === 'ok' ? 'ok' : state.kind === 'limited' ? 'limited' : 'unknown';
-      var body;
+
+      var card = document.createElement('div');
+      card.className = 'acct';
+
+      var nameRow = document.createElement('div');
+      nameRow.className = 'name';
+      nameRow.appendChild(document.createTextNode(a.name));
+
+      var badge = document.createElement('span');
+      badge.classList.add('badge');
+      badge.classList.add(badgeClass);
+      badge.textContent = badgeText;
+      nameRow.appendChild(badge);
+
+      card.appendChild(nameRow);
+
       if (a.quotaError) {
-        body = '<div class="gauge-label">quota unavailable</div>';
+        var errorDiv = document.createElement('div');
+        errorDiv.className = 'gauge-label';
+        errorDiv.textContent = 'quota unavailable';
+        card.appendChild(errorDiv);
       } else if (a.quota) {
-        body = renderGauge('5h', a.quota.fiveHour) + renderGauge('7d', a.quota.sevenDay);
+        card.appendChild(renderGauge('5h', a.quota.fiveHour));
+        card.appendChild(renderGauge('7d', a.quota.sevenDay));
       } else {
-        body = '<div class="gauge-label">quota unavailable</div>';
+        var noQuotaDiv = document.createElement('div');
+        noQuotaDiv.className = 'gauge-label';
+        noQuotaDiv.textContent = 'quota unavailable';
+        card.appendChild(noQuotaDiv);
       }
-      return '<div class="acct"><div class="name">' + a.name +
-        '<span class="badge ' + badgeClass + '">' + badgeText + '</span></div>' + body + '</div>';
-    }).join('');
+
+      accountsEl.appendChild(card);
+    });
   }
 
   function pollAccounts() {
