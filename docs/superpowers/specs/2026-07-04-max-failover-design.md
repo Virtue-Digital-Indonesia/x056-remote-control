@@ -81,6 +81,13 @@ No web UI. No pre-emptive switching (v1.1: switch at turn boundary when active-a
 
 NestJS supervisor service + Next.js control panel over WebSocket: chat stream rendered from supervisor events (browser never touches the claude process — failover is invisible by construction, shown only as a "switching accounts" banner), per-account utilization gauges with reset countdowns (F6), force-switch, failover history. Security for the public-IP server: bearer auth + IP allowlist or Tailscale. SDK migration (F9) to add a `canUseTool` approval queue. Investigate `claude setup-token` long-lived tokens as a possible single-config-dir simplification.
 
+## 8a. v1 implementation notes (recorded 2026-07-04, post-build)
+
+Two spec items were consciously narrowed in the v1 build; both are v1.1 backlog, not silent drops:
+
+- **Transcript tail watcher (D3 channel 3, §4)** — v1 detects the synthetic limit entry only if it arrives on the stream-json stdout with its top-level `error` field intact (detector rule on `error === "rate_limit"`); no separate file-tail watcher was built. **Live-drill action:** capture real stream output at the next limit hit and verify the synthetic entry appears on stdout — that decides whether the tail watcher is needed.
+- **Parked auto-resume + notify (D6)** — v1 returns `parked` with exit code 3 and the reset timestamp; `continue` after reset works and `lastSessionId` is preserved, but there is no sleep-until-reset loop and no Telegram notification yet. Unattended overnight sessions therefore stop silently at double-limit. v1.1: wire `parked` to the existing notify pipeline + optional auto-resume loop.
+
 ## 8. Risks & open items
 
 - `rate_limit_event.status` enum value `"rejected"` inferred from the API's unified header enum, not observed yet; detector never depends on it alone (D3 has three independent triggers).
