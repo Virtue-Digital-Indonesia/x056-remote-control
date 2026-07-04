@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+// Emits canned NDJSON to exercise startTurn: echoes its argv and config dir
+// as events so the test can assert flag construction, then idles 10s so
+// kill() is observable. "FAST" in the prompt exits immediately instead.
+const args = process.argv.slice(2);
+const emit = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+emit({ type: 'system', subtype: 'init', argv: args, config_dir: process.env.CLAUDE_CONFIG_DIR });
+process.stdout.write('this line is not json\n');
+emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'working' }] } });
+if (args[args.length - 1].includes('FAST')) {
+  emit({ type: 'result', subtype: 'success', is_error: false, api_error_status: null, result: 'done' });
+  process.exit(0);
+}
+setTimeout(() => process.exit(0), 10000);
