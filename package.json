@@ -9,12 +9,21 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "x056": "tsx src/cli.ts"
+    "x056": "tsx src/cli.ts",
+    "serve": "tsx server/main.ts"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^20.14.0",
     "tsx": "^4.16.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.27",
+    "@nestjs/core": "^11.1.27",
+    "@nestjs/platform-express": "^11.1.27",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
   }
 }
