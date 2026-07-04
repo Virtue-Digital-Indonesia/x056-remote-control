@@ -77,6 +77,16 @@ Plain TypeScript package `supervisor/` — framework-free, structured so v2 can 
 
 No web UI. No pre-emptive switching (v1.1: switch at turn boundary when active-account utilization ≥ ~90 %, using F6). No more than two accounts. No concurrent multi-session scheduling. No adoption of interactively-started `~/.claude` sessions (v2 candidate).
 
+## 7a. v1.5 — remote access gateway (approved 2026-07-04 late: "use docker compose for it")
+
+One Docker Compose service (`x056`) exposing a browser-accessible remote control over the proven supervisor:
+
+- **Backend:** NestJS in the same repo (`server/`); the `src/` supervisor library stays dependency-free. Endpoints: `GET /healthz` (no auth); `GET /` static panel page (no auth, contains no secrets); authenticated under `/api`: `POST /sessions {prompt, cwd?}` (409 when a session is already running — one live session in v1.5), `POST /sessions/current/messages`, `GET /sessions/current/stream` (SSE: replay ring buffer then live), `GET /accounts` (registry + live `/api/oauth/usage`), `POST /switch` (SIGUSR1 to own process — same-process trick, zero refactor).
+- **Auth:** mandatory `X056_TOKEN` (≥24 chars, generated into gitignored `.env`), `Authorization: Bearer` header; SSE uses `?token=` (EventSource cannot set headers — accepted v1.5 tradeoff on a self-owned server). Constant-time compare. Public-IP exposure is the user's accepted risk; ACCESS.md documents the Tailscale/UFW hardening options.
+- **Panel (v1.5):** one static HTML page served by Nest — chat stream, prompt box, per-account 5h/7d gauges, force-switch button, failover log. Next.js panel remains the v2 upgrade path when the UI grows.
+- **Docker:** image `node:22-bookworm` + global `@anthropic-ai/claude-code` + ripgrep, container user uid 1001 (host `efran`), volumes mounting `~/.claude-x056-a`, `~/.claude-x056-b` and the workspace root `/home/efran/remote-development` at IDENTICAL container paths (preserves the projects symlink and file ownership), named volume for `/app/state`. Sessions' `cwd` is validated to stay inside `X056_WORKSPACE_ROOT`.
+- **Non-goals v1.5:** multi-concurrent sessions, user management, parked auto-resume (still §8a backlog), Next.js build.
+
 ## 7. v2 outlook
 
 NestJS supervisor service + Next.js control panel over WebSocket: chat stream rendered from supervisor events (browser never touches the claude process — failover is invisible by construction, shown only as a "switching accounts" banner), per-account utilization gauges with reset countdowns (F6), force-switch, failover history. Security for the public-IP server: bearer auth + IP allowlist or Tailscale. SDK migration (F9) to add a `canUseTool` approval queue. Investigate `claude setup-token` long-lived tokens as a possible single-config-dir simplification.
