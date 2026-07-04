@@ -1,1 +1,276 @@
-<!-- x056 panel placeholder -->x056
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>x056 remote control</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f1115; color: #e6e6e6; font: 14px/1.4 system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #171a21; position: sticky; top: 0; }
+  header h1 { font-size: 15px; margin: 0; flex: 1; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: #666; flex: none; }
+  #dot.on { background: #3ecf5f; }
+  #dot.off { background: #d9534f; }
+  button { background: #262b36; color: #e6e6e6; border: 1px solid #3a4150; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #313847; }
+  main { padding: 10px 12px 90px; max-width: 720px; margin: 0 auto; }
+  section { margin-bottom: 14px; }
+  #accounts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .acct { background: #171a21; border: 1px solid #262b36; border-radius: 8px; padding: 8px 10px; min-width: 150px; flex: 1; }
+  .acct .name { font-weight: 600; display: flex; justify-content: space-between; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #333; }
+  .badge.ok { background: #1f4a2a; color: #7de893; }
+  .badge.limited { background: #4a3a1f; color: #f0c674; }
+  .badge.unknown { background: #333; color: #aaa; }
+  .gauge { height: 6px; border-radius: 3px; background: #262b36; margin-top: 4px; overflow: hidden; }
+  .gauge > i { display: block; height: 100%; background: #3ecf5f; }
+  .gauge > i.amber { background: #f0c674; }
+  .gauge > i.red { background: #d9534f; }
+  .gauge-label { font-size: 11px; color: #999; margin-top: 2px; }
+  #chat { display: flex; flex-direction: column; gap: 6px; }
+  .bubble { padding: 8px 10px; border-radius: 8px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
+  .bubble.assistant { background: #1c2230; align-self: flex-start; }
+  .banner { align-self: center; font-size: 12px; color: #f0c674; background: #262110; border-radius: 6px; padding: 4px 10px; }
+  .header-line { align-self: center; font-size: 12px; color: #8fb8ff; background: #16202f; border-radius: 6px; padding: 4px 10px; }
+  #log { max-height: 200px; overflow: auto; font-size: 11px; color: #999; background: #12151b; border-radius: 6px; padding: 6px; white-space: pre-wrap; }
+  #logToggle { cursor: pointer; user-select: none; color: #8fb8ff; font-size: 12px; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; background: #171a21; padding: 8px 10px; display: flex; gap: 6px; align-items: flex-end; }
+  textarea { flex: 1; resize: none; background: #0f1115; color: #e6e6e6; border: 1px solid #3a4150; border-radius: 6px; padding: 8px; font: inherit; height: 40px; }
+  #newSessionRow { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #aaa; margin-bottom: 6px; }
+  #cwd { background: #0f1115; color: #e6e6e6; border: 1px solid #3a4150; border-radius: 6px; padding: 4px 6px; font: inherit; width: 160px; }
+  #busy { color: #f0c674; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <span id="dot" class="off"></span>
+  <h1>x056 remote control</h1>
+  <button id="switchBtn" title="force switch account">switch</button>
+  <button id="tokenBtn" title="clear token">&#9881;</button>
+</header>
+<main>
+  <section id="accounts"></section>
+  <section>
+    <div id="newSessionRow">
+      <label><input type="checkbox" id="newSession" /> New session</label>
+      <input id="cwd" placeholder="cwd (optional)" />
+      <span id="busy"></span>
+    </div>
+    <div id="chat"></div>
+  </section>
+  <section>
+    <div id="logToggle">&#9656; failover log</div>
+    <div id="log" hidden></div>
+  </section>
+</main>
+<footer>
+  <textarea id="prompt" placeholder="message…"></textarea>
+  <button id="sendBtn">Send</button>
+</footer>
+<script>
+(function () {
+  var TOKEN_KEY = 'x056_token';
+  var token = localStorage.getItem(TOKEN_KEY);
+  if (!token) {
+    token = window.prompt('x056 access token:') || '';
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+  }
+
+  var dot = document.getElementById('dot');
+  var accountsEl = document.getElementById('accounts');
+  var chatEl = document.getElementById('chat');
+  var logEl = document.getElementById('log');
+  var logToggle = document.getElementById('logToggle');
+  var promptEl = document.getElementById('prompt');
+  var sendBtn = document.getElementById('sendBtn');
+  var switchBtn = document.getElementById('switchBtn');
+  var tokenBtn = document.getElementById('tokenBtn');
+  var newSessionEl = document.getElementById('newSession');
+  var cwdEl = document.getElementById('cwd');
+  var busyEl = document.getElementById('busy');
+
+  var lastSessionId = null;
+  var lastSeq = 0;
+  var logLines = [];
+
+  function authHeaders(extra) {
+    var h = Object.assign({ Authorization: 'Bearer ' + token }, extra || {});
+    return h;
+  }
+
+  function api(path, opts) {
+    opts = opts || {};
+    opts.headers = authHeaders(opts.body ? { 'Content-Type': 'application/json' } : {});
+    return fetch(path, opts);
+  }
+
+  tokenBtn.addEventListener('click', function () {
+    localStorage.removeItem(TOKEN_KEY);
+    location.reload();
+  });
+
+  // ---- accounts ----
+  function fmtTime(ms) {
+    try { return new Date(ms * 1000).toLocaleTimeString(); } catch (e) { return String(ms); }
+  }
+
+  function gaugeClass(pct) {
+    if (pct >= 90) return 'red';
+    if (pct >= 70) return 'amber';
+    return '';
+  }
+
+  function renderGauge(label, usage) {
+    var pct = Math.round((usage.utilization || 0) * 100);
+    // utilization may already be 0-100; clamp defensively either way.
+    if (usage.utilization > 1) pct = Math.round(usage.utilization);
+    pct = Math.max(0, Math.min(100, pct));
+    var cls = gaugeClass(pct);
+    return '<div class="gauge-label">' + label + ' ' + pct + '%</div>' +
+      '<div class="gauge"><i class="' + cls + '" style="width:' + pct + '%"></i></div>';
+  }
+
+  function renderAccounts(list) {
+    accountsEl.innerHTML = list.map(function (a) {
+      var state = a.state || { kind: 'unknown' };
+      var badgeText = state.kind === 'ok' ? 'ok' : state.kind === 'limited' ? 'limited until ' + fmtTime(state.until) : 'unknown';
+      var badgeClass = state.kind === 'ok' ? 'ok' : state.kind === 'limited' ? 'limited' : 'unknown';
+      var body;
+      if (a.quotaError) {
+        body = '<div class="gauge-label">quota unavailable</div>';
+      } else if (a.quota) {
+        body = renderGauge('5h', a.quota.fiveHour) + renderGauge('7d', a.quota.sevenDay);
+      } else {
+        body = '<div class="gauge-label">quota unavailable</div>';
+      }
+      return '<div class="acct"><div class="name">' + a.name +
+        '<span class="badge ' + badgeClass + '">' + badgeText + '</span></div>' + body + '</div>';
+    }).join('');
+  }
+
+  function pollAccounts() {
+    api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {});
+  }
+  pollAccounts();
+  setInterval(pollAccounts, 60000);
+
+  function pollSnapshot() {
+    return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) {
+      lastSessionId = s.lastSessionId;
+      return s;
+    });
+  }
+  pollSnapshot();
+
+  // ---- chat rendering ----
+  function addBubble(cls, text) {
+    var div = document.createElement('div');
+    div.className = 'bubble ' + cls;
+    div.textContent = text;
+    chatEl.appendChild(div);
+    div.scrollIntoView({ block: 'end' });
+  }
+
+  var SUPERVISOR_BANNER_TYPES = {
+    limit_detected: 'limit detected — switching accounts…',
+    forced_switch: 'switching accounts…',
+    failover: 'switched accounts',
+    parked: 'all accounts limited — parked',
+    turn_failed: 'turn failed',
+    flap_guard_tripped: 'too many failovers — stopped',
+  };
+
+  function pushLog(raw) {
+    logLines.push(raw);
+    if (logLines.length > 50) logLines.shift();
+    logEl.textContent = logLines.join('\n');
+  }
+
+  function handleEvent(kind, data) {
+    if (kind === 'assistant_text') {
+      addBubble('assistant', data.text);
+    } else if (kind === 'supervisor') {
+      pushLog(JSON.stringify(data));
+      var label = SUPERVISOR_BANNER_TYPES[data.type];
+      if (label) addBubble('banner', label);
+    } else if (kind === 'session_started') {
+      addBubble('header-line', 'session started (' + (data.resume ? 'resume' : 'new') + ')');
+    } else if (kind === 'session_done') {
+      addBubble('header-line', 'session done: ' + data.status +
+        (data.finalAccount ? ' via ' + data.finalAccount : '') +
+        ' — failovers: ' + data.failovers);
+      pollAccounts();
+      pollSnapshot();
+      setBusy(false);
+    } else if (kind === 'session_error') {
+      addBubble('banner', 'session error: ' + data.message);
+      setBusy(false);
+    }
+  }
+
+  logToggle.addEventListener('click', function () {
+    logEl.hidden = !logEl.hidden;
+    logToggle.textContent = (logEl.hidden ? '▶' : '▼') + ' failover log';
+  });
+
+  // ---- SSE ----
+  var es = null;
+  function connect() {
+    if (es) es.close();
+    es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
+    es.onopen = function () { dot.className = 'on'; };
+    es.onerror = function () {
+      dot.className = 'off';
+      es.close();
+      setTimeout(connect, 2000);
+    };
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error'].forEach(function (kind) {
+      es.addEventListener(kind, function (evt) {
+        if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
+        var data;
+        try { data = JSON.parse(evt.data); } catch (e) { return; }
+        handleEvent(kind, data.data || {});
+      });
+    });
+  }
+  connect();
+
+  // ---- sending ----
+  function setBusy(on) {
+    busyEl.textContent = on ? 'busy — session still running' : '';
+  }
+
+  function send() {
+    var text = promptEl.value.trim();
+    if (!text) return;
+    var forceNew = newSessionEl.checked;
+    var body = { prompt: text };
+    var cwd = cwdEl.value.trim();
+    if (cwd) body.cwd = cwd;
+    var useNew = forceNew || !lastSessionId;
+    var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
+    addBubble('assistant', '> ' + text);
+    api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+      if (r.status === 409) { setBusy(true); return; }
+      setBusy(false);
+      promptEl.value = '';
+      return r.json().then(function (j) { if (j.sessionId) lastSessionId = j.sessionId; });
+    }).catch(function () {});
+  }
+
+  sendBtn.addEventListener('click', send);
+  promptEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+
+  switchBtn.addEventListener('click', function () {
+    api('/api/switch', { method: 'POST' }).then(function (r) {
+      if (r.status === 409) addBubble('banner', 'switch: no session running');
+    }).catch(function () {});
+  });
+})();
+</script>
+</body>
+</html>
