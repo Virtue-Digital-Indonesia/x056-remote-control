@@ -17,9 +17,13 @@ const LOG = join(STATE_DIR, 'events.jsonl');
 
 function printEvent(e: RawEvent): void {
   if (e.type === 'assistant') {
-    const msg = e.message as { content?: { type: string; text?: string }[] } | undefined;
-    for (const block of msg?.content ?? []) {
-      if (block.type === 'text' && block.text) process.stdout.write(`\n${block.text}\n`);
+    const msg = e.message as { content?: unknown } | undefined;
+    const content = Array.isArray(msg?.content) ? msg.content : [];
+    for (const block of content) {
+      if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text') {
+        const text = (block as { text?: unknown }).text;
+        if (typeof text === 'string' && text) process.stdout.write(`\n${text}\n`);
+      }
     }
   }
 }
@@ -72,18 +76,36 @@ async function main(): Promise<number> {
     const registry = AccountRegistry.load(ACCOUNTS);
     const log = new EventLog(LOG);
     const resume = command === 'continue';
-    const sessionId = resume
-      ? (loadState().lastSessionId ?? (() => { throw new Error('no previous session — use run'); })())
-      : randomUUID();
+    let sessionId: string;
+    if (resume) {
+      const lastSessionId = loadState().lastSessionId;
+      if (!lastSessionId) {
+        console.error('no previous session — use run first');
+        return 2;
+      }
+      sessionId = lastSessionId;
+    } else {
+      sessionId = randomUUID();
+    }
     mkdirSync(STATE_DIR, { recursive: true });
-    writeFileSync(STATE, JSON.stringify({ lastSessionId: sessionId }));
     writeFileSync(PIDFILE, String(process.pid));
+
+    let stateSaved = resume; // continue: already correct on disk
+    const saveStateOnce = () => {
+      if (!stateSaved) {
+        writeFileSync(STATE, JSON.stringify({ lastSessionId: sessionId }));
+        stateSaved = true;
+      }
+    };
 
     const res = await runSession({
       registry, log, sessionId,
       cwd: process.cwd(), prompt: arg, resume,
       claudePath: process.env.X056_CLAUDE_PATH,
-      tap: printEvent,
+      tap: (e) => {
+        saveStateOnce();
+        printEvent(e);
+      },
     });
     console.log(`\n[x056] ${res.status} · account=${res.finalAccount ?? '-'} · failovers=${res.failovers}` +
       (res.parkedUntil ? ` · parked until ${new Date(res.parkedUntil * 1000).toISOString()}` : ''));

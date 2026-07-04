@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, afterEach, expect, it } from 'vitest';
 import { AccountRegistry } from '../src/accounts.js';
 import { EventLog } from '../src/eventlog.js';
-import { CONTINUE_PROMPT, runSession } from '../src/failover.js';
+import { runSession } from '../src/failover.js';
 
 const FAKE = new URL('./bin/fake-claude', import.meta.url).pathname;
 
@@ -37,6 +37,8 @@ describe('e2e: failover across accounts via fake-claude', () => {
       scenarioB,
       [
         JSON.stringify({ event: { type: 'system', subtype: 'init', session_id: 'e2e-sid' } }),
+        JSON.stringify({ event: { type: 'assistant', message: { content: 'plain string' } } }),
+        JSON.stringify({ event: { type: 'assistant', message: { content: 42 } } }),
         JSON.stringify({ event: { type: 'result', subtype: 'success', is_error: false, api_error_status: null, result: 'finished on b' } }),
         JSON.stringify({ exit: 0 }),
       ].join('\n'),

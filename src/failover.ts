@@ -72,7 +72,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
 
       let handle: TurnHandle | undefined;
       const processEvent = (e: RawEvent) => {
-        opts.tap?.(e);
+        try { opts.tap?.(e); } catch { /* tap must never affect detection */ }
         const v = classifyEvent(e);
         if (v.kind === 'limited' && !state.limited && !state.forced) {
           state.limited = v;
