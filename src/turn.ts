@@ -5,6 +5,7 @@ import type { RawEvent } from './types.js';
 export interface TurnExit {
   code: number | null;
   signal: NodeJS.Signals | null;
+  spawnError?: string;
 }
 
 export interface TurnHandle {
@@ -49,6 +50,7 @@ export function startTurn(opts: TurnOptions): TurnHandle {
   });
 
   const done = new Promise<TurnExit>((resolve) => {
+    child.on('error', (err) => resolve({ code: null, signal: null, spawnError: err.message }));
     child.on('close', (code, signal) => resolve({ code, signal }));
   });
 

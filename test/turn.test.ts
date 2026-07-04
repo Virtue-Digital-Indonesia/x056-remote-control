@@ -53,4 +53,15 @@ describe('startTurn', () => {
     expect(exit.signal).toBe('SIGKILL');
     expect(events.length).toBeGreaterThan(0);
   }, 10000);
+
+  it('resolves done with spawnError instead of crashing when the binary does not exist', async () => {
+    const { onEvent } = collect();
+    const h = startTurn({
+      claudePath: '/nonexistent/x056-no-such-binary', configDir: '/tmp/cfg-a', cwd: process.cwd(),
+      sessionId: 'sid-4', mode: 'new', prompt: 'anything', onEvent,
+    });
+    const exit = await h.done;
+    expect(exit.spawnError).toMatch(/ENOENT/);
+    expect(exit.code).toBeNull();
+  });
 });
