@@ -60,13 +60,13 @@ export class ApiController {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
+    const sinceSeq = Number.isFinite(Number(since)) ? Number(since) : 0;
     const unsub = this.manager.subscribe((e) => {
       res.write(`id: ${e.seq}\nevent: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`);
-    }, since ? Number(since) : 0);
-    res.on('close', () => {
-      clearInterval(ping);
-      unsub();
-    });
+    }, sinceSeq);
+    const cleanup = () => { clearInterval(ping); unsub(); };
+    res.on('close', cleanup);
+    res.on('error', cleanup);
   }
 
   @Get('sessions')
