@@ -23,9 +23,15 @@ interface UsageBody {
 }
 
 export async function fetchUsage(configDir: string, fetchFn: typeof fetch = fetch): Promise<Usage> {
-  const creds = JSON.parse(readFileSync(join(configDir, '.credentials.json'), 'utf8')) as {
-    claudeAiOauth?: { accessToken?: string };
-  };
+  let creds: { claudeAiOauth?: { accessToken?: string } };
+  try {
+    creds = JSON.parse(readFileSync(join(configDir, '.credentials.json'), 'utf8')) as {
+      claudeAiOauth?: { accessToken?: string };
+    };
+  } catch {
+    // Never leak file contents or parse-error snippets (they may contain the token itself).
+    throw new Error(`credentials unreadable in ${configDir}`);
+  }
   const token = creds.claudeAiOauth?.accessToken;
   if (!token) throw new Error(`no OAuth token in ${configDir}/.credentials.json`);
 

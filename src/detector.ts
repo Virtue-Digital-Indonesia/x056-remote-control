@@ -13,7 +13,9 @@ export function classifyEvent(e: RawEvent): Verdict {
     return { kind: 'ok', source: 'rate_limit_event' };
   }
   if (e.type === 'system' && e.subtype === 'api_retry') {
-    if (e.error === 'rate_limit' || e.error_status === 429) return { kind: 'limited', source: 'api_retry' };
+    // D6: only a rate_limit error should bench the account for hours — a transient
+    // non-quota 429 (or any other error) must not trigger the 5h cooldown.
+    if (e.error === 'rate_limit') return { kind: 'limited', source: 'api_retry' };
     return { kind: 'transient', source: 'api_retry' };
   }
   if (e.type === 'result' && e.api_error_status === 429) return { kind: 'limited', source: 'result' };

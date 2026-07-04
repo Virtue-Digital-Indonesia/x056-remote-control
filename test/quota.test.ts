@@ -47,4 +47,18 @@ describe('fetchUsage', () => {
     await expect(fetchUsage(dir, fakeFetch)).rejects.toThrow(/500/);
     await expect(fetchUsage(dir, fakeFetch)).rejects.not.toThrow(/sekret/);
   });
+
+  it('wraps an unreadable credentials file (nonexistent config dir) in a generic error (Finding 7)', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'x056-cfg-'));
+    const dir = join(parent, 'does-not-exist');
+    await expect(fetchUsage(dir)).rejects.toThrow(/credentials unreadable/);
+  });
+
+  it('wraps malformed credentials JSON in a generic error, never leaking file contents (Finding 7)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-cfg-'));
+    const fakeToken = 'sk-ant-definitely-a-fake-secret-token';
+    writeFileSync(join(dir, '.credentials.json'), `{ this is not json, ${fakeToken}`);
+    await expect(fetchUsage(dir)).rejects.toThrow(/credentials unreadable/);
+    await expect(fetchUsage(dir)).rejects.not.toThrow(fakeToken);
+  });
 });

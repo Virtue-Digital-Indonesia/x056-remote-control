@@ -40,6 +40,11 @@ describe('classifyEvent', () => {
     expect(classifyEvent(e)).toEqual({ kind: 'transient', source: 'api_retry' });
   });
 
+  it('treats a non-quota api_retry with a 429 status as transient, not limited (D6, Finding 2)', () => {
+    const e = { type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 1000, error_status: 429, error: 'some_other_error' };
+    expect(classifyEvent(e)).toEqual({ kind: 'transient', source: 'api_retry' });
+  });
+
   it('flags result with api_error_status 429 as limited', () => {
     const e = { type: 'result', subtype: 'success', is_error: true, api_error_status: 429 };
     expect(classifyEvent(e)).toEqual({ kind: 'limited', source: 'result' });

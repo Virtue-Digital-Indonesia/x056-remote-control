@@ -56,6 +56,41 @@ function scriptTurns(script: ScriptItem[][], recorded: Recorded[]): (opts: TurnO
   };
 }
 
+/**
+ * Like scriptTurns, but interrupt() is a no-op — simulating a wedged CLI build that
+ * ignores SIGINT. Only kill() stops the turn. kill() resolves a shared signal so any
+ * in-flight delay is cut short immediately, keeping the grace-kill test fast and
+ * deterministic (Finding 3, D7 grace-kill).
+ */
+function scriptTurnsIgnoreInterrupt(script: ScriptItem[][], recorded: Recorded[]): (opts: TurnOptions) => TurnHandle {
+  let call = 0;
+  return (opts: TurnOptions) => {
+    recorded.push({ configDir: opts.configDir, mode: opts.mode, prompt: opts.prompt });
+    const events = script[call];
+    call += 1;
+    let killed = false;
+    let resolveKillSignal: (() => void) | undefined;
+    const killSignal = new Promise<void>((r) => { resolveKillSignal = r; });
+    const kill = () => {
+      killed = true;
+      resolveKillSignal?.();
+    };
+    const done = (async () => {
+      for (const e of events) {
+        if (killed) break;
+        if (isDelayMarker(e)) {
+          await Promise.race([new Promise((r) => setTimeout(r, e.__delayMs)), killSignal]);
+          continue;
+        }
+        opts.onEvent(e);
+        await Promise.race([new Promise((r) => setTimeout(r, 1)), killSignal]);
+      }
+      return { code: killed ? null : 0, signal: killed ? ('SIGKILL' as const) : null };
+    })();
+    return { kill, interrupt: () => { /* ignores SIGINT — only kill() stops it */ }, done };
+  };
+}
+
 function fixtures() {
   const dir = mkdtempSync(join(tmpdir(), 'x056-fo-'));
   const registry = AccountRegistry.init(join(dir, 'accounts.json'), [
@@ -180,4 +215,48 @@ describe('runSession', () => {
     const types = log.read().map((r) => r.type);
     expect(types).not.toContain('forced_switch');
   });
+
+  it('surfaces a spawn error as a failed status with a reason, instead of discarding the TurnExit (Finding 1)', async () => {
+    const { registry, log } = fixtures();
+    const res = await runSession({
+      ...base, registry, log, now: () => 100,
+      startTurnFn: () => ({
+        kill: () => {},
+        interrupt: () => {},
+        done: Promise.resolve({ code: null, signal: null, spawnError: 'spawn claude ENOENT' }),
+      }),
+    });
+    expect(res.status).toBe('failed');
+    expect(res.reason).toMatch(/ENOENT/);
+    const row = log.read().find((r) => r.type === 'turn_failed');
+    expect(row).toMatchObject({ spawnError: 'spawn claude ENOENT' });
+  });
+
+  it('grace-kills the turn when interrupt() is ignored after a forced switch, still failing over (Finding 3, D7)', async () => {
+    const { registry, log } = fixtures();
+    const recorded: Recorded[] = [];
+    const resultPromise = runSession({
+      ...base,
+      forceSwitchSignal: true,
+      interruptGraceMs: 50,
+      registry,
+      log,
+      now: () => 100,
+      startTurnFn: scriptTurnsIgnoreInterrupt(
+        [
+          [ASSISTANT, { __delayMs: 20 }, USER_EVENT, { __delayMs: 5000 }],
+          [SUCCESS],
+        ],
+        recorded,
+      ),
+    });
+    process.kill(process.pid, 'SIGUSR1');
+    const res = await resultPromise;
+
+    expect(res).toMatchObject({ status: 'completed', finalAccount: 'b', failovers: 1 });
+    const types = log.read().map((r) => r.type);
+    expect(types).toContain('forced_switch');
+    expect(types).toContain('failover');
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 100 + 30 * 60 });
+  }, 10000);
 });

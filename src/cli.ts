@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -63,6 +63,24 @@ async function main(): Promise<number> {
 
   if (command === 'switch') {
     const pid = Number(readFileSync(PIDFILE, 'utf8').trim());
+    try {
+      process.kill(pid, 0);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
+        console.error(`stale pidfile — no such process ${pid}`);
+        rmSync(PIDFILE, { force: true });
+        return 2;
+      }
+      throw err;
+    }
+    const cmdlinePath = `/proc/${pid}/cmdline`;
+    if (existsSync(cmdlinePath)) {
+      const cmdline = readFileSync(cmdlinePath, 'utf8');
+      if (!cmdline.includes('cli.ts') && !cmdline.includes('x056')) {
+        console.error(`pid ${pid} does not look like an x056 process — refusing to signal`);
+        return 2;
+      }
+    }
     process.kill(pid, 'SIGUSR1');
     console.log(`sent SIGUSR1 to ${pid}`);
     return 0;
@@ -98,19 +116,24 @@ async function main(): Promise<number> {
       }
     };
 
-    const res = await runSession({
-      registry, log, sessionId,
-      cwd: process.cwd(), prompt: arg, resume,
-      claudePath: process.env.X056_CLAUDE_PATH,
-      tap: (e) => {
-        saveStateOnce();
-        printEvent(e);
-      },
-    });
-    console.log(`\n[x056] ${res.status} · account=${res.finalAccount ?? '-'} · failovers=${res.failovers}` +
-      (res.parkedUntil ? ` · parked until ${new Date(res.parkedUntil * 1000).toISOString()}` : ''));
-    if (res.resultText) console.log(res.resultText);
-    return res.status === 'completed' ? 0 : res.status === 'parked' ? 3 : 1;
+    try {
+      const res = await runSession({
+        registry, log, sessionId,
+        cwd: process.cwd(), prompt: arg, resume,
+        claudePath: process.env.X056_CLAUDE_PATH,
+        tap: (e) => {
+          saveStateOnce();
+          printEvent(e);
+        },
+      });
+      console.log(`\n[x056] ${res.status} · account=${res.finalAccount ?? '-'} · failovers=${res.failovers}` +
+        (res.parkedUntil ? ` · parked until ${new Date(res.parkedUntil * 1000).toISOString()}` : '') +
+        (res.status === 'failed' && res.reason ? ` · reason=${res.reason}` : ''));
+      if (res.resultText) console.log(res.resultText);
+      return res.status === 'completed' ? 0 : res.status === 'parked' ? 3 : 1;
+    } finally {
+      rmSync(PIDFILE, { force: true });
+    }
   }
 
   console.error('usage: x056 <init|run|continue|status|switch> [text]');

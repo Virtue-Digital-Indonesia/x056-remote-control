@@ -14,6 +14,7 @@ export interface SessionResult {
   parkedUntil?: number;
   failovers: number;
   resultText?: string;
+  reason?: string;
 }
 
 export interface RunSessionOptions {
@@ -30,6 +31,7 @@ export interface RunSessionOptions {
   tap?: (e: RawEvent) => void;
   forceSwitchSignal?: boolean;
   drainTimeoutMs?: number;
+  interruptGraceMs?: number;
 }
 
 const FIVE_HOURS = 5 * 3600;
@@ -41,15 +43,25 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   const now = opts.now ?? (() => Math.floor(Date.now() / 1000));
   const maxPerHour = opts.maxFailoversPerHour ?? 3;
   const drainTimeoutMs = opts.drainTimeoutMs ?? 30_000;
+  const graceMs = opts.interruptGraceMs ?? 10_000;
   const failoverTimes: number[] = [];
 
   let mode: 'new' | 'resume' = opts.resume ? 'resume' : 'new';
   let prompt = opts.prompt;
   let forceSwitchRequested = false;
+  let currentHandle: TurnHandle | undefined;
   const onSigusr1 = () => {
     forceSwitchRequested = true;
   };
-  if (opts.forceSwitchSignal !== false) process.on('SIGUSR1', onSigusr1);
+  const onTerminate = () => {
+    currentHandle?.kill();
+    process.exit(130);
+  };
+  if (opts.forceSwitchSignal !== false) {
+    process.on('SIGUSR1', onSigusr1);
+    process.on('SIGTERM', onTerminate);
+    process.on('SIGINT', onTerminate);
+  }
 
   try {
     for (;;) {
@@ -66,11 +78,22 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         resultText: undefined as string | undefined,
         resultOk: false,
         drainTimer: null as NodeJS.Timeout | null,
+        graceTimer: null as NodeJS.Timeout | null,
         killRequested: false,
         interruptRequested: false,
       };
 
       let handle: TurnHandle | undefined;
+      // D7 hardening: some CLI builds can wedge and ignore SIGINT. Once we've asked for a
+      // drain-interrupt on a forced switch, arm a one-shot grace-kill so the switch always
+      // completes even if interrupt() never actually stops the child.
+      const armGraceKill = () => {
+        if (state.graceTimer === null) {
+          state.graceTimer = setTimeout(() => {
+            handle?.kill();
+          }, graceMs);
+        }
+      };
       const processEvent = (e: RawEvent) => {
         try { opts.tap?.(e); } catch { /* tap must never affect detection */ }
         const v = classifyEvent(e);
@@ -94,6 +117,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           log.append({ type: 'forced_switch', sessionId, account: account.name });
           state.interruptRequested = true;
           handle?.interrupt();
+          armGraceKill();
         }
       };
 
@@ -106,6 +130,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         prompt,
         onEvent: (e) => processEvent(e),
       });
+      currentHandle = handle;
 
       // The first scripted/streamed event can fire synchronously inside startTurnFn(...),
       // before `handle` is assigned above — processEvent records the request via the
@@ -126,22 +151,32 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
               log.append({ type: 'forced_switch_timeout', sessionId, account: account.name });
               state.interruptRequested = true;
               handle?.interrupt();
+              armGraceKill();
             }
           }, drainTimeoutMs);
         }
       }, 100);
 
-      await handle.done;
+      const exit = await handle.done;
       clearInterval(drainWatch);
       if (state.drainTimer) clearTimeout(state.drainTimer);
+      if (state.graceTimer) clearTimeout(state.graceTimer);
 
       if (!state.limited && !state.forced) {
         if (state.resultOk) {
           log.append({ type: 'turn_completed', sessionId, account: account.name });
           return { status: 'completed', finalAccount: account.name, failovers: failoverTimes.length, resultText: state.resultText };
         }
-        log.append({ type: 'turn_failed', sessionId, account: account.name });
-        return { status: 'failed', finalAccount: account.name, failovers: failoverTimes.length };
+        const reason = exit.spawnError ?? (exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`);
+        log.append({
+          type: 'turn_failed',
+          sessionId,
+          account: account.name,
+          code: exit.code,
+          signal: exit.signal,
+          spawnError: exit.spawnError ?? null,
+        });
+        return { status: 'failed', finalAccount: account.name, failovers: failoverTimes.length, reason };
       }
 
       // failover path (limit or forced)
@@ -165,6 +200,10 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       prompt = CONTINUE_PROMPT;
     }
   } finally {
-    if (opts.forceSwitchSignal !== false) process.off('SIGUSR1', onSigusr1);
+    if (opts.forceSwitchSignal !== false) {
+      process.off('SIGUSR1', onSigusr1);
+      process.off('SIGTERM', onTerminate);
+      process.off('SIGINT', onTerminate);
+    }
   }
 }

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -60,5 +60,26 @@ describe('cli (child process)', () => {
 
     const state = JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8')) as { lastSessionId?: string };
     expect(state.lastSessionId).toBe('original-sid');
+  }, TIMEOUT);
+
+  it('switch with a stale pidfile (dead process) exits 2, reports it, and removes the pidfile (Finding 5)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-cli-switch-'));
+    const init = run(['init'], dir);
+    expect(init.status).toBe(0);
+
+    // Spawn a process and wait for it to exit synchronously, so its pid is guaranteed dead
+    // by the time we write it to the pidfile — more deterministic than guessing an
+    // unlikely-live pid.
+    const dead = spawnSync('node', ['-e', ''], { encoding: 'utf8' });
+    const deadPid = dead.pid;
+    expect(deadPid).toBeGreaterThan(0);
+
+    const pidfile = join(dir, 'state', 'x056.pid');
+    writeFileSync(pidfile, String(deadPid));
+
+    const res = run(['switch'], dir);
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain('stale pidfile');
+    expect(existsSync(pidfile)).toBe(false);
   }, TIMEOUT);
 });
