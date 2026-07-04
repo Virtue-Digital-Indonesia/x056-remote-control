@@ -8,6 +8,8 @@ WORKDIR /app
 COPY --chown=efran:efran package.json package-lock.json ./
 RUN npm ci
 COPY --chown=efran:efran . .
+# Pre-create the state mountpoint so the named volume inherits efran ownership
+RUN mkdir -p /app/state
 ENV PORT=4056
 EXPOSE 4056
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -fsS http://localhost:4056/healthz || exit 1
