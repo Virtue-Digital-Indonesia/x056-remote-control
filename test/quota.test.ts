@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { TokenExpiredError, fetchUsage } from '../src/quota.js';
+import { TokenExpiredError, UsageRateLimitedError, fetchUsage } from '../src/quota.js';
 
 function configDirWithToken(token: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'x056-cfg-'));
@@ -46,6 +46,22 @@ describe('fetchUsage', () => {
     const fakeFetch = (async () => new Response('boom', { status: 500 })) as typeof fetch;
     await expect(fetchUsage(dir, fakeFetch)).rejects.toThrow(/500/);
     await expect(fetchUsage(dir, fakeFetch)).rejects.not.toThrow(/sekret/);
+  });
+
+  it('throws UsageRateLimitedError with clamped retryAfterMs from the retry-after header on 429', async () => {
+    const dir = configDirWithToken('tok');
+    const fakeFetch = (async () =>
+      new Response('rate limited', { status: 429, headers: { 'retry-after': '3155' } })) as typeof fetch;
+    const err = await fetchUsage(dir, fakeFetch).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UsageRateLimitedError);
+    expect((err as UsageRateLimitedError).retryAfterMs).toBe(3155 * 1000);
+  });
+
+  it('defaults the backoff to 5 minutes when retry-after is missing or garbled', async () => {
+    const dir = configDirWithToken('tok');
+    const fakeFetch = (async () => new Response('rate limited', { status: 429 })) as typeof fetch;
+    const err = await fetchUsage(dir, fakeFetch).catch((e: unknown) => e);
+    expect((err as UsageRateLimitedError).retryAfterMs).toBe(300_000);
   });
 
   it('wraps an unreadable credentials file (nonexistent config dir) in a generic error (Finding 7)', async () => {

@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { AccountRegistry } from '../src/accounts.js';
-import { fetchUsage } from '../src/quota.js';
+import { UsageRateLimitedError, fetchUsage } from '../src/quota.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager } from './manager.js';
 
@@ -32,6 +32,9 @@ export class ApiController {
   // serve last-known-good on upstream failures so browser polling never
   // multiplies into upstream 429s.
   private readonly quotaCache = new Map<string, { at: number; quota: unknown }>();
+  // While this holds a future timestamp for an account, upstream is not called
+  // at all — repeated polling during a rate-limit window would only extend it.
+  private readonly quotaBackoffUntil = new Map<string, number>();
 
   constructor(
     @Inject(SessionManager) private readonly manager: SessionManager,
@@ -95,11 +98,19 @@ export class ApiController {
         if (cached && Date.now() - cached.at < QUOTA_TTL_MS) {
           return { ...acct, quota: cached.quota };
         }
+        const backoffUntil = this.quotaBackoffUntil.get(acct.name) ?? 0;
+        if (Date.now() < backoffUntil) {
+          if (cached) return { ...acct, quota: cached.quota, quotaStale: true };
+          return { ...acct, quota: null, quotaError: `rate-limited upstream; retrying after ${new Date(backoffUntil).toISOString()}` };
+        }
         try {
           const quota = await fetchUsage(acct.configDir);
           this.quotaCache.set(acct.name, { at: Date.now(), quota });
+          this.quotaBackoffUntil.delete(acct.name);
           return { ...acct, quota };
         } catch (err) {
+          const backoffMs = err instanceof UsageRateLimitedError ? err.retryAfterMs : 60_000;
+          this.quotaBackoffUntil.set(acct.name, Date.now() + backoffMs);
           if (cached) return { ...acct, quota: cached.quota, quotaStale: true };
           return { ...acct, quota: null, quotaError: (err as Error).message };
         }

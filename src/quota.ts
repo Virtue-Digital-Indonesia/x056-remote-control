@@ -17,6 +17,17 @@ export class TokenExpiredError extends Error {
   }
 }
 
+export class UsageRateLimitedError extends Error {
+  /** How long the caller must back off before touching the endpoint again. */
+  readonly retryAfterMs: number;
+  constructor(retryAfterSeconds: number) {
+    super('usage endpoint rate-limited upstream');
+    // Clamp: never below 1 min, never above 1 h, default 5 min when absent/garbled.
+    const secs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds : 300;
+    this.retryAfterMs = Math.min(Math.max(secs, 60), 3600) * 1000;
+  }
+}
+
 interface UsageBody {
   five_hour: { utilization: number; resets_at: string };
   seven_day: { utilization: number; resets_at: string };
@@ -43,6 +54,7 @@ export async function fetchUsage(configDir: string, fetchFn: typeof fetch = fetc
     },
   });
   if (res.status === 401) throw new TokenExpiredError();
+  if (res.status === 429) throw new UsageRateLimitedError(Number(res.headers.get('retry-after')));
   if (!res.ok) throw new Error(`usage endpoint returned ${res.status}`);
   const body = (await res.json()) as UsageBody;
   return {
