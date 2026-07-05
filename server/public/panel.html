@@ -169,14 +169,20 @@
 
       card.appendChild(nameRow);
 
-      if (a.quotaError) {
-        var errorDiv = document.createElement('div');
-        errorDiv.className = 'gauge-label';
-        errorDiv.textContent = 'quota unavailable';
-        card.appendChild(errorDiv);
-      } else if (a.quota) {
+      if (a.quota) {
         card.appendChild(renderGauge('5h', a.quota.fiveHour));
         card.appendChild(renderGauge('7d', a.quota.sevenDay));
+        if (a.quotaStale) {
+          var staleDiv = document.createElement('div');
+          staleDiv.className = 'gauge-label';
+          staleDiv.textContent = 'cached — refresh pending';
+          card.appendChild(staleDiv);
+        }
+      } else if (a.quotaError) {
+        var errorDiv = document.createElement('div');
+        errorDiv.className = 'gauge-label';
+        errorDiv.textContent = 'quota unavailable — retrying';
+        card.appendChild(errorDiv);
       } else {
         var noQuotaDiv = document.createElement('div');
         noQuotaDiv.className = 'gauge-label';

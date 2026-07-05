@@ -24,8 +24,15 @@ import { BusyError, SessionManager } from './manager.js';
 // they rely only on `experimentalDecorators`, which esbuild does support.
 export const STATE_DIR = Symbol('x056-state-dir');
 
+const QUOTA_TTL_MS = 90_000;
+
 @Controller('api')
 export class ApiController {
+  // The oauth usage endpoint rate-limits aggressively; cache per account and
+  // serve last-known-good on upstream failures so browser polling never
+  // multiplies into upstream 429s.
+  private readonly quotaCache = new Map<string, { at: number; quota: unknown }>();
+
   constructor(
     @Inject(SessionManager) private readonly manager: SessionManager,
     @Inject(STATE_DIR) private readonly stateDir: string,
@@ -84,9 +91,16 @@ export class ApiController {
     }
     return Promise.all(
       registry.list().map(async (acct) => {
+        const cached = this.quotaCache.get(acct.name);
+        if (cached && Date.now() - cached.at < QUOTA_TTL_MS) {
+          return { ...acct, quota: cached.quota };
+        }
         try {
-          return { ...acct, quota: await fetchUsage(acct.configDir) };
+          const quota = await fetchUsage(acct.configDir);
+          this.quotaCache.set(acct.name, { at: Date.now(), quota });
+          return { ...acct, quota };
         } catch (err) {
+          if (cached) return { ...acct, quota: cached.quota, quotaStale: true };
           return { ...acct, quota: null, quotaError: (err as Error).message };
         }
       }),
