@@ -329,6 +329,13 @@ export class SessionManager {
     };
   }
 
+  /** Display name for a project id (for push notifications, etc.). */
+  projectName(pid: string): string | undefined { return this.projects().get(pid)?.name; }
+
+  /** Whether a project currently has autopilot armed (used to suppress noisy
+   *  per-step completion pushes). */
+  hasAutopilot(pid: string): boolean { return !!this.loadAutopilot()[pid]; }
+
   createProject(name: string, cwd?: string): Project {
     const dir = this.resolveCwd(cwd ?? this.opts.workspaceRoot);
     const proj = this.projects().create(name, dir);

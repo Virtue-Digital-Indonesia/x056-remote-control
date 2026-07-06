@@ -23,6 +23,8 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   // Read per request so a bind-mounted panelPath serves UI changes without a
   // rebuild; ~15KB from page cache is negligible for a single-user panel.
   const panelPath = cfg.panelPath ?? join(__dir, 'public', 'panel.html');
+  // PWA assets live alongside the panel (bind-mounted, so edits are live too).
+  const publicDir = dirname(panelPath);
   express.get('/healthz', (_req, res) => res.json({ ok: true }));
   express.get('/', (_req, res) => {
     try {
@@ -31,6 +33,26 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
       res.status(500).send('panel unavailable');
     }
   });
+  // Served without auth: the browser fetches these before/without the token.
+  const serveStatic = (urlPath: string, file: string, type: string, headers?: Record<string, string>) => {
+    express.get(urlPath, (_req, res) => {
+      try {
+        const body = readFileSync(join(publicDir, file));
+        res.type(type);
+        if (headers) for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+        res.send(body);
+      } catch {
+        res.status(404).send('not found');
+      }
+    });
+  };
+  // no-cache on sw.js so an updated worker is picked up promptly; the scope
+  // header lets a worker served from /sw.js control the whole origin.
+  serveStatic('/sw.js', 'sw.js', 'application/javascript', { 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' });
+  serveStatic('/manifest.webmanifest', 'manifest.webmanifest', 'application/manifest+json');
+  serveStatic('/icon-180.png', 'icon-180.png', 'image/png');
+  serveStatic('/icon-192.png', 'icon-192.png', 'image/png');
+  serveStatic('/icon-512.png', 'icon-512.png', 'image/png');
   return app;
 }
 

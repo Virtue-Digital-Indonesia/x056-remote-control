@@ -19,6 +19,8 @@ import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
 import { readSessionHistory, type HistoryEntry } from './history.js';
 import { withAskInstructions } from './question.js';
+import type { PushService } from './push.js';
+import type { PushSubscription } from 'web-push';
 
 const IMG_EXT: Record<string, string> = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
@@ -68,6 +70,7 @@ interface SendBody {
 // param types via reflection. Explicit @Inject tokens sidestep that:
 // they rely only on `experimentalDecorators`, which esbuild does support.
 export const STATE_DIR = Symbol('x056-state-dir');
+export const PUSH_SERVICE = Symbol('x056-push-service');
 
 const QUOTA_TTL_MS = 90_000;
 
@@ -84,6 +87,7 @@ export class ApiController {
   constructor(
     @Inject(SessionManager) private readonly manager: SessionManager,
     @Inject(STATE_DIR) private readonly stateDir: string,
+    @Inject(PUSH_SERVICE) private readonly push: PushService,
   ) {}
 
   /** Fold an optional attached image into the prompt as a readable file path. */
@@ -321,6 +325,30 @@ export class ApiController {
   stopAutopilot(@Body() body: { projectId?: string }): { ok: boolean } {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     this.manager.stopAutopilot(body.projectId);
+    return { ok: true };
+  }
+
+  @Get('push/config')
+  pushConfig(): { enabled: boolean; publicKey: string } {
+    return { enabled: true, publicKey: this.push.publicKey };
+  }
+
+  @Post('push/subscribe')
+  @HttpCode(200)
+  pushSubscribe(@Body() body: { subscription?: PushSubscription }): { ok: boolean } {
+    if (!body?.subscription?.endpoint) throw new BadRequestException('subscription required');
+    try {
+      this.push.add(body.subscription);
+      return { ok: true };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('push/unsubscribe')
+  @HttpCode(200)
+  pushUnsubscribe(@Body() body: { endpoint?: string }): { ok: boolean } {
+    if (body?.endpoint) this.push.remove(body.endpoint);
     return { ok: true };
   }
 }

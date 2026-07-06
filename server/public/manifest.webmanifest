@@ -1,0 +1,16 @@
+{
+  "name": "x056 remote control",
+  "short_name": "x056",
+  "description": "Self-hosted Claude Code remote control with account failover",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a1a19",
+  "theme_color": "#c96442",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
