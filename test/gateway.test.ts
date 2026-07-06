@@ -115,3 +115,24 @@ describe('gateway e2e', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('gateway adoption endpoint', () => {
+  it('rejects an unknown session with 400', async () => {
+    const res = await fetch(`${base}/api/sessions/current`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ sessionId: 'ghost', cwd: dir }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('adopts a seeded transcript and reflects it in the snapshot', async () => {
+    const munged = dir.replace(/[/.]/g, '-');
+    mkdirSync(join(dir, 'cfg-a', 'projects', munged), { recursive: true });
+    writeFileSync(join(dir, 'cfg-a', 'projects', munged, 'adopted-1.jsonl'), '{"type":"user"}\n');
+    const res = await fetch(`${base}/api/sessions/current`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ sessionId: 'adopted-1', cwd: dir }),
+    });
+    expect(res.status).toBe(200);
+    const snap = await (await fetch(`${base}/api/sessions`, { headers: auth })).json() as { lastSessionId: string };
+    expect(snap.lastSessionId).toBe('adopted-1');
+  });
+});

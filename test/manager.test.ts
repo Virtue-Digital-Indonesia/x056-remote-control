@@ -139,3 +139,43 @@ describe('SessionManager', () => {
     expect(snap.running).toBe(false);
   });
 });
+
+describe('SessionManager.setCurrent (adoption)', () => {
+  function adoptFixture() {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-adopt-'));
+    const stateDir = join(dir, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    const cfgA = join(dir, 'cfg-a');
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [
+      { name: 'a', configDir: cfgA },
+      { name: 'b', configDir: join(dir, 'cfg-b') },
+    ]);
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir });
+    return { dir, stateDir, cfgA, mgr };
+  }
+
+  it('points state.json at an existing transcript and emits session_adopted', () => {
+    const { dir, stateDir, cfgA, mgr } = adoptFixture();
+    const munged = dir.replace(/[/.]/g, '-');
+    mkdirSync(join(cfgA, 'projects', munged), { recursive: true });
+    writeFileSync(join(cfgA, 'projects', munged, 'adopt-me.jsonl'), '{"type":"user"}\n');
+    const seen: GatewayEvent[] = [];
+    mgr.subscribe((e) => seen.push(e));
+    mgr.setCurrent('adopt-me', dir);
+    const st = JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'));
+    expect(st).toEqual({ lastSessionId: 'adopt-me', cwd: dir });
+    expect(seen.some((e) => e.kind === 'session_adopted')).toBe(true);
+  });
+
+  it('rejects adoption of a transcript that exists in no account tree', () => {
+    const { dir, mgr } = adoptFixture();
+    expect(() => mgr.setCurrent('ghost', dir)).toThrow(/no transcript/);
+  });
+
+  it('rejects adoption while a session is running', async () => {
+    const { mgr } = fixture(COMPLETED, { delayMs: 150 });
+    mgr.start('busy work');
+    expect(() => mgr.setCurrent('anything', '/tmp')).toThrow(BusyError);
+    await waitFor(() => mgr.snapshot().running === false);
+  });
+});

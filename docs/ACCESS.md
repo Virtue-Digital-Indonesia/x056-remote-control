@@ -164,3 +164,13 @@ Compose will recreate the container with the new token; any previously
 issued token stops working immediately.
 
 > **SSE token caveat:** the stream endpoint authenticates via `?token=` (EventSource cannot send headers). If you ever put a reverse proxy in front, that token will appear in its access logs — scrub or disable query-string logging there, or stick to Tailscale-only exposure.
+
+## Adopting an interactive session
+
+Sessions from your regular `claude` (under `~/.claude`) are invisible to the gateway by design. To hand one over, run **on the host**, from the session's project directory:
+
+```bash
+npm run x056 -- adopt <session-id>
+```
+
+This copies the transcript into the failover tree, updates the CLI state, and — if a gateway is running with `.env` present — points the panel's current session at it. The panel renders the adopted history on next load. Note it's a fork-by-copy: after adopting, continue in ONE place (panel or terminal), not both.

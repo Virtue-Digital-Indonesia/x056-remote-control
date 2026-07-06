@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { join, resolve, sep } from 'node:path';
 import { AccountRegistry } from '../src/accounts.js';
 import { EventLog } from '../src/eventlog.js';
+import { findTranscript } from './history.js';
 import { runSession, type SessionResult } from '../src/failover.js';
 import type { RawEvent } from '../src/types.js';
 
@@ -186,6 +187,19 @@ export class SessionManager {
       lastSessionId: this.loadState().lastSessionId ?? null,
       lastResult: this.lastResult,
     };
+  }
+
+  /** Point the gateway's current session at an already-present transcript (adoption). */
+  setCurrent(sessionId: string, cwd: string): void {
+    if (this.running) throw new BusyError();
+    const dir = this.resolveCwd(cwd);
+    const registry = AccountRegistry.load(join(this.opts.stateDir, 'accounts.json'));
+    const configDirs = registry.list().map((a) => a.configDir);
+    if (!findTranscript(configDirs, sessionId)) {
+      throw new Error(`no transcript for session ${sessionId} in any account's projects tree`);
+    }
+    writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd: dir }));
+    this.emit('session_adopted', { sessionId, cwd: dir });
   }
 
   forceSwitch(): boolean {

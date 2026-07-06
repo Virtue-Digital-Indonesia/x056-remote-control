@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -82,4 +82,32 @@ describe('cli (child process)', () => {
     expect(res.stderr).toContain('stale pidfile');
     expect(existsSync(pidfile)).toBe(false);
   }, TIMEOUT);
+});
+
+describe('x056 adopt', () => {
+  it('copies the transcript from the interactive profile and updates state', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x056-home-'));
+    const proj = mkdtempSync(join(tmpdir(), 'x056-proj-'));
+    const munged = proj.replace(/[/.]/g, '-');
+    mkdirSync(join(home, '.claude', 'projects', munged), { recursive: true });
+    writeFileSync(join(home, '.claude', 'projects', munged, 'sess-42.jsonl'), '{"type":"user"}\n');
+    const env = { ...process.env, HOME: home };
+    const init = spawnSync('npx', ['tsx', CLI, 'init'], { cwd: proj, encoding: 'utf8', timeout: TIMEOUT, env });
+    expect(init.status).toBe(0);
+    const adopt = spawnSync('npx', ['tsx', CLI, 'adopt', 'sess-42'], { cwd: proj, encoding: 'utf8', timeout: TIMEOUT, env });
+    expect(adopt.status).toBe(0);
+    expect(existsSync(join(home, '.claude-x056-a', 'projects', munged, 'sess-42.jsonl'))).toBe(true);
+    const st = JSON.parse(readFileSync(join(proj, 'state', 'state.json'), 'utf8'));
+    expect(st.lastSessionId).toBe('sess-42');
+  });
+
+  it('fails with exit 2 when the source transcript does not exist', () => {
+    const home = mkdtempSync(join(tmpdir(), 'x056-home-'));
+    const proj = mkdtempSync(join(tmpdir(), 'x056-proj-'));
+    const env = { ...process.env, HOME: home };
+    spawnSync('npx', ['tsx', CLI, 'init'], { cwd: proj, encoding: 'utf8', timeout: TIMEOUT, env });
+    const adopt = spawnSync('npx', ['tsx', CLI, 'adopt', 'nope'], { cwd: proj, encoding: 'utf8', timeout: TIMEOUT, env });
+    expect(adopt.status).toBe(2);
+    expect(adopt.stderr).toContain('no transcript');
+  });
 });

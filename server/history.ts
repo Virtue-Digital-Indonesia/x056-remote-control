@@ -7,7 +7,7 @@ export interface HistoryEntry {
 }
 
 /** Locate <sessionId>.jsonl anywhere under any of the config dirs' projects trees. */
-function findTranscript(configDirs: string[], sessionId: string): string | null {
+export function findTranscript(configDirs: string[], sessionId: string): string | null {
   const target = `${sessionId}.jsonl`;
   for (const configDir of configDirs) {
     const projects = join(configDir, 'projects');

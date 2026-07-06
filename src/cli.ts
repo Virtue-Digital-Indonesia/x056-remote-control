@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -86,6 +86,47 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  if (command === 'adopt') {
+    if (!arg) {
+      console.error('usage: x056 adopt <session-id>   (run from the session\'s project directory)');
+      return 2;
+    }
+    const registry = AccountRegistry.load(ACCOUNTS);
+    const cwd = process.cwd();
+    const munged = cwd.replace(/[/.]/g, '-');
+    const fromDir = process.env.X056_ADOPT_FROM ?? join(homedir(), '.claude');
+    const src = join(fromDir, 'projects', munged, `${arg}.jsonl`);
+    if (!existsSync(src)) {
+      console.error(`no transcript at ${src}`);
+      return 2;
+    }
+    const dstDir = join(registry.list()[0].configDir, 'projects', munged);
+    mkdirSync(dstDir, { recursive: true });
+    copyFileSync(src, join(dstDir, `${arg}.jsonl`));
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(STATE, JSON.stringify({ lastSessionId: arg, cwd }));
+    console.log(`adopted ${arg} into ${dstDir}`);
+    // Best-effort: point a running gateway at it too (token from ./.env if present)
+    const envFile = join(cwd, '.env');
+    if (existsSync(envFile)) {
+      const token = /X056_TOKEN=(.+)/.exec(readFileSync(envFile, 'utf8'))?.[1]?.trim();
+      if (token) {
+        const port = process.env.X056_PORT ?? '4056';
+        try {
+          const res = await fetch(`http://localhost:${port}/api/sessions/current`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: arg, cwd }),
+          });
+          console.log(res.ok ? 'gateway updated — session is now current in the panel' : `gateway not updated (HTTP ${res.status})`);
+        } catch {
+          console.log('gateway not reachable — it will pick the session up via state.json if you point it manually');
+        }
+      }
+    }
+    return 0;
+  }
+
   if (command === 'run' || command === 'continue') {
     if (!arg) {
       console.error(`usage: x056 ${command} "<text>"`);
@@ -136,7 +177,7 @@ async function main(): Promise<number> {
     }
   }
 
-  console.error('usage: x056 <init|run|continue|status|switch> [text]');
+  console.error('usage: x056 <init|run|continue|status|switch|adopt> [text|session-id]');
   return 2;
 }
 

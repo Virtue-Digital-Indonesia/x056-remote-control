@@ -64,6 +64,19 @@ export class ApiController {
     }
   }
 
+  @Post('sessions/current')
+  @HttpCode(200)
+  setCurrent(@Body() body: { sessionId?: string; cwd?: string }): { ok: boolean } {
+    if (!body?.sessionId || !body?.cwd) throw new BadRequestException('sessionId and cwd required');
+    try {
+      this.manager.setCurrent(body.sessionId, body.cwd);
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof BusyError) throw new ConflictException('busy');
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
   @Get('sessions/current/stream')
   stream(@Res() res: Response, @Query('since') since?: string): void {
     res.setHeader('Content-Type', 'text/event-stream');
