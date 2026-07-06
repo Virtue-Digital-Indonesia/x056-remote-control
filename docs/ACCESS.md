@@ -174,3 +174,13 @@ npm run x056 -- adopt <session-id>
 ```
 
 This copies the transcript into the failover tree, updates the CLI state, and — if a gateway is running with `.env` present — points the panel's current session at it. The panel renders the adopted history on next load. Note it's a fork-by-copy: after adopting, continue in ONE place (panel or terminal), not both.
+
+## Self-deploy from inside a session (request/actuate split)
+
+The container can never touch the Docker daemon (deliberate — a mounted socket would be root-equivalent on the host). Instead, a host-side actuator runs the one fixed command when asked:
+
+1. One-time install on the host: `bash scripts/install-deployer.sh` (adds a per-minute cron entry, no sudo).
+2. Anyone with repo write access — including Claude working inside the container — triggers a deploy with `touch .deploy/requested`.
+3. The actuator waits until no session is running (never kills an in-flight turn), then runs `docker compose up -d --build`, logs to `.deploy/last.log`, and records `.deploy/status.json`.
+
+Worst-case abuse from a compromised container is a rebuild of itself — not host command execution.
