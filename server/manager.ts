@@ -5,6 +5,7 @@ import { AccountRegistry } from '../src/accounts.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { toActivity } from './activity.js';
+import { ProjectRegistry, type Project } from './projects.js';
 import { runSession, type SessionResult } from '../src/failover.js';
 import type { RawEvent } from '../src/types.js';
 
@@ -62,10 +63,57 @@ export class SessionManager {
 
   constructor(private readonly opts: SessionManagerOptions) {
     mkdirSync(opts.stateDir, { recursive: true });
+    this.migrateProjects();
   }
 
   private get stateFile(): string {
     return join(this.opts.stateDir, 'state.json');
+  }
+
+  private get projectsFile(): string {
+    return join(this.opts.stateDir, 'projects.json');
+  }
+
+  private projects(): ProjectRegistry {
+    return ProjectRegistry.load(this.projectsFile);
+  }
+
+  /** First boot after the projects feature: adopt any pre-existing single
+   *  session as the initial project so it stays visible and continuable. */
+  private migrateProjects(): void {
+    const reg = ProjectRegistry.load(this.projectsFile);
+    if (reg.list().length > 0) return;
+    const st = this.loadState();
+    const proj = reg.create('X056 Remote Control', st.cwd ?? this.opts.workspaceRoot);
+    if (st.lastSessionId) reg.setLastSession(proj.id, st.lastSessionId);
+    reg.select(proj.id);
+  }
+
+  // ---- projects ----
+  listProjects(): { current: string | null; projects: Project[] } {
+    const reg = this.projects();
+    return { current: reg.currentId(), projects: reg.list() };
+  }
+
+  createProject(name: string, cwd?: string): Project {
+    const dir = this.resolveCwd(cwd ?? this.opts.workspaceRoot);
+    const proj = this.projects().create(name, dir);
+    return proj;
+  }
+
+  /** Switch the active project — repoints state.json at that project's session. */
+  selectProject(id: string): void {
+    if (this.running) throw new BusyError();
+    const reg = this.projects();
+    const proj = reg.get(id);
+    if (!proj) throw new Error(`unknown project ${id}`);
+    reg.select(id);
+    writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: proj.lastSessionId, cwd: proj.cwd }));
+    this.emit('project_selected', { id, name: proj.name });
+  }
+
+  renameProject(id: string, name: string): void {
+    this.projects().rename(id, name);
   }
 
   private loadState(): PersistedState {
@@ -101,7 +149,9 @@ export class SessionManager {
 
   start(prompt: string, cwd?: string, opts?: TurnRunOptions): string {
     if (this.running) throw new BusyError();
-    const dir = this.resolveCwd(cwd ?? this.opts.workspaceRoot);
+    // Default to the current project's directory so a "new session" runs where
+    // the selected project lives, not the workspace root.
+    const dir = this.resolveCwd(cwd ?? this.projects().current()?.cwd ?? this.opts.workspaceRoot);
     const sessionId = randomUUID();
     this.launch(sessionId, prompt, dir, false, opts);
     return sessionId;
@@ -124,9 +174,11 @@ export class SessionManager {
       const registry = AccountRegistry.load(join(this.opts.stateDir, 'accounts.json'));
       const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => this.emit(k, d));
       let stateSaved = resume;
+      const currentProjectId = this.projects().currentId();
       const saveStateOnce = () => {
         if (!stateSaved) {
           writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd }));
+          if (currentProjectId) this.projects().setLastSession(currentProjectId, sessionId);
           stateSaved = true;
         }
       };
@@ -197,12 +249,14 @@ export class SessionManager {
     currentSessionId: string | null;
     lastSessionId: string | null;
     lastResult: SessionResult | null;
+    currentProjectId: string | null;
   } {
     return {
       running: this.running,
       currentSessionId: this.currentSessionId,
       lastSessionId: this.loadState().lastSessionId ?? null,
       lastResult: this.lastResult,
+      currentProjectId: this.projects().currentId(),
     };
   }
 

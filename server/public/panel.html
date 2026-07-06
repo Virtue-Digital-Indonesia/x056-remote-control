@@ -9,215 +9,217 @@
     color-scheme: light;
     --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     --mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, monospace;
-    --bg: #f4f4f4; --surface: #ffffff; --surface-2: #f0f0f2; --surface-3: #e8e8ea;
-    --border: #dcdce0; --border-strong: #c6c6cc;
-    --text: #161616; --muted: #6f6f79; --faint: #8d8d97;
-    --accent: #2563eb; --accent-weak: #e6eefb; --on-accent: #ffffff;
-    --user-bg: #eef2fb; --user-border: #dbe4f7;
+    --bg: #ffffff; --sidebar: #f7f7f5; --surface-2: #f0f0ee; --surface-3: #e8e8e5;
+    --border: #e6e6e2; --border-strong: #d4d4ce;
+    --text: #1a1a17; --muted: #73736c; --faint: #9a9a92;
+    --accent: #c96442; --accent-weak: #f6ece7; --on-accent: #ffffff;
+    --link: #2563eb;
+    --user-bg: #f2f2ef;
     --ok: #15803d; --ok-bg: #dcf5e3; --amber: #b45309; --amber-bg: #fbecd0; --err: #b91c1c; --err-bg: #fbe0e0;
-    --shadow: 0 8px 24px rgba(20,20,30,.12);
+    --shadow: 0 12px 32px rgba(20,20,20,.14);
   }
   html[data-theme="dark"] {
     color-scheme: dark;
-    --bg: #0b0c0f; --surface: #15171c; --surface-2: #1c1f26; --surface-3: #242832;
-    --border: #262b34; --border-strong: #363c48;
-    --text: #e9e9ec; --muted: #9aa0ad; --faint: #6b7280;
-    --accent: #6ea0ff; --accent-weak: #172234; --on-accent: #0b0c0f;
-    --user-bg: #182238; --user-border: #24334f;
+    --bg: #1a1a19; --sidebar: #141413; --surface-2: #26262400; --surface-3: #2f2f2c;
+    --border: #2c2c2a; --border-strong: #3c3c39;
+    --text: #ecece7; --muted: #a0a099; --faint: #6f6f68;
+    --accent: #d97757; --accent-weak: #2a1f1a; --on-accent: #1a1a19;
+    --link: #8fb8ff;
+    --user-bg: #262624;
     --ok: #4ade80; --ok-bg: #123021; --amber: #fbbf24; --amber-bg: #2c2410; --err: #f87171; --err-bg: #2b1414;
-    --shadow: 0 10px 30px rgba(0,0,0,.5);
+    --shadow: 0 14px 40px rgba(0,0,0,.55);
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; }
-  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.5; display: flex; flex-direction: column; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14.5px; line-height: 1.55; display: grid; grid-template-columns: 264px 1fr; height: 100vh; overflow: hidden; }
 
-  header { display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 52px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
-  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; letter-spacing: .2px; }
-  .brand .mark { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, var(--accent), #7c3aed); display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
-  .spacer { flex: 1; }
-  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
-  #dot.on { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
-  #dot.off { background: var(--err); }
-  .icon-btn { background: transparent; color: var(--muted); border: 1px solid transparent; border-radius: 8px; height: 34px; min-width: 34px; padding: 0 9px; cursor: pointer; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
-  .icon-btn:hover { background: var(--surface-2); color: var(--text); }
-  .icon-btn.accent { color: var(--accent); }
+  /* sidebar */
+  aside { background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 15px 16px 12px; font-weight: 600; }
+  .brand .mark { width: 24px; height: 24px; border-radius: 7px; background: var(--accent); display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; }
+  .brand .sub { font-size: 11px; color: var(--faint); font-weight: 500; border: 1px solid var(--border-strong); border-radius: 20px; padding: 1px 7px; }
+  .newbtn { margin: 4px 12px 10px; display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; font: inherit; font-size: 13.5px; font-weight: 500; }
+  .newbtn:hover { background: var(--surface-2); }
+  .side-scroll { flex: 1; overflow-y: auto; padding: 0 8px; min-height: 0; }
+  .side-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 6px; }
+  .side-head span { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--faint); font-weight: 600; }
+  .side-head button { background: none; border: none; color: var(--faint); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px; border-radius: 6px; }
+  .side-head button:hover { background: var(--surface-2); color: var(--text); }
+  .proj { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; color: var(--text); }
+  .proj:hover { background: var(--surface-2); }
+  .proj.active { background: var(--surface-3); font-weight: 600; }
+  .proj .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
+  .proj.active .dot { background: var(--accent); }
+  .proj .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+  .acct { margin: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); cursor: pointer; display: flex; align-items: center; gap: 10px; }
+  .acct:hover { background: var(--surface-2); }
+  .acct .av { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
+  .acct .who { flex: 1; overflow: hidden; }
+  .acct .who .n { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acct .who .p { font-size: 11px; color: var(--faint); }
 
-  main { flex: 1; overflow-y: auto; }
-  .wrap { max-width: 900px; margin: 0 auto; padding: 22px 20px 140px; }
+  /* main */
+  main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .topbar { display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--border); flex: none; }
+  .topbar .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar .cwd { font-size: 11.5px; color: var(--faint); background: var(--surface-2); border-radius: 6px; padding: 2px 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+  .topbar .sp { flex: 1; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+  #dot.on { background: var(--ok); } #dot.off { background: var(--err); }
+  .ico { background: none; border: 1px solid transparent; border-radius: 8px; height: 32px; min-width: 32px; padding: 0 8px; cursor: pointer; color: var(--muted); font-size: 14px; }
+  .ico:hover { background: var(--surface-2); color: var(--text); }
 
-  .msg { display: flex; flex-direction: column; gap: 4px; margin-bottom: 20px; }
-  .msg .role { font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--faint); }
-  .msg.user { align-items: flex-end; }
-  .msg.user .role { color: var(--accent); }
-  .content { max-width: 100%; }
-  .msg.user .content { background: var(--user-bg); border: 1px solid var(--user-border); border-radius: 12px 12px 4px 12px; padding: 10px 14px; max-width: 80%; white-space: pre-wrap; word-break: break-word; }
-  .msg.assistant .content { padding: 2px 2px; word-break: break-word; }
-  .content img.att { max-width: 260px; border-radius: 8px; border: 1px solid var(--border); margin-top: 6px; display: block; }
+  .scroll { flex: 1; overflow-y: auto; min-height: 0; }
+  .thread { max-width: 780px; margin: 0 auto; padding: 26px 24px 40px; }
+  .msg { margin-bottom: 22px; }
+  .msg .role { font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
+  .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
+  .msg.user .content { background: var(--user-bg); border-radius: 14px 14px 4px 14px; padding: 10px 15px; max-width: 82%; white-space: pre-wrap; word-break: break-word; }
+  .msg.assistant .content { word-break: break-word; }
+  .content img.att { max-width: 280px; border-radius: 10px; border: 1px solid var(--border); margin-top: 8px; display: block; }
 
-  /* markdown */
-  .content p { margin: 0 0 10px; white-space: pre-wrap; }
+  .content p { margin: 0 0 11px; white-space: pre-wrap; }
   .content > *:last-child { margin-bottom: 0; }
-  .content pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 0 0 10px; }
+  .content pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; overflow-x: auto; margin: 0 0 11px; }
   .content pre code { background: none; padding: 0; font: 12.5px/1.55 var(--mono); }
   .content code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; font: 12.5px/1.4 var(--mono); }
-  .content ul, .content ol { margin: 0 0 10px; padding-left: 24px; }
+  .content ul, .content ol { margin: 0 0 11px; padding-left: 24px; }
   .content li { margin: 3px 0; }
-  .content h3, .content h4, .content h5 { margin: 14px 0 8px; line-height: 1.3; }
-  .content h3 { font-size: 17px; } .content h4 { font-size: 15px; } .content h5 { font-size: 14px; }
-  .content a { color: var(--accent); }
-  .content hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
-  .content blockquote { margin: 0 0 10px; padding: 4px 14px; border-left: 3px solid var(--border-strong); color: var(--muted); }
+  .content h3, .content h4, .content h5 { margin: 16px 0 9px; line-height: 1.3; }
+  .content h3 { font-size: 18px; } .content h4 { font-size: 15.5px; } .content h5 { font-size: 14px; }
+  .content a { color: var(--link); }
+  .content hr { border: none; border-top: 1px solid var(--border); margin: 15px 0; }
+  .content blockquote { margin: 0 0 11px; padding: 4px 14px; border-left: 3px solid var(--border-strong); color: var(--muted); }
 
-  .sysline { text-align: center; margin: 16px 0; }
-  .sysline span { font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; }
-  .banner { text-align: center; margin: 12px 0; }
-  .banner span { font-size: 12.5px; color: var(--amber); background: var(--amber-bg); border-radius: 20px; padding: 5px 14px; display: inline-flex; gap: 6px; align-items: center; }
+  .act { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 3px 0; padding: 3px 0; }
+  .act .ic { color: var(--faint); font-size: 11px; }
+  .act.sub { color: var(--accent); }
+  .act .el { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sysline { text-align: center; margin: 18px 0; } .sysline span { font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 4px 12px; }
+  .banner { text-align: center; margin: 12px 0; } .banner span { font-size: 12.5px; color: var(--amber); background: var(--amber-bg); border-radius: 20px; padding: 5px 14px; }
   .banner.err span { color: var(--err); background: var(--err-bg); }
 
   /* composer */
-  footer { position: sticky; bottom: 0; background: linear-gradient(to top, var(--bg) 72%, transparent); padding: 12px 20px 16px; flex: none; }
-  .composer { max-width: 900px; margin: 0 auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
+  .composer-wrap { flex: none; padding: 10px 24px 18px; }
+  .composer { max-width: 780px; margin: 0 auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
   .composer:focus-within { border-color: var(--accent); }
   #attachRow { display: none; gap: 8px; padding: 10px 12px 0; flex-wrap: wrap; }
   #attachRow.show { display: flex; }
   .chip { display: inline-flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 5px 8px; font-size: 12px; }
   .chip img { width: 34px; height: 34px; object-fit: cover; border-radius: 6px; }
-  .chip button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0 2px; }
-  textarea { width: 100%; border: none; background: transparent; color: var(--text); resize: none; padding: 14px 14px 6px; font: inherit; max-height: 220px; outline: none; }
+  .chip button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 15px; }
+  textarea { width: 100%; border: none; background: transparent; color: var(--text); resize: none; padding: 15px 16px 6px; font: inherit; max-height: 240px; outline: none; }
   .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px 10px; }
   .select { position: relative; }
-  select { appearance: none; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 9px; padding: 6px 26px 6px 10px; font: inherit; font-size: 12.5px; cursor: pointer; }
-  select:hover { border-color: var(--border-strong); }
-  .select::after { content: "▾"; position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); font-size: 10px; }
-  .bar .spacer { flex: 1; }
-  #busy { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 7px; max-width: 340px; }
+  select { appearance: none; background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 9px; padding: 6px 24px 6px 10px; font: inherit; font-size: 12.5px; cursor: pointer; }
+  select:hover { border-color: var(--border-strong); color: var(--text); }
+  .select::after { content: "▾"; position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--faint); font-size: 10px; }
+  .bar .sp { flex: 1; }
+  #busy { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 7px; max-width: 320px; }
   #busy .spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; flex: none; }
   #busy .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #busy .tasks { color: var(--accent); font-weight: 600; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .send { background: var(--accent); color: var(--on-accent); border: none; border-radius: 10px; height: 34px; padding: 0 16px; font-weight: 600; cursor: pointer; font-size: 13px; }
-  .send:disabled { opacity: .45; cursor: default; }
-  .ghost { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); border-radius: 9px; height: 34px; min-width: 34px; cursor: pointer; font-size: 15px; }
-  .ghost:hover { color: var(--text); border-color: var(--border-strong); }
+  .attach { background: none; border: 1px solid var(--border); border-radius: 9px; height: 32px; min-width: 32px; cursor: pointer; color: var(--muted); font-size: 15px; display: inline-grid; place-items: center; }
+  .attach:hover { color: var(--text); border-color: var(--border-strong); }
+  .send { background: var(--accent); color: var(--on-accent); border: none; border-radius: 10px; height: 32px; padding: 0 15px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  .send:disabled { opacity: .4; }
 
-  /* quota popover */
-  .pop { position: absolute; top: 50px; right: 12px; width: 320px; max-width: calc(100vw - 24px); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; z-index: 20; }
+  .pop { position: absolute; bottom: 62px; left: 12px; width: 288px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; z-index: 30; }
   .pop[hidden] { display: none; }
-  .pop h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); margin: 2px 4px 10px; }
-  .acct { padding: 10px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 8px; }
-  .acct:last-child { margin-bottom: 0; }
-  .acct .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .acct .nm { font-weight: 600; }
-  .acct .em { font-size: 11.5px; color: var(--faint); }
-  .badge { font-size: 10.5px; padding: 2px 8px; border-radius: 20px; background: var(--surface-3); color: var(--muted); white-space: nowrap; }
-  .badge.ok { background: var(--ok-bg); color: var(--ok); }
-  .badge.limited { background: var(--amber-bg); color: var(--amber); }
-  .g { margin-top: 8px; }
-  .g .lab { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
-  .g .track { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
-  .g .track > i { display: block; height: 100%; background: var(--ok); }
-  .g .track > i.amber { background: var(--amber); }
-  .g .track > i.red { background: var(--err); }
+  .pop h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); margin: 2px 4px 10px; }
+  .qa { padding: 10px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 8px; }
+  .qa:last-child { margin-bottom: 0; }
+  .qa .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .qa .nm { font-weight: 600; font-size: 13px; } .qa .em { font-size: 11px; color: var(--faint); }
+  .badge { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: var(--surface-3); color: var(--muted); }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.limited { background: var(--amber-bg); color: var(--amber); }
+  .g { margin-top: 8px; } .g .lab { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+  .g .track { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; } .g .track > i { display: block; height: 100%; background: var(--ok); }
+  .g .track > i.amber { background: var(--amber); } .g .track > i.red { background: var(--err); }
   .note { font-size: 11px; color: var(--faint); margin-top: 6px; }
-  .backdrop { position: fixed; inset: 0; z-index: 15; }
-  .backdrop[hidden] { display: none; }
+  .backdrop { position: fixed; inset: 0; z-index: 25; } .backdrop[hidden] { display: none; }
+  @media (max-width: 720px) { body { grid-template-columns: 1fr; } aside { display: none; } }
 </style>
 <script>
-  (function () {
-    var stored = null;
-    try { stored = localStorage.getItem('x056_theme'); } catch (e) {}
-    var dark = stored ? stored === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
-    if (dark) document.documentElement.setAttribute('data-theme', 'dark');
-  })();
+  (function () { var s = null; try { s = localStorage.getItem('x056_theme'); } catch (e) {} if (s ? s === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark'); })();
 </script>
 </head>
 <body>
-<header>
-  <div class="brand"><span class="mark">x0</span><span>remote control</span></div>
-  <span id="dot" class="off" title="connection"></span>
-  <div class="spacer"></div>
-  <button class="icon-btn" id="quotaBtn" title="usage">◔ usage</button>
-  <button class="icon-btn" id="switchBtn" title="force switch account">⇄ switch</button>
-  <button class="icon-btn" id="themeBtn" title="toggle theme"></button>
-  <button class="icon-btn" id="tokenBtn" title="clear token">⚙</button>
-</header>
+<aside>
+  <div class="brand"><span class="mark">x0</span><span>remote control</span><span class="sub">self-hosted</span></div>
+  <button class="newbtn" id="newSessionBtn">✦ New session</button>
+  <div class="side-scroll">
+    <div class="side-head"><span>Projects</span><button id="addProjectBtn" title="add project">+</button></div>
+    <div id="projectList"></div>
+  </div>
+  <div class="acct" id="acctChip" title="usage"><div class="av" id="acctAv">?</div><div class="who"><div class="n" id="acctName">—</div><div class="p" id="acctPlan">usage</div></div></div>
+</aside>
+
+<main>
+  <div class="topbar">
+    <span class="title" id="projTitle">x056</span>
+    <span class="cwd" id="projCwd"></span>
+    <span class="sp"></span>
+    <span id="dot" class="off" title="connection"></span>
+    <button class="ico" id="switchBtn" title="force switch account">⇄</button>
+    <button class="ico" id="themeBtn" title="theme"></button>
+    <button class="ico" id="tokenBtn" title="clear token">⚙</button>
+  </div>
+  <div class="scroll"><div class="thread" id="chat"></div></div>
+  <div class="composer-wrap">
+    <div class="composer">
+      <div id="attachRow"></div>
+      <textarea id="prompt" rows="1" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste an image)"></textarea>
+      <div class="bar">
+        <div class="select"><select id="model" title="model">
+          <option value="">Auto model</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
+        </select></div>
+        <div class="select"><select id="effort" title="effort">
+          <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
+        </select></div>
+        <label class="attach" title="attach image">📎<input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden /></label>
+        <span class="sp"></span>
+        <span id="busy"></span>
+        <button class="send" id="sendBtn">Send</button>
+      </div>
+    </div>
+  </div>
+</main>
 
 <div class="backdrop" id="backdrop" hidden></div>
 <div class="pop" id="quotaPop" hidden><h2>account usage</h2><div id="accounts"></div></div>
-
-<main>
-  <div class="wrap" id="chat"></div>
-</main>
-
-<footer>
-  <div class="composer">
-    <div id="attachRow"></div>
-    <textarea id="prompt" rows="1" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste an image to attach)"></textarea>
-    <div class="bar">
-      <div class="select"><select id="model" title="model">
-        <option value="">Auto model</option>
-        <option value="opus">Opus</option>
-        <option value="sonnet">Sonnet</option>
-        <option value="haiku">Haiku</option>
-      </select></div>
-      <div class="select"><select id="effort" title="effort">
-        <option value="">Auto effort</option>
-        <option value="low">Low</option>
-        <option value="medium">Medium</option>
-        <option value="high">High</option>
-        <option value="xhigh">Extra high</option>
-        <option value="max">Max</option>
-      </select></div>
-      <label class="ghost" title="attach image" style="display:inline-flex;align-items:center;justify-content:center;">
-        📎<input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
-      </label>
-      <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);">
-        <input type="checkbox" id="newSession" /> new
-      </label>
-      <div class="spacer"></div>
-      <span id="busy"></span>
-      <button class="send" id="sendBtn">Send</button>
-    </div>
-  </div>
-</footer>
 
 <script>
 (function () {
   var TOKEN_KEY = 'x056_token', THEME_KEY = 'x056_theme', MODEL_KEY = 'x056_model', EFFORT_KEY = 'x056_effort';
   var token = localStorage.getItem(TOKEN_KEY);
   if (!token) { token = window.prompt('x056 access token:') || ''; if (token) localStorage.setItem(TOKEN_KEY, token); }
-
   var $ = function (id) { return document.getElementById(id); };
   var dot = $('dot'), chatEl = $('chat'), promptEl = $('prompt'), sendBtn = $('sendBtn');
-  var modelEl = $('model'), effortEl = $('effort'), fileEl = $('file'), attachRow = $('attachRow');
-  var busyEl = $('busy'), newSessionEl = $('newSession');
-  var quotaBtn = $('quotaBtn'), quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts');
-  var themeBtn = $('themeBtn');
-  var lastSessionId = null, lastSeq = 0, pendingImage = null;
+  var modelEl = $('model'), effortEl = $('effort'), fileEl = $('file'), attachRow = $('attachRow'), busyEl = $('busy');
+  var projListEl = $('projectList'), projTitleEl = $('projTitle'), projCwdEl = $('projCwd');
+  var acctChip = $('acctChip'), acctAv = $('acctAv'), acctName = $('acctName'), acctPlan = $('acctPlan');
+  var quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts'), themeBtn = $('themeBtn');
+  var lastSessionId = null, lastSeq = 0, pendingImage = null, pendingNew = false, currentProjectId = null;
 
-  // ---- persisted selectors ----
   try { modelEl.value = localStorage.getItem(MODEL_KEY) || ''; effortEl.value = localStorage.getItem(EFFORT_KEY) || ''; } catch (e) {}
   modelEl.addEventListener('change', function () { try { localStorage.setItem(MODEL_KEY, modelEl.value); } catch (e) {} });
   effortEl.addEventListener('change', function () { try { localStorage.setItem(EFFORT_KEY, effortEl.value); } catch (e) {} });
 
-  function authHeaders(extra) { return Object.assign({ Authorization: 'Bearer ' + token }, extra || {}); }
-  function api(path, opts) { opts = opts || {}; opts.headers = authHeaders(opts.body ? { 'Content-Type': 'application/json' } : {}); return fetch(path, opts); }
-
+  function api(path, opts) { opts = opts || {}; opts.headers = Object.assign({ Authorization: 'Bearer ' + token }, opts.body ? { 'Content-Type': 'application/json' } : {}); return fetch(path, opts); }
   $('tokenBtn').addEventListener('click', function () { localStorage.removeItem(TOKEN_KEY); location.reload(); });
 
-  // ---- theme ----
-  var systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+  var systemDark = matchMedia('(prefers-color-scheme: dark)');
   function curTheme() { return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
   function applyTheme(t) { if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark'); else document.documentElement.removeAttribute('data-theme'); themeBtn.textContent = t === 'dark' ? '☀' : '☾'; }
   applyTheme(curTheme());
   themeBtn.addEventListener('click', function () { var n = curTheme() === 'dark' ? 'light' : 'dark'; try { localStorage.setItem(THEME_KEY, n); } catch (e) {} applyTheme(n); });
   systemDark.addEventListener('change', function (e) { var s = null; try { s = localStorage.getItem(THEME_KEY); } catch (err) {} if (!s) applyTheme(e.matches ? 'dark' : 'light'); });
 
-  // ---- markdown (DOM-only, no innerHTML with dynamic text) ----
+  // markdown (DOM-only)
   function renderInline(text) {
-    var frag = document.createDocumentFragment();
-    var re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*\s][^*]*)\*)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
-    var last = 0, m;
+    var frag = document.createDocumentFragment(), re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*\s][^*]*)\*)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g, last = 0, m;
     while ((m = re.exec(text))) {
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
       if (m[2]) { var c = document.createElement('code'); c.textContent = m[2]; frag.appendChild(c); }
@@ -242,116 +244,123 @@
       if (line.trim() === '') { flush(); i++; continue; }
       para.push(line); i++;
     }
-    flush();
-    return root;
+    flush(); return root;
   }
 
-  // ---- chat rendering ----
-  function atBottom() { var m = document.querySelector('main'); return m.scrollHeight - m.scrollTop - m.clientHeight < 120; }
-  function scrollDown() { var m = document.querySelector('main'); m.scrollTop = m.scrollHeight; }
+  var scroller = document.querySelector('.scroll');
+  function atBottom() { return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 140; }
+  function down() { scroller.scrollTop = scroller.scrollHeight; }
   function addMsg(role, text, imgUrl) {
     var stick = atBottom();
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role;
     var lab = document.createElement('div'); lab.className = 'role'; lab.textContent = role === 'user' ? 'you' : 'claude'; wrap.appendChild(lab);
     var content = document.createElement('div'); content.className = 'content';
-    if (role === 'assistant') content.appendChild(renderMarkdown(text));
-    else content.appendChild(document.createTextNode(text));
+    if (role === 'assistant') content.appendChild(renderMarkdown(text)); else content.appendChild(document.createTextNode(text));
     if (imgUrl) { var im = document.createElement('img'); im.className = 'att'; im.src = imgUrl; content.appendChild(im); }
-    wrap.appendChild(content); chatEl.appendChild(wrap);
-    if (stick) scrollDown();
+    wrap.appendChild(content); chatEl.appendChild(wrap); if (stick) down();
   }
-  function addSys(text, cls) {
-    var d = document.createElement('div'); d.className = cls || 'sysline';
-    var s = document.createElement('span'); s.textContent = text; d.appendChild(s); chatEl.appendChild(d);
-    if (atBottom()) scrollDown();
-  }
+  function addSys(text, cls) { var stick = atBottom(); var d = document.createElement('div'); d.className = cls || 'sysline'; var s = document.createElement('span'); s.textContent = text; d.appendChild(s); chatEl.appendChild(d); if (stick) down(); }
+  function addAct(label, isSub) { var stick = atBottom(); var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); var i = document.createElement('span'); i.className = 'ic'; i.textContent = isSub ? '✦' : '▸'; d.appendChild(i); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); chatEl.appendChild(d); if (stick) down(); }
 
-  var BANNERS = {
-    limit_detected: 'limit reached — switching accounts…', forced_switch: 'switching accounts…',
-    failover: 'switched account', parked: 'all accounts limited — parked',
-    turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped',
-  };
-  // Live activity state: latest action label + count of running subagents.
-  var active = false, lastLabel = '', runningSubs = 0, subLabels = {};
+  var BANNERS = { limit_detected: 'limit reached — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts limited — parked', turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped' };
+  var active = false, lastLabel = '', runningSubs = 0, subs = {};
   function renderBusy() {
     busyEl.textContent = '';
     if (!active) return;
     var s = document.createElement('span'); s.className = 'spin'; busyEl.appendChild(s);
-    var l = document.createElement('span'); l.className = 'lbl';
-    l.textContent = lastLabel || 'working…'; busyEl.appendChild(l);
+    var l = document.createElement('span'); l.className = 'lbl'; l.textContent = lastLabel || 'working…'; busyEl.appendChild(l);
     if (runningSubs > 0) { var t = document.createElement('span'); t.className = 'tasks'; t.textContent = '· ' + runningSubs + ' running'; busyEl.appendChild(t); }
   }
   function handleEvent(kind, data) {
     if (kind === 'assistant_text') addMsg('assistant', data.text);
     else if (kind === 'supervisor') { var l = BANNERS[data.type]; if (l) addSys(l, 'banner'); }
-    else if (kind === 'turn_state') { active = !!data.active; if (!active) { lastLabel = ''; runningSubs = 0; subLabels = {}; } renderBusy(); }
+    else if (kind === 'turn_state') { active = !!data.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); }
     else if (kind === 'activity') {
-      if (data.status === 'start') { lastLabel = data.label; if (data.isSubagent) { runningSubs++; subLabels[data.toolUseId] = 1; } }
-      else { if (subLabels[data.toolUseId]) { delete subLabels[data.toolUseId]; runningSubs = Math.max(0, runningSubs - 1); } }
+      if (data.status === 'start') { lastLabel = data.label; addAct(data.label, data.isSubagent); if (data.isSubagent) { runningSubs++; subs[data.toolUseId] = 1; } }
+      else if (subs[data.toolUseId]) { delete subs[data.toolUseId]; runningSubs = Math.max(0, runningSubs - 1); }
       if (active) renderBusy();
     }
-    else if (kind === 'session_started') { active = true; renderBusy(); addSys('session ' + (data.resume ? 'resumed' : 'started') + (data.model ? ' · ' + data.model : '') + (data.effort ? ' · ' + data.effort : '')); }
+    else if (kind === 'session_started') { active = true; renderBusy(); }
     else if (kind === 'session_done') { active = false; renderBusy(); addSys('done: ' + data.status + (data.finalAccount ? ' · ' + data.finalAccount : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')); pollAccounts(); pollSnapshot(); }
     else if (kind === 'session_error') { active = false; renderBusy(); addSys('error: ' + data.message, 'banner err'); }
+    else if (kind === 'project_selected') loadProjects();
   }
 
-  // ---- accounts / quota popover ----
+  // ---- projects ----
+  function renderProjects(reg) {
+    currentProjectId = reg.current;
+    projListEl.textContent = '';
+    reg.projects.forEach(function (p) {
+      var row = document.createElement('div'); row.className = 'proj' + (p.id === reg.current ? ' active' : '');
+      var d = document.createElement('span'); d.className = 'dot'; row.appendChild(d);
+      var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = p.name; row.appendChild(nm);
+      row.addEventListener('click', function () { if (p.id !== currentProjectId) switchProject(p); });
+      projListEl.appendChild(row);
+      if (p.id === reg.current) { projTitleEl.textContent = p.name; projCwdEl.textContent = p.cwd; }
+    });
+  }
+  function loadProjects() { return api('/api/projects').then(function (r) { return r.json(); }).then(renderProjects).catch(function () {}); }
+  function switchProject(p) {
+    api('/api/projects/current', { method: 'POST', body: JSON.stringify({ id: p.id }) }).then(function (r) {
+      if (r.status === 409) { addSys('finish the running turn before switching', 'banner'); return; }
+      currentProjectId = p.id; projTitleEl.textContent = p.name; projCwdEl.textContent = p.cwd;
+      chatEl.textContent = ''; pendingNew = false;
+      loadProjects(); pollSnapshot().then(loadHistory);
+    }).catch(function () {});
+  }
+  $('addProjectBtn').addEventListener('click', function () {
+    var name = window.prompt('Project name:'); if (!name) return;
+    var cwd = window.prompt('Working directory (absolute path under the workspace root):') || '';
+    var body = { name: name }; if (cwd.trim()) body.cwd = cwd.trim();
+    api('/api/projects', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { addSys('could not create project: ' + (j.message || r.status), 'banner'); });
+      return r.json().then(function (p) { switchProject(p); });
+    }).catch(function () {});
+  });
+  $('newSessionBtn').addEventListener('click', function () { pendingNew = true; chatEl.textContent = ''; addSys('new session — send a message to begin'); promptEl.focus(); });
+
+  // ---- accounts / quota ----
   function gCls(p) { return p >= 90 ? 'red' : p >= 70 ? 'amber' : ''; }
-  function gauge(label, usage) {
-    var p = Math.round((usage.utilization || 0) * (usage.utilization > 1 ? 1 : 100));
-    p = Math.max(0, Math.min(100, p));
-    var g = document.createElement('div'); g.className = 'g';
-    var lab = document.createElement('div'); lab.className = 'lab';
-    var a = document.createElement('span'); a.textContent = label; var b = document.createElement('span'); b.textContent = p + '%';
-    lab.appendChild(a); lab.appendChild(b); g.appendChild(lab);
-    var tr = document.createElement('div'); tr.className = 'track'; var i = document.createElement('i'); if (gCls(p)) i.classList.add(gCls(p)); i.style.width = p + '%'; tr.appendChild(i); g.appendChild(tr);
-    return g;
+  function gauge(label, u) {
+    var p = Math.round((u.utilization || 0) * (u.utilization > 1 ? 1 : 100)); p = Math.max(0, Math.min(100, p));
+    var g = document.createElement('div'); g.className = 'g'; var lab = document.createElement('div'); lab.className = 'lab';
+    var a = document.createElement('span'); a.textContent = label; var b = document.createElement('span'); b.textContent = p + '%'; lab.appendChild(a); lab.appendChild(b); g.appendChild(lab);
+    var tr = document.createElement('div'); tr.className = 'track'; var i = document.createElement('i'); if (gCls(p)) i.classList.add(gCls(p)); i.style.width = p + '%'; tr.appendChild(i); g.appendChild(tr); return g;
   }
   function renderAccounts(list) {
     accountsEl.textContent = '';
+    var activeAcct = null;
     list.forEach(function (a) {
       var st = a.state || { kind: 'unknown' };
-      var card = document.createElement('div'); card.className = 'acct';
-      var top = document.createElement('div'); top.className = 'top';
-      var left = document.createElement('div');
+      if (st.kind === 'ok' || (!activeAcct && st.kind !== 'limited')) activeAcct = a;
+      var card = document.createElement('div'); card.className = 'qa';
+      var top = document.createElement('div'); top.className = 'top'; var left = document.createElement('div');
       var nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = a.displayName || a.name; left.appendChild(nm);
       if (a.email) { var em = document.createElement('div'); em.className = 'em'; em.textContent = a.email; left.appendChild(em); }
       top.appendChild(left);
       var badge = document.createElement('span'); badge.className = 'badge';
-      if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'active'; }
-      else if (st.kind === 'limited') { badge.classList.add('limited'); badge.textContent = 'limited'; }
-      else badge.textContent = 'idle';
+      if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'active'; } else if (st.kind === 'limited') { badge.classList.add('limited'); badge.textContent = 'limited'; } else badge.textContent = 'idle';
       top.appendChild(badge); card.appendChild(top);
-      if (a.quota) {
-        card.appendChild(gauge('5-hour', a.quota.fiveHour));
-        card.appendChild(gauge('7-day', a.quota.sevenDay));
-        if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = 'cached — refreshing'; card.appendChild(s); }
-      } else {
-        var n = document.createElement('div'); n.className = 'note'; n.textContent = a.quotaError ? 'usage unavailable — retrying' : 'usage unavailable'; card.appendChild(n);
-      }
+      if (a.quota) { card.appendChild(gauge('5-hour', a.quota.fiveHour)); card.appendChild(gauge('7-day', a.quota.sevenDay)); if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = 'cached — refreshing'; card.appendChild(s); } }
+      else { var n = document.createElement('div'); n.className = 'note'; n.textContent = a.quotaError ? 'usage unavailable — retrying' : 'usage unavailable'; card.appendChild(n); }
       accountsEl.appendChild(card);
     });
+    if (activeAcct) { var nm2 = activeAcct.displayName || activeAcct.name; acctName.textContent = nm2; acctAv.textContent = (nm2[0] || '?').toUpperCase(); acctPlan.textContent = 'Max · view usage'; }
   }
   function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
-  pollAccounts(); setInterval(pollAccounts, 60000);
-
-  function togglePop(show) {
-    var open = show === undefined ? quotaPop.hidden : show;
-    quotaPop.hidden = !open; backdrop.hidden = !open;
-    if (open) pollAccounts();
-  }
-  quotaBtn.addEventListener('click', function () { togglePop(); });
+  function togglePop(show) { var open = show === undefined ? quotaPop.hidden : show; quotaPop.hidden = !open; backdrop.hidden = !open; if (open) pollAccounts(); }
+  acctChip.addEventListener('click', function () { togglePop(); });
   backdrop.addEventListener('click', function () { togglePop(false); });
 
-  function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; return s; }); }
+  function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; currentProjectId = s.currentProjectId; return s; }); }
   function loadHistory() {
     return api('/api/sessions/current/history?limit=80').then(function (r) { return r.json(); }).then(function (rows) {
-      if (!Array.isArray(rows) || rows.length === 0) return;
-      addSys('history — ' + rows.length + ' earlier messages');
-      rows.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); });
-      addSys('live'); scrollDown();
+      if (!Array.isArray(rows) || rows.length === 0) { addSys('no messages yet — say hello'); return; }
+      addSys(rows.length + ' earlier messages'); rows.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); }); addSys('live'); down();
     }).catch(function () {});
   }
+
+  loadProjects(); setInterval(pollAccounts, 60000); pollAccounts();
   pollSnapshot().then(loadHistory);
 
   // ---- SSE ----
@@ -361,60 +370,41 @@
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     es.onopen = function () { dot.className = 'on'; };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state'].forEach(function (kind) {
-      es.addEventListener(kind, function (evt) {
-        if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
-        var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
-        handleEvent(kind, data.data || {});
-      });
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected'].forEach(function (kind) {
+      es.addEventListener(kind, function (evt) { if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq; var data; try { data = JSON.parse(evt.data); } catch (e) { return; } handleEvent(kind, data.data || {}); });
     });
   }
   connect();
 
   // ---- composer ----
-  function autogrow() { promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 220) + 'px'; }
+  function autogrow() { promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + 'px'; }
   promptEl.addEventListener('input', autogrow);
-
-  function setImage(dataUrl) {
-    pendingImage = dataUrl;
-    attachRow.textContent = '';
-    if (!dataUrl) { attachRow.classList.remove('show'); return; }
-    var chip = document.createElement('div'); chip.className = 'chip';
-    var img = document.createElement('img'); img.src = dataUrl; chip.appendChild(img);
-    var span = document.createElement('span'); span.textContent = 'screenshot attached'; chip.appendChild(span);
-    var x = document.createElement('button'); x.textContent = '✕'; x.title = 'remove'; x.addEventListener('click', function () { setImage(null); }); chip.appendChild(x);
+  function setImage(u) {
+    pendingImage = u; attachRow.textContent = '';
+    if (!u) { attachRow.classList.remove('show'); return; }
+    var chip = document.createElement('div'); chip.className = 'chip'; var img = document.createElement('img'); img.src = u; chip.appendChild(img);
+    var sp = document.createElement('span'); sp.textContent = 'image attached'; chip.appendChild(sp);
+    var x = document.createElement('button'); x.textContent = '✕'; x.addEventListener('click', function () { setImage(null); }); chip.appendChild(x);
     attachRow.appendChild(chip); attachRow.classList.add('show');
   }
-  function fileToImage(file) { if (!file || !/^image\//.test(file.type)) return; var r = new FileReader(); r.onload = function () { setImage(r.result); }; r.readAsDataURL(file); }
+  function fileToImage(f) { if (!f || !/^image\//.test(f.type)) return; var r = new FileReader(); r.onload = function () { setImage(r.result); }; r.readAsDataURL(f); }
   fileEl.addEventListener('change', function () { if (fileEl.files[0]) fileToImage(fileEl.files[0]); fileEl.value = ''; });
-  promptEl.addEventListener('paste', function (e) {
-    var items = (e.clipboardData || {}).items || [];
-    for (var i = 0; i < items.length; i++) { if (items[i].type && items[i].type.indexOf('image') === 0) { var f = items[i].getAsFile(); if (f) { e.preventDefault(); fileToImage(f); return; } } }
-  });
+  promptEl.addEventListener('paste', function (e) { var items = (e.clipboardData || {}).items || []; for (var i = 0; i < items.length; i++) if (items[i].type && items[i].type.indexOf('image') === 0) { var f = items[i].getAsFile(); if (f) { e.preventDefault(); fileToImage(f); return; } } });
 
   function send() {
-    var text = promptEl.value.trim();
-    if (!text && !pendingImage) return;
-    var body = { prompt: text };
-    if (modelEl.value) body.model = modelEl.value;
-    if (effortEl.value) body.effort = effortEl.value;
-    if (pendingImage) body.image = pendingImage;
-    var useNew = newSessionEl.checked || !lastSessionId;
-    var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
+    var text = promptEl.value.trim(); if (!text && !pendingImage) return;
+    var body = { prompt: text }; if (modelEl.value) body.model = modelEl.value; if (effortEl.value) body.effort = effortEl.value; if (pendingImage) body.image = pendingImage;
+    var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
     addMsg('user', text || '(image)', pendingImage);
-    var hadImage = !!pendingImage;
     api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
       if (r.status === 409) { addSys('a session is already running', 'banner'); return; }
-      promptEl.value = ''; autogrow(); setImage(null); if (hadImage) {} newSessionEl.checked = false;
+      promptEl.value = ''; autogrow(); setImage(null); pendingNew = false;
       return r.json().then(function (j) { if (j.sessionId) lastSessionId = j.sessionId; }).catch(function () {});
     }).catch(function () {});
   }
   sendBtn.addEventListener('click', send);
   promptEl.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-
-  $('switchBtn').addEventListener('click', function () {
-    api('/api/switch', { method: 'POST' }).then(function (r) { if (r.status === 409) addSys('switch: no session running', 'banner'); }).catch(function () {});
-  });
+  $('switchBtn').addEventListener('click', function () { api('/api/switch', { method: 'POST' }).then(function (r) { if (r.status === 409) addSys('switch: no session running', 'banner'); }).catch(function () {}); });
 })();
 </script>
 </body>

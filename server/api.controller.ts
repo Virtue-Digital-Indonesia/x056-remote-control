@@ -151,6 +151,46 @@ export class ApiController {
     return this.manager.snapshot();
   }
 
+  @Get('projects')
+  projects(): unknown {
+    return this.manager.listProjects();
+  }
+
+  @Post('projects')
+  createProject(@Body() body: { name?: string; cwd?: string }): unknown {
+    if (!body?.name) throw new BadRequestException('name required');
+    try {
+      return this.manager.createProject(body.name, body.cwd);
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('projects/current')
+  @HttpCode(200)
+  selectProject(@Body() body: { id?: string }): { ok: boolean } {
+    if (!body?.id) throw new BadRequestException('id required');
+    try {
+      this.manager.selectProject(body.id);
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof BusyError) throw new ConflictException('busy');
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('projects/rename')
+  @HttpCode(200)
+  renameProject(@Body() body: { id?: string; name?: string }): { ok: boolean } {
+    if (!body?.id || !body?.name) throw new BadRequestException('id and name required');
+    try {
+      this.manager.renameProject(body.id, body.name);
+      return { ok: true };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
   @Get('sessions/current/history')
   history(@Query('limit') limit?: string): HistoryEntry[] {
     const sessionId = this.manager.snapshot().lastSessionId;

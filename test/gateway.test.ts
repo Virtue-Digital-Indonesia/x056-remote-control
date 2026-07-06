@@ -53,6 +53,17 @@ afterAll(async () => {
 
 const auth = { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
 
+/** Wait until no session is running so a test doesn't leak work into the next. */
+async function idle(timeoutMs = 15000): Promise<void> {
+  const t0 = Date.now();
+  for (;;) {
+    const s = await (await fetch(`${base}/api/sessions`, { headers: auth })).json() as { running: boolean };
+    if (!s.running) return;
+    if (Date.now() - t0 > timeoutMs) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 describe('gateway e2e', () => {
   it('healthz is open, api is locked', async () => {
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
@@ -175,10 +186,36 @@ describe('gateway account identity + image upload', () => {
     const files = readdirSync(join(dir, 'state', 'uploads'));
     expect(files.length).toBeGreaterThanOrEqual(1);
     expect(files[0]).toMatch(/\.png$/);
+    // don't leak a running session into later tests
+    await idle();
   });
 
   it('rejects a malformed image with 400', async () => {
     const res = await fetch(`${base}/api/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ prompt: 'x', image: 'not-a-data-url' }) });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('gateway projects', () => {
+  it('lists a migrated default project, creates and selects', async () => {
+    await idle();
+    const list1 = await (await fetch(`${base}/api/projects`, { headers: auth })).json() as { current: string; projects: { id: string; name: string }[] };
+    expect(list1.projects.length).toBeGreaterThanOrEqual(1);
+    expect(list1.current).toBeTruthy();
+
+    const created = await fetch(`${base}/api/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Beta', cwd: dir }) });
+    expect(created.status).toBe(201);
+    const beta = await created.json() as { id: string; name: string };
+    expect(beta.name).toBe('Beta');
+
+    const sel = await fetch(`${base}/api/projects/current`, { method: 'POST', headers: auth, body: JSON.stringify({ id: beta.id }) });
+    expect(sel.status).toBe(200);
+    const snap = await (await fetch(`${base}/api/sessions`, { headers: auth })).json() as { currentProjectId: string };
+    expect(snap.currentProjectId).toBe(beta.id);
+  });
+
+  it('rejects a project cwd outside the workspace root', async () => {
+    const res = await fetch(`${base}/api/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Bad', cwd: '/etc' }) });
     expect(res.status).toBe(400);
   });
 });
