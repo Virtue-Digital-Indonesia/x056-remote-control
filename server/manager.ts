@@ -88,6 +88,7 @@ export class SessionManager {
   // One concurrent turn per project (keyed by projectId); projects run in parallel.
   private runs = new Map<string, ActiveRun>();
   private lastResults = new Map<string, SessionResult>();
+  private lastModelByPid = new Map<string, string>();
   private sharedRegistry?: AccountRegistry;
 
   constructor(private readonly opts: SessionManagerOptions) {
@@ -495,7 +496,7 @@ export class SessionManager {
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {
           saveStateOnce();
-          this.tapToEvents(e, emit);
+          this.tapToEvents(e, emit, pid);
         },
       })
         .then((res) => {
@@ -524,14 +525,21 @@ export class SessionManager {
     }
   }
 
-  private tapToEvents(e: RawEvent, emit: (kind: string, data: Record<string, unknown>) => void): void {
+  private tapToEvents(e: RawEvent, emit: (kind: string, data: Record<string, unknown>) => void, pid?: string): void {
     // Surface tool calls + subagent spawns as activity so the UI can show a
     // live "working / N running tasks" state instead of appearing to hang.
     for (const a of toActivity(e)) {
       emit('activity', a as unknown as Record<string, unknown>);
     }
     if (e.type !== 'assistant') return;
-    const msg = e.message as { content?: unknown } | undefined;
+    const msg = e.message as { content?: unknown; model?: unknown } | undefined;
+    // The actual model resolved for this turn (e.g. "claude-fable-5"), which is
+    // what the UI shows as the live model — meaningful even when "auto" was sent.
+    const model = typeof msg?.model === 'string' ? msg.model : undefined;
+    if (model && pid && this.lastModelByPid.get(pid) !== model) {
+      this.lastModelByPid.set(pid, model);
+      emit('active_model', { model });
+    }
     const content = Array.isArray(msg?.content) ? msg.content : [];
     for (const block of content) {
       if (block && typeof block === 'object' && (block as { type?: string }).type === 'text') {

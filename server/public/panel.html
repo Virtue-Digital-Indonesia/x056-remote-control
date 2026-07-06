@@ -152,6 +152,7 @@
   #busy .spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; flex: none; }
   #busy .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #busy .tasks { color: var(--accent); font-weight: 600; }
+  #busy .bmeta { color: var(--faint); }
   @keyframes spin { to { transform: rotate(360deg); } }
   .attach { background: none; border: 1px solid var(--border); border-radius: 9px; height: 32px; min-width: 32px; cursor: pointer; color: var(--muted); font-size: 15px; display: inline-grid; place-items: center; }
   .attach:hover { color: var(--text); border-color: var(--border-strong); }
@@ -385,13 +386,24 @@
   var active = false, lastLabel = '', runningSubs = 0, subs = {};
   var runningProjects = {}; // projectId -> true while a turn runs there
   var acctNames = {}; // registry name (a/b) -> display name
+  var activeModel = {}, activeAccount = {}; // per pid: model id / account name in this turn
   function acctName(n) { return acctNames[n] || n; }
+  function modelLabel(m) {
+    if (!m) return '';
+    var s = String(m).toLowerCase();
+    if (s.indexOf('fable') >= 0) return 'Fable'; if (s.indexOf('opus') >= 0) return 'Opus';
+    if (s.indexOf('sonnet') >= 0) return 'Sonnet'; if (s.indexOf('haiku') >= 0) return 'Haiku';
+    return String(m).replace(/^claude-/, '');
+  }
   function renderBusy() {
     busyEl.textContent = '';
     if (!active) return;
     var s = document.createElement('span'); s.className = 'spin'; busyEl.appendChild(s);
     var l = document.createElement('span'); l.className = 'lbl'; l.textContent = lastLabel || 'working…'; busyEl.appendChild(l);
     if (runningSubs > 0) { var t = document.createElement('span'); t.className = 'tasks'; t.textContent = '· ' + runningSubs + ' running'; busyEl.appendChild(t); }
+    var meta = []; var ml = modelLabel(activeModel[currentProjectId]); if (ml) meta.push(ml);
+    var ac = activeAccount[currentProjectId]; if (ac) meta.push(acctName(ac));
+    if (meta.length) { var mm = document.createElement('span'); mm.className = 'bmeta'; mm.textContent = '· ' + meta.join(' · '); busyEl.appendChild(mm); }
   }
   // Live strip above the composer: what every OTHER running project is doing,
   // so parallel work is visible without leaving the current chat.
@@ -424,7 +436,11 @@
       return;
     }
     if (kind === 'assistant_text') appendNode(pid, nodeMsg('assistant', data.text));
-    else if (kind === 'supervisor') { var l = BANNERS[data.type]; if (l) appendNode(pid, nodeSys(l, 'banner')); }
+    else if (kind === 'supervisor') {
+      if (data.type === 'turn_started' && data.account) { activeAccount[pid] = data.account; if (mine) renderBusy(); }
+      var l = BANNERS[data.type]; if (l) appendNode(pid, nodeSys(l, 'banner'));
+    }
+    else if (kind === 'active_model') { if (data.model) { activeModel[pid] = data.model; if (mine) renderBusy(); } }
     else if (kind === 'activity') {
       if (data.status === 'start') {
         v.label = data.label; appendNode(pid, nodeAct(data.label, data.isSubagent));
@@ -433,7 +449,7 @@
       if (mine) { lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; if (active) renderBusy(); }
       renderStrip();
     }
-    else if (kind === 'session_started') { if (mine) { active = true; renderBusy(); } }
+    else if (kind === 'session_started') { if (data.model) activeModel[pid] = data.model; if (mine) { active = true; renderBusy(); } }
     else if (kind === 'session_done') {
       appendNode(pid, nodeSys('done: ' + data.status + (data.finalAccount ? ' · ' + acctName(data.finalAccount) : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')));
       if (mine) { active = false; renderBusy(); }
@@ -715,7 +731,7 @@
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     es.onopen = function () { dot.className = 'on'; };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'turn_orphaned', 'autopilot', 'question'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'turn_orphaned', 'autopilot', 'question', 'active_model'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) { if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq; var data; try { data = JSON.parse(evt.data); } catch (e) { return; } handleEvent(kind, data.data || {}); });
     });
   }

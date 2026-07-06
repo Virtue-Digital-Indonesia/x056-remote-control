@@ -94,6 +94,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         log.append({ type: 'parked', sessionId, until });
         return { status: 'parked', parkedUntil: until, failovers: failoverTimes.length };
       }
+      // Announce which account this turn runs on so the UI can show it live.
+      log.append({ type: 'turn_started', sessionId, account: account.name });
 
       const state = {
         limited: null as Verdict | null,
