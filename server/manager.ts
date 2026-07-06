@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
@@ -79,6 +79,7 @@ export class SessionManager {
   constructor(private readonly opts: SessionManagerOptions) {
     mkdirSync(opts.stateDir, { recursive: true });
     this.migrateProjects();
+    this.detectOrphans();
     if (opts.manageProcessSignals) {
       const onTerm = () => {
         for (const run of this.runs.values()) run.control?.abort();
@@ -87,6 +88,57 @@ export class SessionManager {
       process.on('SIGTERM', onTerm);
       process.on('SIGINT', onTerm);
     }
+  }
+
+  private get inflightDir(): string {
+    return join(this.opts.stateDir, 'inflight');
+  }
+
+  /** A turn writes an in-flight marker at launch and deletes it on any settled
+   *  outcome. A marker still present at startup therefore means the process was
+   *  killed mid-turn (crash/reboot) — surface it so the user can resume. */
+  private detectOrphans(): void {
+    let files: string[];
+    try {
+      files = readdirSync(this.inflightDir).filter((f) => f.endsWith('.json'));
+    } catch {
+      return;
+    }
+    for (const f of files) {
+      const path = join(this.inflightDir, f);
+      try {
+        const m = JSON.parse(readFileSync(path, 'utf8')) as { projectId?: string; projectName?: string; sessionId?: string; prompt?: string; startedAt?: string };
+        this.emit('turn_orphaned', {
+          projectId: m.projectId ?? f.replace(/\.json$/, ''),
+          projectName: m.projectName ?? null,
+          sessionId: m.sessionId ?? null,
+          prompt: m.prompt ?? null,
+          startedAt: m.startedAt ?? null,
+        });
+      } catch {
+        // corrupt marker — ignore
+      }
+      rmSync(path, { force: true });
+    }
+  }
+
+  private writeMarker(pid: string, sessionId: string, cwd: string, prompt: string): void {
+    try {
+      mkdirSync(this.inflightDir, { recursive: true });
+      writeFileSync(join(this.inflightDir, `${pid}.json`), JSON.stringify({
+        projectId: pid,
+        projectName: this.projects().get(pid)?.name ?? null,
+        sessionId, cwd,
+        prompt: prompt.slice(0, 200),
+        startedAt: new Date().toISOString(),
+      }));
+    } catch {
+      // best-effort; marker absence just means no orphan detection for this turn
+    }
+  }
+
+  private clearMarker(pid: string): void {
+    rmSync(join(this.inflightDir, `${pid}.json`), { force: true });
   }
 
   /** Shared across all concurrent runs so failover's account-limit accounting
@@ -292,6 +344,7 @@ export class SessionManager {
           stateSaved = true;
         }
       };
+      this.writeMarker(pid, sessionId, cwd, prompt);
       emit('session_started', { sessionId, cwd, resume, prompt, model: runOpts?.model, effort: runOpts?.effort });
       emit('turn_state', { active: true });
       void runFn({
@@ -320,10 +373,12 @@ export class SessionManager {
         })
         .finally(() => {
           this.runs.delete(pid);
+          this.clearMarker(pid);
           emit('turn_state', { active: false });
         });
     } catch (err) {
       this.runs.delete(pid);
+      this.clearMarker(pid);
       emit('turn_state', { active: false });
       throw err;
     }

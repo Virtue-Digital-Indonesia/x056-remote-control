@@ -105,6 +105,9 @@
   .orun .rspin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; flex: none; }
   .orun .pn { font-weight: 600; color: var(--text); }
   .orun .pl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+  .orphan { max-width: 780px; margin: 10px auto; display: flex; align-items: center; gap: 12px; background: var(--warn-bg); border: 1px solid var(--amber); border-radius: 12px; padding: 10px 14px; }
+  .orphan .omsg { flex: 1; display: flex; align-items: center; gap: 8px; color: var(--warn-text); font-size: 13px; }
+  .orphan .send { flex: none; width: auto; padding: 0 14px; }
 
   .act { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 3px 0; padding: 3px 0; }
   .act .ic { opacity: .8; }
@@ -423,7 +426,37 @@
       if (mine) { active = false; renderBusy(); }
       renderStrip();
     }
+    else if (kind === 'turn_orphaned') {
+      var pname = projCache[pid] ? projCache[pid].name : (data.projectName || 'a project');
+      notify('Turn interrupted', pname + ' stopped mid-turn — resume it in the panel');
+      appendNode(pid, nodeOrphan(pid, data));
+    }
     else if (kind === 'project_selected') { /* another tab switched; ignore */ }
+  }
+  // Persistent card shown when a turn died mid-flight (crash/restart) — click to resume.
+  function nodeOrphan(pid, data) {
+    var d = document.createElement('div'); d.className = 'orphan';
+    var msg = document.createElement('div'); msg.className = 'omsg';
+    msg.appendChild(icon('history', 'sm'));
+    var t = document.createElement('span'); t.textContent = 'This turn was interrupted (crash or restart)' + (data.prompt ? ' — “' + String(data.prompt).slice(0, 80) + '”' : '') + '. Resume it?'; msg.appendChild(t);
+    d.appendChild(msg);
+    var btn = document.createElement('button'); btn.className = 'send'; btn.textContent = 'Resume';
+    btn.addEventListener('click', function () { d.remove(); resumeProject(pid); });
+    d.appendChild(btn);
+    return d;
+  }
+  function resumeProject(pid) {
+    api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, prompt: 'Continue from where you left off. If your last action was a command or edit that may have partially applied, verify its actual effect before re-running anything with side effects.' }) })
+      .then(function (r) { if (r.status === 409) addSys('a turn is already running there', 'banner'); }).catch(function () {});
+  }
+  // ---- browser notifications ----
+  var notifyAsked = false;
+  function notify(title, body) {
+    try {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'granted') { new Notification(title, { body: body }); return; }
+      if (Notification.permission !== 'denied' && !notifyAsked) { notifyAsked = true; Notification.requestPermission().then(function (p) { if (p === 'granted') new Notification(title, { body: body }); }); }
+    } catch (e) {}
   }
 
   // ---- projects ----
@@ -603,7 +636,7 @@
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     es.onopen = function () { dot.className = 'on'; };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'turn_orphaned'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) { if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq; var data; try { data = JSON.parse(evt.data); } catch (e) { return; } handleEvent(kind, data.data || {}); });
     });
   }

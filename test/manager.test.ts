@@ -265,3 +265,34 @@ describe('SessionManager parallel projects', () => {
     await waitFor(() => mgr.listProjects().projects.every((p) => !p.running));
   });
 });
+
+describe('SessionManager orphan detection', () => {
+  it('emits turn_orphaned for an in-flight marker left by a killed process', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-orphan-'));
+    const sd = join(dir, 'state'); mkdirSync(join(sd, 'inflight'), { recursive: true });
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
+    // simulate a marker a previous (killed) process left behind
+    writeFileSync(join(sd, 'inflight', 'proj-9.json'), JSON.stringify({ projectId: 'proj-9', projectName: 'AHU', sessionId: 's-1', prompt: 'do the thing', startedAt: '2026-07-06T00:00:00Z' }));
+    const events: GatewayEvent[] = [];
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn: (async () => ({ status: 'completed', finalAccount: 'a', failovers: 0 })) as never });
+    mgr.subscribe((e) => events.push(e)); // buffer replays the startup-emitted event
+    const orphan = events.find((e) => e.kind === 'turn_orphaned');
+    expect(orphan).toBeTruthy();
+    expect((orphan!.data as { projectId: string }).projectId).toBe('proj-9');
+    expect((orphan!.data as { prompt: string }).prompt).toBe('do the thing');
+    // marker consumed so it doesn't re-fire next boot
+    expect(existsSync(join(sd, 'inflight', 'proj-9.json'))).toBe(false);
+  });
+
+  it('clears the in-flight marker when a normal turn settles', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-mark-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn: (async () => { await new Promise((r) => setTimeout(r, 10)); return { status: 'completed', finalAccount: 'a', failovers: 0 }; }) as never });
+    const p = mgr.createProject('P', dir);
+    mgr.start('go', undefined, undefined, p.id);
+    expect(existsSync(join(sd, 'inflight', p.id + '.json'))).toBe(true); // marker present mid-turn
+    await waitFor(() => !existsSync(join(sd, 'inflight', p.id + '.json')));
+    expect(existsSync(join(sd, 'inflight', p.id + '.json'))).toBe(false); // cleared on settle
+  });
+});
