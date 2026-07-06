@@ -274,7 +274,7 @@
   var dot = $('dot'), chatEl = $('chat'), promptEl = $('prompt'), sendBtn = $('sendBtn');
   var modelEl = $('model'), effortEl = $('effort'), fileEl = $('file'), attachRow = $('attachRow'), busyEl = $('busy');
   var projListEl = $('projectList'), projTitleEl = $('projTitle'), projCwdEl = $('projCwd');
-  var acctChip = $('acctChip'), acctAv = $('acctAv'), acctName = $('acctName'), acctPlan = $('acctPlan');
+  var acctChip = $('acctChip'), acctAv = $('acctAv'), acctNameEl = $('acctName'), acctPlan = $('acctPlan');
   var quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts'), themeBtn = $('themeBtn');
   var lastSessionId = null, lastSeq = 0, pendingImage = null, pendingNew = false, currentProjectId = null;
 
@@ -387,6 +387,7 @@
   var runningProjects = {}; // projectId -> true while a turn runs there
   var acctNames = {}; // registry name (a/b) -> display name
   var activeModel = {}, activeAccount = {}; // per pid: model id / account name in this turn
+  var pendingQ = {};   // pid -> unanswered question data (survives history reloads / SSE replays)
   function acctName(n) { return acctNames[n] || n; }
   function modelLabel(m) {
     if (!m) return '';
@@ -449,7 +450,7 @@
       if (mine) { lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; if (active) renderBusy(); }
       renderStrip();
     }
-    else if (kind === 'session_started') { if (data.model) activeModel[pid] = data.model; if (mine) { active = true; renderBusy(); } }
+    else if (kind === 'session_started') { clearQuestion(pid); if (data.model) activeModel[pid] = data.model; if (mine) { active = true; renderBusy(); } }
     else if (kind === 'session_done') {
       appendNode(pid, nodeSys('done: ' + data.status + (data.finalAccount ? ' · ' + acctName(data.finalAccount) : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')));
       if (mine) { active = false; renderBusy(); }
@@ -461,7 +462,7 @@
       renderStrip();
     }
     else if (kind === 'question') {
-      appendNode(pid, nodeQuestion(pid, data));
+      pendingQ[pid] = data; showQuestion(pid, data);
       if (pid !== currentProjectId) notify('Claude has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80));
     }
     else if (kind === 'autopilot') {
@@ -498,8 +499,27 @@
     }
     return d;
   }
+  // A question is an ephemeral SSE event, not part of the transcript, so a history
+  // reload (project switch, refresh, SSE reconnect) would wipe its card. Keep the
+  // pending one in state and (re)render it idempotently so it survives every wipe
+  // and any replay ordering.
+  function qContainer(pid) { return (!pid || pid === currentProjectId) ? chatEl : viewOf(pid).frag; }
+  function showQuestion(pid, data) {
+    // DOM-authoritative dedupe: drop any prior *unanswered* card in this pid's
+    // container (survives SSE replays / reload races regardless of key/timing);
+    // answered cards lack .pending so they're left in place.
+    var c = qContainer(pid), old = c.querySelectorAll('.qcard.pending');
+    for (var i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
+    var node = nodeQuestion(pid, data); node.classList.add('pending'); appendNode(pid, node);
+  }
+  function clearQuestion(pid) {
+    var c = qContainer(pid), old = c.querySelectorAll('.qcard.pending');
+    for (var i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
+    delete pendingQ[pid];
+  }
   function answerQuestion(pid, card, answer) {
-    // lock the card to the chosen answer, then send it as the reply (resumes with context)
+    // this question is handled now — stop tracking it as pending (keep the card, locked)
+    delete pendingQ[pid]; card.classList.remove('pending');
     card.classList.add('answered');
     var buttons = card.querySelectorAll('.qopt');
     for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; if (buttons[i].textContent === answer) buttons[i].classList.add('chosen'); }
@@ -659,7 +679,7 @@
       else { var n = document.createElement('div'); n.className = 'note'; n.textContent = a.quotaError ? 'usage unavailable — retrying' : 'usage unavailable'; card.appendChild(n); }
       accountsEl.appendChild(card);
     });
-    if (activeAcct) { var nm2 = activeAcct.displayName || activeAcct.name; acctName.textContent = nm2; acctAv.textContent = (nm2[0] || '?').toUpperCase(); acctPlan.textContent = 'Max · view usage'; }
+    if (activeAcct) { var nm2 = activeAcct.displayName || activeAcct.name; acctNameEl.textContent = nm2; acctAv.textContent = (nm2[0] || '?').toUpperCase(); acctPlan.textContent = 'Max · view usage'; }
   }
   function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
   var sessPicker = $('sessPicker'), sessList = $('sessList');
@@ -717,7 +737,9 @@
         addSys('no messages yet — say hello, or use the resume button for an existing session');
         return;
       }
-      addSys(rows.length + ' earlier messages'); rows.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); }); addSys('live'); down();
+      addSys(rows.length + ' earlier messages'); rows.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); }); addSys('live');
+      if (pendingQ[pid]) showQuestion(pid, pendingQ[pid]); // re-attach a still-open question the transcript doesn't carry
+      down();
     }).catch(function () {});
   }
 
