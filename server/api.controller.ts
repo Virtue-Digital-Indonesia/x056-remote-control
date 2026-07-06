@@ -208,6 +208,19 @@ export class ApiController {
     }
   }
 
+  @Post('projects/remove')
+  @HttpCode(200)
+  removeProject(@Body() body: { id?: string }): { ok: boolean } {
+    if (!body?.id) throw new BadRequestException('id required');
+    try {
+      this.manager.removeProject(body.id);
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof BusyError) throw new ConflictException('a turn is running there — stop it first');
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
   @Post('projects/rename')
   @HttpCode(200)
   renameProject(@Body() body: { id?: string; name?: string }): { ok: boolean } {
@@ -277,6 +290,13 @@ export class ApiController {
   switch(@Body() body: { projectId?: string }): { switched: boolean } {
     if (!this.manager.forceSwitch(body?.projectId)) throw new ConflictException('no session running');
     return { switched: true };
+  }
+
+  @Post('sessions/current/stop')
+  @HttpCode(200)
+  stop(@Body() body: { projectId?: string }): { stopped: boolean } {
+    if (!this.manager.stopTurn(body?.projectId)) throw new ConflictException('no turn running there');
+    return { stopped: true };
   }
 
   @Get('autopilot')

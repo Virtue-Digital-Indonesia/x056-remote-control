@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { stripAskInstructions } from './question.js';
+import { stripAsk, stripAskInstructions } from './question.js';
 
 export interface HistoryEntry {
   role: 'user' | 'assistant';
@@ -79,7 +79,12 @@ export function readSessionHistory(configDirs: string[], sessionId: string, limi
     ) {
       continue;
     }
-    out.push({ role: type, text: type === 'user' ? stripAskInstructions(text) : text });
+    // Users' prompts carry the appended ASK convention; assistants' final
+    // messages carry the raw <<<ASK>>> block — strip both so neither leaks into
+    // the rendered transcript on reload. Drop a message that was only an ASK.
+    const shown = type === 'user' ? stripAskInstructions(text) : stripAsk(text);
+    if (shown === '') continue;
+    out.push({ role: type, text: shown });
   }
   return out.slice(-limit);
 }

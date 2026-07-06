@@ -38,6 +38,23 @@ describe('readSessionHistory', () => {
     ]);
   });
 
+  it('strips the raw <<<ASK>>> block from assistant text, and drops an assistant turn that was only an ASK', () => {
+    const sid = 'sess-ask';
+    const dir = configDirWithTranscript(sid, [
+      { type: 'user', message: { role: 'user', content: 'do the thing' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Here is my plan.\n\n<<<ASK\nquestion: Proceed?\noptions: Yes | No\n>>>' }] } },
+      { type: 'user', message: { role: 'user', content: 'Yes' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '<<<ASK\nquestion: Only a question?\n>>>' }] } },
+    ]);
+    const rows = readSessionHistory([dir], sid);
+    expect(rows).toEqual([
+      { role: 'user', text: 'do the thing' },
+      { role: 'assistant', text: 'Here is my plan.' },
+      { role: 'user', text: 'Yes' },
+      // the ask-only assistant turn is dropped (nothing left after stripping)
+    ]);
+  });
+
   it('returns [] when the session transcript is not found in any config dir', () => {
     const dir = configDirWithTranscript('other', [{ type: 'user', message: { role: 'user', content: 'x' } }]);
     expect(readSessionHistory([dir], 'missing')).toEqual([]);

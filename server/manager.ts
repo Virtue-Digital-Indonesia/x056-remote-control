@@ -405,6 +405,22 @@ export class SessionManager {
     this.projects().rename(id, name);
   }
 
+  /** Remove a project from the list. Refuses while it has a turn running; stops
+   *  its autopilot; repoints state.json if the removed one was current. */
+  removeProject(id: string): void {
+    if (this.runs.has(id)) throw new BusyError();
+    const reg = this.projects();
+    if (!reg.get(id)) throw new Error(`unknown project ${id}`);
+    this.stopAutopilot(id);
+    reg.remove(id);
+    const cur = reg.currentId();
+    const curProj = cur ? reg.get(cur) : null;
+    if (curProj && !this.runs.has(curProj.id)) {
+      writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: curProj.lastSessionId, cwd: curProj.cwd }));
+    }
+    this.emit('project_removed', { id });
+  }
+
   private loadState(): PersistedState {
     if (!existsSync(this.stateFile)) return {};
     try {
@@ -599,6 +615,18 @@ export class SessionManager {
     const run = pid ? this.runs.get(pid) : undefined;
     if (!run?.control) return false;
     run.control.forceSwitch();
+    return true;
+  }
+
+  /** Abort a specific project's in-flight turn (user pressed Stop). Also stops
+   *  its autopilot so it doesn't immediately auto-continue. The killed turn
+   *  settles through the normal completion path (session_done/error). */
+  stopTurn(projectId?: string): boolean {
+    const pid = projectId ?? this.projects().currentId();
+    const run = pid ? this.runs.get(pid) : undefined;
+    if (!pid || !run?.control) return false;
+    this.stopAutopilot(pid);
+    run.control.abort();
     return true;
   }
 }
