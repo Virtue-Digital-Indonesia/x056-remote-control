@@ -1,13 +1,13 @@
 import { defineConfig } from 'vitest/config';
 
-// Several suites spawn real child processes (npx tsx CLI, fake-claude) and the
-// gateway/parallel-project suites use real timers. Under an unbounded fork pool
-// these contend for CPU and flake on timeout despite being correct in isolation.
-// Cap parallelism for reliable, deterministic runs.
+// Several suites spawn real child processes (npx tsx CLI, fake-claude) or use
+// real timers (gateway, parallel-project). Running test files concurrently
+// over-subscribes CPU and flakes them on timeout despite each passing in
+// isolation. Serialize files for deterministic runs; tests within a file still
+// run sequentially. Slower wall-time, but reliable — and this gates deploys.
 export default defineConfig({
   test: {
-    pool: 'forks',
-    poolOptions: { forks: { maxForks: 3, minForks: 1 } },
+    fileParallelism: false,
     testTimeout: 30_000,
     hookTimeout: 30_000,
   },

@@ -142,6 +142,13 @@
   .g .track > i.amber { background: var(--amber); } .g .track > i.red { background: var(--err); }
   .note { font-size: 11px; color: var(--faint); margin-top: 6px; }
   .backdrop { position: fixed; inset: 0; z-index: 25; } .backdrop[hidden] { display: none; }
+  .pk-search { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13px; background: var(--bg); color: var(--text); margin-bottom: 8px; outline: none; }
+  .pk-search:focus { border-color: var(--accent); }
+  .pk-list { max-height: 320px; overflow-y: auto; }
+  .pk-item { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 7px; cursor: pointer; font-size: 13px; }
+  .pk-item:hover { background: var(--surface-2); }
+  .pk-item.added { color: var(--faint); cursor: default; } .pk-item.added:hover { background: transparent; }
+  .pk-item .tag { margin-left: auto; font-size: 10px; color: var(--faint); }
   @media (max-width: 720px) { body { grid-template-columns: 1fr; } aside { display: none; } }
 </style>
 <script>
@@ -192,6 +199,11 @@
 
 <div class="backdrop" id="backdrop" hidden></div>
 <div class="pop" id="quotaPop" hidden><h2>account usage</h2><div id="accounts"></div></div>
+<div class="pop" id="projPicker" hidden style="top:100px; left:12px; bottom:auto; width:300px;">
+  <h2>add a project from your repos</h2>
+  <input id="projSearch" class="pk-search" placeholder="filter repos…" />
+  <div id="projPickList" class="pk-list"></div>
+</div>
 
 <script>
 (function () {
@@ -327,13 +339,35 @@
     api('/api/projects/current', { method: 'POST', body: JSON.stringify({ id: p.id }) }).catch(function () {});
     loadProjects(); pollSnapshot().then(loadHistory);
   }
+  // ---- add-project picker (lists workspace repos) ----
+  var projPicker = $('projPicker'), projPickList = $('projPickList'), projSearch = $('projSearch');
+  var workspaceDirs = [];
+  function renderPickList(q) {
+    projPickList.textContent = '';
+    var ql = (q || '').toLowerCase();
+    var shown = workspaceDirs.filter(function (d) { return d.name.toLowerCase().indexOf(ql) >= 0; });
+    if (!shown.length) { var e = document.createElement('div'); e.className = 'pk-item added'; e.textContent = 'no matching repos'; projPickList.appendChild(e); return; }
+    shown.forEach(function (d) {
+      var it = document.createElement('div'); it.className = 'pk-item' + (d.isProject ? ' added' : '');
+      var nm = document.createElement('span'); nm.textContent = d.name; it.appendChild(nm);
+      if (d.isProject) { var tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = 'added'; it.appendChild(tag); }
+      else it.addEventListener('click', function () { createProjectFromDir(d); });
+      projPickList.appendChild(it);
+    });
+  }
+  function closePicker() { projPicker.hidden = true; if (quotaPop.hidden) backdrop.hidden = true; }
+  function createProjectFromDir(d) {
+    api('/api/projects', { method: 'POST', body: JSON.stringify({ name: d.name, cwd: d.path }) }).then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { addSys('could not add project: ' + (j.message || r.status), 'banner'); });
+      return r.json().then(function (p) { closePicker(); switchProject(p); });
+    }).catch(function () {});
+  }
+  projSearch.addEventListener('input', function () { renderPickList(projSearch.value); });
   $('addProjectBtn').addEventListener('click', function () {
-    var name = window.prompt('Project name:'); if (!name) return;
-    var cwd = window.prompt('Working directory (absolute path under the workspace root):') || '';
-    var body = { name: name }; if (cwd.trim()) body.cwd = cwd.trim();
-    api('/api/projects', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-      if (!r.ok) return r.json().then(function (j) { addSys('could not create project: ' + (j.message || r.status), 'banner'); });
-      return r.json().then(function (p) { switchProject(p); });
+    api('/api/workspace').then(function (r) { return r.json(); }).then(function (dirs) {
+      workspaceDirs = Array.isArray(dirs) ? dirs : [];
+      projSearch.value = ''; renderPickList('');
+      projPicker.hidden = false; backdrop.hidden = false; projSearch.focus();
     }).catch(function () {});
   });
   $('newSessionBtn').addEventListener('click', function () { pendingNew = true; chatEl.textContent = ''; addSys('new session — send a message to begin'); promptEl.focus(); });
@@ -369,7 +403,7 @@
   function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
   function togglePop(show) { var open = show === undefined ? quotaPop.hidden : show; quotaPop.hidden = !open; backdrop.hidden = !open; if (open) pollAccounts(); }
   acctChip.addEventListener('click', function () { togglePop(); });
-  backdrop.addEventListener('click', function () { togglePop(false); });
+  backdrop.addEventListener('click', function () { togglePop(false); closePicker(); });
 
   function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; currentProjectId = s.currentProjectId; return s; }); }
   function loadHistory() {

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, resolve, sep } from 'node:path';
 import { AccountRegistry } from '../src/accounts.js';
@@ -129,6 +129,25 @@ export class SessionManager {
     const dir = this.resolveCwd(cwd ?? this.opts.workspaceRoot);
     const proj = this.projects().create(name, dir);
     return proj;
+  }
+
+  /** Immediate subdirectories of the workspace root — the repos you can add as
+   *  projects with one click instead of typing paths. */
+  listWorkspaceDirs(): { name: string; path: string; isProject: boolean }[] {
+    const existing = new Set(this.projects().list().map((p) => p.cwd));
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = readdirSync(this.opts.workspaceRoot, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    return entries
+      .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+      .map((d) => {
+        const path = join(this.opts.workspaceRoot, d.name);
+        return { name: d.name, path, isProject: existing.has(path) };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /** Switch the active project (a pure view change — never blocked by a run).

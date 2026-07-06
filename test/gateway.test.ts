@@ -219,3 +219,19 @@ describe('gateway projects', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('gateway workspace picker', () => {
+  it('lists workspace subdirectories, flagging ones already added as projects', async () => {
+    const { mkdirSync: mk } = await import('node:fs');
+    mk(join(dir, 'repo-one'), { recursive: true });
+    mk(join(dir, 'repo-two'), { recursive: true });
+    const dirs = await (await fetch(`${base}/api/workspace`, { headers: auth })).json() as { name: string; path: string; isProject: boolean }[];
+    const names = dirs.map((d) => d.name);
+    expect(names).toContain('repo-one');
+    expect(names).toContain('repo-two');
+    // add repo-one as a project, then it should be flagged isProject
+    await fetch(`${base}/api/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'repo-one', cwd: join(dir, 'repo-one') }) });
+    const after = await (await fetch(`${base}/api/workspace`, { headers: auth })).json() as { name: string; isProject: boolean }[];
+    expect(after.find((d) => d.name === 'repo-one')?.isProject).toBe(true);
+  });
+});

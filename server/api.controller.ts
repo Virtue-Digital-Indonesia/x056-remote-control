@@ -157,6 +157,11 @@ export class ApiController {
     return this.manager.listProjects();
   }
 
+  @Get('workspace')
+  workspace(): unknown {
+    return this.manager.listWorkspaceDirs();
+  }
+
   @Post('projects')
   createProject(@Body() body: { name?: string; cwd?: string }): unknown {
     if (!body?.name) throw new BadRequestException('name required');
