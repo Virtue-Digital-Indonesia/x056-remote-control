@@ -15,6 +15,7 @@ import { AccountRegistry } from '../src/accounts.js';
 import { UsageRateLimitedError, fetchUsage } from '../src/quota.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager } from './manager.js';
+import { readSessionHistory, type HistoryEntry } from './history.js';
 
 // NB: this project runs under tsx (esbuild), which does not implement
 // `emitDecoratorMetadata` — Nest's controller instantiation (driven by
@@ -82,6 +83,22 @@ export class ApiController {
   @Get('sessions')
   sessions(): unknown {
     return this.manager.snapshot();
+  }
+
+  @Get('sessions/current/history')
+  history(@Query('limit') limit?: string): HistoryEntry[] {
+    const sessionId = this.manager.snapshot().lastSessionId;
+    if (!sessionId) return [];
+    let configDirs: string[];
+    try {
+      configDirs = AccountRegistry.load(join(this.stateDir, 'accounts.json'))
+        .list()
+        .map((a) => a.configDir);
+    } catch {
+      return [];
+    }
+    const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 100;
+    return readSessionHistory(configDirs, sessionId, n);
   }
 
   @Get('accounts')
