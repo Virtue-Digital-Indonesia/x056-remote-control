@@ -5,6 +5,10 @@ import { stripAsk, stripAskInstructions } from './question.js';
 export interface HistoryEntry {
   role: 'user' | 'assistant';
   text: string;
+  /** ISO timestamp from the transcript entry, when present — lets the panel
+   *  interleave this message with live activity/subagent events by time
+   *  instead of rendering them as two separate before/after blocks. */
+  ts?: string;
 }
 
 /** Locate <sessionId>.jsonl anywhere under any of the config dirs' projects trees. */
@@ -84,7 +88,8 @@ export function readSessionHistory(configDirs: string[], sessionId: string, limi
     // the rendered transcript on reload. Drop a message that was only an ASK.
     const shown = type === 'user' ? stripAskInstructions(text) : stripAsk(text);
     if (shown === '') continue;
-    out.push({ role: type, text: shown });
+    const ts = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
+    out.push({ role: type, text: shown, ts });
   }
   return out.slice(-limit);
 }

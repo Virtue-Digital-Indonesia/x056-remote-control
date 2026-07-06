@@ -478,7 +478,7 @@
       // replayed/duplicated 'start' can't inflate it (the "· N running" drift).
       if (data.status === 'start') {
         v.label = data.label; appendNode(pid, nodeAct(data.label, data.isSubagent));
-        v.activityLog.push({ label: data.label, isSubagent: !!data.isSubagent });
+        v.activityLog.push({ label: data.label, isSubagent: !!data.isSubagent, ts: data.ts || new Date().toISOString() });
         if (v.activityLog.length > ACTIVITY_LOG_CAP) v.activityLog.splice(0, v.activityLog.length - ACTIVITY_LOG_CAP);
         if (data.isSubagent && data.toolUseId) v.subs[data.toolUseId] = 1;
       } else if (data.toolUseId) { delete v.subs[data.toolUseId]; }
@@ -833,21 +833,28 @@
     return api('/api/sessions/current/history?limit=80').then(function (r) { return r.json(); }).then(function (rows) {
       if (currentProjectId !== pid) return; // user switched away while loading
       chatEl.textContent = ''; // replace cached view with the fresh transcript
-      viewOf(pid).loaded = true;
-      if (!Array.isArray(rows) || rows.length === 0) {
-        addSys('no messages yet — say hello, or use the resume button for an existing session');
-      } else {
-        addSys(rows.length + ' earlier messages'); rows.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); }); addSys('live');
-      }
+      var lv = viewOf(pid); lv.loaded = true;
+      var hasMsgs = Array.isArray(rows) && rows.length > 0;
+      addSys(hasMsgs ? (rows.length + ' earlier messages') : 'no messages yet — say hello, or use the resume button for an existing session');
+      // Merge historical messages with the durable activity/subagent log by
+      // timestamp, so a tool call renders between the two messages it actually
+      // happened between — appending the whole log after all messages (the
+      // previous fix) always dumped the entire trail at the bottom instead.
+      var items = [];
+      if (hasMsgs) rows.forEach(function (m, i) { items.push({ ts: m.ts, idx: i, render: function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); } }); });
+      var base = items.length;
+      lv.activityLog.forEach(function (a, i) { items.push({ ts: a.ts, idx: base + i, render: function () { appendNode(pid, nodeAct(a.label, a.isSubagent)); } }); });
+      items.sort(function (x, y) {
+        var tx = x.ts ? Date.parse(x.ts) : NaN, ty = y.ts ? Date.parse(y.ts) : NaN;
+        if (!isNaN(tx) && !isNaN(ty)) return tx - ty;
+        return x.idx - y.idx; // no timestamp on one side: fall back to messages-then-activity order
+      });
+      items.forEach(function (it) { it.render(); });
+      if (hasMsgs) addSys('live');
       if (pendingQ[pid]) showQuestion(pid, pendingQ[pid]); // re-attach a still-open question the transcript doesn't carry
       // Sync the live busy state from this project's view — events may have set it
       // before currentProjectId was known (so the global `active` never caught it).
-      var lv = viewOf(pid);
       active = !!lv.active; lastLabel = lv.label || ''; runningSubs = lv.subCount || 0; subs = lv.subs || {}; renderBusy();
-      // Replay the full activity/subagent trail from the durable log — the
-      // transcript carries none of it, and re-showing only the latest line (the
-      // old behavior) is what made the whole trail vanish on every switch/reload.
-      lv.activityLog.forEach(function (a) { appendNode(pid, nodeAct(a.label, a.isSubagent)); });
       down();
     }).catch(function () {});
   }
@@ -863,7 +870,15 @@
     es.onopen = function () { dot.className = 'on'; };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
     ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'question', 'active_model'].forEach(function (kind) {
-      es.addEventListener(kind, function (evt) { if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq; var data; try { data = JSON.parse(evt.data); } catch (e) { return; } handleEvent(kind, data.data || {}); });
+      es.addEventListener(kind, function (evt) {
+        if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
+        var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
+        var d = data.data || {};
+        // The envelope's own ts (server emit time) — not present inside data —
+        // is what lets activity/messages interleave chronologically on reload.
+        if (data.ts && d.ts === undefined) d.ts = data.ts;
+        handleEvent(kind, d);
+      });
     });
   }
   connect();

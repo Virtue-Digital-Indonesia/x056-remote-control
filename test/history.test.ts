@@ -38,6 +38,19 @@ describe('readSessionHistory', () => {
     ]);
   });
 
+  it('extracts the transcript timestamp so the panel can interleave with live activity', () => {
+    const sid = 'sess-ts';
+    const dir = configDirWithTranscript(sid, [
+      { type: 'user', timestamp: '2026-07-06T10:00:00.000Z', message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'no timestamp on this one' }] } },
+    ]);
+    const rows = readSessionHistory([dir], sid);
+    expect(rows).toEqual([
+      { role: 'user', text: 'hi', ts: '2026-07-06T10:00:00.000Z' },
+      { role: 'assistant', text: 'no timestamp on this one' },
+    ]);
+  });
+
   it('strips the raw <<<ASK>>> block from assistant text, and drops an assistant turn that was only an ASK', () => {
     const sid = 'sess-ask';
     const dir = configDirWithTranscript(sid, [
