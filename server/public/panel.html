@@ -90,7 +90,11 @@
   select:hover { border-color: var(--border-strong); }
   .select::after { content: "▾"; position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); font-size: 10px; }
   .bar .spacer { flex: 1; }
-  #busy { font-size: 12px; color: var(--amber); }
+  #busy { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 7px; max-width: 340px; }
+  #busy .spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; flex: none; }
+  #busy .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #busy .tasks { color: var(--accent); font-weight: 600; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .send { background: var(--accent); color: var(--on-accent); border: none; border-radius: 10px; height: 34px; padding: 0 16px; font-weight: 600; cursor: pointer; font-size: 13px; }
   .send:disabled { opacity: .45; cursor: default; }
   .ghost { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); border-radius: 9px; height: 34px; min-width: 34px; cursor: pointer; font-size: 15px; }
@@ -267,12 +271,28 @@
     failover: 'switched account', parked: 'all accounts limited — parked',
     turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped',
   };
+  // Live activity state: latest action label + count of running subagents.
+  var active = false, lastLabel = '', runningSubs = 0, subLabels = {};
+  function renderBusy() {
+    busyEl.textContent = '';
+    if (!active) return;
+    var s = document.createElement('span'); s.className = 'spin'; busyEl.appendChild(s);
+    var l = document.createElement('span'); l.className = 'lbl';
+    l.textContent = lastLabel || 'working…'; busyEl.appendChild(l);
+    if (runningSubs > 0) { var t = document.createElement('span'); t.className = 'tasks'; t.textContent = '· ' + runningSubs + ' running'; busyEl.appendChild(t); }
+  }
   function handleEvent(kind, data) {
     if (kind === 'assistant_text') addMsg('assistant', data.text);
     else if (kind === 'supervisor') { var l = BANNERS[data.type]; if (l) addSys(l, 'banner'); }
-    else if (kind === 'session_started') addSys('session ' + (data.resume ? 'resumed' : 'started') + (data.model ? ' · ' + data.model : '') + (data.effort ? ' · ' + data.effort : ''));
-    else if (kind === 'session_done') { addSys('done: ' + data.status + (data.finalAccount ? ' · ' + data.finalAccount : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')); pollAccounts(); pollSnapshot(); setBusy(false); }
-    else if (kind === 'session_error') { addSys('error: ' + data.message, 'banner err'); setBusy(false); }
+    else if (kind === 'turn_state') { active = !!data.active; if (!active) { lastLabel = ''; runningSubs = 0; subLabels = {}; } renderBusy(); }
+    else if (kind === 'activity') {
+      if (data.status === 'start') { lastLabel = data.label; if (data.isSubagent) { runningSubs++; subLabels[data.toolUseId] = 1; } }
+      else { if (subLabels[data.toolUseId]) { delete subLabels[data.toolUseId]; runningSubs = Math.max(0, runningSubs - 1); } }
+      if (active) renderBusy();
+    }
+    else if (kind === 'session_started') { active = true; renderBusy(); addSys('session ' + (data.resume ? 'resumed' : 'started') + (data.model ? ' · ' + data.model : '') + (data.effort ? ' · ' + data.effort : '')); }
+    else if (kind === 'session_done') { active = false; renderBusy(); addSys('done: ' + data.status + (data.finalAccount ? ' · ' + data.finalAccount : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')); pollAccounts(); pollSnapshot(); }
+    else if (kind === 'session_error') { active = false; renderBusy(); addSys('error: ' + data.message, 'banner err'); }
   }
 
   // ---- accounts / quota popover ----
@@ -341,7 +361,7 @@
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     es.onopen = function () { dot.className = 'on'; };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -372,7 +392,6 @@
     for (var i = 0; i < items.length; i++) { if (items[i].type && items[i].type.indexOf('image') === 0) { var f = items[i].getAsFile(); if (f) { e.preventDefault(); fileToImage(f); return; } } }
   });
 
-  function setBusy(on) { busyEl.textContent = on ? 'session running…' : ''; }
   function send() {
     var text = promptEl.value.trim();
     if (!text && !pendingImage) return;
@@ -385,8 +404,8 @@
     addMsg('user', text || '(image)', pendingImage);
     var hadImage = !!pendingImage;
     api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-      if (r.status === 409) { setBusy(true); return; }
-      setBusy(false); promptEl.value = ''; autogrow(); setImage(null); if (hadImage) {} newSessionEl.checked = false;
+      if (r.status === 409) { addSys('a session is already running', 'banner'); return; }
+      promptEl.value = ''; autogrow(); setImage(null); if (hadImage) {} newSessionEl.checked = false;
       return r.json().then(function (j) { if (j.sessionId) lastSessionId = j.sessionId; }).catch(function () {});
     }).catch(function () {});
   }

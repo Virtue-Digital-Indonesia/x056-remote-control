@@ -4,6 +4,7 @@ import { join, resolve, sep } from 'node:path';
 import { AccountRegistry } from '../src/accounts.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
+import { toActivity } from './activity.js';
 import { runSession, type SessionResult } from '../src/failover.js';
 import type { RawEvent } from '../src/types.js';
 
@@ -130,6 +131,7 @@ export class SessionManager {
         }
       };
       this.emit('session_started', { sessionId, cwd, resume, prompt, model: runOpts?.model, effort: runOpts?.effort });
+      this.emit('turn_state', { active: true });
       void runFn({
         registry,
         log,
@@ -155,15 +157,22 @@ export class SessionManager {
         .finally(() => {
           this.running = false;
           this.currentSessionId = null;
+          this.emit('turn_state', { active: false });
         });
     } catch (err) {
       this.running = false;
       this.currentSessionId = null;
+      this.emit('turn_state', { active: false });
       throw err;
     }
   }
 
   private tapToEvents(e: RawEvent): void {
+    // Surface tool calls + subagent spawns as activity so the UI can show a
+    // live "working / N running tasks" state instead of appearing to hang.
+    for (const a of toActivity(e)) {
+      this.emit('activity', a as unknown as Record<string, unknown>);
+    }
     if (e.type !== 'assistant') return;
     const msg = e.message as { content?: unknown } | undefined;
     const content = Array.isArray(msg?.content) ? msg.content : [];

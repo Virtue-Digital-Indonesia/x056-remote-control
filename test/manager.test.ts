@@ -189,3 +189,28 @@ describe('SessionManager model/effort passthrough', () => {
     expect(calls[0].effort).toBe('max');
   });
 });
+
+describe('SessionManager activity + turn_state', () => {
+  it('emits turn_state active then inactive, and activity for tool calls', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-act-'));
+    const stateDir = join(dir, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [
+      { name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' },
+    ]);
+    const runSessionFn = (async (o: { tap?: (e: unknown) => void }) => {
+      o.tap?.({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'x1', name: 'Bash', input: { command: 'ls' } }] } });
+      o.tap?.({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'x1', is_error: false }] } });
+      return { status: 'completed', finalAccount: 'a', failovers: 0 };
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+    const seen: GatewayEvent[] = [];
+    mgr.subscribe((e) => seen.push(e));
+    mgr.start('go');
+    await waitFor(() => seen.some((e) => e.kind === 'turn_state' && (e.data as { active: boolean }).active === false));
+    const kinds = seen.map((e) => e.kind);
+    expect(kinds.filter((k) => k === 'turn_state')).toEqual(['turn_state', 'turn_state']);
+    const acts = seen.filter((e) => e.kind === 'activity').map((e) => (e.data as { status: string }).status);
+    expect(acts).toEqual(['start', 'done']);
+  });
+});
