@@ -6,7 +6,8 @@ Self-hosted Claude Code "remote control" with automatic failover between two Cla
 
 Sessions started through the panel run **inside the Docker container** this repo deploys. That changes how you must work:
 
-- **No docker CLI, no docker socket.** You cannot build, restart, or inspect containers. Do not try; do not ask for the socket (it would be root-equivalent on the host).
+- **`docker` works, but it drives an ISOLATED daemon — not the host's.** The `docker` CLI + `docker compose` in the container point at a dind (Docker-in-Docker) sidecar via `DOCKER_HOST=tcp://dind:2375`, so a project can build images and run its own compose e2e stacks. That daemon is nested and cannot see or touch the **host's** Docker — you still cannot build/restart/inspect the x056 gateway container or any host container, and there is no host socket (asking for one is pointless; it would be root-equivalent on the host). Two gotchas for a project's compose: (a) **bind mounts** resolve on the dind daemon, which shares the workspace at the same path `/home/efran/remote-development`, so relative mounts under the workspace work — mounts of paths OUTSIDE it won't; (b) **published ports** land on the `dind` host, so reach a service from your session at hostname `dind:<port>` (or run the test as a compose service and use service names), not `localhost`.
+- **Deploying the x056 gateway itself is NOT done with `docker` — it goes through the host actuator below.** The dind sidecar is for *projects'* docker needs only; the gateway's own build/swap is the `.deploy/requested` flow.
 - **Deployments happen via the host-side actuator** (`scripts/deployer.sh`, cron every minute):
   1. Commit your changes, then `touch .deploy/requested`.
   2. The actuator **builds immediately** (safe while turns run) but **swaps the container only when NO project has a turn running** — including yours. The swap therefore lands *after your turn ends*.

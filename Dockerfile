@@ -25,6 +25,16 @@ RUN set -eux; \
     php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer; \
     rm -f /tmp/composer-setup.php; \
     rm -rf /var/lib/apt/lists/*
+# Docker CLI + compose plugin ONLY (no daemon). A project session drives the
+# isolated dind sidecar via DOCKER_HOST (see compose.yaml) for its own builds and
+# compose e2e stacks — the host's Docker is never touched.
+RUN install -m0755 -d /etc/apt/keyrings; \
+    curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc; \
+    chmod a+r /etc/apt/keyrings/docker.asc; \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin; \
+    rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1001 efran
 USER efran
 WORKDIR /app

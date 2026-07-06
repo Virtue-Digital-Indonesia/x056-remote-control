@@ -3,6 +3,8 @@ services:
     build: .
     init: true
     restart: unless-stopped
+    depends_on:
+      - dind
     ports:
       - "4056:4056"
     environment:
@@ -13,6 +15,10 @@ services:
       # refresh, no rebuild needed.
       X056_PANEL_PATH: /home/efran/remote-development/x056-remote-control/server/public/panel.html
       PORT: "4056"
+      # A project session that runs `docker`/`docker compose` (builds, e2e stacks)
+      # is pointed at the ISOLATED dind daemon below — NOT the host's Docker. The
+      # host daemon is never exposed to sessions. See CLAUDE.md.
+      DOCKER_HOST: tcp://dind:2375
     volumes:
       - /home/efran/.claude-x056-a:/home/efran/.claude-x056-a
       - /home/efran/.claude-x056-b:/home/efran/.claude-x056-b
@@ -21,5 +27,26 @@ services:
       # to resume them. Transcripts only — credentials live outside projects/.
       - /home/efran/.claude/projects:/home/efran/.claude/projects:ro
       - x056-state:/app/state
+  # Isolated Docker-in-Docker daemon for PROJECTS' own docker needs (building
+  # images, spinning up compose e2e stacks). It is privileged, but it is a NESTED
+  # daemon — it cannot see or touch the host's Docker. The workspace is mounted at
+  # the SAME absolute path as in x056 so a project's relative bind mounts (e.g.
+  # `./uploads`) resolve to real paths the daemon can find. Not published to the
+  # host: reachable only on the internal compose network, over plain tcp 2375.
+  dind:
+    image: docker:27-dind
+    privileged: true
+    restart: unless-stopped
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - dind-storage:/var/lib/docker
+      - /home/efran/remote-development:/home/efran/remote-development
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 volumes:
   x056-state:
+  dind-storage:
