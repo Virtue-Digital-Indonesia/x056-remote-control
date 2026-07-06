@@ -95,6 +95,16 @@
   .content a { color: var(--link); }
   .content hr { border: none; border-top: 1px solid var(--border); margin: 15px 0; }
   .content blockquote { margin: 0 0 11px; padding: 4px 14px; border-left: 3px solid var(--border-strong); color: var(--muted); }
+  .content table { border-collapse: collapse; margin: 0 0 11px; font-size: 13px; display: block; overflow-x: auto; max-width: 100%; }
+  .content th, .content td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; vertical-align: top; }
+  .content th { background: var(--surface-2); font-weight: 600; }
+  .cachenote span { color: var(--accent); background: var(--accent-weak); }
+  #otherRuns { max-width: 780px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .orun { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; cursor: pointer; max-width: 100%; }
+  .orun:hover { border-color: var(--border-strong); color: var(--text); }
+  .orun .rspin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; flex: none; }
+  .orun .pn { font-weight: 600; color: var(--text); }
+  .orun .pl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 
   .act { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 3px 0; padding: 3px 0; }
   .act .ic { opacity: .8; }
@@ -201,6 +211,7 @@
   </div>
   <div class="scroll"><div class="thread" id="chat"></div></div>
   <div class="composer-wrap">
+    <div id="otherRuns"></div>
     <div class="composer">
       <div id="attachRow"></div>
       <textarea id="prompt" rows="1" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste an image)"></textarea>
@@ -282,10 +293,27 @@
   function renderMarkdown(text) {
     var root = document.createDocumentFragment(), lines = text.split('\n'), i = 0, m, para = [];
     function flush() { if (!para.length) return; var p = document.createElement('p'); p.appendChild(renderInline(para.join('\n'))); root.appendChild(p); para.length = 0; }
+    function splitRow(l) { l = l.trim(); if (l.charAt(0) === '|') l = l.slice(1); if (l.charAt(l.length - 1) === '|') l = l.slice(0, -1); return l.split('|').map(function (s) { return s.trim(); }); }
     while (i < lines.length) {
       var line = lines[i];
       if (/^```/.test(line)) { flush(); var buf = []; i++; while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; } i++; var pre = document.createElement('pre'); var code = document.createElement('code'); code.textContent = buf.join('\n'); pre.appendChild(code); root.appendChild(pre); continue; }
       if ((m = /^(#{1,3})\s+(.*)$/.exec(line))) { flush(); var h = document.createElement('h' + (m[1].length + 2)); h.appendChild(renderInline(m[2])); root.appendChild(h); i++; continue; }
+      // GFM table: header row + separator row of dashes/colons
+      if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]) && lines[i + 1].indexOf('-') >= 0) {
+        flush();
+        var table = document.createElement('table');
+        var thead = document.createElement('thead'), trh = document.createElement('tr');
+        splitRow(line).forEach(function (c) { var th = document.createElement('th'); th.appendChild(renderInline(c)); trh.appendChild(th); });
+        thead.appendChild(trh); table.appendChild(thead);
+        var tbody = document.createElement('tbody');
+        i += 2;
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+          var tr = document.createElement('tr');
+          splitRow(lines[i]).forEach(function (c) { var td = document.createElement('td'); td.appendChild(renderInline(c)); tr.appendChild(td); });
+          tbody.appendChild(tr); i++;
+        }
+        table.appendChild(tbody); root.appendChild(table); continue;
+      }
       if (/^\s*[-*]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) { flush(); var ord = /^\s*\d+[.)]\s+/.test(line); var list = document.createElement(ord ? 'ol' : 'ul'); var ir = ord ? /^\s*\d+[.)]\s+(.*)$/ : /^\s*[-*]\s+(.*)$/; while (i < lines.length && (m = ir.exec(lines[i]))) { var li = document.createElement('li'); li.appendChild(renderInline(m[1])); list.appendChild(li); i++; } root.appendChild(list); continue; }
       if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) { flush(); root.appendChild(document.createElement('hr')); i++; continue; }
       if ((m = /^>\s?(.*)$/.exec(line))) { flush(); var bq = document.createElement('blockquote'); var qb = []; while (i < lines.length && (m = /^>\s?(.*)$/.exec(lines[i]))) { qb.push(m[1]); i++; } bq.appendChild(renderInline(qb.join('\n'))); root.appendChild(bq); continue; }
@@ -298,21 +326,38 @@
   var scroller = document.querySelector('.scroll');
   function atBottom() { return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 140; }
   function down() { scroller.scrollTop = scroller.scrollHeight; }
-  function addMsg(role, text, imgUrl) {
-    var stick = atBottom();
+
+  // Per-project view cache: every project keeps its rendered thread (detached
+  // DocumentFragment when not in view) + live activity state, so switching is
+  // instant and background projects keep accumulating their output.
+  var views = {};
+  function viewOf(pid) {
+    if (!views[pid]) views[pid] = { frag: document.createDocumentFragment(), label: '', subs: {}, subCount: 0, active: false, loaded: false };
+    return views[pid];
+  }
+  function appendNode(pid, node) {
+    if (!pid || pid === currentProjectId) { var stick = atBottom(); chatEl.appendChild(node); if (stick) down(); }
+    else viewOf(pid).frag.appendChild(node);
+  }
+
+  function nodeMsg(role, text, imgUrl) {
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role;
     var lab = document.createElement('div'); lab.className = 'role'; lab.textContent = role === 'user' ? 'you' : 'claude'; wrap.appendChild(lab);
     var content = document.createElement('div'); content.className = 'content';
     if (role === 'assistant') content.appendChild(renderMarkdown(text)); else content.appendChild(document.createTextNode(text));
     if (imgUrl) { var im = document.createElement('img'); im.className = 'att'; im.src = imgUrl; content.appendChild(im); }
-    wrap.appendChild(content); chatEl.appendChild(wrap); if (stick) down();
+    wrap.appendChild(content); return wrap;
   }
-  function addSys(text, cls) { var stick = atBottom(); var d = document.createElement('div'); d.className = cls || 'sysline'; var s = document.createElement('span'); s.textContent = text; d.appendChild(s); chatEl.appendChild(d); if (stick) down(); }
-  function addAct(label, isSub) { var stick = atBottom(); var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); chatEl.appendChild(d); if (stick) down(); }
+  function nodeSys(text, cls) { var d = document.createElement('div'); d.className = cls || 'sysline'; var s = document.createElement('span'); s.textContent = text; d.appendChild(s); return d; }
+  function nodeAct(label, isSub) { var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
+  function addMsg(role, text, imgUrl) { appendNode(currentProjectId, nodeMsg(role, text, imgUrl)); }
+  function addSys(text, cls) { appendNode(currentProjectId, nodeSys(text, cls)); }
 
   var BANNERS = { limit_detected: 'limit reached — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts limited — parked', turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped' };
   var active = false, lastLabel = '', runningSubs = 0, subs = {};
   var runningProjects = {}; // projectId -> true while a turn runs there
+  var acctNames = {}; // registry name (a/b) -> display name
+  function acctName(n) { return acctNames[n] || n; }
   function renderBusy() {
     busyEl.textContent = '';
     if (!active) return;
@@ -320,26 +365,57 @@
     var l = document.createElement('span'); l.className = 'lbl'; l.textContent = lastLabel || 'working…'; busyEl.appendChild(l);
     if (runningSubs > 0) { var t = document.createElement('span'); t.className = 'tasks'; t.textContent = '· ' + runningSubs + ' running'; busyEl.appendChild(t); }
   }
-  // Events are global but tagged with projectId — only render those for the
-  // project currently in view; use the rest to keep sidebar run-badges live.
+  // Live strip above the composer: what every OTHER running project is doing,
+  // so parallel work is visible without leaving the current chat.
+  function renderStrip() {
+    var el = $('otherRuns'); el.textContent = '';
+    Object.keys(runningProjects).forEach(function (pid) {
+      if (pid === currentProjectId || !projCache[pid]) return;
+      var v = viewOf(pid);
+      var row = document.createElement('div'); row.className = 'orun';
+      var sp = document.createElement('span'); sp.className = 'rspin'; row.appendChild(sp);
+      var pn = document.createElement('span'); pn.className = 'pn'; pn.textContent = projCache[pid].name; row.appendChild(pn);
+      var pl = document.createElement('span'); pl.className = 'pl'; pl.textContent = v.label || 'working…'; row.appendChild(pl);
+      if (v.subCount > 0) { var t = document.createElement('span'); t.className = 'tasks'; t.textContent = '· ' + v.subCount + ' running'; row.appendChild(t); }
+      row.addEventListener('click', function () { switchProject(projCache[pid]); });
+      el.appendChild(row);
+    });
+  }
+  // Events are global, tagged with projectId. Current project renders into the
+  // live chat; others render into their cached fragment and feed the strip.
   function handleEvent(kind, data) {
+    var pid = data.projectId || currentProjectId;
     var mine = !data.projectId || data.projectId === currentProjectId;
+    var v = viewOf(pid);
     if (kind === 'turn_state') {
-      if (data.projectId) { if (data.active) runningProjects[data.projectId] = true; else delete runningProjects[data.projectId]; markRunning(); }
-      if (mine) { active = !!data.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); }
+      v.active = !!data.active;
+      if (data.active) runningProjects[pid] = true;
+      else { delete runningProjects[pid]; v.label = ''; v.subs = {}; v.subCount = 0; }
+      markRunning(); renderStrip();
+      if (mine) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); }
       return;
     }
-    if (!mine) return;
-    if (kind === 'assistant_text') addMsg('assistant', data.text);
-    else if (kind === 'supervisor') { var l = BANNERS[data.type]; if (l) addSys(l, 'banner'); }
+    if (kind === 'assistant_text') appendNode(pid, nodeMsg('assistant', data.text));
+    else if (kind === 'supervisor') { var l = BANNERS[data.type]; if (l) appendNode(pid, nodeSys(l, 'banner')); }
     else if (kind === 'activity') {
-      if (data.status === 'start') { lastLabel = data.label; addAct(data.label, data.isSubagent); if (data.isSubagent) { runningSubs++; subs[data.toolUseId] = 1; } }
-      else if (subs[data.toolUseId]) { delete subs[data.toolUseId]; runningSubs = Math.max(0, runningSubs - 1); }
-      if (active) renderBusy();
+      if (data.status === 'start') {
+        v.label = data.label; appendNode(pid, nodeAct(data.label, data.isSubagent));
+        if (data.isSubagent) { v.subCount++; v.subs[data.toolUseId] = 1; }
+      } else if (v.subs[data.toolUseId]) { delete v.subs[data.toolUseId]; v.subCount = Math.max(0, v.subCount - 1); }
+      if (mine) { lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; if (active) renderBusy(); }
+      renderStrip();
     }
-    else if (kind === 'session_started') { active = true; renderBusy(); }
-    else if (kind === 'session_done') { active = false; renderBusy(); addSys('done: ' + data.status + (data.finalAccount ? ' · ' + data.finalAccount : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')); pollAccounts(); }
-    else if (kind === 'session_error') { active = false; renderBusy(); addSys('error: ' + data.message, 'banner err'); }
+    else if (kind === 'session_started') { if (mine) { active = true; renderBusy(); } }
+    else if (kind === 'session_done') {
+      appendNode(pid, nodeSys('done: ' + data.status + (data.finalAccount ? ' · ' + acctName(data.finalAccount) : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')));
+      if (mine) { active = false; renderBusy(); }
+      pollAccounts(); renderStrip();
+    }
+    else if (kind === 'session_error') {
+      appendNode(pid, nodeSys('error: ' + data.message, 'banner err'));
+      if (mine) { active = false; renderBusy(); }
+      renderStrip();
+    }
     else if (kind === 'project_selected') { /* another tab switched; ignore */ }
   }
 
@@ -348,10 +424,12 @@
     var rows = projListEl.querySelectorAll('.proj');
     for (var i = 0; i < rows.length; i++) { var id = rows[i].getAttribute('data-id'); if (runningProjects[id]) rows[i].classList.add('busy'); else rows[i].classList.remove('busy'); }
   }
+  var projCache = {}; // pid -> project object (for the strip + quick switch)
   function renderProjects(reg) {
     currentProjectId = reg.current;
     projListEl.textContent = '';
     reg.projects.forEach(function (p) {
+      projCache[p.id] = p;
       if (p.running) runningProjects[p.id] = true; else delete runningProjects[p.id];
       var row = document.createElement('div'); row.className = 'proj' + (p.id === reg.current ? ' active' : '') + (p.running ? ' busy' : '');
       row.setAttribute('data-id', p.id);
@@ -366,11 +444,25 @@
   function loadProjects() { return api('/api/projects').then(function (r) { return r.json(); }).then(renderProjects).catch(function () {}); }
   function switchProject(p) {
     // pure view change — never blocked, even while p (or others) run
-    currentProjectId = p.id; projTitleEl.textContent = p.name; projCwdEl.textContent = p.cwd;
-    chatEl.textContent = ''; pendingNew = false;
-    active = false; lastLabel = ''; runningSubs = 0; subs = {}; renderBusy();
+    if (currentProjectId && currentProjectId !== p.id) {
+      var cv = viewOf(currentProjectId);
+      while (chatEl.firstChild) cv.frag.appendChild(chatEl.firstChild); // stash current thread
+    }
+    currentProjectId = p.id; projCache[p.id] = p;
+    projTitleEl.textContent = p.name; projCwdEl.textContent = p.cwd;
+    pendingNew = false;
+    var v = viewOf(p.id);
+    chatEl.textContent = '';
+    var hadCache = v.frag.childNodes.length > 0;
+    if (hadCache) {
+      chatEl.appendChild(v.frag);
+      appendNode(p.id, nodeSys('showing cached view — refreshing…', 'sysline cachenote'));
+      down();
+    }
+    active = !!v.active; lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; renderBusy();
     api('/api/projects/current', { method: 'POST', body: JSON.stringify({ id: p.id }) }).catch(function () {});
-    loadProjects(); pollSnapshot().then(loadHistory);
+    loadProjects(); renderStrip();
+    pollSnapshot().then(loadHistory);
   }
   // ---- add-project picker (lists workspace repos) ----
   var projPicker = $('projPicker'), projPickList = $('projPickList'), projSearch = $('projSearch');
@@ -417,6 +509,7 @@
     accountsEl.textContent = '';
     var activeAcct = null;
     list.forEach(function (a) {
+      acctNames[a.name] = a.displayName || a.name; // for done-banners etc.
       var st = a.state || { kind: 'unknown' };
       if (st.kind === 'ok' || (!activeAcct && st.kind !== 'limited')) activeAcct = a;
       var card = document.createElement('div'); card.className = 'qa';
@@ -480,9 +573,13 @@
 
   function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; currentProjectId = s.currentProjectId; return s; }); }
   function loadHistory() {
+    var pid = currentProjectId;
     return api('/api/sessions/current/history?limit=80').then(function (r) { return r.json(); }).then(function (rows) {
+      if (currentProjectId !== pid) return; // user switched away while loading
+      chatEl.textContent = ''; // replace cached view with the fresh transcript
+      viewOf(pid).loaded = true;
       if (!Array.isArray(rows) || rows.length === 0) {
-        addSys('no messages yet — say hello, or click ⟲ to resume an existing session');
+        addSys('no messages yet — say hello, or use the resume button for an existing session');
         return;
       }
       addSys(rows.length + ' earlier messages'); rows.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); }); addSys('live'); down();
