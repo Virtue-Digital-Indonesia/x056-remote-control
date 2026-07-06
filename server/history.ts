@@ -70,8 +70,14 @@ export function readSessionHistory(configDirs: string[], sessionId: string, limi
     if (type === 'assistant' && message.model === '<synthetic>') continue;
     const text = textFromContent(message.content).trim();
     if (text === '') continue;
-    // Skip command/local-command wrapper noise that Claude Code stores as user text.
-    if (type === 'user' && /^<(command-|local-command)/.test(text)) continue;
+    // Skip system-injected content Claude Code records as "user" turns:
+    // command wrappers, task/agent notifications, system reminders, caveats.
+    if (
+      type === 'user' &&
+      /^\s*(<(command-|local-command|task-notification|system-reminder|teammate-message)|Caveat:)/.test(text)
+    ) {
+      continue;
+    }
     out.push({ role: type, text });
   }
   return out.slice(-limit);

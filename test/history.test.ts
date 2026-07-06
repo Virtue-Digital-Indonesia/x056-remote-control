@@ -23,6 +23,8 @@ describe('readSessionHistory', () => {
       { type: 'assistant', model: '<synthetic>', message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: "You've hit your limit" }] }, isApiErrorMessage: true },
       { type: 'user', isMeta: true, message: { role: 'user', content: 'meta noise' } },
       { type: 'user', message: { role: 'user', content: '<command-name>/model</command-name>' } },
+      { type: 'user', message: { role: 'user', content: '<task-notification>\n<task-id>abc</task-id>\n</task-notification>' } },
+      { type: 'user', message: { role: 'user', content: '<system-reminder>background</system-reminder>' } },
       { type: 'user', message: { role: 'user', content: 'second question' } },
       { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'second answer' }] } },
     ]);
