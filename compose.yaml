@@ -9,6 +9,9 @@ services:
       X056_TOKEN: ${X056_TOKEN:?generate one into .env — openssl rand -hex 32}
       X056_WORKSPACE_ROOT: /home/efran/remote-development
       X056_STATE_DIR: /app/state
+      # Serve the panel from the bind-mounted repo: UI changes appear on
+      # refresh, no rebuild needed.
+      X056_PANEL_PATH: /home/efran/remote-development/x056-remote-control/server/public/panel.html
       PORT: "4056"
     volumes:
       - /home/efran/.claude-x056-a:/home/efran/.claude-x056-a

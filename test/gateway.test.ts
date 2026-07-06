@@ -136,3 +136,21 @@ describe('gateway adoption endpoint', () => {
     expect(snap.lastSessionId).toBe('adopted-1');
   });
 });
+
+describe('live panel path', () => {
+  it('serves panel content per-request so edits appear without restart', async () => {
+    const pdir = mkdtempSync(join(tmpdir(), 'x056-panel-'));
+    const panelFile = join(pdir, 'panel.html');
+    writeFileSync(panelFile, '<html><body>x056 v1</body></html>');
+    const app2 = await createApp({ token: TOKEN, stateDir: join(pdir, 'state'), workspaceRoot: pdir, panelPath: panelFile });
+    await app2.listen(0);
+    const url = await app2.getUrl();
+    try {
+      expect(await (await fetch(`${url}/`)).text()).toContain('x056 v1');
+      writeFileSync(panelFile, '<html><body>x056 v2 themed</body></html>');
+      expect(await (await fetch(`${url}/`)).text()).toContain('x056 v2 themed');
+    } finally {
+      await app2.close();
+    }
+  });
+});

@@ -9,6 +9,8 @@ export interface GatewayConfig {
   stateDir: string;
   workspaceRoot: string;
   claudePath?: string;
+  /** Panel HTML read per-request from here (bind-mounted for live UI updates). */
+  panelPath?: string;
 }
 
 export function buildModule(cfg: GatewayConfig): unknown {

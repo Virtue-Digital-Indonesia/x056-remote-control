@@ -14,9 +14,17 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   }
   const app = await NestFactory.create(buildModule(cfg) as never, { logger: ['warn', 'error'] });
   const express = app.getHttpAdapter().getInstance() as import('express').Express;
-  const panel = readFileSync(join(__dir, 'public', 'panel.html'), 'utf8');
+  // Read per request so a bind-mounted panelPath serves UI changes without a
+  // rebuild; ~15KB from page cache is negligible for a single-user panel.
+  const panelPath = cfg.panelPath ?? join(__dir, 'public', 'panel.html');
   express.get('/healthz', (_req, res) => res.json({ ok: true }));
-  express.get('/', (_req, res) => res.type('html').send(panel));
+  express.get('/', (_req, res) => {
+    try {
+      res.type('html').send(readFileSync(panelPath, 'utf8'));
+    } catch {
+      res.status(500).send('panel unavailable');
+    }
+  });
   return app;
 }
 
@@ -27,6 +35,7 @@ if (isMain) {
     stateDir: process.env.X056_STATE_DIR ?? join(process.cwd(), 'state'),
     workspaceRoot: process.env.X056_WORKSPACE_ROOT ?? process.cwd(),
     claudePath: process.env.X056_CLAUDE_PATH,
+    panelPath: process.env.X056_PANEL_PATH,
   };
   const port = Number(process.env.PORT ?? 4056);
   createApp(cfg)
