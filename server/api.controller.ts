@@ -11,11 +11,52 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { AccountRegistry } from '../src/accounts.js';
 import { UsageRateLimitedError, fetchUsage } from '../src/quota.js';
 import { join } from 'node:path';
-import { BusyError, SessionManager } from './manager.js';
+import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
 import { readSessionHistory, type HistoryEntry } from './history.js';
+
+const IMG_EXT: Record<string, string> = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
+};
+
+/** Read the human-facing account identity the login stored in <configDir>/.claude.json. */
+function accountIdentity(configDir: string): { displayName?: string; email?: string } {
+  try {
+    const o = (JSON.parse(readFileSync(join(configDir, '.claude.json'), 'utf8')) as {
+      oauthAccount?: { displayName?: string; emailAddress?: string };
+    }).oauthAccount;
+    return { displayName: o?.displayName, email: o?.emailAddress };
+  } catch {
+    return {};
+  }
+}
+
+/** Turn a data URL / base64 image into a file under state/uploads, return its absolute path. */
+function saveImage(stateDir: string, dataUrl: string): string {
+  const m = /^data:([^;]+);base64,(.+)$/s.exec(dataUrl);
+  if (!m) throw new Error('image must be a data URL');
+  const ext = IMG_EXT[m[1]];
+  if (!ext) throw new Error(`unsupported image type ${m[1]}`);
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > 10 * 1024 * 1024) throw new Error('image exceeds 10MB');
+  const dir = join(stateDir, 'uploads');
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${randomUUID()}.${ext}`);
+  writeFileSync(path, buf);
+  return path;
+}
+
+interface SendBody {
+  prompt?: string;
+  cwd?: string;
+  model?: string;
+  effort?: string;
+  image?: string;
+}
 
 // NB: this project runs under tsx (esbuild), which does not implement
 // `emitDecoratorMetadata` — Nest's controller instantiation (driven by
@@ -42,11 +83,22 @@ export class ApiController {
     @Inject(STATE_DIR) private readonly stateDir: string,
   ) {}
 
+  /** Fold an optional attached image into the prompt as a readable file path. */
+  private composePrompt(body: SendBody): { prompt: string; opts: TurnRunOptions } {
+    let prompt = body.prompt ?? '';
+    if (body.image) {
+      const path = saveImage(this.stateDir, body.image);
+      prompt += `\n\n[The user attached an image. Read it with the Read tool at: ${path}]`;
+    }
+    return { prompt, opts: { model: body.model, effort: body.effort } };
+  }
+
   @Post('sessions')
-  startSession(@Body() body: { prompt?: string; cwd?: string }): { sessionId: string } {
-    if (!body?.prompt) throw new BadRequestException('prompt required');
+  startSession(@Body() body: SendBody): { sessionId: string } {
+    if (!body?.prompt && !body?.image) throw new BadRequestException('prompt or image required');
     try {
-      return { sessionId: this.manager.start(body.prompt, body.cwd) };
+      const { prompt, opts } = this.composePrompt(body);
+      return { sessionId: this.manager.start(prompt, body.cwd, opts) };
     } catch (err) {
       if (err instanceof BusyError) throw new ConflictException('busy');
       throw new BadRequestException((err as Error).message);
@@ -54,10 +106,11 @@ export class ApiController {
   }
 
   @Post('sessions/current/messages')
-  continueSession(@Body() body: { prompt?: string }): { sessionId: string } {
-    if (!body?.prompt) throw new BadRequestException('prompt required');
+  continueSession(@Body() body: SendBody): { sessionId: string } {
+    if (!body?.prompt && !body?.image) throw new BadRequestException('prompt or image required');
     try {
-      return { sessionId: this.manager.continueLast(body.prompt) };
+      const { prompt, opts } = this.composePrompt(body);
+      return { sessionId: this.manager.continueLast(prompt, opts) };
     } catch (err) {
       if (err instanceof BusyError) throw new ConflictException('busy');
       throw new BadRequestException((err as Error).message);
@@ -124,25 +177,27 @@ export class ApiController {
     }
     return Promise.all(
       registry.list().map(async (acct) => {
+        const id = accountIdentity(acct.configDir);
+        const base = { ...acct, displayName: id.displayName ?? acct.name, email: id.email };
         const cached = this.quotaCache.get(acct.name);
         if (cached && Date.now() - cached.at < QUOTA_TTL_MS) {
-          return { ...acct, quota: cached.quota };
+          return { ...base, quota: cached.quota };
         }
         const backoffUntil = this.quotaBackoffUntil.get(acct.name) ?? 0;
         if (Date.now() < backoffUntil) {
-          if (cached) return { ...acct, quota: cached.quota, quotaStale: true };
-          return { ...acct, quota: null, quotaError: `rate-limited upstream; retrying after ${new Date(backoffUntil).toISOString()}` };
+          if (cached) return { ...base, quota: cached.quota, quotaStale: true };
+          return { ...base, quota: null, quotaError: `rate-limited upstream; retrying after ${new Date(backoffUntil).toISOString()}` };
         }
         try {
           const quota = await fetchUsage(acct.configDir);
           this.quotaCache.set(acct.name, { at: Date.now(), quota });
           this.quotaBackoffUntil.delete(acct.name);
-          return { ...acct, quota };
+          return { ...base, quota };
         } catch (err) {
           const backoffMs = err instanceof UsageRateLimitedError ? err.retryAfterMs : 60_000;
           this.quotaBackoffUntil.set(acct.name, Date.now() + backoffMs);
-          if (cached) return { ...acct, quota: cached.quota, quotaStale: true };
-          return { ...acct, quota: null, quotaError: (err as Error).message };
+          if (cached) return { ...base, quota: cached.quota, quotaStale: true };
+          return { ...base, quota: null, quotaError: (err as Error).message };
         }
       }),
     );

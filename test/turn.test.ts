@@ -65,3 +65,28 @@ describe('startTurn', () => {
     expect(exit.code).toBeNull();
   });
 });
+
+describe('startTurn model/effort flags', () => {
+  it('inserts --model and --effort before the session flag when provided', async () => {
+    const { events, onEvent } = collect();
+    const h = startTurn({
+      claudePath: STUB, configDir: '/tmp/cfg-a', cwd: process.cwd(),
+      sessionId: 'sid-me', mode: 'new', prompt: 'FAST go', model: 'opus', effort: 'high', onEvent,
+    });
+    await h.done;
+    const argv = (events[0] as { argv: string[] }).argv;
+    expect(argv).toEqual([
+      '-p', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions',
+      '--model', 'opus', '--effort', 'high', '--session-id', 'sid-me', 'FAST go',
+    ]);
+  });
+
+  it('omits both flags when not provided', async () => {
+    const { events, onEvent } = collect();
+    const h = startTurn({ claudePath: STUB, configDir: '/tmp/c', cwd: process.cwd(), sessionId: 's', mode: 'new', prompt: 'FAST', onEvent });
+    await h.done;
+    const argv = (events[0] as { argv: string[] }).argv;
+    expect(argv).not.toContain('--model');
+    expect(argv).not.toContain('--effort');
+  });
+});

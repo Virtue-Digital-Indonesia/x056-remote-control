@@ -179,3 +179,13 @@ describe('SessionManager.setCurrent (adoption)', () => {
     await waitFor(() => mgr.snapshot().running === false);
   });
 });
+
+describe('SessionManager model/effort passthrough', () => {
+  it('forwards model and effort options into runSession', async () => {
+    const { mgr, calls } = fixture(COMPLETED);
+    mgr.start('build', undefined, { model: 'sonnet', effort: 'max' });
+    await waitFor(() => mgr.snapshot().running === false);
+    expect(calls[0].model).toBe('sonnet');
+    expect(calls[0].effort).toBe('max');
+  });
+});

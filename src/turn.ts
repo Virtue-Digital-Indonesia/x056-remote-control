@@ -21,6 +21,8 @@ export interface TurnOptions {
   sessionId: string;
   mode: 'new' | 'resume';
   prompt: string;
+  model?: string;
+  effort?: string;
   onEvent: (e: RawEvent) => void;
 }
 
@@ -30,6 +32,8 @@ export function startTurn(opts: TurnOptions): TurnHandle {
     '--output-format', 'stream-json',
     '--verbose',
     '--dangerously-skip-permissions',
+    ...(opts.model ? ['--model', opts.model] : []),
+    ...(opts.effort ? ['--effort', opts.effort] : []),
     ...(opts.mode === 'new' ? ['--session-id', opts.sessionId] : ['--resume', opts.sessionId]),
     opts.prompt,
   ];

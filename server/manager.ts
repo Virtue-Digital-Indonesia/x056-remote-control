@@ -27,6 +27,12 @@ export interface SessionManagerOptions {
   runSessionFn?: typeof runSession;
 }
 
+/** Per-turn overrides chosen in the UI. */
+export interface TurnRunOptions {
+  model?: string;
+  effort?: string;
+}
+
 const BUFFER_MAX = 1000;
 
 /** EventLog that also forwards every supervisor row to the gateway stream. */
@@ -92,24 +98,24 @@ export class SessionManager {
     return target;
   }
 
-  start(prompt: string, cwd?: string): string {
+  start(prompt: string, cwd?: string, opts?: TurnRunOptions): string {
     if (this.running) throw new BusyError();
     const dir = this.resolveCwd(cwd ?? this.opts.workspaceRoot);
     const sessionId = randomUUID();
-    this.launch(sessionId, prompt, dir, false);
+    this.launch(sessionId, prompt, dir, false, opts);
     return sessionId;
   }
 
-  continueLast(prompt: string): string {
+  continueLast(prompt: string, opts?: TurnRunOptions): string {
     if (this.running) throw new BusyError();
     const st = this.loadState();
     if (!st.lastSessionId) throw new Error('no previous session — start one first');
     const dir = this.resolveCwd(st.cwd ?? this.opts.workspaceRoot);
-    this.launch(st.lastSessionId, prompt, dir, true);
+    this.launch(st.lastSessionId, prompt, dir, true, opts);
     return st.lastSessionId;
   }
 
-  private launch(sessionId: string, prompt: string, cwd: string, resume: boolean): void {
+  private launch(sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
     this.running = true;
     this.currentSessionId = sessionId;
     try {
@@ -123,7 +129,7 @@ export class SessionManager {
           stateSaved = true;
         }
       };
-      this.emit('session_started', { sessionId, cwd, resume, prompt });
+      this.emit('session_started', { sessionId, cwd, resume, prompt, model: runOpts?.model, effort: runOpts?.effort });
       void runFn({
         registry,
         log,
@@ -132,6 +138,8 @@ export class SessionManager {
         prompt,
         resume,
         claudePath: this.opts.claudePath,
+        model: runOpts?.model,
+        effort: runOpts?.effort,
         tap: (e: RawEvent) => {
           saveStateOnce();
           this.tapToEvents(e);

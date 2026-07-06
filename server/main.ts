@@ -12,7 +12,13 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   if (!cfg.token || cfg.token.length < 24) {
     throw new Error('X056_TOKEN missing or shorter than 24 chars — refusing to start');
   }
-  const app = await NestFactory.create(buildModule(cfg) as never, { logger: ['warn', 'error'] });
+  const app = await NestFactory.create(buildModule(cfg) as never, {
+    logger: ['warn', 'error'],
+    // Base64 screenshots ride in the JSON body; default 100kb is far too small.
+    bodyParser: true,
+    rawBody: false,
+  });
+  (app as unknown as { useBodyParser: (t: string, o: { limit: string }) => void }).useBodyParser('json', { limit: '12mb' });
   const express = app.getHttpAdapter().getInstance() as import('express').Express;
   // Read per request so a bind-mounted panelPath serves UI changes without a
   // rebuild; ~15KB from page cache is negligible for a single-user panel.

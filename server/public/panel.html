@@ -7,87 +7,118 @@
 <style>
   :root {
     color-scheme: light;
-    --bg: #f5f6f8; --surface: #ffffff; --surface-2: #eef0f4;
-    --border: #d9dde5; --border-2: #c3c9d4;
-    --text: #1c2128; --muted: #667085;
-    --accent-text: #1d4ed8; --accent-bg: #e3ecfd;
-    --warn-text: #92610a; --warn-bg: #fbf0d4;
-    --ok: #16a34a; --err: #dc2626; --amber: #d97706;
-    --badge-ok-bg: #dcf5e3; --badge-ok-text: #15803d;
-    --badge-warn-bg: #fbf0d4; --badge-warn-text: #92610a;
-    --badge-unknown-bg: #e5e8ee; --badge-unknown-text: #667085;
-    --bubble-assistant: #eef1f6; --bubble-user: #e3f3d9;
-    --btn-bg: #ffffff; --btn-hover: #eef0f4;
-    --gauge-track: #e2e6ec; --dot-idle: #9aa3b2;
+    --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, monospace;
+    --bg: #f4f4f4; --surface: #ffffff; --surface-2: #f0f0f2; --surface-3: #e8e8ea;
+    --border: #dcdce0; --border-strong: #c6c6cc;
+    --text: #161616; --muted: #6f6f79; --faint: #8d8d97;
+    --accent: #2563eb; --accent-weak: #e6eefb; --on-accent: #ffffff;
+    --user-bg: #eef2fb; --user-border: #dbe4f7;
+    --ok: #15803d; --ok-bg: #dcf5e3; --amber: #b45309; --amber-bg: #fbecd0; --err: #b91c1c; --err-bg: #fbe0e0;
+    --shadow: 0 8px 24px rgba(20,20,30,.12);
   }
   html[data-theme="dark"] {
     color-scheme: dark;
-    --bg: #0f1115; --surface: #171a21; --surface-2: #12151b;
-    --border: #262b36; --border-2: #3a4150;
-    --text: #e6e6e6; --muted: #99a0ad;
-    --accent-text: #8fb8ff; --accent-bg: #16202f;
-    --warn-text: #f0c674; --warn-bg: #262110;
-    --ok: #3ecf5f; --err: #d9534f; --amber: #f0c674;
-    --badge-ok-bg: #1f4a2a; --badge-ok-text: #7de893;
-    --badge-warn-bg: #4a3a1f; --badge-warn-text: #f0c674;
-    --badge-unknown-bg: #333333; --badge-unknown-text: #aaaaaa;
-    --bubble-assistant: #1c2230; --bubble-user: #223018;
-    --btn-bg: #262b36; --btn-hover: #313847;
-    --gauge-track: #262b36; --dot-idle: #666666;
+    --bg: #0b0c0f; --surface: #15171c; --surface-2: #1c1f26; --surface-3: #242832;
+    --border: #262b34; --border-strong: #363c48;
+    --text: #e9e9ec; --muted: #9aa0ad; --faint: #6b7280;
+    --accent: #6ea0ff; --accent-weak: #172234; --on-accent: #0b0c0f;
+    --user-bg: #182238; --user-border: #24334f;
+    --ok: #4ade80; --ok-bg: #123021; --amber: #fbbf24; --amber-bg: #2c2410; --err: #f87171; --err-bg: #2b1414;
+    --shadow: 0 10px 30px rgba(0,0,0,.5);
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
-  header { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; }
-  header h1 { font-size: 15px; margin: 0; flex: 1; }
-  #dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dot-idle); flex: none; }
-  #dot.on { background: var(--ok); }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.5; display: flex; flex-direction: column; }
+
+  header { display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 52px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; letter-spacing: .2px; }
+  .brand .mark { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, var(--accent), #7c3aed); display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
+  .spacer { flex: 1; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  #dot.on { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
   #dot.off { background: var(--err); }
-  button { background: var(--btn-bg); color: var(--text); border: 1px solid var(--border-2); border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
-  button:hover { background: var(--btn-hover); }
-  main { padding: 10px 12px 90px; max-width: 720px; margin: 0 auto; }
-  section { margin-bottom: 14px; }
-  #accounts { display: flex; flex-wrap: wrap; gap: 8px; }
-  .acct { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 150px; flex: 1; }
-  .acct .name { font-weight: 600; display: flex; justify-content: space-between; }
-  .badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--badge-unknown-bg); }
-  .badge.ok { background: var(--badge-ok-bg); color: var(--badge-ok-text); }
-  .badge.limited { background: var(--badge-warn-bg); color: var(--badge-warn-text); }
-  .badge.unknown { background: var(--badge-unknown-bg); color: var(--badge-unknown-text); }
-  .gauge { height: 6px; border-radius: 3px; background: var(--gauge-track); margin-top: 4px; overflow: hidden; }
-  .gauge > i { display: block; height: 100%; background: var(--ok); }
-  .gauge > i.amber { background: var(--amber); }
-  .gauge > i.red { background: var(--err); }
-  .gauge-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
-  #chat { display: flex; flex-direction: column; gap: 6px; }
-  .bubble { padding: 8px 10px; border-radius: 8px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
-  .bubble.assistant { background: var(--bubble-assistant); align-self: flex-start; white-space: normal; }
-  .bubble.user { background: var(--bubble-user); align-self: flex-end; }
-  /* markdown inside assistant bubbles */
-  .bubble.assistant p { margin: 0 0 8px; white-space: pre-wrap; }
-  .bubble.assistant p:last-child, .bubble.assistant ul:last-child,
-  .bubble.assistant ol:last-child, .bubble.assistant pre:last-child { margin-bottom: 0; }
-  .bubble.assistant pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; margin: 0 0 8px; }
-  .bubble.assistant pre code { background: none; padding: 0; font: 12px/1.45 ui-monospace, monospace; }
-  .bubble.assistant code { background: var(--surface-2); border-radius: 4px; padding: 1px 4px; font: 12px/1.4 ui-monospace, monospace; }
-  .bubble.assistant ul, .bubble.assistant ol { margin: 0 0 8px; padding-left: 22px; }
-  .bubble.assistant li { margin: 2px 0; white-space: pre-wrap; }
-  .bubble.assistant h3, .bubble.assistant h4, .bubble.assistant h5 { margin: 4px 0 6px; line-height: 1.3; }
-  .bubble.assistant h3 { font-size: 15px; } .bubble.assistant h4 { font-size: 14px; } .bubble.assistant h5 { font-size: 13px; }
-  .bubble.assistant a { color: var(--accent-text); }
-  .bubble.assistant hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
-  .bubble.assistant blockquote { margin: 0 0 8px; padding: 2px 10px; border-left: 3px solid var(--border-2); color: var(--muted); }
-  .banner { align-self: center; font-size: 12px; color: var(--warn-text); background: var(--warn-bg); border-radius: 6px; padding: 4px 10px; }
-  .header-line { align-self: center; font-size: 12px; color: var(--accent-text); background: var(--accent-bg); border-radius: 6px; padding: 4px 10px; }
-  #log { max-height: 200px; overflow: auto; font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 6px; white-space: pre-wrap; }
-  #logToggle { cursor: pointer; user-select: none; color: var(--accent-text); font-size: 12px; }
-  footer { position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--border); padding: 8px 10px; display: flex; gap: 6px; align-items: flex-end; }
-  textarea { flex: 1; resize: none; background: var(--bg); color: var(--text); border: 1px solid var(--border-2); border-radius: 6px; padding: 8px; font: inherit; height: 40px; }
-  #newSessionRow { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-  #cwd { background: var(--bg); color: var(--text); border: 1px solid var(--border-2); border-radius: 6px; padding: 4px 6px; font: inherit; width: 160px; }
-  #busy { color: var(--warn-text); font-size: 12px; }
+  .icon-btn { background: transparent; color: var(--muted); border: 1px solid transparent; border-radius: 8px; height: 34px; min-width: 34px; padding: 0 9px; cursor: pointer; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+  .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+  .icon-btn.accent { color: var(--accent); }
+
+  main { flex: 1; overflow-y: auto; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 22px 20px 140px; }
+
+  .msg { display: flex; flex-direction: column; gap: 4px; margin-bottom: 20px; }
+  .msg .role { font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--faint); }
+  .msg.user { align-items: flex-end; }
+  .msg.user .role { color: var(--accent); }
+  .content { max-width: 100%; }
+  .msg.user .content { background: var(--user-bg); border: 1px solid var(--user-border); border-radius: 12px 12px 4px 12px; padding: 10px 14px; max-width: 80%; white-space: pre-wrap; word-break: break-word; }
+  .msg.assistant .content { padding: 2px 2px; word-break: break-word; }
+  .content img.att { max-width: 260px; border-radius: 8px; border: 1px solid var(--border); margin-top: 6px; display: block; }
+
+  /* markdown */
+  .content p { margin: 0 0 10px; white-space: pre-wrap; }
+  .content > *:last-child { margin-bottom: 0; }
+  .content pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 0 0 10px; }
+  .content pre code { background: none; padding: 0; font: 12.5px/1.55 var(--mono); }
+  .content code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; font: 12.5px/1.4 var(--mono); }
+  .content ul, .content ol { margin: 0 0 10px; padding-left: 24px; }
+  .content li { margin: 3px 0; }
+  .content h3, .content h4, .content h5 { margin: 14px 0 8px; line-height: 1.3; }
+  .content h3 { font-size: 17px; } .content h4 { font-size: 15px; } .content h5 { font-size: 14px; }
+  .content a { color: var(--accent); }
+  .content hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+  .content blockquote { margin: 0 0 10px; padding: 4px 14px; border-left: 3px solid var(--border-strong); color: var(--muted); }
+
+  .sysline { text-align: center; margin: 16px 0; }
+  .sysline span { font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; }
+  .banner { text-align: center; margin: 12px 0; }
+  .banner span { font-size: 12.5px; color: var(--amber); background: var(--amber-bg); border-radius: 20px; padding: 5px 14px; display: inline-flex; gap: 6px; align-items: center; }
+  .banner.err span { color: var(--err); background: var(--err-bg); }
+
+  /* composer */
+  footer { position: sticky; bottom: 0; background: linear-gradient(to top, var(--bg) 72%, transparent); padding: 12px 20px 16px; flex: none; }
+  .composer { max-width: 900px; margin: 0 auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
+  .composer:focus-within { border-color: var(--accent); }
+  #attachRow { display: none; gap: 8px; padding: 10px 12px 0; flex-wrap: wrap; }
+  #attachRow.show { display: flex; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 5px 8px; font-size: 12px; }
+  .chip img { width: 34px; height: 34px; object-fit: cover; border-radius: 6px; }
+  .chip button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0 2px; }
+  textarea { width: 100%; border: none; background: transparent; color: var(--text); resize: none; padding: 14px 14px 6px; font: inherit; max-height: 220px; outline: none; }
+  .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px 10px; }
+  .select { position: relative; }
+  select { appearance: none; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 9px; padding: 6px 26px 6px 10px; font: inherit; font-size: 12.5px; cursor: pointer; }
+  select:hover { border-color: var(--border-strong); }
+  .select::after { content: "▾"; position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); font-size: 10px; }
+  .bar .spacer { flex: 1; }
+  #busy { font-size: 12px; color: var(--amber); }
+  .send { background: var(--accent); color: var(--on-accent); border: none; border-radius: 10px; height: 34px; padding: 0 16px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  .send:disabled { opacity: .45; cursor: default; }
+  .ghost { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); border-radius: 9px; height: 34px; min-width: 34px; cursor: pointer; font-size: 15px; }
+  .ghost:hover { color: var(--text); border-color: var(--border-strong); }
+
+  /* quota popover */
+  .pop { position: absolute; top: 50px; right: 12px; width: 320px; max-width: calc(100vw - 24px); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; z-index: 20; }
+  .pop[hidden] { display: none; }
+  .pop h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); margin: 2px 4px 10px; }
+  .acct { padding: 10px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 8px; }
+  .acct:last-child { margin-bottom: 0; }
+  .acct .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .acct .nm { font-weight: 600; }
+  .acct .em { font-size: 11.5px; color: var(--faint); }
+  .badge { font-size: 10.5px; padding: 2px 8px; border-radius: 20px; background: var(--surface-3); color: var(--muted); white-space: nowrap; }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.limited { background: var(--amber-bg); color: var(--amber); }
+  .g { margin-top: 8px; }
+  .g .lab { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+  .g .track { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+  .g .track > i { display: block; height: 100%; background: var(--ok); }
+  .g .track > i.amber { background: var(--amber); }
+  .g .track > i.red { background: var(--err); }
+  .note { font-size: 11px; color: var(--faint); margin-top: 6px; }
+  .backdrop { position: fixed; inset: 0; z-index: 15; }
+  .backdrop[hidden] { display: none; }
 </style>
 <script>
-  // Apply theme before first paint: stored preference wins, else system.
   (function () {
     var stored = null;
     try { stored = localStorage.getItem('x056_theme'); } catch (e) {}
@@ -98,360 +129,210 @@
 </head>
 <body>
 <header>
-  <span id="dot" class="off"></span>
-  <h1>x056 remote control</h1>
-  <button id="switchBtn" title="force switch account">switch</button>
-  <button id="themeBtn" title="toggle light/dark theme"></button>
-  <button id="tokenBtn" title="clear token">&#9881;</button>
+  <div class="brand"><span class="mark">x0</span><span>remote control</span></div>
+  <span id="dot" class="off" title="connection"></span>
+  <div class="spacer"></div>
+  <button class="icon-btn" id="quotaBtn" title="usage">◔ usage</button>
+  <button class="icon-btn" id="switchBtn" title="force switch account">⇄ switch</button>
+  <button class="icon-btn" id="themeBtn" title="toggle theme"></button>
+  <button class="icon-btn" id="tokenBtn" title="clear token">⚙</button>
 </header>
+
+<div class="backdrop" id="backdrop" hidden></div>
+<div class="pop" id="quotaPop" hidden><h2>account usage</h2><div id="accounts"></div></div>
+
 <main>
-  <section id="accounts"></section>
-  <section>
-    <div id="newSessionRow">
-      <label><input type="checkbox" id="newSession" /> New session</label>
-      <input id="cwd" placeholder="cwd (optional)" />
-      <span id="busy"></span>
-    </div>
-    <div id="chat"></div>
-  </section>
-  <section>
-    <div id="logToggle">&#9656; failover log</div>
-    <div id="log" hidden></div>
-  </section>
+  <div class="wrap" id="chat"></div>
 </main>
+
 <footer>
-  <textarea id="prompt" placeholder="message…"></textarea>
-  <button id="sendBtn">Send</button>
+  <div class="composer">
+    <div id="attachRow"></div>
+    <textarea id="prompt" rows="1" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste an image to attach)"></textarea>
+    <div class="bar">
+      <div class="select"><select id="model" title="model">
+        <option value="">Auto model</option>
+        <option value="opus">Opus</option>
+        <option value="sonnet">Sonnet</option>
+        <option value="haiku">Haiku</option>
+      </select></div>
+      <div class="select"><select id="effort" title="effort">
+        <option value="">Auto effort</option>
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+        <option value="xhigh">Extra high</option>
+        <option value="max">Max</option>
+      </select></div>
+      <label class="ghost" title="attach image" style="display:inline-flex;align-items:center;justify-content:center;">
+        📎<input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);">
+        <input type="checkbox" id="newSession" /> new
+      </label>
+      <div class="spacer"></div>
+      <span id="busy"></span>
+      <button class="send" id="sendBtn">Send</button>
+    </div>
+  </div>
 </footer>
+
 <script>
 (function () {
-  var TOKEN_KEY = 'x056_token';
+  var TOKEN_KEY = 'x056_token', THEME_KEY = 'x056_theme', MODEL_KEY = 'x056_model', EFFORT_KEY = 'x056_effort';
   var token = localStorage.getItem(TOKEN_KEY);
-  if (!token) {
-    token = window.prompt('x056 access token:') || '';
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-  }
+  if (!token) { token = window.prompt('x056 access token:') || ''; if (token) localStorage.setItem(TOKEN_KEY, token); }
 
-  var dot = document.getElementById('dot');
-  var accountsEl = document.getElementById('accounts');
-  var chatEl = document.getElementById('chat');
-  var logEl = document.getElementById('log');
-  var logToggle = document.getElementById('logToggle');
-  var promptEl = document.getElementById('prompt');
-  var sendBtn = document.getElementById('sendBtn');
-  var switchBtn = document.getElementById('switchBtn');
-  var tokenBtn = document.getElementById('tokenBtn');
-  var newSessionEl = document.getElementById('newSession');
-  var cwdEl = document.getElementById('cwd');
-  var busyEl = document.getElementById('busy');
+  var $ = function (id) { return document.getElementById(id); };
+  var dot = $('dot'), chatEl = $('chat'), promptEl = $('prompt'), sendBtn = $('sendBtn');
+  var modelEl = $('model'), effortEl = $('effort'), fileEl = $('file'), attachRow = $('attachRow');
+  var busyEl = $('busy'), newSessionEl = $('newSession');
+  var quotaBtn = $('quotaBtn'), quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts');
+  var themeBtn = $('themeBtn');
+  var lastSessionId = null, lastSeq = 0, pendingImage = null;
 
-  var lastSessionId = null;
-  var lastSeq = 0;
-  var logLines = [];
+  // ---- persisted selectors ----
+  try { modelEl.value = localStorage.getItem(MODEL_KEY) || ''; effortEl.value = localStorage.getItem(EFFORT_KEY) || ''; } catch (e) {}
+  modelEl.addEventListener('change', function () { try { localStorage.setItem(MODEL_KEY, modelEl.value); } catch (e) {} });
+  effortEl.addEventListener('change', function () { try { localStorage.setItem(EFFORT_KEY, effortEl.value); } catch (e) {} });
 
-  function authHeaders(extra) {
-    var h = Object.assign({ Authorization: 'Bearer ' + token }, extra || {});
-    return h;
-  }
+  function authHeaders(extra) { return Object.assign({ Authorization: 'Bearer ' + token }, extra || {}); }
+  function api(path, opts) { opts = opts || {}; opts.headers = authHeaders(opts.body ? { 'Content-Type': 'application/json' } : {}); return fetch(path, opts); }
 
-  function api(path, opts) {
-    opts = opts || {};
-    opts.headers = authHeaders(opts.body ? { 'Content-Type': 'application/json' } : {});
-    return fetch(path, opts);
-  }
-
-  tokenBtn.addEventListener('click', function () {
-    localStorage.removeItem(TOKEN_KEY);
-    location.reload();
-  });
+  $('tokenBtn').addEventListener('click', function () { localStorage.removeItem(TOKEN_KEY); location.reload(); });
 
   // ---- theme ----
-  var THEME_KEY = 'x056_theme';
-  var themeBtn = document.getElementById('themeBtn');
   var systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+  function curTheme() { return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
+  function applyTheme(t) { if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark'); else document.documentElement.removeAttribute('data-theme'); themeBtn.textContent = t === 'dark' ? '☀' : '☾'; }
+  applyTheme(curTheme());
+  themeBtn.addEventListener('click', function () { var n = curTheme() === 'dark' ? 'light' : 'dark'; try { localStorage.setItem(THEME_KEY, n); } catch (e) {} applyTheme(n); });
+  systemDark.addEventListener('change', function (e) { var s = null; try { s = localStorage.getItem(THEME_KEY); } catch (err) {} if (!s) applyTheme(e.matches ? 'dark' : 'light'); });
 
-  function currentTheme() {
-    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
-  }
-
-  function applyTheme(theme) {
-    if (theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
-    else document.documentElement.removeAttribute('data-theme');
-    themeBtn.textContent = theme === 'dark' ? '☀' : '☾'; // sun to go light, moon to go dark
-  }
-
-  applyTheme(currentTheme());
-
-  themeBtn.addEventListener('click', function () {
-    var next = currentTheme() === 'dark' ? 'light' : 'dark';
-    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
-    applyTheme(next);
-  });
-
-  // Follow system changes only while the user hasn't chosen explicitly.
-  systemDark.addEventListener('change', function (e) {
-    var stored = null;
-    try { stored = localStorage.getItem(THEME_KEY); } catch (err) {}
-    if (!stored) applyTheme(e.matches ? 'dark' : 'light');
-  });
-
-  // ---- accounts ----
-  function fmtTime(ms) {
-    try { return new Date(ms * 1000).toLocaleTimeString(); } catch (e) { return String(ms); }
-  }
-
-  function gaugeClass(pct) {
-    if (pct >= 90) return 'red';
-    if (pct >= 70) return 'amber';
-    return '';
-  }
-
-  function renderGauge(label, usage) {
-    var pct = Math.round((usage.utilization || 0) * 100);
-    // utilization may already be 0-100; clamp defensively either way.
-    if (usage.utilization > 1) pct = Math.round(usage.utilization);
-    pct = Math.max(0, Math.min(100, pct));
-    var cls = gaugeClass(pct);
-
-    var container = document.createElement('div');
-
-    var labelEl = document.createElement('div');
-    labelEl.className = 'gauge-label';
-    labelEl.textContent = label + ' ' + pct + '%';
-    container.appendChild(labelEl);
-
-    var gaugeEl = document.createElement('div');
-    gaugeEl.className = 'gauge';
-    var i = document.createElement('i');
-    if (cls) i.classList.add(cls);
-    i.style.width = pct + '%';
-    gaugeEl.appendChild(i);
-    container.appendChild(gaugeEl);
-
-    return container;
-  }
-
-  function renderAccounts(list) {
-    accountsEl.innerHTML = '';
-    list.forEach(function (a) {
-      var state = a.state || { kind: 'unknown' };
-      var badgeText = state.kind === 'ok' ? 'ok' : state.kind === 'limited' ? 'limited until ' + fmtTime(state.until) : 'unknown';
-      var badgeClass = state.kind === 'ok' ? 'ok' : state.kind === 'limited' ? 'limited' : 'unknown';
-
-      var card = document.createElement('div');
-      card.className = 'acct';
-
-      var nameRow = document.createElement('div');
-      nameRow.className = 'name';
-      nameRow.appendChild(document.createTextNode(a.name));
-
-      var badge = document.createElement('span');
-      badge.classList.add('badge');
-      badge.classList.add(badgeClass);
-      badge.textContent = badgeText;
-      nameRow.appendChild(badge);
-
-      card.appendChild(nameRow);
-
-      if (a.quota) {
-        card.appendChild(renderGauge('5h', a.quota.fiveHour));
-        card.appendChild(renderGauge('7d', a.quota.sevenDay));
-        if (a.quotaStale) {
-          var staleDiv = document.createElement('div');
-          staleDiv.className = 'gauge-label';
-          staleDiv.textContent = 'cached — refresh pending';
-          card.appendChild(staleDiv);
-        }
-      } else if (a.quotaError) {
-        var errorDiv = document.createElement('div');
-        errorDiv.className = 'gauge-label';
-        errorDiv.textContent = 'quota unavailable — retrying';
-        card.appendChild(errorDiv);
-      } else {
-        var noQuotaDiv = document.createElement('div');
-        noQuotaDiv.className = 'gauge-label';
-        noQuotaDiv.textContent = 'quota unavailable';
-        card.appendChild(noQuotaDiv);
-      }
-
-      accountsEl.appendChild(card);
-    });
-  }
-
-  function pollAccounts() {
-    api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {});
-  }
-  pollAccounts();
-  setInterval(pollAccounts, 60000);
-
-  function pollSnapshot() {
-    return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) {
-      lastSessionId = s.lastSessionId;
-      return s;
-    });
-  }
-
-  function loadHistory() {
-    return api('/api/sessions/current/history?limit=60')
-      .then(function (r) { return r.json(); })
-      .then(function (rows) {
-        if (!Array.isArray(rows) || rows.length === 0) return;
-        var note = document.createElement('div');
-        note.className = 'bubble header-line';
-        note.textContent = '— adopted session history (' + rows.length + ' messages) —';
-        chatEl.appendChild(note);
-        rows.forEach(function (m) {
-          addBubble(m.role === 'user' ? 'user' : 'assistant', m.text);
-        });
-        var live = document.createElement('div');
-        live.className = 'bubble header-line';
-        live.textContent = '— live —';
-        chatEl.appendChild(live);
-      })
-      .catch(function () {});
-  }
-
-  // Load the snapshot (so lastSessionId is known), then paint prior history
-  // before the live SSE stream starts appending — the adopted conversation is
-  // visible on open, not just future turns.
-  pollSnapshot().then(loadHistory);
-
-  // ---- markdown (safe by construction: DOM nodes only, never innerHTML) ----
+  // ---- markdown (DOM-only, no innerHTML with dynamic text) ----
   function renderInline(text) {
     var frag = document.createDocumentFragment();
     var re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*\s][^*]*)\*)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
     var last = 0, m;
     while ((m = re.exec(text))) {
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
-      if (m[2]) { // `code`
-        var c = document.createElement('code'); c.textContent = m[2]; frag.appendChild(c);
-      } else if (m[4]) { // **bold**
-        var b = document.createElement('strong'); b.textContent = m[4]; frag.appendChild(b);
-      } else if (m[6]) { // *italic*
-        var em = document.createElement('em'); em.textContent = m[6]; frag.appendChild(em);
-      } else if (m[8]) { // [text](https://url)
-        var a = document.createElement('a');
-        a.textContent = m[8]; a.href = m[9]; a.target = '_blank'; a.rel = 'noopener noreferrer';
-        frag.appendChild(a);
-      }
+      if (m[2]) { var c = document.createElement('code'); c.textContent = m[2]; frag.appendChild(c); }
+      else if (m[4]) { var b = document.createElement('strong'); b.textContent = m[4]; frag.appendChild(b); }
+      else if (m[6]) { var em = document.createElement('em'); em.textContent = m[6]; frag.appendChild(em); }
+      else if (m[8]) { var a = document.createElement('a'); a.textContent = m[8]; a.href = m[9]; a.target = '_blank'; a.rel = 'noopener noreferrer'; frag.appendChild(a); }
       last = re.lastIndex;
     }
     if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
     return frag;
   }
-
   function renderMarkdown(text) {
-    var root = document.createDocumentFragment();
-    var lines = text.split('\n');
-    var i = 0, m;
-    function flushPara(buf) {
-      if (!buf.length) return;
-      var p = document.createElement('p');
-      p.appendChild(renderInline(buf.join('\n')));
-      root.appendChild(p);
-      buf.length = 0;
-    }
-    var para = [];
+    var root = document.createDocumentFragment(), lines = text.split('\n'), i = 0, m, para = [];
+    function flush() { if (!para.length) return; var p = document.createElement('p'); p.appendChild(renderInline(para.join('\n'))); root.appendChild(p); para.length = 0; }
     while (i < lines.length) {
       var line = lines[i];
-      if (/^```/.test(line)) {
-        flushPara(para);
-        var buf = []; i++;
-        while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
-        i++; // closing fence
-        var pre = document.createElement('pre');
-        var code = document.createElement('code');
-        code.textContent = buf.join('\n');
-        pre.appendChild(code); root.appendChild(pre);
-        continue;
-      }
-      if ((m = /^(#{1,3})\s+(.*)$/.exec(line))) {
-        flushPara(para);
-        var h = document.createElement('h' + (m[1].length + 2));
-        h.appendChild(renderInline(m[2]));
-        root.appendChild(h); i++; continue;
-      }
-      if (/^\s*[-*]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) {
-        flushPara(para);
-        var ordered = /^\s*\d+[.)]\s+/.test(line);
-        var list = document.createElement(ordered ? 'ol' : 'ul');
-        var itemRe = ordered ? /^\s*\d+[.)]\s+(.*)$/ : /^\s*[-*]\s+(.*)$/;
-        while (i < lines.length && (m = itemRe.exec(lines[i]))) {
-          var li = document.createElement('li');
-          li.appendChild(renderInline(m[1]));
-          list.appendChild(li); i++;
-        }
-        root.appendChild(list); continue;
-      }
-      if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) {
-        flushPara(para); root.appendChild(document.createElement('hr')); i++; continue;
-      }
-      if ((m = /^>\s?(.*)$/.exec(line))) {
-        flushPara(para);
-        var bq = document.createElement('blockquote');
-        var qbuf = [];
-        while (i < lines.length && (m = /^>\s?(.*)$/.exec(lines[i]))) { qbuf.push(m[1]); i++; }
-        bq.appendChild(renderInline(qbuf.join('\n')));
-        root.appendChild(bq); continue;
-      }
-      if (line.trim() === '') { flushPara(para); i++; continue; }
+      if (/^```/.test(line)) { flush(); var buf = []; i++; while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; } i++; var pre = document.createElement('pre'); var code = document.createElement('code'); code.textContent = buf.join('\n'); pre.appendChild(code); root.appendChild(pre); continue; }
+      if ((m = /^(#{1,3})\s+(.*)$/.exec(line))) { flush(); var h = document.createElement('h' + (m[1].length + 2)); h.appendChild(renderInline(m[2])); root.appendChild(h); i++; continue; }
+      if (/^\s*[-*]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) { flush(); var ord = /^\s*\d+[.)]\s+/.test(line); var list = document.createElement(ord ? 'ol' : 'ul'); var ir = ord ? /^\s*\d+[.)]\s+(.*)$/ : /^\s*[-*]\s+(.*)$/; while (i < lines.length && (m = ir.exec(lines[i]))) { var li = document.createElement('li'); li.appendChild(renderInline(m[1])); list.appendChild(li); i++; } root.appendChild(list); continue; }
+      if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) { flush(); root.appendChild(document.createElement('hr')); i++; continue; }
+      if ((m = /^>\s?(.*)$/.exec(line))) { flush(); var bq = document.createElement('blockquote'); var qb = []; while (i < lines.length && (m = /^>\s?(.*)$/.exec(lines[i]))) { qb.push(m[1]); i++; } bq.appendChild(renderInline(qb.join('\n'))); root.appendChild(bq); continue; }
+      if (line.trim() === '') { flush(); i++; continue; }
       para.push(line); i++;
     }
-    flushPara(para);
+    flush();
     return root;
   }
 
   // ---- chat rendering ----
-  function addBubble(cls, text) {
-    var div = document.createElement('div');
-    div.className = 'bubble ' + cls;
-    if (cls === 'assistant') div.appendChild(renderMarkdown(text));
-    else div.textContent = text;
-    chatEl.appendChild(div);
-    div.scrollIntoView({ block: 'end' });
+  function atBottom() { var m = document.querySelector('main'); return m.scrollHeight - m.scrollTop - m.clientHeight < 120; }
+  function scrollDown() { var m = document.querySelector('main'); m.scrollTop = m.scrollHeight; }
+  function addMsg(role, text, imgUrl) {
+    var stick = atBottom();
+    var wrap = document.createElement('div'); wrap.className = 'msg ' + role;
+    var lab = document.createElement('div'); lab.className = 'role'; lab.textContent = role === 'user' ? 'you' : 'claude'; wrap.appendChild(lab);
+    var content = document.createElement('div'); content.className = 'content';
+    if (role === 'assistant') content.appendChild(renderMarkdown(text));
+    else content.appendChild(document.createTextNode(text));
+    if (imgUrl) { var im = document.createElement('img'); im.className = 'att'; im.src = imgUrl; content.appendChild(im); }
+    wrap.appendChild(content); chatEl.appendChild(wrap);
+    if (stick) scrollDown();
+  }
+  function addSys(text, cls) {
+    var d = document.createElement('div'); d.className = cls || 'sysline';
+    var s = document.createElement('span'); s.textContent = text; d.appendChild(s); chatEl.appendChild(d);
+    if (atBottom()) scrollDown();
   }
 
-  var SUPERVISOR_BANNER_TYPES = {
-    limit_detected: 'limit detected — switching accounts…',
-    forced_switch: 'switching accounts…',
-    failover: 'switched accounts',
-    parked: 'all accounts limited — parked',
-    turn_failed: 'turn failed',
-    flap_guard_tripped: 'too many failovers — stopped',
+  var BANNERS = {
+    limit_detected: 'limit reached — switching accounts…', forced_switch: 'switching accounts…',
+    failover: 'switched account', parked: 'all accounts limited — parked',
+    turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped',
   };
-
-  function pushLog(raw) {
-    logLines.push(raw);
-    if (logLines.length > 50) logLines.shift();
-    logEl.textContent = logLines.join('\n');
-  }
-
   function handleEvent(kind, data) {
-    if (kind === 'assistant_text') {
-      addBubble('assistant', data.text);
-    } else if (kind === 'supervisor') {
-      pushLog(JSON.stringify(data));
-      var label = SUPERVISOR_BANNER_TYPES[data.type];
-      if (label) addBubble('banner', label);
-    } else if (kind === 'session_started') {
-      addBubble('header-line', 'session started (' + (data.resume ? 'resume' : 'new') + ')');
-    } else if (kind === 'session_done') {
-      addBubble('header-line', 'session done: ' + data.status +
-        (data.finalAccount ? ' via ' + data.finalAccount : '') +
-        ' — failovers: ' + data.failovers);
-      pollAccounts();
-      pollSnapshot();
-      setBusy(false);
-    } else if (kind === 'session_error') {
-      addBubble('banner', 'session error: ' + data.message);
-      setBusy(false);
-    }
+    if (kind === 'assistant_text') addMsg('assistant', data.text);
+    else if (kind === 'supervisor') { var l = BANNERS[data.type]; if (l) addSys(l, 'banner'); }
+    else if (kind === 'session_started') addSys('session ' + (data.resume ? 'resumed' : 'started') + (data.model ? ' · ' + data.model : '') + (data.effort ? ' · ' + data.effort : ''));
+    else if (kind === 'session_done') { addSys('done: ' + data.status + (data.finalAccount ? ' · ' + data.finalAccount : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')); pollAccounts(); pollSnapshot(); setBusy(false); }
+    else if (kind === 'session_error') { addSys('error: ' + data.message, 'banner err'); setBusy(false); }
   }
 
-  logToggle.addEventListener('click', function () {
-    logEl.hidden = !logEl.hidden;
-    logToggle.textContent = (logEl.hidden ? '▶' : '▼') + ' failover log';
-  });
+  // ---- accounts / quota popover ----
+  function gCls(p) { return p >= 90 ? 'red' : p >= 70 ? 'amber' : ''; }
+  function gauge(label, usage) {
+    var p = Math.round((usage.utilization || 0) * (usage.utilization > 1 ? 1 : 100));
+    p = Math.max(0, Math.min(100, p));
+    var g = document.createElement('div'); g.className = 'g';
+    var lab = document.createElement('div'); lab.className = 'lab';
+    var a = document.createElement('span'); a.textContent = label; var b = document.createElement('span'); b.textContent = p + '%';
+    lab.appendChild(a); lab.appendChild(b); g.appendChild(lab);
+    var tr = document.createElement('div'); tr.className = 'track'; var i = document.createElement('i'); if (gCls(p)) i.classList.add(gCls(p)); i.style.width = p + '%'; tr.appendChild(i); g.appendChild(tr);
+    return g;
+  }
+  function renderAccounts(list) {
+    accountsEl.textContent = '';
+    list.forEach(function (a) {
+      var st = a.state || { kind: 'unknown' };
+      var card = document.createElement('div'); card.className = 'acct';
+      var top = document.createElement('div'); top.className = 'top';
+      var left = document.createElement('div');
+      var nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = a.displayName || a.name; left.appendChild(nm);
+      if (a.email) { var em = document.createElement('div'); em.className = 'em'; em.textContent = a.email; left.appendChild(em); }
+      top.appendChild(left);
+      var badge = document.createElement('span'); badge.className = 'badge';
+      if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'active'; }
+      else if (st.kind === 'limited') { badge.classList.add('limited'); badge.textContent = 'limited'; }
+      else badge.textContent = 'idle';
+      top.appendChild(badge); card.appendChild(top);
+      if (a.quota) {
+        card.appendChild(gauge('5-hour', a.quota.fiveHour));
+        card.appendChild(gauge('7-day', a.quota.sevenDay));
+        if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = 'cached — refreshing'; card.appendChild(s); }
+      } else {
+        var n = document.createElement('div'); n.className = 'note'; n.textContent = a.quotaError ? 'usage unavailable — retrying' : 'usage unavailable'; card.appendChild(n);
+      }
+      accountsEl.appendChild(card);
+    });
+  }
+  function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
+  pollAccounts(); setInterval(pollAccounts, 60000);
+
+  function togglePop(show) {
+    var open = show === undefined ? quotaPop.hidden : show;
+    quotaPop.hidden = !open; backdrop.hidden = !open;
+    if (open) pollAccounts();
+  }
+  quotaBtn.addEventListener('click', function () { togglePop(); });
+  backdrop.addEventListener('click', function () { togglePop(false); });
+
+  function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; return s; }); }
+  function loadHistory() {
+    return api('/api/sessions/current/history?limit=80').then(function (r) { return r.json(); }).then(function (rows) {
+      if (!Array.isArray(rows) || rows.length === 0) return;
+      addSys('history — ' + rows.length + ' earlier messages');
+      rows.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); });
+      addSys('live'); scrollDown();
+    }).catch(function () {});
+  }
+  pollSnapshot().then(loadHistory);
 
   // ---- SSE ----
   var es = null;
@@ -459,54 +340,61 @@
     if (es) es.close();
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     es.onopen = function () { dot.className = 'on'; };
-    es.onerror = function () {
-      dot.className = 'off';
-      es.close();
-      setTimeout(connect, 2000);
-    };
+    es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
     ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
-        var data;
-        try { data = JSON.parse(evt.data); } catch (e) { return; }
+        var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
         handleEvent(kind, data.data || {});
       });
     });
   }
   connect();
 
-  // ---- sending ----
-  function setBusy(on) {
-    busyEl.textContent = on ? 'busy — session still running' : '';
-  }
+  // ---- composer ----
+  function autogrow() { promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 220) + 'px'; }
+  promptEl.addEventListener('input', autogrow);
 
-  function send() {
-    var text = promptEl.value.trim();
-    if (!text) return;
-    var forceNew = newSessionEl.checked;
-    var body = { prompt: text };
-    var cwd = cwdEl.value.trim();
-    if (cwd) body.cwd = cwd;
-    var useNew = forceNew || !lastSessionId;
-    var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
-    addBubble('user', text);
-    api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-      if (r.status === 409) { setBusy(true); return; }
-      setBusy(false);
-      promptEl.value = '';
-      return r.json().then(function (j) { if (j.sessionId) lastSessionId = j.sessionId; });
-    }).catch(function () {});
+  function setImage(dataUrl) {
+    pendingImage = dataUrl;
+    attachRow.textContent = '';
+    if (!dataUrl) { attachRow.classList.remove('show'); return; }
+    var chip = document.createElement('div'); chip.className = 'chip';
+    var img = document.createElement('img'); img.src = dataUrl; chip.appendChild(img);
+    var span = document.createElement('span'); span.textContent = 'screenshot attached'; chip.appendChild(span);
+    var x = document.createElement('button'); x.textContent = '✕'; x.title = 'remove'; x.addEventListener('click', function () { setImage(null); }); chip.appendChild(x);
+    attachRow.appendChild(chip); attachRow.classList.add('show');
   }
-
-  sendBtn.addEventListener('click', send);
-  promptEl.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  function fileToImage(file) { if (!file || !/^image\//.test(file.type)) return; var r = new FileReader(); r.onload = function () { setImage(r.result); }; r.readAsDataURL(file); }
+  fileEl.addEventListener('change', function () { if (fileEl.files[0]) fileToImage(fileEl.files[0]); fileEl.value = ''; });
+  promptEl.addEventListener('paste', function (e) {
+    var items = (e.clipboardData || {}).items || [];
+    for (var i = 0; i < items.length; i++) { if (items[i].type && items[i].type.indexOf('image') === 0) { var f = items[i].getAsFile(); if (f) { e.preventDefault(); fileToImage(f); return; } } }
   });
 
-  switchBtn.addEventListener('click', function () {
-    api('/api/switch', { method: 'POST' }).then(function (r) {
-      if (r.status === 409) addBubble('banner', 'switch: no session running');
+  function setBusy(on) { busyEl.textContent = on ? 'session running…' : ''; }
+  function send() {
+    var text = promptEl.value.trim();
+    if (!text && !pendingImage) return;
+    var body = { prompt: text };
+    if (modelEl.value) body.model = modelEl.value;
+    if (effortEl.value) body.effort = effortEl.value;
+    if (pendingImage) body.image = pendingImage;
+    var useNew = newSessionEl.checked || !lastSessionId;
+    var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
+    addMsg('user', text || '(image)', pendingImage);
+    var hadImage = !!pendingImage;
+    api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+      if (r.status === 409) { setBusy(true); return; }
+      setBusy(false); promptEl.value = ''; autogrow(); setImage(null); if (hadImage) {} newSessionEl.checked = false;
+      return r.json().then(function (j) { if (j.sessionId) lastSessionId = j.sessionId; }).catch(function () {});
     }).catch(function () {});
+  }
+  sendBtn.addEventListener('click', send);
+  promptEl.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+
+  $('switchBtn').addEventListener('click', function () {
+    api('/api/switch', { method: 'POST' }).then(function (r) { if (r.status === 409) addSys('switch: no session running', 'banner'); }).catch(function () {});
   });
 })();
 </script>

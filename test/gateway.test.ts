@@ -21,6 +21,8 @@ beforeAll(async () => {
     { name: 'a', configDir: join(dir, 'cfg-a') },
     { name: 'b', configDir: join(dir, 'cfg-b') },
   ]);
+  mkdirSync(join(dir, 'cfg-a'), { recursive: true });
+  writeFileSync(join(dir, 'cfg-a', '.claude.json'), JSON.stringify({ oauthAccount: { displayName: 'Alpha', emailAddress: 'alpha@example.com' } }));
   const scenarioA = join(dir, 'a.jsonl');
   writeFileSync(scenarioA, [
     JSON.stringify({ event: { type: 'system', subtype: 'init', session_id: 'gw' } }),
@@ -152,5 +154,31 @@ describe('live panel path', () => {
     } finally {
       await app2.close();
     }
+  });
+});
+
+describe('gateway account identity + image upload', () => {
+  it('accounts include displayName/email read from .claude.json', async () => {
+    const body = await (await fetch(`${base}/api/accounts`, { headers: auth })).json() as { name: string; displayName?: string; email?: string }[];
+    const a = body.find((x) => x.name === 'a');
+    expect(a?.displayName).toBe('Alpha');
+    expect(a?.email).toBe('alpha@example.com');
+  });
+
+  it('a session started with an image writes the file and injects its path into the prompt', async () => {
+    // 1x1 png
+    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const res = await fetch(`${base}/api/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ prompt: 'look at this', image: png }) });
+    expect(res.status).toBe(201);
+    // uploads dir now holds one image
+    const { readdirSync } = await import('node:fs');
+    const files = readdirSync(join(dir, 'state', 'uploads'));
+    expect(files.length).toBeGreaterThanOrEqual(1);
+    expect(files[0]).toMatch(/\.png$/);
+  });
+
+  it('rejects a malformed image with 400', async () => {
+    const res = await fetch(`${base}/api/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ prompt: 'x', image: 'not-a-data-url' }) });
+    expect(res.status).toBe(400);
   });
 });

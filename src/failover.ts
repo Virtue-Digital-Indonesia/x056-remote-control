@@ -28,6 +28,8 @@ export interface RunSessionOptions {
   now?: () => number;
   maxFailoversPerHour?: number;
   claudePath?: string;
+  model?: string;
+  effort?: string;
   tap?: (e: RawEvent) => void;
   forceSwitchSignal?: boolean;
   drainTimeoutMs?: number;
@@ -128,6 +130,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         sessionId,
         mode,
         prompt,
+        model: opts.model,
+        effort: opts.effort,
         onEvent: (e) => processEvent(e),
       });
       currentHandle = handle;
