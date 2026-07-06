@@ -30,6 +30,8 @@
     --shadow: 0 14px 40px rgba(0,0,0,.55);
   }
   * { box-sizing: border-box; }
+  .ic { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; display: inline-block; vertical-align: middle; }
+  .ic.sm { width: 15px; height: 15px; }
   html, body { height: 100%; margin: 0; }
   body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14.5px; line-height: 1.55; display: grid; grid-template-columns: 264px 1fr; height: 100vh; overflow: hidden; }
 
@@ -95,7 +97,7 @@
   .content blockquote { margin: 0 0 11px; padding: 4px 14px; border-left: 3px solid var(--border-strong); color: var(--muted); }
 
   .act { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 3px 0; padding: 3px 0; }
-  .act .ic { color: var(--faint); font-size: 11px; }
+  .act .ic { opacity: .8; }
   .act.sub { color: var(--accent); }
   .act .el { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sysline { text-align: center; margin: 18px 0; } .sysline span { font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 4px 12px; }
@@ -125,7 +127,8 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .attach { background: none; border: 1px solid var(--border); border-radius: 9px; height: 32px; min-width: 32px; cursor: pointer; color: var(--muted); font-size: 15px; display: inline-grid; place-items: center; }
   .attach:hover { color: var(--text); border-color: var(--border-strong); }
-  .send { background: var(--accent); color: var(--on-accent); border: none; border-radius: 10px; height: 32px; padding: 0 15px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  .send { background: var(--accent); color: var(--on-accent); border: none; border-radius: 10px; height: 32px; width: 34px; display: inline-grid; place-items: center; cursor: pointer; }
+  .send:hover { filter: brightness(1.05); }
   .send:disabled { opacity: .4; }
 
   .pop { position: absolute; bottom: 62px; left: 12px; width: 288px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; z-index: 30; }
@@ -160,11 +163,26 @@
 </script>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-compose" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-7.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-switch" viewBox="0 0 24 24"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="M16 21l4-4-4-4"/><path d="M20 17H4"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></symbol>
+  <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+</defs></svg>
 <aside>
   <div class="brand"><span class="mark">x0</span><span>remote control</span><span class="sub">self-hosted</span></div>
-  <button class="newbtn" id="newSessionBtn">✦ New session</button>
+  <button class="newbtn" id="newSessionBtn"><svg class="ic sm"><use href="#i-compose"/></svg> New session</button>
   <div class="side-scroll">
-    <div class="side-head"><span>Projects</span><button id="addProjectBtn" title="add project">+</button></div>
+    <div class="side-head"><span>Projects</span><button id="addProjectBtn" title="add project"><svg class="ic sm"><use href="#i-plus"/></svg></button></div>
     <div id="projectList"></div>
   </div>
   <div class="acct" id="acctChip" title="usage"><div class="av" id="acctAv">?</div><div class="who"><div class="n" id="acctName">—</div><div class="p" id="acctPlan">usage</div></div></div>
@@ -176,10 +194,10 @@
     <span class="cwd" id="projCwd"></span>
     <span class="sp"></span>
     <span id="dot" class="off" title="connection"></span>
-    <button class="ico" id="resumeBtn" title="resume an existing session">⟲</button>
-    <button class="ico" id="switchBtn" title="force switch account">⇄</button>
-    <button class="ico" id="themeBtn" title="theme"></button>
-    <button class="ico" id="tokenBtn" title="clear token">⚙</button>
+    <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
+    <button class="ico" id="switchBtn" title="force switch account"><svg class="ic"><use href="#i-switch"/></svg></button>
+    <button class="ico" id="themeBtn" title="theme"><svg class="ic"><use href="#i-moon"/></svg></button>
+    <button class="ico" id="tokenBtn" title="clear token"><svg class="ic"><use href="#i-logout"/></svg></button>
   </div>
   <div class="scroll"><div class="thread" id="chat"></div></div>
   <div class="composer-wrap">
@@ -193,10 +211,10 @@
         <div class="select"><select id="effort" title="effort">
           <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
         </select></div>
-        <label class="attach" title="attach image">📎<input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden /></label>
+        <label class="attach" title="attach image"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden /></label>
         <span class="sp"></span>
         <span id="busy"></span>
-        <button class="send" id="sendBtn">Send</button>
+        <button class="send" id="sendBtn" title="send"><svg class="ic sm"><use href="#i-up"/></svg></button>
       </div>
     </div>
   </div>
@@ -232,11 +250,17 @@
   effortEl.addEventListener('change', function () { try { localStorage.setItem(EFFORT_KEY, effortEl.value); } catch (e) {} });
 
   function api(path, opts) { opts = opts || {}; opts.headers = Object.assign({ Authorization: 'Bearer ' + token }, opts.body ? { 'Content-Type': 'application/json' } : {}); return fetch(path, opts); }
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  function icon(name, cls) {
+    var svg = document.createElementNS(SVGNS, 'svg'); svg.setAttribute('class', 'ic ' + (cls || ''));
+    var use = document.createElementNS(SVGNS, 'use'); use.setAttribute('href', '#i-' + name); svg.appendChild(use);
+    return svg;
+  }
   $('tokenBtn').addEventListener('click', function () { localStorage.removeItem(TOKEN_KEY); location.reload(); });
 
   var systemDark = matchMedia('(prefers-color-scheme: dark)');
   function curTheme() { return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
-  function applyTheme(t) { if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark'); else document.documentElement.removeAttribute('data-theme'); themeBtn.textContent = t === 'dark' ? '☀' : '☾'; }
+  function applyTheme(t) { if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark'); else document.documentElement.removeAttribute('data-theme'); themeBtn.textContent = ''; themeBtn.appendChild(icon(t === 'dark' ? 'sun' : 'moon')); }
   applyTheme(curTheme());
   themeBtn.addEventListener('click', function () { var n = curTheme() === 'dark' ? 'light' : 'dark'; try { localStorage.setItem(THEME_KEY, n); } catch (e) {} applyTheme(n); });
   systemDark.addEventListener('change', function (e) { var s = null; try { s = localStorage.getItem(THEME_KEY); } catch (err) {} if (!s) applyTheme(e.matches ? 'dark' : 'light'); });
@@ -284,7 +308,7 @@
     wrap.appendChild(content); chatEl.appendChild(wrap); if (stick) down();
   }
   function addSys(text, cls) { var stick = atBottom(); var d = document.createElement('div'); d.className = cls || 'sysline'; var s = document.createElement('span'); s.textContent = text; d.appendChild(s); chatEl.appendChild(d); if (stick) down(); }
-  function addAct(label, isSub) { var stick = atBottom(); var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); var i = document.createElement('span'); i.className = 'ic'; i.textContent = isSub ? '✦' : '▸'; d.appendChild(i); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); chatEl.appendChild(d); if (stick) down(); }
+  function addAct(label, isSub) { var stick = atBottom(); var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); chatEl.appendChild(d); if (stick) down(); }
 
   var BANNERS = { limit_detected: 'limit reached — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts limited — parked', turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped' };
   var active = false, lastLabel = '', runningSubs = 0, subs = {};
@@ -354,11 +378,12 @@
   function renderPickList(q) {
     projPickList.textContent = '';
     var ql = (q || '').toLowerCase();
-    var shown = workspaceDirs.filter(function (d) { return d.name.toLowerCase().indexOf(ql) >= 0; });
+    var shown = workspaceDirs.filter(function (d) { return (d.rel || d.name).toLowerCase().indexOf(ql) >= 0; });
     if (!shown.length) { var e = document.createElement('div'); e.className = 'pk-item added'; e.textContent = 'no matching repos'; projPickList.appendChild(e); return; }
     shown.forEach(function (d) {
       var it = document.createElement('div'); it.className = 'pk-item' + (d.isProject ? ' added' : '');
-      var nm = document.createElement('span'); nm.textContent = d.name; it.appendChild(nm);
+      it.appendChild(icon('folder', 'sm'));
+      var nm = document.createElement('span'); nm.style.overflow = 'hidden'; nm.style.textOverflow = 'ellipsis'; nm.style.whiteSpace = 'nowrap'; nm.textContent = d.rel || d.name; it.appendChild(nm);
       if (d.isProject) { var tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = 'added'; it.appendChild(tag); }
       else it.addEventListener('click', function () { createProjectFromDir(d); });
       projPickList.appendChild(it);
@@ -488,7 +513,7 @@
     if (!u) { attachRow.classList.remove('show'); return; }
     var chip = document.createElement('div'); chip.className = 'chip'; var img = document.createElement('img'); img.src = u; chip.appendChild(img);
     var sp = document.createElement('span'); sp.textContent = 'image attached'; chip.appendChild(sp);
-    var x = document.createElement('button'); x.textContent = '✕'; x.addEventListener('click', function () { setImage(null); }); chip.appendChild(x);
+    var x = document.createElement('button'); x.appendChild(icon('x', 'sm')); x.addEventListener('click', function () { setImage(null); }); chip.appendChild(x);
     attachRow.appendChild(chip); attachRow.classList.add('show');
   }
   function fileToImage(f) { if (!f || !/^image\//.test(f.type)) return; var r = new FileReader(); r.onload = function () { setImage(r.result); }; r.readAsDataURL(f); }

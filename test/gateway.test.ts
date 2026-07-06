@@ -221,18 +221,24 @@ describe('gateway projects', () => {
 });
 
 describe('gateway workspace picker', () => {
-  it('lists workspace subdirectories, flagging ones already added as projects', async () => {
+  it('lists top-level dirs and nested .git repos, flagging added ones', async () => {
     const { mkdirSync: mk } = await import('node:fs');
     mk(join(dir, 'repo-one'), { recursive: true });
     mk(join(dir, 'repo-two'), { recursive: true });
-    const dirs = await (await fetch(`${base}/api/workspace`, { headers: auth })).json() as { name: string; path: string; isProject: boolean }[];
-    const names = dirs.map((d) => d.name);
-    expect(names).toContain('repo-one');
-    expect(names).toContain('repo-two');
+    // a container with a nested git repo two levels deep
+    mk(join(dir, 'container', 'nested-repo', '.git'), { recursive: true });
+    const dirs = await (await fetch(`${base}/api/workspace`, { headers: auth })).json() as { name: string; rel: string; path: string; isProject: boolean }[];
+    const rels = dirs.map((d) => d.rel);
+    expect(rels).toContain('repo-one');
+    expect(rels).toContain('repo-two');
+    // the nested repo is discovered by its rel path; its name is the leaf
+    const nested = dirs.find((d) => d.rel === 'container/nested-repo');
+    expect(nested).toBeTruthy();
+    expect(nested?.name).toBe('nested-repo');
     // add repo-one as a project, then it should be flagged isProject
     await fetch(`${base}/api/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'repo-one', cwd: join(dir, 'repo-one') }) });
-    const after = await (await fetch(`${base}/api/workspace`, { headers: auth })).json() as { name: string; isProject: boolean }[];
-    expect(after.find((d) => d.name === 'repo-one')?.isProject).toBe(true);
+    const after = await (await fetch(`${base}/api/workspace`, { headers: auth })).json() as { rel: string; isProject: boolean }[];
+    expect(after.find((d) => d.rel === 'repo-one')?.isProject).toBe(true);
   });
 });
 

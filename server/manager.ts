@@ -165,23 +165,40 @@ export class SessionManager {
     this.emit('session_adopted', { sessionId, projectId });
   }
 
-  /** Immediate subdirectories of the workspace root — the repos you can add as
-   *  projects with one click instead of typing paths. */
-  listWorkspaceDirs(): { name: string; path: string; isProject: boolean }[] {
+  /** Repos under the workspace root you can add as projects with one click.
+   *  Walks up to 3 levels so nested repos (e.g. poc-ahu-ai/ahu-ai-chatbot) are
+   *  found: a directory containing `.git` is a project leaf (not descended
+   *  into); top-level directories are always listed; intermediate containers
+   *  are recursed but not themselves listed. */
+  listWorkspaceDirs(): { name: string; rel: string; path: string; isProject: boolean }[] {
     const existing = new Set(this.projects().list().map((p) => p.cwd));
-    let entries: import('node:fs').Dirent[];
-    try {
-      entries = readdirSync(this.opts.workspaceRoot, { withFileTypes: true });
-    } catch {
-      return [];
-    }
-    return entries
-      .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
-      .map((d) => {
-        const path = join(this.opts.workspaceRoot, d.name);
-        return { name: d.name, path, isProject: existing.has(path) };
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const skip = new Set(['node_modules', 'dist', 'build', '.next', 'target', '__pycache__', 'vendor', '.venv', 'venv', 'coverage', '.cache', 'tmp']);
+    const root = this.opts.workspaceRoot;
+    const MAX_DEPTH = 3;
+    const found: { rel: string; path: string }[] = [];
+    const walk = (abs: string, rel: string, depth: number): void => {
+      if (found.length >= 800 || depth > MAX_DEPTH) return;
+      let entries: import('node:fs').Dirent[];
+      try {
+        entries = readdirSync(abs, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      const hasGit = entries.some((e) => e.name === '.git');
+      if (depth > 0) {
+        if (hasGit) { found.push({ rel, path: abs }); return; }
+        if (depth === 1) found.push({ rel, path: abs });
+      }
+      if (depth >= MAX_DEPTH) return;
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name.startsWith('.') || skip.has(e.name)) continue;
+        walk(join(abs, e.name), rel ? `${rel}/${e.name}` : e.name, depth + 1);
+      }
+    };
+    walk(root, '', 0);
+    return found
+      .map(({ rel, path }) => ({ name: rel.split('/').pop() ?? rel, rel, path, isProject: existing.has(path) }))
+      .sort((a, b) => a.rel.localeCompare(b.rel));
   }
 
   /** Switch the active project (a pure view change — never blocked by a run).
