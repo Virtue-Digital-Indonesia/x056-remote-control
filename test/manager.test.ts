@@ -214,3 +214,54 @@ describe('SessionManager activity + turn_state', () => {
     expect(acts).toEqual(['start', 'done']);
   });
 });
+
+describe('SessionManager parallel projects', () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-par-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
+    const switches: string[] = [];
+    const runSessionFn = (async (o: { sessionId: string; cwd: string; control?: (c: { forceSwitch: () => void; abort: () => void }) => void; tap?: (e: unknown) => void }) => {
+      o.control?.({ forceSwitch: () => switches.push(o.sessionId), abort: () => {} });
+      o.tap?.({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi ' + o.cwd }] } });
+      await new Promise((r) => setTimeout(r, 40));
+      return { status: 'completed', finalAccount: 'a', failovers: 0 };
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn });
+    const p1 = mgr.createProject('P1', dir);
+    const p2 = mgr.createProject('P2', dir);
+    return { mgr, p1, p2, switches };
+  }
+
+  it('runs two projects at once and tags every event with its projectId', async () => {
+    const { mgr, p1, p2 } = setup();
+    const seen: GatewayEvent[] = [];
+    mgr.subscribe((e) => seen.push(e));
+    mgr.start('a', undefined, undefined, p1.id);
+    mgr.start('b', undefined, undefined, p2.id);
+    expect(mgr.listProjects().projects.filter((p) => p.running).map((p) => p.id).sort()).toEqual([p1.id, p2.id].sort());
+    await waitFor(() => mgr.listProjects().projects.every((p) => !p.running));
+    const pid = (e: GatewayEvent) => (e.data as { projectId?: string }).projectId;
+    expect(seen.some((e) => e.kind === 'assistant_text' && pid(e) === p1.id)).toBe(true);
+    expect(seen.some((e) => e.kind === 'assistant_text' && pid(e) === p2.id)).toBe(true);
+    expect(seen.filter((e) => e.kind === 'turn_state' && pid(e) === p1.id).length).toBe(2);
+  });
+
+  it('blocks a second turn in the same project but allows a different one', async () => {
+    const { mgr, p1, p2 } = setup();
+    mgr.start('a', undefined, undefined, p1.id);
+    expect(() => mgr.start('again', undefined, undefined, p1.id)).toThrow(BusyError);
+    expect(() => mgr.start('b', undefined, undefined, p2.id)).not.toThrow();
+    await waitFor(() => mgr.listProjects().projects.every((p) => !p.running));
+  });
+
+  it('forceSwitch targets one project run and returns false when idle', async () => {
+    const { mgr, p1, p2, switches } = setup();
+    expect(mgr.forceSwitch(p1.id)).toBe(false);
+    const sid = mgr.start('a', undefined, undefined, p1.id);
+    mgr.start('b', undefined, undefined, p2.id);
+    expect(mgr.forceSwitch(p1.id)).toBe(true);
+    expect(switches).toEqual([sid]);
+    await waitFor(() => mgr.listProjects().projects.every((p) => !p.running));
+  });
+});

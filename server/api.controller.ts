@@ -56,6 +56,7 @@ interface SendBody {
   model?: string;
   effort?: string;
   image?: string;
+  projectId?: string;
 }
 
 // NB: this project runs under tsx (esbuild), which does not implement
@@ -98,7 +99,7 @@ export class ApiController {
     if (!body?.prompt && !body?.image) throw new BadRequestException('prompt or image required');
     try {
       const { prompt, opts } = this.composePrompt(body);
-      return { sessionId: this.manager.start(prompt, body.cwd, opts) };
+      return { sessionId: this.manager.start(prompt, body.cwd, opts, body.projectId) };
     } catch (err) {
       if (err instanceof BusyError) throw new ConflictException('busy');
       throw new BadRequestException((err as Error).message);
@@ -110,7 +111,7 @@ export class ApiController {
     if (!body?.prompt && !body?.image) throw new BadRequestException('prompt or image required');
     try {
       const { prompt, opts } = this.composePrompt(body);
-      return { sessionId: this.manager.continueLast(prompt, opts) };
+      return { sessionId: this.manager.continueLast(prompt, opts, body.projectId) };
     } catch (err) {
       if (err instanceof BusyError) throw new ConflictException('busy');
       throw new BadRequestException((err as Error).message);
@@ -245,8 +246,8 @@ export class ApiController {
 
   @Post('switch')
   @HttpCode(200)
-  switch(): { switched: boolean } {
-    if (!this.manager.forceSwitch()) throw new ConflictException('no session running');
+  switch(@Body() body: { projectId?: string }): { switched: boolean } {
+    if (!this.manager.forceSwitch(body?.projectId)) throw new ConflictException('no session running');
     return { switched: true };
   }
 }

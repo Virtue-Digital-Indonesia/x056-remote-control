@@ -184,3 +184,7 @@ The container can never touch the Docker daemon (deliberate — a mounted socket
 3. The actuator waits until no session is running (never kills an in-flight turn), then runs `docker compose up -d --build`, logs to `.deploy/last.log`, and records `.deploy/status.json`.
 
 Worst-case abuse from a compromised container is a rebuild of itself — not host command execution.
+
+## Parallel projects
+
+Projects run **concurrently** — each project executes at most one turn at a time, but different projects run simultaneously. Switching projects is a pure view change (never blocked). The sidebar shows a spinner on any project with a turn in flight. Because all projects share the same two Max accounts, parallel turns split the same quota and can both hit the limit; failover accounting is coordinated in-process so it stays correct under concurrency.

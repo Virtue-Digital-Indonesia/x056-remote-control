@@ -18,6 +18,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
     stateDir: cfg.stateDir,
     workspaceRoot: cfg.workspaceRoot,
     claudePath: cfg.claudePath,
+    manageProcessSignals: true,
   });
 
   @Module({

@@ -6,7 +6,7 @@ import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { toActivity } from './activity.js';
 import { ProjectRegistry, type Project } from './projects.js';
-import { runSession, type SessionResult } from '../src/failover.js';
+import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import type { RawEvent } from '../src/types.js';
 
 export interface GatewayEvent {
@@ -27,6 +27,9 @@ export interface SessionManagerOptions {
   workspaceRoot: string;
   claudePath?: string;
   runSessionFn?: typeof runSession;
+  /** Register one process-level SIGTERM/SIGINT handler that aborts all runs.
+   *  Set by the server entrypoint; left off in tests. */
+  manageProcessSignals?: boolean;
 }
 
 /** Per-turn overrides chosen in the UI. */
@@ -53,17 +56,41 @@ interface PersistedState {
   cwd?: string;
 }
 
+interface ActiveRun {
+  sessionId: string;
+  cwd: string;
+  control?: RunControl;
+}
+
 export class SessionManager {
   private buffer: GatewayEvent[] = [];
   private seq = 0;
   private subscribers = new Set<(e: GatewayEvent) => void>();
-  private running = false;
-  private currentSessionId: string | null = null;
-  private lastResult: SessionResult | null = null;
+  // One concurrent turn per project (keyed by projectId); projects run in parallel.
+  private runs = new Map<string, ActiveRun>();
+  private lastResults = new Map<string, SessionResult>();
+  private sharedRegistry?: AccountRegistry;
 
   constructor(private readonly opts: SessionManagerOptions) {
     mkdirSync(opts.stateDir, { recursive: true });
     this.migrateProjects();
+    if (opts.manageProcessSignals) {
+      const onTerm = () => {
+        for (const run of this.runs.values()) run.control?.abort();
+        process.exit(130);
+      };
+      process.on('SIGTERM', onTerm);
+      process.on('SIGINT', onTerm);
+    }
+  }
+
+  /** Shared across all concurrent runs so failover's account-limit accounting
+   *  is one authoritative in-process view (no cross-run file races). */
+  private registry(): AccountRegistry {
+    if (!this.sharedRegistry) {
+      this.sharedRegistry = AccountRegistry.load(join(this.opts.stateDir, 'accounts.json'));
+    }
+    return this.sharedRegistry;
   }
 
   private get stateFile(): string {
@@ -90,9 +117,12 @@ export class SessionManager {
   }
 
   // ---- projects ----
-  listProjects(): { current: string | null; projects: Project[] } {
+  listProjects(): { current: string | null; projects: (Project & { running: boolean })[] } {
     const reg = this.projects();
-    return { current: reg.currentId(), projects: reg.list() };
+    return {
+      current: reg.currentId(),
+      projects: reg.list().map((p) => ({ ...p, running: this.runs.has(p.id) })),
+    };
   }
 
   createProject(name: string, cwd?: string): Project {
@@ -101,14 +131,17 @@ export class SessionManager {
     return proj;
   }
 
-  /** Switch the active project — repoints state.json at that project's session. */
+  /** Switch the active project (a pure view change — never blocked by a run).
+   *  Repoints state.json only if that project isn't mid-turn, so a running
+   *  project's own pointer isn't clobbered underneath it. */
   selectProject(id: string): void {
-    if (this.running) throw new BusyError();
     const reg = this.projects();
     const proj = reg.get(id);
     if (!proj) throw new Error(`unknown project ${id}`);
     reg.select(id);
-    writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: proj.lastSessionId, cwd: proj.cwd }));
+    if (!this.runs.has(id)) {
+      writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: proj.lastSessionId, cwd: proj.cwd }));
+    }
     this.emit('project_selected', { id, name: proj.name });
   }
 
@@ -147,45 +180,52 @@ export class SessionManager {
     return target;
   }
 
-  start(prompt: string, cwd?: string, opts?: TurnRunOptions): string {
-    if (this.running) throw new BusyError();
-    // Default to the current project's directory so a "new session" runs where
-    // the selected project lives, not the workspace root.
-    const dir = this.resolveCwd(cwd ?? this.projects().current()?.cwd ?? this.opts.workspaceRoot);
+  start(prompt: string, cwd?: string, opts?: TurnRunOptions, projectId?: string): string {
+    const pid = projectId ?? this.projects().currentId();
+    if (!pid) throw new Error('no project selected');
+    if (this.runs.has(pid)) throw new BusyError();
+    const proj = this.projects().get(pid);
+    const dir = this.resolveCwd(cwd ?? proj?.cwd ?? this.opts.workspaceRoot);
     const sessionId = randomUUID();
-    this.launch(sessionId, prompt, dir, false, opts);
+    this.launch(pid, sessionId, prompt, dir, false, opts);
     return sessionId;
   }
 
-  continueLast(prompt: string, opts?: TurnRunOptions): string {
-    if (this.running) throw new BusyError();
-    const st = this.loadState();
-    if (!st.lastSessionId) throw new Error('no previous session — start one first');
-    const dir = this.resolveCwd(st.cwd ?? this.opts.workspaceRoot);
-    this.launch(st.lastSessionId, prompt, dir, true, opts);
-    return st.lastSessionId;
+  continueLast(prompt: string, opts?: TurnRunOptions, projectId?: string): string {
+    const pid = projectId ?? this.projects().currentId();
+    if (!pid) throw new Error('no project selected');
+    if (this.runs.has(pid)) throw new BusyError();
+    const proj = this.projects().get(pid);
+    const sessionId = proj?.lastSessionId ?? this.loadState().lastSessionId;
+    if (!sessionId) throw new Error('no previous session — start one first');
+    const dir = this.resolveCwd(proj?.cwd ?? this.loadState().cwd ?? this.opts.workspaceRoot);
+    this.launch(pid, sessionId, prompt, dir, true, opts);
+    return sessionId;
   }
 
-  private launch(sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
-    this.running = true;
-    this.currentSessionId = sessionId;
+  private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
+    const run: ActiveRun = { sessionId, cwd };
+    this.runs.set(pid, run);
+    // Every event from this run carries its projectId so the panel can route it
+    // to the right conversation while other projects run concurrently.
+    const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { ...data, projectId: pid });
     try {
       const runFn = this.opts.runSessionFn ?? runSession;
-      const registry = AccountRegistry.load(join(this.opts.stateDir, 'accounts.json'));
-      const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => this.emit(k, d));
+      const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => emit(k, d));
       let stateSaved = resume;
-      const currentProjectId = this.projects().currentId();
       const saveStateOnce = () => {
         if (!stateSaved) {
-          writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd }));
-          if (currentProjectId) this.projects().setLastSession(currentProjectId, sessionId);
+          this.projects().setLastSession(pid, sessionId);
+          if (this.projects().currentId() === pid) {
+            writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd }));
+          }
           stateSaved = true;
         }
       };
-      this.emit('session_started', { sessionId, cwd, resume, prompt, model: runOpts?.model, effort: runOpts?.effort });
-      this.emit('turn_state', { active: true });
+      emit('session_started', { sessionId, cwd, resume, prompt, model: runOpts?.model, effort: runOpts?.effort });
+      emit('turn_state', { active: true });
       void runFn({
-        registry,
+        registry: this.registry(),
         log,
         sessionId,
         cwd,
@@ -194,36 +234,36 @@ export class SessionManager {
         claudePath: this.opts.claudePath,
         model: runOpts?.model,
         effort: runOpts?.effort,
+        forceSwitchSignal: false,
+        control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {
           saveStateOnce();
-          this.tapToEvents(e);
+          this.tapToEvents(e, emit);
         },
       })
         .then((res) => {
-          this.lastResult = res;
-          this.emit('session_done', { sessionId, ...res });
+          this.lastResults.set(pid, res);
+          emit('session_done', { sessionId, ...res });
         })
         .catch((err: unknown) => {
-          this.emit('session_error', { sessionId, message: (err as Error).message });
+          emit('session_error', { sessionId, message: (err as Error).message });
         })
         .finally(() => {
-          this.running = false;
-          this.currentSessionId = null;
-          this.emit('turn_state', { active: false });
+          this.runs.delete(pid);
+          emit('turn_state', { active: false });
         });
     } catch (err) {
-      this.running = false;
-      this.currentSessionId = null;
-      this.emit('turn_state', { active: false });
+      this.runs.delete(pid);
+      emit('turn_state', { active: false });
       throw err;
     }
   }
 
-  private tapToEvents(e: RawEvent): void {
+  private tapToEvents(e: RawEvent, emit: (kind: string, data: Record<string, unknown>) => void): void {
     // Surface tool calls + subagent spawns as activity so the UI can show a
     // live "working / N running tasks" state instead of appearing to hang.
     for (const a of toActivity(e)) {
-      this.emit('activity', a as unknown as Record<string, unknown>);
+      emit('activity', a as unknown as Record<string, unknown>);
     }
     if (e.type !== 'assistant') return;
     const msg = e.message as { content?: unknown } | undefined;
@@ -231,7 +271,7 @@ export class SessionManager {
     for (const block of content) {
       if (block && typeof block === 'object' && (block as { type?: string }).type === 'text') {
         const text = (block as { text?: unknown }).text;
-        if (typeof text === 'string' && text.length > 0) this.emit('assistant_text', { text });
+        if (typeof text === 'string' && text.length > 0) emit('assistant_text', { text });
       }
     }
   }
@@ -246,36 +286,43 @@ export class SessionManager {
 
   snapshot(): {
     running: boolean;
+    runningProjects: string[];
     currentSessionId: string | null;
     lastSessionId: string | null;
     lastResult: SessionResult | null;
     currentProjectId: string | null;
   } {
+    const pid = this.projects().currentId();
     return {
-      running: this.running,
-      currentSessionId: this.currentSessionId,
-      lastSessionId: this.loadState().lastSessionId ?? null,
-      lastResult: this.lastResult,
-      currentProjectId: this.projects().currentId(),
+      running: this.runs.size > 0,
+      runningProjects: [...this.runs.keys()],
+      currentSessionId: pid ? this.runs.get(pid)?.sessionId ?? null : null,
+      lastSessionId: (pid ? this.projects().get(pid)?.lastSessionId : undefined) ?? this.loadState().lastSessionId ?? null,
+      lastResult: (pid ? this.lastResults.get(pid) : undefined) ?? null,
+      currentProjectId: pid,
     };
   }
 
-  /** Point the gateway's current session at an already-present transcript (adoption). */
+  /** Point the current project at an already-present transcript (adoption). */
   setCurrent(sessionId: string, cwd: string): void {
-    if (this.running) throw new BusyError();
+    const pid = this.projects().currentId();
+    if (pid && this.runs.has(pid)) throw new BusyError();
     const dir = this.resolveCwd(cwd);
-    const registry = AccountRegistry.load(join(this.opts.stateDir, 'accounts.json'));
-    const configDirs = registry.list().map((a) => a.configDir);
+    const configDirs = this.registry().list().map((a) => a.configDir);
     if (!findTranscript(configDirs, sessionId)) {
       throw new Error(`no transcript for session ${sessionId} in any account's projects tree`);
     }
     writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd: dir }));
-    this.emit('session_adopted', { sessionId, cwd: dir });
+    if (pid) this.projects().setLastSession(pid, sessionId);
+    this.emit('session_adopted', { sessionId, cwd: dir, projectId: pid });
   }
 
-  forceSwitch(): boolean {
-    if (!this.running) return false;
-    process.kill(process.pid, 'SIGUSR1');
+  /** Force an account switch on a specific project's in-flight turn. */
+  forceSwitch(projectId?: string): boolean {
+    const pid = projectId ?? this.projects().currentId();
+    const run = pid ? this.runs.get(pid) : undefined;
+    if (!run?.control) return false;
+    run.control.forceSwitch();
     return true;
   }
 }

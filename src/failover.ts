@@ -34,6 +34,15 @@ export interface RunSessionOptions {
   forceSwitchSignal?: boolean;
   drainTimeoutMs?: number;
   interruptGraceMs?: number;
+  /** Hands the caller per-run controls so multiple concurrent runs can be
+   *  driven individually (the process-wide SIGUSR1 path can't distinguish
+   *  between them). Called once, synchronously, before the first turn. */
+  control?: (c: RunControl) => void;
+}
+
+export interface RunControl {
+  forceSwitch: () => void;
+  abort: () => void;
 }
 
 const FIVE_HOURS = 5 * 3600;
@@ -64,6 +73,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     process.on('SIGTERM', onTerminate);
     process.on('SIGINT', onTerminate);
   }
+  opts.control?.({
+    forceSwitch: () => {
+      forceSwitchRequested = true;
+    },
+    abort: () => {
+      currentHandle?.kill();
+    },
+  });
 
   try {
     for (;;) {
