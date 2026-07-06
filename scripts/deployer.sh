@@ -5,15 +5,18 @@
 # one fixed action: build the new image, then swap the container.
 #
 # Split build from swap: BUILD always (it doesn't touch the running container),
-# but SWAP only when no turn is running — so the idle window a deploy needs is
-# seconds (recreate) not minutes (build). Without this, the control session
-# driving the deploy is ~always mid-turn and starves the swap forever.
+# but prefer to SWAP only when no turn is running so an in-flight turn isn't
+# killed. HOWEVER, with parallel projects there may be no global-idle moment for
+# a long time, which starves the swap forever. So bound the wait: if the request
+# has been pending longer than MAX_DEFER, swap anyway — killed turns are
+# recoverable (orphan-resume cards + autopilot auto-resume on the new container).
 set -euo pipefail
 export PATH=/usr/local/bin:/usr/bin:/bin
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FLAG="$DIR/.deploy/requested"
 LOG="$DIR/.deploy/last.log"
 STATUS="$DIR/.deploy/status.json"
+MAX_DEFER=180   # seconds; brief idle-catch window, then swap even if busy
 
 [ -f "$FLAG" ] || exit 0
 mkdir -p "$DIR/.deploy"
@@ -34,12 +37,14 @@ busy() {
     echo "build FAILED — flag cleared"
     exit 0
   fi
-  # 2. Swap only when idle, so an in-flight turn is never killed. Keep the flag
-  #    and retry next tick otherwise — the built image is cached, so the swap is
-  #    near-instant once a gap appears.
+  # 2. Prefer to swap at idle; but don't let parallel projects starve it forever.
+  age=$(( $(date +%s) - $(stat -c %Y "$FLAG" 2>/dev/null || echo 0) ))
   if busy; then
-    echo "built OK; a turn is running — deferring swap"
-    exit 0
+    if [ "$age" -lt "$MAX_DEFER" ]; then
+      echo "built OK; a turn is running — deferring swap (${age}s/${MAX_DEFER}s)"
+      exit 0
+    fi
+    echo "built OK; deploy pending ${age}s (> ${MAX_DEFER}s) — swapping despite active turns; they resume on the new container"
   fi
   if docker compose --project-directory "$DIR" up -d; then
     rm -f "$FLAG"
