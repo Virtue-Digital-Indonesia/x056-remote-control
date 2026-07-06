@@ -8,6 +8,23 @@ RUN npm install -g @anthropic-ai/claude-code playwright \
  && npx playwright install --with-deps chromium \
  && chmod -R a+rX /ms-playwright \
  && rm -rf /var/lib/apt/lists/*
+# Language toolchains for the workspace's projects so ANY session can build/test
+# in its own project, not only Node ones (Go, Java+Maven, Python pip/venv,
+# PHP+Composer; gcc/make already present). Go uses GOTOOLCHAIN=auto so a project
+# pinning a newer patch is fetched on demand.
+ENV GOTOOLCHAIN=auto GOPATH=/home/efran/go
+ENV PATH="/usr/local/go/bin:/home/efran/go/bin:${PATH}"
+RUN set -eux; \
+    GO_VERSION="$(curl -fsSL https://go.dev/VERSION?m=text | head -1)"; \
+    curl -fsSL "https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz; \
+    tar -C /usr/local -xzf /tmp/go.tgz; rm /tmp/go.tgz; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      openjdk-17-jdk-headless maven python3-pip python3-venv php-cli unzip zip jq; \
+    curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php; \
+    php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer; \
+    rm -f /tmp/composer-setup.php; \
+    rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1001 efran
 USER efran
 WORKDIR /app

@@ -17,6 +17,7 @@ Sessions started through the panel run **inside the Docker container** this repo
 - Mounts you can see: the two failover config dirs (`~/.claude-x056-a`, `~/.claude-x056-b`), the workspace (`/home/efran/remote-development`), `~/.claude/projects` **read-only** (interactive transcripts, for session adoption), and the `/app/state` volume. The host's `~/.claude` credentials are NOT visible.
 - Tests: `npm test` (vitest, serialized files — keep it green), `npm run typecheck`. Both must pass before requesting a deploy.
 - **You CAN screenshot** to eyeball UI work: a headless Chromium (Playwright) is baked into the image at `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`. Start the project's dev server, then `node /app/scripts/shot.cjs <url> <out.png> [width] [height]` and Read the PNG. Any project's own Playwright/Puppeteer also finds the browser via that env var. (Requires a container built after this note — if `shot.cjs` says playwright not found, the image predates it; commit + request a deploy.)
+- **Toolchains baked into the image** (so any project builds, not just Node): Go (`GOTOOLCHAIN=auto`), Java 17 + Maven (Gradle via each project's `./gradlew`), Python 3 with pip/venv (system Python is PEP-668 externally-managed — always work in a venv), PHP + Composer, plus gcc/make/git/ripgrep/jq. `git push` over SSH works to GitHub and to the VPN host `192.168.83.20` (dedicated keys in `state/ssh/`).
 
 ## Session rules
 
