@@ -18,6 +18,7 @@ import { UsageRateLimitedError, fetchUsage } from '../src/quota.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
 import { readSessionHistory, type HistoryEntry } from './history.js';
+import { withAskInstructions } from './question.js';
 
 const IMG_EXT: Record<string, string> = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
@@ -57,6 +58,7 @@ interface SendBody {
   effort?: string;
   image?: string;
   projectId?: string;
+  interactive?: boolean;
 }
 
 // NB: this project runs under tsx (esbuild), which does not implement
@@ -91,6 +93,9 @@ export class ApiController {
       const path = saveImage(this.stateDir, body.image);
       prompt += `\n\n[The user attached an image. Read it with the Read tool at: ${path}]`;
     }
+    // Teach the model the ASK convention so it can pose questions the panel can
+    // surface with quick-reply buttons (opt out with interactive:false).
+    if (body.interactive !== false) prompt = withAskInstructions(prompt);
     return { prompt, opts: { model: body.model, effort: body.effort } };
   }
 

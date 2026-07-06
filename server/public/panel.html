@@ -113,6 +113,16 @@
   .orphan { max-width: 780px; margin: 10px auto; display: flex; align-items: center; gap: 12px; background: var(--warn-bg); border: 1px solid var(--amber); border-radius: 12px; padding: 10px 14px; }
   .orphan .omsg { flex: 1; display: flex; align-items: center; gap: 8px; color: var(--warn-text); font-size: 13px; }
   .orphan .send { flex: none; width: auto; padding: 0 14px; }
+  .qcard { max-width: 780px; margin: 12px auto; border: 1px solid var(--accent); border-radius: 14px; padding: 12px 16px; background: var(--accent-weak); }
+  .qcard.answered { opacity: .75; }
+  .qhead { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600; letter-spacing: .3px; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .qtext { font-size: 14.5px; color: var(--text); margin-bottom: 10px; }
+  .qopts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .qopt { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); border-radius: 9px; padding: 7px 14px; cursor: pointer; font: inherit; font-size: 13px; }
+  .qopt:hover { border-color: var(--accent); }
+  .qopt.chosen { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .qopt:disabled { cursor: default; }
+  .qhint { font-size: 12px; color: var(--muted); }
 
   .act { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 3px 0; padding: 3px 0; }
   .act .ic { opacity: .8; }
@@ -434,6 +444,10 @@
       if (mine) { active = false; renderBusy(); }
       renderStrip();
     }
+    else if (kind === 'question') {
+      appendNode(pid, nodeQuestion(pid, data));
+      if (pid !== currentProjectId) notify('Claude has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80));
+    }
     else if (kind === 'autopilot') {
       if (data.active) apState[pid] = data.remaining; else delete apState[pid];
       if (pid === currentProjectId) renderAutopilot();
@@ -445,6 +459,37 @@
       appendNode(pid, nodeOrphan(pid, data));
     }
     else if (kind === 'project_selected') { /* another tab switched; ignore */ }
+  }
+  // Card shown when Claude ended its turn asking the user something.
+  function nodeQuestion(pid, data) {
+    var d = document.createElement('div'); d.className = 'qcard';
+    var head = document.createElement('div'); head.className = 'qhead';
+    head.appendChild(icon('sparkles', 'sm'));
+    var h = document.createElement('span'); h.textContent = 'Claude is asking'; head.appendChild(h);
+    d.appendChild(head);
+    var q = document.createElement('div'); q.className = 'qtext'; q.appendChild(renderInline(String(data.question || ''))); d.appendChild(q);
+    var opts = Array.isArray(data.options) ? data.options : [];
+    if (opts.length) {
+      var row = document.createElement('div'); row.className = 'qopts';
+      opts.forEach(function (o) {
+        var b = document.createElement('button'); b.className = 'qopt'; b.textContent = o;
+        b.addEventListener('click', function () { answerQuestion(pid, d, o); });
+        row.appendChild(b);
+      });
+      d.appendChild(row);
+    } else {
+      var hint = document.createElement('div'); hint.className = 'qhint'; hint.textContent = 'Type your answer in the message box below.'; d.appendChild(hint);
+    }
+    return d;
+  }
+  function answerQuestion(pid, card, answer) {
+    // lock the card to the chosen answer, then send it as the reply (resumes with context)
+    card.classList.add('answered');
+    var buttons = card.querySelectorAll('.qopt');
+    for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; if (buttons[i].textContent === answer) buttons[i].classList.add('chosen'); }
+    addMsg('user', answer);
+    api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, prompt: answer }) })
+      .then(function (r) { if (r.status === 409) addSys('a turn is already running there', 'banner'); }).catch(function () {});
   }
   // Persistent card shown when a turn died mid-flight (crash/restart) — click to resume.
   function nodeOrphan(pid, data) {
@@ -670,7 +715,7 @@
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     es.onopen = function () { dot.className = 'on'; };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'turn_orphaned', 'autopilot'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'turn_orphaned', 'autopilot', 'question'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) { if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq; var data; try { data = JSON.parse(evt.data); } catch (e) { return; } handleEvent(kind, data.data || {}); });
     });
   }

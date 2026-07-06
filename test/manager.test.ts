@@ -343,3 +343,24 @@ describe('SessionManager autopilot', () => {
     expect(mgr.autopilotStatus()[p.id]).toBeUndefined();
   });
 });
+
+describe('SessionManager question surfacing', () => {
+  it('emits a question event when a turn ends with an ASK block, and not on autopilot', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-q-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
+    const runSessionFn = (async (o: { tap?: (e: unknown) => void }) => {
+      o.tap?.({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }] } });
+      return { status: 'completed', finalAccount: 'a', failovers: 0, resultText: '<<<ASK\nquestion: Deploy now?\noptions: yes | no\n>>>' };
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn });
+    const p = mgr.createProject('P', dir);
+    const events: GatewayEvent[] = [];
+    mgr.subscribe((e) => events.push(e));
+    mgr.start('go', undefined, undefined, p.id);
+    await waitFor(() => events.some((e) => e.kind === 'question'), 4000);
+    const q = events.find((e) => e.kind === 'question');
+    expect((q!.data as { question: string }).question).toBe('Deploy now?');
+    expect((q!.data as { options: string[] }).options).toEqual(['yes', 'no']);
+  });
+});

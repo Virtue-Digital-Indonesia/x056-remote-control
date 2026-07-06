@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { stripAskInstructions } from './question.js';
 
 export interface HistoryEntry {
   role: 'user' | 'assistant';
@@ -78,7 +79,7 @@ export function readSessionHistory(configDirs: string[], sessionId: string, limi
     ) {
       continue;
     }
-    out.push({ role: type, text });
+    out.push({ role: type, text: type === 'user' ? stripAskInstructions(text) : text });
   }
   return out.slice(-limit);
 }

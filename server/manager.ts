@@ -10,6 +10,7 @@ import { ProjectRegistry, type Project } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import type { RawEvent } from '../src/types.js';
+import { parseQuestion, stripAsk } from './question.js';
 
 export interface GatewayEvent {
   seq: number;
@@ -487,6 +488,11 @@ export class SessionManager {
       })
         .then((res) => {
           this.lastResults.set(pid, res);
+          // If the model ended its turn asking the user something, surface it as
+          // an answerable card (only when not on autopilot, which drives itself).
+          const onAutopilot = !!this.loadAutopilot()[pid];
+          const q = onAutopilot ? null : parseQuestion(res.resultText ?? '');
+          if (q) emit('question', { sessionId, question: q.question, options: q.options });
           emit('session_done', { sessionId, ...res });
           this.maybeAutopilot(pid, res);
         })
@@ -518,7 +524,10 @@ export class SessionManager {
     for (const block of content) {
       if (block && typeof block === 'object' && (block as { type?: string }).type === 'text') {
         const text = (block as { text?: unknown }).text;
-        if (typeof text === 'string' && text.length > 0) emit('assistant_text', { text });
+        if (typeof text === 'string' && text.length > 0) {
+          const shown = stripAsk(text); // hide the raw <<<ASK>>> marker from the chat
+          if (shown.length > 0) emit('assistant_text', { text: shown });
+        }
       }
     }
   }
