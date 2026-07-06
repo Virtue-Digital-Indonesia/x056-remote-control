@@ -296,3 +296,50 @@ describe('SessionManager orphan detection', () => {
     expect(existsSync(join(sd, 'inflight', p.id + '.json'))).toBe(false); // cleared on settle
   });
 });
+
+describe('SessionManager autopilot', () => {
+  function apFixture(results: SessionResult[]) {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-ap-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
+    let call = 0; const prompts: string[] = [];
+    const runSessionFn = (async (o: { prompt: string; tap?: (e: unknown) => void }) => {
+      prompts.push(o.prompt);
+      o.tap?.({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }] } }); // persists lastSessionId like the real CLI
+      await new Promise((r) => setTimeout(r, 5));
+      return results[Math.min(call++, results.length - 1)];
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn, autopilotIntervalMs: 20 });
+    const p = mgr.createProject('P', dir);
+    return { mgr, p, prompts, sd };
+  }
+  const done = (text?: string): SessionResult => ({ status: 'completed', finalAccount: 'a', failovers: 0, resultText: text });
+
+  it('auto-continues after a completed turn until the count is exhausted', async () => {
+    const { mgr, p, prompts } = apFixture([done('working'), done('working'), done('working')]);
+    mgr.start('kick off', undefined, undefined, p.id);
+    mgr.setAutopilot(p.id, { count: 2, prompt: 'CONTINUE_NOW' });
+    // 1 initial + up to 2 auto-continues
+    await waitFor(() => prompts.filter((x) => x === 'CONTINUE_NOW').length >= 2, 8000);
+    expect(prompts.filter((x) => x === 'CONTINUE_NOW').length).toBe(2);
+    await waitFor(() => mgr.autopilotStatus()[p.id] === undefined, 3000); // clears when the final continue settles
+  }, 12000);
+
+  it('stops early when the result contains the stop phrase', async () => {
+    const { mgr, p, prompts } = apFixture([done('AUTOPILOT_DONE now')]);
+    mgr.start('kick off', undefined, undefined, p.id);
+    mgr.setAutopilot(p.id, { count: 10 });
+    await waitFor(() => mgr.snapshot().running === false, 4000);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(prompts.filter((x) => x.includes('Continue')).length).toBe(0); // never continued
+    expect(mgr.autopilotStatus()[p.id]).toBeUndefined();
+  });
+
+  it('stopAutopilot cancels the loop', async () => {
+    const { mgr, p } = apFixture([done('working')]);
+    mgr.setAutopilot(p.id, { count: 5 });
+    expect(mgr.autopilotStatus()[p.id]).toEqual({ remaining: 5 });
+    mgr.stopAutopilot(p.id);
+    expect(mgr.autopilotStatus()[p.id]).toBeUndefined();
+  });
+});

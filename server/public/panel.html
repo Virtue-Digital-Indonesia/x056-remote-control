@@ -99,6 +99,11 @@
   .content th, .content td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; vertical-align: top; }
   .content th { background: var(--surface-2); font-weight: 600; }
   .cachenote span { color: var(--accent); background: var(--accent-weak); }
+  #autopilotBar { max-width: 780px; margin: 0 auto 8px; }
+  #autopilotBar:empty { display: none; }
+  .apbar { display: flex; align-items: center; gap: 10px; background: var(--accent-weak); border: 1px solid var(--accent); border-radius: 12px; padding: 8px 14px; font-size: 13px; color: var(--accent); }
+  .apbar .lbl { flex: 1; }
+  .apbar button { background: transparent; border: 1px solid var(--accent); color: var(--accent); border-radius: 8px; padding: 4px 12px; cursor: pointer; font: inherit; font-size: 12px; }
   #otherRuns { max-width: 780px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 6px; }
   .orun { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; cursor: pointer; max-width: 100%; }
   .orun:hover { border-color: var(--border-strong); color: var(--text); }
@@ -190,6 +195,7 @@
   <symbol id="i-terminal" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></symbol>
   <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3z"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></symbol>
 </defs></svg>
 <aside>
   <div class="brand"><span class="mark">x0</span><span>remote control</span><span class="sub">self-hosted</span></div>
@@ -207,6 +213,7 @@
     <span class="cwd" id="projCwd"></span>
     <span class="sp"></span>
     <span id="dot" class="off" title="connection"></span>
+    <button class="ico" id="autopilotBtn" title="autopilot — gateway keeps the work going across turns/restarts"><svg class="ic"><use href="#i-repeat"/></svg></button>
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="switchBtn" title="force switch account"><svg class="ic"><use href="#i-switch"/></svg></button>
     <button class="ico" id="themeBtn" title="theme"><svg class="ic"><use href="#i-moon"/></svg></button>
@@ -214,6 +221,7 @@
   </div>
   <div class="scroll"><div class="thread" id="chat"></div></div>
   <div class="composer-wrap">
+    <div id="autopilotBar"></div>
     <div id="otherRuns"></div>
     <div class="composer">
       <div id="attachRow"></div>
@@ -426,6 +434,11 @@
       if (mine) { active = false; renderBusy(); }
       renderStrip();
     }
+    else if (kind === 'autopilot') {
+      if (data.active) apState[pid] = data.remaining; else delete apState[pid];
+      if (pid === currentProjectId) renderAutopilot();
+      if (!data.active && data.reason === 'done' && pid !== currentProjectId) notify('Autopilot done', (projCache[pid] ? projCache[pid].name : 'a project') + ' finished its task');
+    }
     else if (kind === 'turn_orphaned') {
       var pname = projCache[pid] ? projCache[pid].name : (data.projectName || 'a project');
       notify('Turn interrupted', pname + ' stopped mid-turn — resume it in the panel');
@@ -449,6 +462,27 @@
     api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, prompt: 'Continue from where you left off. If your last action was a command or edit that may have partially applied, verify its actual effect before re-running anything with side effects.' }) })
       .then(function (r) { if (r.status === 409) addSys('a turn is already running there', 'banner'); }).catch(function () {});
   }
+  // ---- autopilot (gateway-driven continuation) ----
+  var apState = {}; // pid -> remaining
+  function renderAutopilot() {
+    var bar = $('autopilotBar'); bar.textContent = '';
+    var rem = apState[currentProjectId];
+    if (rem === undefined) return;
+    var d = document.createElement('div'); d.className = 'apbar';
+    d.appendChild(icon('repeat', 'sm'));
+    var l = document.createElement('span'); l.className = 'lbl'; l.textContent = 'Autopilot on — gateway will keep this going (' + rem + ' step' + (rem === 1 ? '' : 's') + ' left, or until the task says done)'; d.appendChild(l);
+    var stop = document.createElement('button'); stop.textContent = 'Stop'; stop.addEventListener('click', function () { api('/api/autopilot/stop', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId }) }).catch(function () {}); }); d.appendChild(stop);
+    bar.appendChild(d);
+  }
+  $('autopilotBtn').addEventListener('click', function () {
+    if (!currentProjectId) return;
+    if (apState[currentProjectId] !== undefined) { api('/api/autopilot/stop', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId }) }).catch(function () {}); return; }
+    var n = window.prompt('Autopilot: how many times should the gateway auto-continue this project?\n\nAfter each turn it sends "keep going" until the task replies AUTOPILOT_DONE or this many steps run out. Survives turn-end and restarts.', '20');
+    if (!n) return; var count = parseInt(n, 10); if (!(count > 0)) return;
+    api('/api/autopilot', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId, count: count }) }).catch(function () {});
+  });
+  function loadAutopilot() { return api('/api/autopilot').then(function (r) { return r.json(); }).then(function (m) { apState = {}; Object.keys(m || {}).forEach(function (pid) { apState[pid] = m[pid].remaining; }); renderAutopilot(); }).catch(function () {}); }
+
   // ---- browser notifications ----
   var notifyAsked = false;
   function notify(title, body) {
@@ -501,7 +535,7 @@
     }
     active = !!v.active; lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; renderBusy();
     api('/api/projects/current', { method: 'POST', body: JSON.stringify({ id: p.id }) }).catch(function () {});
-    loadProjects(); renderStrip();
+    loadProjects(); renderStrip(); renderAutopilot();
     pollSnapshot().then(loadHistory);
   }
   // ---- add-project picker (lists workspace repos) ----
@@ -626,7 +660,7 @@
     }).catch(function () {});
   }
 
-  loadProjects(); setInterval(pollAccounts, 60000); pollAccounts();
+  loadProjects(); setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot();
   pollSnapshot().then(loadHistory);
 
   // ---- SSE ----
@@ -636,7 +670,7 @@
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     es.onopen = function () { dot.className = 'on'; };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'turn_orphaned'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'turn_orphaned', 'autopilot'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) { if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq; var data; try { data = JSON.parse(evt.data); } catch (e) { return; } handleEvent(kind, data.data || {}); });
     });
   }

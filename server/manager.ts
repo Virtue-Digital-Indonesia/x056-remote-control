@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
@@ -32,6 +32,8 @@ export interface SessionManagerOptions {
   /** Register one process-level SIGTERM/SIGINT handler that aborts all runs.
    *  Set by the server entrypoint; left off in tests. */
   manageProcessSignals?: boolean;
+  /** Delay before a gateway-driven autopilot continuation (ms). */
+  autopilotIntervalMs?: number;
   /** Where the user's interactive `claude` transcripts live (read-only mount).
    *  Defaults to ~/.claude/projects. */
   interactiveProjectsDir?: string;
@@ -80,6 +82,7 @@ export class SessionManager {
     mkdirSync(opts.stateDir, { recursive: true });
     this.migrateProjects();
     this.detectOrphans();
+    this.resumeAutopilots();
     if (opts.manageProcessSignals) {
       const onTerm = () => {
         for (const run of this.runs.values()) run.control?.abort();
@@ -139,6 +142,124 @@ export class SessionManager {
 
   private clearMarker(pid: string): void {
     rmSync(join(this.inflightDir, `${pid}.json`), { force: true });
+  }
+
+  // ---- autopilot: gateway-driven continuation so long/background work survives
+  //      turn boundaries and restarts (the gateway keeps driving; the ephemeral
+  //      claude process doesn't have to). ----
+  private get autopilotFile(): string {
+    return join(this.opts.stateDir, 'autopilot.json');
+  }
+  private loadAutopilot(): Record<string, { remaining: number; prompt: string; stopPhrase: string }> {
+    try {
+      return JSON.parse(readFileSync(this.autopilotFile, 'utf8')) as Record<string, { remaining: number; prompt: string; stopPhrase: string }>;
+    } catch {
+      return {};
+    }
+  }
+  private saveAutopilot(map: Record<string, { remaining: number; prompt: string; stopPhrase: string }>): void {
+    const tmp = `${this.autopilotFile}.tmp`;
+    writeFileSync(tmp, JSON.stringify(map, null, 2));
+    renameSync(tmp, this.autopilotFile);
+  }
+
+  private readonly autopilotTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly DEFAULT_AUTOPILOT_PROMPT =
+    'Continue working on the task, one concrete step at a time. Do the work directly and synchronously — never background it. When the entire task is fully complete, reply with exactly: AUTOPILOT_DONE';
+  private get autopilotInterval(): number { return this.opts.autopilotIntervalMs ?? 3000; }
+
+  /** Turn on gateway-driven continuation for a project. */
+  setAutopilot(projectId: string, opts: { count: number; prompt?: string; stopPhrase?: string }): void {
+    if (!this.projects().get(projectId)) throw new Error(`unknown project ${projectId}`);
+    const map = this.loadAutopilot();
+    map[projectId] = {
+      remaining: Math.max(1, Math.min(500, Math.floor(opts.count))),
+      prompt: opts.prompt?.trim() || this.DEFAULT_AUTOPILOT_PROMPT,
+      stopPhrase: opts.stopPhrase?.trim() || 'AUTOPILOT_DONE',
+    };
+    this.saveAutopilot(map);
+    this.emit('autopilot', { projectId, active: true, remaining: map[projectId].remaining });
+  }
+
+  stopAutopilot(projectId: string): void {
+    const map = this.loadAutopilot();
+    if (map[projectId]) {
+      delete map[projectId];
+      this.saveAutopilot(map);
+    }
+    const t = this.autopilotTimers.get(projectId);
+    if (t) { clearTimeout(t); this.autopilotTimers.delete(projectId); }
+    this.emit('autopilot', { projectId, active: false, remaining: 0, reason: 'stopped' });
+  }
+
+  autopilotStatus(): Record<string, { remaining: number }> {
+    const map = this.loadAutopilot();
+    const out: Record<string, { remaining: number }> = {};
+    for (const [pid, v] of Object.entries(map)) out[pid] = { remaining: v.remaining };
+    return out;
+  }
+
+  /** After a completed turn, decide whether the gateway should auto-continue. */
+  private maybeAutopilot(pid: string, res: SessionResult): void {
+    const map = this.loadAutopilot();
+    const ap = map[pid];
+    if (!ap) return;
+    // Only continue on a clean completion; park/error pauses (state kept so the
+    // user or a later trigger can resume) but stops the auto-loop.
+    if (res.status !== 'completed') {
+      this.emit('autopilot', { projectId: pid, active: false, remaining: ap.remaining, reason: res.status });
+      return;
+    }
+    if (typeof res.resultText === 'string' && res.resultText.includes(ap.stopPhrase)) {
+      delete map[pid]; this.saveAutopilot(map);
+      this.emit('autopilot', { projectId: pid, active: false, remaining: 0, reason: 'done' });
+      return;
+    }
+    if (ap.remaining <= 0) {
+      delete map[pid]; this.saveAutopilot(map);
+      this.emit('autopilot', { projectId: pid, active: false, remaining: 0, reason: 'exhausted' });
+      return;
+    }
+    // This continuation consumes one of the allotted steps.
+    ap.remaining -= 1;
+    map[pid] = ap; this.saveAutopilot(map);
+    this.emit('autopilot', { projectId: pid, active: true, remaining: ap.remaining });
+    this.scheduleAutopilot(pid, ap.prompt);
+  }
+
+  private scheduleAutopilot(pid: string, prompt: string): void {
+    const existing = this.autopilotTimers.get(pid);
+    if (existing) clearTimeout(existing);
+    // Deferred so the finished run is out of the map before we continue.
+    const t = setTimeout(() => {
+      this.autopilotTimers.delete(pid);
+      if (!this.loadAutopilot()[pid]) return; // stopped meanwhile
+      if (this.runs.has(pid)) return; // a turn is somehow running; skip this tick
+      try {
+        this.continueLast(prompt, undefined, pid);
+      } catch {
+        // e.g. no previous session yet — drop autopilot for safety
+        this.stopAutopilot(pid);
+      }
+    }, this.autopilotInterval);
+    this.autopilotTimers.set(pid, t);
+  }
+
+  /** On startup, revive any project whose autopilot was mid-flight when the
+   *  process died — this is what makes long autonomous work survive restarts. */
+  private resumeAutopilots(): void {
+    const map = this.loadAutopilot();
+    let stagger = 1000;
+    for (const [pid, ap] of Object.entries(map)) {
+      if (ap.remaining <= 0) continue;
+      const t = setTimeout(() => {
+        this.autopilotTimers.delete(pid);
+        if (!this.loadAutopilot()[pid] || this.runs.has(pid)) return;
+        try { this.continueLast(ap.prompt, undefined, pid); } catch { this.stopAutopilot(pid); }
+      }, stagger);
+      this.autopilotTimers.set(pid, t);
+      stagger += 1500;
+    }
   }
 
   /** Shared across all concurrent runs so failover's account-limit accounting
@@ -367,6 +488,7 @@ export class SessionManager {
         .then((res) => {
           this.lastResults.set(pid, res);
           emit('session_done', { sessionId, ...res });
+          this.maybeAutopilot(pid, res);
         })
         .catch((err: unknown) => {
           emit('session_error', { sessionId, message: (err as Error).message });

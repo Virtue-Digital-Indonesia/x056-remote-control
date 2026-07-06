@@ -273,4 +273,29 @@ export class ApiController {
     if (!this.manager.forceSwitch(body?.projectId)) throw new ConflictException('no session running');
     return { switched: true };
   }
+
+  @Get('autopilot')
+  autopilot(): unknown {
+    return this.manager.autopilotStatus();
+  }
+
+  @Post('autopilot')
+  @HttpCode(200)
+  setAutopilot(@Body() body: { projectId?: string; count?: number; prompt?: string; stopPhrase?: string }): { ok: boolean } {
+    if (!body?.projectId || !body?.count) throw new BadRequestException('projectId and count required');
+    try {
+      this.manager.setAutopilot(body.projectId, { count: body.count, prompt: body.prompt, stopPhrase: body.stopPhrase });
+      return { ok: true };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('autopilot/stop')
+  @HttpCode(200)
+  stopAutopilot(@Body() body: { projectId?: string }): { ok: boolean } {
+    if (!body?.projectId) throw new BadRequestException('projectId required');
+    this.manager.stopAutopilot(body.projectId);
+    return { ok: true };
+  }
 }
