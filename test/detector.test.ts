@@ -30,9 +30,9 @@ describe('classifyEvent', () => {
     expect(classifyEvent(e)).toEqual({ kind: 'warning', resetsAt: 1783170000, source: 'rate_limit_event' });
   });
 
-  it('flags api_retry with rate_limit as limited (kill-on-first-signal, D3)', () => {
+  it('treats api_retry with rate_limit as transient — a retried 429 is a burst, not quota exhaustion', () => {
     const e = { type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 1000, error_status: 429, error: 'rate_limit' };
-    expect(classifyEvent(e)).toEqual({ kind: 'limited', source: 'api_retry' });
+    expect(classifyEvent(e)).toEqual({ kind: 'transient', source: 'api_retry' });
   });
 
   it('treats api_retry for overloaded as transient (F8)', () => {

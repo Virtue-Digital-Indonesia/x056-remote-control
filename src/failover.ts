@@ -45,7 +45,10 @@ export interface RunControl {
   abort: () => void;
 }
 
-const FIVE_HOURS = 5 * 3600;
+// A limit signal without a reset time (synthetic transcript entry, result 429)
+// means "the CLI gave up on a 429" but not when it clears — bench for 30m and
+// re-check, rather than assuming a full 5h window and over-benching.
+const LIMIT_NO_RESET_FALLBACK = 30 * 60;
 const FORCED_COOLDOWN = 30 * 60;
 
 export async function runSession(opts: RunSessionOptions): Promise<SessionResult> {
@@ -206,7 +209,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       // flag triggering a spurious forced interrupt on the next account.
       forceSwitchRequested = false;
       if (state.limited) {
-        registry.markLimited(account.name, state.limited.resetsAt ?? now() + FIVE_HOURS);
+        registry.markLimited(account.name, state.limited.resetsAt ?? now() + LIMIT_NO_RESET_FALLBACK);
       } else {
         registry.markLimited(account.name, now() + FORCED_COOLDOWN);
       }

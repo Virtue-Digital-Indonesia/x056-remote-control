@@ -28,7 +28,7 @@ beforeAll(async () => {
     JSON.stringify({ event: { type: 'system', subtype: 'init', session_id: 'gw' } }),
     JSON.stringify({ event: { type: 'assistant', message: { content: [{ type: 'text', text: 'working on it' }] } } }),
     JSON.stringify({ delayMs: 20 }),
-    JSON.stringify({ event: { type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 1000, error_status: 429, error: 'rate_limit' } }),
+    JSON.stringify({ event: { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 5000, rateLimitType: 'five_hour' } } }),
     JSON.stringify({ hang: true }),
   ].join('\n'));
   const scenarioB = join(dir, 'b.jsonl');

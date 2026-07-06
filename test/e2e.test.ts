@@ -17,8 +17,9 @@ describe('e2e: failover across accounts via fake-claude', () => {
   it('detects the limit on A, kills the turn, resumes on B, completes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'x056-e2e-'));
 
-    // Account A's turn: init, some work, then the CLI starts retrying a quota 429 and hangs.
-    // The supervisor must kill it (kill-on-first-signal, D3) — the scenario never exits by itself.
+    // Account A's turn: init, some work, then a real quota limit (rejected
+    // rate_limit_event) and hangs. The supervisor must kill it on that signal
+    // (kill-on-first-signal, D3) — the scenario never exits by itself.
     const scenarioA = join(dir, 'a.jsonl');
     writeFileSync(
       scenarioA,
@@ -26,7 +27,7 @@ describe('e2e: failover across accounts via fake-claude', () => {
         JSON.stringify({ event: { type: 'system', subtype: 'init', session_id: 'e2e-sid' } }),
         JSON.stringify({ event: { type: 'assistant', message: { content: [{ type: 'text', text: 'working on it' }] } } }),
         JSON.stringify({ delayMs: 20 }),
-        JSON.stringify({ event: { type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 1000, error_status: 429, error: 'rate_limit' } }),
+        JSON.stringify({ event: { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 5000, rateLimitType: 'five_hour' } } }),
         JSON.stringify({ hang: true }),
       ].join('\n'),
     );
@@ -112,7 +113,7 @@ describe('e2e: failover across accounts via fake-claude', () => {
     expect(registry.get('a').state).toEqual({ kind: 'limited', until: 2000 });
   }, 15000);
 
-  it('fails over on a result-only 429 where the CLI self-exits (D3 trigger: result api_error_status), using the now+5h fallback', async () => {
+  it('fails over on a result-only 429 where the CLI self-exits (D3 trigger: result api_error_status), using the 30m no-reset fallback', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'x056-e2e-'));
 
     // Account A's turn: init, then a result event carrying api_error_status 429, then the
@@ -157,6 +158,6 @@ describe('e2e: failover across accounts via fake-claude', () => {
     });
 
     expect(res).toMatchObject({ status: 'completed', finalAccount: 'b', failovers: 1 });
-    expect(registry.get('a').state).toEqual({ kind: 'limited', until: injectedNow + 18000 });
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: injectedNow + 1800 });
   }, 15000);
 });

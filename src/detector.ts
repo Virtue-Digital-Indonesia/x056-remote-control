@@ -13,9 +13,11 @@ export function classifyEvent(e: RawEvent): Verdict {
     return { kind: 'ok', source: 'rate_limit_event' };
   }
   if (e.type === 'system' && e.subtype === 'api_retry') {
-    // D6: only a rate_limit error should bench the account for hours — a transient
-    // non-quota 429 (or any other error) must not trigger the 5h cooldown.
-    if (e.error === 'rate_limit') return { kind: 'limited', source: 'api_retry' };
+    // A 429 the CLI is retrying is transient, NOT quota exhaustion. Real quota
+    // limits surface as a rate_limit_event with status 'rejected' (carrying
+    // resetsAt) or a synthetic transcript entry — both handled below. Treating
+    // every retried 429 as 'limited' benched accounts that still had quota when
+    // a large-context turn tripped a short burst/RPM limit mid-compaction.
     return { kind: 'transient', source: 'api_retry' };
   }
   if (e.type === 'result' && e.api_error_status === 429) return { kind: 'limited', source: 'result' };

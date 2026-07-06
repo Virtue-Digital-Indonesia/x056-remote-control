@@ -153,14 +153,15 @@ describe('runSession', () => {
     expect(log.read().map((r) => r.type)).toContain('flap_guard_tripped');
   });
 
-  it('uses now+5h fallback when the limit signal has no resetsAt', async () => {
+  it('uses the 30m fallback when a limit signal (synthetic transcript entry) has no resetsAt', async () => {
     const { registry, log } = fixtures();
-    const NO_RESET: RawEvent = { type: 'system', subtype: 'api_retry', error: 'rate_limit', error_status: 429 };
+    // A synthetic transcript entry ("You've hit your limit") carries no parsed reset time.
+    const NO_RESET: RawEvent = { type: 'assistant', error: 'rate_limit', isApiErrorMessage: true, message: { model: '<synthetic>', content: [] } };
     await runSession({
       ...base, registry, log, now: () => 1000,
       startTurnFn: scriptTurns([[NO_RESET], [SUCCESS]], []),
     });
-    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 1000 + 5 * 3600 });
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 1000 + 30 * 60 });
   });
 
   it('drains then interrupts on a forced switch (SIGUSR1), failing over with the 30m cooldown (D7)', async () => {
