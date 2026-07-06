@@ -35,6 +35,9 @@ export function startTurn(opts: TurnOptions): TurnHandle {
     ...(opts.model ? ['--model', opts.model] : []),
     ...(opts.effort ? ['--effort', opts.effort] : []),
     ...(opts.mode === 'new' ? ['--session-id', opts.sessionId] : ['--resume', opts.sessionId]),
+    // `--` ends option parsing so a prompt beginning with '-' (e.g. a markdown
+    // bullet list) is taken as the positional prompt, not an unknown flag.
+    '--',
     opts.prompt,
   ];
   const child = spawn(opts.claudePath ?? 'claude', args, {

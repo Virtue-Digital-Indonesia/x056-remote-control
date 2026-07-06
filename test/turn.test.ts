@@ -22,9 +22,24 @@ describe('startTurn', () => {
     expect(init.config_dir).toBe('/tmp/cfg-a');
     expect(init.argv).toEqual([
       '-p', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions',
-      '--session-id', 'sid-1', 'FAST task',
+      '--session-id', 'sid-1', '--', 'FAST task',
     ]);
     expect(events.map((e) => e.type)).toEqual(['system', 'assistant', 'result']);
+  });
+
+  it('places the prompt after -- so a dash-leading prompt is not parsed as a flag', async () => {
+    const { events, onEvent } = collect();
+    const h = startTurn({
+      claudePath: STUB, configDir: '/tmp/cfg-a', cwd: process.cwd(),
+      sessionId: 'sid-d', mode: 'resume', prompt: '- FAST bullet list item', onEvent,
+    });
+    await h.done;
+    const init = events[0] as { argv: string[] };
+    const dd = init.argv.indexOf('--');
+    expect(dd).toBeGreaterThan(-1);
+    // the prompt is the element immediately after '--', nothing between them
+    expect(init.argv[dd + 1]).toBe('- FAST bullet list item');
+    expect(init.argv[init.argv.length - 1]).toBe('- FAST bullet list item');
   });
 
   it('builds resume args', async () => {
@@ -77,7 +92,7 @@ describe('startTurn model/effort flags', () => {
     const argv = (events[0] as { argv: string[] }).argv;
     expect(argv).toEqual([
       '-p', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions',
-      '--model', 'opus', '--effort', 'high', '--session-id', 'sid-me', 'FAST go',
+      '--model', 'opus', '--effort', 'high', '--session-id', 'sid-me', '--', 'FAST go',
     ]);
   });
 
