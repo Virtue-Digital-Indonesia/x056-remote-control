@@ -376,8 +376,14 @@
   // DocumentFragment when not in view) + live activity state, so switching is
   // instant and background projects keep accumulating their output.
   var views = {};
+  var ACTIVITY_LOG_CAP = 500;
   function viewOf(pid) {
-    if (!views[pid]) views[pid] = { frag: document.createDocumentFragment(), label: '', subs: {}, subCount: 0, active: false, loaded: false };
+    // activityLog is the DURABLE record of this project's "Running.../Reading...
+    // /Subagent: ..." lines — plain data, not DOM, so it survives loadHistory()
+    // wiping chatEl (project switch, refresh, SSE reconnect). Without it the only
+    // copy of that trail was the DOM nodes themselves, which loadHistory discards
+    // wholesale, replacing them with a single "current action" line.
+    if (!views[pid]) views[pid] = { frag: document.createDocumentFragment(), label: '', subs: {}, subCount: 0, active: false, loaded: false, activityLog: [] };
     return views[pid];
   }
   function appendNode(pid, node) {
@@ -472,13 +478,19 @@
       // replayed/duplicated 'start' can't inflate it (the "· N running" drift).
       if (data.status === 'start') {
         v.label = data.label; appendNode(pid, nodeAct(data.label, data.isSubagent));
+        v.activityLog.push({ label: data.label, isSubagent: !!data.isSubagent });
+        if (v.activityLog.length > ACTIVITY_LOG_CAP) v.activityLog.splice(0, v.activityLog.length - ACTIVITY_LOG_CAP);
         if (data.isSubagent && data.toolUseId) v.subs[data.toolUseId] = 1;
       } else if (data.toolUseId) { delete v.subs[data.toolUseId]; }
       v.subCount = Object.keys(v.subs).length;
       if (mine) { lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; if (active) renderBusy(); }
       renderStrip();
     }
-    else if (kind === 'session_started') { clearQuestion(pid); if (data.model) activeModel[pid] = data.model; if (mine) { active = true; renderBusy(); } }
+    else if (kind === 'session_started') {
+      clearQuestion(pid);
+      if (data.resume === false) v.activityLog = []; // brand-new session — don't inherit the prior one's trail
+      if (data.model) activeModel[pid] = data.model; if (mine) { active = true; renderBusy(); }
+    }
     else if (kind === 'session_done') {
       appendNode(pid, nodeSys('done: ' + data.status + (data.finalAccount ? ' · ' + acctName(data.finalAccount) : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')));
       if (mine) { active = false; renderBusy(); }
@@ -824,16 +836,18 @@
       viewOf(pid).loaded = true;
       if (!Array.isArray(rows) || rows.length === 0) {
         addSys('no messages yet — say hello, or use the resume button for an existing session');
-        return;
+      } else {
+        addSys(rows.length + ' earlier messages'); rows.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); }); addSys('live');
       }
-      addSys(rows.length + ' earlier messages'); rows.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); }); addSys('live');
       if (pendingQ[pid]) showQuestion(pid, pendingQ[pid]); // re-attach a still-open question the transcript doesn't carry
       // Sync the live busy state from this project's view — events may have set it
-      // before currentProjectId was known (so the global `active` never caught it)
-      // — and re-surface the current action, which the wiped transcript can't carry.
+      // before currentProjectId was known (so the global `active` never caught it).
       var lv = viewOf(pid);
       active = !!lv.active; lastLabel = lv.label || ''; runningSubs = lv.subCount || 0; subs = lv.subs || {}; renderBusy();
-      if (lv.active && lv.label) appendNode(pid, nodeAct(lv.label, false));
+      // Replay the full activity/subagent trail from the durable log — the
+      // transcript carries none of it, and re-showing only the latest line (the
+      // old behavior) is what made the whole trail vanish on every switch/reload.
+      lv.activityLog.forEach(function (a) { appendNode(pid, nodeAct(a.label, a.isSubagent)); });
       down();
     }).catch(function () {});
   }
