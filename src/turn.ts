@@ -23,6 +23,7 @@ export interface TurnOptions {
   prompt: string;
   model?: string;
   effort?: string;
+  appendSystemPrompt?: string;
   onEvent: (e: RawEvent) => void;
 }
 
@@ -32,6 +33,7 @@ export function startTurn(opts: TurnOptions): TurnHandle {
     '--output-format', 'stream-json',
     '--verbose',
     '--dangerously-skip-permissions',
+    ...(opts.appendSystemPrompt ? ['--append-system-prompt', opts.appendSystemPrompt] : []),
     ...(opts.model ? ['--model', opts.model] : []),
     ...(opts.effort ? ['--effort', opts.effort] : []),
     ...(opts.mode === 'new' ? ['--session-id', opts.sessionId] : ['--resume', opts.sessionId]),

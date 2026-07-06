@@ -105,3 +105,16 @@ describe('startTurn model/effort flags', () => {
     expect(argv).not.toContain('--effort');
   });
 });
+
+describe('startTurn appendSystemPrompt', () => {
+  it('inserts --append-system-prompt before model/session flags when provided', async () => {
+    const { events, onEvent } = collect();
+    const h = startTurn({ claudePath: STUB, configDir: '/tmp/c', cwd: process.cwd(), sessionId: 's', mode: 'new', prompt: 'FAST', appendSystemPrompt: 'NOTE-HERE', onEvent });
+    await h.done;
+    const argv = (events[0] as { argv: string[] }).argv;
+    const i = argv.indexOf('--append-system-prompt');
+    expect(i).toBeGreaterThan(-1);
+    expect(argv[i + 1]).toBe('NOTE-HERE');
+    expect(i).toBeLessThan(argv.indexOf('--session-id'));
+  });
+});

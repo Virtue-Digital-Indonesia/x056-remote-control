@@ -30,6 +30,7 @@ export interface RunSessionOptions {
   claudePath?: string;
   model?: string;
   effort?: string;
+  appendSystemPrompt?: string;
   tap?: (e: RawEvent) => void;
   forceSwitchSignal?: boolean;
   drainTimeoutMs?: number;
@@ -152,6 +153,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         prompt,
         model: opts.model,
         effort: opts.effort,
+        appendSystemPrompt: opts.appendSystemPrompt,
         onEvent: (e) => processEvent(e),
       });
       currentHandle = handle;
