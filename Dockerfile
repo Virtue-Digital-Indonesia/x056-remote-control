@@ -11,7 +11,7 @@ COPY --chown=efran:efran . .
 # Pre-create the state mountpoint so the named volume inherits efran ownership,
 # and point ~/.ssh at the dedicated key material kept in that persistent volume
 # (state/ssh/: scoped key + pinned known_hosts + config for the VPN target).
-RUN mkdir -p /app/state && ln -sfn /app/state/ssh /home/efran/.ssh
+RUN mkdir -p /app/state && rm -rf /home/efran/.ssh && ln -s /app/state/ssh /home/efran/.ssh
 ENV PORT=4056
 EXPOSE 4056
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -fsS http://localhost:4056/healthz || exit 1
