@@ -278,13 +278,20 @@
 
   // markdown (DOM-only)
   function renderInline(text) {
-    var frag = document.createDocumentFragment(), re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*\s][^*]*)\*)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g, last = 0, m;
+    var frag = document.createDocumentFragment(), re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*\s][^*]*)\*)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))|(https?:\/\/[^\s<>()\[\]]+)/g, last = 0, m;
     while ((m = re.exec(text))) {
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
       if (m[2]) { var c = document.createElement('code'); c.textContent = m[2]; frag.appendChild(c); }
       else if (m[4]) { var b = document.createElement('strong'); b.textContent = m[4]; frag.appendChild(b); }
       else if (m[6]) { var em = document.createElement('em'); em.textContent = m[6]; frag.appendChild(em); }
       else if (m[8]) { var a = document.createElement('a'); a.textContent = m[8]; a.href = m[9]; a.target = '_blank'; a.rel = 'noopener noreferrer'; frag.appendChild(a); }
+      else if (m[10]) { // bare URL — autolink, keeping trailing punctuation as text
+        var url = m[10], trail = '';
+        var tm = /[.,;:!?]+$/.exec(url);
+        if (tm) { trail = tm[0]; url = url.slice(0, -trail.length); }
+        var a2 = document.createElement('a'); a2.textContent = url; a2.href = url; a2.target = '_blank'; a2.rel = 'noopener noreferrer'; frag.appendChild(a2);
+        if (trail) frag.appendChild(document.createTextNode(trail));
+      }
       last = re.lastIndex;
     }
     if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
