@@ -56,6 +56,10 @@
   .proj .rspin { width: 12px; height: 12px; flex: none; display: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; }
   .proj.busy .rspin { display: block; }
   .proj.busy .dot { background: var(--accent); }
+  .proj .projrm { width: 18px; height: 18px; flex: none; display: none; align-items: center; justify-content: center; border: none; background: transparent; color: var(--faint); border-radius: 5px; cursor: pointer; padding: 0; }
+  .proj:hover .projrm { display: inline-flex; }
+  .proj.busy .projrm { display: none !important; }
+  .proj .projrm:hover { background: var(--surface-2); color: var(--text); }
   .acct { margin: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); cursor: pointer; display: flex; align-items: center; gap: 10px; }
   .acct:hover { background: var(--surface-2); }
   .acct .av { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
@@ -153,6 +157,8 @@
   #busy .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #busy .tasks { color: var(--accent); font-weight: 600; }
   #busy .bmeta { color: var(--faint); }
+  #busy .stopbtn { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border-strong); background: transparent; color: var(--muted); border-radius: 7px; padding: 2px 8px; cursor: pointer; font: inherit; font-size: 11.5px; flex: none; }
+  #busy .stopbtn:hover { border-color: #e5484d; color: #e5484d; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .attach { background: none; border: 1px solid var(--border); border-radius: 9px; height: 32px; min-width: 32px; cursor: pointer; color: var(--muted); font-size: 15px; display: inline-grid; place-items: center; }
   .attach:hover { color: var(--text); border-color: var(--border-strong); }
@@ -405,6 +411,15 @@
     var meta = []; var ml = modelLabel(activeModel[currentProjectId]); if (ml) meta.push(ml);
     var ac = activeAccount[currentProjectId]; if (ac) meta.push(acctName(ac));
     if (meta.length) { var mm = document.createElement('span'); mm.className = 'bmeta'; mm.textContent = '· ' + meta.join(' · '); busyEl.appendChild(mm); }
+    var stop = document.createElement('button'); stop.className = 'stopbtn'; stop.title = 'stop this turn'; stop.appendChild(icon('x', 'sm'));
+    var sl = document.createElement('span'); sl.textContent = 'Stop'; stop.appendChild(sl);
+    stop.addEventListener('click', stopCurrentTurn); busyEl.appendChild(stop);
+  }
+  function stopCurrentTurn() {
+    if (!currentProjectId) return;
+    api('/api/sessions/current/stop', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId }) })
+      .then(function (r) { if (r.ok) addSys('stopping this turn…', 'banner'); else if (r.status === 409) addSys('no turn running here', 'banner'); })
+      .catch(function () {});
   }
   // Live strip above the composer: what every OTHER running project is doing,
   // so parallel work is visible without leaving the current chat.
@@ -433,12 +448,12 @@
       if (data.active) runningProjects[pid] = true;
       else { delete runningProjects[pid]; v.label = ''; v.subs = {}; v.subCount = 0; }
       markRunning(); renderStrip();
-      if (mine) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); }
+      if (mine) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); renderAccountChip(); }
       return;
     }
     if (kind === 'assistant_text') appendNode(pid, nodeMsg('assistant', data.text));
     else if (kind === 'supervisor') {
-      if (data.type === 'turn_started' && data.account) { activeAccount[pid] = data.account; if (mine) renderBusy(); }
+      if (data.type === 'turn_started' && data.account) { activeAccount[pid] = data.account; if (mine) { renderBusy(); renderAccountChip(); } }
       var l = BANNERS[data.type]; if (l) appendNode(pid, nodeSys(l, 'banner'));
     }
     else if (kind === 'active_model') { if (data.model) { activeModel[pid] = data.model; if (mine) renderBusy(); } }
@@ -476,6 +491,13 @@
       appendNode(pid, nodeOrphan(pid, data));
     }
     else if (kind === 'project_selected') { /* another tab switched; ignore */ }
+    else if (kind === 'project_removed') {
+      // removed elsewhere (another tab) — drop caches and reconcile the list
+      var wasCur = currentProjectId === data.id;
+      delete views[data.id]; delete projCache[data.id]; delete runningProjects[data.id]; delete apState[data.id];
+      if (wasCur) { currentProjectId = null; chatEl.textContent = ''; }
+      loadProjects().then(function () { if (wasCur && currentProjectId && projCache[currentProjectId]) switchProject(projCache[currentProjectId]); });
+    }
   }
   // Card shown when Claude ended its turn asking the user something.
   function nodeQuestion(pid, data) {
@@ -580,21 +602,45 @@
     for (var i = 0; i < rows.length; i++) { var id = rows[i].getAttribute('data-id'); if (runningProjects[id]) rows[i].classList.add('busy'); else rows[i].classList.remove('busy'); }
   }
   var projCache = {}; // pid -> project object (for the strip + quick switch)
+  // Highlight/title follow the CLIENT's currentProjectId, adopting the server's
+  // default only before the user has picked one. Keying off reg.current instead
+  // raced the not-yet-acked select POST → wrong title + navbar selection.
+  function markActiveProject(pid) {
+    var rows = projListEl.querySelectorAll('.proj');
+    for (var i = 0; i < rows.length; i++) { var id = rows[i].getAttribute('data-id'); if (id === pid) rows[i].classList.add('active'); else rows[i].classList.remove('active'); }
+  }
   function renderProjects(reg) {
-    currentProjectId = reg.current;
+    if (!currentProjectId) currentProjectId = reg.current;
+    var cur = currentProjectId;
     projListEl.textContent = '';
     reg.projects.forEach(function (p) {
       projCache[p.id] = p;
       if (p.running) runningProjects[p.id] = true; else delete runningProjects[p.id];
-      var row = document.createElement('div'); row.className = 'proj' + (p.id === reg.current ? ' active' : '') + (p.running ? ' busy' : '');
+      var row = document.createElement('div'); row.className = 'proj' + (p.id === cur ? ' active' : '') + (p.running ? ' busy' : '');
       row.setAttribute('data-id', p.id);
       var d = document.createElement('span'); d.className = 'dot'; row.appendChild(d);
       var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = p.name; row.appendChild(nm);
       var sp = document.createElement('span'); sp.className = 'rspin'; row.appendChild(sp);
+      var rm = document.createElement('button'); rm.className = 'projrm'; rm.title = 'remove project'; rm.appendChild(icon('x', 'sm'));
+      rm.addEventListener('click', function (e) { e.stopPropagation(); removeProject(p); });
+      row.appendChild(rm);
       row.addEventListener('click', function () { if (p.id !== currentProjectId) switchProject(p); });
       projListEl.appendChild(row);
-      if (p.id === reg.current) { projTitleEl.textContent = p.name; projCwdEl.textContent = p.cwd; }
+      if (p.id === cur) { projTitleEl.textContent = p.name; projCwdEl.textContent = p.cwd; }
     });
+  }
+  function removeProject(p) {
+    if (runningProjects[p.id]) { addSys('stop the running turn in “' + p.name + '” before removing it', 'banner'); return; }
+    if (!window.confirm('Remove “' + p.name + '” from the projects list?\n\nOnly removes it from the panel — your files and git history are untouched.')) return;
+    api('/api/projects/remove', { method: 'POST', body: JSON.stringify({ id: p.id }) }).then(function (r) {
+      if (!r.ok) { addSys(r.status === 409 ? 'a turn is running there — stop it first' : 'could not remove project', 'banner'); return; }
+      var wasCurrent = currentProjectId === p.id;
+      delete views[p.id]; delete projCache[p.id]; delete runningProjects[p.id]; delete apState[p.id];
+      if (wasCurrent) { currentProjectId = null; chatEl.textContent = ''; } // let renderProjects adopt the new server current
+      loadProjects().then(function () {
+        if (wasCurrent && currentProjectId && projCache[currentProjectId]) switchProject(projCache[currentProjectId]);
+      });
+    }).catch(function () {});
   }
   function loadProjects() { return api('/api/projects').then(function (r) { return r.json(); }).then(renderProjects).catch(function () {}); }
   function switchProject(p) {
@@ -605,6 +651,7 @@
     }
     currentProjectId = p.id; projCache[p.id] = p;
     projTitleEl.textContent = p.name; projCwdEl.textContent = p.cwd;
+    markActiveProject(p.id); // instant navbar highlight, no round-trip
     pendingNew = false;
     var v = viewOf(p.id);
     chatEl.textContent = '';
@@ -615,9 +662,14 @@
       down();
     }
     active = !!v.active; lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; renderBusy();
-    api('/api/projects/current', { method: 'POST', body: JSON.stringify({ id: p.id }) }).catch(function () {});
-    loadProjects(); renderStrip(); renderAutopilot();
-    pollSnapshot().then(loadHistory);
+    renderStrip(); renderAutopilot(); renderAccountChip();
+    // Commit the selection server-side FIRST — /history and /sessions are keyed to
+    // the server's "current" project, so loading before the select lands fetches
+    // the wrong project's thread. Guard each step against a newer switch.
+    api('/api/projects/current', { method: 'POST', body: JSON.stringify({ id: p.id }) })
+      .then(function () { if (currentProjectId !== p.id) return null; return pollSnapshot(); })
+      .then(function (s) { if (!s || currentProjectId !== p.id) return; loadProjects(); loadHistory(); })
+      .catch(function () {});
   }
   // ---- add-project picker (lists workspace repos) ----
   var projPicker = $('projPicker'), projPickList = $('projPickList'), projSearch = $('projSearch');
@@ -660,13 +712,13 @@
     var a = document.createElement('span'); a.textContent = label; var b = document.createElement('span'); b.textContent = p + '%'; lab.appendChild(a); lab.appendChild(b); g.appendChild(lab);
     var tr = document.createElement('div'); tr.className = 'track'; var i = document.createElement('i'); if (gCls(p)) i.classList.add(gCls(p)); i.style.width = p + '%'; tr.appendChild(i); g.appendChild(tr); return g;
   }
+  var acctList = []; // last /api/accounts response (for the bottom-left chip)
   function renderAccounts(list) {
+    acctList = Array.isArray(list) ? list : [];
     accountsEl.textContent = '';
-    var activeAcct = null;
-    list.forEach(function (a) {
+    acctList.forEach(function (a) {
       acctNames[a.name] = a.displayName || a.name; // for done-banners etc.
       var st = a.state || { kind: 'unknown' };
-      if (st.kind === 'ok' || (!activeAcct && st.kind !== 'limited')) activeAcct = a;
       var card = document.createElement('div'); card.className = 'qa';
       var top = document.createElement('div'); top.className = 'top'; var left = document.createElement('div');
       var nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = a.displayName || a.name; left.appendChild(nm);
@@ -679,7 +731,30 @@
       else { var n = document.createElement('div'); n.className = 'note'; n.textContent = a.quotaError ? 'usage unavailable — retrying' : 'usage unavailable'; card.appendChild(n); }
       accountsEl.appendChild(card);
     });
-    if (activeAcct) { var nm2 = activeAcct.displayName || activeAcct.name; acctNameEl.textContent = nm2; acctAv.textContent = (nm2[0] || '?').toUpperCase(); acctPlan.textContent = 'Max · view usage'; }
+    renderAccountChip();
+  }
+  // The bottom-left chip shows the account actually in use: the one running the
+  // viewed project's turn if known, else an OK one, else the limited one that
+  // resets soonest — so it never blanks to "—/?" even when both are limited.
+  function pickPrimaryAccount() {
+    function byName(n) { for (var i = 0; i < acctList.length; i++) if (acctList[i].name === n) return acctList[i]; return null; }
+    if (runningProjects[currentProjectId]) { var live = byName(activeAccount[currentProjectId]); if (live) return live; }
+    var ok = null, nonLim = null, soonest = null;
+    acctList.forEach(function (a) {
+      var k = (a.state && a.state.kind) || 'unknown';
+      if (k === 'ok' && !ok) ok = a;
+      if (k !== 'limited' && !nonLim) nonLim = a;
+      if (k === 'limited' && (!soonest || (a.state.until || 0) < (soonest.state.until || 0))) soonest = a;
+    });
+    return ok || nonLim || soonest || acctList[0] || null;
+  }
+  function renderAccountChip() {
+    var a = pickPrimaryAccount(); if (!a) return;
+    var nm = a.displayName || a.name;
+    acctNameEl.textContent = nm; acctAv.textContent = (nm[0] || '?').toUpperCase();
+    var live = runningProjects[currentProjectId] && activeAccount[currentProjectId] === a.name;
+    var lim = a.state && a.state.kind === 'limited';
+    acctPlan.textContent = live ? 'Max · active now' : (lim ? 'Max · limited' : 'Max · view usage');
   }
   function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
   var sessPicker = $('sessPicker'), sessList = $('sessList');
@@ -726,7 +801,7 @@
   }
   $('resumeBtn').addEventListener('click', openSessions);
 
-  function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; currentProjectId = s.currentProjectId; return s; }); }
+  function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; if (!currentProjectId) currentProjectId = s.currentProjectId; return s; }); }
   function loadHistory() {
     var pid = currentProjectId;
     return api('/api/sessions/current/history?limit=80').then(function (r) { return r.json(); }).then(function (rows) {
@@ -753,7 +828,7 @@
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     es.onopen = function () { dot.className = 'on'; };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'turn_orphaned', 'autopilot', 'question', 'active_model'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'question', 'active_model'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) { if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq; var data; try { data = JSON.parse(evt.data); } catch (e) { return; } handleEvent(kind, data.data || {}); });
     });
   }
