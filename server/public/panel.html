@@ -60,8 +60,22 @@
   .gauge-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
   #chat { display: flex; flex-direction: column; gap: 6px; }
   .bubble { padding: 8px 10px; border-radius: 8px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
-  .bubble.assistant { background: var(--bubble-assistant); align-self: flex-start; }
+  .bubble.assistant { background: var(--bubble-assistant); align-self: flex-start; white-space: normal; }
   .bubble.user { background: var(--bubble-user); align-self: flex-end; }
+  /* markdown inside assistant bubbles */
+  .bubble.assistant p { margin: 0 0 8px; white-space: pre-wrap; }
+  .bubble.assistant p:last-child, .bubble.assistant ul:last-child,
+  .bubble.assistant ol:last-child, .bubble.assistant pre:last-child { margin-bottom: 0; }
+  .bubble.assistant pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; margin: 0 0 8px; }
+  .bubble.assistant pre code { background: none; padding: 0; font: 12px/1.45 ui-monospace, monospace; }
+  .bubble.assistant code { background: var(--surface-2); border-radius: 4px; padding: 1px 4px; font: 12px/1.4 ui-monospace, monospace; }
+  .bubble.assistant ul, .bubble.assistant ol { margin: 0 0 8px; padding-left: 22px; }
+  .bubble.assistant li { margin: 2px 0; white-space: pre-wrap; }
+  .bubble.assistant h3, .bubble.assistant h4, .bubble.assistant h5 { margin: 4px 0 6px; line-height: 1.3; }
+  .bubble.assistant h3 { font-size: 15px; } .bubble.assistant h4 { font-size: 14px; } .bubble.assistant h5 { font-size: 13px; }
+  .bubble.assistant a { color: var(--accent-text); }
+  .bubble.assistant hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+  .bubble.assistant blockquote { margin: 0 0 8px; padding: 2px 10px; border-left: 3px solid var(--border-2); color: var(--muted); }
   .banner { align-self: center; font-size: 12px; color: var(--warn-text); background: var(--warn-bg); border-radius: 6px; padding: 4px 10px; }
   .header-line { align-self: center; font-size: 12px; color: var(--accent-text); background: var(--accent-bg); border-radius: 6px; padding: 4px 10px; }
   #log { max-height: 200px; overflow: auto; font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 6px; white-space: pre-wrap; }
@@ -302,11 +316,97 @@
   // visible on open, not just future turns.
   pollSnapshot().then(loadHistory);
 
+  // ---- markdown (safe by construction: DOM nodes only, never innerHTML) ----
+  function renderInline(text) {
+    var frag = document.createDocumentFragment();
+    var re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*\s][^*]*)\*)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
+    var last = 0, m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      if (m[2]) { // `code`
+        var c = document.createElement('code'); c.textContent = m[2]; frag.appendChild(c);
+      } else if (m[4]) { // **bold**
+        var b = document.createElement('strong'); b.textContent = m[4]; frag.appendChild(b);
+      } else if (m[6]) { // *italic*
+        var em = document.createElement('em'); em.textContent = m[6]; frag.appendChild(em);
+      } else if (m[8]) { // [text](https://url)
+        var a = document.createElement('a');
+        a.textContent = m[8]; a.href = m[9]; a.target = '_blank'; a.rel = 'noopener noreferrer';
+        frag.appendChild(a);
+      }
+      last = re.lastIndex;
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    return frag;
+  }
+
+  function renderMarkdown(text) {
+    var root = document.createDocumentFragment();
+    var lines = text.split('\n');
+    var i = 0, m;
+    function flushPara(buf) {
+      if (!buf.length) return;
+      var p = document.createElement('p');
+      p.appendChild(renderInline(buf.join('\n')));
+      root.appendChild(p);
+      buf.length = 0;
+    }
+    var para = [];
+    while (i < lines.length) {
+      var line = lines[i];
+      if (/^```/.test(line)) {
+        flushPara(para);
+        var buf = []; i++;
+        while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+        i++; // closing fence
+        var pre = document.createElement('pre');
+        var code = document.createElement('code');
+        code.textContent = buf.join('\n');
+        pre.appendChild(code); root.appendChild(pre);
+        continue;
+      }
+      if ((m = /^(#{1,3})\s+(.*)$/.exec(line))) {
+        flushPara(para);
+        var h = document.createElement('h' + (m[1].length + 2));
+        h.appendChild(renderInline(m[2]));
+        root.appendChild(h); i++; continue;
+      }
+      if (/^\s*[-*]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) {
+        flushPara(para);
+        var ordered = /^\s*\d+[.)]\s+/.test(line);
+        var list = document.createElement(ordered ? 'ol' : 'ul');
+        var itemRe = ordered ? /^\s*\d+[.)]\s+(.*)$/ : /^\s*[-*]\s+(.*)$/;
+        while (i < lines.length && (m = itemRe.exec(lines[i]))) {
+          var li = document.createElement('li');
+          li.appendChild(renderInline(m[1]));
+          list.appendChild(li); i++;
+        }
+        root.appendChild(list); continue;
+      }
+      if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) {
+        flushPara(para); root.appendChild(document.createElement('hr')); i++; continue;
+      }
+      if ((m = /^>\s?(.*)$/.exec(line))) {
+        flushPara(para);
+        var bq = document.createElement('blockquote');
+        var qbuf = [];
+        while (i < lines.length && (m = /^>\s?(.*)$/.exec(lines[i]))) { qbuf.push(m[1]); i++; }
+        bq.appendChild(renderInline(qbuf.join('\n')));
+        root.appendChild(bq); continue;
+      }
+      if (line.trim() === '') { flushPara(para); i++; continue; }
+      para.push(line); i++;
+    }
+    flushPara(para);
+    return root;
+  }
+
   // ---- chat rendering ----
   function addBubble(cls, text) {
     var div = document.createElement('div');
     div.className = 'bubble ' + cls;
-    div.textContent = text;
+    if (cls === 'assistant') div.appendChild(renderMarkdown(text));
+    else div.textContent = text;
     chatEl.appendChild(div);
     div.scrollIntoView({ block: 'end' });
   }
