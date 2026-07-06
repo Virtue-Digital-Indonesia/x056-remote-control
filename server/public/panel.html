@@ -5,50 +5,89 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>x056 remote control</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: light;
+    --bg: #f5f6f8; --surface: #ffffff; --surface-2: #eef0f4;
+    --border: #d9dde5; --border-2: #c3c9d4;
+    --text: #1c2128; --muted: #667085;
+    --accent-text: #1d4ed8; --accent-bg: #e3ecfd;
+    --warn-text: #92610a; --warn-bg: #fbf0d4;
+    --ok: #16a34a; --err: #dc2626; --amber: #d97706;
+    --badge-ok-bg: #dcf5e3; --badge-ok-text: #15803d;
+    --badge-warn-bg: #fbf0d4; --badge-warn-text: #92610a;
+    --badge-unknown-bg: #e5e8ee; --badge-unknown-text: #667085;
+    --bubble-assistant: #eef1f6; --bubble-user: #e3f3d9;
+    --btn-bg: #ffffff; --btn-hover: #eef0f4;
+    --gauge-track: #e2e6ec; --dot-idle: #9aa3b2;
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0f1115; --surface: #171a21; --surface-2: #12151b;
+    --border: #262b36; --border-2: #3a4150;
+    --text: #e6e6e6; --muted: #99a0ad;
+    --accent-text: #8fb8ff; --accent-bg: #16202f;
+    --warn-text: #f0c674; --warn-bg: #262110;
+    --ok: #3ecf5f; --err: #d9534f; --amber: #f0c674;
+    --badge-ok-bg: #1f4a2a; --badge-ok-text: #7de893;
+    --badge-warn-bg: #4a3a1f; --badge-warn-text: #f0c674;
+    --badge-unknown-bg: #333333; --badge-unknown-text: #aaaaaa;
+    --bubble-assistant: #1c2230; --bubble-user: #223018;
+    --btn-bg: #262b36; --btn-hover: #313847;
+    --gauge-track: #262b36; --dot-idle: #666666;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: #0f1115; color: #e6e6e6; font: 14px/1.4 system-ui, sans-serif; }
-  header { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #171a21; position: sticky; top: 0; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; }
   header h1 { font-size: 15px; margin: 0; flex: 1; }
-  #dot { width: 10px; height: 10px; border-radius: 50%; background: #666; flex: none; }
-  #dot.on { background: #3ecf5f; }
-  #dot.off { background: #d9534f; }
-  button { background: #262b36; color: #e6e6e6; border: 1px solid #3a4150; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
-  button:hover { background: #313847; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dot-idle); flex: none; }
+  #dot.on { background: var(--ok); }
+  #dot.off { background: var(--err); }
+  button { background: var(--btn-bg); color: var(--text); border: 1px solid var(--border-2); border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+  button:hover { background: var(--btn-hover); }
   main { padding: 10px 12px 90px; max-width: 720px; margin: 0 auto; }
   section { margin-bottom: 14px; }
   #accounts { display: flex; flex-wrap: wrap; gap: 8px; }
-  .acct { background: #171a21; border: 1px solid #262b36; border-radius: 8px; padding: 8px 10px; min-width: 150px; flex: 1; }
+  .acct { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 150px; flex: 1; }
   .acct .name { font-weight: 600; display: flex; justify-content: space-between; }
-  .badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #333; }
-  .badge.ok { background: #1f4a2a; color: #7de893; }
-  .badge.limited { background: #4a3a1f; color: #f0c674; }
-  .badge.unknown { background: #333; color: #aaa; }
-  .gauge { height: 6px; border-radius: 3px; background: #262b36; margin-top: 4px; overflow: hidden; }
-  .gauge > i { display: block; height: 100%; background: #3ecf5f; }
-  .gauge > i.amber { background: #f0c674; }
-  .gauge > i.red { background: #d9534f; }
-  .gauge-label { font-size: 11px; color: #999; margin-top: 2px; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--badge-unknown-bg); }
+  .badge.ok { background: var(--badge-ok-bg); color: var(--badge-ok-text); }
+  .badge.limited { background: var(--badge-warn-bg); color: var(--badge-warn-text); }
+  .badge.unknown { background: var(--badge-unknown-bg); color: var(--badge-unknown-text); }
+  .gauge { height: 6px; border-radius: 3px; background: var(--gauge-track); margin-top: 4px; overflow: hidden; }
+  .gauge > i { display: block; height: 100%; background: var(--ok); }
+  .gauge > i.amber { background: var(--amber); }
+  .gauge > i.red { background: var(--err); }
+  .gauge-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
   #chat { display: flex; flex-direction: column; gap: 6px; }
   .bubble { padding: 8px 10px; border-radius: 8px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
-  .bubble.assistant { background: #1c2230; align-self: flex-start; }
-  .bubble.user { background: #223018; align-self: flex-end; }
-  .banner { align-self: center; font-size: 12px; color: #f0c674; background: #262110; border-radius: 6px; padding: 4px 10px; }
-  .header-line { align-self: center; font-size: 12px; color: #8fb8ff; background: #16202f; border-radius: 6px; padding: 4px 10px; }
-  #log { max-height: 200px; overflow: auto; font-size: 11px; color: #999; background: #12151b; border-radius: 6px; padding: 6px; white-space: pre-wrap; }
-  #logToggle { cursor: pointer; user-select: none; color: #8fb8ff; font-size: 12px; }
-  footer { position: fixed; bottom: 0; left: 0; right: 0; background: #171a21; padding: 8px 10px; display: flex; gap: 6px; align-items: flex-end; }
-  textarea { flex: 1; resize: none; background: #0f1115; color: #e6e6e6; border: 1px solid #3a4150; border-radius: 6px; padding: 8px; font: inherit; height: 40px; }
-  #newSessionRow { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #aaa; margin-bottom: 6px; }
-  #cwd { background: #0f1115; color: #e6e6e6; border: 1px solid #3a4150; border-radius: 6px; padding: 4px 6px; font: inherit; width: 160px; }
-  #busy { color: #f0c674; font-size: 12px; }
+  .bubble.assistant { background: var(--bubble-assistant); align-self: flex-start; }
+  .bubble.user { background: var(--bubble-user); align-self: flex-end; }
+  .banner { align-self: center; font-size: 12px; color: var(--warn-text); background: var(--warn-bg); border-radius: 6px; padding: 4px 10px; }
+  .header-line { align-self: center; font-size: 12px; color: var(--accent-text); background: var(--accent-bg); border-radius: 6px; padding: 4px 10px; }
+  #log { max-height: 200px; overflow: auto; font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 6px; white-space: pre-wrap; }
+  #logToggle { cursor: pointer; user-select: none; color: var(--accent-text); font-size: 12px; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--border); padding: 8px 10px; display: flex; gap: 6px; align-items: flex-end; }
+  textarea { flex: 1; resize: none; background: var(--bg); color: var(--text); border: 1px solid var(--border-2); border-radius: 6px; padding: 8px; font: inherit; height: 40px; }
+  #newSessionRow { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  #cwd { background: var(--bg); color: var(--text); border: 1px solid var(--border-2); border-radius: 6px; padding: 4px 6px; font: inherit; width: 160px; }
+  #busy { color: var(--warn-text); font-size: 12px; }
 </style>
+<script>
+  // Apply theme before first paint: stored preference wins, else system.
+  (function () {
+    var stored = null;
+    try { stored = localStorage.getItem('x056_theme'); } catch (e) {}
+    var dark = stored ? stored === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    if (dark) document.documentElement.setAttribute('data-theme', 'dark');
+  })();
+</script>
 </head>
 <body>
 <header>
   <span id="dot" class="off"></span>
   <h1>x056 remote control</h1>
   <button id="switchBtn" title="force switch account">switch</button>
+  <button id="themeBtn" title="toggle light/dark theme"></button>
   <button id="tokenBtn" title="clear token">&#9881;</button>
 </header>
 <main>
@@ -110,6 +149,36 @@
   tokenBtn.addEventListener('click', function () {
     localStorage.removeItem(TOKEN_KEY);
     location.reload();
+  });
+
+  // ---- theme ----
+  var THEME_KEY = 'x056_theme';
+  var themeBtn = document.getElementById('themeBtn');
+  var systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+
+  function currentTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+  }
+
+  function applyTheme(theme) {
+    if (theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    else document.documentElement.removeAttribute('data-theme');
+    themeBtn.textContent = theme === 'dark' ? '☀' : '☾'; // sun to go light, moon to go dark
+  }
+
+  applyTheme(currentTheme());
+
+  themeBtn.addEventListener('click', function () {
+    var next = currentTheme() === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+    applyTheme(next);
+  });
+
+  // Follow system changes only while the user hasn't chosen explicitly.
+  systemDark.addEventListener('change', function (e) {
+    var stored = null;
+    try { stored = localStorage.getItem(THEME_KEY); } catch (err) {}
+    if (!stored) applyTheme(e.matches ? 'dark' : 'light');
   });
 
   // ---- accounts ----
@@ -320,7 +389,7 @@
     if (cwd) body.cwd = cwd;
     var useNew = forceNew || !lastSessionId;
     var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
-    addBubble('assistant', '> ' + text);
+    addBubble('user', text);
     api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
       if (r.status === 409) { setBusy(true); return; }
       setBusy(false);
