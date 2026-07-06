@@ -11,6 +11,8 @@ export interface GatewayConfig {
   claudePath?: string;
   /** Panel HTML read per-request from here (bind-mounted for live UI updates). */
   panelPath?: string;
+  /** Read-only mount of the user's interactive ~/.claude/projects for resume. */
+  interactiveProjectsDir?: string;
 }
 
 export function buildModule(cfg: GatewayConfig): unknown {
@@ -18,6 +20,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
     stateDir: cfg.stateDir,
     workspaceRoot: cfg.workspaceRoot,
     claudePath: cfg.claudePath,
+    interactiveProjectsDir: cfg.interactiveProjectsDir,
     manageProcessSignals: true,
   });
 

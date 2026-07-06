@@ -1,11 +1,13 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { AccountRegistry } from '../src/accounts.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { toActivity } from './activity.js';
 import { ProjectRegistry, type Project } from './projects.js';
+import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import type { RawEvent } from '../src/types.js';
 
@@ -30,6 +32,9 @@ export interface SessionManagerOptions {
   /** Register one process-level SIGTERM/SIGINT handler that aborts all runs.
    *  Set by the server entrypoint; left off in tests. */
   manageProcessSignals?: boolean;
+  /** Where the user's interactive `claude` transcripts live (read-only mount).
+   *  Defaults to ~/.claude/projects. */
+  interactiveProjectsDir?: string;
 }
 
 /** Per-turn overrides chosen in the UI. */
@@ -129,6 +134,35 @@ export class SessionManager {
     const dir = this.resolveCwd(cwd ?? this.opts.workspaceRoot);
     const proj = this.projects().create(name, dir);
     return proj;
+  }
+
+  private get interactiveDir(): string {
+    return this.opts.interactiveProjectsDir ?? join(homedir(), '.claude', 'projects');
+  }
+
+  /** Existing interactive sessions recorded for a project's directory. */
+  listAvailableSessions(projectId?: string): AvailableSession[] {
+    const pid = projectId ?? this.projects().currentId();
+    const proj = pid ? this.projects().get(pid) : undefined;
+    if (!proj) return [];
+    return listInteractiveSessions(this.interactiveDir, proj.cwd);
+  }
+
+  /** Import an existing interactive session into a project and make it the
+   *  session that project resumes. */
+  resumeExisting(projectId: string, sessionId: string): void {
+    const proj = this.projects().get(projectId);
+    if (!proj) throw new Error(`unknown project ${projectId}`);
+    if (this.runs.has(projectId)) throw new BusyError();
+    const accounts = this.registry().list();
+    if (accounts.length === 0) throw new Error('no accounts configured');
+    const failoverProjects = join(accounts[0].configDir, 'projects');
+    adoptFromInteractive(this.interactiveDir, failoverProjects, proj.cwd, sessionId);
+    this.projects().setLastSession(projectId, sessionId);
+    if (this.projects().currentId() === projectId) {
+      writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd: proj.cwd }));
+    }
+    this.emit('session_adopted', { sessionId, projectId });
   }
 
   /** Immediate subdirectories of the workspace root — the repos you can add as

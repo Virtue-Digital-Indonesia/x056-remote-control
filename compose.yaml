@@ -17,6 +17,9 @@ services:
       - /home/efran/.claude-x056-a:/home/efran/.claude-x056-a
       - /home/efran/.claude-x056-b:/home/efran/.claude-x056-b
       - /home/efran/remote-development:/home/efran/remote-development
+      # Read-only: lets the gateway list + import existing interactive sessions
+      # to resume them. Transcripts only — credentials live outside projects/.
+      - /home/efran/.claude/projects:/home/efran/.claude/projects:ro
       - x056-state:/app/state
 volumes:
   x056-state:

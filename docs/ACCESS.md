@@ -188,3 +188,9 @@ Worst-case abuse from a compromised container is a rebuild of itself — not hos
 ## Parallel projects
 
 Projects run **concurrently** — each project executes at most one turn at a time, but different projects run simultaneously. Switching projects is a pure view change (never blocked). The sidebar shows a spinner on any project with a turn in flight. Because all projects share the same two Max accounts, parallel turns split the same quota and can both hit the limit; failover accounting is coordinated in-process so it stays correct under concurrency.
+
+## Resuming existing interactive sessions
+
+The compose file mounts `~/.claude/projects` **read-only** into the container so the gateway can list and import your existing interactive `claude` conversations. Transcripts only — credentials live in `~/.claude/.credentials.json`, outside the mounted `projects/` subdir, and are never exposed.
+
+In the panel: select (or add) a project, click **⟲** in the top bar, pick a past session (shown with its first message + when), and it's copied into the failover tree and resumed. The `x056 adopt` host CLI still works for the same purpose from a terminal.

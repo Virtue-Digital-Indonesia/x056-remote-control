@@ -162,6 +162,24 @@ export class ApiController {
     return this.manager.listWorkspaceDirs();
   }
 
+  @Get('available-sessions')
+  availableSessions(@Query('projectId') projectId?: string): unknown {
+    return this.manager.listAvailableSessions(projectId);
+  }
+
+  @Post('resume-session')
+  @HttpCode(200)
+  resumeSession(@Body() body: { projectId?: string; sessionId?: string }): { ok: boolean } {
+    if (!body?.projectId || !body?.sessionId) throw new BadRequestException('projectId and sessionId required');
+    try {
+      this.manager.resumeExisting(body.projectId, body.sessionId);
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof BusyError) throw new ConflictException('busy');
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
   @Post('projects')
   createProject(@Body() body: { name?: string; cwd?: string }): unknown {
     if (!body?.name) throw new BadRequestException('name required');

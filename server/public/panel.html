@@ -149,6 +149,10 @@
   .pk-item:hover { background: var(--surface-2); }
   .pk-item.added { color: var(--faint); cursor: default; } .pk-item.added:hover { background: transparent; }
   .pk-item .tag { margin-left: auto; font-size: 10px; color: var(--faint); }
+  .pk-item.sess { align-items: flex-start; }
+  .pk-item.sess > div { overflow: hidden; }
+  .sess-msg { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess-meta { font-size: 11px; color: var(--faint); margin-top: 2px; }
   @media (max-width: 720px) { body { grid-template-columns: 1fr; } aside { display: none; } }
 </style>
 <script>
@@ -172,6 +176,7 @@
     <span class="cwd" id="projCwd"></span>
     <span class="sp"></span>
     <span id="dot" class="off" title="connection"></span>
+    <button class="ico" id="resumeBtn" title="resume an existing session">⟲</button>
     <button class="ico" id="switchBtn" title="force switch account">⇄</button>
     <button class="ico" id="themeBtn" title="theme"></button>
     <button class="ico" id="tokenBtn" title="clear token">⚙</button>
@@ -203,6 +208,10 @@
   <h2>add a project from your repos</h2>
   <input id="projSearch" class="pk-search" placeholder="filter repos…" />
   <div id="projPickList" class="pk-list"></div>
+</div>
+<div class="pop" id="sessPicker" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:360px;">
+  <h2>resume an existing session</h2>
+  <div id="sessList" class="pk-list"></div>
 </div>
 
 <script>
@@ -355,11 +364,10 @@
       projPickList.appendChild(it);
     });
   }
-  function closePicker() { projPicker.hidden = true; if (quotaPop.hidden) backdrop.hidden = true; }
   function createProjectFromDir(d) {
     api('/api/projects', { method: 'POST', body: JSON.stringify({ name: d.name, cwd: d.path }) }).then(function (r) {
       if (!r.ok) return r.json().then(function (j) { addSys('could not add project: ' + (j.message || r.status), 'banner'); });
-      return r.json().then(function (p) { closePicker(); switchProject(p); });
+      return r.json().then(function (p) { closeAllPops(); switchProject(p); });
     }).catch(function () {});
   }
   projSearch.addEventListener('input', function () { renderPickList(projSearch.value); });
@@ -367,7 +375,7 @@
     api('/api/workspace').then(function (r) { return r.json(); }).then(function (dirs) {
       workspaceDirs = Array.isArray(dirs) ? dirs : [];
       projSearch.value = ''; renderPickList('');
-      projPicker.hidden = false; backdrop.hidden = false; projSearch.focus();
+      openPop(projPicker); projSearch.focus();
     }).catch(function () {});
   });
   $('newSessionBtn').addEventListener('click', function () { pendingNew = true; chatEl.textContent = ''; addSys('new session — send a message to begin'); promptEl.focus(); });
@@ -401,14 +409,57 @@
     if (activeAcct) { var nm2 = activeAcct.displayName || activeAcct.name; acctName.textContent = nm2; acctAv.textContent = (nm2[0] || '?').toUpperCase(); acctPlan.textContent = 'Max · view usage'; }
   }
   function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
-  function togglePop(show) { var open = show === undefined ? quotaPop.hidden : show; quotaPop.hidden = !open; backdrop.hidden = !open; if (open) pollAccounts(); }
+  var sessPicker = $('sessPicker'), sessList = $('sessList');
+  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; }
+  function closeAllPops() { hidePops(); backdrop.hidden = true; }
+  function openPop(el) { hidePops(); el.hidden = false; backdrop.hidden = false; }
+  function togglePop(show) { var open = show === undefined ? quotaPop.hidden : show; if (open) { openPop(quotaPop); pollAccounts(); } else closeAllPops(); }
   acctChip.addEventListener('click', function () { togglePop(); });
-  backdrop.addEventListener('click', function () { togglePop(false); closePicker(); });
+  backdrop.addEventListener('click', closeAllPops);
+
+  // ---- resume an existing session ----
+  function relTime(iso) {
+    var t = Date.parse(iso); if (isNaN(t)) return '';
+    var s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 90) return 'just now';
+    if (s < 3600) return Math.round(s / 60) + 'm ago';
+    if (s < 86400) return Math.round(s / 3600) + 'h ago';
+    if (s < 86400 * 30) return Math.round(s / 86400) + 'd ago';
+    return new Date(t).toLocaleDateString();
+  }
+  function resumeSession(s) {
+    api('/api/resume-session', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId, sessionId: s.id }) }).then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { addSys('could not resume: ' + (j.message || r.status), 'banner'); });
+      closeAllPops(); chatEl.textContent = ''; pendingNew = false; lastSessionId = s.id; pollSnapshot().then(loadHistory);
+    }).catch(function () {});
+  }
+  function openSessions() {
+    if (!currentProjectId) return;
+    sessList.textContent = ''; var ld = document.createElement('div'); ld.className = 'pk-item added'; ld.textContent = 'loading…'; sessList.appendChild(ld);
+    openPop(sessPicker);
+    api('/api/available-sessions?projectId=' + encodeURIComponent(currentProjectId)).then(function (r) { return r.json(); }).then(function (list) {
+      sessList.textContent = '';
+      if (!Array.isArray(list) || !list.length) { var e = document.createElement('div'); e.className = 'pk-item added'; e.textContent = 'no existing sessions for this repo'; sessList.appendChild(e); return; }
+      list.forEach(function (s) {
+        var it = document.createElement('div'); it.className = 'pk-item sess';
+        var col = document.createElement('div');
+        var m = document.createElement('div'); m.className = 'sess-msg'; m.textContent = s.firstMessage || '(no preview)'; col.appendChild(m);
+        var meta = document.createElement('div'); meta.className = 'sess-meta'; meta.textContent = relTime(s.updatedAt) + ' · ' + s.messages + ' msgs'; col.appendChild(meta);
+        it.appendChild(col);
+        it.addEventListener('click', function () { resumeSession(s); });
+        sessList.appendChild(it);
+      });
+    }).catch(function () { sessList.textContent = ''; var e = document.createElement('div'); e.className = 'pk-item added'; e.textContent = 'could not load sessions'; sessList.appendChild(e); });
+  }
+  $('resumeBtn').addEventListener('click', openSessions);
 
   function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; currentProjectId = s.currentProjectId; return s; }); }
   function loadHistory() {
     return api('/api/sessions/current/history?limit=80').then(function (r) { return r.json(); }).then(function (rows) {
-      if (!Array.isArray(rows) || rows.length === 0) { addSys('no messages yet — say hello'); return; }
+      if (!Array.isArray(rows) || rows.length === 0) {
+        addSys('no messages yet — say hello, or click ⟲ to resume an existing session');
+        return;
+      }
       addSys(rows.length + ' earlier messages'); rows.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); }); addSys('live'); down();
     }).catch(function () {});
   }

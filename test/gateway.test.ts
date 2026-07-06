@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -233,5 +233,41 @@ describe('gateway workspace picker', () => {
     await fetch(`${base}/api/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'repo-one', cwd: join(dir, 'repo-one') }) });
     const after = await (await fetch(`${base}/api/workspace`, { headers: auth })).json() as { name: string; isProject: boolean }[];
     expect(after.find((d) => d.name === 'repo-one')?.isProject).toBe(true);
+  });
+});
+
+describe('gateway resume existing session', () => {
+  it('lists available interactive sessions for a project and resumes one', async () => {
+    await idle();
+    // stand up a fake interactive tree the app can read (app was built with
+    // workspaceRoot=dir; its interactiveProjectsDir defaults to ~/.claude/projects,
+    // so we point a dedicated app at a temp interactive dir instead).
+    const base2dir = mkdtempSync(join(tmpdir(), 'x056-resume-'));
+    const sd = join(base2dir, 'state'); mkdirSync(sd, { recursive: true });
+    const cfgA = join(base2dir, 'cfg-a');
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: cfgA }, { name: 'b', configDir: join(base2dir, 'cfg-b') }]);
+    const repo = join(base2dir, 'repo'); mkdirSync(repo, { recursive: true });
+    const interactive = join(base2dir, 'interactive'); mkdirSync(interactive, { recursive: true });
+    const munged = repo.replace(/[/.]/g, '-');
+    mkdirSync(join(interactive, munged), { recursive: true });
+    writeFileSync(join(interactive, munged, 'sess-xyz.jsonl'), JSON.stringify({ type: 'user', message: { content: 'resume me' } }) + '\n');
+
+    const app2 = await createApp({ token: TOKEN, stateDir: sd, workspaceRoot: base2dir, claudePath: FAKE, interactiveProjectsDir: interactive });
+    await app2.listen(0);
+    const u = await app2.getUrl();
+    try {
+      const proj = await (await fetch(`${u}/api/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'repo', cwd: repo }) })).json() as { id: string };
+      const avail = await (await fetch(`${u}/api/available-sessions?projectId=${proj.id}`, { headers: auth })).json() as { id: string; firstMessage: string }[];
+      expect(avail.map((s) => s.id)).toContain('sess-xyz');
+      expect(avail.find((s) => s.id === 'sess-xyz')?.firstMessage).toBe('resume me');
+      const r = await fetch(`${u}/api/resume-session`, { method: 'POST', headers: auth, body: JSON.stringify({ projectId: proj.id, sessionId: 'sess-xyz' }) });
+      expect(r.status).toBe(200);
+      // transcript copied into the failover tree; project now resumes it
+      expect(existsSync(join(cfgA, 'projects', munged, 'sess-xyz.jsonl'))).toBe(true);
+      const list = await (await fetch(`${u}/api/projects`, { headers: auth })).json() as { projects: { id: string; lastSessionId?: string }[] };
+      expect(list.projects.find((p) => p.id === proj.id)?.lastSessionId).toBe('sess-xyz');
+    } finally {
+      await app2.close();
+    }
   });
 });
