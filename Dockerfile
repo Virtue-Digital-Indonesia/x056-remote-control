@@ -1,6 +1,12 @@
 FROM node:22-bookworm
-RUN npm install -g @anthropic-ai/claude-code \
+# Headless Chromium (via Playwright) is baked into the image at a shared,
+# world-readable path so any session can screenshot/verify UI work — the
+# post-reset container previously had no browser at all.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npm install -g @anthropic-ai/claude-code playwright \
  && apt-get update && apt-get install -y --no-install-recommends ripgrep curl openssh-client \
+ && npx playwright install --with-deps chromium \
+ && chmod -R a+rX /ms-playwright \
  && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1001 efran
 USER efran

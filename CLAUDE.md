@@ -16,6 +16,7 @@ Sessions started through the panel run **inside the Docker container** this repo
 - **Background work DIES when your turn ends.** Your process is the turn: backgrounded subagents, workflows, or `run_in_background` shells are killed at turn completion. Run long orchestration synchronously within the turn, or don't run it. Never promise "I'll be notified when it finishes."
 - Mounts you can see: the two failover config dirs (`~/.claude-x056-a`, `~/.claude-x056-b`), the workspace (`/home/efran/remote-development`), `~/.claude/projects` **read-only** (interactive transcripts, for session adoption), and the `/app/state` volume. The host's `~/.claude` credentials are NOT visible.
 - Tests: `npm test` (vitest, serialized files — keep it green), `npm run typecheck`. Both must pass before requesting a deploy.
+- **You CAN screenshot** to eyeball UI work: a headless Chromium (Playwright) is baked into the image at `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`. Start the project's dev server, then `node /app/scripts/shot.cjs <url> <out.png> [width] [height]` and Read the PNG. Any project's own Playwright/Puppeteer also finds the browser via that env var. (Requires a container built after this note — if `shot.cjs` says playwright not found, the image predates it; commit + request a deploy.)
 
 ## Session rules
 
