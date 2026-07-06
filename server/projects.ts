@@ -8,6 +8,10 @@ export interface Project {
   name: string;
   cwd: string;
   lastSessionId?: string;
+  /** Last explicitly-chosen model/effort, reused on continuations (autopilot,
+   *  orphan-resume, question answers) so the session doesn't revert to default. */
+  model?: string;
+  effort?: string;
 }
 
 interface ProjectsFile {
@@ -84,6 +88,16 @@ export class ProjectRegistry {
     const p = this.data.projects.find((x) => x.id === id);
     if (!p) return;
     p.lastSessionId = sessionId;
+    this.save();
+  }
+
+  /** Remember the model/effort last chosen for a project (only overwrites the
+   *  fields actually provided), so continuations can reuse them. */
+  setPrefs(id: string, prefs: { model?: string; effort?: string }): void {
+    const p = this.data.projects.find((x) => x.id === id);
+    if (!p) return;
+    if (prefs.model) p.model = prefs.model;
+    if (prefs.effort) p.effort = prefs.effort;
     this.save();
   }
 

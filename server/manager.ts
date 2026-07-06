@@ -489,6 +489,14 @@ export class SessionManager {
   }
 
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
+    // Persist an explicitly-chosen model/effort, and reuse the last choice when a
+    // continuation doesn't carry one (autopilot, orphan-resume, question answers),
+    // so a Fable session doesn't silently revert to the CLI default on continue.
+    const reg = this.projects();
+    if (runOpts?.model || runOpts?.effort) reg.setPrefs(pid, { model: runOpts.model, effort: runOpts.effort });
+    const stored = reg.get(pid);
+    const model = runOpts?.model ?? stored?.model;
+    const effort = runOpts?.effort ?? stored?.effort;
     const run: ActiveRun = { sessionId, cwd };
     this.runs.set(pid, run);
     // Every event from this run carries its projectId so the panel can route it
@@ -508,7 +516,7 @@ export class SessionManager {
         }
       };
       this.writeMarker(pid, sessionId, cwd, prompt);
-      emit('session_started', { sessionId, cwd, resume, prompt, model: runOpts?.model, effort: runOpts?.effort });
+      emit('session_started', { sessionId, cwd, resume, prompt, model, effort });
       emit('turn_state', { active: true });
       void runFn({
         registry: this.registry(),
@@ -518,8 +526,8 @@ export class SessionManager {
         prompt,
         resume,
         claudePath: this.opts.claudePath,
-        model: runOpts?.model,
-        effort: runOpts?.effort,
+        model,
+        effort,
         appendSystemPrompt: CONTAINER_SYSTEM_NOTE,
         forceSwitchSignal: false,
         control: (c) => { run.control = c; },

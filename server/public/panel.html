@@ -288,6 +288,15 @@
   try { modelEl.value = localStorage.getItem(MODEL_KEY) || ''; effortEl.value = localStorage.getItem(EFFORT_KEY) || ''; } catch (e) {}
   modelEl.addEventListener('change', function () { try { localStorage.setItem(MODEL_KEY, modelEl.value); } catch (e) {} });
   effortEl.addEventListener('change', function () { try { localStorage.setItem(EFFORT_KEY, effortEl.value); } catch (e) {} });
+  // Reflect the project's persisted model/effort in the picker (falling back to
+  // the global default) so switching projects shows what that one actually runs.
+  function syncPicker(pid) {
+    var p = projCache[pid]; if (!p) return;
+    try {
+      modelEl.value = p.model || localStorage.getItem(MODEL_KEY) || '';
+      effortEl.value = p.effort || localStorage.getItem(EFFORT_KEY) || '';
+    } catch (e) {}
+  }
 
   function api(path, opts) { opts = opts || {}; opts.headers = Object.assign({ Authorization: 'Bearer ' + token }, opts.body ? { 'Content-Type': 'application/json' } : {}); return fetch(path, opts); }
   var SVGNS = 'http://www.w3.org/2000/svg';
@@ -670,9 +679,10 @@
     // Commit the selection server-side FIRST — /history and /sessions are keyed to
     // the server's "current" project, so loading before the select lands fetches
     // the wrong project's thread. Guard each step against a newer switch.
+    syncPicker(p.id);
     api('/api/projects/current', { method: 'POST', body: JSON.stringify({ id: p.id }) })
       .then(function () { if (currentProjectId !== p.id) return null; return pollSnapshot(); })
-      .then(function (s) { if (!s || currentProjectId !== p.id) return; loadProjects(); loadHistory(); })
+      .then(function (s) { if (!s || currentProjectId !== p.id) return; return loadProjects().then(function () { if (currentProjectId === p.id) syncPicker(p.id); loadHistory(); }); })
       .catch(function () {});
   }
   // ---- add-project picker (lists workspace repos) ----
@@ -828,7 +838,7 @@
     }).catch(function () {});
   }
 
-  loadProjects(); setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot();
+  loadProjects().then(function () { if (currentProjectId) syncPicker(currentProjectId); }); setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot();
   pollSnapshot().then(loadHistory);
 
   // ---- SSE ----

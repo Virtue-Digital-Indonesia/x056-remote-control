@@ -56,6 +56,20 @@ describe('SessionManager', () => {
     expect(mgr.snapshot().lastResult).toEqual(COMPLETED);
   });
 
+  it('reuses a project\'s last chosen model/effort on a continue that specifies none', async () => {
+    const { mgr, calls } = fixture(COMPLETED);
+    mgr.start('first', undefined, { model: 'fable', effort: 'high' });
+    await waitFor(() => mgr.snapshot().running === false);
+    expect(calls[0].model).toBe('fable');
+    expect(calls[0].effort).toBe('high');
+    // A continue with no opts — the autopilot / orphan-resume / question-answer
+    // path — must not silently revert to the CLI default.
+    mgr.continueLast('keep going');
+    await waitFor(() => calls.length === 2);
+    expect(calls[1].model).toBe('fable');
+    expect(calls[1].effort).toBe('high');
+  });
+
   it('rejects concurrent starts with BusyError and allows continue after completion', async () => {
     const { mgr, calls } = fixture(COMPLETED, { delayMs: 100 });
     mgr.start('first');
