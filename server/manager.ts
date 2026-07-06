@@ -85,7 +85,14 @@ interface ActiveRun {
 
 export class SessionManager {
   private buffer: GatewayEvent[] = [];
-  private seq = 0;
+  // Seed from wall-clock ms so seq is monotonic ACROSS container restarts, not
+  // just within one process. A swap used to reset this to 0, so a browser that
+  // reconnected with its old (high) lastSeq had every replayed event —
+  // including the orphan-resume card for a turn the swap just killed — filtered
+  // out by subscribe()'s `e.seq > sinceSeq`, silently freezing the panel until
+  // a manual refresh. A time-based base guarantees the new container's events
+  // outrank anything the browser already saw.
+  private seq = Date.now();
   private subscribers = new Set<(e: GatewayEvent) => void>();
   // One concurrent turn per project (keyed by projectId); projects run in parallel.
   private runs = new Map<string, ActiveRun>();
@@ -126,8 +133,12 @@ export class SessionManager {
       const path = join(this.inflightDir, f);
       try {
         const m = JSON.parse(readFileSync(path, 'utf8')) as { projectId?: string; projectName?: string; sessionId?: string; prompt?: string; startedAt?: string };
+        const opid = m.projectId ?? f.replace(/\.json$/, '');
+        // Clear any stale "running" indicator the swap left behind (the killed
+        // turn never emitted turn_state:false), then surface the resume card.
+        this.emit('turn_state', { projectId: opid, active: false });
         this.emit('turn_orphaned', {
-          projectId: m.projectId ?? f.replace(/\.json$/, ''),
+          projectId: opid,
           projectName: m.projectName ?? null,
           sessionId: m.sessionId ?? null,
           prompt: m.prompt ?? null,
