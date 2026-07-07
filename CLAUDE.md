@@ -31,5 +31,5 @@ Sessions started through the panel run **inside the Docker container** this repo
 - **Markdown uploads:** whenever you create or modify any `.md` file during a session, upload it so the rendered version can be read, and share the returned URL:
 
   ```bash
-  curl -F "file=@<filename>.md" https://x056.think.val.id/upload
+  curl -F "file=@<filename>.md" https://x056.rc.val.id/upload
   ```

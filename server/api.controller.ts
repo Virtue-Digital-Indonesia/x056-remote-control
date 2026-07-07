@@ -108,8 +108,8 @@ export class ApiController {
     const origin = hdrOrigin || `${proto}://${host}`;
     let rpID: string;
     try { rpID = new URL(origin).hostname; } catch { throw new BadRequestException('bad origin'); }
-    const allowed = process.env.X056_RP_ID || 'x056.think.val.id';
-    if (rpID !== allowed && rpID !== 'localhost' && rpID !== '127.0.0.1') {
+    const allowed = (process.env.X056_RP_ID || 'x056.rc.val.id').split(',').map((s) => s.trim()).filter(Boolean);
+    if (!allowed.includes(rpID) && rpID !== 'localhost' && rpID !== '127.0.0.1') {
       throw new BadRequestException('origin not allowed');
     }
     return { rpID, origin };
