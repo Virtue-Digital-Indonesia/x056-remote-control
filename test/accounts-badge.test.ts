@@ -38,6 +38,20 @@ describe('GET /api/accounts — badge staleness', () => {
     expect(b.state.until).toBe(now + 3600);
   });
 
+  it('passes through the estimated flag so the panel knows not to show a fabricated reset time', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-badge-'));
+    const reg = AccountRegistry.init(join(dir, 'accounts.json'), [
+      { name: 'a', configDir: join(dir, 'cfg-a') },
+      { name: 'b', configDir: join(dir, 'cfg-b') },
+    ]);
+    const now = Math.floor(Date.now() / 1000);
+    reg.markLimited('a', now + 3600); // real Anthropic-reported reset time
+    reg.markLimited('b', now + 3600, true); // our own cooldown guess
+    const result = (await controller(dir).accounts()) as { name: string; state: { estimated?: boolean } }[];
+    expect(result.find((r) => r.name === 'a')!.state.estimated).toBeUndefined();
+    expect(result.find((r) => r.name === 'b')!.state.estimated).toBe(true);
+  });
+
   it('returns [] when accounts.json does not exist, without throwing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'x056-badge-'));
     expect(await controller(dir).accounts()).toEqual([]);

@@ -213,9 +213,15 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       // flag triggering a spurious forced interrupt on the next account.
       forceSwitchRequested = false;
       if (state.limited) {
-        registry.markLimited(account.name, state.limited.resetsAt ?? now() + LIMIT_NO_RESET_FALLBACK);
+        // A real resetsAt came from Anthropic (rate_limit_event); its absence
+        // means the verdict came from a path that never carries one (a bare 429
+        // result or a synthetic error message) — mark that cooldown as our own
+        // estimate, not a fact, so the UI doesn't present a guess as a countdown.
+        const hasRealReset = state.limited.resetsAt != null;
+        registry.markLimited(account.name, state.limited.resetsAt ?? now() + LIMIT_NO_RESET_FALLBACK, !hasRealReset);
       } else {
-        registry.markLimited(account.name, now() + FORCED_COOLDOWN);
+        // A forced switch is never backed by an Anthropic-reported reset time.
+        registry.markLimited(account.name, now() + FORCED_COOLDOWN, true);
       }
       failoverTimes.push(now());
       const recent = failoverTimes.filter((t) => t > now() - 3600);

@@ -31,6 +31,15 @@ describe('AccountRegistry', () => {
     expect(reloaded.get('a').state).toEqual({ kind: 'limited', until: 5000 });
   });
 
+  it('markLimited records whether the reset time is estimated (our guess) vs a real reported time', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    reg.markLimited('a', 5000); // no third arg — a real Anthropic-reported reset time
+    expect(reg.get('a').state).toEqual({ kind: 'limited', until: 5000 });
+    reg.markLimited('b', 6000, true); // our own cooldown guess
+    expect(reg.get('b').state).toEqual({ kind: 'limited', until: 6000, estimated: true });
+  });
+
   it('a limited account becomes usable again after its reset time', () => {
     const file = freshFile();
     const reg = AccountRegistry.init(file, specs);

@@ -1,7 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-export type AccountState = { kind: 'unknown' } | { kind: 'ok' } | { kind: 'limited'; until: number };
+export type AccountState =
+  | { kind: 'unknown' }
+  | { kind: 'ok' }
+  // `estimated: true` means `until` is our own retry-cooldown guess (no reset
+  // time was available from Anthropic), NOT a real reported reset time — the UI
+  // must not present it as a factual countdown.
+  | { kind: 'limited'; until: number; estimated?: boolean };
 
 export interface Account {
   name: string;
@@ -73,8 +79,8 @@ export class AccountRegistry {
     this.save();
   }
 
-  markLimited(name: string, until: number): void {
-    this.find(name).state = { kind: 'limited', until };
+  markLimited(name: string, until: number, estimated?: boolean): void {
+    this.find(name).state = estimated ? { kind: 'limited', until, estimated: true } : { kind: 'limited', until };
     this.save();
   }
 

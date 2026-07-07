@@ -153,7 +153,7 @@ describe('runSession', () => {
     expect(log.read().map((r) => r.type)).toContain('flap_guard_tripped');
   });
 
-  it('uses the 30m fallback when a limit signal (synthetic transcript entry) has no resetsAt', async () => {
+  it('uses the 30m fallback when a limit signal (synthetic transcript entry) has no resetsAt, flagged as estimated', async () => {
     const { registry, log } = fixtures();
     // A synthetic transcript entry ("You've hit your limit") carries no parsed reset time.
     const NO_RESET: RawEvent = { type: 'assistant', error: 'rate_limit', isApiErrorMessage: true, message: { model: '<synthetic>', content: [] } };
@@ -161,7 +161,15 @@ describe('runSession', () => {
       ...base, registry, log, now: () => 1000,
       startTurnFn: scriptTurns([[NO_RESET], [SUCCESS]], []),
     });
-    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 1000 + 30 * 60 });
+    // estimated: true — this cooldown is our own 30m guess, not an Anthropic-reported
+    // reset time, so the UI must not present it as a factual countdown.
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 1000 + 30 * 60, estimated: true });
+  });
+
+  it('marks a real rate_limit_event reset time as NOT estimated (it is Anthropic-reported fact)', async () => {
+    const { registry, log } = fixtures();
+    await runSession({ ...base, registry, log, now: () => 1000, startTurnFn: scriptTurns([[REJECTED], [SUCCESS]], []) });
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 2000 });
   });
 
   it('drains then interrupts on a forced switch (SIGUSR1), failing over with the 30m cooldown (D7)', async () => {
@@ -188,7 +196,8 @@ describe('runSession', () => {
     const types = log.read().map((r) => r.type);
     expect(types).toContain('forced_switch');
     expect(types).toContain('failover');
-    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 100 + 30 * 60 });
+    // A forced switch is never backed by an Anthropic-reported reset time.
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 100 + 30 * 60, estimated: true });
   });
 
   it('does not leave a stale forceSwitchRequested flag when a rate limit wins the SIGUSR1 race (Finding 2)', async () => {
@@ -258,6 +267,6 @@ describe('runSession', () => {
     const types = log.read().map((r) => r.type);
     expect(types).toContain('forced_switch');
     expect(types).toContain('failover');
-    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 100 + 30 * 60 });
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: 100 + 30 * 60, estimated: true });
   }, 10000);
 });

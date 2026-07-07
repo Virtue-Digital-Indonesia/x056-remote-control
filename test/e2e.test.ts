@@ -158,6 +158,7 @@ describe('e2e: failover across accounts via fake-claude', () => {
     });
 
     expect(res).toMatchObject({ status: 'completed', finalAccount: 'b', failovers: 1 });
-    expect(registry.get('a').state).toEqual({ kind: 'limited', until: injectedNow + 1800 });
+    // A bare 429 result carries no resetsAt, so this cooldown is our own guess.
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: injectedNow + 1800, estimated: true });
   }, 15000);
 });

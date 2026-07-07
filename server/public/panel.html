@@ -1027,7 +1027,12 @@
       top.appendChild(left);
       var badge = document.createElement('span'); badge.className = 'badge';
       if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'active'; }
-      else if (st.kind === 'limited') { badge.classList.add('limited'); badge.textContent = 'limited · resets ' + clockTime(new Date(st.until * 1000).toISOString()); }
+      else if (st.kind === 'limited') {
+        badge.classList.add('limited');
+        // Only claim a reset time when it's real (Anthropic-reported), never our
+        // own retry-cooldown guess — st.estimated marks exactly that case.
+        badge.textContent = st.estimated ? 'limited' : 'limited · resets ' + clockTime(new Date(st.until * 1000).toISOString());
+      }
       else badge.textContent = 'idle';
       top.appendChild(badge); card.appendChild(top);
       if (a.quota) { card.appendChild(gauge('5-hour', a.quota.fiveHour)); card.appendChild(gauge('7-day', a.quota.sevenDay)); if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = 'cached — refreshing'; card.appendChild(s); } }
