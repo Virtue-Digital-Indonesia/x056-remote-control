@@ -247,7 +247,7 @@
     .moreBtn { display: inline-grid; place-items: center; }
     /* On mobile the crowded action icons collapse into the "more" menu; keep
        only the projects drawer, title, connection dot, and the more button. */
-    .topbar #notifyBtn, .topbar #autopilotBtn, .topbar #resumeBtn, .topbar #switchBtn,
+    .topbar #notifyBtn, .topbar #autopilotBtn, .topbar #resumeBtn,
     .topbar #defaultsBtn, .topbar #passkeyBtn, .topbar #themeBtn, .topbar #tokenBtn { display: none; }
     .topbar .title { flex: 1; min-width: 0; }
     .topbar .sp { display: none; }
@@ -319,7 +319,6 @@
     <button class="ico" id="notifyBtn" title="enable phone/desktop notifications"><svg class="ic"><use href="#i-bell"/></svg></button>
     <button class="ico" id="autopilotBtn" title="autopilot — gateway keeps the work going across turns/restarts"><svg class="ic"><use href="#i-repeat"/></svg></button>
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
-    <button class="ico" id="switchBtn" title="force switch account"><svg class="ic"><use href="#i-switch"/></svg></button>
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
     <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
     <button class="ico" id="themeBtn" title="theme"><svg class="ic"><use href="#i-moon"/></svg></button>
@@ -342,7 +341,7 @@
         <div class="select"><select id="effort" title="effort">
           <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
         </select></div>
-        <label class="attach" title="attach image"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden /></label>
+        <label class="attach" title="attach images"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden /></label>
         <span class="sp"></span>
         <button class="send" id="sendBtn" title="send"><svg class="ic sm"><use href="#i-up"/></svg></button>
       </div>
@@ -351,7 +350,7 @@
 </main>
 
 <div class="backdrop" id="backdrop" hidden></div>
-<div class="pop" id="quotaPop" hidden><h2>account usage</h2><div id="accounts"></div></div>
+<div class="pop" id="quotaPop" hidden><h2>account usage</h2><div id="accounts"></div><button class="send" id="switchAcctBtn" style="width:100%; margin-top:4px;">Force-switch active account</button></div>
 <div class="pop" id="projPicker" hidden style="top:100px; left:12px; bottom:auto; width:300px;">
   <h2>add a project from your repos</h2>
   <input id="projSearch" class="pk-search" placeholder="filter repos…" />
@@ -400,7 +399,7 @@
   var acctChip = $('acctChip'), acctAv = $('acctAv'), acctNameEl = $('acctName'), acctPlan = $('acctPlan');
   var quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts'), themeBtn = $('themeBtn');
   var defaultsPop = $('defaultsPop'), defaultsList = $('defaultsList'), passkeyPop = $('passkeyPop');
-  var lastSessionId = null, lastSeq = 0, pendingImage = null, pendingNew = false, currentProjectId = null;
+  var lastSessionId = null, lastSeq = 0, pendingImages = [], pendingNew = false, currentProjectId = null;
 
   try { modelEl.value = localStorage.getItem(MODEL_KEY) || ''; effortEl.value = localStorage.getItem(EFFORT_KEY) || ''; } catch (e) {}
   modelEl.addEventListener('change', function () {
@@ -584,7 +583,9 @@
     var lab = document.createElement('div'); lab.className = 'role'; lab.textContent = role === 'user' ? 'you' : 'claude'; wrap.appendChild(lab);
     var content = document.createElement('div'); content.className = 'content';
     if (role === 'assistant') content.appendChild(renderMarkdown(text)); else content.appendChild(document.createTextNode(text));
-    if (imgUrl) { var im = document.createElement('img'); im.className = 'att'; im.src = imgUrl; content.appendChild(im); }
+    // imgUrl may be a single data URL (legacy callers) or an array (attachments).
+    var imgs = Array.isArray(imgUrl) ? imgUrl : (imgUrl ? [imgUrl] : []);
+    imgs.forEach(function (u) { var im = document.createElement('img'); im.className = 'att'; im.src = u; content.appendChild(im); });
     wrap.appendChild(content);
     var meta = document.createElement('div'); meta.className = 'mmeta';
     var tm = document.createElement('span'); tm.textContent = clockTime(ts); meta.appendChild(tm);
@@ -1092,7 +1093,6 @@
     { id: 'notifyBtn', label: 'Notifications', icon: 'bell' },
     { id: 'autopilotBtn', label: 'Autopilot', icon: 'repeat' },
     { id: 'resumeBtn', label: 'Resume a session', icon: 'history' },
-    { id: 'switchBtn', label: 'Switch account', icon: 'switch' },
     { id: 'defaultsBtn', label: 'Default effort per model', icon: 'gear' },
     { id: 'passkeyBtn', label: 'Passkeys', icon: 'key' },
     { id: 'themeBtn', label: 'Theme', icon: 'moon' },
@@ -1223,47 +1223,63 @@
   // ---- composer ----
   function autogrow() { promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + 'px'; }
   promptEl.addEventListener('input', autogrow);
-  function setImage(u) {
-    pendingImage = u; attachRow.textContent = '';
-    if (!u) { attachRow.classList.remove('show'); return; }
-    var chip = document.createElement('div'); chip.className = 'chip'; var img = document.createElement('img'); img.src = u; chip.appendChild(img);
-    var sp = document.createElement('span'); sp.textContent = 'image attached'; chip.appendChild(sp);
-    var x = document.createElement('button'); x.appendChild(icon('x', 'sm')); x.addEventListener('click', function () { setImage(null); }); chip.appendChild(x);
-    attachRow.appendChild(chip); attachRow.classList.add('show');
+  // Multiple attachments: pendingImages holds every attached data URL; the chip
+  // row re-renders (with fresh indices) on any add/remove so the × buttons stay
+  // correct after a splice.
+  function renderAttachments() {
+    attachRow.textContent = '';
+    if (!pendingImages.length) { attachRow.classList.remove('show'); return; }
+    pendingImages.forEach(function (u, i) {
+      var chip = document.createElement('div'); chip.className = 'chip';
+      var img = document.createElement('img'); img.src = u; chip.appendChild(img);
+      var x = document.createElement('button'); x.appendChild(icon('x', 'sm'));
+      x.addEventListener('click', function () { pendingImages.splice(i, 1); renderAttachments(); }); chip.appendChild(x);
+      attachRow.appendChild(chip);
+    });
+    attachRow.classList.add('show');
   }
-  function fileToImage(f) { if (!f || !/^image\//.test(f.type)) return; var r = new FileReader(); r.onload = function () { setImage(r.result); }; r.readAsDataURL(f); }
-  fileEl.addEventListener('change', function () { if (fileEl.files[0]) fileToImage(fileEl.files[0]); fileEl.value = ''; });
-  promptEl.addEventListener('paste', function (e) { var items = (e.clipboardData || {}).items || []; for (var i = 0; i < items.length; i++) if (items[i].type && items[i].type.indexOf('image') === 0) { var f = items[i].getAsFile(); if (f) { e.preventDefault(); fileToImage(f); return; } } });
+  function clearAttachments() { pendingImages = []; renderAttachments(); }
+  function addImageFromFile(f) { if (!f || !/^image\//.test(f.type)) return; var r = new FileReader(); r.onload = function () { pendingImages.push(r.result); renderAttachments(); }; r.readAsDataURL(f); }
+  fileEl.addEventListener('change', function () { for (var i = 0; i < fileEl.files.length; i++) addImageFromFile(fileEl.files[i]); fileEl.value = ''; });
+  promptEl.addEventListener('paste', function (e) { var items = (e.clipboardData || {}).items || []; var added = false; for (var i = 0; i < items.length; i++) if (items[i].type && items[i].type.indexOf('image') === 0) { var f = items[i].getAsFile(); if (f) { addImageFromFile(f); added = true; } } if (added) e.preventDefault(); });
 
   function queueBody(text) { var b = { projectId: currentProjectId, prompt: text }; if (modelEl.value) b.model = modelEl.value; if (effortEl.value) b.effort = effortEl.value; return b; }
   function send() {
-    var text = promptEl.value.trim(); if (!text && !pendingImage) return;
+    var text = promptEl.value.trim(); if (!text && !pendingImages.length) return;
     // A turn is already running here → queue the follow-up (sent when it finishes)
     // instead of erroring. Images can't be queued (they need a live upload).
     if (currentProjectId && runningProjects[currentProjectId]) {
       if (!text) { addSys('type a message to queue — images can’t be queued', 'banner'); return; }
-      if (pendingImage) addSys('image left attached — queued the text only', 'banner');
+      if (pendingImages.length) addSys('images left attached — queued the text only', 'banner');
       api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).then(function (r) {
-        if (r.ok) { promptEl.value = ''; autogrow(); if (!pendingImage) setImage(null); }
+        if (r.ok) { promptEl.value = ''; autogrow(); }
       }).catch(function () {});
       return;
     }
-    var body = { prompt: text }; if (modelEl.value) body.model = modelEl.value; if (effortEl.value) body.effort = effortEl.value; if (pendingImage) body.image = pendingImage;
+    var imgs = pendingImages.slice();
+    var body = { prompt: text }; if (modelEl.value) body.model = modelEl.value; if (effortEl.value) body.effort = effortEl.value; if (imgs.length) body.images = imgs;
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
-    addMsg('user', text || '(image)', pendingImage, new Date().toISOString());
+    addMsg('user', text || (imgs.length > 1 ? '(' + imgs.length + ' images)' : '(image)'), imgs, new Date().toISOString());
     api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
       if (r.status === 409) { // raced a turn start — queue it so it isn't lost
         if (text) api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).catch(function () {});
-        addSys('a turn was already running — queued this message instead', 'banner'); promptEl.value = ''; autogrow(); setImage(null); return;
+        addSys('a turn was already running — queued this message instead', 'banner'); promptEl.value = ''; autogrow(); clearAttachments(); return;
       }
-      promptEl.value = ''; autogrow(); setImage(null); pendingNew = false;
+      promptEl.value = ''; autogrow(); clearAttachments(); pendingNew = false;
       return r.json().then(function (j) { if (j.sessionId) lastSessionId = j.sessionId; }).catch(function () {});
     }).catch(function () {});
   }
   sendBtn.addEventListener('click', send);
   promptEl.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-  $('switchBtn').addEventListener('click', function () { var b = currentProjectId ? { projectId: currentProjectId } : {}; api('/api/switch', { method: 'POST', body: JSON.stringify(b) }).then(function (r) { if (r.status === 409) addSys('no turn running in this project', 'banner'); }).catch(function () {}); });
+  $('switchAcctBtn').addEventListener('click', function () {
+    var b = currentProjectId ? { projectId: currentProjectId } : {};
+    api('/api/switch', { method: 'POST', body: JSON.stringify(b) }).then(function (r) {
+      if (r.status === 409) addSys('no turn running in this project — nothing to switch', 'banner');
+      else if (r.ok) addSys('switching account…', 'banner');
+      closeAllPops();
+    }).catch(function () {});
+  });
 
   // ---- auth gate + passkeys (WebAuthn) ----
   // Authed unless we get a definitive 401. A 404 (older backend without this

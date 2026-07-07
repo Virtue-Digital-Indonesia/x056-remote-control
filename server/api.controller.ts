@@ -62,7 +62,8 @@ interface SendBody {
   cwd?: string;
   model?: string;
   effort?: string;
-  image?: string;
+  image?: string; // legacy single-image field (kept for back-compat)
+  images?: string[]; // multiple attachments
   projectId?: string;
   interactive?: boolean;
 }
@@ -125,9 +126,12 @@ export class ApiController {
   /** Fold an optional attached image into the prompt as a readable file path. */
   private composePrompt(body: SendBody): { prompt: string; opts: TurnRunOptions } {
     let prompt = body.prompt ?? '';
-    if (body.image) {
-      const path = saveImage(this.stateDir, body.image);
-      prompt += `\n\n[The user attached an image. Read it with the Read tool at: ${path}]`;
+    const images = Array.isArray(body.images) && body.images.length ? body.images : body.image ? [body.image] : [];
+    if (images.length === 1) {
+      prompt += `\n\n[The user attached an image. Read it with the Read tool at: ${saveImage(this.stateDir, images[0])}]`;
+    } else if (images.length > 1) {
+      const paths = images.map((img) => saveImage(this.stateDir, img));
+      prompt += `\n\n[The user attached ${paths.length} images. Read them with the Read tool at:\n${paths.map((p) => `- ${p}`).join('\n')}]`;
     }
     // Teach the model the ASK convention so it can pose questions the panel can
     // surface with quick-reply buttons (opt out with interactive:false).
@@ -137,7 +141,7 @@ export class ApiController {
 
   @Post('sessions')
   startSession(@Body() body: SendBody): { sessionId: string } {
-    if (!body?.prompt && !body?.image) throw new BadRequestException('prompt or image required');
+    if (!body?.prompt && !body?.image && !(body?.images && body.images.length)) throw new BadRequestException('prompt or image required');
     try {
       const { prompt, opts } = this.composePrompt(body);
       return { sessionId: this.manager.start(prompt, body.cwd, opts, body.projectId) };
@@ -149,7 +153,7 @@ export class ApiController {
 
   @Post('sessions/current/messages')
   continueSession(@Body() body: SendBody): { sessionId: string } {
-    if (!body?.prompt && !body?.image) throw new BadRequestException('prompt or image required');
+    if (!body?.prompt && !body?.image && !(body?.images && body.images.length)) throw new BadRequestException('prompt or image required');
     try {
       const { prompt, opts } = this.composePrompt(body);
       return { sessionId: this.manager.continueLast(prompt, opts, body.projectId) };
