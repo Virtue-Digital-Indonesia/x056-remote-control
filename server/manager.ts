@@ -465,11 +465,14 @@ export class SessionManager {
   }
 
   // ---- projects ----
-  listProjects(): { current: string | null; projects: (Project & { running: boolean })[] } {
+  listProjects(): { current: string | null; projects: (Project & { running: boolean; runningSessionId: string | null })[] } {
     const reg = this.projects();
     return {
       current: reg.currentId(),
-      projects: reg.list().map((p) => ({ ...p, running: this.runs.has(p.id) })),
+      // runningSessionId tells the panel WHICH conversation owns the project's one
+      // running turn — a project can have several conversations, only one of
+      // which is running, and the panel needs to know which without guessing.
+      projects: reg.list().map((p) => ({ ...p, running: this.runs.has(p.id), runningSessionId: this.runs.get(p.id)?.sessionId ?? null })),
     };
   }
 
@@ -694,16 +697,24 @@ export class SessionManager {
     const effort = runOpts?.effort ?? stored?.effort;
     const run: ActiveRun = { sessionId, cwd };
     this.runs.set(pid, run);
-    // Every event from this run carries its projectId so the panel can route it
-    // to the right conversation while other projects run concurrently.
-    const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { ...data, projectId: pid });
+    // Every event from this run carries its projectId AND sessionId so the panel
+    // can route it to the right conversation — a project can have one turn
+    // running while the user views a different, idle conversation in it, and
+    // activity/messages must not bleed into whatever's currently on screen.
+    const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { sessionId, ...data, projectId: pid });
     try {
       const runFn = this.opts.runSessionFn ?? runSession;
       const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => emit(k, d));
       let stateSaved = resume;
       const saveStateOnce = () => {
         if (!stateSaved) {
-          this.projects().setLastSession(pid, sessionId);
+          // NOT this.projects().setLastSession(pid, sessionId) — start() already
+          // called addConversation() synchronously before launch(), which made
+          // this the project's current conversation. Doing it again here, on the
+          // first streamed event, used to silently overwrite a conversation
+          // switch the user made in the meantime (a new conversation's first
+          // chunk arriving would yank lastSessionId back to it). This only
+          // touches the legacy crash-recovery snapshot.
           if (this.projects().currentId() === pid) {
             writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd }));
           }
@@ -841,13 +852,25 @@ export class SessionManager {
     return true;
   }
 
+  /** sessionId of the turn currently running in a project, if any — lets a
+   *  caller tell "nothing is running" apart from "a different conversation in
+   *  this project is running" before deciding whether Stop should apply. */
+  runningSessionId(projectId: string): string | undefined {
+    return this.runs.get(projectId)?.sessionId;
+  }
+
   /** Abort a specific project's in-flight turn (user pressed Stop). Also stops
    *  its autopilot so it doesn't immediately auto-continue. The killed turn
-   *  settles through the normal completion path (session_done/error). */
-  stopTurn(projectId?: string): boolean {
+   *  settles through the normal completion path (session_done/error).
+   *  When expectedSessionId is given, only stops if that's the conversation
+   *  actually running — a project can have a turn running for one conversation
+   *  while the user is viewing a different (idle) one, and Stop must not kill
+   *  a conversation the user isn't looking at. */
+  stopTurn(projectId?: string, expectedSessionId?: string): boolean {
     const pid = projectId ?? this.projects().currentId();
     const run = pid ? this.runs.get(pid) : undefined;
     if (!pid || !run?.control) return false;
+    if (expectedSessionId && run.sessionId !== expectedSessionId) return false;
     this.stopAutopilot(pid);
     run.control.abort();
     return true;

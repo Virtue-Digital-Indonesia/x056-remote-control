@@ -73,6 +73,8 @@
   .conv:hover { background: var(--surface-2); }
   .conv.active { background: var(--surface-3); color: var(--text); font-weight: 600; }
   .conv .cnm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conv .crspin { display: none; width: 9px; height: 9px; flex: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; }
+  .conv.running .crspin { display: block; }
   .conv .cbtn { flex: none; display: none; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: none; background: transparent; color: var(--faint); border-radius: 5px; cursor: pointer; }
   .conv:hover .cbtn { display: inline-flex; }
   .conv .cbtn:hover { background: var(--surface-3); color: var(--text); }
@@ -558,23 +560,38 @@
   function atBottom() { return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 140; }
   function down() { scroller.scrollTop = scroller.scrollHeight; }
 
-  // Per-project view cache: every project keeps its rendered thread (detached
-  // DocumentFragment when not in view) + live activity state, so switching is
-  // instant and background projects keep accumulating their output.
+  // Per-CONVERSATION view cache: every conversation (not just project) keeps its
+  // rendered thread (detached DocumentFragment when not in view) + live activity
+  // state, so switching is instant and background work keeps accumulating its
+  // output. Keyed by project+session — a project can run one turn while the user
+  // is viewing a DIFFERENT, idle conversation in it, and the two must never share
+  // a bucket or that turn's activity/messages bleed into whatever's on screen.
   var views = {};
   var ACTIVITY_LOG_CAP = 500;
-  function viewOf(pid) {
-    // activityLog is the DURABLE record of this project's "Running.../Reading...
-    // /Subagent: ..." lines — plain data, not DOM, so it survives loadHistory()
-    // wiping chatEl (project switch, refresh, SSE reconnect). Without it the only
-    // copy of that trail was the DOM nodes themselves, which loadHistory discards
-    // wholesale, replacing them with a single "current action" line.
-    if (!views[pid]) views[pid] = { frag: document.createDocumentFragment(), label: '', subs: {}, subCount: 0, active: false, loaded: false, activityLog: [] };
-    return views[pid];
+  function viewKey(pid, sessionId) { return pid + '::' + (sessionId || ''); }
+  function viewOf(pid, sessionId) {
+    // activityLog is the DURABLE record of this conversation's "Running.../
+    // Reading.../Subagent: ..." lines — plain data, not DOM, so it survives
+    // loadHistory() wiping chatEl (project switch, refresh, SSE reconnect).
+    // Without it the only copy of that trail was the DOM nodes themselves, which
+    // loadHistory discards wholesale, replacing them with a single "current
+    // action" line.
+    var key = viewKey(pid, sessionId);
+    if (!views[key]) views[key] = { frag: document.createDocumentFragment(), label: '', subs: {}, subCount: 0, active: false, loaded: false, activityLog: [] };
+    return views[key];
   }
-  function appendNode(pid, node) {
-    if (!pid || pid === currentProjectId) { var stick = atBottom(); chatEl.appendChild(node); if (stick) down(); }
-    else viewOf(pid).frag.appendChild(node);
+  function forgetView(pid, sessionId) { delete views[viewKey(pid, sessionId)]; }
+  function forgetProjectViews(pid) {
+    var prefix = pid + '::';
+    Object.keys(views).forEach(function (k) { if (k.indexOf(prefix) === 0) delete views[k]; });
+  }
+  // A node belongs in the live thread only if it's for the project AND
+  // conversation currently being viewed; otherwise it's stashed in that OTHER
+  // conversation's own cache so it doesn't bleed into what's on screen.
+  function appendNode(pid, sessionId, node) {
+    if (!pid || (pid === currentProjectId && (!sessionId || sessionId === lastSessionId))) {
+      var stick = atBottom(); chatEl.appendChild(node); if (stick) down();
+    } else viewOf(pid, sessionId).frag.appendChild(node);
   }
 
   function clockTime(iso) {
@@ -619,12 +636,13 @@
   }
   function nodeSys(text, cls) { var d = document.createElement('div'); d.className = cls || 'sysline'; var s = document.createElement('span'); s.textContent = text; d.appendChild(s); return d; }
   function nodeAct(label, isSub) { var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
-  function addMsg(role, text, imgUrl, ts) { appendNode(currentProjectId, nodeMsg(role, text, imgUrl, ts)); }
-  function addSys(text, cls) { appendNode(currentProjectId, nodeSys(text, cls)); }
+  function addMsg(role, text, imgUrl, ts) { appendNode(currentProjectId, lastSessionId, nodeMsg(role, text, imgUrl, ts)); }
+  function addSys(text, cls) { appendNode(currentProjectId, lastSessionId, nodeSys(text, cls)); }
 
   var BANNERS = { limit_detected: 'limit reached — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts limited — parked', turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped' };
   var active = false, lastLabel = '', runningSubs = 0, subs = {};
-  var runningProjects = {}; // projectId -> true while a turn runs there
+  var runningProjects = {}; // projectId -> true while a turn runs there (any conversation)
+  var runningSessionId = {}; // projectId -> sessionId of the conversation actually running there
   var acctNames = {}; // registry name (a/b) -> display name
   var activeModel = {}, activeAccount = {}; // per pid: model id / account name in this turn
   var pendingQ = {};   // pid -> unanswered question data (survives history reloads / SSE replays)
@@ -651,17 +669,25 @@
   }
   function stopCurrentTurn() {
     if (!currentProjectId) return;
-    api('/api/sessions/current/stop', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId }) })
-      .then(function (r) { if (r.ok) addSys('stopping this turn…', 'banner'); else if (r.status === 409) addSys('no turn running here', 'banner'); })
+    // Always send the VIEWED conversation's sessionId — the server refuses to
+    // stop a turn unless it matches, so Stop can never kill a different
+    // conversation in this project than the one on screen.
+    api('/api/sessions/current/stop', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId, sessionId: lastSessionId }) })
+      .then(function (r) {
+        if (r.ok) { addSys('stopping this turn…', 'banner'); return; }
+        return r.json().then(function (j) { addSys(j && j.message ? j.message : 'no turn running here', 'banner'); }).catch(function () { addSys('no turn running here', 'banner'); });
+      })
       .catch(function () {});
   }
   // Live strip above the composer: what every OTHER running project is doing,
-  // so parallel work is visible without leaving the current chat.
+  // PLUS — if the current project's turn belongs to a different conversation
+  // than the one being viewed — a pointer to that conversation, so Stop never
+  // has to guess and the user always knows what's actually running.
   function renderStrip() {
     var el = $('otherRuns'); el.textContent = '';
     Object.keys(runningProjects).forEach(function (pid) {
       if (pid === currentProjectId || !projCache[pid]) return;
-      var v = viewOf(pid);
+      var v = viewOf(pid, runningSessionId[pid]);
       var row = document.createElement('div'); row.className = 'orun';
       var sp = document.createElement('span'); sp.className = 'rspin'; row.appendChild(sp);
       var pn = document.createElement('span'); pn.className = 'pn'; pn.textContent = projCache[pid].name; row.appendChild(pn);
@@ -670,65 +696,87 @@
       row.addEventListener('click', function () { switchProject(projCache[pid]); });
       el.appendChild(row);
     });
+    var curRunSid = currentProjectId && runningSessionId[currentProjectId];
+    if (curRunSid && curRunSid !== lastSessionId) {
+      var p = projCache[currentProjectId];
+      var conv = p && (p.conversations || []).find(function (c) { return c.sessionId === curRunSid; });
+      var v2 = viewOf(currentProjectId, curRunSid);
+      var row2 = document.createElement('div'); row2.className = 'orun';
+      row2.title = 'running in a different conversation of this project';
+      var sp2 = document.createElement('span'); sp2.className = 'rspin'; row2.appendChild(sp2);
+      var pn2 = document.createElement('span'); pn2.className = 'pn'; pn2.textContent = (conv && conv.title) || 'another conversation'; row2.appendChild(pn2);
+      var pl2 = document.createElement('span'); pl2.className = 'pl'; pl2.textContent = v2.label || 'working…'; row2.appendChild(pl2);
+      row2.addEventListener('click', function () { switchConversation(currentProjectId, curRunSid); });
+      el.appendChild(row2);
+    }
   }
-  // Events are global, tagged with projectId. Current project renders into the
-  // live chat; others render into their cached fragment and feed the strip.
+  // Events are global, tagged with projectId AND (for anything tied to a run)
+  // sessionId. `mine` is project-level (used for project-scoped bookkeeping:
+  // sidebar dot, strip, autopilot/queue banners). `mineConvo` additionally
+  // requires the event's conversation to be the one actually on screen — a
+  // project can have a turn running for one conversation while the user views
+  // a different, idle one, and only the viewed conversation's busy bar/thread
+  // may reflect it.
   function handleEvent(kind, data) {
     var pid = data.projectId || currentProjectId;
     var mine = !data.projectId || data.projectId === currentProjectId;
-    var v = viewOf(pid);
+    var sid = data.sessionId;
+    var mineConvo = mine && (!sid || sid === lastSessionId);
     if (kind === 'turn_state') {
+      var v = viewOf(pid, sid);
       v.active = !!data.active;
-      if (data.active) runningProjects[pid] = true;
-      else { delete runningProjects[pid]; v.label = ''; v.subs = {}; v.subCount = 0; }
+      if (data.active) { runningProjects[pid] = true; if (sid) runningSessionId[pid] = sid; }
+      else { delete runningProjects[pid]; delete runningSessionId[pid]; v.label = ''; v.subs = {}; v.subCount = 0; }
       markRunning(); renderStrip();
-      if (mine) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); renderAccountChip(); }
+      if (mineConvo) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); renderAccountChip(); }
       return;
     }
-    if (kind === 'assistant_text') appendNode(pid, nodeMsg('assistant', data.text, null, data.ts));
+    if (kind === 'assistant_text') appendNode(pid, sid, nodeMsg('assistant', data.text, null, data.ts));
     else if (kind === 'supervisor') {
-      if (data.type === 'turn_started' && data.account) { activeAccount[pid] = data.account; if (mine) { renderBusy(); renderAccountChip(); } }
-      var l = BANNERS[data.type]; if (l) appendNode(pid, nodeSys(l, 'banner'));
+      if (data.type === 'turn_started' && data.account) { activeAccount[pid] = data.account; if (mineConvo) { renderBusy(); renderAccountChip(); } }
+      var l = BANNERS[data.type]; if (l) appendNode(pid, sid, nodeSys(l, 'banner'));
     }
     else if (kind === 'active_model') {
       if (data.model) {
         var changed = activeModel[pid] !== data.model;
         activeModel[pid] = data.model;
-        if (changed) appendNode(pid, nodeModelMark(data.model, data.ts)); // a switch — mark it inline
-        if (mine) renderBusy();
+        if (changed) appendNode(pid, sid, nodeModelMark(data.model, data.ts)); // a switch — mark it inline
+        if (mineConvo) renderBusy();
       }
     }
     else if (kind === 'activity') {
       // Derive the running-subagent count from the tracked set (idempotent), so a
       // replayed/duplicated 'start' can't inflate it (the "· N running" drift).
+      var v = viewOf(pid, sid);
       if (data.status === 'start') {
-        v.label = data.label; appendNode(pid, nodeAct(data.label, data.isSubagent));
+        v.label = data.label; appendNode(pid, sid, nodeAct(data.label, data.isSubagent));
         v.activityLog.push({ label: data.label, isSubagent: !!data.isSubagent, ts: data.ts || new Date().toISOString() });
         if (v.activityLog.length > ACTIVITY_LOG_CAP) v.activityLog.splice(0, v.activityLog.length - ACTIVITY_LOG_CAP);
         if (data.isSubagent && data.toolUseId) v.subs[data.toolUseId] = 1;
       } else if (data.toolUseId) { delete v.subs[data.toolUseId]; }
       v.subCount = Object.keys(v.subs).length;
-      if (mine) { lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; if (active) renderBusy(); }
+      if (mineConvo) { lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; if (active) renderBusy(); }
       renderStrip();
     }
     else if (kind === 'session_started') {
-      clearQuestion(pid);
+      clearQuestion(pid, sid);
+      var v = viewOf(pid, sid);
       if (data.resume === false) v.activityLog = []; // brand-new session — don't inherit the prior one's trail
-      if (data.model) activeModel[pid] = data.model; if (mine) { active = true; renderBusy(); }
+      if (data.model) activeModel[pid] = data.model; if (mineConvo) { active = true; renderBusy(); }
     }
     else if (kind === 'session_done') {
-      appendNode(pid, nodeSys('done: ' + data.status + (data.finalAccount ? ' · ' + acctName(data.finalAccount) : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')));
-      if (mine) { active = false; renderBusy(); }
+      appendNode(pid, sid, nodeSys('done: ' + data.status + (data.finalAccount ? ' · ' + acctName(data.finalAccount) : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')));
+      if (mineConvo) { active = false; renderBusy(); }
       pollAccounts(); renderStrip();
     }
     else if (kind === 'session_error') {
-      appendNode(pid, nodeSys('error: ' + data.message, 'banner err'));
-      if (mine) { active = false; renderBusy(); }
+      appendNode(pid, sid, nodeSys('error: ' + data.message, 'banner err'));
+      if (mineConvo) { active = false; renderBusy(); }
       renderStrip();
     }
     else if (kind === 'question') {
       pendingQ[pid] = data; showQuestion(pid, data);
-      if (pid !== currentProjectId) notify('Claude has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80));
+      if (!mineConvo) notify('Claude has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80));
     }
     else if (kind === 'autopilot') {
       if (data.active) apState[pid] = data.remaining; else delete apState[pid];
@@ -742,7 +790,7 @@
     else if (kind === 'turn_orphaned') {
       var pname = projCache[pid] ? projCache[pid].name : (data.projectName || 'a project');
       notify('Turn interrupted', pname + ' stopped mid-turn — resume it in the panel');
-      appendNode(pid, nodeOrphan(pid, data));
+      appendNode(pid, sid, nodeOrphan(pid, data));
     }
     else if (kind === 'project_selected') { /* another tab switched; ignore */ }
     else if (kind === 'conversation') {
@@ -753,7 +801,7 @@
     else if (kind === 'project_removed') {
       // removed elsewhere (another tab) — drop caches and reconcile the list
       var wasCur = currentProjectId === data.id;
-      delete views[data.id]; delete projCache[data.id]; delete runningProjects[data.id]; delete apState[data.id]; delete queueState[data.id];
+      forgetProjectViews(data.id); delete projCache[data.id]; delete runningProjects[data.id]; delete runningSessionId[data.id]; delete apState[data.id]; delete queueState[data.id];
       if (wasCur) { currentProjectId = null; chatEl.textContent = ''; }
       loadProjects().then(function () { if (wasCur && currentProjectId && projCache[currentProjectId]) switchProject(projCache[currentProjectId]); });
     }
@@ -784,17 +832,20 @@
   // reload (project switch, refresh, SSE reconnect) would wipe its card. Keep the
   // pending one in state and (re)render it idempotently so it survives every wipe
   // and any replay ordering.
-  function qContainer(pid) { return (!pid || pid === currentProjectId) ? chatEl : viewOf(pid).frag; }
+  function qContainer(pid, sessionId) { return (!pid || (pid === currentProjectId && (!sessionId || sessionId === lastSessionId))) ? chatEl : viewOf(pid, sessionId).frag; }
   function showQuestion(pid, data) {
     // DOM-authoritative dedupe: drop any prior *unanswered* card in this pid's
     // container (survives SSE replays / reload races regardless of key/timing);
     // answered cards lack .pending so they're left in place.
-    var c = qContainer(pid), old = c.querySelectorAll('.qcard.pending');
+    var c = qContainer(pid, data.sessionId), old = c.querySelectorAll('.qcard.pending');
     for (var i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
-    var node = nodeQuestion(pid, data); node.classList.add('pending'); appendNode(pid, node);
+    var node = nodeQuestion(pid, data); node.classList.add('pending'); appendNode(pid, data.sessionId, node);
   }
-  function clearQuestion(pid) {
-    var c = qContainer(pid), old = c.querySelectorAll('.qcard.pending');
+  // sessionId defaults to whatever's currently viewed — session_started passes
+  // the NEW turn's session explicitly so it clears the right conversation's card.
+  function clearQuestion(pid, sessionId) {
+    var sid = sessionId !== undefined ? sessionId : lastSessionId;
+    var c = qContainer(pid, sid), old = c.querySelectorAll('.qcard.pending');
     for (var i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
     delete pendingQ[pid];
   }
@@ -968,15 +1019,24 @@
     reg.projects.forEach(function (p) {
       projCache[p.id] = p;
       if (p.running) runningProjects[p.id] = true; else delete runningProjects[p.id];
-      // Reconcile against the server's authoritative running state — SSE
-      // turn_state events can be missed (mobile backgrounding, reconnect gaps),
-      // leaving the Stop button / sidebar spinner stuck showing a turn that
-      // already ended (or hiding one that's actually running).
-      var v = viewOf(p.id);
-      if (v.active !== !!p.running) {
-        v.active = !!p.running;
-        if (!v.active) { v.label = ''; v.subs = {}; v.subCount = 0; }
-        if (p.id === cur) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); }
+      var runSid = (p.running && p.runningSessionId) || null;
+      if (runSid) runningSessionId[p.id] = runSid; else delete runningSessionId[p.id];
+      // Reconcile the VIEWED conversation's busy state against the server's
+      // authoritative running-session — SSE turn_state events can be missed
+      // (mobile backgrounding, reconnect gaps), leaving the Stop button/spinner
+      // stuck showing a turn that already ended, or (just as importantly) stuck
+      // showing one that belongs to a DIFFERENT conversation in this project.
+      if (p.id === cur) {
+        var curView = viewOf(p.id, lastSessionId);
+        var shouldBeActive = !!(runSid && runSid === lastSessionId);
+        if (curView.active !== shouldBeActive) {
+          curView.active = shouldBeActive;
+          if (!shouldBeActive) { curView.label = ''; curView.subs = {}; curView.subCount = 0; }
+          active = shouldBeActive;
+          if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; }
+          else { lastLabel = curView.label || ''; runningSubs = curView.subCount || 0; subs = curView.subs || {}; }
+          renderBusy();
+        }
       }
       var row = document.createElement('div'); row.className = 'proj' + (p.id === cur ? ' active' : '') + (p.running ? ' busy' : '');
       row.setAttribute('data-id', p.id);
@@ -995,7 +1055,10 @@
   function renderConvList(p) {
     var wrap = document.createElement('div'); wrap.className = 'conv-list';
     (p.conversations || []).forEach(function (c) {
-      var row = document.createElement('div'); row.className = 'conv' + (c.sessionId === p.lastSessionId && !pendingNew ? ' active' : '');
+      var isRunning = runningSessionId[p.id] === c.sessionId;
+      var row = document.createElement('div'); row.className = 'conv' + (c.sessionId === p.lastSessionId && !pendingNew ? ' active' : '') + (isRunning ? ' running' : '');
+      if (isRunning) row.title = 'running';
+      var sp = document.createElement('span'); sp.className = 'crspin'; row.appendChild(sp);
       var nm = document.createElement('span'); nm.className = 'cnm'; nm.textContent = c.title || 'Conversation'; nm.title = c.title || ''; row.appendChild(nm);
       var ed = document.createElement('button'); ed.className = 'cbtn'; ed.title = 'rename'; ed.appendChild(icon('compose', 'sm'));
       ed.addEventListener('click', function (e) { e.stopPropagation(); renameConv(p.id, c); }); row.appendChild(ed);
@@ -1017,15 +1080,26 @@
     pendingNew = false;
     api('/api/conversations/select', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: sessionId }) }).then(function (r) {
       if (!r.ok) { addSys('could not switch conversation', 'banner'); return; }
-      var v = viewOf(projectId); v.frag = document.createDocumentFragment(); v.loaded = false; // conversation changed — drop the stale thread cache
+      var oldView = viewOf(projectId, lastSessionId);
+      while (chatEl.firstChild) oldView.frag.appendChild(chatEl.firstChild); // stash the outgoing conversation's own thread
       if (projCache[projectId]) projCache[projectId].lastSessionId = sessionId;
       lastSessionId = sessionId; chatEl.textContent = '';
+      var v = viewOf(projectId, sessionId);
+      if (v.frag.childNodes.length > 0) {
+        chatEl.appendChild(v.frag);
+        appendNode(projectId, sessionId, nodeSys('showing cached view — refreshing…', 'sysline cachenote'));
+        down();
+      }
       loadProjects(); pollSnapshot().then(loadHistory);
     }).catch(function () {});
   }
   function newConversation(projectId) {
     setNav(false);
     if (projectId !== currentProjectId && projCache[projectId]) { switchProject(projCache[projectId]); }
+    else if (projectId === currentProjectId) {
+      var oldView = viewOf(projectId, lastSessionId);
+      while (chatEl.firstChild) oldView.frag.appendChild(chatEl.firstChild); // stash it before showing the blank composer
+    }
     pendingNew = true; lastSessionId = null; chatEl.textContent = '';
     addSys('new conversation — send a message to begin'); loadProjects(); promptEl.focus();
   }
@@ -1038,7 +1112,7 @@
     if (!window.confirm('Remove conversation “' + (c.title || '') + '” from the list?\n\nOnly removes it from the panel — the transcript on disk is kept.')) return;
     api('/api/conversations/remove', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: c.sessionId }) }).then(function (r) {
       if (!r.ok) { addSys(r.status === 409 ? 'that conversation has a turn running — stop it first' : 'could not remove conversation', 'banner'); return; }
-      var v = viewOf(projectId); v.frag = document.createDocumentFragment(); v.loaded = false;
+      forgetView(projectId, c.sessionId); // no longer reachable from the sidebar
       loadProjects().then(function () { pollSnapshot().then(loadHistory); });
     }).catch(function () {});
   }
@@ -1048,7 +1122,7 @@
     api('/api/projects/remove', { method: 'POST', body: JSON.stringify({ id: p.id }) }).then(function (r) {
       if (!r.ok) { addSys(r.status === 409 ? 'a turn is running there — stop it first' : 'could not remove project', 'banner'); return; }
       var wasCurrent = currentProjectId === p.id;
-      delete views[p.id]; delete projCache[p.id]; delete runningProjects[p.id]; delete apState[p.id];
+      forgetProjectViews(p.id); delete projCache[p.id]; delete runningProjects[p.id]; delete runningSessionId[p.id]; delete apState[p.id];
       if (wasCurrent) { currentProjectId = null; chatEl.textContent = ''; } // let renderProjects adopt the new server current
       loadProjects().then(function () {
         if (wasCurrent && currentProjectId && projCache[currentProjectId]) switchProject(projCache[currentProjectId]);
@@ -1060,19 +1134,20 @@
     setNav(false); // close the mobile drawer on selection
     // pure view change — never blocked, even while p (or others) run
     if (currentProjectId && currentProjectId !== p.id) {
-      var cv = viewOf(currentProjectId);
+      var cv = viewOf(currentProjectId, lastSessionId); // the OLD project's viewed conversation, before we overwrite lastSessionId below
       while (chatEl.firstChild) cv.frag.appendChild(chatEl.firstChild); // stash current thread
     }
     currentProjectId = p.id; projCache[p.id] = p;
+    lastSessionId = p.lastSessionId || null; // sync synchronously (no round-trip) so view lookups below key on the right conversation
     projTitleEl.textContent = p.name; projCwdEl.textContent = p.cwd;
     markActiveProject(p.id); // instant navbar highlight, no round-trip
     pendingNew = false;
-    var v = viewOf(p.id);
+    var v = viewOf(p.id, lastSessionId);
     chatEl.textContent = '';
     var hadCache = v.frag.childNodes.length > 0;
     if (hadCache) {
       chatEl.appendChild(v.frag);
-      appendNode(p.id, nodeSys('showing cached view — refreshing…', 'sysline cachenote'));
+      appendNode(p.id, lastSessionId, nodeSys('showing cached view — refreshing…', 'sysline cachenote'));
       down();
     }
     active = !!v.active; lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; renderBusy();
@@ -1247,11 +1322,11 @@
 
   function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; if (!currentProjectId) currentProjectId = s.currentProjectId; return s; }); }
   function loadHistory() {
-    var pid = currentProjectId;
+    var pid = currentProjectId, sid = lastSessionId;
     return api('/api/sessions/current/history?limit=80').then(function (r) { return r.json(); }).then(function (rows) {
-      if (currentProjectId !== pid) return; // user switched away while loading
+      if (currentProjectId !== pid || lastSessionId !== sid) return; // user switched project OR conversation while loading
       chatEl.textContent = ''; // replace cached view with the fresh transcript
-      var lv = viewOf(pid); lv.loaded = true;
+      var lv = viewOf(pid, sid); lv.loaded = true;
       var hasMsgs = Array.isArray(rows) && rows.length > 0;
       addSys(hasMsgs ? (rows.length + ' earlier messages') : 'no messages yet — say hello, or use the resume button for an existing session');
       // Merge historical messages with the durable activity/subagent log by
@@ -1261,11 +1336,11 @@
       var items = [];
       if (hasMsgs) rows.forEach(function (m, i) {
         items.push({ ts: m.ts, idx: i, render: m.role === 'model'
-          ? function () { appendNode(pid, nodeModelMark(m.text, m.ts)); }        // model-switch marker from the transcript
+          ? function () { appendNode(pid, sid, nodeModelMark(m.text, m.ts)); }        // model-switch marker from the transcript
           : function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts); } });
       });
       var base = items.length;
-      lv.activityLog.forEach(function (a, i) { items.push({ ts: a.ts, idx: base + i, render: function () { appendNode(pid, nodeAct(a.label, a.isSubagent)); } }); });
+      lv.activityLog.forEach(function (a, i) { items.push({ ts: a.ts, idx: base + i, render: function () { appendNode(pid, sid, nodeAct(a.label, a.isSubagent)); } }); });
       items.sort(function (x, y) {
         var tx = x.ts ? Date.parse(x.ts) : NaN, ty = y.ts ? Date.parse(y.ts) : NaN;
         if (!isNaN(tx) && !isNaN(ty)) return tx - ty;
@@ -1273,9 +1348,13 @@
       });
       items.forEach(function (it) { it.render(); });
       if (hasMsgs) addSys('live');
-      if (pendingQ[pid]) showQuestion(pid, pendingQ[pid]); // re-attach a still-open question the transcript doesn't carry
-      // Sync the live busy state from this project's view — events may have set it
-      // before currentProjectId was known (so the global `active` never caught it).
+      // Re-attach a still-open question the transcript doesn't carry — but only
+      // if it actually belongs to THIS conversation, not a different one of the
+      // same project that happens to have a pending question.
+      if (pendingQ[pid] && (!pendingQ[pid].sessionId || pendingQ[pid].sessionId === sid)) showQuestion(pid, pendingQ[pid]);
+      // Sync the live busy state from this conversation's view — events may have
+      // set it before currentProjectId/lastSessionId were known (so the global
+      // `active` never caught it).
       active = !!lv.active; lastLabel = lv.label || ''; runningSubs = lv.subCount || 0; subs = lv.subs || {}; renderBusy();
       down();
     }).catch(function () {});

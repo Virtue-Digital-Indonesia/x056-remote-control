@@ -376,8 +376,14 @@ export class ApiController {
 
   @Post('sessions/current/stop')
   @HttpCode(200)
-  stop(@Body() body: { projectId?: string }): { stopped: boolean } {
-    if (!this.manager.stopTurn(body?.projectId)) throw new ConflictException('no turn running there');
+  stop(@Body() body: { projectId?: string; sessionId?: string }): { stopped: boolean } {
+    const pid = body?.projectId;
+    const running = pid ? this.manager.runningSessionId(pid) : undefined;
+    if (!running) throw new ConflictException('no turn running there');
+    if (body?.sessionId && body.sessionId !== running) {
+      throw new ConflictException('a different conversation in this project is running — switch to it to stop it');
+    }
+    this.manager.stopTurn(pid, body?.sessionId);
     return { stopped: true };
   }
 

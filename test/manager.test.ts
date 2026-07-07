@@ -435,3 +435,85 @@ describe('SessionManager question surfacing', () => {
     expect((q!.data as { options: string[] }).options).toEqual(['yes', 'no']);
   });
 });
+
+// A project can have several conversations; only one can run at a time, but the
+// panel must be able to tell WHICH one — so it doesn't bleed a running turn's
+// activity/messages into an idle conversation the user happens to be viewing,
+// and so Stop can refuse to kill a conversation the user isn't looking at.
+describe('SessionManager per-conversation isolation', () => {
+  it('tags turn_state, activity, and session_started with the run\'s sessionId', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-sid-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
+    const runSessionFn = (async (o: RunSessionOptions) => {
+      o.tap?.({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'x1', name: 'Bash', input: { command: 'ls' } }] } });
+      return { status: 'completed', finalAccount: 'a', failovers: 0 };
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn });
+    const seen: GatewayEvent[] = [];
+    mgr.subscribe((e) => seen.push(e));
+    const sid = mgr.start('go');
+    await waitFor(() => seen.some((e) => e.kind === 'session_done'));
+    const sidsFor = (kind: string) => seen.filter((e) => e.kind === kind).map((e) => (e.data as { sessionId?: string }).sessionId);
+    expect(sidsFor('turn_state')).toEqual([sid, sid]);
+    expect(sidsFor('activity').every((s) => s === sid)).toBe(true);
+    expect(sidsFor('session_started')).toEqual([sid]);
+  });
+
+  it('listProjects reports which conversation is running via runningSessionId', async () => {
+    const { mgr } = fixture(COMPLETED, { delayMs: 100 });
+    const pid = mgr.listProjects().current as string;
+    const sid = mgr.start('go');
+    expect(mgr.listProjects().projects.find((p) => p.id === pid)?.runningSessionId).toBe(sid);
+    await waitFor(() => mgr.listProjects().projects.find((p) => p.id === pid)?.runningSessionId == null);
+    expect(mgr.listProjects().projects.find((p) => p.id === pid)?.running).toBe(false);
+  });
+
+  it('stopTurn only stops the expected conversation; a mismatched sessionId is refused', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-stop-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
+    let aborted = false;
+    const runSessionFn = (async (o: { control?: (c: { forceSwitch: () => void; abort: () => void }) => void }) => {
+      o.control?.({ forceSwitch: () => {}, abort: () => { aborted = true; } });
+      await new Promise((r) => setTimeout(r, 200));
+      return { status: 'completed', finalAccount: 'a', failovers: 0 };
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn });
+    const pid = mgr.createProject('P', dir).id;
+    const sid = mgr.start('go', undefined, undefined, pid);
+    expect(mgr.runningSessionId(pid)).toBe(sid);
+    expect(mgr.stopTurn(pid, 'not-the-running-session')).toBe(false);
+    expect(aborted).toBe(false);
+    expect(mgr.stopTurn(pid, sid)).toBe(true);
+    expect(aborted).toBe(true);
+  });
+
+  it('a conversation switch mid-turn survives the new conversation\'s first streamed event', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-race-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
+    let callN = 0;
+    let releaseSecondTap: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { releaseSecondTap = resolve; });
+    const runSessionFn = (async (o: RunSessionOptions) => {
+      callN++;
+      if (callN === 2) await gate; // hold the brand-new conversation's turn until the test says go
+      o.tap?.({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } });
+      return { status: 'completed', finalAccount: 'a', failovers: 0 };
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn });
+    const pid = mgr.createProject('P', dir).id;
+    const olderSid = mgr.start('older conversation', undefined, undefined, pid);
+    await waitFor(() => !mgr.listProjects().projects.find((p) => p.id === pid)?.running);
+    const newSid = mgr.start('brand new conversation', undefined, undefined, pid); // call #2, gated on `gate`
+    expect(mgr.listProjects().projects.find((p) => p.id === pid)?.lastSessionId).toBe(newSid); // addConversation() makes it current immediately
+    mgr.selectConversation(pid, olderSid); // user switches back to the older one while the new one's turn is still in flight
+    expect(mgr.listProjects().projects.find((p) => p.id === pid)?.lastSessionId).toBe(olderSid);
+    releaseSecondTap!(); // let the new conversation's first stream event arrive
+    await waitFor(() => !mgr.listProjects().projects.find((p) => p.id === pid)?.running);
+    // The manual switch back must survive — not get clobbered back to newSid by
+    // the new conversation's first tap event.
+    expect(mgr.listProjects().projects.find((p) => p.id === pid)?.lastSessionId).toBe(olderSid);
+  });
+});
