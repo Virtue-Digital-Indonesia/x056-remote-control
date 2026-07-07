@@ -15,6 +15,9 @@ services:
       # refresh, no rebuild needed.
       X056_PANEL_PATH: /home/efran/remote-development/x056-remote-control/server/public/panel.html
       PORT: "4056"
+      # WebAuthn/passkey relying-party id — the public host passkeys are bound to
+      # (also allowed: localhost, for dev/e2e). Origin is derived per-request.
+      X056_RP_ID: x056.think.val.id
       # A project session that runs `docker`/`docker compose` (builds, e2e stacks)
       # is pointed at the ISOLATED dind daemon below — NOT the host's Docker. The
       # host daemon is never exposed to sessions. See CLAUDE.md.

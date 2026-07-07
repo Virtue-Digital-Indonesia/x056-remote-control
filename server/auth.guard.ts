@@ -1,8 +1,15 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable, SetMetadata, UnauthorizedException } from '@nestjs/common';
+import type { Reflector } from '@nestjs/core';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Request } from 'express';
+import type { SessionStore } from './webauthn.js';
 
 export const TOKEN_KEY = Symbol('x056-token');
+
+/** Mark a route reachable without auth (the passkey login ceremony needs this —
+ *  you don't have a session yet while logging in). */
+export const IS_PUBLIC = 'x056:isPublic';
+export const Public = (): MethodDecorator & ClassDecorator => SetMetadata(IS_PUBLIC, true);
 
 function safeEqual(a: string, b: string): boolean {
   const ha = createHash('sha256').update(a).digest();
@@ -10,17 +17,37 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ha, hb);
 }
 
+/** Read one cookie value out of the raw Cookie header (no cookie-parser dep). */
+export function readCookie(header: string | undefined, name: string): string {
+  if (!header) return '';
+  for (const part of header.split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return '';
+}
+
 @Injectable()
 export class AuthGuard implements CanActivate {
-  constructor(private readonly token: string) {}
+  constructor(
+    private readonly token: string,
+    private readonly sessions: SessionStore,
+    private readonly reflector: Reflector,
+  ) {}
 
   canActivate(ctx: ExecutionContext): boolean {
+    if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [ctx.getHandler(), ctx.getClass()])) return true;
     const req = ctx.switchToHttp().getRequest<Request>();
+    // 1. Bearer token or ?token= (the original mechanism; the fallback).
     const header = req.headers.authorization ?? '';
     const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
     const query = typeof req.query.token === 'string' ? req.query.token : '';
     const presented = bearer || query;
-    if (!presented || !safeEqual(presented, this.token)) throw new UnauthorizedException();
-    return true;
+    if (presented && safeEqual(presented, this.token)) return true;
+    // 2. A passkey session cookie (set after a WebAuthn login).
+    const sid = readCookie(req.headers.cookie, 'x056_session');
+    if (sid && this.sessions.valid(sid)) return true;
+    throw new UnauthorizedException();
   }
 }

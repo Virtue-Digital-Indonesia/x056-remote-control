@@ -8,9 +8,10 @@ import {
   Inject,
   Post,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { AccountRegistry } from '../src/accounts.js';
@@ -20,6 +21,9 @@ import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
 import { readSessionHistory, type HistoryEntry } from './history.js';
 import { withAskInstructions } from './question.js';
 import type { PushService } from './push.js';
+import type { WebAuthnService, SessionStore } from './webauthn.js';
+import { Public, readCookie } from './auth.guard.js';
+import type { RegistrationResponseJSON, AuthenticationResponseJSON } from '@simplewebauthn/server';
 import type { PushSubscription } from 'web-push';
 
 const IMG_EXT: Record<string, string> = {
@@ -71,6 +75,8 @@ interface SendBody {
 // they rely only on `experimentalDecorators`, which esbuild does support.
 export const STATE_DIR = Symbol('x056-state-dir');
 export const PUSH_SERVICE = Symbol('x056-push-service');
+export const WEBAUTHN_SERVICE = Symbol('x056-webauthn-service');
+export const SESSION_STORE = Symbol('x056-session-store');
 
 const QUOTA_TTL_MS = 90_000;
 
@@ -88,7 +94,33 @@ export class ApiController {
     @Inject(SessionManager) private readonly manager: SessionManager,
     @Inject(STATE_DIR) private readonly stateDir: string,
     @Inject(PUSH_SERVICE) private readonly push: PushService,
+    @Inject(WEBAUTHN_SERVICE) private readonly webauthn: WebAuthnService,
+    @Inject(SESSION_STORE) private readonly sessionStore: SessionStore,
   ) {}
+
+  /** Derive the RP id + origin the browser used, validated against an allowlist
+   *  (the production host, plus localhost for dev/e2e) so WebAuthn can't be
+   *  driven for some other origin. */
+  private rp(req: Request): { rpID: string; origin: string } {
+    const hdrOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? (req.secure ? 'https' : 'http');
+    const host = (req.headers['x-forwarded-host'] as string | undefined) ?? req.headers.host ?? '';
+    const origin = hdrOrigin || `${proto}://${host}`;
+    let rpID: string;
+    try { rpID = new URL(origin).hostname; } catch { throw new BadRequestException('bad origin'); }
+    const allowed = process.env.X056_RP_ID || 'x056.think.val.id';
+    if (rpID !== allowed && rpID !== 'localhost' && rpID !== '127.0.0.1') {
+      throw new BadRequestException('origin not allowed');
+    }
+    return { rpID, origin };
+  }
+
+  private setSessionCookie(req: Request, res: Response): void {
+    const secure = (req.headers['x-forwarded-proto'] as string | undefined) === 'https' || req.secure;
+    res.cookie('x056_session', this.sessionStore.create(), {
+      httpOnly: true, secure, sameSite: 'lax', path: '/', maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+  }
 
   /** Fold an optional attached image into the prompt as a readable file path. */
   private composePrompt(body: SendBody): { prompt: string; opts: TurnRunOptions } {
@@ -325,6 +357,79 @@ export class ApiController {
   stopAutopilot(@Body() body: { projectId?: string }): { ok: boolean } {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     this.manager.stopAutopilot(body.projectId);
+    return { ok: true };
+  }
+
+  // ---- auth / passkeys ----
+  @Get('auth/status')
+  authStatus(): { authed: boolean } {
+    return { authed: true }; // reaching this (past the guard) means authenticated
+  }
+
+  @Post('auth/logout')
+  @HttpCode(200)
+  logout(@Req() req: Request, @Res({ passthrough: true }) res: Response): { ok: boolean } {
+    const sid = readCookie(req.headers.cookie, 'x056_session');
+    if (sid) this.sessionStore.destroy(sid);
+    res.clearCookie('x056_session', { path: '/' });
+    return { ok: true };
+  }
+
+  @Public()
+  @Get('auth/passkey/available')
+  passkeyAvailable(): { available: boolean } {
+    return { available: this.webauthn.hasAny() };
+  }
+
+  @Post('auth/passkey/register/options')
+  @HttpCode(200)
+  async registerOptions(@Req() req: Request): Promise<unknown> {
+    const { rpID, origin } = this.rp(req);
+    return this.webauthn.registrationOptions(rpID, origin);
+  }
+
+  @Post('auth/passkey/register/verify')
+  @HttpCode(200)
+  async registerVerify(@Body() body: { flowId?: string; response?: RegistrationResponseJSON; label?: string }): Promise<{ ok: boolean }> {
+    if (!body?.flowId || !body?.response) throw new BadRequestException('flowId and response required');
+    const ok = await this.webauthn.verifyRegistration(body.flowId, body.response, body.label ?? '');
+    if (!ok) throw new BadRequestException('passkey registration failed');
+    return { ok: true };
+  }
+
+  @Public()
+  @Post('auth/passkey/auth/options')
+  @HttpCode(200)
+  async authOptions(@Req() req: Request): Promise<unknown> {
+    const { rpID, origin } = this.rp(req);
+    return this.webauthn.authenticationOptions(rpID, origin);
+  }
+
+  @Public()
+  @Post('auth/passkey/auth/verify')
+  @HttpCode(200)
+  async authVerify(
+    @Body() body: { flowId?: string; response?: AuthenticationResponseJSON },
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ ok: boolean }> {
+    if (!body?.flowId || !body?.response) throw new BadRequestException('flowId and response required');
+    const ok = await this.webauthn.verifyAuthentication(body.flowId, body.response);
+    if (!ok) throw new BadRequestException('passkey login failed');
+    this.setSessionCookie(req, res); // logged in — issue a session
+    return { ok: true };
+  }
+
+  @Get('auth/passkey/list')
+  passkeyList(): unknown {
+    return this.webauthn.list();
+  }
+
+  @Post('auth/passkey/remove')
+  @HttpCode(200)
+  passkeyRemove(@Body() body: { id?: string }): { ok: boolean } {
+    if (!body?.id) throw new BadRequestException('id required');
+    this.webauthn.remove(body.id);
     return { ok: true };
   }
 

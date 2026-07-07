@@ -218,6 +218,16 @@
   .pk-item .tag { margin-left: auto; font-size: 10px; color: var(--faint); }
   .pk-item.sess { align-items: flex-start; }
   .pk-item.sess > div { overflow: hidden; }
+  #authGate { position: fixed; inset: 0; z-index: 100; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 24px; }
+  #authGate[hidden] { display: none; }
+  .gate-card { width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 12px; }
+  .gate-brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 17px; justify-content: center; margin-bottom: 8px; }
+  .gate-brand .mark { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; color: #fff; font-size: 14px; font-weight: 700; }
+  .gate-btn { width: 100%; height: 44px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-size: 14.5px; }
+  .gate-btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--border-strong); }
+  .gate-sep { text-align: center; font-size: 12px; color: var(--faint); }
+  .gate-err { color: #e5484d; font-size: 12.5px; min-height: 16px; text-align: center; }
+  .gate-note { font-size: 11.5px; color: var(--faint); line-height: 1.5; }
   .defaults-list { display: flex; flex-direction: column; gap: 8px; }
   .drow { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }
   .drow select { font: inherit; font-size: 12.5px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; }
@@ -271,6 +281,7 @@
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-4 4 3 3m-6-1 2.5 2.5"/></symbol>
 </defs></svg>
 <aside>
   <div class="brand"><span class="mark">x0</span><span>remote control</span><span class="sub">self-hosted</span></div>
@@ -295,8 +306,9 @@
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="switchBtn" title="force switch account"><svg class="ic"><use href="#i-switch"/></svg></button>
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
+    <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
     <button class="ico" id="themeBtn" title="theme"><svg class="ic"><use href="#i-moon"/></svg></button>
-    <button class="ico" id="tokenBtn" title="clear token"><svg class="ic"><use href="#i-logout"/></svg></button>
+    <button class="ico" id="tokenBtn" title="log out"><svg class="ic"><use href="#i-logout"/></svg></button>
   </div>
   <div class="scroll"><div class="thread" id="chat"></div></div>
   <div class="composer-wrap">
@@ -338,19 +350,37 @@
   <div id="defaultsList" class="defaults-list"></div>
   <button class="send" id="defaultsSave" style="width:100%; margin-top:10px;">Save</button>
 </div>
+<div class="pop" id="passkeyPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:320px;">
+  <h2>passkeys · Face ID / Touch ID login</h2>
+  <div id="passkeyList" class="pk-list" style="margin-bottom:8px;"></div>
+  <button class="send" id="passkeyAddBtn" style="width:100%;">Register this device</button>
+  <div class="gate-note" style="margin-top:8px;">On iPhone, register once; it syncs to your other Apple devices via iCloud Keychain. The access token still works as a fallback.</div>
+</div>
 
+<!-- Login gate: shown when neither the token nor a passkey session authenticates. -->
+<div id="authGate" hidden>
+  <div class="gate-card">
+    <div class="gate-brand"><span class="mark">x0</span><span>remote control</span></div>
+    <button class="send gate-btn" id="gatePasskeyBtn"><svg class="ic sm"><use href="#i-key"/></svg> Log in with passkey</button>
+    <div class="gate-sep">or</div>
+    <input id="gateToken" class="pk-search" type="password" placeholder="access token" autocomplete="off" />
+    <button class="send gate-btn ghost" id="gateTokenBtn">Use access token</button>
+    <div id="gateErr" class="gate-err"></div>
+  </div>
+</div>
+
+<script src="/webauthn.js"></script>
 <script>
 (function () {
   var TOKEN_KEY = 'x056_token', THEME_KEY = 'x056_theme', MODEL_KEY = 'x056_model', EFFORT_KEY = 'x056_effort';
-  var token = localStorage.getItem(TOKEN_KEY);
-  if (!token) { token = window.prompt('x056 access token:') || ''; if (token) localStorage.setItem(TOKEN_KEY, token); }
+  var token = localStorage.getItem(TOKEN_KEY) || ''; // may be empty — a passkey session (cookie) also authenticates
   var $ = function (id) { return document.getElementById(id); };
   var dot = $('dot'), chatEl = $('chat'), promptEl = $('prompt'), sendBtn = $('sendBtn');
   var modelEl = $('model'), effortEl = $('effort'), fileEl = $('file'), attachRow = $('attachRow'), busyEl = $('busy');
   var projListEl = $('projectList'), projTitleEl = $('projTitle'), projCwdEl = $('projCwd');
   var acctChip = $('acctChip'), acctAv = $('acctAv'), acctNameEl = $('acctName'), acctPlan = $('acctPlan');
   var quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts'), themeBtn = $('themeBtn');
-  var defaultsPop = $('defaultsPop'), defaultsList = $('defaultsList');
+  var defaultsPop = $('defaultsPop'), defaultsList = $('defaultsList'), passkeyPop = $('passkeyPop');
   var lastSessionId = null, lastSeq = 0, pendingImage = null, pendingNew = false, currentProjectId = null;
 
   try { modelEl.value = localStorage.getItem(MODEL_KEY) || ''; effortEl.value = localStorage.getItem(EFFORT_KEY) || ''; } catch (e) {}
@@ -401,14 +431,27 @@
     } catch (e) {}
   }
 
-  function api(path, opts) { opts = opts || {}; opts.headers = Object.assign({ Authorization: 'Bearer ' + token }, opts.body ? { 'Content-Type': 'application/json' } : {}); return fetch(path, opts); }
+  function api(path, opts) {
+    opts = opts || {};
+    var h = {};
+    if (token) h.Authorization = 'Bearer ' + token; // fallback token; else the same-origin session cookie authenticates
+    if (opts.body) h['Content-Type'] = 'application/json';
+    opts.headers = Object.assign(h, opts.headers || {});
+    opts.credentials = 'same-origin'; // send the passkey session cookie
+    return fetch(path, opts);
+  }
   var SVGNS = 'http://www.w3.org/2000/svg';
   function icon(name, cls) {
     var svg = document.createElementNS(SVGNS, 'svg'); svg.setAttribute('class', 'ic ' + (cls || ''));
     var use = document.createElementNS(SVGNS, 'use'); use.setAttribute('href', '#i-' + name); svg.appendChild(use);
     return svg;
   }
-  $('tokenBtn').addEventListener('click', function () { localStorage.removeItem(TOKEN_KEY); location.reload(); });
+  $('tokenBtn').addEventListener('click', function () {
+    api('/api/auth/logout', { method: 'POST' }).catch(function () {}).then(function () {
+      try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+      location.reload();
+    });
+  });
 
   // ---- mobile projects drawer ----
   function setNav(open) { document.body.classList.toggle('nav-open', open); }
@@ -1016,7 +1059,7 @@
   }
   function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
   var sessPicker = $('sessPicker'), sessList = $('sessList');
-  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; }
+  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; }
   function closeAllPops() { hidePops(); backdrop.hidden = true; }
   function openPop(el) { hidePops(); el.hidden = false; backdrop.hidden = false; }
   function togglePop(show) { var open = show === undefined ? quotaPop.hidden : show; if (open) { openPop(quotaPop); pollAccounts(); } else closeAllPops(); }
@@ -1095,12 +1138,18 @@
     }).catch(function () {});
   }
 
-  loadProjects().then(function () {
-    if (currentProjectId) syncPicker(currentProjectId);
-    // Cold-opened from a notification tap (service worker openWindow): jump to it.
-    try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) switchProject(projCache[want]); } catch (e) {}
-  }); setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings();
-  pollSnapshot().then(loadHistory);
+  var booted = false;
+  function boot() {
+    if (booted) return; booted = true; // only after auth is established
+    loadProjects().then(function () {
+      if (currentProjectId) syncPicker(currentProjectId);
+      // Cold-opened from a notification tap (service worker openWindow): jump to it.
+      try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) switchProject(projCache[want]); } catch (e) {}
+    });
+    setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings();
+    pollSnapshot().then(loadHistory);
+    connect();
+  }
 
   // ---- SSE ----
   var es = null;
@@ -1121,7 +1170,6 @@
       });
     });
   }
-  connect();
 
   // ---- composer ----
   function autogrow() { promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + 'px'; }
@@ -1167,6 +1215,75 @@
   sendBtn.addEventListener('click', send);
   promptEl.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
   $('switchBtn').addEventListener('click', function () { var b = currentProjectId ? { projectId: currentProjectId } : {}; api('/api/switch', { method: 'POST', body: JSON.stringify(b) }).then(function (r) { if (r.status === 409) addSys('no turn running in this project', 'banner'); }).catch(function () {}); });
+
+  // ---- auth gate + passkeys (WebAuthn) ----
+  // Authed unless we get a definitive 401. A 404 (older backend without this
+  // endpoint) or a network error must NOT gate a user who already has a working
+  // token — otherwise the bind-mounted panel would lock them out in the window
+  // before the backend deploy lands.
+  function ensureAuth() { return api('/api/auth/status').then(function (r) { return r.status !== 401; }).catch(function () { return true; }); }
+  function gateError(m) { $('gateErr').textContent = m || ''; }
+  function showGate() {
+    $('authGate').hidden = false;
+    api('/api/auth/passkey/available').then(function (r) { return r.json(); }).then(function (d) {
+      $('gatePasskeyBtn').style.display = (d && d.available) ? '' : 'none';
+    }).catch(function () {});
+  }
+  function passkeyLogin() {
+    if (typeof SimpleWebAuthnBrowser === 'undefined') { gateError('passkey library failed to load'); return; }
+    gateError('');
+    api('/api/auth/passkey/auth/options', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (data) {
+      if (!data || !data.options) throw new Error('no options');
+      return SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: data.options }).then(function (asr) {
+        return api('/api/auth/passkey/auth/verify', { method: 'POST', body: JSON.stringify({ flowId: data.flowId, response: asr }) });
+      });
+    }).then(function (r) { if (r.ok) { $('authGate').hidden = true; boot(); } else { gateError('passkey login failed'); } })
+      .catch(function () { gateError('passkey login cancelled or failed'); });
+  }
+  function tokenLogin() {
+    var v = ($('gateToken').value || '').trim(); if (!v) { gateError('enter a token'); return; }
+    token = v;
+    ensureAuth().then(function (ok) {
+      if (ok) { try { localStorage.setItem(TOKEN_KEY, v); } catch (e) {} $('authGate').hidden = true; boot(); }
+      else { token = ''; gateError('invalid token'); }
+    });
+  }
+  $('gatePasskeyBtn').addEventListener('click', passkeyLogin);
+  $('gateTokenBtn').addEventListener('click', tokenLogin);
+  $('gateToken').addEventListener('keydown', function (e) { if (e.key === 'Enter') tokenLogin(); });
+
+  function registerPasskey() {
+    if (typeof SimpleWebAuthnBrowser === 'undefined') { addSys('passkey library failed to load', 'banner'); return; }
+    var label = window.prompt('Name this passkey (e.g. iPhone):', 'my device'); if (label === null) return;
+    api('/api/auth/passkey/register/options', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (data) {
+      if (!data || !data.options) throw new Error('no options');
+      return SimpleWebAuthnBrowser.startRegistration({ optionsJSON: data.options }).then(function (att) {
+        return api('/api/auth/passkey/register/verify', { method: 'POST', body: JSON.stringify({ flowId: data.flowId, response: att, label: label || 'passkey' }) });
+      });
+    }).then(function (r) { if (r.ok) { addSys('passkey registered on this device', 'banner'); loadPasskeys(); } else { addSys('passkey registration failed', 'banner'); } })
+      .catch(function () { addSys('passkey registration cancelled or failed', 'banner'); });
+  }
+  function loadPasskeys() {
+    return api('/api/auth/passkey/list').then(function (r) { return r.json(); }).then(function (list) {
+      var el = $('passkeyList'); el.textContent = '';
+      list = Array.isArray(list) ? list : [];
+      if (!list.length) { var e = document.createElement('div'); e.className = 'pk-item added'; e.textContent = 'no passkeys registered yet'; el.appendChild(e); return; }
+      list.forEach(function (p) {
+        var row = document.createElement('div'); row.className = 'pk-item';
+        var nm = document.createElement('span'); nm.style.flex = '1'; nm.style.overflow = 'hidden'; nm.style.textOverflow = 'ellipsis'; nm.style.whiteSpace = 'nowrap';
+        nm.textContent = p.label + (p.createdAt ? ' · ' + relTime(new Date(p.createdAt).toISOString()) : ''); row.appendChild(nm);
+        var rm = document.createElement('button'); rm.className = 'copybtn'; rm.title = 'remove'; rm.appendChild(icon('x', 'sm'));
+        rm.addEventListener('click', function () { api('/api/auth/passkey/remove', { method: 'POST', body: JSON.stringify({ id: p.id }) }).then(loadPasskeys).catch(function () {}); });
+        row.appendChild(rm);
+        el.appendChild(row);
+      });
+    }).catch(function () {});
+  }
+  $('passkeyBtn').addEventListener('click', function () { loadPasskeys(); openPop(passkeyPop); });
+  $('passkeyAddBtn').addEventListener('click', registerPasskey);
+
+  // Boot only once authenticated — by the fallback token OR a passkey session cookie.
+  ensureAuth().then(function (ok) { if (ok) boot(); else showGate(); });
 })();
 </script>
 </body>
