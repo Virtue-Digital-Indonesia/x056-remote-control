@@ -41,7 +41,7 @@
   .ic { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; display: inline-block; vertical-align: middle; }
   .ic.sm { width: 15px; height: 15px; }
   html, body { height: 100%; margin: 0; }
-  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14.5px; line-height: 1.55; display: grid; grid-template-columns: 264px 1fr; height: 100vh; overflow: hidden; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14.5px; line-height: 1.55; display: grid; grid-template-columns: 264px 1fr; height: 100vh; height: 100dvh; overflow: hidden; }
 
   /* sidebar */
   aside { background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
@@ -234,10 +234,24 @@
   .sess-msg { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sess-meta { font-size: 11px; color: var(--faint); margin-top: 2px; }
   .hamburger { display: none; }
+  .moreBtn { display: none; }
   .nav-backdrop { display: none; }
+  #morePop { top: 52px; right: 8px; left: auto; bottom: auto; width: 232px; }
+  .more-list { display: flex; flex-direction: column; gap: 1px; }
+  .more-item { display: flex; align-items: center; gap: 11px; padding: 10px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; color: var(--text); background: none; border: none; width: 100%; text-align: left; }
+  .more-item:hover { background: var(--surface-2); }
+  .more-item .ic { color: var(--muted); flex: none; }
   @media (max-width: 720px) {
     body { grid-template-columns: 1fr; }
     .hamburger { display: inline-grid; place-items: center; }
+    .moreBtn { display: inline-grid; place-items: center; }
+    /* On mobile the crowded action icons collapse into the "more" menu; keep
+       only the projects drawer, title, connection dot, and the more button. */
+    .topbar #notifyBtn, .topbar #autopilotBtn, .topbar #resumeBtn, .topbar #switchBtn,
+    .topbar #defaultsBtn, .topbar #passkeyBtn, .topbar #themeBtn, .topbar #tokenBtn { display: none; }
+    .topbar .title { flex: 1; min-width: 0; }
+    .topbar .sp { display: none; }
+    #morePop { top: calc(52px + env(safe-area-inset-top)); }
     /* Sidebar becomes an off-canvas drawer toggled by the hamburger. */
     aside {
       position: fixed; top: 0; left: 0; bottom: 0; width: 84%; max-width: 300px; z-index: 60;
@@ -282,6 +296,7 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-4 4 3 3m-6-1 2.5 2.5"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
 </defs></svg>
 <aside>
   <div class="brand"><span class="mark">x0</span><span>remote control</span><span class="sub">self-hosted</span></div>
@@ -309,6 +324,7 @@
     <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
     <button class="ico" id="themeBtn" title="theme"><svg class="ic"><use href="#i-moon"/></svg></button>
     <button class="ico" id="tokenBtn" title="log out"><svg class="ic"><use href="#i-logout"/></svg></button>
+    <button class="ico moreBtn" id="moreBtn" title="more" aria-label="more"><svg class="ic"><use href="#i-more"/></svg></button>
   </div>
   <div class="scroll"><div class="thread" id="chat"></div></div>
   <div class="composer-wrap">
@@ -349,6 +365,9 @@
   <h2>default effort per model</h2>
   <div id="defaultsList" class="defaults-list"></div>
   <button class="send" id="defaultsSave" style="width:100%; margin-top:10px;">Save</button>
+</div>
+<div class="pop" id="morePop" hidden>
+  <div id="moreList" class="more-list"></div>
 </div>
 <div class="pop" id="passkeyPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:320px;">
   <h2>passkeys · Face ID / Touch ID login</h2>
@@ -1066,7 +1085,30 @@
   }
   function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
   var sessPicker = $('sessPicker'), sessList = $('sessList');
-  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; }
+  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; $('morePop').hidden = true; }
+  // Mobile "more" menu: labeled rows that trigger the real (CSS-hidden on mobile)
+  // topbar buttons, so there's one source of truth for each action's handler.
+  var MORE_ITEMS = [
+    { id: 'notifyBtn', label: 'Notifications', icon: 'bell' },
+    { id: 'autopilotBtn', label: 'Autopilot', icon: 'repeat' },
+    { id: 'resumeBtn', label: 'Resume a session', icon: 'history' },
+    { id: 'switchBtn', label: 'Switch account', icon: 'switch' },
+    { id: 'defaultsBtn', label: 'Default effort per model', icon: 'gear' },
+    { id: 'passkeyBtn', label: 'Passkeys', icon: 'key' },
+    { id: 'themeBtn', label: 'Theme', icon: 'moon' },
+    { id: 'tokenBtn', label: 'Log out', icon: 'logout' }
+  ];
+  $('moreBtn').addEventListener('click', function () {
+    var list = $('moreList'); list.textContent = '';
+    MORE_ITEMS.forEach(function (it) {
+      var b = document.createElement('button'); b.className = 'more-item';
+      b.appendChild(icon(it.icon, 'sm'));
+      var s = document.createElement('span'); s.textContent = it.label; b.appendChild(s);
+      b.addEventListener('click', function () { closeAllPops(); $(it.id).click(); });
+      list.appendChild(b);
+    });
+    openPop($('morePop'));
+  });
   function closeAllPops() { hidePops(); backdrop.hidden = true; }
   function openPop(el) { hidePops(); el.hidden = false; backdrop.hidden = false; }
   function togglePop(show) { var open = show === undefined ? quotaPop.hidden : show; if (open) { openPop(quotaPop); pollAccounts(); } else closeAllPops(); }
