@@ -39,8 +39,8 @@ async function main(): Promise<number> {
   if (command === 'init') {
     mkdirSync(STATE_DIR, { recursive: true });
     AccountRegistry.init(ACCOUNTS, [
-      { name: 'a', configDir: join(homedir(), '.claude-x056-a') },
-      { name: 'b', configDir: join(homedir(), '.claude-x056-b') },
+      { name: 'a', configDir: process.env.X056_ACCOUNT_A_DIR ?? join(homedir(), '.claude-x056-a') },
+      { name: 'b', configDir: process.env.X056_ACCOUNT_B_DIR ?? join(homedir(), '.claude-x056-b') },
     ]);
     console.log(`wrote ${ACCOUNTS}`);
     return 0;

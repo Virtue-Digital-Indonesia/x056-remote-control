@@ -60,15 +60,18 @@ const BUFFER_MAX = 1000;
 // Injected into every spawned session (any project) via --append-system-prompt,
 // so sessions don't rely on background execution that this gateway kills at
 // turn end. Projects have their own CLAUDE.md; this teaches the runtime reality.
-const CONTAINER_SYSTEM_NOTE =
+// Universal to any deployment. A deployment MAY append host-specific guidance
+// (SSH escape hatches, self-serve nginx, extra remotes, …) via the X056_HOST_NOTE
+// env var — kept out of the shared code so a colleague's clone isn't told about
+// infra it doesn't have.
+const BASE_SYSTEM_NOTE =
   'EXECUTION ENVIRONMENT (x056 remote-control gateway): You run headless inside a container and your process ENDS when this turn ends. ' +
   'Consequences you must respect: (1) Background shell commands (run_in_background: true), backgrounded subagents, and the Workflow tool are ALL KILLED at turn end — their work is lost. Do NOT background work; run everything synchronously in the foreground even if it is long (a turn can run a long time and its activity is streamed to the user). ' +
   '(2) Never say you will continue "in the background" or that you will "be notified when it finishes" — you will not be. ' +
   '(3) For long autonomous or multi-turn work, tell the user to enable Autopilot (the gateway re-invokes you across turns with full context via resume) instead of backgrounding. ' +
-  '(4) Your in-container `docker`/`docker compose` drive an isolated Docker-in-Docker sidecar (DOCKER_HOST=tcp://dind:2375), NOT the host Docker — use them for your project\'s own builds/e2e. Two caveats for a project compose: bind mounts resolve on the dind daemon (which shares the workspace at the same path /home/efran/remote-development, so mounts under the workspace work), and published ports are reachable at hostname `dind:<port>`, not localhost. Deploying THIS gateway is still the host actuator (commit + `touch .deploy/requested`), never docker. ' +
-  '(5) When you genuinely need the HOST that runs this gateway (inspect/manage a sibling container or another project\'s stack, freeze a legacy service), `ssh valbox` (aka `legacy`, or 103.30.246.154) connects as user efran with real host Docker access (efran is in the docker group — no sudo needed for containers). This is the ACTUAL host, not a sandbox: do not disturb the gateway container, the dind sidecar, or other projects\' containers. ' +
-  '(6) The host edge nginx (/etc/nginx/sites-enabled/) is self-serve from valbox via scoped passwordless sudo — `sudo nginx -t`, `sudo systemctl reload nginx`, and `sudo x056-write-vhost.sh <bare-filename> <<< "$content"` (writes ONE vhost file, refuses path traversal, self-tests before leaving a change in place). That is the entire sudo grant — no blanket root shell; anything else on the host (installing a cert, editing nginx.conf itself, other host-OS sudo) still needs the user. If a git push over an SSH remote fails on authentication, the credential for that remote is not configured — surface it to the user instead of retrying. ' +
-  'Toolchains you DO have: Node/npm, Go (GOTOOLCHAIN=auto), Java 17 + Maven, Python 3 (create a venv — the system Python is externally-managed), PHP + Composer, gcc/make, git, ripgrep, and a headless Chromium — screenshot any local URL with `node /app/scripts/shot.cjs <url> <out.png>` then read the PNG. git push over SSH works to GitHub, the VPN host 192.168.83.20 (`ssh ocr`), and the gateway host `ssh valbox`.';
+  '(4) Your in-container `docker`/`docker compose` drive an isolated Docker-in-Docker sidecar (DOCKER_HOST=tcp://dind:2375), NOT the host Docker — use them for your project\'s own builds/e2e. Two caveats for a project compose: bind mounts resolve on the dind daemon (which shares the workspace at the same absolute path, so mounts under the workspace root work), and published ports are reachable at hostname `dind:<port>`, not localhost. Deploying THIS gateway itself is a host-side actuator (commit, then `touch .deploy/requested`), never docker. ' +
+  'Toolchains you DO have: Node/npm, Go (GOTOOLCHAIN=auto), Java 17 + Maven, Python 3 (create a venv — the system Python is externally-managed), PHP + Composer, gcc/make, git, ripgrep, and a headless Chromium — screenshot any local URL with `node /app/scripts/shot.cjs <url> <out.png>` then read the PNG. If a git push over an SSH remote fails on authentication, the credential for that remote is not configured — surface it to the user instead of retrying.';
+const CONTAINER_SYSTEM_NOTE = BASE_SYSTEM_NOTE + (process.env.X056_HOST_NOTE ? ' ' + process.env.X056_HOST_NOTE.trim() : '');
 
 /** EventLog that also forwards every supervisor row to the gateway stream. */
 class EmittingLog extends EventLog {

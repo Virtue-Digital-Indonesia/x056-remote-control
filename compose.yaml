@@ -11,28 +11,33 @@ services:
       # intended entry point, not http://<host-ip>:4056 directly.
       - "127.0.0.1:4056:4056"
     environment:
+      # All settings come from .env (see .env.example). Defaults are the author's
+      # deployment so nothing breaks if a var is unset; override in your .env.
       X056_TOKEN: ${X056_TOKEN:?generate one into .env — openssl rand -hex 32}
-      X056_WORKSPACE_ROOT: /home/efran/remote-development
+      X056_WORKSPACE_ROOT: ${X056_WORKSPACE_ROOT:-/home/efran/remote-development}
       X056_STATE_DIR: /app/state
-      # Serve the panel from the bind-mounted repo: UI changes appear on
-      # refresh, no rebuild needed.
-      X056_PANEL_PATH: /home/efran/remote-development/x056-remote-control/server/public/panel.html
+      # Panel HTML is bind-mount live-served (UI edits appear on refresh, no rebuild).
+      X056_PANEL_PATH: ${X056_PANEL_PATH:-/home/efran/remote-development/x056-remote-control/server/public/panel.html}
       PORT: "4056"
       # WebAuthn/passkey relying-party id(s), comma-separated — the public host(s)
-      # passkeys are bound to (localhost is always allowed for dev/e2e). Origin is
-      # derived per-request and validated against this.
-      X056_RP_ID: x056.rc.val.id
-      # A project session that runs `docker`/`docker compose` (builds, e2e stacks)
-      # is pointed at the ISOLATED dind daemon below — NOT the host's Docker. The
-      # host daemon is never exposed to sessions. See CLAUDE.md.
+      # passkeys are bound to (localhost is always allowed for dev/e2e).
+      X056_RP_ID: ${X056_RP_ID:-x056.rc.val.id}
+      # Optional host-specific addendum appended to the per-session system note
+      # (SSH escape hatches, self-serve nginx, extra git remotes …). Unset by
+      # default — the shared note stays generic. Set it in your .env if you want
+      # your sessions taught about your host's extras.
+      X056_HOST_NOTE: ${X056_HOST_NOTE:-}
+      # Project sessions' `docker`/`docker compose` point at the ISOLATED dind
+      # sidecar below — NOT the host's Docker.
       DOCKER_HOST: tcp://dind:2375
     volumes:
-      - /home/efran/.claude-x056-a:/home/efran/.claude-x056-a
-      - /home/efran/.claude-x056-b:/home/efran/.claude-x056-b
-      - /home/efran/remote-development:/home/efran/remote-development
-      # Read-only: lets the gateway list + import existing interactive sessions
-      # to resume them. Transcripts only — credentials live outside projects/.
-      - /home/efran/.claude/projects:/home/efran/.claude/projects:ro
+      # The two Claude account config dirs (each a separate `claude /login`).
+      - ${X056_ACCOUNT_A_DIR:-/home/efran/.claude-x056-a}:${X056_ACCOUNT_A_DIR:-/home/efran/.claude-x056-a}
+      - ${X056_ACCOUNT_B_DIR:-/home/efran/.claude-x056-b}:${X056_ACCOUNT_B_DIR:-/home/efran/.claude-x056-b}
+      # The workspace of repos the panel can open as projects.
+      - ${X056_WORKSPACE_ROOT:-/home/efran/remote-development}:${X056_WORKSPACE_ROOT:-/home/efran/remote-development}
+      # Read-only: import existing interactive `claude` sessions for resume.
+      - ${X056_INTERACTIVE_PROJECTS:-/home/efran/.claude/projects}:${X056_INTERACTIVE_PROJECTS:-/home/efran/.claude/projects}:ro
       - x056-state:/app/state
   # Isolated Docker-in-Docker daemon for PROJECTS' own docker needs (building
   # images, spinning up compose e2e stacks). It is privileged, but it is a NESTED
@@ -48,7 +53,7 @@ services:
       DOCKER_TLS_CERTDIR: ""
     volumes:
       - dind-storage:/var/lib/docker
-      - /home/efran/remote-development:/home/efran/remote-development
+      - ${X056_WORKSPACE_ROOT:-/home/efran/remote-development}:${X056_WORKSPACE_ROOT:-/home/efran/remote-development}
     healthcheck:
       test: ["CMD", "docker", "info"]
       interval: 10s

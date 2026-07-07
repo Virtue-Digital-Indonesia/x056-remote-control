@@ -38,7 +38,7 @@ export class AccountRegistry {
 
   static load(file: string): AccountRegistry {
     if (!existsSync(file)) {
-      throw new Error(`${file} not found — run the setup step (scripts/setup-accounts.sh) first.`);
+      throw new Error(`${file} not found — run the setup wizard (scripts/setup.sh) first.`);
     }
     return new AccountRegistry(file, JSON.parse(readFileSync(file, 'utf8')) as RegistryFile);
   }
