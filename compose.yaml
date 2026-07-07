@@ -6,7 +6,10 @@ services:
     depends_on:
       - dind
     ports:
-      - "4056:4056"
+      # Loopback-only: reachable at localhost:4056 (what nginx proxies to) but
+      # NOT on the host's public IP — the domain (behind nginx/TLS) is the only
+      # intended entry point, not http://<host-ip>:4056 directly.
+      - "127.0.0.1:4056:4056"
     environment:
       X056_TOKEN: ${X056_TOKEN:?generate one into .env — openssl rand -hex 32}
       X056_WORKSPACE_ROOT: /home/efran/remote-development
