@@ -263,13 +263,19 @@
     .topbar .title { flex: 1; min-width: 0; }
     .topbar .sp { display: none; }
     #morePop { top: calc(52px + env(safe-area-inset-top)); }
-    /* Sidebar becomes an off-canvas drawer toggled by the hamburger. */
+    /* Sidebar becomes an off-canvas drawer toggled by the hamburger. The shadow
+       lives only on the .nav-open rule — on the base rule its blur radius peeked
+       past the -100% translated edge as a permanent dark sliver down the left
+       side of the screen even while the drawer was closed. */
     aside {
       position: fixed; top: 0; left: 0; bottom: 0; width: 84%; max-width: 300px; z-index: 60;
       transform: translateX(-100%); transition: transform .22s ease;
-      box-shadow: 2px 0 24px rgba(0,0,0,.3); padding-top: env(safe-area-inset-top);
+      padding-top: env(safe-area-inset-top);
     }
-    body.nav-open aside { transform: translateX(0); }
+    body.nav-open aside { transform: translateX(0); box-shadow: 2px 0 24px rgba(0,0,0,.3); }
+    /* iOS Safari auto-zooms the page on focus if the control's font-size is
+       under 16px — bump these to 16px on mobile to stop the zoom-in-while-typing. */
+    textarea, select, .pk-search { font-size: 16px; }
     .nav-backdrop { display: block; position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.45); opacity: 0; pointer-events: none; transition: opacity .22s ease; }
     body.nav-open .nav-backdrop { opacity: 1; pointer-events: auto; }
     .topbar { padding-top: env(safe-area-inset-top); height: calc(48px + env(safe-area-inset-top)); gap: 6px; }
@@ -950,6 +956,16 @@
     reg.projects.forEach(function (p) {
       projCache[p.id] = p;
       if (p.running) runningProjects[p.id] = true; else delete runningProjects[p.id];
+      // Reconcile against the server's authoritative running state — SSE
+      // turn_state events can be missed (mobile backgrounding, reconnect gaps),
+      // leaving the Stop button / sidebar spinner stuck showing a turn that
+      // already ended (or hiding one that's actually running).
+      var v = viewOf(p.id);
+      if (v.active !== !!p.running) {
+        v.active = !!p.running;
+        if (!v.active) { v.label = ''; v.subs = {}; v.subCount = 0; }
+        if (p.id === cur) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); }
+      }
       var row = document.createElement('div'); row.className = 'proj' + (p.id === cur ? ' active' : '') + (p.running ? ' busy' : '');
       row.setAttribute('data-id', p.id);
       var d = document.createElement('span'); d.className = 'dot'; row.appendChild(d);
@@ -1262,6 +1278,11 @@
       try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) switchProject(projCache[want]); } catch (e) {}
     });
     setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings();
+    // Safety-net reconciliation for the running-turn state: SSE can silently
+    // miss turn_state/session_done events (mobile tab backgrounded, reconnect
+    // gap), leaving the busy indicator stuck. loadProjects() re-derives it from
+    // the server's authoritative state.
+    setInterval(loadProjects, 20000);
     pollSnapshot().then(loadHistory);
     connect();
   }
@@ -1271,7 +1292,7 @@
   function connect() {
     if (es) es.close();
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
-    es.onopen = function () { dot.className = 'on'; };
+    es.onopen = function () { dot.className = 'on'; loadProjects(); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
     ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'active_model', 'settings'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
