@@ -30,6 +30,17 @@ const IMG_EXT: Record<string, string> = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
 };
 
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50MB — Claude reads from disk, so be generous
+
+/** Sanitize a user-supplied filename to a safe basename (no path separators,
+ *  no traversal), preserving a reasonable extension. */
+function safeBaseName(name: string | undefined, fallbackExt: string): string {
+  const raw = (name ?? '').split(/[\\/]/).pop() ?? '';
+  const cleaned = raw.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(0, 120);
+  if (cleaned && cleaned !== '_') return cleaned;
+  return `attachment.${fallbackExt}`;
+}
+
 /** Read the human-facing account identity the login stored in <configDir>/.claude.json. */
 function accountIdentity(configDir: string): { displayName?: string; email?: string } {
   try {
@@ -42,20 +53,26 @@ function accountIdentity(configDir: string): { displayName?: string; email?: str
   }
 }
 
-/** Turn a data URL / base64 image into a file under state/uploads, return its absolute path. */
-function saveImage(stateDir: string, dataUrl: string): string {
-  const m = /^data:([^;]+);base64,(.+)$/s.exec(dataUrl);
-  if (!m) throw new Error('image must be a data URL');
-  const ext = IMG_EXT[m[1]];
-  if (!ext) throw new Error(`unsupported image type ${m[1]}`);
+/** Persist a data-URL attachment of ANY type under state/uploads, keeping its
+ *  original filename (sanitized) so Claude — which can Read any file — sees a
+ *  sensible name. Returns the absolute path, display name, and whether it's an
+ *  image. Filenames are namespaced by a uuid dir so two "notes.txt" don't clash. */
+function saveAttachment(stateDir: string, dataUrl: string, name?: string): { path: string; name: string; isImage: boolean } {
+  const m = /^data:([^;]*);base64,(.+)$/s.exec(dataUrl);
+  if (!m) throw new Error('attachment must be a base64 data URL');
+  const mime = m[1] || 'application/octet-stream';
   const buf = Buffer.from(m[2], 'base64');
-  if (buf.length > 10 * 1024 * 1024) throw new Error('image exceeds 10MB');
-  const dir = join(stateDir, 'uploads');
+  if (buf.length > MAX_UPLOAD_BYTES) throw new Error('attachment exceeds 50MB');
+  const isImage = mime.startsWith('image/');
+  const fileName = safeBaseName(name, IMG_EXT[mime] ?? (isImage ? 'png' : 'bin'));
+  const dir = join(stateDir, 'uploads', randomUUID());
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${randomUUID()}.${ext}`);
+  const path = join(dir, fileName);
   writeFileSync(path, buf);
-  return path;
+  return { path, name: fileName, isImage };
 }
+
+interface Attachment { name?: string; data: string } // data = base64 data URL
 
 interface SendBody {
   prompt?: string;
@@ -63,10 +80,16 @@ interface SendBody {
   model?: string;
   effort?: string;
   image?: string; // legacy single-image field (kept for back-compat)
-  images?: string[]; // multiple attachments
+  images?: string[]; // legacy image-only attachments (data URLs)
+  attachments?: Attachment[]; // any file type, with original name
   projectId?: string;
   sessionId?: string; // the conversation a queued follow-up is for
   interactive?: boolean;
+}
+
+/** True if the body carries at least one attachment (new or legacy). */
+function hasAttachments(body: SendBody): boolean {
+  return !!(body?.attachments?.length || body?.images?.length || body?.image);
 }
 
 // NB: this project runs under tsx (esbuild), which does not implement
@@ -124,15 +147,24 @@ export class ApiController {
     });
   }
 
-  /** Fold an optional attached image into the prompt as a readable file path. */
+  /** Fold any attached files into the prompt as readable on-disk paths. Claude
+   *  can Read any file (text, code, PDFs, images, …), so every attachment — not
+   *  just images — is saved and handed over by path. */
   private composePrompt(body: SendBody): { prompt: string; opts: TurnRunOptions } {
     let prompt = body.prompt ?? '';
-    const images = Array.isArray(body.images) && body.images.length ? body.images : body.image ? [body.image] : [];
-    if (images.length === 1) {
-      prompt += `\n\n[The user attached an image. Read it with the Read tool at: ${saveImage(this.stateDir, images[0])}]`;
-    } else if (images.length > 1) {
-      const paths = images.map((img) => saveImage(this.stateDir, img));
-      prompt += `\n\n[The user attached ${paths.length} images. Read them with the Read tool at:\n${paths.map((p) => `- ${p}`).join('\n')}]`;
+    // New unified `attachments` (name + data), plus legacy image-only fields.
+    const specs: Attachment[] = [
+      ...(Array.isArray(body.attachments) ? body.attachments : []),
+      ...(Array.isArray(body.images) ? body.images.map((data) => ({ data })) : []),
+      ...(body.image ? [{ data: body.image }] : []),
+    ].filter((a) => a && typeof a.data === 'string');
+    const saved = specs.map((a) => saveAttachment(this.stateDir, a.data, a.name));
+    if (saved.length === 1) {
+      const f = saved[0];
+      const kind = f.isImage ? 'image' : 'file';
+      prompt += `\n\n[The user attached a ${kind} (${f.name}). Read it with the Read tool at: ${f.path}]`;
+    } else if (saved.length > 1) {
+      prompt += `\n\n[The user attached ${saved.length} files. Read them with the Read tool at:\n${saved.map((f) => `- ${f.path}`).join('\n')}]`;
     }
     // Teach the model the ASK convention so it can pose questions the panel can
     // surface with quick-reply buttons (opt out with interactive:false).
@@ -142,7 +174,7 @@ export class ApiController {
 
   @Post('sessions')
   startSession(@Body() body: SendBody): { sessionId: string } {
-    if (!body?.prompt && !body?.image && !(body?.images && body.images.length)) throw new BadRequestException('prompt or image required');
+    if (!body?.prompt && !hasAttachments(body)) throw new BadRequestException('prompt or attachment required');
     try {
       const { prompt, opts } = this.composePrompt(body);
       return { sessionId: this.manager.start(prompt, body.cwd, opts, body.projectId) };
@@ -154,7 +186,7 @@ export class ApiController {
 
   @Post('sessions/current/messages')
   continueSession(@Body() body: SendBody): { sessionId: string } {
-    if (!body?.prompt && !body?.image && !(body?.images && body.images.length)) throw new BadRequestException('prompt or image required');
+    if (!body?.prompt && !hasAttachments(body)) throw new BadRequestException('prompt or attachment required');
     try {
       const { prompt, opts } = this.composePrompt(body);
       return { sessionId: this.manager.continueLast(prompt, opts, body.projectId) };

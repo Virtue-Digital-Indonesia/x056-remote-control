@@ -178,22 +178,39 @@ describe('gateway account identity + image upload', () => {
     expect(a?.email).toBe('alpha@example.com');
   });
 
-  it('a session started with an image writes the file and injects its path into the prompt', async () => {
+  it('a session started with an image writes the file (legacy image field still works)', async () => {
     // 1x1 png
     const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
     const res = await fetch(`${base}/api/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ prompt: 'look at this', image: png }) });
     expect(res.status).toBe(201);
-    // uploads dir now holds one image
     const { readdirSync } = await import('node:fs');
-    const files = readdirSync(join(dir, 'state', 'uploads'));
-    expect(files.length).toBeGreaterThanOrEqual(1);
-    expect(files[0]).toMatch(/\.png$/);
-    // don't leak a running session into later tests
+    const files = readdirSync(join(dir, 'state', 'uploads'), { recursive: true }) as string[];
+    expect(files.some((f) => String(f).endsWith('.png'))).toBe(true);
+    await idle(); // don't leak a running session into later tests
+  });
+
+  it('attaches a NON-image file, keeping its sanitized original name', async () => {
+    const txt = 'data:text/plain;base64,' + Buffer.from('hello from a log file').toString('base64');
+    const res = await fetch(`${base}/api/sessions`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ prompt: 'read my log', attachments: [{ name: 'server (1).log', data: txt }] }),
+    });
+    expect(res.status).toBe(201);
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const files = readdirSync(join(dir, 'state', 'uploads'), { recursive: true, withFileTypes: true });
+    const saved = files.find((e) => e.isFile() && e.name === 'server_1_.log'); // '(' ')' ' ' → '_'
+    expect(saved).toBeTruthy();
+    expect(readFileSync(join(saved!.parentPath ?? (saved as unknown as { path: string }).path, saved!.name), 'utf8')).toBe('hello from a log file');
     await idle();
   });
 
-  it('rejects a malformed image with 400', async () => {
+  it('rejects a malformed attachment with 400', async () => {
     const res = await fetch(`${base}/api/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ prompt: 'x', image: 'not-a-data-url' }) });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a message with neither prompt nor attachment with 400', async () => {
+    const res = await fetch(`${base}/api/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({}) });
     expect(res.status).toBe(400);
   });
 });

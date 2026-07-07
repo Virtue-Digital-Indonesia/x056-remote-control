@@ -1,20 +1,20 @@
 # x056 — Claude Code Remote Control
 
-A self-hosted **remote control for Claude Code** with **automatic failover between two Claude Max accounts**. A supervisor drives headless `claude -p` sessions and, when the active account hits its usage limit, transparently respawns the *same* session under the other account — so one continuous conversation survives the switch. A NestJS gateway + a single-file browser panel expose it anywhere: parallel projects, multiple grouped conversations, live activity, a prompt queue, passkey login, and a mobile PWA.
+A self-hosted **remote control for Claude Code** with **automatic failover across two or more Claude Max accounts**. A supervisor drives headless `claude -p` sessions and, when the active account hits its usage limit, transparently respawns the *same* session under the next available account — so one continuous conversation survives the switch. A NestJS gateway + a single-file browser panel expose it anywhere: parallel projects, multiple concurrent conversations, live activity, a prompt queue, passkey login, and a mobile PWA.
 
-> Each user runs **their own** two Claude accounts. This is an orchestrator for accounts you own, not a way to share one.
+> Each user runs **their own** Claude accounts (two or more). This is an orchestrator for accounts you own, not a way to share one.
 
 ---
 
 ## Features
 
-- **Account failover** — a rate-limit on account A resumes the same session on account B, mid-conversation, no lost context.
-- **Projects** — add any repo under your workspace as a project; each runs its own turn independently (parallel work across projects).
-- **Multiple conversations per project** — grouped under the project in the sidebar, renamable, each its own Claude session you can jump between.
-- **Prompt queue** — send a follow-up while a turn is still running; it's queued (editable, cancelable) and sent the moment the turn finishes.
+- **N-account failover** — a rate-limit on the active account resumes the same session on the next available account, mid-conversation, no lost context. **Two or more** accounts; add or remove them from the panel at any time, and see which one the next prompt will use.
+- **Projects** — add any repo under your workspace as a project; projects run in parallel.
+- **Concurrent conversations per project** — grouped under the project in the sidebar, renamable, each its own Claude session. Different conversations of the same project run **independently and at the same time**, each with its own composer draft and queue.
+- **Prompt queue** — send a follow-up while that conversation's turn is running; it's queued (editable, cancelable) and sent the moment that conversation is free.
 - **Autopilot** — keeps a project working across turns/restarts without you re-prompting it each time.
-- **Multi-image upload** — attach one or more screenshots/images to a message.
-- **Live activity** — see the current tool call / subagent count / active model + account while a turn runs, for every project (not just the one you're viewing).
+- **Attach any file** — drag-and-drop, paste, or pick files of any type (images, PDFs, code, logs, …); Claude reads them from disk with its Read tool.
+- **Live activity + notifications** — see the current tool call / subagent count / active model + account per running conversation, plus a sidebar bell when a chat you're not watching finishes, fails, or asks a question.
 - **Session resume** — adopt an existing interactive `claude` session (run outside the panel) into the panel to keep steering it remotely.
 - **Passkeys** (WebAuthn) — Face ID / Touch ID login on top of a bootstrap access token.
 - **Mobile PWA** — installable to your phone's home screen, with push notifications when a turn needs your input.
@@ -22,17 +22,19 @@ A self-hosted **remote control for Claude Code** with **automatic failover betwe
 
 ## How it works (one paragraph)
 
-The gateway spawns `claude -p --output-format stream-json --resume <id>` under a per-account `CLAUDE_CONFIG_DIR`. Both accounts point at **one shared `projects/` transcript tree**, so `--resume <id>` works no matter which account runs. A detector watches the stream for genuine rate-limit rejections and flips the active account. Turns stream to the panel over SSE; state lives in a Docker volume (`state/`).
+The gateway spawns `claude -p --output-format stream-json --resume <id>` under a per-account `CLAUDE_CONFIG_DIR`. All accounts point at **one shared `projects/` transcript tree**, so `--resume <id>` works no matter which account runs. A detector watches the stream for genuine rate-limit rejections and flips to the next usable account. Turns stream to the panel over SSE, tagged by conversation so parallel work stays isolated; state lives in a Docker volume (`state/`).
 
 ---
 
 ## Using the panel
 
-**Projects & conversations.** The **+** next to "Projects" in the sidebar adds a repo from your workspace. Click a project to switch to it; its conversations list expands underneath (rename with ✎, remove with ×, or start a fresh one with **+ New conversation**). One turn runs per project at a time — a project busy elsewhere shows a spinner in the sidebar and a live strip above the composer, and you can jump straight to it.
+**Projects & conversations.** The **+** next to "Projects" in the sidebar adds a repo from your workspace. Click a project to switch to it; its conversations list expands underneath (rename with ✎, remove with ×, or start a fresh one with **+ New conversation**). Conversations run **concurrently** — several conversations of the same project (and other projects) can be working at once; each running one shows its own spinner in the sidebar, and any you're not currently viewing appear in a live strip above the composer, one tap away.
 
-**Sending messages.** Type in the composer, pick a model/effort if you want something other than the project's default, optionally attach images (paperclip, or just paste), and hit send (⏎, or ⇧⏎ for a newline). If a turn is already running in that conversation, your message queues instead of erroring — edit or cancel it from the queue bar above the composer any time before it fires.
+**Sending messages.** Type in the composer, pick a model/effort if you want something other than the project's default, optionally **attach files of any type** (paperclip, paste, or drag-and-drop onto the window), and hit send (⏎, or ⇧⏎ for a newline). Each conversation keeps its **own** unsent draft, so switching chats never carries text over. If *that conversation's* turn is already running, your message queues (edit/cancel it from the queue bar) and sends when it's free; sending to an idle conversation starts immediately, even while a sibling conversation runs.
 
-**Stopping / switching accounts.** The busy indicator (top of the thread) has a **Stop** button for the running turn. The account-usage chip (bottom left) shows both accounts' quota and has a **Force-switch active account** button if you want to move off the current one before it's actually rate-limited.
+**Accounts.** The chip at the bottom-left shows the account the next prompt will use ("sends next") and opens the accounts panel: each account's quota, a **"next up"** marker, a **remove** (×) button, **+ Add account** to onboard another (sign in via the link, paste the code back), and **Force-switch active account** to move off the current one before it's rate-limited.
+
+**Stopping.** The busy indicator (above the composer) has a **Stop** button that stops **only the conversation you're viewing** — sibling conversations keep running.
 
 **Autopilot.** Toggle it (repeat icon) to keep a project working on its current task across multiple turns/restarts, without you having to re-send "continue" each time.
 
@@ -53,7 +55,7 @@ The gateway spawns `claude -p --output-format stream-json --resume <id>` under a
 - **Docker + Docker Compose** on a Linux host.
 - **Node 20+ and npm** (for the one-time setup CLI).
 - The **`claude` CLI** ([Claude Code](https://claude.com/claude-code)) on PATH.
-- **Two Claude accounts** (Max recommended) you can log into.
+- **Two or more Claude accounts** (Max recommended) you can log into — failover needs at least two; more accounts extend how long you can run before every account is limited.
 - A **reverse proxy with TLS** (nginx/Caddy) in front — the container binds to `127.0.0.1:4056` only; passkeys and secure cookies require HTTPS.
 
 ### Setup
@@ -64,19 +66,16 @@ cd x056-remote-control
 npm ci
 
 cp .env.example .env      # then edit the paths + X056_RP_ID for your host
-bash scripts/setup.sh     # generates the token, logs in both accounts, writes config
+bash scripts/setup.sh     # generates the token, logs in your accounts, writes config
 ```
 
-`scripts/setup.sh` is re-runnable and walks you through everything: it generates `X056_TOKEN`, runs `claude /login` for each account dir, checks the two accounts are actually different, wires the shared transcript tree, and writes `state/accounts.json`. See [`.env.example`](.env.example) for every setting.
+`scripts/setup.sh` is re-runnable and walks you through the initial two accounts: it generates `X056_TOKEN`, runs `claude /login` for each account dir, checks they're actually different, wires the shared transcript tree, and writes `state/accounts.json`. See [`.env.example`](.env.example) for every setting.
 
-#### Adding / changing accounts
+#### Adding / removing accounts (2, 3, 4, …)
 
-Accounts are two config dirs, set in `.env` (`X056_ACCOUNT_A_DIR`, `X056_ACCOUNT_B_DIR`). To (re)log an account, just point `CLAUDE_CONFIG_DIR` at its dir and log in, then re-run the wizard:
+The easiest way to add a **third or fourth** account is right from the panel — no redeploy: open the accounts chip (bottom-left) → **+ Add account** → sign in with the new account via the link → paste the code back. It's stored in the state volume and joins the failover pool immediately. Remove any account there too (× on its card).
 
-```bash
-CLAUDE_CONFIG_DIR="$X056_ACCOUNT_A_DIR" claude /login
-bash scripts/setup.sh
-```
+To **bootstrap more than two at init time**, set `X056_ACCOUNT_DIRS` in `.env` to a comma-separated list of config dirs (named `a`, `b`, `c`, …) instead of the `X056_ACCOUNT_A_DIR`/`_B_DIR` pair, log each in, and run the wizard. To **re-log** an existing account, point `CLAUDE_CONFIG_DIR` at its dir and `claude /login` again.
 
 ### Run
 

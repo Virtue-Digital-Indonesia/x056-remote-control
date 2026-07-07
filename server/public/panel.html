@@ -128,6 +128,9 @@
   .msg.user .content { background: var(--user-bg); border-radius: 14px 14px 4px 14px; padding: 10px 15px; max-width: 82%; white-space: pre-wrap; word-break: break-word; }
   .msg.assistant .content { word-break: break-word; }
   .content img.att { max-width: 280px; border-radius: 10px; border: 1px solid var(--border); margin-top: 8px; display: block; }
+  .content .filechip { display: inline-flex; align-items: center; gap: 7px; margin-top: 8px; padding: 7px 11px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); text-decoration: none; font-size: 12.5px; max-width: 280px; }
+  .content .filechip:hover { border-color: var(--accent); color: var(--accent); }
+  .content .filechip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .content p { margin: 0 0 11px; white-space: pre-wrap; }
   .content > *:last-child { margin-bottom: 0; }
@@ -190,13 +193,22 @@
 
   /* composer */
   .composer-wrap { flex: none; padding: 10px 24px 18px; }
+  /* Jump-to-latest: floats just above the composer when the thread is scrolled up. */
+  #jumpBtn { position: absolute; left: 50%; transform: translateX(-50%); bottom: 128px; z-index: 30; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; display: grid; place-items: center; box-shadow: 0 2px 10px rgba(0,0,0,.25); }
+  #jumpBtn[hidden] { display: none; }
+  #jumpBtn:hover { border-color: var(--accent); color: var(--accent); }
   .composer { max-width: 780px; margin: 0 auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
   .composer:focus-within { border-color: var(--accent); }
   #attachRow { display: none; gap: 8px; padding: 10px 12px 0; flex-wrap: wrap; }
   #attachRow.show { display: flex; }
-  .chip { display: inline-flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 5px 8px; font-size: 12px; }
+  /* Drag-and-drop file overlay: a dashed accent frame while files hover the app. */
+  body.dragging main::after { content: "Drop files to attach"; position: absolute; inset: 10px; z-index: 40; border: 2px dashed var(--accent); border-radius: 14px; background: var(--accent-weak); color: var(--accent); display: grid; place-items: center; font-size: 15px; font-weight: 600; pointer-events: none; }
+  main { position: relative; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 5px 8px; font-size: 12px; max-width: 220px; }
   .chip img { width: 34px; height: 34px; object-fit: cover; border-radius: 6px; }
-  .chip button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 15px; }
+  .chip.filed { padding: 8px 10px; color: var(--muted); }
+  .chip .fn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 15px; flex: none; display: inline-flex; }
   textarea { width: 100%; border: none; background: transparent; color: var(--text); resize: none; padding: 15px 16px 6px; font: inherit; max-height: 240px; outline: none; }
   .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px 10px; }
   .select { position: relative; }
@@ -333,6 +345,8 @@
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-4 4 3 3m-6-1 2.5 2.5"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
@@ -365,6 +379,7 @@
     <button class="ico moreBtn" id="moreBtn" title="more" aria-label="more"><svg class="ic"><use href="#i-more"/></svg></button>
   </div>
   <div class="scroll"><div class="thread" id="chat"></div></div>
+  <button id="jumpBtn" title="jump to latest" hidden><svg class="ic sm"><use href="#i-down"/></svg></button>
   <div class="composer-wrap">
     <div id="autopilotBar"></div>
     <div id="otherRuns"></div>
@@ -372,7 +387,7 @@
     <div id="queueBar"></div>
     <div class="composer">
       <div id="attachRow"></div>
-      <textarea id="prompt" rows="1" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste an image)"></textarea>
+      <textarea id="prompt" rows="1" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste or drop a file)"></textarea>
       <div class="bar">
         <div class="select"><select id="model" title="model">
           <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
@@ -380,7 +395,7 @@
         <div class="select"><select id="effort" title="effort">
           <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
         </select></div>
-        <label class="attach" title="attach images"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden /></label>
+        <label class="attach" title="attach files (any type — drag &amp; drop or paste too)"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" multiple hidden /></label>
         <span class="sp"></span>
         <button class="send" id="sendBtn" title="send"><svg class="ic sm"><use href="#i-up"/></svg></button>
       </div>
@@ -456,7 +471,7 @@
   var acctChip = $('acctChip'), acctAv = $('acctAv'), acctNameEl = $('acctName'), acctPlan = $('acctPlan');
   var quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts'), themeBtn = $('themeBtn');
   var defaultsPop = $('defaultsPop'), defaultsList = $('defaultsList'), passkeyPop = $('passkeyPop');
-  var lastSessionId = null, lastSeq = 0, pendingImages = [], pendingNew = false, currentProjectId = null;
+  var lastSessionId = null, lastSeq = 0, pendingFiles = [], pendingNew = false, currentProjectId = null;
 
   try { modelEl.value = localStorage.getItem(MODEL_KEY) || ''; effortEl.value = localStorage.getItem(EFFORT_KEY) || ''; } catch (e) {}
   modelEl.addEventListener('change', function () {
@@ -597,6 +612,12 @@
   var scroller = document.querySelector('.scroll');
   function atBottom() { return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 140; }
   function down() { scroller.scrollTop = scroller.scrollHeight; }
+  // Jump-to-latest button: visible only when the thread is scrolled away from the
+  // bottom, so long/running turns don't trap you mid-scroll.
+  var jumpBtn = document.getElementById('jumpBtn');
+  function updateJump() { jumpBtn.hidden = atBottom(); }
+  scroller.addEventListener('scroll', updateJump, { passive: true });
+  jumpBtn.addEventListener('click', function () { down(); updateJump(); });
 
   // Per-CONVERSATION view cache: every conversation (not just project) keeps its
   // rendered thread (detached DocumentFragment when not in view) + live activity
@@ -628,7 +649,7 @@
   // conversation's own cache so it doesn't bleed into what's on screen.
   function appendNode(pid, sessionId, node) {
     if (!pid || (pid === currentProjectId && (!sessionId || sessionId === lastSessionId))) {
-      var stick = atBottom(); chatEl.appendChild(node); if (stick) down();
+      var stick = atBottom(); chatEl.appendChild(node); if (stick) down(); updateJump();
     } else viewOf(pid, sessionId).frag.appendChild(node);
   }
 
@@ -650,14 +671,26 @@
   function fallbackCopy(txt) {
     try { var ta = document.createElement('textarea'); ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); } catch (e) {}
   }
-  function nodeMsg(role, text, imgUrl, ts) {
+  function nodeMsg(role, text, atts, ts) {
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role;
     var lab = document.createElement('div'); lab.className = 'role'; lab.textContent = role === 'user' ? 'you' : 'claude'; wrap.appendChild(lab);
     var content = document.createElement('div'); content.className = 'content';
     if (role === 'assistant') content.appendChild(renderMarkdown(text)); else content.appendChild(document.createTextNode(text));
-    // imgUrl may be a single data URL (legacy callers) or an array (attachments).
-    var imgs = Array.isArray(imgUrl) ? imgUrl : (imgUrl ? [imgUrl] : []);
-    imgs.forEach(function (u) { var im = document.createElement('img'); im.className = 'att'; im.src = u; content.appendChild(im); });
+    // atts: a single data URL (legacy), or an array of data URLs / {name,type,url}
+    // objects. Images render as thumbnails; any other file as a download chip.
+    var list = Array.isArray(atts) ? atts : (atts ? [atts] : []);
+    list.forEach(function (a) {
+      var isStr = typeof a === 'string';
+      var url = isStr ? a : a.url, type = isStr ? '' : (a.type || ''), name = isStr ? '' : (a.name || '');
+      var isImage = type.indexOf('image/') === 0 || (isStr && /^data:image\//.test(url || ''));
+      if (isImage) { var im = document.createElement('img'); im.className = 'att'; im.src = url; content.appendChild(im); }
+      else {
+        var chip = document.createElement('a'); chip.className = 'filechip'; chip.href = url; chip.download = name || 'file'; chip.target = '_blank'; chip.rel = 'noopener';
+        chip.appendChild(icon('file', 'sm'));
+        var nm = document.createElement('span'); nm.textContent = name || 'file'; chip.appendChild(nm);
+        content.appendChild(chip);
+      }
+    });
     wrap.appendChild(content);
     var meta = document.createElement('div'); meta.className = 'mmeta';
     var tm = document.createElement('span'); tm.textContent = clockTime(ts); meta.appendChild(tm);
@@ -1540,49 +1573,75 @@
   function saveDraft() { var k = draftKey(); if (!k) return; try { if (promptEl.value) localStorage.setItem(k, promptEl.value); else localStorage.removeItem(k); } catch (e) {} }
   function restoreDraft() { var k = draftKey(), v = ''; try { v = (k && localStorage.getItem(k)) || ''; } catch (e) {} promptEl.value = v; autogrow(); }
   promptEl.addEventListener('input', function () { autogrow(); saveDraft(); });
-  // Multiple attachments: pendingImages holds every attached data URL; the chip
-  // row re-renders (with fresh indices) on any add/remove so the × buttons stay
-  // correct after a splice.
+  // Attachments of ANY type: pendingFiles holds {name,type,url} objects (Claude
+  // can Read any file). The chip row re-renders (fresh indices) on add/remove so
+  // the × buttons stay correct after a splice. Images preview as thumbnails;
+  // other files show a name chip.
   function renderAttachments() {
     attachRow.textContent = '';
-    if (!pendingImages.length) { attachRow.classList.remove('show'); return; }
-    pendingImages.forEach(function (u, i) {
-      var chip = document.createElement('div'); chip.className = 'chip';
-      var img = document.createElement('img'); img.src = u; chip.appendChild(img);
+    if (!pendingFiles.length) { attachRow.classList.remove('show'); return; }
+    pendingFiles.forEach(function (f, i) {
+      var chip = document.createElement('div'); chip.className = 'chip' + (/^image\//.test(f.type) ? '' : ' filed');
+      if (/^image\//.test(f.type)) { var img = document.createElement('img'); img.src = f.url; chip.appendChild(img); }
+      else { chip.appendChild(icon('file', 'sm')); }
+      var nm = document.createElement('span'); nm.className = 'fn'; nm.textContent = f.name || (/^image\//.test(f.type) ? 'image' : 'file'); nm.title = f.name || ''; chip.appendChild(nm);
       var x = document.createElement('button'); x.appendChild(icon('x', 'sm'));
-      x.addEventListener('click', function () { pendingImages.splice(i, 1); renderAttachments(); }); chip.appendChild(x);
+      x.addEventListener('click', function () { pendingFiles.splice(i, 1); renderAttachments(); }); chip.appendChild(x);
       attachRow.appendChild(chip);
     });
     attachRow.classList.add('show');
   }
-  function clearAttachments() { pendingImages = []; renderAttachments(); }
-  function addImageFromFile(f) { if (!f || !/^image\//.test(f.type)) return; var r = new FileReader(); r.onload = function () { pendingImages.push(r.result); renderAttachments(); }; r.readAsDataURL(f); }
-  fileEl.addEventListener('change', function () { for (var i = 0; i < fileEl.files.length; i++) addImageFromFile(fileEl.files[i]); fileEl.value = ''; });
-  promptEl.addEventListener('paste', function (e) { var items = (e.clipboardData || {}).items || []; var added = false; for (var i = 0; i < items.length; i++) if (items[i].type && items[i].type.indexOf('image') === 0) { var f = items[i].getAsFile(); if (f) { addImageFromFile(f); added = true; } } if (added) e.preventDefault(); });
+  function clearAttachments() { pendingFiles = []; renderAttachments(); }
+  var MAX_ATTACH_BYTES = 50 * 1024 * 1024;
+  function addFile(f) {
+    if (!f) return;
+    if (f.size > MAX_ATTACH_BYTES) { addSys('“' + (f.name || 'file') + '” is over 50MB — not attached', 'banner'); return; }
+    var r = new FileReader();
+    r.onload = function () { pendingFiles.push({ name: f.name || (/^image\//.test(f.type) ? 'pasted-image.png' : 'file'), type: f.type || '', url: r.result }); renderAttachments(); };
+    r.readAsDataURL(f);
+  }
+  fileEl.addEventListener('change', function () { for (var i = 0; i < fileEl.files.length; i++) addFile(fileEl.files[i]); fileEl.value = ''; });
+  // Paste: attach any file on the clipboard (images, but also copied files).
+  promptEl.addEventListener('paste', function (e) {
+    var items = (e.clipboardData || {}).items || []; var added = false;
+    for (var i = 0; i < items.length; i++) if (items[i].kind === 'file') { var f = items[i].getAsFile(); if (f) { addFile(f); added = true; } }
+    if (added) e.preventDefault();
+  });
+  // Drag-and-drop files anywhere over the chat/composer to attach them.
+  var dropZone = document.querySelector('main') || document.body;
+  ['dragenter', 'dragover'].forEach(function (ev) { dropZone.addEventListener(ev, function (e) { if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) { e.preventDefault(); document.body.classList.add('dragging'); } }); });
+  ['dragleave', 'drop'].forEach(function (ev) { dropZone.addEventListener(ev, function (e) { if (ev === 'dragleave' && e.relatedTarget) return; document.body.classList.remove('dragging'); }); });
+  dropZone.addEventListener('drop', function (e) {
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    for (var i = 0; i < e.dataTransfer.files.length; i++) addFile(e.dataTransfer.files[i]);
+  });
 
   function queueBody(text) { var b = { projectId: currentProjectId, sessionId: lastSessionId, prompt: text }; if (modelEl.value) b.model = modelEl.value; if (effortEl.value) b.effort = effortEl.value; return b; }
   function send() {
-    var text = promptEl.value.trim(); if (!text && !pendingImages.length) return;
+    var text = promptEl.value.trim(); if (!text && !pendingFiles.length) return;
     // Busy is now per-CONVERSATION: only THIS conversation's own running turn
     // makes a message queue. A different conversation running in the same project
     // no longer blocks this one — send to an idle conversation and it starts
     // immediately, in parallel.
     var busy = !pendingNew && isSessionRunning(currentProjectId, lastSessionId);
     // This conversation is running → queue the follow-up (sent when it finishes)
-    // instead of erroring. Images can't be queued (they need a live upload).
+    // instead of erroring. Files can't be queued (they need a live upload).
     if (busy) {
-      if (!text) { addSys('type a message to queue — images can’t be queued', 'banner'); return; }
-      if (pendingImages.length) addSys('images left attached — queued the text only', 'banner');
+      if (!text) { addSys('type a message to queue — files can’t be queued', 'banner'); return; }
+      if (pendingFiles.length) addSys('files left attached — queued the text only', 'banner');
       api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).then(function (r) {
         if (r.ok) { promptEl.value = ''; autogrow(); saveDraft(); }
       }).catch(function () {});
       return;
     }
-    var imgs = pendingImages.slice();
-    var body = { prompt: text }; if (modelEl.value) body.model = modelEl.value; if (effortEl.value) body.effort = effortEl.value; if (imgs.length) body.images = imgs;
+    var files = pendingFiles.slice();
+    var body = { prompt: text }; if (modelEl.value) body.model = modelEl.value; if (effortEl.value) body.effort = effortEl.value;
+    if (files.length) body.attachments = files.map(function (f) { return { name: f.name, data: f.url }; });
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
-    addMsg('user', text || (imgs.length > 1 ? '(' + imgs.length + ' images)' : '(image)'), imgs, new Date().toISOString());
+    var label = text || (files.length > 1 ? '(' + files.length + ' files)' : '(' + (files[0] && files[0].name || 'file') + ')');
+    addMsg('user', label, files, new Date().toISOString());
     api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
       if (r.status === 409) { // raced a turn start — queue it so it isn't lost
         if (text) api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).catch(function () {});
