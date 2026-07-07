@@ -342,6 +342,14 @@ export class SessionManager {
     (map[pid] ??= []).push(q);
     this.saveQueues(map);
     this.emitQueue(pid, map);
+    // The queue normally drains on turn completion. But if the project is IDLE
+    // when an item lands (the panel queued on a stale "running" flag, or a turn
+    // ended without one), nothing would ever trigger a send and the item strands
+    // forever. Kick a drain immediately in that case — but only when there's a
+    // session to resume into (else the drain just throws) and no drain timer is
+    // already pending (so we don't race the completion path into a double-shift).
+    const resumable = this.projects().get(pid)?.lastSessionId ?? this.loadState().lastSessionId;
+    if (resumable && !this.runs.has(pid) && !this.queueTimers.has(pid)) this.maybeDrainQueue(pid);
     return q;
   }
 

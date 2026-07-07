@@ -105,6 +105,28 @@ describe('SessionManager', () => {
     expect(mgr.queues()[pid] ?? []).toEqual([]); // drained
   });
 
+  it('auto-drains a queued message when the project is idle but has a resumable session', async () => {
+    const { mgr, calls } = fixture(COMPLETED);
+    const pid = mgr.listProjects().current as string;
+    mgr.start('first');
+    await waitFor(() => mgr.snapshot().running === false, 3000); // turn done → project idle w/ a session
+    expect(calls.length).toBe(1);
+    mgr.enqueue(pid, { text: 'queued while idle' }); // would otherwise strand forever
+    await waitFor(() => calls.length === 2, 3000);
+    expect(calls[1].prompt).toBe('queued while idle');
+    expect(calls[1].resume).toBe(true);
+    expect(mgr.queues()[pid] ?? []).toEqual([]); // drained, not stranded
+  });
+
+  it('does not auto-drain an idle queue when there is no session to resume into', () => {
+    const { mgr, calls } = fixture(COMPLETED);
+    const pid = mgr.listProjects().current as string;
+    mgr.enqueue(pid, { text: 'first' }); // no turn ever started → nothing to resume
+    mgr.enqueue(pid, { text: 'second' });
+    expect(mgr.queues()[pid].map((q) => q.text)).toEqual(['first', 'second']);
+    expect(calls.length).toBe(0);
+  });
+
   it('rejects concurrent starts with BusyError and allows continue after completion', async () => {
     const { mgr, calls } = fixture(COMPLETED, { delayMs: 100 });
     mgr.start('first');

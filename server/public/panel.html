@@ -860,15 +860,27 @@
       var ed = document.createElement('button'); ed.title = 'edit'; ed.appendChild(icon('compose', 'sm'));
       ed.addEventListener('click', function () { editQueueItem(currentProjectId, it); }); row.appendChild(ed);
       var rm = document.createElement('button'); rm.className = 'qx'; rm.title = 'cancel'; rm.appendChild(icon('x', 'sm'));
-      rm.addEventListener('click', function () { api('/api/queue/remove', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId, id: it.id }) }).catch(function () {}); }); row.appendChild(rm);
+      rm.addEventListener('click', function () { removeQueueItem(currentProjectId, it.id); }); row.appendChild(rm);
       bar.appendChild(row);
     });
+  }
+  // Optimistically drop the item and re-render so cancel is instant and survives
+  // a missed/late 'queue' SSE event (the "can't delete queued message" bug). The
+  // server 'queue' broadcast reconciles the true state; on failure we resync.
+  function removeQueueItem(pid, id) {
+    queueState[pid] = (queueState[pid] || []).filter(function (x) { return x.id !== id; });
+    renderQueue();
+    api('/api/queue/remove', { method: 'POST', body: JSON.stringify({ projectId: pid, id: id }) })
+      .then(function (r) { if (!r.ok) loadQueue(); }).catch(function () { loadQueue(); });
   }
   function editQueueItem(pid, it) {
     var next = window.prompt('Edit queued message:', it.text);
     if (next === null) return; // cancelled
-    if (!next.trim()) { api('/api/queue/remove', { method: 'POST', body: JSON.stringify({ projectId: pid, id: it.id }) }).catch(function () {}); return; }
-    api('/api/queue/edit', { method: 'POST', body: JSON.stringify({ projectId: pid, id: it.id, prompt: next }) }).catch(function () {});
+    if (!next.trim()) { removeQueueItem(pid, it.id); return; }
+    var q = queueState[pid] || []; for (var i = 0; i < q.length; i++) { if (q[i].id === it.id) { q[i].text = next.trim(); break; } }
+    renderQueue();
+    api('/api/queue/edit', { method: 'POST', body: JSON.stringify({ projectId: pid, id: it.id, prompt: next }) })
+      .then(function (r) { if (!r.ok) loadQueue(); }).catch(function () { loadQueue(); });
   }
   function loadQueue() { return api('/api/queue').then(function (r) { return r.json(); }).then(function (m) { queueState = m || {}; renderQueue(); }).catch(function () {}); }
 
@@ -1333,9 +1345,19 @@
   function queueBody(text) { var b = { projectId: currentProjectId, prompt: text }; if (modelEl.value) b.model = modelEl.value; if (effortEl.value) b.effort = effortEl.value; return b; }
   function send() {
     var text = promptEl.value.trim(); if (!text && !pendingImages.length) return;
+    var busy = currentProjectId && runningProjects[currentProjectId];
+    // A brand-new conversation can't join a running turn (one turn per project).
+    // Don't silently misroute its first message into the RUNNING conversation's
+    // queue — that's the "new convo just queues to the existing one" bug. Ask the
+    // user to let the current turn finish/stop first; keep the draft so they can
+    // retry once idle (then it starts fresh via /api/sessions below).
+    if (busy && pendingNew) {
+      addSys('this project has a running turn — stop it or wait for it to finish, then send to start the new conversation', 'banner');
+      return;
+    }
     // A turn is already running here → queue the follow-up (sent when it finishes)
     // instead of erroring. Images can't be queued (they need a live upload).
-    if (currentProjectId && runningProjects[currentProjectId]) {
+    if (busy) {
       if (!text) { addSys('type a message to queue — images can’t be queued', 'banner'); return; }
       if (pendingImages.length) addSys('images left attached — queued the text only', 'banner');
       api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).then(function (r) {
