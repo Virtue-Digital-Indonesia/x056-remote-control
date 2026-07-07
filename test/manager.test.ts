@@ -150,16 +150,37 @@ describe('SessionManager', () => {
     expect(calls.length).toBe(0);
   });
 
-  it('rejects concurrent starts with BusyError and allows continue after completion', async () => {
+  it('queues are per-conversation: an item drains into ITS OWN session, not the project\'s current one', async () => {
+    const { mgr, calls } = fixture(COMPLETED, { delayMs: 80 });
+    const pid = mgr.listProjects().current as string;
+    const main = mgr.start('main work');                    // conversation "Main" runs
+    const handoff = mgr.start('handoff task');              // conversation "Handoff" also runs; it's now current
+    // Queue a follow-up explicitly for MAIN while both run.
+    mgr.enqueue(pid, { text: 'follow-up for main', sessionId: main });
+    // The item is bound to main and shows under main only.
+    expect(mgr.queues()[pid].map((q) => ({ t: q.text, s: q.sessionId }))).toEqual([{ t: 'follow-up for main', s: main }]);
+    await waitFor(() => calls.length === 3, 4000);          // both initial turns + the drained follow-up
+    const drained = calls[2];
+    expect(drained.prompt).toBe('follow-up for main');
+    expect(drained.sessionId).toBe(main);                   // resumed MAIN, NOT handoff (the current conversation)
+    expect(mgr.queues()[pid] ?? []).toEqual([]);
+  });
+
+  it('runs multiple conversations concurrently but blocks re-running the same one', async () => {
     const { mgr, calls } = fixture(COMPLETED, { delayMs: 100 });
-    mgr.start('first');
-    expect(() => mgr.start('second')).toThrow(BusyError);
+    const pid = mgr.listProjects().current as string;
+    const s1 = mgr.start('first');
+    const s2 = mgr.start('second'); // a second NEW conversation starts in parallel
+    expect(s2).not.toBe(s1);
+    expect(mgr.listProjects().projects.find((p) => p.id === pid)?.runningSessionIds.slice().sort()).toEqual([s1, s2].slice().sort());
+    // but resuming s1 while its own turn is still running is refused
+    expect(() => mgr.continueSession(pid, s1, 'again')).toThrow(BusyError);
     await waitFor(() => mgr.snapshot().running === false);
-    const sid2 = mgr.continueLast('again');
-    expect(sid2).toBe(mgr.snapshot().currentSessionId ?? sid2);
+    // after completion, continue works (resumes the project's current session, s2)
+    mgr.continueLast('again');
     await waitFor(() => mgr.snapshot().running === false);
-    expect(calls[1]?.resume).toBe(true);
-    expect(calls[1]?.sessionId).toBe(calls[0]?.sessionId);
+    const resume = calls.find((c) => c.resume);
+    expect(resume?.sessionId).toBe(s2);
   });
 
   it('continueLast without prior session throws', () => {
@@ -341,11 +362,14 @@ describe('SessionManager parallel projects', () => {
     expect(seen.filter((e) => e.kind === 'turn_state' && pid(e) === p1.id).length).toBe(2);
   });
 
-  it('blocks a second turn in the same project but allows a different one', async () => {
+  it('runs two conversations of the SAME project concurrently, and a second project too', async () => {
     const { mgr, p1, p2 } = setup();
-    mgr.start('a', undefined, undefined, p1.id);
-    expect(() => mgr.start('again', undefined, undefined, p1.id)).toThrow(BusyError);
-    expect(() => mgr.start('b', undefined, undefined, p2.id)).not.toThrow();
+    const a = mgr.start('a', undefined, undefined, p1.id);
+    const b = mgr.start('again', undefined, undefined, p1.id); // second conversation of p1 — no longer blocked
+    expect(b).not.toBe(a);
+    mgr.start('c', undefined, undefined, p2.id);
+    const p1running = mgr.listProjects().projects.find((p) => p.id === p1.id)?.runningSessionIds ?? [];
+    expect(p1running.slice().sort()).toEqual([a, b].slice().sort());
     await waitFor(() => mgr.listProjects().projects.every((p) => !p.running));
   });
 
@@ -384,10 +408,10 @@ describe('SessionManager orphan detection', () => {
     AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
     const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn: (async () => { await new Promise((r) => setTimeout(r, 10)); return { status: 'completed', finalAccount: 'a', failovers: 0 }; }) as never });
     const p = mgr.createProject('P', dir);
-    mgr.start('go', undefined, undefined, p.id);
-    expect(existsSync(join(sd, 'inflight', p.id + '.json'))).toBe(true); // marker present mid-turn
-    await waitFor(() => !existsSync(join(sd, 'inflight', p.id + '.json')));
-    expect(existsSync(join(sd, 'inflight', p.id + '.json'))).toBe(false); // cleared on settle
+    const sid = mgr.start('go', undefined, undefined, p.id); // markers are keyed by sessionId (concurrency)
+    expect(existsSync(join(sd, 'inflight', sid + '.json'))).toBe(true); // marker present mid-turn
+    await waitFor(() => !existsSync(join(sd, 'inflight', sid + '.json')));
+    expect(existsSync(join(sd, 'inflight', sid + '.json'))).toBe(false); // cleared on settle
   });
 });
 
@@ -483,16 +507,16 @@ describe('SessionManager per-conversation isolation', () => {
     expect(sidsFor('session_started')).toEqual([sid]);
   });
 
-  it('listProjects reports which conversation is running via runningSessionId', async () => {
+  it('listProjects reports which conversations are running via runningSessionIds', async () => {
     const { mgr } = fixture(COMPLETED, { delayMs: 100 });
     const pid = mgr.listProjects().current as string;
     const sid = mgr.start('go');
-    expect(mgr.listProjects().projects.find((p) => p.id === pid)?.runningSessionId).toBe(sid);
-    await waitFor(() => mgr.listProjects().projects.find((p) => p.id === pid)?.runningSessionId == null);
+    expect(mgr.listProjects().projects.find((p) => p.id === pid)?.runningSessionIds).toEqual([sid]);
+    await waitFor(() => (mgr.listProjects().projects.find((p) => p.id === pid)?.runningSessionIds.length ?? 0) === 0);
     expect(mgr.listProjects().projects.find((p) => p.id === pid)?.running).toBe(false);
   });
 
-  it('stopTurn only stops the expected conversation; a mismatched sessionId is refused', async () => {
+  it('stopTurn only stops the named conversation; a mismatched sessionId is refused', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'x056-stop-'));
     const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
     AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
@@ -505,7 +529,7 @@ describe('SessionManager per-conversation isolation', () => {
     const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn });
     const pid = mgr.createProject('P', dir).id;
     const sid = mgr.start('go', undefined, undefined, pid);
-    expect(mgr.runningSessionId(pid)).toBe(sid);
+    expect(mgr.isSessionRunning(sid)).toBe(true);
     expect(mgr.stopTurn(pid, 'not-the-running-session')).toBe(false);
     expect(aborted).toBe(false);
     expect(mgr.stopTurn(pid, sid)).toBe(true);

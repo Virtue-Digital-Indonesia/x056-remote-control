@@ -66,6 +66,9 @@ export interface QueueItem {
   model?: string;
   effort?: string;
   at: number;
+  /** The conversation this follow-up is for; it drains into THIS session, and
+   *  the panel shows it only under that conversation. Absent on legacy items. */
+  sessionId?: string;
 }
 
 const BUFFER_MAX = 1000;
@@ -104,6 +107,7 @@ interface PersistedState {
 
 interface ActiveRun {
   sessionId: string;
+  projectId: string;
   cwd: string;
   control?: RunControl;
 }
@@ -160,8 +164,21 @@ export class SessionManager {
   // outrank anything the browser already saw.
   private seq = Date.now();
   private subscribers = new Set<(e: GatewayEvent) => void>();
-  // One concurrent turn per project (keyed by projectId); projects run in parallel.
+  // One concurrent turn per CONVERSATION (keyed by sessionId). A project can have
+  // several conversations running at once — each is an independent chat — so the
+  // key is the session, not the project. Helpers below answer the project-level
+  // questions (is any conversation in this project running?).
   private runs = new Map<string, ActiveRun>();
+  private sessionBusy(sessionId: string): boolean { return this.runs.has(sessionId); }
+  private projectBusy(pid: string): boolean {
+    for (const r of this.runs.values()) if (r.projectId === pid) return true;
+    return false;
+  }
+  private runningSessionsForProject(pid: string): string[] {
+    const out: string[] = [];
+    for (const r of this.runs.values()) if (r.projectId === pid) out.push(r.sessionId);
+    return out;
+  }
   private lastResults = new Map<string, SessionResult>();
   private lastModelByPid = new Map<string, string>();
   private sharedRegistry?: AccountRegistry;
@@ -221,7 +238,9 @@ export class SessionManager {
   private writeMarker(pid: string, sessionId: string, cwd: string, prompt: string): void {
     try {
       mkdirSync(this.inflightDir, { recursive: true });
-      writeFileSync(join(this.inflightDir, `${pid}.json`), JSON.stringify({
+      // Keyed by sessionId, not project — two conversations in the same project
+      // can be in-flight at once, and each needs its own crash-recovery marker.
+      writeFileSync(join(this.inflightDir, `${sessionId}.json`), JSON.stringify({
         projectId: pid,
         projectName: this.projects().get(pid)?.name ?? null,
         sessionId, cwd,
@@ -233,8 +252,8 @@ export class SessionManager {
     }
   }
 
-  private clearMarker(pid: string): void {
-    rmSync(join(this.inflightDir, `${pid}.json`), { force: true });
+  private clearMarker(sessionId: string): void {
+    rmSync(join(this.inflightDir, `${sessionId}.json`), { force: true });
   }
 
   // ---- autopilot: gateway-driven continuation so long/background work survives
@@ -292,11 +311,14 @@ export class SessionManager {
     return out;
   }
 
-  /** After a completed turn, decide whether the gateway should auto-continue. */
-  private maybeAutopilot(pid: string, res: SessionResult): void {
+  /** After a completed turn, decide whether the gateway should auto-continue.
+   *  Only the autopilot's OWN conversation (the project's current one) drives the
+   *  loop — a sibling conversation finishing concurrently must not. */
+  private maybeAutopilot(pid: string, sessionId: string, res: SessionResult): void {
     const map = this.loadAutopilot();
     const ap = map[pid];
     if (!ap) return;
+    if ((this.projects().get(pid)?.lastSessionId ?? sessionId) !== sessionId) return;
     // Only continue on a clean completion; park/error pauses (state kept so the
     // user or a later trigger can resume) but stops the auto-loop.
     if (res.status !== 'completed') {
@@ -327,7 +349,7 @@ export class SessionManager {
     const t = setTimeout(() => {
       this.autopilotTimers.delete(pid);
       if (!this.loadAutopilot()[pid]) return; // stopped meanwhile
-      if (this.runs.has(pid)) return; // a turn is somehow running; skip this tick
+      if (this.projectBusy(pid)) return; // a turn is somehow running; skip this tick
       try {
         this.continueLast(prompt, undefined, pid);
       } catch {
@@ -347,7 +369,7 @@ export class SessionManager {
       if (ap.remaining <= 0) continue;
       const t = setTimeout(() => {
         this.autopilotTimers.delete(pid);
-        if (!this.loadAutopilot()[pid] || this.runs.has(pid)) return;
+        if (!this.loadAutopilot()[pid] || this.projectBusy(pid)) return;
         try { this.continueLast(ap.prompt, undefined, pid); } catch { this.stopAutopilot(pid); }
       }, stagger);
       this.autopilotTimers.set(pid, t);
@@ -376,23 +398,26 @@ export class SessionManager {
 
   queues(): Record<string, QueueItem[]> { return this.loadQueues(); }
 
-  enqueue(pid: string, item: { text: string; model?: string; effort?: string }): QueueItem {
-    if (!this.projects().get(pid)) throw new Error(`unknown project ${pid}`);
+  enqueue(pid: string, item: { text: string; model?: string; effort?: string; sessionId?: string }): QueueItem {
+    const proj = this.projects().get(pid);
+    if (!proj) throw new Error(`unknown project ${pid}`);
     const text = (item.text ?? '').trim();
     if (!text) throw new Error('empty message');
+    // Bind the item to a conversation: the one the panel named, else the
+    // project's current one. Draining resumes THIS session, so a follow-up
+    // queued in "Handoff" can never be misrouted into "Main".
+    const sessionId = item.sessionId ?? proj.lastSessionId ?? this.loadState().lastSessionId;
     const map = this.loadQueues();
-    const q: QueueItem = { id: randomUUID(), text, model: item.model, effort: item.effort, at: Date.now() };
+    const q: QueueItem = { id: randomUUID(), text, model: item.model, effort: item.effort, at: Date.now(), sessionId };
     (map[pid] ??= []).push(q);
     this.saveQueues(map);
     this.emitQueue(pid, map);
-    // The queue normally drains on turn completion. But if the project is IDLE
-    // when an item lands (the panel queued on a stale "running" flag, or a turn
-    // ended without one), nothing would ever trigger a send and the item strands
-    // forever. Kick a drain immediately in that case — but only when there's a
-    // session to resume into (else the drain just throws) and no drain timer is
-    // already pending (so we don't race the completion path into a double-shift).
-    const resumable = this.projects().get(pid)?.lastSessionId ?? this.loadState().lastSessionId;
-    if (resumable && !this.runs.has(pid) && !this.queueTimers.has(pid)) this.maybeDrainQueue(pid);
+    // Normally the queue drains when that conversation's turn completes. But if
+    // the conversation is IDLE when an item lands (queued on a stale "running"
+    // flag, or its turn already ended), nothing would trigger a send — kick a
+    // drain now. Only when there's a session to resume into and no drain timer is
+    // already pending for it (so we don't race completion into a double-shift).
+    if (sessionId && !this.sessionBusy(sessionId) && !this.queueTimers.has(sessionId)) this.maybeDrainQueue(pid, sessionId);
     return q;
   }
 
@@ -414,16 +439,18 @@ export class SessionManager {
     if (map[pid].length !== before) { this.saveQueues(map); this.emitQueue(pid, map); }
   }
 
-  /** If a project has queued messages, pop the head and send it after the turn
-   *  settles (ahead of autopilot). Returns true if it claimed this cycle. */
-  private maybeDrainQueue(pid: string): boolean {
+  /** If a conversation has queued messages, pop ITS head and resume THAT session
+   *  after its turn settles (ahead of autopilot). Returns true if it claimed a
+   *  drain this cycle. Items for other conversations are left untouched. */
+  private maybeDrainQueue(pid: string, sessionId: string): boolean {
     const map = this.loadQueues();
     const q = map[pid] ?? [];
-    if (q.length === 0) return false;
-    const head = q.shift() as QueueItem;
+    const headIdx = q.findIndex((x) => (x.sessionId ?? pid) === sessionId);
+    if (headIdx < 0) return false;
+    const head = q.splice(headIdx, 1)[0];
     this.saveQueues(map);
     this.emitQueue(pid, map);
-    const existing = this.queueTimers.get(pid);
+    const existing = this.queueTimers.get(sessionId);
     if (existing) clearTimeout(existing);
     const reEnqueueHead = () => {
       const m2 = this.loadQueues();
@@ -432,18 +459,18 @@ export class SessionManager {
       this.emitQueue(pid, m2);
     };
     const t = setTimeout(() => {
-      this.queueTimers.delete(pid);
-      if (this.runs.has(pid)) { reEnqueueHead(); return; } // a turn snuck in — don't lose the item
+      this.queueTimers.delete(sessionId);
+      if (this.sessionBusy(sessionId)) { reEnqueueHead(); return; } // its turn snuck back in — don't lose the item
       try {
-        this.continueLast(head.text, { model: head.model, effort: head.effort }, pid);
+        this.continueSession(pid, sessionId, head.text, { model: head.model, effort: head.effort });
       } catch {
-        reEnqueueHead(); // no session yet / busy — put it back
+        reEnqueueHead(); // still busy / gone — put it back
       }
     }, 400);
-    this.queueTimers.set(pid, t);
+    this.queueTimers.set(sessionId, t);
     return true;
   }
-  private readonly queueTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly queueTimers = new Map<string, ReturnType<typeof setTimeout>>(); // keyed by sessionId
 
   // ---- settings: global user preferences (not per-project), e.g. which effort
   //      to auto-fill when a given model is picked in the composer. ----
@@ -657,14 +684,17 @@ export class SessionManager {
   }
 
   // ---- projects ----
-  listProjects(): { current: string | null; projects: (Project & { running: boolean; runningSessionId: string | null })[] } {
+  listProjects(): { current: string | null; projects: (Project & { running: boolean; runningSessionIds: string[] })[] } {
     const reg = this.projects();
     return {
       current: reg.currentId(),
-      // runningSessionId tells the panel WHICH conversation owns the project's one
-      // running turn — a project can have several conversations, only one of
-      // which is running, and the panel needs to know which without guessing.
-      projects: reg.list().map((p) => ({ ...p, running: this.runs.has(p.id), runningSessionId: this.runs.get(p.id)?.sessionId ?? null })),
+      // runningSessionIds tells the panel WHICH conversations are running in each
+      // project — several can run at once — so it can put a spinner on exactly
+      // those and reconcile each conversation's busy state independently.
+      projects: reg.list().map((p) => {
+        const running = this.runningSessionsForProject(p.id);
+        return { ...p, running: running.length > 0, runningSessionIds: running };
+      }),
     };
   }
 
@@ -682,7 +712,7 @@ export class SessionManager {
     reg.selectConversation(projectId, sessionId); // throws if unknown project/conversation
     reg.select(projectId);
     const proj = reg.get(projectId);
-    if (proj && !this.runs.has(projectId)) {
+    if (proj && !this.projectBusy(projectId)) {
       writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd: proj.cwd }));
     }
     this.emitConversations(projectId);
@@ -695,12 +725,11 @@ export class SessionManager {
 
   /** Forget a conversation; refuses if it's the one currently running a turn. */
   removeConversation(projectId: string, sessionId: string): void {
-    const run = this.runs.get(projectId);
-    if (run && run.sessionId === sessionId) throw new BusyError();
+    if (this.sessionBusy(sessionId)) throw new BusyError();
     const reg = this.projects();
     reg.removeConversation(projectId, sessionId);
     const proj = reg.get(projectId);
-    if (proj && !this.runs.has(projectId)) {
+    if (proj && !this.projectBusy(projectId)) {
       writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: proj.lastSessionId ?? '', cwd: proj.cwd }));
     }
     this.emitConversations(projectId);
@@ -736,7 +765,7 @@ export class SessionManager {
   resumeExisting(projectId: string, sessionId: string): void {
     const proj = this.projects().get(projectId);
     if (!proj) throw new Error(`unknown project ${projectId}`);
-    if (this.runs.has(projectId)) throw new BusyError();
+    if (this.sessionBusy(sessionId)) throw new BusyError();
     const accounts = this.registry().list();
     if (accounts.length === 0) throw new Error('no accounts configured');
     const failoverProjects = join(accounts[0].configDir, 'projects');
@@ -792,7 +821,7 @@ export class SessionManager {
     const proj = reg.get(id);
     if (!proj) throw new Error(`unknown project ${id}`);
     reg.select(id);
-    if (!this.runs.has(id)) {
+    if (!this.projectBusy(id)) {
       writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: proj.lastSessionId, cwd: proj.cwd }));
     }
     this.emit('project_selected', { id, name: proj.name });
@@ -805,7 +834,7 @@ export class SessionManager {
   /** Remove a project from the list. Refuses while it has a turn running; stops
    *  its autopilot; repoints state.json if the removed one was current. */
   removeProject(id: string): void {
-    if (this.runs.has(id)) throw new BusyError();
+    if (this.projectBusy(id)) throw new BusyError();
     const reg = this.projects();
     if (!reg.get(id)) throw new Error(`unknown project ${id}`);
     this.stopAutopilot(id);
@@ -814,7 +843,7 @@ export class SessionManager {
     reg.remove(id);
     const cur = reg.currentId();
     const curProj = cur ? reg.get(cur) : null;
-    if (curProj && !this.runs.has(curProj.id)) {
+    if (curProj && !this.projectBusy(curProj.id)) {
       writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: curProj.lastSessionId, cwd: curProj.cwd }));
     }
     this.emit('project_removed', { id });
@@ -854,7 +883,8 @@ export class SessionManager {
   start(prompt: string, cwd?: string, opts?: TurnRunOptions, projectId?: string): string {
     const pid = projectId ?? this.projects().currentId();
     if (!pid) throw new Error('no project selected');
-    if (this.runs.has(pid)) throw new BusyError();
+    // A brand-new conversation always gets a fresh sessionId, so it can start
+    // even while OTHER conversations in the same project are running.
     const proj = this.projects().get(pid);
     const dir = this.resolveCwd(cwd ?? proj?.cwd ?? this.opts.workspaceRoot);
     const sessionId = randomUUID();
@@ -869,10 +899,18 @@ export class SessionManager {
   continueLast(prompt: string, opts?: TurnRunOptions, projectId?: string): string {
     const pid = projectId ?? this.projects().currentId();
     if (!pid) throw new Error('no project selected');
-    if (this.runs.has(pid)) throw new BusyError();
     const proj = this.projects().get(pid);
     const sessionId = proj?.lastSessionId ?? this.loadState().lastSessionId;
     if (!sessionId) throw new Error('no previous session — start one first');
+    return this.continueSession(pid, sessionId, prompt, opts);
+  }
+
+  /** Resume a SPECIFIC conversation (not just the project's current one). Blocks
+   *  only if THAT conversation already has a turn running — a sibling
+   *  conversation running in the same project is fine. */
+  continueSession(pid: string, sessionId: string, prompt: string, opts?: TurnRunOptions): string {
+    if (this.sessionBusy(sessionId)) throw new BusyError();
+    const proj = this.projects().get(pid);
     const dir = this.resolveCwd(proj?.cwd ?? this.loadState().cwd ?? this.opts.workspaceRoot);
     this.launch(pid, sessionId, prompt, dir, true, opts);
     return sessionId;
@@ -887,12 +925,12 @@ export class SessionManager {
     const stored = reg.get(pid);
     const model = runOpts?.model ?? stored?.model;
     const effort = runOpts?.effort ?? stored?.effort;
-    const run: ActiveRun = { sessionId, cwd };
-    this.runs.set(pid, run);
+    const run: ActiveRun = { sessionId, projectId: pid, cwd };
+    this.runs.set(sessionId, run);
     // Every event from this run carries its projectId AND sessionId so the panel
-    // can route it to the right conversation — a project can have one turn
-    // running while the user views a different, idle conversation in it, and
-    // activity/messages must not bleed into whatever's currently on screen.
+    // can route it to the right conversation — a project can have several
+    // conversations running at once, and each conversation's activity/messages
+    // must land only in its own view, not whatever's currently on screen.
     const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { sessionId, ...data, projectId: pid });
     try {
       const runFn = this.opts.runSessionFn ?? runSession;
@@ -936,29 +974,29 @@ export class SessionManager {
       })
         .then((res) => {
           this.lastResults.set(pid, res);
-          // Queued follow-ups take priority: on a clean completion, drain the head
-          // (ahead of autopilot). A queued message is the user's explicit next
-          // step, so it also pre-empts surfacing a question card / autopilot.
-          const drained = res.status === 'completed' ? this.maybeDrainQueue(pid) : false;
+          // Queued follow-ups for THIS conversation take priority: on a clean
+          // completion, drain its head (ahead of autopilot). A queued message is
+          // the user's explicit next step, so it also pre-empts a question card.
+          const drained = res.status === 'completed' ? this.maybeDrainQueue(pid, sessionId) : false;
           // If the model ended its turn asking the user something, surface it as
           // an answerable card (only when not on autopilot/queue, which drive it).
           const onAutopilot = !!this.loadAutopilot()[pid];
           const q = onAutopilot || drained ? null : parseQuestion(res.resultText ?? '');
           if (q) emit('question', { sessionId, question: q.question, options: q.options });
           emit('session_done', { sessionId, ...res });
-          if (!drained) this.maybeAutopilot(pid, res);
+          if (!drained) this.maybeAutopilot(pid, sessionId, res);
         })
         .catch((err: unknown) => {
           emit('session_error', { sessionId, message: (err as Error).message });
         })
         .finally(() => {
-          this.runs.delete(pid);
-          this.clearMarker(pid);
+          this.runs.delete(sessionId);
+          this.clearMarker(sessionId);
           emit('turn_state', { active: false });
         });
     } catch (err) {
-      this.runs.delete(pid);
-      this.clearMarker(pid);
+      this.runs.delete(sessionId);
+      this.clearMarker(sessionId);
       emit('turn_state', { active: false });
       throw err;
     }
@@ -1011,20 +1049,23 @@ export class SessionManager {
     currentProjectId: string | null;
   } {
     const pid = this.projects().currentId();
+    const curSid = (pid ? this.projects().get(pid)?.lastSessionId : undefined) ?? this.loadState().lastSessionId ?? null;
     return {
       running: this.runs.size > 0,
-      runningProjects: [...this.runs.keys()],
-      currentSessionId: pid ? this.runs.get(pid)?.sessionId ?? null : null,
-      lastSessionId: (pid ? this.projects().get(pid)?.lastSessionId : undefined) ?? this.loadState().lastSessionId ?? null,
+      runningProjects: [...new Set([...this.runs.values()].map((r) => r.projectId))],
+      // the current project's current conversation, if it's actually running
+      currentSessionId: curSid && this.sessionBusy(curSid) ? curSid : null,
+      lastSessionId: curSid,
       lastResult: (pid ? this.lastResults.get(pid) : undefined) ?? null,
       currentProjectId: pid,
     };
   }
 
-  /** Point the current project at an already-present transcript (adoption). */
+  /** Point the current project at an already-present transcript (adoption).
+   *  Conservatively blocked while the project has any turn running. */
   setCurrent(sessionId: string, cwd: string): void {
     const pid = this.projects().currentId();
-    if (pid && this.runs.has(pid)) throw new BusyError();
+    if (pid && this.projectBusy(pid)) throw new BusyError();
     const dir = this.resolveCwd(cwd);
     const configDirs = this.registry().list().map((a) => a.configDir);
     if (!findTranscript(configDirs, sessionId)) {
@@ -1035,35 +1076,34 @@ export class SessionManager {
     this.emit('session_adopted', { sessionId, cwd: dir, projectId: pid });
   }
 
-  /** Force an account switch on a specific project's in-flight turn. */
-  forceSwitch(projectId?: string): boolean {
-    const pid = projectId ?? this.projects().currentId();
-    const run = pid ? this.runs.get(pid) : undefined;
+  /** Force an account switch on an in-flight turn. Targets the given
+   *  conversation if named, else any run in the project. */
+  forceSwitch(projectId?: string, sessionId?: string): boolean {
+    let run: ActiveRun | undefined;
+    if (sessionId) run = this.runs.get(sessionId);
+    else {
+      const pid = projectId ?? this.projects().currentId();
+      run = pid ? [...this.runs.values()].find((r) => r.projectId === pid) : undefined;
+    }
     if (!run?.control) return false;
     run.control.forceSwitch();
     return true;
   }
 
-  /** sessionId of the turn currently running in a project, if any — lets a
-   *  caller tell "nothing is running" apart from "a different conversation in
-   *  this project is running" before deciding whether Stop should apply. */
-  runningSessionId(projectId: string): string | undefined {
-    return this.runs.get(projectId)?.sessionId;
-  }
+  /** Is a specific conversation currently running a turn? */
+  isSessionRunning(sessionId: string): boolean { return this.sessionBusy(sessionId); }
 
-  /** Abort a specific project's in-flight turn (user pressed Stop). Also stops
-   *  its autopilot so it doesn't immediately auto-continue. The killed turn
-   *  settles through the normal completion path (session_done/error).
-   *  When expectedSessionId is given, only stops if that's the conversation
-   *  actually running — a project can have a turn running for one conversation
-   *  while the user is viewing a different (idle) one, and Stop must not kill
-   *  a conversation the user isn't looking at. */
-  stopTurn(projectId?: string, expectedSessionId?: string): boolean {
-    const pid = projectId ?? this.projects().currentId();
-    const run = pid ? this.runs.get(pid) : undefined;
-    if (!pid || !run?.control) return false;
-    if (expectedSessionId && run.sessionId !== expectedSessionId) return false;
-    this.stopAutopilot(pid);
+  /** Abort a CONVERSATION's in-flight turn (user pressed Stop). Also stops the
+   *  project's autopilot so it doesn't immediately auto-continue. The killed turn
+   *  settles through the normal completion path (session_done/error). Stops only
+   *  the named conversation — sibling conversations in the same project keep
+   *  running. */
+  stopTurn(projectId?: string, sessionId?: string): boolean {
+    const run = sessionId
+      ? this.runs.get(sessionId)
+      : (() => { const pid = projectId ?? this.projects().currentId(); return pid ? [...this.runs.values()].find((r) => r.projectId === pid) : undefined; })();
+    if (!run?.control) return false;
+    this.stopAutopilot(run.projectId);
     run.control.abort();
     return true;
   }

@@ -85,8 +85,10 @@ describe('gateway e2e', () => {
     const { sessionId } = (await started.json()) as { sessionId: string };
     expect(sessionId).toMatch(/[0-9a-f-]{36}/);
 
-    // busy guard
-    const busy = await fetch(`${base}/api/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ prompt: 'nope' }) });
+    // Per-conversation busy guard: re-sending to the SAME running conversation
+    // (a continue) is refused with 409. (A second POST /api/sessions would start
+    // a NEW conversation concurrently — allowed — so we test the continue path.)
+    const busy = await fetch(`${base}/api/sessions/current/messages`, { method: 'POST', headers: auth, body: JSON.stringify({ prompt: 'nope' }) });
     expect(busy.status).toBe(409);
 
     // SSE via query token

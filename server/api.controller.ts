@@ -65,6 +65,7 @@ interface SendBody {
   image?: string; // legacy single-image field (kept for back-compat)
   images?: string[]; // multiple attachments
   projectId?: string;
+  sessionId?: string; // the conversation a queued follow-up is for
   interactive?: boolean;
 }
 
@@ -372,8 +373,8 @@ export class ApiController {
 
   @Post('switch')
   @HttpCode(200)
-  switch(@Body() body: { projectId?: string }): { switched: boolean } {
-    if (!this.manager.forceSwitch(body?.projectId)) throw new ConflictException('no session running');
+  switch(@Body() body: { projectId?: string; sessionId?: string }): { switched: boolean } {
+    if (!this.manager.forceSwitch(body?.projectId, body?.sessionId)) throw new ConflictException('no session running');
     return { switched: true };
   }
 
@@ -422,13 +423,12 @@ export class ApiController {
   @Post('sessions/current/stop')
   @HttpCode(200)
   stop(@Body() body: { projectId?: string; sessionId?: string }): { stopped: boolean } {
-    const pid = body?.projectId;
-    const running = pid ? this.manager.runningSessionId(pid) : undefined;
-    if (!running) throw new ConflictException('no turn running there');
-    if (body?.sessionId && body.sessionId !== running) {
-      throw new ConflictException('a different conversation in this project is running — switch to it to stop it');
+    // Stop targets the named conversation; a sibling conversation running in the
+    // same project keeps going.
+    if (body?.sessionId && !this.manager.isSessionRunning(body.sessionId)) {
+      throw new ConflictException('no turn running in this conversation');
     }
-    this.manager.stopTurn(pid, body?.sessionId);
+    if (!this.manager.stopTurn(body?.projectId, body?.sessionId)) throw new ConflictException('no turn running there');
     return { stopped: true };
   }
 
@@ -541,7 +541,7 @@ export class ApiController {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
     try {
-      const item = this.manager.enqueue(body.projectId, { text: body.prompt, model: body.model, effort: body.effort });
+      const item = this.manager.enqueue(body.projectId, { text: body.prompt, model: body.model, effort: body.effort, sessionId: body.sessionId });
       return { queued: true, id: item.id };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
