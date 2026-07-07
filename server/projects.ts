@@ -2,12 +2,22 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 
-/** A workspace the panel can switch between; each remembers its own resumable session. */
+/** One Claude Code conversation (a resumable session) within a project. */
+export interface Conversation {
+  sessionId: string;
+  title: string;
+  createdAt: number;
+}
+
+/** A workspace the panel can switch between. Holds N conversations grouped under
+ *  it; `lastSessionId` is the currently-active one (what turns/history operate on). */
 export interface Project {
   id: string;
   name: string;
   cwd: string;
   lastSessionId?: string;
+  /** All conversations under this project, newest last. */
+  conversations?: Conversation[];
   /** Last explicitly-chosen model/effort, reused on continuations (autopilot,
    *  orphan-resume, question answers) so the session doesn't revert to default. */
   model?: string;
@@ -83,12 +93,74 @@ export class ProjectRegistry {
     this.save();
   }
 
-  /** Record the session a project should resume next time it's selected. */
-  setLastSession(id: string, sessionId: string): void {
+  /** Record the session a project should resume next time it's selected, and
+   *  make sure it's registered as a conversation (idempotent) and set current. */
+  setLastSession(id: string, sessionId: string, title?: string): void {
     const p = this.data.projects.find((x) => x.id === id);
     if (!p) return;
     p.lastSessionId = sessionId;
+    p.conversations = p.conversations ?? [];
+    if (!p.conversations.some((c) => c.sessionId === sessionId)) {
+      p.conversations.push({ sessionId, title: (title ?? '').trim() || 'Conversation', createdAt: Date.now() });
+    }
     this.save();
+  }
+
+  /** Add a brand-new conversation and make it current (used when starting a fresh
+   *  session so it can carry a prompt-derived title). */
+  addConversation(id: string, sessionId: string, title: string): void {
+    const p = this.data.projects.find((x) => x.id === id);
+    if (!p) return;
+    p.conversations = p.conversations ?? [];
+    if (!p.conversations.some((c) => c.sessionId === sessionId)) {
+      p.conversations.push({ sessionId, title: title.trim() || 'New conversation', createdAt: Date.now() });
+    }
+    p.lastSessionId = sessionId;
+    this.save();
+  }
+
+  conversations(id: string): Conversation[] {
+    return (this.get(id)?.conversations ?? []).map((c) => ({ ...c }));
+  }
+
+  /** Make a specific conversation the current one for its project. */
+  selectConversation(projectId: string, sessionId: string): void {
+    const p = this.data.projects.find((x) => x.id === projectId);
+    if (!p) throw new Error(`unknown project ${projectId}`);
+    if (!(p.conversations ?? []).some((c) => c.sessionId === sessionId)) throw new Error('unknown conversation');
+    p.lastSessionId = sessionId;
+    this.save();
+  }
+
+  renameConversation(projectId: string, sessionId: string, title: string): void {
+    const p = this.data.projects.find((x) => x.id === projectId);
+    const c = p?.conversations?.find((x) => x.sessionId === sessionId);
+    if (!c) return;
+    c.title = title.trim() || c.title;
+    this.save();
+  }
+
+  /** Forget a conversation (its transcript on disk is left intact). Repoints the
+   *  current pointer if the removed one was active. */
+  removeConversation(projectId: string, sessionId: string): void {
+    const p = this.data.projects.find((x) => x.id === projectId);
+    if (!p || !p.conversations) return;
+    p.conversations = p.conversations.filter((c) => c.sessionId !== sessionId);
+    if (p.lastSessionId === sessionId) p.lastSessionId = p.conversations[p.conversations.length - 1]?.sessionId;
+    this.save();
+  }
+
+  /** Backfill: a project that predates conversations but has a lastSessionId gets
+   *  that session registered as its first conversation. */
+  migrateConversations(): void {
+    let changed = false;
+    for (const p of this.data.projects) {
+      if (p.lastSessionId && (!p.conversations || p.conversations.length === 0)) {
+        p.conversations = [{ sessionId: p.lastSessionId, title: 'Conversation 1', createdAt: Date.now() }];
+        changed = true;
+      }
+    }
+    if (changed) this.save();
   }
 
   /** Remember the model/effort last chosen for a project (only overwrites the

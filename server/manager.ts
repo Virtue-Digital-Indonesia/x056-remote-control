@@ -6,11 +6,11 @@ import { AccountRegistry } from '../src/accounts.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { toActivity } from './activity.js';
-import { ProjectRegistry, type Project } from './projects.js';
+import { ProjectRegistry, type Project, type Conversation } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import type { RawEvent } from '../src/types.js';
-import { parseQuestion, stripAsk } from './question.js';
+import { parseQuestion, stripAsk, stripAskInstructions } from './question.js';
 
 export interface GatewayEvent {
   seq: number;
@@ -92,6 +92,17 @@ interface ActiveRun {
   control?: RunControl;
 }
 
+/** A short conversation title from the opening prompt (first non-empty line,
+ *  minus the appended ASK convention and any image-attachment marker). */
+function titleFromPrompt(prompt: string): string {
+  const line = stripAskInstructions(prompt ?? '')
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0 && !l.startsWith('[The user attached'));
+  const t = (line ?? '').replace(/\s+/g, ' ').slice(0, 60);
+  return t || 'New conversation';
+}
+
 export class SessionManager {
   private buffer: GatewayEvent[] = [];
   // Seed from wall-clock ms so seq is monotonic ACROSS container restarts, not
@@ -112,6 +123,7 @@ export class SessionManager {
   constructor(private readonly opts: SessionManagerOptions) {
     mkdirSync(opts.stateDir, { recursive: true });
     this.migrateProjects();
+    this.projects().migrateConversations();
     this.detectOrphans();
     this.resumeAutopilots();
     if (opts.manageProcessSignals) {
@@ -450,6 +462,44 @@ export class SessionManager {
     };
   }
 
+  // ---- conversations (multiple Claude sessions grouped under one project) ----
+  private emitConversations(projectId: string): void {
+    const reg = this.projects();
+    this.emit('conversation', { projectId, conversations: reg.conversations(projectId), currentSessionId: reg.get(projectId)?.lastSessionId ?? null });
+  }
+
+  listConversations(projectId: string): Conversation[] { return this.projects().conversations(projectId); }
+
+  /** Make a conversation the active one for its project (and current project). */
+  selectConversation(projectId: string, sessionId: string): void {
+    const reg = this.projects();
+    reg.selectConversation(projectId, sessionId); // throws if unknown project/conversation
+    reg.select(projectId);
+    const proj = reg.get(projectId);
+    if (proj && !this.runs.has(projectId)) {
+      writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: sessionId, cwd: proj.cwd }));
+    }
+    this.emitConversations(projectId);
+  }
+
+  renameConversation(projectId: string, sessionId: string, title: string): void {
+    this.projects().renameConversation(projectId, sessionId, title);
+    this.emitConversations(projectId);
+  }
+
+  /** Forget a conversation; refuses if it's the one currently running a turn. */
+  removeConversation(projectId: string, sessionId: string): void {
+    const run = this.runs.get(projectId);
+    if (run && run.sessionId === sessionId) throw new BusyError();
+    const reg = this.projects();
+    reg.removeConversation(projectId, sessionId);
+    const proj = reg.get(projectId);
+    if (proj && !this.runs.has(projectId)) {
+      writeFileSync(this.stateFile, JSON.stringify({ lastSessionId: proj.lastSessionId ?? '', cwd: proj.cwd }));
+    }
+    this.emitConversations(projectId);
+  }
+
   /** Display name for a project id (for push notifications, etc.). */
   projectName(pid: string): string | undefined { return this.projects().get(pid)?.name; }
 
@@ -602,6 +652,10 @@ export class SessionManager {
     const proj = this.projects().get(pid);
     const dir = this.resolveCwd(cwd ?? proj?.cwd ?? this.opts.workspaceRoot);
     const sessionId = randomUUID();
+    // Register the new session as its own conversation (prompt-derived title),
+    // grouped under the project, and make it current.
+    this.projects().addConversation(pid, sessionId, titleFromPrompt(prompt));
+    this.emitConversations(pid);
     this.launch(pid, sessionId, prompt, dir, false, opts);
     return sessionId;
   }

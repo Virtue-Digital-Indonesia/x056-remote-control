@@ -273,6 +273,40 @@ export class ApiController {
     }
   }
 
+  // ---- conversations (multiple sessions grouped under a project) ----
+  @Post('conversations/select')
+  @HttpCode(200)
+  selectConversation(@Body() body: { projectId?: string; sessionId?: string }): { ok: boolean } {
+    if (!body?.projectId || !body?.sessionId) throw new BadRequestException('projectId and sessionId required');
+    try {
+      this.manager.selectConversation(body.projectId, body.sessionId);
+      return { ok: true };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('conversations/rename')
+  @HttpCode(200)
+  renameConversation(@Body() body: { projectId?: string; sessionId?: string; title?: string }): { ok: boolean } {
+    if (!body?.projectId || !body?.sessionId || !body?.title) throw new BadRequestException('projectId, sessionId and title required');
+    this.manager.renameConversation(body.projectId, body.sessionId, body.title);
+    return { ok: true };
+  }
+
+  @Post('conversations/remove')
+  @HttpCode(200)
+  removeConversation(@Body() body: { projectId?: string; sessionId?: string }): { ok: boolean } {
+    if (!body?.projectId || !body?.sessionId) throw new BadRequestException('projectId and sessionId required');
+    try {
+      this.manager.removeConversation(body.projectId, body.sessionId);
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof BusyError) throw new ConflictException('that conversation has a turn running — stop it first');
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
   @Get('sessions/current/history')
   history(@Query('limit') limit?: string): HistoryEntry[] {
     const sessionId = this.manager.snapshot().lastSessionId;

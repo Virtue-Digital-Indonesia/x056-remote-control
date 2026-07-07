@@ -25,6 +25,39 @@ describe('ProjectRegistry', () => {
   it('missing file loads as empty', () => {
     expect(ProjectRegistry.load(join(stateDir(), 'nope.json')).list()).toEqual([]);
   });
+
+  it('manages multiple conversations per project: add, select, rename, remove', () => {
+    const f = join(stateDir(), 'projects.json');
+    const r = ProjectRegistry.load(f);
+    const p = r.create('Alpha', '/w/a');
+    r.addConversation(p.id, 's1', 'Fix the bug');
+    r.addConversation(p.id, 's2', 'Write docs');
+    expect(r.conversations(p.id).map((c) => c.title)).toEqual(['Fix the bug', 'Write docs']);
+    expect(r.get(p.id)?.lastSessionId).toBe('s2'); // newest is current
+
+    r.selectConversation(p.id, 's1');
+    expect(r.get(p.id)?.lastSessionId).toBe('s1');
+    r.renameConversation(p.id, 's1', 'Fix the login bug');
+    expect(r.conversations(p.id).find((c) => c.sessionId === 's1')?.title).toBe('Fix the login bug');
+
+    // setLastSession upserts an unknown session as a conversation (resume/adopt path)
+    r.setLastSession(p.id, 's3', 'Adopted');
+    expect(r.conversations(p.id).map((c) => c.sessionId)).toEqual(['s1', 's2', 's3']);
+
+    r.removeConversation(p.id, 's1'); // removing the current repoints to the newest remaining
+    expect(r.conversations(p.id).map((c) => c.sessionId)).toEqual(['s2', 's3']);
+    const reloaded = ProjectRegistry.load(f);
+    expect(reloaded.conversations(p.id).map((c) => c.sessionId)).toEqual(['s2', 's3']);
+    expect(() => r.selectConversation(p.id, 'gone')).toThrow(/unknown conversation/);
+  });
+
+  it('migrateConversations backfills a pre-existing lastSessionId into a conversation', () => {
+    const f = join(stateDir(), 'projects.json');
+    writeFileSync(f, JSON.stringify({ current: 'p1', projects: [{ id: 'p1', name: 'Old', cwd: '/w', lastSessionId: 'legacy-sess' }] }));
+    const r = ProjectRegistry.load(f);
+    r.migrateConversations();
+    expect(r.conversations('p1')).toEqual([{ sessionId: 'legacy-sess', title: 'Conversation 1', createdAt: expect.any(Number) }]);
+  });
 });
 
 describe('SessionManager projects', () => {
