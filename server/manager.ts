@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
@@ -38,6 +39,18 @@ export interface SessionManagerOptions {
   /** Where the user's interactive `claude` transcripts live (read-only mount).
    *  Defaults to ~/.claude/projects. */
   interactiveProjectsDir?: string;
+  /** Spawns the interactive `claude auth login` for onboarding a new account,
+   *  wired to a pseudo-terminal so the CLI prints its URL and reads the pasted
+   *  code. Overridable in tests with a fake that emits a URL and writes creds. */
+  loginSpawnFn?: (configDir: string, claudePath?: string) => ChildProcess;
+}
+
+/** A pending account-onboarding login, keyed by an opaque id the panel holds. */
+interface PendingLogin {
+  configDir: string;
+  child: ChildProcess;
+  buf: string;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 /** Per-turn overrides chosen in the UI. */
@@ -104,6 +117,36 @@ function titleFromPrompt(prompt: string): string {
     .find((l) => l.length > 0 && !l.startsWith('[The user attached'));
   const t = (line ?? '').replace(/\s+/g, ' ').slice(0, 60);
   return t || 'New conversation';
+}
+
+/** The human-facing identity a `claude` login stores in <configDir>/.claude.json. */
+function readAccountIdentity(configDir: string): { displayName?: string; email?: string } {
+  try {
+    const o = (JSON.parse(readFileSync(join(configDir, '.claude.json'), 'utf8')) as {
+      oauthAccount?: { displayName?: string; emailAddress?: string };
+    }).oauthAccount;
+    return { displayName: o?.displayName, email: o?.emailAddress };
+  } catch {
+    return {};
+  }
+}
+
+/** Pull the first OAuth URL out of the login CLI's (ANSI-laden) output. */
+function extractLoginUrl(text: string): string | null {
+  const clean = text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/[\r\n]+/g, ' ');
+  const m = /https?:\/\/[^\s"']+/.exec(clean);
+  return m ? m[0] : null;
+}
+
+/** Default onboarding spawn: drive the interactive `claude auth login` under a
+ *  PTY (via `script`) so it prints its URL and reads the pasted code on stdin.
+ *  COLUMNS is set wide so the long URL isn't hard-wrapped across lines. */
+function defaultLoginSpawn(configDir: string, claudePath?: string): ChildProcess {
+  const bin = claudePath ?? 'claude';
+  return spawn('script', ['-qec', `${bin} auth login --claudeai`, '/dev/null'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, COLUMNS: '1000', TERM: 'xterm-256color' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
 }
 
 export class SessionManager {
@@ -439,6 +482,155 @@ export class SessionManager {
       this.sharedRegistry = AccountRegistry.load(join(this.opts.stateDir, 'accounts.json'));
     }
     return this.sharedRegistry;
+  }
+
+  // ---- accounts: onboarding (panel-driven login), removal, and "who's next" ----
+  private pendingLogins = new Map<string, PendingLogin>();
+  private get accountsDir(): string { return join(this.opts.stateDir, 'accounts'); }
+
+  /** Public snapshot of accounts for the panel, tagging the one the NEXT turn
+   *  would run on so the UI can show "this prompt will use X". */
+  accountsInfo(): { name: string; configDir: string; nextUp: boolean }[] {
+    const reg = this.registry();
+    const next = reg.peekActive(Math.floor(Date.now() / 1000))?.name ?? reg.activeName();
+    return reg.list().map((a) => ({ name: a.name, configDir: a.configDir, nextUp: a.name === next }));
+  }
+
+  /** name of the account the next turn would run on (or null if all limited). */
+  nextUpAccount(): string | null {
+    return this.registry().peekActive(Math.floor(Date.now() / 1000))?.name ?? null;
+  }
+
+  private nextAccountName(): string {
+    const reg = this.registry();
+    for (let i = 0; i < 26; i++) { const n = String.fromCharCode(97 + i); if (!reg.has(n)) return n; }
+    return `acct-${randomUUID().slice(0, 8)}`;
+  }
+
+  private emitAccounts(): void { this.emit('accounts', {}); }
+
+  /** Start onboarding a new account: spawn `claude auth login` on a PTY in a
+   *  fresh config dir and return the URL the user must visit. The process is
+   *  kept alive (keyed by loginId) until they paste back the code. */
+  async startAccountLogin(): Promise<{ loginId: string; url: string }> {
+    const loginId = randomUUID();
+    const configDir = join(this.accountsDir, `pending-${loginId}`);
+    mkdirSync(configDir, { recursive: true });
+    const child = (this.opts.loginSpawnFn ?? defaultLoginSpawn)(configDir, this.opts.claudePath);
+    const pending: PendingLogin = {
+      configDir, child, buf: '',
+      timer: setTimeout(() => this.cancelAccountLogin(loginId), 10 * 60_000), // abandon after 10 min
+    };
+    this.pendingLogins.set(loginId, pending);
+    return new Promise((resolvePromise, reject) => {
+      const settleUrl = () => {
+        const url = extractLoginUrl(pending.buf);
+        if (url) { cleanup(); resolvePromise({ loginId, url }); return true; }
+        return false;
+      };
+      const onData = (d: Buffer) => { pending.buf += d.toString('utf8'); settleUrl(); };
+      const urlTimeout = setTimeout(() => { cleanup(); this.cancelAccountLogin(loginId); reject(new Error('timed out waiting for the login URL')); }, 20_000);
+      const onExit = () => { cleanup(); this.pendingLogins.delete(loginId); reject(new Error('login process exited before producing a URL')); };
+      const cleanup = () => {
+        clearTimeout(urlTimeout);
+        child.stdout?.off('data', onData); child.stderr?.off('data', onData); child.off('exit', onExit);
+      };
+      child.stdout?.on('data', onData);
+      child.stderr?.on('data', onData);
+      child.on('exit', onExit);
+    });
+  }
+
+  /** Finish onboarding: feed the pasted code to the waiting login process, wait
+   *  for it to write credentials, verify identity, wire the shared transcript
+   *  tree, and register the account. */
+  async submitAccountLoginCode(loginId: string, code: string): Promise<{ name: string; email?: string; displayName?: string }> {
+    const pending = this.pendingLogins.get(loginId);
+    if (!pending) throw new Error('no such login (it may have timed out — start again)');
+    const { configDir, child } = pending;
+    child.stdin?.write(code.trim() + '\n');
+    // Wait for the CLI to exchange the code for credentials (or fail).
+    await new Promise<void>((resolvePromise, reject) => {
+      const deadline = setTimeout(() => reject(new Error('timed out exchanging the code — check it and try again')), 45_000);
+      const poll = setInterval(() => {
+        if (existsSync(join(configDir, '.credentials.json'))) { clearTimeout(deadline); clearInterval(poll); resolvePromise(); }
+      }, 300);
+      child.on('exit', () => {
+        setTimeout(() => {
+          clearTimeout(deadline); clearInterval(poll);
+          if (existsSync(join(configDir, '.credentials.json'))) resolvePromise();
+          else reject(new Error('login did not complete — the code may be wrong or expired'));
+        }, 300);
+      });
+    });
+    clearTimeout(pending.timer);
+    this.pendingLogins.delete(loginId);
+    try { child.kill(); } catch { /* already gone */ }
+
+    // Guard against onboarding a duplicate of an account already registered.
+    const identity = readAccountIdentity(configDir);
+    const reg = this.registry();
+    if (identity.email) {
+      for (const a of reg.list()) {
+        if (readAccountIdentity(a.configDir).email === identity.email) {
+          this.discardPending(configDir);
+          throw new Error(`that account (${identity.email}) is already added`);
+        }
+      }
+    }
+
+    // Move pending dir → its permanent home, wire the shared transcript tree so
+    // a resumed session survives a failover to this account, then register.
+    const name = this.nextAccountName();
+    const finalDir = join(this.accountsDir, name);
+    renameSync(configDir, finalDir);
+    this.wireSharedProjects(finalDir);
+    reg.add(name, finalDir);
+    this.emitAccounts();
+    return { name, email: identity.email, displayName: identity.displayName };
+  }
+
+  cancelAccountLogin(loginId: string): void {
+    const pending = this.pendingLogins.get(loginId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingLogins.delete(loginId);
+    try { pending.child.kill(); } catch { /* already gone */ }
+    this.discardPending(pending.configDir);
+  }
+
+  private discardPending(dir: string): void {
+    if (dir.startsWith(this.accountsDir + sep)) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } }
+  }
+
+  /** Point a new account's projects/ at the shared transcript tree (account a's),
+   *  migrating any content the fresh login created there first. */
+  private wireSharedProjects(configDir: string): void {
+    const shared = join(this.registry().list()[0].configDir, 'projects');
+    mkdirSync(shared, { recursive: true });
+    const own = join(configDir, 'projects');
+    if (existsSync(own)) {
+      try {
+        const st = readdirSync(own);
+        for (const entry of st) { try { cpSync(join(own, entry), join(shared, entry), { recursive: true, force: false }); } catch { /* keep existing */ } }
+      } catch { /* nothing to migrate */ }
+      rmSync(own, { recursive: true, force: true });
+    }
+    try { symlinkSync(shared, own); } catch { /* a concurrent create is fine */ }
+  }
+
+  /** Forget an account. Blocked while any turn runs (account state is global and
+   *  an in-flight failover may still reach for it) and for the last account. */
+  removeAccount(name: string): void {
+    if (this.runs.size > 0) throw new BusyError();
+    const acct = this.registry().get(name); // throws if unknown
+    this.registry().remove(name); // throws on last-account
+    // Drop the config dir only if WE created it (under state/accounts); a
+    // bind-mounted A/B dir is the user's and left untouched.
+    if (acct.configDir.startsWith(this.accountsDir + sep)) {
+      try { rmSync(acct.configDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+    this.emitAccounts();
   }
 
   private get stateFile(): string {

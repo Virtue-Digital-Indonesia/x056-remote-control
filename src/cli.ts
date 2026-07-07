@@ -38,11 +38,24 @@ async function main(): Promise<number> {
 
   if (command === 'init') {
     mkdirSync(STATE_DIR, { recursive: true });
-    AccountRegistry.init(ACCOUNTS, [
-      { name: 'a', configDir: process.env.X056_ACCOUNT_A_DIR ?? join(homedir(), '.claude-x056-a') },
-      { name: 'b', configDir: process.env.X056_ACCOUNT_B_DIR ?? join(homedir(), '.claude-x056-b') },
-    ]);
-    console.log(`wrote ${ACCOUNTS}`);
+    // X056_ACCOUNT_DIRS (comma-separated) bootstraps N accounts named a, b, c, …;
+    // otherwise fall back to the classic two A/B dirs. More accounts can also be
+    // onboarded later from the panel, which appends to this same registry file.
+    const listed = (process.env.X056_ACCOUNT_DIRS ?? '')
+      .split(',')
+      .map((d) => d.trim())
+      .filter(Boolean);
+    const dirs = listed.length
+      ? listed
+      : [
+          process.env.X056_ACCOUNT_A_DIR ?? join(homedir(), '.claude-x056-a'),
+          process.env.X056_ACCOUNT_B_DIR ?? join(homedir(), '.claude-x056-b'),
+        ];
+    AccountRegistry.init(
+      ACCOUNTS,
+      dirs.map((configDir, i) => ({ name: String.fromCharCode(97 + i), configDir })),
+    );
+    console.log(`wrote ${ACCOUNTS} with ${dirs.length} account(s)`);
     return 0;
   }
 

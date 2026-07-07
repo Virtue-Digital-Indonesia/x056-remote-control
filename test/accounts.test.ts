@@ -93,6 +93,50 @@ describe('AccountRegistry', () => {
     accounts[0].state = { kind: 'limited', until: 9999 };
     expect(reg.get('a').state).toEqual({ kind: 'unknown' });
   });
+
+  it('add appends a third account and persists', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    reg.add('c', '/cfg/c');
+    expect(reg.list().map((a) => a.name)).toEqual(['a', 'b', 'c']);
+    expect(AccountRegistry.load(file).get('c')).toEqual({ name: 'c', configDir: '/cfg/c', state: { kind: 'unknown' } });
+    expect(() => reg.add('c', '/cfg/c2')).toThrow(/already exists/);
+  });
+
+  it('remove drops an account, repoints active off it, and refuses the last one', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    reg.add('c', '/cfg/c');
+    reg.setActive('b');
+    reg.remove('b'); // active was b → repoints to first remaining (a)
+    expect(reg.list().map((a) => a.name)).toEqual(['a', 'c']);
+    expect(reg.activeName()).toBe('a');
+    reg.remove('c');
+    expect(() => reg.remove('a')).toThrow(/last account/);
+    expect(() => reg.remove('nope')).toThrow(/unknown account/); // (only reachable while >1, but still guarded)
+  });
+
+  it('peekActive reports who runs next WITHOUT mutating the active pointer, across N accounts', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, [...specs, { name: 'c', configDir: '/cfg/c' }]);
+    reg.markLimited('a', 5000);
+    reg.markLimited('b', 5000);
+    // a (active) and b are limited; peek should skip to the usable c…
+    expect(reg.peekActive(1000)?.name).toBe('c');
+    // …but WITHOUT moving the active pointer (unlike pickActive).
+    expect(reg.activeName()).toBe('a');
+    expect(AccountRegistry.load(file).activeName()).toBe('a');
+    // all limited → null
+    reg.markLimited('c', 5000);
+    expect(reg.peekActive(1000)).toBeNull();
+  });
+
+  it('has() reflects membership', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    expect(reg.has('a')).toBe(true);
+    expect(reg.has('z')).toBe(false);
+  });
 });
 
 describe('EventLog', () => {

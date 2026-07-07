@@ -57,8 +57,47 @@ export class AccountRegistry {
     return structuredClone(this.find(name));
   }
 
+  has(name: string): boolean {
+    return this.data.accounts.some((a) => a.name === name);
+  }
+
+  activeName(): string {
+    return this.data.active;
+  }
+
+  /** Append a freshly-onboarded account (state unknown until first used). */
+  add(name: string, configDir: string): Account {
+    if (this.has(name)) throw new Error(`account already exists: ${name}`);
+    const acct: Account = { name, configDir, state: { kind: 'unknown' } };
+    this.data.accounts.push(acct);
+    this.save();
+    return structuredClone(acct);
+  }
+
+  /** Forget an account. Refuses to remove the last one; if it was the active
+   *  account, the active pointer moves to the first remaining account. */
+  remove(name: string): Account {
+    const idx = this.data.accounts.findIndex((a) => a.name === name);
+    if (idx < 0) throw new Error(`unknown account: ${name}`);
+    if (this.data.accounts.length <= 1) throw new Error('cannot remove the last account');
+    const [removed] = this.data.accounts.splice(idx, 1);
+    if (this.data.active === name) this.data.active = this.data.accounts[0].name;
+    this.save();
+    return structuredClone(removed);
+  }
+
   private usable(a: Account, now: number): boolean {
     return a.state.kind !== 'limited' || a.state.until <= now;
+  }
+
+  /** Which account the next turn WOULD run on, without mutating the active
+   *  pointer — for showing "this prompt will use X" in the UI. Returns null when
+   *  every account is currently limited. */
+  peekActive(now: number): Account | null {
+    const preferred = this.find(this.data.active);
+    if (this.usable(preferred, now)) return structuredClone(preferred);
+    const other = this.data.accounts.find((a) => a.name !== preferred.name && this.usable(a, now));
+    return other ? structuredClone(other) : null;
   }
 
   pickActive(now: number): Account | null {

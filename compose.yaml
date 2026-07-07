@@ -27,6 +27,12 @@ services:
       # default — the shared note stays generic. Set it in your .env if you want
       # your sessions taught about your host's extras.
       X056_HOST_NOTE: ${X056_HOST_NOTE:-}
+      # Optional: bootstrap >2 accounts at init (comma-separated config dirs,
+      # named a, b, c …). Blank → the A/B pair below. More can be onboarded from
+      # the panel at any time (stored in the state volume).
+      X056_ACCOUNT_DIRS: ${X056_ACCOUNT_DIRS:-}
+      X056_ACCOUNT_A_DIR: ${X056_ACCOUNT_A_DIR:-/home/efran/.claude-x056-a}
+      X056_ACCOUNT_B_DIR: ${X056_ACCOUNT_B_DIR:-/home/efran/.claude-x056-b}
       # Project sessions' `docker`/`docker compose` point at the ISOLATED dind
       # sidecar below — NOT the host's Docker.
       DOCKER_HOST: tcp://dind:2375

@@ -331,6 +331,9 @@ export class ApiController {
     } catch {
       return [];
     }
+    // Which account the next turn would run on (skipping any still-limited one),
+    // so the panel can show "this prompt will use X".
+    const nextUp = registry.peekActive(Math.floor(Date.now() / 1000))?.name ?? null;
     return Promise.all(
       registry.list().map(async (acct) => {
         const id = accountIdentity(acct.configDir);
@@ -342,7 +345,7 @@ export class ApiController {
         const state = acct.state.kind === 'limited' && acct.state.until <= Math.floor(Date.now() / 1000)
           ? ({ kind: 'ok' } as const)
           : acct.state;
-        const base = { ...acct, state, displayName: id.displayName ?? acct.name, email: id.email };
+        const base = { ...acct, state, displayName: id.displayName ?? acct.name, email: id.email, nextUp: acct.name === nextUp };
         const cached = this.quotaCache.get(acct.name);
         if (cached && Date.now() - cached.at < QUOTA_TTL_MS) {
           return { ...base, quota: cached.quota };
@@ -372,6 +375,48 @@ export class ApiController {
   switch(@Body() body: { projectId?: string }): { switched: boolean } {
     if (!this.manager.forceSwitch(body?.projectId)) throw new ConflictException('no session running');
     return { switched: true };
+  }
+
+  // ---- account onboarding / removal ----
+  @Post('accounts/login/start')
+  @HttpCode(200)
+  async accountLoginStart(): Promise<{ loginId: string; url: string }> {
+    try {
+      return await this.manager.startAccountLogin();
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('accounts/login/submit')
+  @HttpCode(200)
+  async accountLoginSubmit(@Body() body: { loginId?: string; code?: string }): Promise<{ name: string; email?: string; displayName?: string }> {
+    if (!body?.loginId || !body?.code) throw new BadRequestException('loginId and code required');
+    try {
+      return await this.manager.submitAccountLoginCode(body.loginId, body.code);
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('accounts/login/cancel')
+  @HttpCode(200)
+  accountLoginCancel(@Body() body: { loginId?: string }): { ok: boolean } {
+    if (body?.loginId) this.manager.cancelAccountLogin(body.loginId);
+    return { ok: true };
+  }
+
+  @Post('accounts/remove')
+  @HttpCode(200)
+  accountRemove(@Body() body: { name?: string }): { removed: boolean } {
+    if (!body?.name) throw new BadRequestException('name required');
+    try {
+      this.manager.removeAccount(body.name);
+      return { removed: true };
+    } catch (err) {
+      if (err instanceof BusyError) throw new ConflictException('stop the running turn before removing an account');
+      throw new BadRequestException((err as Error).message);
+    }
   }
 
   @Post('sessions/current/stop')

@@ -1,10 +1,33 @@
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { AccountRegistry } from '../src/accounts.js';
 import type { RunSessionOptions, SessionResult } from '../src/failover.js';
 import { BusyError, SessionManager, type GatewayEvent } from '../server/manager.js';
+
+/** A stand-in for the `claude auth login` PTY child: emits a URL, and on the
+ *  pasted code writes credentials + identity into the config dir (as the real
+ *  CLI would after the OAuth exchange). */
+function fakeLoginSpawn(email: string, displayName: string) {
+  return (configDir: string): ChildProcess => {
+    const child = new EventEmitter() as unknown as ChildProcess & EventEmitter;
+    const stdout = new EventEmitter();
+    (child as unknown as { stdout: EventEmitter }).stdout = stdout;
+    (child as unknown as { stderr: EventEmitter }).stderr = new EventEmitter();
+    (child as unknown as { stdin: { write: (s: string) => void } }).stdin = {
+      write: () => {
+        writeFileSync(join(configDir, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'tok' } }));
+        writeFileSync(join(configDir, '.claude.json'), JSON.stringify({ oauthAccount: { displayName, emailAddress: email } }));
+      },
+    };
+    (child as unknown as { kill: () => void }).kill = () => { child.emit('exit', 0); };
+    setImmediate(() => stdout.emit('data', Buffer.from('If the browser did not open, visit: https://claude.com/cai/oauth/authorize?code=true&x=1\nPaste code here if prompted > ')));
+    return child;
+  };
+}
 
 function fixture(result: SessionResult, opts?: { emitEvents?: boolean; delayMs?: number }) {
   const dir = mkdtempSync(join(tmpdir(), 'x056-mgr-'));
@@ -515,5 +538,69 @@ describe('SessionManager per-conversation isolation', () => {
     // The manual switch back must survive — not get clobbered back to newSid by
     // the new conversation's first tap event.
     expect(mgr.listProjects().projects.find((p) => p.id === pid)?.lastSessionId).toBe(olderSid);
+  });
+});
+
+describe('SessionManager account management', () => {
+  function acctFixture(email = 'new@example.com', displayName = 'New Account') {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-acct-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    const cfgA = join(dir, 'cfg-a'); mkdirSync(cfgA, { recursive: true }); // real dir so the shared-projects symlink can be wired
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: cfgA }, { name: 'b', configDir: join(dir, 'cfg-b') }]);
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, loginSpawnFn: fakeLoginSpawn(email, displayName) });
+    return { mgr, sd, dir, cfgA };
+  }
+
+  it('onboards a new account via the login flow: URL, code, register, shared-projects symlink', async () => {
+    const { mgr, sd, cfgA } = acctFixture('carol@example.com', 'Carol');
+    // a marker in the SHARED transcript tree (account a's) — the new account's
+    // projects/ symlink must resolve to it so a resumed session survives failover.
+    mkdirSync(join(cfgA, 'projects'), { recursive: true });
+    writeFileSync(join(cfgA, 'projects', '.keep'), 'shared');
+    const events: GatewayEvent[] = [];
+    mgr.subscribe((e) => events.push(e));
+    const { loginId, url } = await mgr.startAccountLogin();
+    expect(url).toContain('oauth');
+    expect(loginId).toBeTruthy();
+    const res = await mgr.submitAccountLoginCode(loginId, 'THE-CODE');
+    expect(res).toMatchObject({ name: 'c', email: 'carol@example.com', displayName: 'Carol' });
+    expect(mgr.accountsInfo().map((a) => a.name)).toEqual(['a', 'b', 'c']);
+    // the account persisted with its credentials, and its projects/ points at the shared tree
+    expect(existsSync(join(sd, 'accounts', 'c', '.credentials.json'))).toBe(true);
+    expect(readFileSync(join(sd, 'accounts', 'c', 'projects', '.keep'), 'utf8')).toBe('shared'); // written into cfgA/projects, visible via the symlink
+    expect(events.some((e) => e.kind === 'accounts')).toBe(true);
+  });
+
+  it('refuses to onboard a duplicate account (same email) and cleans up the pending dir', async () => {
+    const { mgr } = acctFixture('dupe@example.com', 'Dupe');
+    const first = await mgr.startAccountLogin();
+    await mgr.submitAccountLoginCode(first.loginId, 'CODE1');
+    const second = await mgr.startAccountLogin();
+    await expect(mgr.submitAccountLoginCode(second.loginId, 'CODE2')).rejects.toThrow(/already added/);
+    expect(mgr.accountsInfo().map((a) => a.name)).toEqual(['a', 'b', 'c']); // no 'd' added
+  });
+
+  it('accountsInfo marks exactly one account as nextUp', () => {
+    const { mgr } = acctFixture();
+    const info = mgr.accountsInfo();
+    expect(info.filter((a) => a.nextUp).length).toBe(1);
+    expect(info.find((a) => a.nextUp)?.name).toBe('a');
+    expect(mgr.nextUpAccount()).toBe('a');
+  });
+
+  it('removeAccount drops an account and refuses the last one', () => {
+    const { mgr } = acctFixture();
+    mgr.removeAccount('b');
+    expect(mgr.accountsInfo().map((a) => a.name)).toEqual(['a']);
+    expect(() => mgr.removeAccount('a')).toThrow(/last account/);
+  });
+
+  it('removeAccount is blocked while a turn is running', async () => {
+    const { mgr } = fixture(COMPLETED, { delayMs: 150 });
+    mgr.start('go');
+    expect(() => mgr.removeAccount('b')).toThrow(BusyError);
+    await waitFor(() => mgr.snapshot().running === false, 3000);
+    mgr.removeAccount('b'); // fine once idle
+    expect(mgr.accountsInfo().map((a) => a.name)).toEqual(['a']);
   });
 });

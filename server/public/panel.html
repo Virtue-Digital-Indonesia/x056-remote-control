@@ -213,10 +213,19 @@
   .pop h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); margin: 2px 4px 10px; }
   .qa { padding: 10px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 8px; }
   .qa:last-child { margin-bottom: 0; }
+  .qa.nextup { border-color: var(--accent); }
   .qa .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
   .qa .nm { font-weight: 600; font-size: 13px; } .qa .em { font-size: 11px; color: var(--faint); }
+  .qa .badges { display: flex; align-items: center; gap: 6px; flex: none; }
+  .qa .arm { flex: none; width: 20px; height: 20px; padding: 0; border: none; background: transparent; color: var(--faint); border-radius: 5px; cursor: pointer; display: inline-grid; place-items: center; }
+  .qa .arm:hover { background: var(--surface-3); color: #e5484d; }
   .badge { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: var(--surface-3); color: var(--muted); }
   .badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.limited { background: var(--amber-bg); color: var(--amber); }
+  .badge.next { background: var(--accent-weak); color: var(--accent); }
+  .send.ghost { background: transparent; color: var(--text); border: 1px solid var(--border-strong); }
+  .send.ghost:hover { filter: none; border-color: var(--accent); color: var(--accent); }
+  .acct-link { display: inline-block; color: var(--accent); font-size: 13px; word-break: break-all; text-decoration: none; padding: 6px 0; }
+  .acct-link:hover { text-decoration: underline; }
   .g { margin-top: 8px; } .g .lab { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
   .g .track { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; } .g .track > i { display: block; height: 100%; background: var(--ok); }
   .g .track > i.amber { background: var(--amber); } .g .track > i.red { background: var(--err); }
@@ -369,7 +378,25 @@
 </main>
 
 <div class="backdrop" id="backdrop" hidden></div>
-<div class="pop" id="quotaPop" hidden><h2>account usage</h2><div id="accounts"></div><button class="send" id="switchAcctBtn" style="width:100%; margin-top:4px;">Force-switch active account</button></div>
+<div class="pop" id="quotaPop" hidden><h2>accounts</h2><div id="accounts"></div><button class="send ghost" id="addAcctBtn" style="width:100%; margin-top:4px;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div>
+<div class="pop" id="addAcctPop" hidden style="top:56px; left:12px; bottom:auto; width:340px;">
+  <h2>add a Claude account</h2>
+  <div id="addAcctStep1">
+    <div class="gate-note" style="margin-bottom:10px;">Sign in to another Claude account to add it to the failover pool. A new browser tab will open to authorize; you'll paste back a code.</div>
+    <button class="send" id="addAcctStart" style="width:100%;">Start sign-in</button>
+  </div>
+  <div id="addAcctStep2" hidden>
+    <div class="gate-note" style="margin-bottom:6px;">1. Open this link, sign in with the account you want to add, and authorize:</div>
+    <a id="addAcctLink" href="#" target="_blank" rel="noopener" class="acct-link">Open sign-in page ↗</a>
+    <div class="gate-note" style="margin:10px 0 6px;">2. Copy the code it gives you and paste it here:</div>
+    <input id="addAcctCode" class="pk-search" placeholder="paste authorization code" autocomplete="off" />
+    <div id="addAcctErr" class="gate-err" style="text-align:left;"></div>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button class="send ghost" id="addAcctCancel" style="flex:1;">Cancel</button>
+      <button class="send" id="addAcctFinish" style="flex:2;">Finish</button>
+    </div>
+  </div>
+</div>
 <div class="pop" id="projPicker" hidden style="top:100px; left:12px; bottom:auto; width:300px;">
   <h2>add a project from your repos</h2>
   <input id="projSearch" class="pk-search" placeholder="filter repos…" />
@@ -798,6 +825,7 @@
       if (pid === currentProjectId) loadProjects(); // re-render the sidebar sublist
     }
     else if (kind === 'settings') { modelEffortDefaults = data.modelEffort || {}; } // saved from another tab
+    else if (kind === 'accounts') { pollAccounts(); } // an account was added/removed (this or another tab)
     else if (kind === 'project_removed') {
       // removed elsewhere (another tab) — drop caches and reconcile the list
       var wasCur = currentProjectId === data.id;
@@ -1206,16 +1234,27 @@
   function renderAccounts(list) {
     acctList = Array.isArray(list) ? list : [];
     accountsEl.textContent = '';
+    var anyRunning = Object.keys(runningProjects).length > 0;
+    // Capability probe: the panel is bind-mount live-served and may be running
+    // ahead of a backend that doesn't yet expose account add/remove. The new
+    // backend tags every account with `nextUp`; the old one never does. Only
+    // surface add/remove/next-up when the backend actually supports them, so the
+    // live panel keeps working before the matching backend deploy.
+    var capable = acctList.some(function (a) { return 'nextUp' in a; });
+    $('addAcctBtn').style.display = capable ? '' : 'none';
     acctList.forEach(function (a) {
       acctNames[a.name] = a.displayName || a.name; // for done-banners etc.
       var st = a.state || { kind: 'unknown' };
-      var card = document.createElement('div'); card.className = 'qa';
+      var card = document.createElement('div'); card.className = 'qa' + (a.nextUp ? ' nextup' : '');
       var top = document.createElement('div'); top.className = 'top'; var left = document.createElement('div');
       var nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = a.displayName || a.name; left.appendChild(nm);
       if (a.email) { var em = document.createElement('div'); em.className = 'em'; em.textContent = a.email; left.appendChild(em); }
       top.appendChild(left);
+      var badges = document.createElement('div'); badges.className = 'badges';
+      // "next up" — the account THIS next prompt will run on (skips a limited one).
+      if (a.nextUp) { var nb = document.createElement('span'); nb.className = 'badge next'; nb.textContent = 'next up'; nb.title = 'the next prompt will use this account'; badges.appendChild(nb); }
       var badge = document.createElement('span'); badge.className = 'badge';
-      if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'active'; }
+      if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'ready'; }
       else if (st.kind === 'limited') {
         badge.classList.add('limited');
         // Only claim a reset time when it's real (Anthropic-reported), never our
@@ -1223,19 +1262,38 @@
         badge.textContent = st.estimated ? 'limited' : 'limited · resets ' + clockTime(new Date(st.until * 1000).toISOString());
       }
       else badge.textContent = 'idle';
-      top.appendChild(badge); card.appendChild(top);
+      badges.appendChild(badge);
+      // Remove — only when the backend supports it, there's more than one
+      // account, and nothing is running (account state is global; a live
+      // failover could still reach for it).
+      if (capable && acctList.length > 1) {
+        var rm = document.createElement('button'); rm.className = 'arm'; rm.appendChild(icon('x', 'sm'));
+        rm.title = anyRunning ? 'stop running turns before removing' : 'remove this account';
+        rm.disabled = anyRunning;
+        rm.addEventListener('click', function () { removeAccount(a); });
+        badges.appendChild(rm);
+      }
+      top.appendChild(badges); card.appendChild(top);
       if (a.quota) { card.appendChild(gauge('5-hour', a.quota.fiveHour)); card.appendChild(gauge('7-day', a.quota.sevenDay)); if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = 'cached — refreshing'; card.appendChild(s); } }
       else { var n = document.createElement('div'); n.className = 'note'; n.textContent = a.quotaError ? 'usage unavailable — retrying' : 'usage unavailable'; card.appendChild(n); }
       accountsEl.appendChild(card);
     });
     renderAccountChip();
   }
+  function removeAccount(a) {
+    if (!window.confirm('Remove account “' + (a.displayName || a.name) + '”' + (a.email ? ' (' + a.email + ')' : '') + ' from the failover pool?\n\nIts saved login is deleted from this panel; failover will use the remaining account(s).')) return;
+    api('/api/accounts/remove', { method: 'POST', body: JSON.stringify({ name: a.name }) }).then(function (r) {
+      if (!r.ok) { return r.json().then(function (j) { addSys(j && j.message ? j.message : 'could not remove account', 'banner'); }).catch(function () { addSys('could not remove account', 'banner'); }); }
+      pollAccounts();
+    }).catch(function () {});
+  }
   // The bottom-left chip shows the account actually in use: the one running the
-  // viewed project's turn if known, else an OK one, else the limited one that
-  // resets soonest — so it never blanks to "—/?" even when both are limited.
+  // viewed project's turn if known, else the server's "next up" account (the one
+  // THIS next prompt would run on), else a fallback so it never blanks to "—/?".
   function pickPrimaryAccount() {
     function byName(n) { for (var i = 0; i < acctList.length; i++) if (acctList[i].name === n) return acctList[i]; return null; }
     if (runningProjects[currentProjectId]) { var live = byName(activeAccount[currentProjectId]); if (live) return live; }
+    for (var i = 0; i < acctList.length; i++) if (acctList[i].nextUp) return acctList[i]; // who the next prompt uses
     var ok = null, nonLim = null, soonest = null;
     acctList.forEach(function (a) {
       var k = (a.state && a.state.kind) || 'unknown';
@@ -1251,11 +1309,12 @@
     acctNameEl.textContent = nm; acctAv.textContent = (nm[0] || '?').toUpperCase();
     var live = runningProjects[currentProjectId] && activeAccount[currentProjectId] === a.name;
     var lim = a.state && a.state.kind === 'limited';
-    acctPlan.textContent = live ? 'Max · active now' : (lim ? 'Max · limited' : 'Max · view usage');
+    // Idle: this account is the one the next prompt will use → say so.
+    acctPlan.textContent = live ? 'Max · active now' : (lim ? 'Max · limited' : (a.nextUp ? 'Max · sends next' : 'Max · view usage'));
   }
   function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
   var sessPicker = $('sessPicker'), sessList = $('sessList');
-  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; $('morePop').hidden = true; }
+  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; $('morePop').hidden = true; $('addAcctPop').hidden = true; }
   // Mobile "more" menu: labeled rows that trigger the real (CSS-hidden on mobile)
   // topbar buttons, so there's one source of truth for each action's handler.
   var MORE_ITEMS = [
@@ -1385,7 +1444,7 @@
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     es.onopen = function () { dot.className = 'on'; loadProjects(); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'active_model', 'settings'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'active_model', 'settings', 'accounts'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -1467,6 +1526,46 @@
       else if (r.ok) addSys('switching account…', 'banner');
       closeAllPops();
     }).catch(function () {});
+  });
+
+  // ---- add-account onboarding (drives `claude auth login` on the server) ----
+  var addAcctLoginId = null;
+  function resetAddAcct() {
+    addAcctLoginId = null;
+    $('addAcctStep1').hidden = false; $('addAcctStep2').hidden = true;
+    $('addAcctCode').value = ''; $('addAcctErr').textContent = '';
+    $('addAcctStart').disabled = false; $('addAcctStart').textContent = 'Start sign-in';
+    $('addAcctFinish').disabled = false; $('addAcctFinish').textContent = 'Finish';
+  }
+  $('addAcctBtn').addEventListener('click', function () { resetAddAcct(); openPop($('addAcctPop')); });
+  $('addAcctStart').addEventListener('click', function () {
+    $('addAcctStart').disabled = true; $('addAcctStart').textContent = 'Opening…';
+    api('/api/accounts/login/start', { method: 'POST' }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) { $('addAcctErr').textContent = j && j.message ? j.message : 'could not start sign-in'; resetAddAcct(); return; }
+        addAcctLoginId = j.loginId;
+        var link = $('addAcctLink'); link.href = j.url;
+        $('addAcctStep1').hidden = true; $('addAcctStep2').hidden = false;
+        try { window.open(j.url, '_blank', 'noopener'); } catch (e) {}
+        $('addAcctCode').focus();
+      });
+    }).catch(function () { $('addAcctErr').textContent = 'network error'; resetAddAcct(); });
+  });
+  $('addAcctFinish').addEventListener('click', function () {
+    var code = $('addAcctCode').value.trim();
+    if (!code) { $('addAcctErr').textContent = 'paste the authorization code first'; return; }
+    if (!addAcctLoginId) { $('addAcctErr').textContent = 'sign-in expired — start again'; return; }
+    $('addAcctErr').textContent = ''; $('addAcctFinish').disabled = true; $('addAcctFinish').textContent = 'Adding…';
+    api('/api/accounts/login/submit', { method: 'POST', body: JSON.stringify({ loginId: addAcctLoginId, code: code }) }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) { $('addAcctErr').textContent = j && j.message ? j.message : 'could not add account'; $('addAcctFinish').disabled = false; $('addAcctFinish').textContent = 'Finish'; return; }
+        closeAllPops(); addSys('account added: ' + (j.displayName || j.email || j.name), 'banner'); pollAccounts();
+      });
+    }).catch(function () { $('addAcctErr').textContent = 'network error'; $('addAcctFinish').disabled = false; $('addAcctFinish').textContent = 'Finish'; });
+  });
+  $('addAcctCancel').addEventListener('click', function () {
+    if (addAcctLoginId) api('/api/accounts/login/cancel', { method: 'POST', body: JSON.stringify({ loginId: addAcctLoginId }) }).catch(function () {});
+    closeAllPops();
   });
 
   // ---- auth gate + passkeys (WebAuthn) ----
