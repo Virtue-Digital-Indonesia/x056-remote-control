@@ -3,7 +3,10 @@ import { join } from 'node:path';
 import { stripAsk, stripAskInstructions } from './question.js';
 
 export interface HistoryEntry {
-  role: 'user' | 'assistant';
+  /** 'model' is a synthetic marker recording that the main turn's model changed
+   *  (text = the model id, e.g. "claude-sonnet-5"), so switches are visible on
+   *  reload — derived from the transcript, no separate storage needed. */
+  role: 'user' | 'assistant' | 'model';
   text: string;
   /** ISO timestamp from the transcript entry, when present — lets the panel
    *  interleave this message with live activity/subagent events by time
@@ -59,6 +62,7 @@ export function readSessionHistory(configDirs: string[], sessionId: string, limi
     return [];
   }
   const out: HistoryEntry[] = [];
+  let lastModel: string | undefined;
   for (const line of raw.split('\n')) {
     if (line.trim() === '') continue;
     let entry: Record<string, unknown>;
@@ -72,6 +76,15 @@ export function readSessionHistory(configDirs: string[], sessionId: string, limi
     if (entry.isApiErrorMessage || entry.isMeta) continue;
     const message = entry.message as { role?: string; content?: unknown; model?: unknown } | undefined;
     if (!message) continue;
+    const ts = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
+    // Record model switches on the MAIN turn (ignore subagents/sidechains, which
+    // may run a different model) so the timeline shows what handled each part.
+    if (type === 'assistant' && entry.isSidechain !== true && typeof message.model === 'string' && message.model !== '<synthetic>') {
+      if (message.model !== lastModel) {
+        out.push({ role: 'model', text: message.model, ts });
+        lastModel = message.model;
+      }
+    }
     if (type === 'assistant' && message.model === '<synthetic>') continue;
     const text = textFromContent(message.content).trim();
     if (text === '') continue;
@@ -88,7 +101,6 @@ export function readSessionHistory(configDirs: string[], sessionId: string, limi
     // the rendered transcript on reload. Drop a message that was only an ASK.
     const shown = type === 'user' ? stripAskInstructions(text) : stripAsk(text);
     if (shown === '') continue;
-    const ts = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
     out.push({ role: type, text: shown, ts });
   }
   return out.slice(-limit);

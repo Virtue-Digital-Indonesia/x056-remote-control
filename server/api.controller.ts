@@ -328,6 +328,40 @@ export class ApiController {
     return { ok: true };
   }
 
+  @Get('queue')
+  queue(): unknown {
+    return this.manager.queues();
+  }
+
+  @Post('queue')
+  @HttpCode(200)
+  enqueue(@Body() body: SendBody): { queued: boolean; id?: string } {
+    if (!body?.projectId) throw new BadRequestException('projectId required');
+    if (!body?.prompt) throw new BadRequestException('prompt required');
+    try {
+      const item = this.manager.enqueue(body.projectId, { text: body.prompt, model: body.model, effort: body.effort });
+      return { queued: true, id: item.id };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('queue/edit')
+  @HttpCode(200)
+  editQueue(@Body() body: { projectId?: string; id?: string; prompt?: string; model?: string; effort?: string }): { ok: boolean } {
+    if (!body?.projectId || !body?.id) throw new BadRequestException('projectId and id required');
+    this.manager.editQueueItem(body.projectId, body.id, { text: body.prompt, model: body.model, effort: body.effort });
+    return { ok: true };
+  }
+
+  @Post('queue/remove')
+  @HttpCode(200)
+  removeQueue(@Body() body: { projectId?: string; id?: string }): { ok: boolean } {
+    if (!body?.projectId || !body?.id) throw new BadRequestException('projectId and id required');
+    this.manager.removeQueueItem(body.projectId, body.id);
+    return { ok: true };
+  }
+
   @Get('push/config')
   pushConfig(): { enabled: boolean; publicKey: string } {
     return { enabled: true, publicKey: this.push.publicKey };

@@ -38,6 +38,28 @@ describe('readSessionHistory', () => {
     ]);
   });
 
+  it('emits a model marker on the first main-turn model and on each change, ignoring subagents', () => {
+    const sid = 'sess-model';
+    const dir = configDirWithTranscript(sid, [
+      { type: 'user', message: { role: 'user', content: 'go' } },
+      { type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5', content: [{ type: 'text', text: 'on fable' }] } },
+      // subagent (sidechain) on a different model — must NOT produce a marker
+      { type: 'assistant', isSidechain: true, message: { role: 'assistant', model: 'claude-haiku-4-5', content: [{ type: 'text', text: 'sub' }] } },
+      { type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5', content: [{ type: 'text', text: 'still fable' }] } },
+      { type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'now sonnet' }] } },
+    ]);
+    const rows = readSessionHistory([dir], sid);
+    expect(rows).toEqual([
+      { role: 'user', text: 'go' },
+      { role: 'model', text: 'claude-fable-5' },
+      { role: 'assistant', text: 'on fable' },
+      { role: 'assistant', text: 'sub' },        // subagent text still shown, but no marker for it
+      { role: 'assistant', text: 'still fable' },
+      { role: 'model', text: 'claude-sonnet-5' }, // switch fable -> sonnet
+      { role: 'assistant', text: 'now sonnet' },
+    ]);
+  });
+
   it('extracts the transcript timestamp so the panel can interleave with live activity', () => {
     const sid = 'sess-ts';
     const dir = configDirWithTranscript(sid, [

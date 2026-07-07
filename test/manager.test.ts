@@ -70,6 +70,29 @@ describe('SessionManager', () => {
     expect(calls[1].effort).toBe('high');
   });
 
+  it('enqueue/edit/remove maintain a per-project queue', () => {
+    const { mgr } = fixture(COMPLETED);
+    const pid = mgr.listProjects().current as string;
+    const a = mgr.enqueue(pid, { text: 'first' });
+    mgr.enqueue(pid, { text: 'second', model: 'opus' });
+    expect(mgr.queues()[pid].map((q) => q.text)).toEqual(['first', 'second']);
+    mgr.editQueueItem(pid, a.id, { text: 'first-edited' });
+    expect(mgr.queues()[pid][0].text).toBe('first-edited');
+    mgr.removeQueueItem(pid, a.id);
+    expect(mgr.queues()[pid].map((q) => q.text)).toEqual(['second']);
+  });
+
+  it('drains a queued message when the turn completes, sending its text as a resume', async () => {
+    const { mgr, calls } = fixture(COMPLETED, { delayMs: 120 });
+    const pid = mgr.listProjects().current as string;
+    mgr.start('first');
+    mgr.enqueue(pid, { text: 'queued follow-up' }); // queued while the first turn runs
+    await waitFor(() => calls.length === 2, 3000);
+    expect(calls[1].prompt).toBe('queued follow-up');
+    expect(calls[1].resume).toBe(true);
+    expect(mgr.queues()[pid] ?? []).toEqual([]); // drained
+  });
+
   it('rejects concurrent starts with BusyError and allows continue after completion', async () => {
     const { mgr, calls } = fixture(COMPLETED, { delayMs: 100 });
     mgr.start('first');

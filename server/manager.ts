@@ -46,6 +46,15 @@ export interface TurnRunOptions {
   effort?: string;
 }
 
+/** A follow-up message queued to send when the current turn completes. */
+export interface QueueItem {
+  id: string;
+  text: string;
+  model?: string;
+  effort?: string;
+  at: number;
+}
+
 const BUFFER_MAX = 1000;
 
 // Injected into every spawned session (any project) via --append-system-prompt,
@@ -288,6 +297,88 @@ export class SessionManager {
     }
   }
 
+  // ---- prompt queue: line up follow-up messages while a turn runs; the head is
+  //      sent automatically when the turn completes (ahead of any autopilot). ----
+  private get queueFile(): string { return join(this.opts.stateDir, 'queues.json'); }
+  private loadQueues(): Record<string, QueueItem[]> {
+    try {
+      const m = JSON.parse(readFileSync(this.queueFile, 'utf8')) as Record<string, QueueItem[]>;
+      return m && typeof m === 'object' ? m : {};
+    } catch { return {}; }
+  }
+  private saveQueues(map: Record<string, QueueItem[]>): void {
+    const tmp = `${this.queueFile}.tmp`;
+    writeFileSync(tmp, JSON.stringify(map, null, 2));
+    renameSync(tmp, this.queueFile);
+  }
+  private emitQueue(pid: string, map?: Record<string, QueueItem[]>): void {
+    const m = map ?? this.loadQueues();
+    this.emit('queue', { projectId: pid, items: m[pid] ?? [] });
+  }
+
+  queues(): Record<string, QueueItem[]> { return this.loadQueues(); }
+
+  enqueue(pid: string, item: { text: string; model?: string; effort?: string }): QueueItem {
+    if (!this.projects().get(pid)) throw new Error(`unknown project ${pid}`);
+    const text = (item.text ?? '').trim();
+    if (!text) throw new Error('empty message');
+    const map = this.loadQueues();
+    const q: QueueItem = { id: randomUUID(), text, model: item.model, effort: item.effort, at: Date.now() };
+    (map[pid] ??= []).push(q);
+    this.saveQueues(map);
+    this.emitQueue(pid, map);
+    return q;
+  }
+
+  editQueueItem(pid: string, id: string, patch: { text?: string; model?: string; effort?: string }): void {
+    const map = this.loadQueues();
+    const it = (map[pid] ?? []).find((x) => x.id === id);
+    if (!it) return;
+    if (typeof patch.text === 'string' && patch.text.trim()) it.text = patch.text.trim();
+    if (patch.model !== undefined) it.model = patch.model || undefined;
+    if (patch.effort !== undefined) it.effort = patch.effort || undefined;
+    this.saveQueues(map);
+    this.emitQueue(pid, map);
+  }
+
+  removeQueueItem(pid: string, id: string): void {
+    const map = this.loadQueues();
+    const before = (map[pid] ?? []).length;
+    map[pid] = (map[pid] ?? []).filter((x) => x.id !== id);
+    if (map[pid].length !== before) { this.saveQueues(map); this.emitQueue(pid, map); }
+  }
+
+  /** If a project has queued messages, pop the head and send it after the turn
+   *  settles (ahead of autopilot). Returns true if it claimed this cycle. */
+  private maybeDrainQueue(pid: string): boolean {
+    const map = this.loadQueues();
+    const q = map[pid] ?? [];
+    if (q.length === 0) return false;
+    const head = q.shift() as QueueItem;
+    this.saveQueues(map);
+    this.emitQueue(pid, map);
+    const existing = this.queueTimers.get(pid);
+    if (existing) clearTimeout(existing);
+    const reEnqueueHead = () => {
+      const m2 = this.loadQueues();
+      (m2[pid] ??= []).unshift(head);
+      this.saveQueues(m2);
+      this.emitQueue(pid, m2);
+    };
+    const t = setTimeout(() => {
+      this.queueTimers.delete(pid);
+      if (this.runs.has(pid)) { reEnqueueHead(); return; } // a turn snuck in — don't lose the item
+      try {
+        this.continueLast(head.text, { model: head.model, effort: head.effort }, pid);
+      } catch {
+        reEnqueueHead(); // no session yet / busy — put it back
+      }
+    }, 400);
+    this.queueTimers.set(pid, t);
+    return true;
+  }
+  private readonly queueTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   /** Shared across all concurrent runs so failover's account-limit accounting
    *  is one authoritative in-process view (no cross-run file races). */
   private registry(): AccountRegistry {
@@ -432,6 +523,8 @@ export class SessionManager {
     const reg = this.projects();
     if (!reg.get(id)) throw new Error(`unknown project ${id}`);
     this.stopAutopilot(id);
+    const qmap = this.loadQueues();
+    if (qmap[id]) { delete qmap[id]; this.saveQueues(qmap); }
     reg.remove(id);
     const cur = reg.currentId();
     const curProj = cur ? reg.get(cur) : null;
@@ -545,13 +638,17 @@ export class SessionManager {
       })
         .then((res) => {
           this.lastResults.set(pid, res);
+          // Queued follow-ups take priority: on a clean completion, drain the head
+          // (ahead of autopilot). A queued message is the user's explicit next
+          // step, so it also pre-empts surfacing a question card / autopilot.
+          const drained = res.status === 'completed' ? this.maybeDrainQueue(pid) : false;
           // If the model ended its turn asking the user something, surface it as
-          // an answerable card (only when not on autopilot, which drives itself).
+          // an answerable card (only when not on autopilot/queue, which drive it).
           const onAutopilot = !!this.loadAutopilot()[pid];
-          const q = onAutopilot ? null : parseQuestion(res.resultText ?? '');
+          const q = onAutopilot || drained ? null : parseQuestion(res.resultText ?? '');
           if (q) emit('question', { sessionId, question: q.question, options: q.options });
           emit('session_done', { sessionId, ...res });
-          this.maybeAutopilot(pid, res);
+          if (!drained) this.maybeAutopilot(pid, res);
         })
         .catch((err: unknown) => {
           emit('session_error', { sessionId, message: (err as Error).message });
@@ -578,11 +675,14 @@ export class SessionManager {
     if (e.type !== 'assistant') return;
     const msg = e.message as { content?: unknown; model?: unknown } | undefined;
     // The actual model resolved for this turn (e.g. "claude-fable-5"), which is
-    // what the UI shows as the live model — meaningful even when "auto" was sent.
+    // what the UI shows as the live model. Ignore subagent messages (they carry
+    // parent_tool_use_id and may run a different model) so the indicator tracks
+    // the MAIN turn's model instead of flip-flopping with each subagent reply.
+    const fromSubagent = e.parent_tool_use_id != null;
     const model = typeof msg?.model === 'string' ? msg.model : undefined;
-    if (model && pid && this.lastModelByPid.get(pid) !== model) {
+    if (model && !fromSubagent && pid && this.lastModelByPid.get(pid) !== model) {
       this.lastModelByPid.set(pid, model);
-      emit('active_model', { model });
+      emit('active_model', { model }); // envelope ts (emit time) carries ordering
     }
     const content = Array.isArray(msg?.content) ? msg.content : [];
     for (const block of content) {

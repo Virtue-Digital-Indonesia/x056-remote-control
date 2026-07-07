@@ -91,6 +91,15 @@
   .thread { max-width: 780px; margin: 0 auto; padding: 26px 24px 40px; }
   .msg { margin-bottom: 22px; }
   .msg .role { font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
+  .msg .mmeta { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 11px; color: var(--faint); opacity: 0; transition: opacity .12s; }
+  .msg:hover .mmeta { opacity: 1; }
+  .msg.user .mmeta { justify-content: flex-end; }
+  .copybtn { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; color: var(--faint); cursor: pointer; font: inherit; font-size: 11px; padding: 0; }
+  .copybtn:hover { color: var(--accent); }
+  .copybtn.done { color: var(--accent); }
+  .modelmark { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 6px auto 16px; font-size: 11px; color: var(--faint); }
+  .modelmark .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+  .modelmark b { color: var(--muted); font-weight: 600; }
   .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
   .msg.user .content { background: var(--user-bg); border-radius: 14px 14px 4px 14px; padding: 10px 15px; max-width: 82%; white-space: pre-wrap; word-break: break-word; }
   .msg.assistant .content { word-break: break-word; }
@@ -117,6 +126,16 @@
   .apbar { display: flex; align-items: center; gap: 10px; background: var(--accent-weak); border: 1px solid var(--accent); border-radius: 12px; padding: 8px 14px; font-size: 13px; color: var(--accent); }
   .apbar .lbl { flex: 1; }
   .apbar button { background: transparent; border: 1px solid var(--accent); color: var(--accent); border-radius: 8px; padding: 4px 12px; cursor: pointer; font: inherit; font-size: 12px; }
+  #queueBar { max-width: 780px; margin: 0 auto 8px; display: flex; flex-direction: column; gap: 6px; }
+  #queueBar:empty { display: none; }
+  .qhdr { font-size: 11px; font-weight: 600; letter-spacing: .3px; text-transform: uppercase; color: var(--faint); padding: 0 2px; }
+  .qitem { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; }
+  .qitem .qn { width: 18px; height: 18px; flex: none; border-radius: 5px; background: var(--surface-3); color: var(--muted); display: grid; place-items: center; font-size: 11px; font-weight: 600; }
+  .qitem .qtxt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); }
+  .qitem .qmeta { flex: none; font-size: 10.5px; color: var(--faint); }
+  .qitem button { flex: none; background: none; border: none; color: var(--faint); cursor: pointer; padding: 3px; border-radius: 6px; display: inline-grid; place-items: center; }
+  .qitem button:hover { background: var(--surface-3); color: var(--text); }
+  .qitem button.qx:hover { color: #e5484d; }
   #otherRuns { max-width: 780px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 6px; }
   .orun { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; cursor: pointer; max-width: 100%; }
   .orun:hover { border-color: var(--border-strong); color: var(--text); }
@@ -222,6 +241,7 @@
     .ico { min-width: 36px; height: 36px; }
     .proj { padding: 11px 10px; }
     .msg, .sysline, .act, .qcard, .orphan { max-width: 100%; }
+    .msg .mmeta { opacity: .65; } /* no hover on touch — keep copy/time visible */
   }
 </style>
 <script>
@@ -246,6 +266,7 @@
   <symbol id="i-repeat" viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
 </defs></svg>
 <aside>
   <div class="brand"><span class="mark">x0</span><span>remote control</span><span class="sub">self-hosted</span></div>
@@ -277,6 +298,7 @@
     <div id="autopilotBar"></div>
     <div id="otherRuns"></div>
     <div id="busy"></div>
+    <div id="queueBar"></div>
     <div class="composer">
       <div id="attachRow"></div>
       <textarea id="prompt" rows="1" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste an image)"></textarea>
@@ -431,17 +453,47 @@
     else viewOf(pid).frag.appendChild(node);
   }
 
-  function nodeMsg(role, text, imgUrl) {
+  function clockTime(iso) {
+    var t = iso ? Date.parse(iso) : Date.now(); if (isNaN(t)) t = Date.now();
+    try { return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; }
+  }
+  function copyButton(getText) {
+    var b = document.createElement('button'); b.className = 'copybtn'; b.type = 'button';
+    b.appendChild(icon('copy', 'sm')); var s = document.createElement('span'); s.textContent = 'copy'; b.appendChild(s);
+    b.addEventListener('click', function () {
+      var txt = getText();
+      var done = function () { b.classList.add('done'); s.textContent = 'copied'; setTimeout(function () { b.classList.remove('done'); s.textContent = 'copy'; }, 1400); };
+      try { navigator.clipboard.writeText(txt).then(done, function () { fallbackCopy(txt); done(); }); }
+      catch (e) { fallbackCopy(txt); done(); }
+    });
+    return b;
+  }
+  function fallbackCopy(txt) {
+    try { var ta = document.createElement('textarea'); ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); } catch (e) {}
+  }
+  function nodeMsg(role, text, imgUrl, ts) {
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role;
     var lab = document.createElement('div'); lab.className = 'role'; lab.textContent = role === 'user' ? 'you' : 'claude'; wrap.appendChild(lab);
     var content = document.createElement('div'); content.className = 'content';
     if (role === 'assistant') content.appendChild(renderMarkdown(text)); else content.appendChild(document.createTextNode(text));
     if (imgUrl) { var im = document.createElement('img'); im.className = 'att'; im.src = imgUrl; content.appendChild(im); }
-    wrap.appendChild(content); return wrap;
+    wrap.appendChild(content);
+    var meta = document.createElement('div'); meta.className = 'mmeta';
+    var tm = document.createElement('span'); tm.textContent = clockTime(ts); meta.appendChild(tm);
+    meta.appendChild(copyButton(function () { return text; }));
+    wrap.appendChild(meta);
+    return wrap;
+  }
+  function nodeModelMark(model, ts) {
+    var d = document.createElement('div'); d.className = 'modelmark';
+    var dot = document.createElement('span'); dot.className = 'dot'; d.appendChild(dot);
+    var s = document.createElement('span'); s.appendChild(document.createTextNode('model: ')); var b = document.createElement('b'); b.textContent = modelLabel(model); s.appendChild(b);
+    if (ts) { s.appendChild(document.createTextNode(' · ' + clockTime(ts))); }
+    d.appendChild(s); return d;
   }
   function nodeSys(text, cls) { var d = document.createElement('div'); d.className = cls || 'sysline'; var s = document.createElement('span'); s.textContent = text; d.appendChild(s); return d; }
   function nodeAct(label, isSub) { var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
-  function addMsg(role, text, imgUrl) { appendNode(currentProjectId, nodeMsg(role, text, imgUrl)); }
+  function addMsg(role, text, imgUrl, ts) { appendNode(currentProjectId, nodeMsg(role, text, imgUrl, ts)); }
   function addSys(text, cls) { appendNode(currentProjectId, nodeSys(text, cls)); }
 
   var BANNERS = { limit_detected: 'limit reached — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts limited — parked', turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped' };
@@ -507,12 +559,19 @@
       if (mine) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); renderAccountChip(); }
       return;
     }
-    if (kind === 'assistant_text') appendNode(pid, nodeMsg('assistant', data.text));
+    if (kind === 'assistant_text') appendNode(pid, nodeMsg('assistant', data.text, null, data.ts));
     else if (kind === 'supervisor') {
       if (data.type === 'turn_started' && data.account) { activeAccount[pid] = data.account; if (mine) { renderBusy(); renderAccountChip(); } }
       var l = BANNERS[data.type]; if (l) appendNode(pid, nodeSys(l, 'banner'));
     }
-    else if (kind === 'active_model') { if (data.model) { activeModel[pid] = data.model; if (mine) renderBusy(); } }
+    else if (kind === 'active_model') {
+      if (data.model) {
+        var changed = activeModel[pid] !== data.model;
+        activeModel[pid] = data.model;
+        if (changed) appendNode(pid, nodeModelMark(data.model, data.ts)); // a switch — mark it inline
+        if (mine) renderBusy();
+      }
+    }
     else if (kind === 'activity') {
       // Derive the running-subagent count from the tracked set (idempotent), so a
       // replayed/duplicated 'start' can't inflate it (the "· N running" drift).
@@ -550,6 +609,10 @@
       if (pid === currentProjectId) renderAutopilot();
       if (!data.active && data.reason === 'done' && pid !== currentProjectId) notify('Autopilot done', (projCache[pid] ? projCache[pid].name : 'a project') + ' finished its task');
     }
+    else if (kind === 'queue') {
+      queueState[pid] = Array.isArray(data.items) ? data.items : [];
+      if (pid === currentProjectId) renderQueue();
+    }
     else if (kind === 'turn_orphaned') {
       var pname = projCache[pid] ? projCache[pid].name : (data.projectName || 'a project');
       notify('Turn interrupted', pname + ' stopped mid-turn — resume it in the panel');
@@ -559,7 +622,7 @@
     else if (kind === 'project_removed') {
       // removed elsewhere (another tab) — drop caches and reconcile the list
       var wasCur = currentProjectId === data.id;
-      delete views[data.id]; delete projCache[data.id]; delete runningProjects[data.id]; delete apState[data.id];
+      delete views[data.id]; delete projCache[data.id]; delete runningProjects[data.id]; delete apState[data.id]; delete queueState[data.id];
       if (wasCur) { currentProjectId = null; chatEl.textContent = ''; }
       loadProjects().then(function () { if (wasCur && currentProjectId && projCache[currentProjectId]) switchProject(projCache[currentProjectId]); });
     }
@@ -610,7 +673,7 @@
     card.classList.add('answered');
     var buttons = card.querySelectorAll('.qopt');
     for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; if (buttons[i].textContent === answer) buttons[i].classList.add('chosen'); }
-    addMsg('user', answer);
+    addMsg('user', answer, null, new Date().toISOString());
     api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, prompt: answer }) })
       .then(function (r) { if (r.status === 409) addSys('a turn is already running there', 'banner'); }).catch(function () {});
   }
@@ -650,6 +713,33 @@
     api('/api/autopilot', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId, count: count }) }).catch(function () {});
   });
   function loadAutopilot() { return api('/api/autopilot').then(function (r) { return r.json(); }).then(function (m) { apState = {}; Object.keys(m || {}).forEach(function (pid) { apState[pid] = m[pid].remaining; }); renderAutopilot(); }).catch(function () {}); }
+
+  // ---- prompt queue (messages lined up to send when the current turn finishes) ----
+  var queueState = {}; // pid -> [{id,text,model,effort,at}]
+  function renderQueue() {
+    var bar = $('queueBar'); bar.textContent = '';
+    var items = queueState[currentProjectId] || [];
+    if (!items.length) return;
+    var hdr = document.createElement('div'); hdr.className = 'qhdr'; hdr.textContent = 'Queued · ' + items.length + ' (sends when the turn finishes)'; bar.appendChild(hdr);
+    items.forEach(function (it, i) {
+      var row = document.createElement('div'); row.className = 'qitem';
+      var n = document.createElement('span'); n.className = 'qn'; n.textContent = String(i + 1); row.appendChild(n);
+      var t = document.createElement('span'); t.className = 'qtxt'; t.textContent = it.text; t.title = it.text; row.appendChild(t);
+      if (it.model) { var mm = document.createElement('span'); mm.className = 'qmeta'; mm.textContent = modelLabel(it.model); row.appendChild(mm); }
+      var ed = document.createElement('button'); ed.title = 'edit'; ed.appendChild(icon('compose', 'sm'));
+      ed.addEventListener('click', function () { editQueueItem(currentProjectId, it); }); row.appendChild(ed);
+      var rm = document.createElement('button'); rm.className = 'qx'; rm.title = 'cancel'; rm.appendChild(icon('x', 'sm'));
+      rm.addEventListener('click', function () { api('/api/queue/remove', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId, id: it.id }) }).catch(function () {}); }); row.appendChild(rm);
+      bar.appendChild(row);
+    });
+  }
+  function editQueueItem(pid, it) {
+    var next = window.prompt('Edit queued message:', it.text);
+    if (next === null) return; // cancelled
+    if (!next.trim()) { api('/api/queue/remove', { method: 'POST', body: JSON.stringify({ projectId: pid, id: it.id }) }).catch(function () {}); return; }
+    api('/api/queue/edit', { method: 'POST', body: JSON.stringify({ projectId: pid, id: it.id, prompt: next }) }).catch(function () {});
+  }
+  function loadQueue() { return api('/api/queue').then(function (r) { return r.json(); }).then(function (m) { queueState = m || {}; renderQueue(); }).catch(function () {}); }
 
   // ---- browser notifications ----
   var notifyAsked = false;
@@ -782,7 +872,7 @@
       down();
     }
     active = !!v.active; lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; renderBusy();
-    renderStrip(); renderAutopilot(); renderAccountChip();
+    renderStrip(); renderAutopilot(); renderAccountChip(); renderQueue();
     // Commit the selection server-side FIRST — /history and /sessions are keyed to
     // the server's "current" project, so loading before the select lands fetches
     // the wrong project's thread. Guard each step against a newer switch.
@@ -936,7 +1026,11 @@
       // happened between — appending the whole log after all messages (the
       // previous fix) always dumped the entire trail at the bottom instead.
       var items = [];
-      if (hasMsgs) rows.forEach(function (m, i) { items.push({ ts: m.ts, idx: i, render: function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text); } }); });
+      if (hasMsgs) rows.forEach(function (m, i) {
+        items.push({ ts: m.ts, idx: i, render: m.role === 'model'
+          ? function () { appendNode(pid, nodeModelMark(m.text, m.ts)); }        // model-switch marker from the transcript
+          : function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts); } });
+      });
       var base = items.length;
       lv.activityLog.forEach(function (a, i) { items.push({ ts: a.ts, idx: base + i, render: function () { appendNode(pid, nodeAct(a.label, a.isSubagent)); } }); });
       items.sort(function (x, y) {
@@ -958,7 +1052,7 @@
     if (currentProjectId) syncPicker(currentProjectId);
     // Cold-opened from a notification tap (service worker openWindow): jump to it.
     try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) switchProject(projCache[want]); } catch (e) {}
-  }); setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot();
+  }); setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue();
   pollSnapshot().then(loadHistory);
 
   // ---- SSE ----
@@ -968,7 +1062,7 @@
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     es.onopen = function () { dot.className = 'on'; };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'question', 'active_model'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'question', 'active_model'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -997,14 +1091,28 @@
   fileEl.addEventListener('change', function () { if (fileEl.files[0]) fileToImage(fileEl.files[0]); fileEl.value = ''; });
   promptEl.addEventListener('paste', function (e) { var items = (e.clipboardData || {}).items || []; for (var i = 0; i < items.length; i++) if (items[i].type && items[i].type.indexOf('image') === 0) { var f = items[i].getAsFile(); if (f) { e.preventDefault(); fileToImage(f); return; } } });
 
+  function queueBody(text) { var b = { projectId: currentProjectId, prompt: text }; if (modelEl.value) b.model = modelEl.value; if (effortEl.value) b.effort = effortEl.value; return b; }
   function send() {
     var text = promptEl.value.trim(); if (!text && !pendingImage) return;
+    // A turn is already running here → queue the follow-up (sent when it finishes)
+    // instead of erroring. Images can't be queued (they need a live upload).
+    if (currentProjectId && runningProjects[currentProjectId]) {
+      if (!text) { addSys('type a message to queue — images can’t be queued', 'banner'); return; }
+      if (pendingImage) addSys('image left attached — queued the text only', 'banner');
+      api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).then(function (r) {
+        if (r.ok) { promptEl.value = ''; autogrow(); if (!pendingImage) setImage(null); }
+      }).catch(function () {});
+      return;
+    }
     var body = { prompt: text }; if (modelEl.value) body.model = modelEl.value; if (effortEl.value) body.effort = effortEl.value; if (pendingImage) body.image = pendingImage;
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
-    addMsg('user', text || '(image)', pendingImage);
+    addMsg('user', text || '(image)', pendingImage, new Date().toISOString());
     api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-      if (r.status === 409) { addSys('this project already has a turn running — it can run alongside your other projects, just not two at once', 'banner'); return; }
+      if (r.status === 409) { // raced a turn start — queue it so it isn't lost
+        if (text) api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).catch(function () {});
+        addSys('a turn was already running — queued this message instead', 'banner'); promptEl.value = ''; autogrow(); setImage(null); return;
+      }
       promptEl.value = ''; autogrow(); setImage(null); pendingNew = false;
       return r.json().then(function (j) { if (j.sessionId) lastSessionId = j.sessionId; }).catch(function () {});
     }).catch(function () {});
