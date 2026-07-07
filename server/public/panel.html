@@ -1026,7 +1026,9 @@
       if (a.email) { var em = document.createElement('div'); em.className = 'em'; em.textContent = a.email; left.appendChild(em); }
       top.appendChild(left);
       var badge = document.createElement('span'); badge.className = 'badge';
-      if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'active'; } else if (st.kind === 'limited') { badge.classList.add('limited'); badge.textContent = 'limited'; } else badge.textContent = 'idle';
+      if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'active'; }
+      else if (st.kind === 'limited') { badge.classList.add('limited'); badge.textContent = 'limited · resets ' + clockTime(new Date(st.until * 1000).toISOString()); }
+      else badge.textContent = 'idle';
       top.appendChild(badge); card.appendChild(top);
       if (a.quota) { card.appendChild(gauge('5-hour', a.quota.fiveHour)); card.appendChild(gauge('7-day', a.quota.sevenDay)); if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = 'cached — refreshing'; card.appendChild(s); } }
       else { var n = document.createElement('div'); n.className = 'note'; n.textContent = a.quotaError ? 'usage unavailable — retrying' : 'usage unavailable'; card.appendChild(n); }

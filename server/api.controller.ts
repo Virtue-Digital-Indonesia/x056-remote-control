@@ -296,7 +296,15 @@ export class ApiController {
     return Promise.all(
       registry.list().map(async (acct) => {
         const id = accountIdentity(acct.configDir);
-        const base = { ...acct, displayName: id.displayName ?? acct.name, email: id.email };
+        // registry.list() returns the raw persisted verdict, which only gets
+        // re-evaluated the next time a turn actually tries this account — so a
+        // 'limited' mark can sit stale (badge says "limited" long after the
+        // cooldown passed). pickActive() already treats an expired `until` as
+        // usable; make the badge agree with that instead of the raw record.
+        const state = acct.state.kind === 'limited' && acct.state.until <= Math.floor(Date.now() / 1000)
+          ? ({ kind: 'ok' } as const)
+          : acct.state;
+        const base = { ...acct, state, displayName: id.displayName ?? acct.name, email: id.email };
         const cached = this.quotaCache.get(acct.name);
         if (cached && Date.now() - cached.at < QUOTA_TTL_MS) {
           return { ...base, quota: cached.quota };
