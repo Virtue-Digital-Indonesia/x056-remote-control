@@ -70,6 +70,18 @@ describe('SessionManager', () => {
     expect(calls[1].effort).toBe('high');
   });
 
+  it('persists the model->effort default map, replacing on save and dropping blank entries', () => {
+    const { mgr, stateDir } = fixture(COMPLETED);
+    expect(mgr.getSettings()).toEqual({ modelEffort: {} });
+    mgr.setModelEffortDefaults({ fable: 'high', opus: 'max' });
+    expect(mgr.getSettings()).toEqual({ modelEffort: { fable: 'high', opus: 'max' } });
+    const onDisk = JSON.parse(readFileSync(join(stateDir, 'settings.json'), 'utf8'));
+    expect(onDisk).toEqual({ modelEffort: { fable: 'high', opus: 'max' } });
+    // A later save fully replaces the map (form semantics) and blank values drop.
+    mgr.setModelEffortDefaults({ fable: 'low', sonnet: '' });
+    expect(mgr.getSettings()).toEqual({ modelEffort: { fable: 'low' } });
+  });
+
   it('enqueue/edit/remove maintain a per-project queue', () => {
     const { mgr } = fixture(COMPLETED);
     const pid = mgr.listProjects().current as string;

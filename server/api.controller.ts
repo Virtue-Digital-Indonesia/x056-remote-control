@@ -362,6 +362,21 @@ export class ApiController {
     return { ok: true };
   }
 
+  @Get('settings')
+  settings(): unknown {
+    return this.manager.getSettings();
+  }
+
+  @Post('settings/model-effort')
+  @HttpCode(200)
+  setModelEffort(@Body() body: { modelEffort?: Record<string, string> }): { ok: boolean } {
+    if (!body || typeof body.modelEffort !== 'object' || body.modelEffort === null) {
+      throw new BadRequestException('modelEffort required');
+    }
+    this.manager.setModelEffortDefaults(body.modelEffort);
+    return { ok: true };
+  }
+
   @Get('push/config')
   pushConfig(): { enabled: boolean; publicKey: string } {
     return { enabled: true, publicKey: this.push.publicKey };

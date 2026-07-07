@@ -379,6 +379,36 @@ export class SessionManager {
   }
   private readonly queueTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  // ---- settings: global user preferences (not per-project), e.g. which effort
+  //      to auto-fill when a given model is picked in the composer. ----
+  private get settingsFile(): string { return join(this.opts.stateDir, 'settings.json'); }
+  private loadSettings(): { modelEffort: Record<string, string> } {
+    try {
+      const s = JSON.parse(readFileSync(this.settingsFile, 'utf8')) as { modelEffort?: Record<string, string> };
+      return { modelEffort: s.modelEffort && typeof s.modelEffort === 'object' ? s.modelEffort : {} };
+    } catch {
+      return { modelEffort: {} };
+    }
+  }
+  private saveSettings(s: { modelEffort: Record<string, string> }): void {
+    const tmp = `${this.settingsFile}.tmp`;
+    writeFileSync(tmp, JSON.stringify(s, null, 2));
+    renameSync(tmp, this.settingsFile);
+  }
+
+  getSettings(): { modelEffort: Record<string, string> } { return this.loadSettings(); }
+
+  /** Replace the whole model->effort default map (the panel submits its full
+   *  current form on save; empty/missing entries just mean "no default"). */
+  setModelEffortDefaults(map: Record<string, string>): void {
+    const clean: Record<string, string> = {};
+    for (const [model, effort] of Object.entries(map ?? {})) {
+      if (typeof effort === 'string' && effort.trim()) clean[model] = effort.trim();
+    }
+    this.saveSettings({ modelEffort: clean });
+    this.emit('settings', { modelEffort: clean });
+  }
+
   /** Shared across all concurrent runs so failover's account-limit accounting
    *  is one authoritative in-process view (no cross-run file races). */
   private registry(): AccountRegistry {
