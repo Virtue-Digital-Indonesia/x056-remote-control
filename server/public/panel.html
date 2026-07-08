@@ -243,6 +243,10 @@
   .qa .arm { flex: none; width: 20px; height: 20px; padding: 0; border: none; background: transparent; color: var(--faint); border-radius: 5px; cursor: pointer; display: inline-grid; place-items: center; }
   .qa .arm:hover { background: var(--surface-3); color: #e5484d; }
   .qa .act { width: 100%; margin-top: 8px; height: 28px; font-size: 12px; font-weight: 500; }
+  /* The account already selected — sending next, or running the viewed turn right
+     now — gets the accent treatment instead of looking merely disabled like the
+     truly-unavailable (limited) case. */
+  .qa .act.current:disabled { opacity: 1; background: var(--accent-weak); color: var(--accent); border-color: var(--accent); font-weight: 600; cursor: default; }
   .badge { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: var(--surface-3); color: var(--muted); }
   .badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.limited { background: var(--amber-bg); color: var(--amber); }
   .badge.next { background: var(--accent-weak); color: var(--accent); }
@@ -1484,12 +1488,12 @@
         var act = document.createElement('button'); act.className = 'send ghost act';
         var limited = st.kind === 'limited';
         if (viewedRunning) {
-          if (a.name === runningAcct) { act.textContent = 'running this turn'; act.disabled = true; }
+          if (a.name === runningAcct) { act.textContent = 'running this turn'; act.disabled = true; act.classList.add('current'); }
           else if (limited) { act.textContent = 'limited — unavailable'; act.disabled = true; }
           else { act.textContent = 'Switch this turn here'; act.addEventListener('click', function () { switchTurnTo(a); }); }
         } else {
           if (limited) { act.textContent = 'limited — unavailable'; act.disabled = true; }
-          else if (a.active) { act.textContent = 'sends next message'; act.disabled = true; }
+          else if (a.active) { act.textContent = 'sends next message'; act.disabled = true; act.classList.add('current'); }
           else { act.textContent = 'Use for next message'; act.addEventListener('click', function () { chooseNextAccount(a); }); }
         }
         card.appendChild(act);
