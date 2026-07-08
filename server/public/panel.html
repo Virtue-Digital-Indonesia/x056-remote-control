@@ -1568,7 +1568,18 @@
     // gap), leaving the busy indicator stuck. loadProjects() re-derives it from
     // the server's authoritative state.
     setInterval(loadProjects, 20000);
-    pollSnapshot().then(function () { restoreDraft(); return loadHistory(); });
+    pollSnapshot().then(function () {
+      restoreDraft();
+      // loadAutopilot()/loadQueue() above fire in parallel with this poll, and
+      // their renders read apState[currentProjectId]/queueState[...lastSessionId]
+      // — both still null until THIS resolves. If those fetches won the race,
+      // they rendered against stale/empty ids and nothing else ever re-renders
+      // them (a real toggle/enqueue looked like it "didn't show up" until an
+      // unrelated action, like switching projects, happened to redraw them).
+      // Re-render now that the ids are authoritative; harmless if already correct.
+      renderAutopilot(); renderQueue();
+      return loadHistory();
+    });
     connect();
   }
 
