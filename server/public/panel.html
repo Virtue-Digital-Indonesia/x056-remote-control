@@ -193,7 +193,10 @@
 
   /* composer */
   .composer-wrap { flex: none; padding: 10px 24px 18px; }
-  /* Jump-to-latest: floats just above the composer when the thread is scrolled up. */
+  /* Jump-to-latest: floats just above the composer when the thread is scrolled up.
+     `bottom` is a fallback for the instant before JS measures composer-wrap (below,
+     it's kept in sync with a ResizeObserver since attachments/queue/autopilot bars
+     and the multiline prompt all change that height). */
   #jumpBtn { position: absolute; left: 50%; transform: translateX(-50%); bottom: 128px; z-index: 30; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; display: grid; place-items: center; box-shadow: 0 2px 10px rgba(0,0,0,.25); }
   #jumpBtn[hidden] { display: none; }
   #jumpBtn:hover { border-color: var(--accent); color: var(--accent); }
@@ -663,6 +666,14 @@
   function updateJump() { jumpBtn.hidden = atBottom(); }
   scroller.addEventListener('scroll', updateJump, { passive: true });
   jumpBtn.addEventListener('click', function () { down(); updateJump(); });
+  // Sit just above the composer-wrap, whatever height it currently is — that box
+  // grows with attachments, the queue/autopilot bars, and the multiline prompt, so
+  // a fixed CSS offset drifts and the button ends up covering the prompt box.
+  var composerWrapEl = document.querySelector('.composer-wrap');
+  function positionJumpBtn() { jumpBtn.style.bottom = (composerWrapEl.offsetHeight + 14) + 'px'; }
+  positionJumpBtn();
+  if (window.ResizeObserver) new ResizeObserver(positionJumpBtn).observe(composerWrapEl);
+  else window.addEventListener('resize', positionJumpBtn);
 
   // Per-CONVERSATION view cache: every conversation (not just project) keeps its
   // rendered thread (detached DocumentFragment when not in view) + live activity
