@@ -941,7 +941,7 @@
     else if (kind === 'project_removed') {
       // removed elsewhere (another tab) — drop caches and reconcile the list
       var wasCur = currentProjectId === data.id;
-      forgetProjectViews(data.id); forgetProjectNotifs(data.id); delete projCache[data.id]; delete runningProjects[data.id]; delete runningSessionIds[data.id]; delete apState[data.id]; delete queueState[data.id];
+      forgetProjectViews(data.id); forgetProjectNotifs(data.id); forgetProjectFiles(data.id); delete projCache[data.id]; delete runningProjects[data.id]; delete runningSessionIds[data.id]; delete apState[data.id]; delete queueState[data.id];
       if (wasCur) { currentProjectId = null; chatEl.textContent = ''; }
       loadProjects().then(function () { if (wasCur && currentProjectId && projCache[currentProjectId]) switchProject(projCache[currentProjectId]); });
     }
@@ -1242,6 +1242,7 @@
       if (projCache[projectId]) projCache[projectId].lastSessionId = sessionId;
       lastSessionId = sessionId; chatEl.textContent = '';
       restoreDraft(); // load this conversation's own unsent text
+      restoreAttachments(); // and its own pending (unsent) attachments
       renderQueue(); // re-filter the queue bar to this conversation
       clearConvNotif(projectId, sessionId); // viewing it clears its bell
       var v = viewOf(projectId, sessionId);
@@ -1262,6 +1263,7 @@
     }
     pendingNew = true; lastSessionId = null; chatEl.textContent = '';
     restoreDraft(); // the fresh conversation's own (usually empty) draft
+    restoreAttachments();
     addSys('new conversation — send a message to begin'); loadProjects(); promptEl.focus();
   }
   function renameConv(projectId, c) {
@@ -1273,7 +1275,7 @@
     if (!window.confirm('Remove conversation “' + (c.title || '') + '” from the list?\n\nOnly removes it from the panel — the transcript on disk is kept.')) return;
     api('/api/conversations/remove', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: c.sessionId }) }).then(function (r) {
       if (!r.ok) { addSys(r.status === 409 ? 'that conversation has a turn running — stop it first' : 'could not remove conversation', 'banner'); return; }
-      forgetView(projectId, c.sessionId); clearConvNotif(projectId, c.sessionId); // no longer reachable from the sidebar
+      forgetView(projectId, c.sessionId); clearConvNotif(projectId, c.sessionId); delete pendingFilesByConv[filesKeyFor(projectId, c.sessionId)]; // no longer reachable from the sidebar
       loadProjects().then(function () { pollSnapshot().then(loadHistory); });
     }).catch(function () {});
   }
@@ -1283,7 +1285,7 @@
     api('/api/projects/remove', { method: 'POST', body: JSON.stringify({ id: p.id }) }).then(function (r) {
       if (!r.ok) { addSys(r.status === 409 ? 'a turn is running there — stop it first' : 'could not remove project', 'banner'); return; }
       var wasCurrent = currentProjectId === p.id;
-      forgetProjectViews(p.id); forgetProjectNotifs(p.id); delete projCache[p.id]; delete runningProjects[p.id]; delete runningSessionIds[p.id]; delete apState[p.id];
+      forgetProjectViews(p.id); forgetProjectNotifs(p.id); forgetProjectFiles(p.id); delete projCache[p.id]; delete runningProjects[p.id]; delete runningSessionIds[p.id]; delete apState[p.id];
       if (wasCurrent) { currentProjectId = null; chatEl.textContent = ''; } // let renderProjects adopt the new server current
       loadProjects().then(function () {
         if (wasCurrent && currentProjectId && projCache[currentProjectId]) switchProject(projCache[currentProjectId]);
@@ -1301,6 +1303,7 @@
     currentProjectId = p.id; projCache[p.id] = p;
     lastSessionId = p.lastSessionId || null; // sync synchronously (no round-trip) so view lookups below key on the right conversation
     restoreDraft(); // this project/conversation's own unsent text
+    restoreAttachments(); // and its own pending (unsent) attachments
     clearConvNotif(p.id, lastSessionId); // viewing this project's current conversation clears its bell
     projTitleEl.textContent = p.name; projCwdEl.textContent = p.cwd;
     markActiveProject(p.id); // instant navbar highlight, no round-trip
@@ -1570,6 +1573,7 @@
     setInterval(loadProjects, 20000);
     pollSnapshot().then(function () {
       restoreDraft();
+      restoreAttachments();
       // loadAutopilot()/loadQueue() above fire in parallel with this poll, and
       // their renders read apState[currentProjectId]/queueState[...lastSessionId]
       // — both still null until THIS resolves. If those fetches won the race,
@@ -1620,9 +1624,22 @@
   function restoreDraft() { var k = draftKey(), v = ''; try { v = (k && localStorage.getItem(k)) || ''; } catch (e) {} promptEl.value = v; autogrow(); }
   promptEl.addEventListener('input', function () { autogrow(); saveDraft(); });
   // Attachments of ANY type: pendingFiles holds {name,type,url} objects (Claude
-  // can Read any file). The chip row re-renders (fresh indices) on add/remove so
-  // the × buttons stay correct after a splice. Images preview as thumbnails;
-  // other files show a name chip.
+  // can Read any file), one array PER CONVERSATION (pendingFilesByConv, keyed
+  // like the text draft) — NOT persisted to localStorage, unlike the text draft,
+  // since a single attachment can be tens of MB and would risk blowing the
+  // storage quota and breaking drafts/settings too. `pendingFiles` always points
+  // at the array for whichever conversation is currently viewed; restoreAttachments()
+  // repoints it on every switch so attaching a file never leaks into another chat.
+  var pendingFilesByConv = {};
+  function filesKeyFor(pid, sid) { return 'x056_draft_' + viewKey(pid, sid); }
+  function restoreAttachments() {
+    var k = draftKey();
+    pendingFiles = k ? (pendingFilesByConv[k] = pendingFilesByConv[k] || []) : [];
+    renderAttachments();
+  }
+  function forgetProjectFiles(pid) { var prefix = 'x056_draft_' + pid + '::'; Object.keys(pendingFilesByConv).forEach(function (k) { if (k.indexOf(prefix) === 0) delete pendingFilesByConv[k]; }); }
+  // The chip row re-renders (fresh indices) on add/remove so the × buttons stay
+  // correct after a splice. Images preview as thumbnails; other files show a name chip.
   function renderAttachments() {
     attachRow.textContent = '';
     if (!pendingFiles.length) { attachRow.classList.remove('show'); return; }
@@ -1637,7 +1654,9 @@
     });
     attachRow.classList.add('show');
   }
-  function clearAttachments() { pendingFiles = []; renderAttachments(); }
+  // Truncate IN PLACE (not reassign) so the array still stored in
+  // pendingFilesByConv for this conversation is the same, now-empty, object.
+  function clearAttachments() { pendingFiles.length = 0; renderAttachments(); }
   var MAX_ATTACH_BYTES = 50 * 1024 * 1024;
   function addFile(f) {
     if (!f) return;
@@ -1693,10 +1712,22 @@
         if (text) api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).catch(function () {});
         addSys('a turn was already running — queued this message instead', 'banner'); promptEl.value = ''; autogrow(); saveDraft(); clearAttachments(); return;
       }
-      // Clear the sent text under its current draft key (empty value removes it),
-      // then adopt the server's new sessionId as the current conversation.
+      // Clear the sent text/attachments under the current (pre-send) draft key
+      // (empty value removes it), then adopt the server's new sessionId as the
+      // current conversation.
       promptEl.value = ''; autogrow(); saveDraft(); clearAttachments(); pendingNew = false;
-      return r.json().then(function (j) { if (j.sessionId) lastSessionId = j.sessionId; }).catch(function () {});
+      return r.json().then(function (j) {
+        if (j.sessionId) {
+          lastSessionId = j.sessionId;
+          // A brand-new conversation just got its real sessionId — pendingFiles
+          // was pointing at the "pending new" slot (keyed by a null session) the
+          // whole time we were composing it; re-point it to the conversation's
+          // OWN key now, or any file attached after this (before the next send)
+          // would land in the wrong slot and bleed into the NEXT new conversation
+          // instead of staying with this one.
+          restoreAttachments();
+        }
+      }).catch(function () {});
     }).catch(function () {});
   }
   sendBtn.addEventListener('click', send);
