@@ -55,13 +55,13 @@ describe('PushService', () => {
     expect(sent[0].payload).toMatchObject({ title: 'ocr needs you', body: 'Proceed?', projectId: 'p1' });
   });
 
-  it('suppresses session_done while a project is on autopilot, but pushes when it is not', async () => {
-    const onAP = new Set(['p-ap']);
-    const { p } = svc({ autopilot: (pid) => onAP.has(pid) });
+  it('suppresses session_done while a CONVERSATION is on autopilot, but pushes when it is not', async () => {
+    const onAP = new Set(['sess-ap']); // autopilot is keyed by sessionId now
+    const { p } = svc({ autopilot: (sid) => onAP.has(sid) });
     p.add(sub('https://push/a'));
-    await p.notify('session_done', { projectId: 'p-ap', status: 'completed' });
+    await p.notify('session_done', { projectId: 'p1', sessionId: 'sess-ap', status: 'completed' });
     expect(sent.length).toBe(0); // mid-autopilot step, suppressed
-    await p.notify('session_done', { projectId: 'p-manual', status: 'completed' });
+    await p.notify('session_done', { projectId: 'p1', sessionId: 'sess-manual', status: 'completed' });
     expect(sent.length).toBe(1);
     expect(sent[0].payload).toMatchObject({ title: 'Proj finished' });
   });

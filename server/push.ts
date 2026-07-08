@@ -23,7 +23,7 @@ export class PushService {
   constructor(
     private readonly stateDir: string,
     private readonly nameOf: (pid: string) => string,
-    private readonly isAutopilot: (pid: string) => boolean,
+    private readonly isAutopilot: (sessionId: string) => boolean,
   ) {
     this.vapid = this.loadOrCreateVapid();
     webpush.setVapidDetails('mailto:x056@val.id', this.vapid.publicKey, this.vapid.privateKey);
@@ -94,7 +94,8 @@ export class PushService {
       title = `${project} needs you`;
       body = typeof data.question === 'string' ? String(data.question).slice(0, 140) : 'Claude asked a question';
     } else if (kind === 'session_done') {
-      if (pid && this.isAutopilot(pid)) return; // mid-autopilot step, not a real stop
+      const sid = typeof data.sessionId === 'string' ? data.sessionId : '';
+      if (sid && this.isAutopilot(sid)) return; // mid-autopilot step, not a real stop
       const status = typeof data.status === 'string' ? data.status : 'done';
       title = status === 'completed' ? `${project} finished` : `${project} stopped`;
       body = status === 'completed' ? 'The turn completed — tap to continue.' : `Turn ${status}.`;

@@ -948,9 +948,11 @@
       if (!mineConvo) { setConvNotif(pid, sid, 'question'); notify('Claude has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80)); }
     }
     else if (kind === 'autopilot') {
-      if (data.active) apState[pid] = data.remaining; else delete apState[pid];
-      if (pid === currentProjectId) renderAutopilot();
-      if (!data.active && data.reason === 'done' && pid !== currentProjectId) notify('Autopilot done', (projCache[pid] ? projCache[pid].name : 'a project') + ' finished its task');
+      // Autopilot is per-conversation now — keyed by the run's sessionId, not
+      // the project. The bar shows only for the conversation actually on screen.
+      if (sid) { if (data.active) apState[sid] = data.remaining; else delete apState[sid]; }
+      if (mineConvo) renderAutopilot();
+      if (!data.active && data.reason === 'done' && !mineConvo) notify('Autopilot done', (projCache[pid] ? projCache[pid].name : 'a project') + ' finished its task');
     }
     else if (kind === 'queue') {
       queueState[pid] = Array.isArray(data.items) ? data.items : [];
@@ -1045,27 +1047,30 @@
     api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, prompt: 'Continue from where you left off. If your last action was a command or edit that may have partially applied, verify its actual effect before re-running anything with side effects.' }) })
       .then(function (r) { if (r.status === 409) addSys('a turn is already running there', 'banner'); }).catch(function () {});
   }
-  // ---- autopilot (gateway-driven continuation) ----
-  var apState = {}; // pid -> remaining
+  // ---- autopilot (gateway-driven continuation, per conversation) ----
+  var apState = {}; // sessionId -> remaining
   function renderAutopilot() {
     var bar = $('autopilotBar'); bar.textContent = '';
-    var rem = apState[currentProjectId];
+    var rem = lastSessionId ? apState[lastSessionId] : undefined; // the VIEWED conversation's autopilot
     if (rem === undefined) return;
+    var sid = lastSessionId;
     var d = document.createElement('div'); d.className = 'apbar';
     d.appendChild(icon('repeat', 'sm'));
-    var l = document.createElement('span'); l.className = 'lbl'; l.textContent = 'Autopilot on — gateway will keep this going (' + rem + ' step' + (rem === 1 ? '' : 's') + ' left, or until the task says done)'; d.appendChild(l);
-    var stop = document.createElement('button'); stop.textContent = 'Stop'; stop.addEventListener('click', function () { api('/api/autopilot/stop', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId }) }).catch(function () {}); }); d.appendChild(stop);
+    var l = document.createElement('span'); l.className = 'lbl'; l.textContent = 'Autopilot on — gateway will keep this conversation going (' + rem + ' step' + (rem === 1 ? '' : 's') + ' left, or until the task says done)'; d.appendChild(l);
+    var stop = document.createElement('button'); stop.textContent = 'Stop'; stop.addEventListener('click', function () { api('/api/autopilot/stop', { method: 'POST', body: JSON.stringify({ sessionId: sid }) }).catch(function () {}); }); d.appendChild(stop);
     bar.appendChild(d);
   }
   $('autopilotBtn').addEventListener('click', function () {
     if (!currentProjectId) return;
-    if (apState[currentProjectId] !== undefined) { api('/api/autopilot/stop', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId }) }).catch(function () {}); return; }
-    uiPrompt({ title: 'Enable autopilot', message: 'How many times should the gateway auto-continue this project? After each turn it sends “keep going” until the task replies AUTOPILOT_DONE or this many steps run out. Survives turn-end and restarts.', value: '20', type: 'number', okText: 'Enable' }).then(function (n) {
+    if (!lastSessionId) { addSys('start or open a conversation first, then enable autopilot for it', 'banner'); return; }
+    if (apState[lastSessionId] !== undefined) { api('/api/autopilot/stop', { method: 'POST', body: JSON.stringify({ sessionId: lastSessionId }) }).catch(function () {}); return; }
+    var pid = currentProjectId, sid = lastSessionId;
+    uiPrompt({ title: 'Enable autopilot', message: 'How many times should the gateway auto-continue THIS conversation? After each turn it sends “keep going” until the task replies AUTOPILOT_DONE or this many steps run out. Survives turn-end and restarts.', value: '20', type: 'number', okText: 'Enable' }).then(function (n) {
       if (n == null) return; var count = parseInt(n, 10); if (!(count > 0)) return;
-      api('/api/autopilot', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId, count: count }) }).catch(function () {});
+      api('/api/autopilot', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, count: count }) }).catch(function () {});
     });
   });
-  function loadAutopilot() { return api('/api/autopilot').then(function (r) { return r.json(); }).then(function (m) { apState = {}; Object.keys(m || {}).forEach(function (pid) { apState[pid] = m[pid].remaining; }); renderAutopilot(); }).catch(function () {}); }
+  function loadAutopilot() { return api('/api/autopilot').then(function (r) { return r.json(); }).then(function (m) { apState = {}; Object.keys(m || {}).forEach(function (sid) { apState[sid] = m[sid].remaining; }); renderAutopilot(); }).catch(function () {}); }
 
   // ---- prompt queue (messages lined up to send when the current turn finishes) ----
   var queueState = {}; // pid -> [{id,text,model,effort,at}]
@@ -1275,7 +1280,7 @@
       lastSessionId = sessionId; chatEl.textContent = '';
       restoreDraft(); // load this conversation's own unsent text
       restoreAttachments(); // and its own pending (unsent) attachments
-      renderQueue(); // re-filter the queue bar to this conversation
+      renderQueue(); renderAutopilot(); // re-scope the queue + autopilot bars to this conversation
       clearConvNotif(projectId, sessionId); // viewing it clears its bell
       var v = viewOf(projectId, sessionId);
       if (v.frag.childNodes.length > 0) {
@@ -1296,6 +1301,7 @@
     pendingNew = true; lastSessionId = null; chatEl.textContent = '';
     restoreDraft(); // the fresh conversation's own (usually empty) draft
     restoreAttachments();
+    renderQueue(); renderAutopilot(); // no session yet → both bars clear
     addSys('new conversation — send a message to begin'); loadProjects(); promptEl.focus();
   }
   function renameConv(projectId, c) {

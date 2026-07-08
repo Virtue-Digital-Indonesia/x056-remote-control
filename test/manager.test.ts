@@ -435,30 +435,33 @@ describe('SessionManager autopilot', () => {
 
   it('auto-continues after a completed turn until the count is exhausted', async () => {
     const { mgr, p, prompts } = apFixture([done('working'), done('working'), done('working')]);
-    mgr.start('kick off', undefined, undefined, p.id);
-    mgr.setAutopilot(p.id, { count: 2, prompt: 'CONTINUE_NOW' });
+    const sid = mgr.start('kick off', undefined, undefined, p.id);
+    mgr.setAutopilot(p.id, sid, { count: 2, prompt: 'CONTINUE_NOW' });
     // 1 initial + up to 2 auto-continues
     await waitFor(() => prompts.filter((x) => x === 'CONTINUE_NOW').length >= 2, 8000);
     expect(prompts.filter((x) => x === 'CONTINUE_NOW').length).toBe(2);
-    await waitFor(() => mgr.autopilotStatus()[p.id] === undefined, 3000); // clears when the final continue settles
+    await waitFor(() => mgr.autopilotStatus()[sid] === undefined, 3000); // clears when the final continue settles
   }, 12000);
 
   it('stops early when the result contains the stop phrase', async () => {
     const { mgr, p, prompts } = apFixture([done('AUTOPILOT_DONE now')]);
-    mgr.start('kick off', undefined, undefined, p.id);
-    mgr.setAutopilot(p.id, { count: 10 });
+    const sid = mgr.start('kick off', undefined, undefined, p.id);
+    mgr.setAutopilot(p.id, sid, { count: 10 });
     await waitFor(() => mgr.snapshot().running === false, 4000);
     await new Promise((r) => setTimeout(r, 200));
     expect(prompts.filter((x) => x.includes('Continue')).length).toBe(0); // never continued
-    expect(mgr.autopilotStatus()[p.id]).toBeUndefined();
+    expect(mgr.autopilotStatus()[sid]).toBeUndefined();
   });
 
-  it('stopAutopilot cancels the loop', async () => {
+  it('is per-conversation: arming one conversation leaves a sibling un-armed', async () => {
     const { mgr, p } = apFixture([done('working')]);
-    mgr.setAutopilot(p.id, { count: 5 });
-    expect(mgr.autopilotStatus()[p.id]).toEqual({ remaining: 5 });
-    mgr.stopAutopilot(p.id);
-    expect(mgr.autopilotStatus()[p.id]).toBeUndefined();
+    mgr.setAutopilot(p.id, 'sess-A', { count: 5 });
+    expect(mgr.autopilotStatus()['sess-A']).toEqual({ remaining: 5, projectId: p.id });
+    expect(mgr.autopilotStatus()['sess-B']).toBeUndefined(); // sibling conversation NOT armed
+    expect(mgr.hasAutopilot('sess-A')).toBe(true);
+    expect(mgr.hasAutopilot('sess-B')).toBe(false);
+    mgr.stopAutopilot('sess-A');
+    expect(mgr.autopilotStatus()['sess-A']).toBeUndefined();
   });
 });
 

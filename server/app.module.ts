@@ -32,7 +32,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   const push = new PushService(
     cfg.stateDir,
     (pid) => manager.projectName(pid) ?? 'a project',
-    (pid) => manager.hasAutopilot(pid),
+    (sessionId) => manager.hasAutopilot(sessionId),
   );
   manager.subscribe((e) => { push.notify(e.kind, e.data).catch(() => {}); });
 

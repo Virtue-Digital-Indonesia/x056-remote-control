@@ -262,117 +262,137 @@ export class SessionManager {
   private get autopilotFile(): string {
     return join(this.opts.stateDir, 'autopilot.json');
   }
-  private loadAutopilot(): Record<string, { remaining: number; prompt: string; stopPhrase: string }> {
+  // Autopilot is armed per CONVERSATION (keyed by sessionId), each entry
+  // carrying its projectId so the loop can resume that exact session. A project
+  // can have several conversations, only some on autopilot — arming one must not
+  // arm the others.
+  private loadAutopilot(): Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string }> {
     try {
-      return JSON.parse(readFileSync(this.autopilotFile, 'utf8')) as Record<string, { remaining: number; prompt: string; stopPhrase: string }>;
+      const m = JSON.parse(readFileSync(this.autopilotFile, 'utf8')) as Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId?: string }>;
+      // Migrate legacy project-keyed entries (no projectId field) to session-keyed:
+      // the key WAS the projectId, so resume the project's current conversation.
+      const out: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string }> = {};
+      for (const [key, v] of Object.entries(m)) {
+        if (v.projectId) { out[key] = v as typeof out[string]; continue; }
+        const proj = this.projects().get(key); // legacy key = projectId
+        const sid = proj?.lastSessionId;
+        if (proj && sid) out[sid] = { ...v, projectId: key };
+      }
+      return out;
     } catch {
       return {};
     }
   }
-  private saveAutopilot(map: Record<string, { remaining: number; prompt: string; stopPhrase: string }>): void {
+  private saveAutopilot(map: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string }>): void {
     const tmp = `${this.autopilotFile}.tmp`;
     writeFileSync(tmp, JSON.stringify(map, null, 2));
     renameSync(tmp, this.autopilotFile);
   }
 
-  private readonly autopilotTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly autopilotTimers = new Map<string, ReturnType<typeof setTimeout>>(); // keyed by sessionId
   private readonly DEFAULT_AUTOPILOT_PROMPT =
     'Continue working on the task, one concrete step at a time. Do the work directly and synchronously — never background it. When the entire task is fully complete, reply with exactly: AUTOPILOT_DONE';
   private get autopilotInterval(): number { return this.opts.autopilotIntervalMs ?? 3000; }
 
-  /** Turn on gateway-driven continuation for a project. */
-  setAutopilot(projectId: string, opts: { count: number; prompt?: string; stopPhrase?: string }): void {
+  /** Turn on gateway-driven continuation for ONE conversation. */
+  setAutopilot(projectId: string, sessionId: string, opts: { count: number; prompt?: string; stopPhrase?: string }): void {
     if (!this.projects().get(projectId)) throw new Error(`unknown project ${projectId}`);
+    if (!sessionId) throw new Error('no conversation selected');
     const map = this.loadAutopilot();
-    map[projectId] = {
+    map[sessionId] = {
       remaining: Math.max(1, Math.min(500, Math.floor(opts.count))),
       prompt: opts.prompt?.trim() || this.DEFAULT_AUTOPILOT_PROMPT,
       stopPhrase: opts.stopPhrase?.trim() || 'AUTOPILOT_DONE',
+      projectId,
     };
     this.saveAutopilot(map);
-    this.emit('autopilot', { projectId, active: true, remaining: map[projectId].remaining });
+    this.emit('autopilot', { projectId, sessionId, active: true, remaining: map[sessionId].remaining });
   }
 
-  stopAutopilot(projectId: string): void {
+  stopAutopilot(sessionId: string): void {
     const map = this.loadAutopilot();
-    if (map[projectId]) {
-      delete map[projectId];
-      this.saveAutopilot(map);
+    const pid = map[sessionId]?.projectId;
+    if (map[sessionId]) { delete map[sessionId]; this.saveAutopilot(map); }
+    const t = this.autopilotTimers.get(sessionId);
+    if (t) { clearTimeout(t); this.autopilotTimers.delete(sessionId); }
+    this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'stopped' });
+  }
+
+  /** Stop autopilot for every conversation of a project (used when it's removed). */
+  private stopAutopilotForProject(projectId: string): void {
+    for (const [sid, ap] of Object.entries(this.loadAutopilot())) {
+      if (ap.projectId === projectId) this.stopAutopilot(sid);
     }
-    const t = this.autopilotTimers.get(projectId);
-    if (t) { clearTimeout(t); this.autopilotTimers.delete(projectId); }
-    this.emit('autopilot', { projectId, active: false, remaining: 0, reason: 'stopped' });
   }
 
-  autopilotStatus(): Record<string, { remaining: number }> {
+  autopilotStatus(): Record<string, { remaining: number; projectId: string }> {
     const map = this.loadAutopilot();
-    const out: Record<string, { remaining: number }> = {};
-    for (const [pid, v] of Object.entries(map)) out[pid] = { remaining: v.remaining };
+    const out: Record<string, { remaining: number; projectId: string }> = {};
+    for (const [sid, v] of Object.entries(map)) out[sid] = { remaining: v.remaining, projectId: v.projectId };
     return out;
   }
 
-  /** After a completed turn, decide whether the gateway should auto-continue.
-   *  Only the autopilot's OWN conversation (the project's current one) drives the
-   *  loop — a sibling conversation finishing concurrently must not. */
+  /** After a completed turn, decide whether the gateway should auto-continue
+   *  THIS conversation — each conversation drives its own autopilot loop. */
   private maybeAutopilot(pid: string, sessionId: string, res: SessionResult): void {
     const map = this.loadAutopilot();
-    const ap = map[pid];
+    const ap = map[sessionId];
     if (!ap) return;
-    if ((this.projects().get(pid)?.lastSessionId ?? sessionId) !== sessionId) return;
     // Only continue on a clean completion; park/error pauses (state kept so the
     // user or a later trigger can resume) but stops the auto-loop.
     if (res.status !== 'completed') {
-      this.emit('autopilot', { projectId: pid, active: false, remaining: ap.remaining, reason: res.status });
+      this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: ap.remaining, reason: res.status });
       return;
     }
     if (typeof res.resultText === 'string' && res.resultText.includes(ap.stopPhrase)) {
-      delete map[pid]; this.saveAutopilot(map);
-      this.emit('autopilot', { projectId: pid, active: false, remaining: 0, reason: 'done' });
+      delete map[sessionId]; this.saveAutopilot(map);
+      this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'done' });
       return;
     }
     if (ap.remaining <= 0) {
-      delete map[pid]; this.saveAutopilot(map);
-      this.emit('autopilot', { projectId: pid, active: false, remaining: 0, reason: 'exhausted' });
+      delete map[sessionId]; this.saveAutopilot(map);
+      this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'exhausted' });
       return;
     }
     // This continuation consumes one of the allotted steps.
     ap.remaining -= 1;
-    map[pid] = ap; this.saveAutopilot(map);
-    this.emit('autopilot', { projectId: pid, active: true, remaining: ap.remaining });
-    this.scheduleAutopilot(pid, ap.prompt);
+    map[sessionId] = ap; this.saveAutopilot(map);
+    this.emit('autopilot', { projectId: pid, sessionId, active: true, remaining: ap.remaining });
+    this.scheduleAutopilot(sessionId, ap.prompt);
   }
 
-  private scheduleAutopilot(pid: string, prompt: string): void {
-    const existing = this.autopilotTimers.get(pid);
+  private scheduleAutopilot(sessionId: string, prompt: string): void {
+    const existing = this.autopilotTimers.get(sessionId);
     if (existing) clearTimeout(existing);
     // Deferred so the finished run is out of the map before we continue.
     const t = setTimeout(() => {
-      this.autopilotTimers.delete(pid);
-      if (!this.loadAutopilot()[pid]) return; // stopped meanwhile
-      if (this.projectBusy(pid)) return; // a turn is somehow running; skip this tick
+      this.autopilotTimers.delete(sessionId);
+      const ap = this.loadAutopilot()[sessionId];
+      if (!ap) return; // stopped meanwhile
+      if (this.sessionBusy(sessionId)) return; // this conversation is running; skip this tick
       try {
-        this.continueLast(prompt, undefined, pid);
+        this.continueSession(ap.projectId, sessionId, prompt);
       } catch {
-        // e.g. no previous session yet — drop autopilot for safety
-        this.stopAutopilot(pid);
+        // e.g. session gone — drop autopilot for safety
+        this.stopAutopilot(sessionId);
       }
     }, this.autopilotInterval);
-    this.autopilotTimers.set(pid, t);
+    this.autopilotTimers.set(sessionId, t);
   }
 
-  /** On startup, revive any project whose autopilot was mid-flight when the
+  /** On startup, revive any conversation whose autopilot was mid-flight when the
    *  process died — this is what makes long autonomous work survive restarts. */
   private resumeAutopilots(): void {
     const map = this.loadAutopilot();
     let stagger = 1000;
-    for (const [pid, ap] of Object.entries(map)) {
+    for (const [sessionId, ap] of Object.entries(map)) {
       if (ap.remaining <= 0) continue;
       const t = setTimeout(() => {
-        this.autopilotTimers.delete(pid);
-        if (!this.loadAutopilot()[pid] || this.projectBusy(pid)) return;
-        try { this.continueLast(ap.prompt, undefined, pid); } catch { this.stopAutopilot(pid); }
+        this.autopilotTimers.delete(sessionId);
+        if (!this.loadAutopilot()[sessionId] || this.sessionBusy(sessionId)) return;
+        try { this.continueSession(ap.projectId, sessionId, ap.prompt); } catch { this.stopAutopilot(sessionId); }
       }, stagger);
-      this.autopilotTimers.set(pid, t);
+      this.autopilotTimers.set(sessionId, t);
       stagger += 1500;
     }
   }
@@ -726,6 +746,7 @@ export class SessionManager {
   /** Forget a conversation; refuses if it's the one currently running a turn. */
   removeConversation(projectId: string, sessionId: string): void {
     if (this.sessionBusy(sessionId)) throw new BusyError();
+    this.stopAutopilot(sessionId); // don't leave its autopilot armed against a removed conversation
     const reg = this.projects();
     reg.removeConversation(projectId, sessionId);
     const proj = reg.get(projectId);
@@ -740,7 +761,7 @@ export class SessionManager {
 
   /** Whether a project currently has autopilot armed (used to suppress noisy
    *  per-step completion pushes). */
-  hasAutopilot(pid: string): boolean { return !!this.loadAutopilot()[pid]; }
+  hasAutopilot(sessionId: string): boolean { return !!this.loadAutopilot()[sessionId]; }
 
   createProject(name: string, cwd?: string): Project {
     const dir = this.resolveCwd(cwd ?? this.opts.workspaceRoot);
@@ -837,7 +858,7 @@ export class SessionManager {
     if (this.projectBusy(id)) throw new BusyError();
     const reg = this.projects();
     if (!reg.get(id)) throw new Error(`unknown project ${id}`);
-    this.stopAutopilot(id);
+    this.stopAutopilotForProject(id);
     const qmap = this.loadQueues();
     if (qmap[id]) { delete qmap[id]; this.saveQueues(qmap); }
     reg.remove(id);
@@ -980,7 +1001,7 @@ export class SessionManager {
           const drained = res.status === 'completed' ? this.maybeDrainQueue(pid, sessionId) : false;
           // If the model ended its turn asking the user something, surface it as
           // an answerable card (only when not on autopilot/queue, which drive it).
-          const onAutopilot = !!this.loadAutopilot()[pid];
+          const onAutopilot = !!this.loadAutopilot()[sessionId];
           const q = onAutopilot || drained ? null : parseQuestion(res.resultText ?? '');
           if (q) emit('question', { sessionId, question: q.question, options: q.options });
           emit('session_done', { sessionId, ...res });
@@ -1103,7 +1124,7 @@ export class SessionManager {
       ? this.runs.get(sessionId)
       : (() => { const pid = projectId ?? this.projects().currentId(); return pid ? [...this.runs.values()].find((r) => r.projectId === pid) : undefined; })();
     if (!run?.control) return false;
-    this.stopAutopilot(run.projectId);
+    this.stopAutopilot(run.sessionId); // stop THIS conversation's autopilot, not the project's
     run.control.abort();
     return true;
   }

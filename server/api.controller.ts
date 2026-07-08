@@ -477,10 +477,10 @@ export class ApiController {
 
   @Post('autopilot')
   @HttpCode(200)
-  setAutopilot(@Body() body: { projectId?: string; count?: number; prompt?: string; stopPhrase?: string }): { ok: boolean } {
-    if (!body?.projectId || !body?.count) throw new BadRequestException('projectId and count required');
+  setAutopilot(@Body() body: { projectId?: string; sessionId?: string; count?: number; prompt?: string; stopPhrase?: string }): { ok: boolean } {
+    if (!body?.projectId || !body?.sessionId || !body?.count) throw new BadRequestException('projectId, sessionId and count required');
     try {
-      this.manager.setAutopilot(body.projectId, { count: body.count, prompt: body.prompt, stopPhrase: body.stopPhrase });
+      this.manager.setAutopilot(body.projectId, body.sessionId, { count: body.count, prompt: body.prompt, stopPhrase: body.stopPhrase });
       return { ok: true };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
@@ -489,9 +489,9 @@ export class ApiController {
 
   @Post('autopilot/stop')
   @HttpCode(200)
-  stopAutopilot(@Body() body: { projectId?: string }): { ok: boolean } {
-    if (!body?.projectId) throw new BadRequestException('projectId required');
-    this.manager.stopAutopilot(body.projectId);
+  stopAutopilot(@Body() body: { sessionId?: string }): { ok: boolean } {
+    if (!body?.sessionId) throw new BadRequestException('sessionId required');
+    this.manager.stopAutopilot(body.sessionId);
     return { ok: true };
   }
 
