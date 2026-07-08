@@ -42,7 +42,11 @@ export interface RunSessionOptions {
 }
 
 export interface RunControl {
-  forceSwitch: () => void;
+  /** Drain the current turn and resume on another account. By default (a legacy
+   *  or automatic switch) the account being left is benched for a cooldown; pass
+   *  { bench: false } for a user-directed switch to a specific account (the
+   *  caller sets which account is active first) so the old one stays available. */
+  forceSwitch: (opts?: { bench?: boolean }) => void;
   abort: () => void;
 }
 
@@ -64,6 +68,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   let mode: 'new' | 'resume' = opts.resume ? 'resume' : 'new';
   let prompt = opts.prompt;
   let forceSwitchRequested = false;
+  let forceBench = true; // whether the account being left is benched on the pending forced switch
   let currentHandle: TurnHandle | undefined;
   const onSigusr1 = () => {
     forceSwitchRequested = true;
@@ -78,8 +83,9 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     process.on('SIGINT', onTerminate);
   }
   opts.control?.({
-    forceSwitch: () => {
+    forceSwitch: (o) => {
       forceSwitchRequested = true;
+      if (o && o.bench === false) forceBench = false;
     },
     abort: () => {
       currentHandle?.kill();
@@ -212,6 +218,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       // session is switching anyway — so clear it unconditionally to avoid a stale
       // flag triggering a spurious forced interrupt on the next account.
       forceSwitchRequested = false;
+      const bench = forceBench; forceBench = true; // consume; default back to benching
       if (state.limited) {
         // A real resetsAt came from Anthropic (rate_limit_event); its absence
         // means the verdict came from a path that never carries one (a bare 429
@@ -219,15 +226,21 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // estimate, not a fact, so the UI doesn't present a guess as a countdown.
         const hasRealReset = state.limited.resetsAt != null;
         registry.markLimited(account.name, state.limited.resetsAt ?? now() + LIMIT_NO_RESET_FALLBACK, !hasRealReset);
-      } else {
-        // A forced switch is never backed by an Anthropic-reported reset time.
+      } else if (bench) {
+        // A legacy/automatic forced switch benches the account being left (never
+        // backed by an Anthropic-reported reset time). A user-directed switch to a
+        // specific account (bench:false) leaves the old one available to return to.
         registry.markLimited(account.name, now() + FORCED_COOLDOWN, true);
       }
-      failoverTimes.push(now());
-      const recent = failoverTimes.filter((t) => t > now() - 3600);
-      if (recent.length > maxPerHour) {
-        log.append({ type: 'flap_guard_tripped', sessionId });
-        return { status: 'failed', failovers: failoverTimes.length };
+      // Count toward the flap guard only for limit-driven or legacy forced rotates;
+      // a user-directed targeted switch is intentional, not flapping.
+      if (state.limited || bench) {
+        failoverTimes.push(now());
+        const recent = failoverTimes.filter((t) => t > now() - 3600);
+        if (recent.length > maxPerHour) {
+          log.append({ type: 'flap_guard_tripped', sessionId });
+          return { status: 'failed', failovers: failoverTimes.length };
+        }
       }
       log.append({ type: 'failover', sessionId, from: account.name });
       mode = 'resume';

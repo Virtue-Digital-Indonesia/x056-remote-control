@@ -115,13 +115,26 @@ describe('gateway e2e', () => {
   it('accounts endpoint returns registry state with quota errors handled gracefully', async () => {
     const res = await fetch(`${base}/api/accounts`, { headers: auth });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { name: string; state: unknown; quota: unknown; quotaError?: string }[];
+    const body = (await res.json()) as { name: string; state: unknown; quota: unknown; quotaError?: string; active?: boolean }[];
     expect(body.map((a) => a.name)).toEqual(['a', 'b']);
     expect(body[0].quotaError).toBeTruthy(); // fake cfg dirs have no credentials
+    // Exactly one account is flagged active (the account-selection capability probe).
+    expect(body.filter((a) => a.active === true).map((a) => a.name)).toEqual(['a']);
   });
 
-  it('switch returns 409 when idle', async () => {
-    const res = await fetch(`${base}/api/switch`, { method: 'POST', headers: auth });
+  it('accounts/active chooses which account the next message uses; rejects unknown/missing', async () => {
+    expect((await fetch(`${base}/api/accounts/active`, { method: 'POST', headers: auth, body: JSON.stringify({}) })).status).toBe(400);
+    expect((await fetch(`${base}/api/accounts/active`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'ghost' }) })).status).toBe(400);
+    const ok = await fetch(`${base}/api/accounts/active`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'b' }) });
+    expect(ok.status).toBe(200);
+    const body = (await (await fetch(`${base}/api/accounts`, { headers: auth })).json()) as { name: string; active?: boolean }[];
+    expect(body.filter((a) => a.active === true).map((a) => a.name)).toEqual(['b']);
+    await fetch(`${base}/api/accounts/active`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'a' }) }); // restore for other tests
+  });
+
+  it('switch returns 409 when idle (with or without a target account)', async () => {
+    expect((await fetch(`${base}/api/switch`, { method: 'POST', headers: auth })).status).toBe(409);
+    const res = await fetch(`${base}/api/switch`, { method: 'POST', headers: auth, body: JSON.stringify({ account: 'b' }) });
     expect(res.status).toBe(409);
   });
 

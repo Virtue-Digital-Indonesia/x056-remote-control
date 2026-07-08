@@ -384,6 +384,57 @@ describe('SessionManager parallel projects', () => {
   });
 });
 
+describe('SessionManager targeted account switch', () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-tsw-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
+    const calls: Array<{ bench?: boolean } | undefined> = [];
+    const runSessionFn = (async (o: RunSessionOptions) => {
+      // Announce the running account like the real supervisor, so a targeted
+      // switch can tell "same account" (refuse) from "different" (perform).
+      o.log.append({ type: 'turn_started', sessionId: o.sessionId, account: 'a' });
+      o.control?.({ forceSwitch: (opts) => calls.push(opts), abort: () => {} });
+      await new Promise((r) => setTimeout(r, 60));
+      return { status: 'completed', finalAccount: 'a', failovers: 0 } as SessionResult;
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn });
+    const p = mgr.createProject('P', dir);
+    return { mgr, p, calls };
+  }
+
+  it('refuses a targeted switch to the same/unknown account, performs it (bench:false) to a different one', async () => {
+    const { mgr, p, calls } = setup();
+    const sid = mgr.start('go', undefined, undefined, p.id);
+    // same account as the one running → nothing to switch
+    expect(mgr.forceSwitch(p.id, sid, 'a')).toBe(false);
+    // unknown account → refused
+    expect(mgr.forceSwitch(p.id, sid, 'nope')).toBe(false);
+    expect(calls).toEqual([]); // neither reached the run control
+    // a different, valid account → performed as a user-directed (non-benching) switch
+    expect(mgr.forceSwitch(p.id, sid, 'b')).toBe(true);
+    expect(calls).toEqual([{ bench: false }]);
+    // and the registry now prefers the target, so the resumed turn lands there
+    expect(mgr.nextUpAccount()).toBe('b');
+    await waitFor(() => mgr.listProjects().projects.every((pp) => !pp.running));
+  });
+
+  it('an untargeted forceSwitch still does the legacy benching rotate', async () => {
+    const { mgr, p, calls } = setup();
+    const sid = mgr.start('go', undefined, undefined, p.id);
+    expect(mgr.forceSwitch(p.id, sid)).toBe(true);
+    expect(calls).toEqual([undefined]); // no {bench:false} → benches, as before
+    await waitFor(() => mgr.listProjects().projects.every((pp) => !pp.running));
+  });
+
+  it('setActiveAccount points the registry at the chosen account and rejects an unknown one', () => {
+    const { mgr } = setup();
+    mgr.setActiveAccount('b');
+    expect(mgr.nextUpAccount()).toBe('b');
+    expect(() => mgr.setActiveAccount('nope')).toThrow();
+  });
+});
+
 describe('SessionManager orphan detection', () => {
   it('emits turn_orphaned for an in-flight marker left by a killed process', () => {
     const dir = mkdtempSync(join(tmpdir(), 'x056-orphan-'));

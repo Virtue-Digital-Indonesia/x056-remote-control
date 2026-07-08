@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { AccountRegistry } from '../src/accounts.js';
 import { EventLog } from '../src/eventlog.js';
 import { CONTINUE_PROMPT, runSession } from '../src/failover.js';
+import type { RunControl } from '../src/failover.js';
 import type { TurnHandle, TurnOptions } from '../src/turn.js';
 import type { RawEvent } from '../src/types.js';
 
@@ -198,6 +199,44 @@ describe('runSession', () => {
     expect(types).toContain('failover');
     // A forced switch is never backed by an Anthropic-reported reset time.
     expect(registry.get('a').state).toEqual({ kind: 'limited', until: 100 + 30 * 60, estimated: true });
+  });
+
+  it('user-directed forced switch (bench:false, via control) resumes on the target WITHOUT benching the account it left, and does not count as flapping', async () => {
+    const { registry, log } = fixtures();
+    const recorded: Recorded[] = [];
+    let ctrl: RunControl | undefined;
+    const resultPromise = runSession({
+      ...base,
+      registry,
+      log,
+      now: () => 100,
+      control: (c) => { ctrl = c; },
+      startTurnFn: scriptTurns(
+        [
+          [ASSISTANT, { __delayMs: 50 }, USER_EVENT],
+          [SUCCESS],
+        ],
+        recorded,
+      ),
+    });
+    // Ask for the switch once the first turn is underway (before its USER_EVENT
+    // drains). The manager points the registry at the target first (that's how a
+    // user-directed switch chooses WHERE to resume); mirror that here.
+    await new Promise((r) => setTimeout(r, 10));
+    registry.setActive('b');
+    ctrl!.forceSwitch({ bench: false });
+    const res = await resultPromise;
+
+    expect(res).toMatchObject({ status: 'completed', finalAccount: 'b' });
+    // Intentional, user-directed — not counted toward the flap guard.
+    expect(res.failovers).toBe(0);
+    const types = log.read().map((r) => r.type);
+    expect(types).toContain('forced_switch');
+    expect(types).toContain('failover');
+    // The account we left stays usable (NOT benched), so the user can switch back.
+    expect(registry.get('a').state.kind).not.toBe('limited');
+    // And the second turn actually ran on account b (resume mode).
+    expect(recorded[1]).toMatchObject({ configDir: registry.get('b').configDir, mode: 'resume' });
   });
 
   it('does not leave a stale forceSwitchRequested flag when a rate limit wins the SIGUSR1 race (Finding 2)', async () => {

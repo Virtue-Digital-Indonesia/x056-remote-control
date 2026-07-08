@@ -242,6 +242,7 @@
   .qa .badges { display: flex; align-items: center; gap: 6px; flex: none; }
   .qa .arm { flex: none; width: 20px; height: 20px; padding: 0; border: none; background: transparent; color: var(--faint); border-radius: 5px; cursor: pointer; display: inline-grid; place-items: center; }
   .qa .arm:hover { background: var(--surface-3); color: #e5484d; }
+  .qa .act { width: 100%; margin-top: 8px; height: 28px; font-size: 12px; font-weight: 500; }
   .badge { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: var(--surface-3); color: var(--muted); }
   .badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.limited { background: var(--amber-bg); color: var(--amber); }
   .badge.next { background: var(--accent-weak); color: var(--accent); }
@@ -903,12 +904,12 @@
       setSessionRunning(pid, sid, !!data.active);
       if (!data.active) { v.label = ''; v.subs = {}; v.subCount = 0; }
       markRunning(); renderStrip();
-      if (mineConvo) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); renderAccountChip(); }
+      if (mineConvo) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); renderAccountChip(); refreshAccountsPop(); }
       return;
     }
     if (kind === 'assistant_text') appendNode(pid, sid, nodeMsg('assistant', data.text, null, data.ts));
     else if (kind === 'supervisor') {
-      if (data.type === 'turn_started' && data.account) { activeAccount[pid] = data.account; if (mineConvo) { renderBusy(); renderAccountChip(); } }
+      if (data.type === 'turn_started' && data.account) { activeAccount[pid] = data.account; if (mineConvo) { renderBusy(); renderAccountChip(); refreshAccountsPop(); } }
       var l = BANNERS[data.type]; if (l) appendNode(pid, sid, nodeSys(l, 'banner'));
     }
     else if (kind === 'active_model') {
@@ -1431,7 +1432,16 @@
     // surface add/remove/next-up when the backend actually supports them, so the
     // live panel keeps working before the matching backend deploy.
     var capable = acctList.some(function (a) { return 'nextUp' in a; });
+    // A second, newer capability: per-account "send next on this" / "switch this
+    // turn here". Gated on the `active` field the account-selection backend adds,
+    // so a live panel ahead of that backend still just shows the old global button.
+    var activeCapable = acctList.some(function (a) { return 'active' in a; });
     $('addAcctBtn').style.display = capable ? '' : 'none';
+    // The global "Force-switch active account" button is superseded by the
+    // per-account "Switch this turn here" action once the backend supports it.
+    $('switchAcctBtn').style.display = activeCapable ? 'none' : '';
+    var viewedRunning = isSessionRunning(currentProjectId, lastSessionId);
+    var runningAcct = viewedRunning ? activeAccount[currentProjectId] : null;
     acctList.forEach(function (a) {
       acctNames[a.name] = a.displayName || a.name; // for done-banners etc.
       var st = a.state || { kind: 'unknown' };
@@ -1466,6 +1476,24 @@
       top.appendChild(badges); card.appendChild(top);
       if (a.quota) { card.appendChild(gauge('5-hour', a.quota.fiveHour)); card.appendChild(gauge('7-day', a.quota.sevenDay)); if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = 'cached — refreshing'; card.appendChild(s); } }
       else { var n = document.createElement('div'); n.className = 'note'; n.textContent = a.quotaError ? 'usage unavailable — retrying' : 'usage unavailable'; card.appendChild(n); }
+      // Per-account action. When the viewed conversation is mid-turn: switch THAT
+      // turn onto this account (ends the current turn, resumes it here) — disabled
+      // for the account already running it or a limited one. When idle: make this
+      // the account the next message uses — disabled for the one already chosen.
+      if (activeCapable) {
+        var act = document.createElement('button'); act.className = 'send ghost act';
+        var limited = st.kind === 'limited';
+        if (viewedRunning) {
+          if (a.name === runningAcct) { act.textContent = 'running this turn'; act.disabled = true; }
+          else if (limited) { act.textContent = 'limited — unavailable'; act.disabled = true; }
+          else { act.textContent = 'Switch this turn here'; act.addEventListener('click', function () { switchTurnTo(a); }); }
+        } else {
+          if (limited) { act.textContent = 'limited — unavailable'; act.disabled = true; }
+          else if (a.active) { act.textContent = 'sends next message'; act.disabled = true; }
+          else { act.textContent = 'Use for next message'; act.addEventListener('click', function () { chooseNextAccount(a); }); }
+        }
+        card.appendChild(act);
+      }
       accountsEl.appendChild(card);
     });
     renderAccountChip();
@@ -1478,6 +1506,24 @@
         pollAccounts();
       }).catch(function () {});
     });
+  }
+  // Idle: pick which account the next message runs on (sets the registry's
+  // preferred account). Keeps the popover open and re-polls so the badges update.
+  function chooseNextAccount(a) {
+    api('/api/accounts/active', { method: 'POST', body: JSON.stringify({ name: a.name }) }).then(function (r) {
+      if (!r.ok) { return r.json().then(function (j) { addSys(j && j.message ? j.message : 'could not choose account', 'banner'); }).catch(function () { addSys('could not choose account', 'banner'); }); }
+      addSys('next message will use ' + (a.displayName || a.name), 'banner');
+      pollAccounts();
+    }).catch(function () {});
+  }
+  // Mid-turn: end the current turn and resume it on the chosen account.
+  function switchTurnTo(a) {
+    var b = { account: a.name };
+    if (currentProjectId) { b.projectId = currentProjectId; b.sessionId = lastSessionId; }
+    api('/api/switch', { method: 'POST', body: JSON.stringify(b) }).then(function (r) {
+      if (r.status === 409) addSys('no running turn to switch, or it is already on that account', 'banner');
+      else if (r.ok) { addSys('switching to ' + (a.displayName || a.name) + '…', 'banner'); closeAllPops(); }
+    }).catch(function () {});
   }
   // The bottom-left chip shows the account actually in use: the one running the
   // viewed project's turn if known, else the server's "next up" account (the one
@@ -1505,6 +1551,10 @@
     acctPlan.textContent = live ? 'Max · active now' : (lim ? 'Max · limited' : (a.nextUp ? 'Max · sends next' : 'Max · view usage'));
   }
   function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
+  // Re-render the (open) account popover from the cached list so the per-account
+  // "Switch this turn here" / "Use for next message" buttons flip the instant the
+  // viewed conversation starts or ends a turn — no refetch needed.
+  function refreshAccountsPop() { if (!quotaPop.hidden) renderAccounts(acctList); }
   var sessPicker = $('sessPicker'), sessList = $('sessList');
   function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; $('morePop').hidden = true; $('addAcctPop').hidden = true; }
   // Mobile "more" menu: labeled rows that trigger the real (CSS-hidden on mobile)

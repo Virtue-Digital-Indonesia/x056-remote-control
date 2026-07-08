@@ -110,6 +110,7 @@ interface ActiveRun {
   projectId: string;
   cwd: string;
   control?: RunControl;
+  account?: string; // the account this turn is currently running on (from turn_started)
 }
 
 /** A short conversation title from the opening prompt (first non-empty line,
@@ -955,7 +956,12 @@ export class SessionManager {
     const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { sessionId, ...data, projectId: pid });
     try {
       const runFn = this.opts.runSessionFn ?? runSession;
-      const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => emit(k, d));
+      const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => {
+        // Track which account this turn is on (updated on start + each failover),
+        // so a targeted force-switch can tell "same account" from "different".
+        if (k === 'supervisor' && d && d.type === 'turn_started' && typeof d.account === 'string') run.account = d.account;
+        emit(k, d);
+      });
       let stateSaved = resume;
       const saveStateOnce = () => {
         if (!stateSaved) {
@@ -1097,9 +1103,20 @@ export class SessionManager {
     this.emit('session_adopted', { sessionId, cwd: dir, projectId: pid });
   }
 
-  /** Force an account switch on an in-flight turn. Targets the given
-   *  conversation if named, else any run in the project. */
-  forceSwitch(projectId?: string, sessionId?: string): boolean {
+  /** Choose the account the NEXT turn will run on (idle). Sets the registry's
+   *  preferred account; the next pickActive() returns it when it's usable. */
+  setActiveAccount(name: string): void {
+    this.registry().get(name); // throws if unknown
+    this.registry().setActive(name);
+    this.emitAccounts();
+  }
+
+  /** Force an account switch on an in-flight turn. With targetAccount, ends the
+   *  current turn and resumes it on THAT account (leaving the old one available,
+   *  not benched); refuses when it's already the account in use. Without a
+   *  target, does the legacy automatic rotate (benches the account being left).
+   *  Returns false when there's no in-flight turn or the target is invalid/same. */
+  forceSwitch(projectId?: string, sessionId?: string, targetAccount?: string): boolean {
     let run: ActiveRun | undefined;
     if (sessionId) run = this.runs.get(sessionId);
     else {
@@ -1107,7 +1124,15 @@ export class SessionManager {
       run = pid ? [...this.runs.values()].find((r) => r.projectId === pid) : undefined;
     }
     if (!run?.control) return false;
-    run.control.forceSwitch();
+    if (targetAccount) {
+      if (!this.registry().has(targetAccount)) return false;
+      if (run.account && run.account === targetAccount) return false; // already on it — nothing to switch
+      this.registry().setActive(targetAccount); // the resumed turn will pick this one
+      this.emitAccounts();
+      run.control.forceSwitch({ bench: false });
+    } else {
+      run.control.forceSwitch();
+    }
     return true;
   }
 

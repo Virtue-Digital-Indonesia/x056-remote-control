@@ -373,6 +373,7 @@ export class ApiController {
     // Which account the next turn would run on (skipping any still-limited one),
     // so the panel can show "this prompt will use X".
     const nextUp = registry.peekActive(Math.floor(Date.now() / 1000))?.name ?? null;
+    const activeName = registry.activeName(); // the preferred account (also flags the new-backend account-selection capability)
     return Promise.all(
       registry.list().map(async (acct) => {
         const id = accountIdentity(acct.configDir);
@@ -384,7 +385,7 @@ export class ApiController {
         const state = acct.state.kind === 'limited' && acct.state.until <= Math.floor(Date.now() / 1000)
           ? ({ kind: 'ok' } as const)
           : acct.state;
-        const base = { ...acct, state, displayName: id.displayName ?? acct.name, email: id.email, nextUp: acct.name === nextUp };
+        const base = { ...acct, state, displayName: id.displayName ?? acct.name, email: id.email, nextUp: acct.name === nextUp, active: acct.name === activeName };
         const cached = this.quotaCache.get(acct.name);
         if (cached && Date.now() - cached.at < QUOTA_TTL_MS) {
           return { ...base, quota: cached.quota };
@@ -411,9 +412,24 @@ export class ApiController {
 
   @Post('switch')
   @HttpCode(200)
-  switch(@Body() body: { projectId?: string; sessionId?: string }): { switched: boolean } {
-    if (!this.manager.forceSwitch(body?.projectId, body?.sessionId)) throw new ConflictException('no session running');
+  switch(@Body() body: { projectId?: string; sessionId?: string; account?: string }): { switched: boolean } {
+    if (!this.manager.forceSwitch(body?.projectId, body?.sessionId, body?.account)) {
+      throw new ConflictException(body?.account ? 'no running turn to switch, or it is already on that account' : 'no session running');
+    }
     return { switched: true };
+  }
+
+  /** Choose which account the next message uses (when idle). */
+  @Post('accounts/active')
+  @HttpCode(200)
+  setActiveAccount(@Body() body: { name?: string }): { ok: boolean } {
+    if (!body?.name) throw new BadRequestException('name required');
+    try {
+      this.manager.setActiveAccount(body.name);
+      return { ok: true };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
   }
 
   // ---- account onboarding / removal ----
