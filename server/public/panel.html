@@ -254,6 +254,34 @@
   .g .track > i.amber { background: var(--amber); } .g .track > i.red { background: var(--err); }
   .note { font-size: 11px; color: var(--faint); margin-top: 6px; }
   .backdrop { position: fixed; inset: 0; z-index: 25; } .backdrop[hidden] { display: none; }
+  /* Centered in-app dialogs (replace native prompt/confirm) + the ⌘K palette. */
+  .modal-wrap { position: fixed; inset: 0; z-index: 120; display: grid; place-items: start center; padding: 12vh 20px 20px; background: rgba(0,0,0,.5); }
+  .modal { width: 100%; max-width: 420px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 16px; box-shadow: var(--shadow); padding: 18px; }
+  .modal h3 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+  .modal p { font-size: 13px; color: var(--muted); margin: 0 0 4px; line-height: 1.5; white-space: pre-wrap; }
+  .modal .m-in { width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px; font: inherit; font-size: 16px; background: var(--bg); color: var(--text); outline: none; margin-top: 12px; }
+  .modal .m-in:focus { border-color: var(--accent); }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  .modal-actions .send { width: auto; padding: 0 16px; height: 34px; font-size: 13px; font-weight: 500; }
+  .modal-actions .send.danger { background: var(--err); color: #fff; }
+  .modal-actions .send.danger:hover { filter: brightness(1.08); }
+  /* ⌘K command palette */
+  .palette { max-width: 520px; padding: 10px; }
+  .palette .m-in { margin-top: 0; }
+  .palette-list { max-height: 46vh; overflow-y: auto; margin-top: 8px; }
+  .pal-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; color: var(--text); }
+  .pal-item .sub { color: var(--faint); font-size: 12px; }
+  .pal-item .kbd { margin-left: auto; }
+  .pal-item.sel { background: var(--surface-3); }
+  .pal-item .rspin { width: 11px; height: 11px; flex: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; }
+  .pal-empty { padding: 14px 10px; color: var(--faint); font-size: 13px; text-align: center; }
+  .pal-group { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--faint); padding: 8px 10px 4px; }
+  /* keyboard-shortcut help + inline kbd chips */
+  kbd, .kbd { font-family: var(--font); font-size: 11px; line-height: 1.6; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+  .sc-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 2px; border-bottom: 1px solid var(--border); }
+  .sc-row:last-child { border-bottom: none; }
+  .sc-row .desc { font-size: 13px; color: var(--text); }
+  .sc-row .keys { display: flex; gap: 4px; flex: none; }
   .pk-search { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13px; background: var(--bg); color: var(--text); margin-bottom: 8px; outline: none; }
   .pk-search:focus { border-color: var(--accent); }
   .pk-list { max-height: 320px; overflow-y: auto; }
@@ -293,7 +321,7 @@
     /* On mobile the crowded action icons collapse into the "more" menu; keep
        only the projects drawer, title, connection dot, and the more button. */
     .topbar #notifyBtn, .topbar #autopilotBtn, .topbar #resumeBtn,
-    .topbar #defaultsBtn, .topbar #passkeyBtn, .topbar #themeBtn, .topbar #tokenBtn { display: none; }
+    .topbar #defaultsBtn, .topbar #passkeyBtn, .topbar #themeBtn, .topbar #tokenBtn, .topbar #shortcutsBtn { display: none; }
     .topbar .title { flex: 1; min-width: 0; }
     .topbar .sp { display: none; }
     #morePop { top: calc(52px + env(safe-area-inset-top)); }
@@ -347,6 +375,7 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></symbol>
+  <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M10 14h4"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-4 4 3 3m-6-1 2.5 2.5"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
@@ -374,6 +403,7 @@
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
     <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
+    <button class="ico" id="shortcutsBtn" title="keyboard shortcuts (⌘/)"><svg class="ic"><use href="#i-keyboard"/></svg></button>
     <button class="ico" id="themeBtn" title="theme"><svg class="ic"><use href="#i-moon"/></svg></button>
     <button class="ico" id="tokenBtn" title="log out"><svg class="ic"><use href="#i-logout"/></svg></button>
     <button class="ico moreBtn" id="moreBtn" title="more" aria-label="more"><svg class="ic"><use href="#i-more"/></svg></button>
@@ -1030,9 +1060,10 @@
   $('autopilotBtn').addEventListener('click', function () {
     if (!currentProjectId) return;
     if (apState[currentProjectId] !== undefined) { api('/api/autopilot/stop', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId }) }).catch(function () {}); return; }
-    var n = window.prompt('Autopilot: how many times should the gateway auto-continue this project?\n\nAfter each turn it sends "keep going" until the task replies AUTOPILOT_DONE or this many steps run out. Survives turn-end and restarts.', '20');
-    if (!n) return; var count = parseInt(n, 10); if (!(count > 0)) return;
-    api('/api/autopilot', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId, count: count }) }).catch(function () {});
+    uiPrompt({ title: 'Enable autopilot', message: 'How many times should the gateway auto-continue this project? After each turn it sends “keep going” until the task replies AUTOPILOT_DONE or this many steps run out. Survives turn-end and restarts.', value: '20', type: 'number', okText: 'Enable' }).then(function (n) {
+      if (n == null) return; var count = parseInt(n, 10); if (!(count > 0)) return;
+      api('/api/autopilot', { method: 'POST', body: JSON.stringify({ projectId: currentProjectId, count: count }) }).catch(function () {});
+    });
   });
   function loadAutopilot() { return api('/api/autopilot').then(function (r) { return r.json(); }).then(function (m) { apState = {}; Object.keys(m || {}).forEach(function (pid) { apState[pid] = m[pid].remaining; }); renderAutopilot(); }).catch(function () {}); }
 
@@ -1070,13 +1101,14 @@
       .then(function (r) { if (!r.ok) loadQueue(); }).catch(function () { loadQueue(); });
   }
   function editQueueItem(pid, it) {
-    var next = window.prompt('Edit queued message:', it.text);
-    if (next === null) return; // cancelled
-    if (!next.trim()) { removeQueueItem(pid, it.id); return; }
-    var q = queueState[pid] || []; for (var i = 0; i < q.length; i++) { if (q[i].id === it.id) { q[i].text = next.trim(); break; } }
-    renderQueue();
-    api('/api/queue/edit', { method: 'POST', body: JSON.stringify({ projectId: pid, id: it.id, prompt: next }) })
-      .then(function (r) { if (!r.ok) loadQueue(); }).catch(function () { loadQueue(); });
+    uiPrompt({ title: 'Edit queued message', value: it.text, okText: 'Save' }).then(function (next) {
+      if (next === null) return; // cancelled
+      if (!next.trim()) { removeQueueItem(pid, it.id); return; }
+      var q = queueState[pid] || []; for (var i = 0; i < q.length; i++) { if (q[i].id === it.id) { q[i].text = next.trim(); break; } }
+      renderQueue();
+      api('/api/queue/edit', { method: 'POST', body: JSON.stringify({ projectId: pid, id: it.id, prompt: next }) })
+        .then(function (r) { if (!r.ok) loadQueue(); }).catch(function () { loadQueue(); });
+    });
   }
   function loadQueue() { return api('/api/queue').then(function (r) { return r.json(); }).then(function (m) { queueState = m || {}; renderQueue(); }).catch(function () {}); }
 
@@ -1267,30 +1299,35 @@
     addSys('new conversation — send a message to begin'); loadProjects(); promptEl.focus();
   }
   function renameConv(projectId, c) {
-    var next = window.prompt('Rename conversation:', c.title || '');
-    if (next === null || !next.trim()) return;
-    api('/api/conversations/rename', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: c.sessionId, title: next.trim() }) }).then(function () { loadProjects(); }).catch(function () {});
+    uiPrompt({ title: 'Rename conversation', value: c.title || '', okText: 'Rename' }).then(function (next) {
+      if (next === null || !next.trim()) return;
+      api('/api/conversations/rename', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: c.sessionId, title: next.trim() }) }).then(function () { loadProjects(); }).catch(function () {});
+    });
   }
   function removeConv(projectId, c) {
-    if (!window.confirm('Remove conversation “' + (c.title || '') + '” from the list?\n\nOnly removes it from the panel — the transcript on disk is kept.')) return;
-    api('/api/conversations/remove', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: c.sessionId }) }).then(function (r) {
-      if (!r.ok) { addSys(r.status === 409 ? 'that conversation has a turn running — stop it first' : 'could not remove conversation', 'banner'); return; }
-      forgetView(projectId, c.sessionId); clearConvNotif(projectId, c.sessionId); delete pendingFilesByConv[filesKeyFor(projectId, c.sessionId)]; // no longer reachable from the sidebar
-      loadProjects().then(function () { pollSnapshot().then(loadHistory); });
-    }).catch(function () {});
+    uiConfirm({ title: 'Remove conversation?', message: '“' + (c.title || 'Conversation') + '” — only removes it from the panel; the transcript on disk is kept.', confirmText: 'Remove', danger: true }).then(function (ok) {
+      if (!ok) return;
+      api('/api/conversations/remove', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: c.sessionId }) }).then(function (r) {
+        if (!r.ok) { addSys(r.status === 409 ? 'that conversation has a turn running — stop it first' : 'could not remove conversation', 'banner'); return; }
+        forgetView(projectId, c.sessionId); clearConvNotif(projectId, c.sessionId); delete pendingFilesByConv[filesKeyFor(projectId, c.sessionId)]; // no longer reachable from the sidebar
+        loadProjects().then(function () { pollSnapshot().then(loadHistory); });
+      }).catch(function () {});
+    });
   }
   function removeProject(p) {
     if (runningProjects[p.id]) { addSys('stop the running turn in “' + p.name + '” before removing it', 'banner'); return; }
-    if (!window.confirm('Remove “' + p.name + '” from the projects list?\n\nOnly removes it from the panel — your files and git history are untouched.')) return;
-    api('/api/projects/remove', { method: 'POST', body: JSON.stringify({ id: p.id }) }).then(function (r) {
-      if (!r.ok) { addSys(r.status === 409 ? 'a turn is running there — stop it first' : 'could not remove project', 'banner'); return; }
-      var wasCurrent = currentProjectId === p.id;
-      forgetProjectViews(p.id); forgetProjectNotifs(p.id); forgetProjectFiles(p.id); delete projCache[p.id]; delete runningProjects[p.id]; delete runningSessionIds[p.id]; delete apState[p.id];
-      if (wasCurrent) { currentProjectId = null; chatEl.textContent = ''; } // let renderProjects adopt the new server current
-      loadProjects().then(function () {
-        if (wasCurrent && currentProjectId && projCache[currentProjectId]) switchProject(projCache[currentProjectId]);
-      });
-    }).catch(function () {});
+    uiConfirm({ title: 'Remove project?', message: '“' + p.name + '” — only removes it from the projects list; your files and git history are untouched.', confirmText: 'Remove', danger: true }).then(function (ok) {
+      if (!ok) return;
+      api('/api/projects/remove', { method: 'POST', body: JSON.stringify({ id: p.id }) }).then(function (r) {
+        if (!r.ok) { addSys(r.status === 409 ? 'a turn is running there — stop it first' : 'could not remove project', 'banner'); return; }
+        var wasCurrent = currentProjectId === p.id;
+        forgetProjectViews(p.id); forgetProjectNotifs(p.id); forgetProjectFiles(p.id); delete projCache[p.id]; delete runningProjects[p.id]; delete runningSessionIds[p.id]; delete apState[p.id];
+        if (wasCurrent) { currentProjectId = null; chatEl.textContent = ''; } // let renderProjects adopt the new server current
+        loadProjects().then(function () {
+          if (wasCurrent && currentProjectId && projCache[currentProjectId]) switchProject(projCache[currentProjectId]);
+        });
+      }).catch(function () {});
+    });
   }
   function loadProjects() { return api('/api/projects').then(function (r) { return r.json(); }).then(renderProjects).catch(function () {}); }
   function switchProject(p) {
@@ -1419,11 +1456,13 @@
     renderAccountChip();
   }
   function removeAccount(a) {
-    if (!window.confirm('Remove account “' + (a.displayName || a.name) + '”' + (a.email ? ' (' + a.email + ')' : '') + ' from the failover pool?\n\nIts saved login is deleted from this panel; failover will use the remaining account(s).')) return;
-    api('/api/accounts/remove', { method: 'POST', body: JSON.stringify({ name: a.name }) }).then(function (r) {
-      if (!r.ok) { return r.json().then(function (j) { addSys(j && j.message ? j.message : 'could not remove account', 'banner'); }).catch(function () { addSys('could not remove account', 'banner'); }); }
-      pollAccounts();
-    }).catch(function () {});
+    uiConfirm({ title: 'Remove account?', message: '“' + (a.displayName || a.name) + '”' + (a.email ? ' (' + a.email + ')' : '') + ' — its saved login is deleted from this panel; failover will use the remaining account(s).', confirmText: 'Remove', danger: true }).then(function (ok) {
+      if (!ok) return;
+      api('/api/accounts/remove', { method: 'POST', body: JSON.stringify({ name: a.name }) }).then(function (r) {
+        if (!r.ok) { return r.json().then(function (j) { addSys(j && j.message ? j.message : 'could not remove account', 'banner'); }).catch(function () { addSys('could not remove account', 'banner'); }); }
+        pollAccounts();
+      }).catch(function () {});
+    });
   }
   // The bottom-left chip shows the account actually in use: the one running the
   // viewed project's turn if known, else the server's "next up" account (the one
@@ -1460,10 +1499,12 @@
     { id: 'autopilotBtn', label: 'Autopilot', icon: 'repeat' },
     { id: 'resumeBtn', label: 'Resume a session', icon: 'history' },
     { id: 'defaultsBtn', label: 'Default effort per model', icon: 'gear' },
+    { id: 'shortcutsBtn', label: 'Keyboard shortcuts', icon: 'keyboard' },
     { id: 'passkeyBtn', label: 'Passkeys', icon: 'key' },
     { id: 'themeBtn', label: 'Theme', icon: 'moon' },
     { id: 'tokenBtn', label: 'Log out', icon: 'logout' }
   ];
+  $('shortcutsBtn').addEventListener('click', openShortcuts);
   $('moreBtn').addEventListener('click', function () {
     var list = $('moreList'); list.textContent = '';
     MORE_ITEMS.forEach(function (it) {
@@ -1480,6 +1521,172 @@
   function togglePop(show) { var open = show === undefined ? quotaPop.hidden : show; if (open) { openPop(quotaPop); pollAccounts(); } else closeAllPops(); }
   acctChip.addEventListener('click', function () { togglePop(); });
   backdrop.addEventListener('click', closeAllPops);
+
+  // ---- in-app modal dialogs (replace native alert/confirm/prompt) ----
+  var modalStack = []; // topmost modal handles Esc; others are shielded beneath it
+  function anyModalOpen() { return modalStack.length > 0; }
+  function dismissModal(entry, val) {
+    var i = modalStack.indexOf(entry); if (i < 0) return; // already closed
+    modalStack.splice(i, 1);
+    if (entry.wrap.parentNode) entry.wrap.parentNode.removeChild(entry.wrap);
+    entry.resolve(val);
+  }
+  // build(card, done) populates the card; call done(value) to close. onCancel is
+  // the value resolved on Esc / backdrop click. Returns a Promise of the value.
+  function showModal(cls, onCancel, build) {
+    return new Promise(function (resolve) {
+      var wrap = document.createElement('div'); wrap.className = 'modal-wrap';
+      var card = document.createElement('div'); card.className = 'modal' + (cls ? ' ' + cls : '');
+      var entry = { wrap: wrap, resolve: resolve, onCancel: onCancel };
+      wrap.addEventListener('mousedown', function (e) { if (e.target === wrap) dismissModal(entry, onCancel); });
+      build(card, function (val) { dismissModal(entry, val); });
+      wrap.appendChild(card); document.body.appendChild(wrap);
+      modalStack.push(entry);
+    });
+  }
+  function uiConfirm(o) {
+    return showModal('', false, function (card, done) {
+      var h = document.createElement('h3'); h.textContent = o.title; card.appendChild(h);
+      if (o.message) { var p = document.createElement('p'); p.textContent = o.message; card.appendChild(p); }
+      var acts = document.createElement('div'); acts.className = 'modal-actions';
+      var cancel = document.createElement('button'); cancel.className = 'send ghost'; cancel.textContent = o.cancelText || 'Cancel'; cancel.addEventListener('click', function () { done(false); });
+      var ok = document.createElement('button'); ok.className = 'send' + (o.danger ? ' danger' : ''); ok.textContent = o.confirmText || 'Confirm'; ok.addEventListener('click', function () { done(true); });
+      acts.appendChild(cancel); acts.appendChild(ok); card.appendChild(acts);
+      setTimeout(function () { ok.focus(); }, 20);
+    });
+  }
+  function uiPrompt(o) {
+    return showModal('', null, function (card, done) {
+      var h = document.createElement('h3'); h.textContent = o.title; card.appendChild(h);
+      if (o.message) { var p = document.createElement('p'); p.textContent = o.message; card.appendChild(p); }
+      var inp = document.createElement('input'); inp.className = 'm-in'; inp.type = o.type || 'text'; inp.value = o.value == null ? '' : String(o.value);
+      if (o.placeholder) inp.placeholder = o.placeholder;
+      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); done(inp.value); } });
+      card.appendChild(inp);
+      var acts = document.createElement('div'); acts.className = 'modal-actions';
+      var cancel = document.createElement('button'); cancel.className = 'send ghost'; cancel.textContent = o.cancelText || 'Cancel'; cancel.addEventListener('click', function () { done(null); });
+      var ok = document.createElement('button'); ok.className = 'send'; ok.textContent = o.okText || 'Save'; ok.addEventListener('click', function () { done(inp.value); });
+      acts.appendChild(cancel); acts.appendChild(ok); card.appendChild(acts);
+      setTimeout(function () { inp.focus(); inp.select(); }, 20);
+    });
+  }
+  function closeTopModal() { if (modalStack.length) { var e = modalStack[modalStack.length - 1]; dismissModal(e, e.onCancel); return true; } return false; }
+
+  // ---- keyboard shortcuts + ⌘K command palette ----
+  var IS_MAC = /Mac|iPhone|iPad|iPod/.test((navigator.platform || '') + ' ' + (navigator.userAgent || ''));
+  var K_CMD = IS_MAC ? '⌘' : 'Ctrl', K_ALT = IS_MAC ? '⌥' : 'Alt', K_SH = IS_MAC ? '⇧' : 'Shift';
+  var SHORTCUTS = [
+    { keys: [K_CMD + 'K'], desc: 'Quick switch — jump to any project or conversation' },
+    { keys: [K_CMD + '1', '–', K_CMD + '9'], desc: 'Jump to the 1st–9th project' },
+    { keys: [K_ALT + 'N'], desc: 'New conversation in the current project' },
+    { keys: [K_ALT + 'M'], desc: 'Open the model selector' },
+    { keys: [K_ALT + 'E'], desc: 'Open the effort selector' },
+    { keys: [K_ALT + 'U'], desc: 'Attach a file' },
+    { keys: ['Enter'], desc: 'Send message' },
+    { keys: [K_SH + 'Enter'], desc: 'New line in the message' },
+    { keys: [K_CMD + '/'], desc: 'Show this shortcuts help' },
+    { keys: ['Esc'], desc: 'Close a dialog, menu, or the quick switcher' },
+  ];
+  function openShortcuts() {
+    if (anyModalOpen()) { closeTopModal(); }
+    showModal('', false, function (card, done) {
+      var h = document.createElement('h3'); h.textContent = 'Keyboard shortcuts'; card.appendChild(h);
+      SHORTCUTS.forEach(function (s) {
+        var row = document.createElement('div'); row.className = 'sc-row';
+        var d = document.createElement('div'); d.className = 'desc'; d.textContent = s.desc; row.appendChild(d);
+        var keys = document.createElement('div'); keys.className = 'keys';
+        s.keys.forEach(function (k) { if (k === '–') { keys.appendChild(document.createTextNode('–')); } else { var kb = document.createElement('kbd'); kb.textContent = k; keys.appendChild(kb); } });
+        row.appendChild(keys); card.appendChild(row);
+      });
+      var acts = document.createElement('div'); acts.className = 'modal-actions';
+      var ok = document.createElement('button'); ok.className = 'send'; ok.textContent = 'Done'; ok.addEventListener('click', function () { done(true); });
+      acts.appendChild(ok); card.appendChild(acts);
+      setTimeout(function () { ok.focus(); }, 20);
+    });
+  }
+  // Projects in sidebar order (the DOM is the source of truth for ordering).
+  function orderedProjects() {
+    var out = [], rows = projListEl.querySelectorAll('.proj');
+    for (var i = 0; i < rows.length; i++) { var id = rows[i].getAttribute('data-id'); if (projCache[id]) out.push(projCache[id]); }
+    return out;
+  }
+  function jumpToProject(idx) { var ps = orderedProjects(); if (idx >= 0 && idx < ps.length && ps[idx].id !== currentProjectId) switchProject(ps[idx]); }
+  function openSelect(el) { if (!el) return; el.focus(); try { if (el.showPicker) el.showPicker(); } catch (e) {} }
+  function openPalette() {
+    if (anyModalOpen()) return;
+    showModal('palette', null, function (card, done) {
+      var inp = document.createElement('input'); inp.className = 'm-in'; inp.placeholder = 'Jump to a project or conversation…';
+      var list = document.createElement('div'); list.className = 'palette-list';
+      card.appendChild(inp); card.appendChild(list);
+      var rows = [], sel = 0;
+      function collect(q) {
+        var items = [];
+        orderedProjects().forEach(function (p) {
+          var pn = (p.name || '').toLowerCase();
+          if (!q || pn.indexOf(q) >= 0) items.push({ type: 'project', pid: p.id, title: p.name, sub: 'project', running: !!runningProjects[p.id] });
+          (p.conversations || []).forEach(function (c) {
+            var ct = (c.title || '').toLowerCase();
+            if (!q || ct.indexOf(q) >= 0 || pn.indexOf(q) >= 0) items.push({ type: 'conv', pid: p.id, sid: c.sessionId, title: c.title || 'Conversation', sub: p.name, running: isSessionRunning(p.id, c.sessionId) });
+          });
+        });
+        return items;
+      }
+      function activate(it) {
+        done(null);
+        if (it.type === 'project') { if (it.pid !== currentProjectId) switchProject(projCache[it.pid]); }
+        else { if (it.pid !== currentProjectId) switchProject(projCache[it.pid]); switchConversation(it.pid, it.sid); }
+      }
+      function markSel() { rows.forEach(function (r, i) { r.el.classList.toggle('sel', i === sel); }); if (rows[sel]) rows[sel].el.scrollIntoView({ block: 'nearest' }); }
+      function render() {
+        list.textContent = ''; rows = [];
+        var items = collect(inp.value.trim().toLowerCase());
+        if (!items.length) { var e = document.createElement('div'); e.className = 'pal-empty'; e.textContent = 'No matching projects or conversations'; list.appendChild(e); return; }
+        if (sel >= items.length) sel = items.length - 1;
+        items.forEach(function (it, i) {
+          var row = document.createElement('div'); row.className = 'pal-item' + (i === sel ? ' sel' : '');
+          if (it.running) { var sp = document.createElement('span'); sp.className = 'rspin'; row.appendChild(sp); }
+          else row.appendChild(icon(it.type === 'project' ? 'folder' : 'compose', 'sm'));
+          var t = document.createElement('span'); t.textContent = it.title; row.appendChild(t);
+          if (it.sub) { var s = document.createElement('span'); s.className = 'sub'; s.textContent = '· ' + it.sub; row.appendChild(s); }
+          row.addEventListener('mousemove', function () { if (sel !== i) { sel = i; markSel(); } });
+          row.addEventListener('click', function () { activate(it); });
+          list.appendChild(row); rows.push({ el: row, item: it });
+        });
+      }
+      inp.addEventListener('input', function () { sel = 0; render(); });
+      inp.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, rows.length - 1); markSel(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); markSel(); }
+        else if (e.key === 'Enter') { e.preventDefault(); if (rows[sel]) activate(rows[sel].item); }
+      });
+      render(); setTimeout(function () { inp.focus(); }, 20);
+    });
+  }
+  // Global shortcut dispatch. Uses e.code (physical key) so it's layout- and
+  // modifier-independent (⌥+letter on macOS otherwise reports the special char).
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      if (closeTopModal()) { e.preventDefault(); return; }
+      if (!backdrop.hidden) { e.preventDefault(); closeAllPops(); return; }
+      if (document.body.classList.contains('nav-open')) { e.preventDefault(); setNav(false); return; }
+      return;
+    }
+    if (anyModalOpen()) return; // a dialog/palette is up; let it own the keyboard
+    var mod = e.metaKey || e.ctrlKey;
+    if (mod && !e.altKey) {
+      if (e.code === 'KeyK') { e.preventDefault(); openPalette(); return; }
+      if (e.code === 'Slash') { e.preventDefault(); openShortcuts(); return; }
+      var dm = /^Digit([1-9])$/.exec(e.code); if (dm) { e.preventDefault(); jumpToProject(parseInt(dm[1], 10) - 1); return; }
+    }
+    if (e.altKey && !mod && !e.shiftKey) {
+      if (e.code === 'KeyM') { e.preventDefault(); openSelect(modelEl); return; }
+      if (e.code === 'KeyE') { e.preventDefault(); openSelect(effortEl); return; }
+      if (e.code === 'KeyU') { e.preventDefault(); fileEl.click(); return; }
+      if (e.code === 'KeyN') { e.preventDefault(); if (currentProjectId) newConversation(currentProjectId); return; }
+    }
+    // "?" opens help too, but only when you're not typing into a field.
+    if (e.key === '?' && !mod && !/^(INPUT|TEXTAREA)$/.test((document.activeElement || {}).tagName || '')) { e.preventDefault(); openShortcuts(); }
+  });
 
   // ---- resume an existing session ----
   function relTime(iso) {
@@ -1819,14 +2026,16 @@
 
   function registerPasskey() {
     if (typeof SimpleWebAuthnBrowser === 'undefined') { addSys('passkey library failed to load', 'banner'); return; }
-    var label = window.prompt('Name this passkey (e.g. iPhone):', 'my device'); if (label === null) return;
-    api('/api/auth/passkey/register/options', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (data) {
-      if (!data || !data.options) throw new Error('no options');
-      return SimpleWebAuthnBrowser.startRegistration({ optionsJSON: data.options }).then(function (att) {
-        return api('/api/auth/passkey/register/verify', { method: 'POST', body: JSON.stringify({ flowId: data.flowId, response: att, label: label || 'passkey' }) });
-      });
-    }).then(function (r) { if (r.ok) { addSys('passkey registered on this device', 'banner'); loadPasskeys(); } else { addSys('passkey registration failed', 'banner'); } })
-      .catch(function () { addSys('passkey registration cancelled or failed', 'banner'); });
+    uiPrompt({ title: 'Register a passkey', message: 'Name this passkey so you recognize it later.', value: 'my device', placeholder: 'e.g. iPhone', okText: 'Register' }).then(function (label) {
+      if (label === null) return;
+      api('/api/auth/passkey/register/options', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (data) {
+        if (!data || !data.options) throw new Error('no options');
+        return SimpleWebAuthnBrowser.startRegistration({ optionsJSON: data.options }).then(function (att) {
+          return api('/api/auth/passkey/register/verify', { method: 'POST', body: JSON.stringify({ flowId: data.flowId, response: att, label: label || 'passkey' }) });
+        });
+      }).then(function (r) { if (r.ok) { addSys('passkey registered on this device', 'banner'); loadPasskeys(); } else { addSys('passkey registration failed', 'banner'); } })
+        .catch(function () { addSys('passkey registration cancelled or failed', 'banner'); });
+    });
   }
   function loadPasskeys() {
     return api('/api/auth/passkey/list').then(function (r) { return r.json(); }).then(function (list) {

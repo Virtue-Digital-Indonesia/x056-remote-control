@@ -46,6 +46,22 @@ The gateway spawns `claude -p --output-format stream-json --resume <id>` under a
 
 **Install as an app.** On mobile, "Add to Home Screen" installs the panel as a PWA — full-screen, with the safe-area-aware layout and push notifications.
 
+### Keyboard shortcuts
+
+Press **⌘/** (Ctrl+/ on Windows/Linux), or the ⌨️ icon in the top bar, to open the in-app shortcuts reference any time. On Windows/Linux, ⌘ is Ctrl and ⌥ is Alt.
+
+| Shortcut | Action |
+| --- | --- |
+| **⌘K** | Quick switch — fuzzy-jump to any project or conversation |
+| **⌘1 … ⌘9** | Jump to the 1st–9th project |
+| **⌥N** | New conversation in the current project |
+| **⌥M** | Open the model selector |
+| **⌥E** | Open the effort selector |
+| **⌥U** | Attach a file |
+| **Enter** / **⇧Enter** | Send / new line |
+| **⌘/** | Show the shortcuts help |
+| **Esc** | Close a dialog, menu, or the quick switcher |
+
 ---
 
 ## Deploying your own instance
