@@ -502,6 +502,14 @@
   var quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts'), themeBtn = $('themeBtn');
   var defaultsPop = $('defaultsPop'), defaultsList = $('defaultsList'), passkeyPop = $('passkeyPop');
   var lastSessionId = null, lastSeq = 0, pendingFiles = [], pendingNew = false, currentProjectId = null;
+  // Monotonic token for the "blank new-conversation composer". It changes every
+  // time the composer enters a fresh blank state (New conversation, project
+  // switch to a blank project, boot). A new-conversation POST captures the token
+  // at send time and only adopts the server's sessionId as the viewed
+  // conversation if the token still matches — so a slow response can't clobber
+  // the blank composer the user has since moved on to (creating a SECOND new
+  // conversation, whose message would otherwise be misrouted into the first).
+  var blankSeq = 1;
 
   try { modelEl.value = localStorage.getItem(MODEL_KEY) || ''; effortEl.value = localStorage.getItem(EFFORT_KEY) || ''; } catch (e) {}
   modelEl.addEventListener('change', function () {
@@ -1271,7 +1279,7 @@
     // via the 'conversation' broadcast without changing what's on OUR screen,
     // which used to make this click silently no-op.
     if (sessionId === lastSessionId && !pendingNew) return;
-    pendingNew = false;
+    pendingNew = false; blankSeq++; // moving to an existing conversation supersedes any in-flight new-conversation adopt
     api('/api/conversations/select', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: sessionId }) }).then(function (r) {
       if (!r.ok) { addSys('could not switch conversation', 'banner'); return; }
       var oldView = viewOf(projectId, lastSessionId);
@@ -1298,7 +1306,7 @@
       var oldView = viewOf(projectId, lastSessionId);
       while (chatEl.firstChild) oldView.frag.appendChild(chatEl.firstChild); // stash it before showing the blank composer
     }
-    pendingNew = true; lastSessionId = null; chatEl.textContent = '';
+    pendingNew = true; lastSessionId = null; blankSeq++; chatEl.textContent = '';
     restoreDraft(); // the fresh conversation's own (usually empty) draft
     restoreAttachments();
     renderQueue(); renderAutopilot(); // no session yet → both bars clear
@@ -1345,6 +1353,7 @@
     }
     currentProjectId = p.id; projCache[p.id] = p;
     lastSessionId = p.lastSessionId || null; // sync synchronously (no round-trip) so view lookups below key on the right conversation
+    blankSeq++; // switching projects retargets the composer; supersede any in-flight new-conversation adopt
     restoreDraft(); // this project/conversation's own unsent text
     restoreAttachments(); // and its own pending (unsent) attachments
     clearConvNotif(p.id, lastSessionId); // viewing this project's current conversation clears its bell
@@ -1920,26 +1929,36 @@
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
     var label = text || (files.length > 1 ? '(' + files.length + ' files)' : '(' + (files[0] && files[0].name || 'file') + ')');
     addMsg('user', label, files, new Date().toISOString());
+    // Capture the compose context so a slow response can't misapply to a blank
+    // composer the user has since moved on to.
+    var myProject = currentProjectId, myBlank = blankSeq;
+    // Optimistically clear the composer (the text/files are now sent).
+    promptEl.value = ''; autogrow(); saveDraft(); clearAttachments();
     api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
       if (r.status === 409) { // raced a turn start — queue it so it isn't lost
         if (text) api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).catch(function () {});
-        addSys('a turn was already running — queued this message instead', 'banner'); promptEl.value = ''; autogrow(); saveDraft(); clearAttachments(); return;
+        addSys('a turn was already running — queued this message instead', 'banner'); return;
       }
-      // Clear the sent text/attachments under the current (pre-send) draft key
-      // (empty value removes it), then adopt the server's new sessionId as the
-      // current conversation.
-      promptEl.value = ''; autogrow(); saveDraft(); clearAttachments(); pendingNew = false;
       return r.json().then(function (j) {
-        if (j.sessionId) {
-          lastSessionId = j.sessionId;
-          // A brand-new conversation just got its real sessionId — pendingFiles
-          // was pointing at the "pending new" slot (keyed by a null session) the
-          // whole time we were composing it; re-point it to the conversation's
-          // OWN key now, or any file attached after this (before the next send)
-          // would land in the wrong slot and bleed into the NEXT new conversation
-          // instead of staying with this one.
-          restoreAttachments();
-        }
+        if (!j.sessionId) return;
+        if (!useNew) return; // continued an existing conversation — lastSessionId already correct
+        // A brand-new conversation was created. Only make it the VIEWED one if the
+        // user is still on the same blank composer (hasn't started another new
+        // conversation, switched conversation, or changed project). Otherwise it
+        // simply joins the sidebar (via the 'conversation' broadcast) and the user
+        // can open it — we must NOT clobber whatever they're now looking at.
+        if (currentProjectId !== myProject || blankSeq !== myBlank || lastSessionId) return;
+        pendingNew = false; lastSessionId = j.sessionId;
+        // SSE events for this conversation may have raced ahead of this response
+        // (the already-open stream is faster than the POST round-trip) and
+        // rendered into the conversation's own cached fragment while lastSessionId
+        // was still null. Splice it into the live thread so the reply/activity
+        // isn't stranded off-screen, and sync the busy bar.
+        var v = viewOf(currentProjectId, j.sessionId);
+        if (v.frag.childNodes.length) { var stick = atBottom(); chatEl.appendChild(v.frag); if (stick) down(); }
+        active = !!v.active; lastLabel = v.label || ''; runningSubs = v.subCount || 0; subs = v.subs || {};
+        renderBusy(); renderStrip(); renderQueue(); renderAutopilot();
+        restoreDraft(); restoreAttachments();
       }).catch(function () {});
     }).catch(function () {});
   }
