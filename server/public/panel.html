@@ -1691,7 +1691,10 @@
     if (mod && !e.altKey) {
       if (e.code === 'KeyK') { e.preventDefault(); openPalette(); return; }
       if (e.code === 'Slash') { e.preventDefault(); openShortcuts(); return; }
-      var dm = /^Digit([1-9])$/.exec(e.code); if (dm) { e.preventDefault(); jumpToProject(parseInt(dm[1], 10) - 1); return; }
+      // Jump-to-project: on macOS require ⌘ (not ⌃) — Ctrl+[1-9] is the system
+      // Spaces/Desktop switcher there, so we leave it to the OS. Ctrl stays on
+      // Windows/Linux (no ⌘).
+      var dm = /^Digit([1-9])$/.exec(e.code); if (dm && (e.metaKey || !IS_MAC)) { e.preventDefault(); jumpToProject(parseInt(dm[1], 10) - 1); return; }
     }
     if (e.altKey && !mod && !e.shiftKey) {
       if (e.code === 'KeyM') { e.preventDefault(); openSelect(modelEl); return; }
