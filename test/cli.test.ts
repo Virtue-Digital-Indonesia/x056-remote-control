@@ -7,8 +7,20 @@ import { describe, expect, it } from 'vitest';
 const CLI = new URL('../src/cli.ts', import.meta.url).pathname;
 const TIMEOUT = 30_000;
 
+// This test file itself may be running inside the deployed x056 gateway
+// container, which sets X056_ACCOUNT_A_DIR/B_DIR (etc.) to ITS OWN real config
+// dirs for its own deployment. A spawned CLI subprocess inherits process.env by
+// default, so those vars would leak in and silently override a test's isolated
+// HOME-based tmpdir (the explicit env var wins over the homedir()-derived
+// default in `init`) — strip them so every test gets a clean, deterministic env
+// regardless of what host it runs on.
+function isolatedEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const { X056_ACCOUNT_A_DIR, X056_ACCOUNT_B_DIR, X056_ACCOUNT_DIRS, ...rest } = process.env;
+  return { ...rest, ...extra };
+}
+
 function run(args: string[], cwd: string) {
-  return spawnSync('npx', ['tsx', CLI, ...args], { cwd, encoding: 'utf8', timeout: TIMEOUT });
+  return spawnSync('npx', ['tsx', CLI, ...args], { cwd, encoding: 'utf8', timeout: TIMEOUT, env: isolatedEnv() });
 }
 
 describe('cli (child process)', () => {
@@ -91,7 +103,7 @@ describe('x056 adopt', () => {
     const munged = proj.replace(/[/.]/g, '-');
     mkdirSync(join(home, '.claude', 'projects', munged), { recursive: true });
     writeFileSync(join(home, '.claude', 'projects', munged, 'sess-42.jsonl'), '{"type":"user"}\n');
-    const env = { ...process.env, HOME: home };
+    const env = isolatedEnv({ HOME: home });
     const init = spawnSync('npx', ['tsx', CLI, 'init'], { cwd: proj, encoding: 'utf8', timeout: TIMEOUT, env });
     expect(init.status).toBe(0);
     const adopt = spawnSync('npx', ['tsx', CLI, 'adopt', 'sess-42'], { cwd: proj, encoding: 'utf8', timeout: TIMEOUT, env });
@@ -104,7 +116,7 @@ describe('x056 adopt', () => {
   it('fails with exit 2 when the source transcript does not exist', () => {
     const home = mkdtempSync(join(tmpdir(), 'x056-home-'));
     const proj = mkdtempSync(join(tmpdir(), 'x056-proj-'));
-    const env = { ...process.env, HOME: home };
+    const env = isolatedEnv({ HOME: home });
     spawnSync('npx', ['tsx', CLI, 'init'], { cwd: proj, encoding: 'utf8', timeout: TIMEOUT, env });
     const adopt = spawnSync('npx', ['tsx', CLI, 'adopt', 'nope'], { cwd: proj, encoding: 'utf8', timeout: TIMEOUT, env });
     expect(adopt.status).toBe(2);

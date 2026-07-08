@@ -733,17 +733,40 @@
   // user isn't currently viewing (a question, a failed turn, or a finished turn).
   // Keyed by project+conversation (viewKey); a project row aggregates its convos.
   var convNotif = {}; // 'pid::sessionId' -> 'question' | 'failed' | 'done'
+  // The SSE cursor (lastSeq) intentionally resets to 0 on every page load, so a
+  // refresh replays the server's full event buffer and no notification from
+  // while the tab was closed gets lost. But that means the events for a
+  // conversation you already opened AND cleared (before the refresh) replay
+  // too — without this, they'd re-raise a bell you'd already dismissed. So we
+  // separately persist, per conversation, the seq you'd last seen through
+  // (across refreshes, via localStorage); a replayed event at or before that
+  // point is suppressed, one that's genuinely new (seq beyond it) still fires.
+  var SEEN_KEY = 'x056_conv_seen';
+  var seenSeq = (function () { try { return JSON.parse(localStorage.getItem(SEEN_KEY) || '{}'); } catch (e) { return {}; } })();
+  function markConvSeen(pid, sid) {
+    if (!pid) return;
+    seenSeq[viewKey(pid, sid)] = lastSeq;
+    try { localStorage.setItem(SEEN_KEY, JSON.stringify(seenSeq)); } catch (e) {}
+  }
   function notifRank(k) { return k === 'question' ? 3 : k === 'failed' ? 2 : k === 'done' ? 1 : 0; }
   function setConvNotif(pid, sid, kind) {
     if (!pid) return;
     var k = viewKey(pid, sid);
+    if ((seenSeq[k] || 0) >= lastSeq) return; // already viewed at/after this event — a replay of something already dismissed
     if (notifRank(kind) > notifRank(convNotif[k])) { convNotif[k] = kind; applyNotifs(); }
   }
   function clearConvNotif(pid, sid) {
     var k = viewKey(pid, sid);
     if (convNotif[k]) { delete convNotif[k]; applyNotifs(); }
+    markConvSeen(pid, sid);
   }
-  function forgetProjectNotifs(pid) { var prefix = pid + '::'; Object.keys(convNotif).forEach(function (k) { if (k.indexOf(prefix) === 0) delete convNotif[k]; }); }
+  function forgetProjectNotifs(pid) {
+    var prefix = pid + '::';
+    Object.keys(convNotif).forEach(function (k) { if (k.indexOf(prefix) === 0) delete convNotif[k]; });
+    var changed = false;
+    Object.keys(seenSeq).forEach(function (k) { if (k.indexOf(prefix) === 0) { delete seenSeq[k]; changed = true; } });
+    if (changed) { try { localStorage.setItem(SEEN_KEY, JSON.stringify(seenSeq)); } catch (e) {} }
+  }
   function projNotifKind(pid) {
     var best = null, prefix = pid + '::';
     Object.keys(convNotif).forEach(function (k) { if (k.indexOf(prefix) === 0 && notifRank(convNotif[k]) > notifRank(best)) best = convNotif[k]; });
@@ -1205,7 +1228,12 @@
   function switchConversation(projectId, sessionId) {
     if (projectId !== currentProjectId) return;
     setNav(false);
-    if (projCache[projectId] && projCache[projectId].lastSessionId === sessionId && !pendingNew) return; // already viewing it
+    // "Already viewing it" must check what THIS client is actually looking at
+    // (lastSessionId), not the project's server-mirrored pointer — another tab
+    // or device starting a new conversation updates projCache[pid].lastSessionId
+    // via the 'conversation' broadcast without changing what's on OUR screen,
+    // which used to make this click silently no-op.
+    if (sessionId === lastSessionId && !pendingNew) return;
     pendingNew = false;
     api('/api/conversations/select', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: sessionId }) }).then(function (r) {
       if (!r.ok) { addSys('could not switch conversation', 'banner'); return; }
