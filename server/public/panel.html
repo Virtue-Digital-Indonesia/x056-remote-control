@@ -266,6 +266,8 @@
   .modal p { font-size: 13px; color: var(--muted); margin: 0 0 4px; line-height: 1.5; white-space: pre-wrap; }
   .modal .m-in { width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px; font: inherit; font-size: 16px; background: var(--bg); color: var(--text); outline: none; margin-top: 12px; }
   .modal .m-in:focus { border-color: var(--accent); }
+  .modal textarea.m-in { resize: vertical; min-height: 90px; max-height: 320px; line-height: 1.5; }
+  .modal.wide { max-width: 560px; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
   .modal-actions .send { width: auto; padding: 0 16px; height: 34px; font-size: 13px; font-weight: 500; }
   .modal-actions .send.danger { background: var(--err); color: #fff; }
@@ -1119,7 +1121,7 @@
       .then(function (r) { if (!r.ok) loadQueue(); }).catch(function () { loadQueue(); });
   }
   function editQueueItem(pid, it) {
-    uiPrompt({ title: 'Edit queued message', value: it.text, okText: 'Save' }).then(function (next) {
+    uiPrompt({ title: 'Edit queued message', value: it.text, okText: 'Save', multiline: true }).then(function (next) {
       if (next === null) return; // cancelled
       if (!next.trim()) { removeQueueItem(pid, it.id); return; }
       var q = queueState[pid] || []; for (var i = 0; i < q.length; i++) { if (q[i].id === it.id) { q[i].text = next.trim(); break; } }
@@ -1625,18 +1627,23 @@
     });
   }
   function uiPrompt(o) {
-    return showModal('', null, function (card, done) {
+    return showModal(o.multiline ? 'wide' : '', null, function (card, done) {
       var h = document.createElement('h3'); h.textContent = o.title; card.appendChild(h);
       if (o.message) { var p = document.createElement('p'); p.textContent = o.message; card.appendChild(p); }
-      var inp = document.createElement('input'); inp.className = 'm-in'; inp.type = o.type || 'text'; inp.value = o.value == null ? '' : String(o.value);
+      var inp = document.createElement(o.multiline ? 'textarea' : 'input');
+      inp.className = 'm-in'; if (!o.multiline) inp.type = o.type || 'text';
+      inp.value = o.value == null ? '' : String(o.value);
       if (o.placeholder) inp.placeholder = o.placeholder;
-      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); done(inp.value); } });
+      // Match the main composer's convention: Enter sends/saves, Shift+Enter
+      // inserts a newline — only relevant once the field actually has room for one.
+      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !(o.multiline && e.shiftKey)) { e.preventDefault(); done(inp.value); } });
+      if (o.multiline) inp.addEventListener('input', function () { inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 320) + 'px'; });
       card.appendChild(inp);
       var acts = document.createElement('div'); acts.className = 'modal-actions';
       var cancel = document.createElement('button'); cancel.className = 'send ghost'; cancel.textContent = o.cancelText || 'Cancel'; cancel.addEventListener('click', function () { done(null); });
       var ok = document.createElement('button'); ok.className = 'send'; ok.textContent = o.okText || 'Save'; ok.addEventListener('click', function () { done(inp.value); });
       acts.appendChild(cancel); acts.appendChild(ok); card.appendChild(acts);
-      setTimeout(function () { inp.focus(); inp.select(); }, 20);
+      setTimeout(function () { inp.focus(); if (o.multiline) { inp.dispatchEvent(new Event('input')); inp.selectionStart = inp.selectionEnd = inp.value.length; } else { inp.select(); } }, 20);
     });
   }
   function closeTopModal() { if (modalStack.length) { var e = modalStack[modalStack.length - 1]; dismissModal(e, e.onCancel); return true; } return false; }
@@ -1945,11 +1952,24 @@
     r.readAsDataURL(f);
   }
   fileEl.addEventListener('change', function () { for (var i = 0; i < fileEl.files.length; i++) addFile(fileEl.files[i]); fileEl.value = ''; });
-  // Paste: attach any file on the clipboard (images, but also copied files).
+  // A big block of pasted text (a log dump, a whole file) dwarfs the composer and
+  // buries the actual message — attach it as a .txt file instead, same as a
+  // dropped file. Below this size it pastes inline as normal.
+  var PASTE_TEXT_MAX_LINES = 30, PASTE_TEXT_MAX_CHARS = 4000;
+  var pasteTxtSeq = 0;
+  // Paste: attach any file on the clipboard (images, but also copied files);
+  // otherwise, convert an overlong plain-text paste into a .txt attachment.
   promptEl.addEventListener('paste', function (e) {
     var items = (e.clipboardData || {}).items || []; var added = false;
     for (var i = 0; i < items.length; i++) if (items[i].kind === 'file') { var f = items[i].getAsFile(); if (f) { addFile(f); added = true; } }
-    if (added) e.preventDefault();
+    if (added) { e.preventDefault(); return; }
+    var text = e.clipboardData && e.clipboardData.getData('text/plain');
+    if (text && (text.split('\n').length >= PASTE_TEXT_MAX_LINES || text.length >= PASTE_TEXT_MAX_CHARS)) {
+      e.preventDefault();
+      pasteTxtSeq++;
+      var name = pasteTxtSeq === 1 ? 'pasted.txt' : 'pasted-' + pasteTxtSeq + '.txt';
+      addFile(new File([text], name, { type: 'text/plain' }));
+    }
   });
   // Drag-and-drop files anywhere over the chat/composer to attach them.
   var dropZone = document.querySelector('main') || document.body;
