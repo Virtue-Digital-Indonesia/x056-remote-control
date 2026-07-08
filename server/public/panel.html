@@ -1578,6 +1578,13 @@
       // unrelated action, like switching projects, happened to redraw them).
       // Re-render now that the ids are authoritative; harmless if already correct.
       renderAutopilot(); renderQueue();
+      // Same race for the busy/activity bar: renderProjects()'s reconciliation
+      // (comparing the viewed conversation's cached active-state against the
+      // server's authoritative runningSessionIds) may have already run — via the
+      // loadProjects() fired in parallel above, at boot — before lastSessionId
+      // was set, silently no-oping. Re-run it now so a turn already running when
+      // the page loaded shows up without needing to switch conversations first.
+      loadProjects();
       return loadHistory();
     });
     connect();
