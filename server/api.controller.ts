@@ -214,6 +214,12 @@ export class ApiController {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    // Tell a reverse proxy (nginx et al.) NOT to buffer this stream. Without it,
+    // nginx's default proxy_buffering holds each small SSE event until its buffer
+    // fills or another write arrives — so a lone 'autopilot'/'queue'/'turn_state'
+    // event appears "only after refresh" (the refresh re-fetches over plain HTTP),
+    // while a busy turn's burst of events flushes the buffer and looks fine live.
+    res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
     const sinceSeq = Number.isFinite(Number(since)) ? Number(since) : 0;
