@@ -187,7 +187,8 @@
   .act .ic { opacity: .8; }
   .act.sub { color: var(--accent); }
   .act .el { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sysline { text-align: center; margin: 18px 0; } .sysline span { font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 4px 12px; }
+  .sysline { text-align: center; margin: 18px 0; opacity: 1; transition: opacity .4s; } .sysline span { font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 4px 12px; }
+  .sysline.fade-out { opacity: 0; }
   .banner { text-align: center; margin: 12px 0; } .banner span { font-size: 12.5px; color: var(--amber); background: var(--amber-bg); border-radius: 20px; padding: 5px 14px; }
   .banner.err span { color: var(--err); background: var(--err-bg); }
 
@@ -197,7 +198,7 @@
      `bottom` is a fallback for the instant before JS measures composer-wrap (below,
      it's kept in sync with a ResizeObserver since attachments/queue/autopilot bars
      and the multiline prompt all change that height). */
-  #jumpBtn { position: absolute; left: 50%; transform: translateX(-50%); bottom: 128px; z-index: 30; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; display: grid; place-items: center; box-shadow: 0 2px 10px rgba(0,0,0,.25); }
+  #jumpBtn { position: absolute; left: 50%; transform: translateX(-50%); bottom: 128px; z-index: 30; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; display: grid; place-items: center; box-shadow: 0 2px 10px rgba(0,0,0,.25); }
   #jumpBtn[hidden] { display: none; }
   #jumpBtn:hover { border-color: var(--accent); color: var(--accent); }
   .composer { max-width: 780px; margin: 0 auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
@@ -237,12 +238,27 @@
   .pop { position: absolute; bottom: 62px; left: 12px; width: 288px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; z-index: 30; }
   .pop[hidden] { display: none; }
   .pop h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); margin: 2px 4px 10px; }
+  /* Wide enough for a horizontal card layout (gauges side by side, name+email on
+     one line) instead of a tall stack — with several accounts that stack still
+     outgrows the viewport, so the list itself scrolls and only it grows/shrinks;
+     the header and the add/switch actions stay put. */
+  #quotaPop { width: 380px; max-height: min(560px, calc(100vh - 110px)); display: flex; flex-direction: column; }
+  /* #quotaPop's own `display: flex` (an ID selector) outranks the shared
+     `.pop[hidden] { display: none }` rule below by specificity, so without this
+     override the popover would keep rendering — fully laid out, clickable —
+     even while `hidden` is true, and closing it (outside click, Esc, anything
+     that just flips the attribute) would have no visible effect. */
+  #quotaPop[hidden] { display: none; }
+  #quotaPop #accounts { overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+  #quotaPop .pop-footer { flex: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
   .qa { padding: 10px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 8px; }
   .qa:last-child { margin-bottom: 0; }
   .qa.nextup { border-color: var(--accent); }
-  .qa .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .qa .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .qa .nm-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qa .nm { font-weight: 600; font-size: 13px; } .qa .em { font-size: 11px; color: var(--faint); }
   .qa .badges { display: flex; align-items: center; gap: 6px; flex: none; }
+  .qa .state-row { margin-top: 6px; } .qa .state-row .badge { white-space: normal; }
   .qa .arm { flex: none; width: 20px; height: 20px; padding: 0; border: none; background: transparent; color: var(--faint); border-radius: 5px; cursor: pointer; display: inline-grid; place-items: center; }
   .qa .arm:hover { background: var(--surface-3); color: #e5484d; }
   .qa .act { width: 100%; margin-top: 8px; height: 28px; font-size: 12px; font-weight: 500; }
@@ -257,7 +273,11 @@
   .send.ghost:hover { filter: none; border-color: var(--accent); color: var(--accent); }
   .acct-link { display: inline-block; color: var(--accent); font-size: 13px; word-break: break-all; text-decoration: none; padding: 6px 0; }
   .acct-link:hover { text-decoration: underline; }
-  .g { margin-top: 8px; } .g .lab { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+  /* Two gauges side by side (5-hour | 7-day) instead of stacked — the single
+     biggest lever for a wide-not-tall card. */
+  .qa .gauges { display: flex; gap: 12px; margin-top: 8px; }
+  .qa .gauges .g { flex: 1; min-width: 0; margin-top: 0; }
+  .g .lab { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
   .g .track { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; } .g .track > i { display: block; height: 100%; background: var(--ok); }
   .g .track > i.amber { background: var(--amber); } .g .track > i.red { background: var(--err); }
   .note { font-size: 11px; color: var(--faint); margin-top: 6px; }
@@ -444,7 +464,7 @@
 </main>
 
 <div class="backdrop" id="backdrop" hidden></div>
-<div class="pop" id="quotaPop" hidden><h2>accounts</h2><div id="accounts"></div><button class="send ghost" id="addAcctBtn" style="width:100%; margin-top:4px;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div>
+<div class="pop" id="quotaPop" hidden><h2>accounts</h2><div id="accounts"></div><div class="pop-footer"><button class="send ghost" id="addAcctBtn" style="width:100%;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div></div>
 <div class="pop" id="addAcctPop" hidden style="top:56px; left:12px; bottom:auto; width:340px;">
   <h2>add a Claude account</h2>
   <div id="addAcctStep1">
@@ -713,6 +733,25 @@
     var t = iso ? Date.parse(iso) : Date.now(); if (isNaN(t)) t = Date.now();
     try { return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; }
   }
+  // "resets in 2d 3hr 15min" — a countdown reads better here than a wall-clock
+  // time, which forces the reader to do their own subtraction.
+  function formatResetIn(untilEpochSeconds) {
+    var diff = Math.max(0, untilEpochSeconds - Math.floor(Date.now() / 1000));
+    var d = Math.floor(diff / 86400), h = Math.floor((diff % 86400) / 3600), m = Math.floor((diff % 3600) / 60);
+    var parts = [];
+    if (d > 0) parts.push(d + 'd');
+    if (d > 0 || h > 0) parts.push(h + 'hr');
+    parts.push(m + 'min');
+    return parts.join(' ');
+  }
+  // "cached 12min ago" — how old the last real reading is, so a stale quota
+  // never masquerades as live data.
+  function formatAgo(atMs) {
+    var diff = Math.max(0, Math.floor((Date.now() - atMs) / 1000));
+    if (diff < 60) return 'just now';
+    var m = Math.floor(diff / 60); if (m < 60) return m + 'min ago';
+    var h = Math.floor(m / 60); return h + 'hr ' + (m % 60) + 'min ago';
+  }
   function copyButton(getText) {
     var b = document.createElement('button'); b.className = 'copybtn'; b.type = 'button';
     b.appendChild(icon('copy', 'sm')); var s = document.createElement('span'); s.textContent = 'copy'; b.appendChild(s);
@@ -764,7 +803,7 @@
   function nodeSys(text, cls) { var d = document.createElement('div'); d.className = cls || 'sysline'; var s = document.createElement('span'); s.textContent = text; d.appendChild(s); return d; }
   function nodeAct(label, isSub) { var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
   function addMsg(role, text, imgUrl, ts) { appendNode(currentProjectId, lastSessionId, nodeMsg(role, text, imgUrl, ts)); }
-  function addSys(text, cls) { appendNode(currentProjectId, lastSessionId, nodeSys(text, cls)); }
+  function addSys(text, cls) { var node = nodeSys(text, cls); appendNode(currentProjectId, lastSessionId, node); return node; }
 
   var BANNERS = { limit_detected: 'limit reached — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts limited — parked', turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped' };
   var active = false, lastLabel = '', runningSubs = 0, subs = {};
@@ -1463,23 +1502,16 @@
       acctNames[a.name] = a.displayName || a.name; // for done-banners etc.
       var st = a.state || { kind: 'unknown' };
       var card = document.createElement('div'); card.className = 'qa' + (a.nextUp ? ' nextup' : '');
-      var top = document.createElement('div'); top.className = 'top'; var left = document.createElement('div');
-      var nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = a.displayName || a.name; left.appendChild(nm);
-      if (a.email) { var em = document.createElement('div'); em.className = 'em'; em.textContent = a.email; left.appendChild(em); }
+      var top = document.createElement('div'); top.className = 'top';
+      // Name + email on one line (wide card, not a tall stack) — ellipsized
+      // if the pair is too long for the available width.
+      var left = document.createElement('div'); left.className = 'nm-line';
+      var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = a.displayName || a.name; left.appendChild(nm);
+      if (a.email) { var em = document.createElement('span'); em.className = 'em'; em.textContent = ' · ' + a.email; left.appendChild(em); }
       top.appendChild(left);
       var badges = document.createElement('div'); badges.className = 'badges';
       // "next up" — the account THIS next prompt will run on (skips a limited one).
       if (a.nextUp) { var nb = document.createElement('span'); nb.className = 'badge next'; nb.textContent = 'next up'; nb.title = 'the next prompt will use this account'; badges.appendChild(nb); }
-      var badge = document.createElement('span'); badge.className = 'badge';
-      if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'ready'; }
-      else if (st.kind === 'limited') {
-        badge.classList.add('limited');
-        // Only claim a reset time when it's real (Anthropic-reported), never our
-        // own retry-cooldown guess — st.estimated marks exactly that case.
-        badge.textContent = st.estimated ? 'limited' : 'limited · resets ' + clockTime(new Date(st.until * 1000).toISOString());
-      }
-      else badge.textContent = 'idle';
-      badges.appendChild(badge);
       // Remove — only when the backend supports it, there's more than one
       // account, and nothing is running (account state is global; a live
       // failover could still reach for it).
@@ -1491,7 +1523,28 @@
         badges.appendChild(rm);
       }
       top.appendChild(badges); card.appendChild(top);
-      if (a.quota) { card.appendChild(gauge('5-hour', a.quota.fiveHour)); card.appendChild(gauge('7-day', a.quota.sevenDay)); if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = 'cached — refreshing'; card.appendChild(s); } }
+      // The ready/limited state gets its own full-width row instead of squeezing
+      // into the name row — "limited · resets in 2d 3hr 15min" is a lot wider than
+      // a wall-clock time was. Nothing renders for 'unknown' (never-used account) —
+      // there's nothing useful to say yet, so no pill.
+      if (st.kind === 'ok' || st.kind === 'limited') {
+        var stateRow = document.createElement('div'); stateRow.className = 'state-row';
+        var badge = document.createElement('span'); badge.className = 'badge';
+        if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'ready'; }
+        else {
+          badge.classList.add('limited');
+          // Only claim a reset time when it's real (Anthropic-reported), never our
+          // own retry-cooldown guess — st.estimated marks exactly that case.
+          badge.textContent = st.estimated ? 'limited' : 'limited · resets in ' + formatResetIn(st.until);
+        }
+        stateRow.appendChild(badge); card.appendChild(stateRow);
+      }
+      if (a.quota) {
+        var gRow = document.createElement('div'); gRow.className = 'gauges';
+        gRow.appendChild(gauge('5-hour', a.quota.fiveHour)); gRow.appendChild(gauge('7-day', a.quota.sevenDay));
+        card.appendChild(gRow);
+        if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = a.quotaAt ? 'cached ' + formatAgo(a.quotaAt) : 'cached — stale'; card.appendChild(s); }
+      }
       else { var n = document.createElement('div'); n.className = 'note'; n.textContent = a.quotaError ? 'usage unavailable — retrying' : 'usage unavailable'; card.appendChild(n); }
       // Per-account action. When the viewed conversation is mid-turn: switch THAT
       // turn onto this account (ends the current turn, resumes it here) — disabled
@@ -1841,7 +1894,16 @@
         return x.idx - y.idx; // no timestamp on one side: fall back to messages-then-activity order
       });
       items.forEach(function (it) { it.render(); });
-      if (hasMsgs) addSys('live');
+      // "live" just marks the handoff point from replayed history to the real
+      // SSE stream — useful for a moment, clutter if it sits in the transcript
+      // forever, so fade it out rather than leaving it as a permanent divider.
+      if (hasMsgs) {
+        var liveNode = addSys('live');
+        setTimeout(function () {
+          liveNode.classList.add('fade-out');
+          setTimeout(function () { if (liveNode.parentNode) liveNode.parentNode.removeChild(liveNode); }, 400);
+        }, 3000);
+      }
       // Re-attach a still-open question the transcript doesn't carry — but only
       // if it actually belongs to THIS conversation, not a different one of the
       // same project that happens to have a pending question.

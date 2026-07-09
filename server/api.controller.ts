@@ -388,22 +388,28 @@ export class ApiController {
         const base = { ...acct, state, displayName: id.displayName ?? acct.name, email: id.email, nextUp: acct.name === nextUp, active: acct.name === activeName };
         const cached = this.quotaCache.get(acct.name);
         if (cached && Date.now() - cached.at < QUOTA_TTL_MS) {
-          return { ...base, quota: cached.quota };
+          return { ...base, quota: cached.quota, quotaAt: cached.at };
         }
         const backoffUntil = this.quotaBackoffUntil.get(acct.name) ?? 0;
         if (Date.now() < backoffUntil) {
-          if (cached) return { ...base, quota: cached.quota, quotaStale: true };
+          // Cached data never goes dark just because upstream is (still) rate-limited —
+          // keep showing the last real reading, marked stale, with its age so the panel
+          // can say how old it is instead of a blanket "refreshing" that may not be
+          // imminent (upstream retry-after here can run up to an hour).
+          if (cached) return { ...base, quota: cached.quota, quotaStale: true, quotaAt: cached.at, quotaRetryAt: backoffUntil };
           return { ...base, quota: null, quotaError: `rate-limited upstream; retrying after ${new Date(backoffUntil).toISOString()}` };
         }
         try {
           const quota = await fetchUsage(acct.configDir);
-          this.quotaCache.set(acct.name, { at: Date.now(), quota });
+          const at = Date.now();
+          this.quotaCache.set(acct.name, { at, quota });
           this.quotaBackoffUntil.delete(acct.name);
-          return { ...base, quota };
+          return { ...base, quota, quotaAt: at };
         } catch (err) {
           const backoffMs = err instanceof UsageRateLimitedError ? err.retryAfterMs : 60_000;
-          this.quotaBackoffUntil.set(acct.name, Date.now() + backoffMs);
-          if (cached) return { ...base, quota: cached.quota, quotaStale: true };
+          const retryAt = Date.now() + backoffMs;
+          this.quotaBackoffUntil.set(acct.name, retryAt);
+          if (cached) return { ...base, quota: cached.quota, quotaStale: true, quotaAt: cached.at, quotaRetryAt: retryAt };
           return { ...base, quota: null, quotaError: (err as Error).message };
         }
       }),
