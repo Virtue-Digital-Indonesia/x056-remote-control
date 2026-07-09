@@ -22,5 +22,10 @@ export function classifyEvent(e: RawEvent): Verdict {
   }
   if (e.type === 'result' && e.api_error_status === 429) return { kind: 'limited', source: 'result' };
   if (e.error === 'rate_limit') return { kind: 'limited', source: 'synthetic_message' };
+  // The CLI's own synthetic response when the account's stored OAuth session is
+  // missing/expired/revoked: an assistant message with this exact `error` field
+  // and no real model involved (message.model: '<synthetic>'), text "Not logged
+  // in · Please run /login". No reset time applies — a human has to re-auth.
+  if (e.error === 'authentication_failed') return { kind: 'auth_required', source: 'synthetic_message' };
   return { kind: 'irrelevant', source: 'none' };
 }

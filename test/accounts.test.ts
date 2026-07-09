@@ -70,6 +70,32 @@ describe('AccountRegistry', () => {
     expect(reloaded.get('a').state).toEqual({ kind: 'ok' });
   });
 
+  it('markUnauthenticated persists and makes the account unusable regardless of time (no reset to wait out)', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    reg.setActive('a');
+    reg.markUnauthenticated('a');
+    expect(reg.get('a').state).toEqual({ kind: 'unauthenticated' });
+    const reloaded = AccountRegistry.load(file);
+    expect(reloaded.get('a').state).toEqual({ kind: 'unauthenticated' });
+    // pickActive skips it at any point in time, exactly like a still-limited account
+    expect(reg.pickActive(0)?.name).toBe('b');
+    expect(reg.pickActive(1e15)?.name).toBe('b');
+    // re-authenticating (markOk) makes it selectable again
+    reg.markOk('a');
+    reg.setActive('a');
+    expect(reg.pickActive(0)?.name).toBe('a');
+  });
+
+  it('earliestReset falls back to now (not Infinity) when every account is unauthenticated', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    reg.markUnauthenticated('a');
+    reg.markUnauthenticated('b');
+    expect(reg.pickActive(1000)).toBeNull();
+    expect(Number.isFinite(reg.earliestReset())).toBe(true);
+  });
+
   it("get('nope') throws unknown account error", () => {
     const file = freshFile();
     const reg = AccountRegistry.init(file, specs);

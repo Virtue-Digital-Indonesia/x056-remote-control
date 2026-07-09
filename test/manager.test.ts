@@ -666,6 +666,48 @@ describe('SessionManager account management', () => {
     expect(mgr.nextUpAccount()).toBe('a');
   });
 
+  it('relogin re-authenticates an EXISTING account in place — no new account, unauthenticated state clears', async () => {
+    const { mgr, sd } = acctFixture('carol@example.com', 'Carol');
+    // simulate the CLI having reported "Not logged in" for account a
+    AccountRegistry.load(join(sd, 'accounts.json')).markUnauthenticated('a');
+    const events: GatewayEvent[] = [];
+    mgr.subscribe((e) => events.push(e));
+    const { loginId, url } = await mgr.startAccountRelogin('a');
+    expect(url).toContain('oauth');
+    const res = await mgr.submitAccountLoginCode(loginId, 'THE-CODE');
+    expect(res.name).toBe('a'); // the SAME account, not a new one
+    expect(mgr.accountsInfo().map((a) => a.name)).toEqual(['a', 'b']); // still just 2
+    expect(AccountRegistry.load(join(sd, 'accounts.json')).get('a').state).toEqual({ kind: 'ok' });
+    expect(events.some((e) => e.kind === 'accounts')).toBe(true);
+  });
+
+  it('relogin of an unknown account name is rejected', async () => {
+    const { mgr } = acctFixture();
+    await expect(mgr.startAccountRelogin('ghost')).rejects.toThrow(/unknown account/);
+  });
+
+  it('cancelling (or timing out) a relogin never deletes the existing account\'s config dir', async () => {
+    const { mgr, cfgA } = acctFixture();
+    const { loginId } = await mgr.startAccountRelogin('a');
+    mgr.cancelAccountLogin(loginId);
+    expect(existsSync(cfgA)).toBe(true); // preserved — unlike an abandoned ONBOARDING pending dir
+  });
+
+  it('relogin refuses a code that authenticates a DIFFERENT already-registered account (mixup guard)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-relog-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    const cfgA = join(dir, 'cfg-a'); mkdirSync(cfgA, { recursive: true });
+    const cfgB = join(dir, 'cfg-b'); mkdirSync(cfgB, { recursive: true });
+    writeFileSync(join(cfgB, '.claude.json'), JSON.stringify({ oauthAccount: { displayName: 'Bob', emailAddress: 'bob@example.com' } }));
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: cfgA }, { name: 'b', configDir: cfgB }]);
+    // the login flow will authenticate as Bob — but we're re-logging in account 'a'
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, loginSpawnFn: fakeLoginSpawn('bob@example.com', 'Bob') });
+    const { loginId } = await mgr.startAccountRelogin('a');
+    await expect(mgr.submitAccountLoginCode(loginId, 'THE-CODE')).rejects.toThrow(/different account/);
+    // 'a' is untouched — still whatever it was, not silently repointed at Bob's identity
+    expect(AccountRegistry.load(join(sd, 'accounts.json')).get('a').state).toEqual({ kind: 'unknown' });
+  });
+
   it('removeAccount drops an account and refuses the last one', () => {
     const { mgr } = acctFixture();
     mgr.removeAccount('b');

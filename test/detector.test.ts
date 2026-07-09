@@ -15,6 +15,18 @@ const syntheticLimitEntry = {
   error: 'rate_limit', isApiErrorMessage: true, apiErrorStatus: 429,
 };
 
+// Captured verbatim from a real `claude -p` run under a config dir with no valid
+// OAuth session: the CLI never touches the network — it emits this synthetic
+// assistant turn, then a result event carrying the same text with is_error: true.
+const notLoggedInEntry = {
+  type: 'assistant',
+  message: {
+    model: '<synthetic>', role: 'assistant',
+    content: [{ type: 'text', text: 'Not logged in · Please run /login' }],
+  },
+  error: 'authentication_failed',
+};
+
 describe('classifyEvent', () => {
   it('passes through an allowed rate_limit_event as ok', () => {
     expect(classifyEvent(rateLimitAllowed)).toEqual({ kind: 'ok', source: 'rate_limit_event' });
@@ -52,6 +64,10 @@ describe('classifyEvent', () => {
 
   it('flags the synthetic transcript limit entry as limited', () => {
     expect(classifyEvent(syntheticLimitEntry)).toEqual({ kind: 'limited', source: 'synthetic_message' });
+  });
+
+  it('flags the "Not logged in" synthetic entry as auth_required (real CLI capture)', () => {
+    expect(classifyEvent(notLoggedInEntry)).toEqual({ kind: 'auth_required', source: 'synthetic_message' });
   });
 
   it('ignores ordinary events', () => {

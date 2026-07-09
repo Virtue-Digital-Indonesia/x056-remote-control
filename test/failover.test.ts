@@ -16,6 +16,16 @@ const REJECTED: RawEvent = {
 const SUCCESS: RawEvent = { type: 'result', subtype: 'success', is_error: false, api_error_status: null, result: 'task done' };
 const ASSISTANT: RawEvent = { type: 'assistant', message: { content: [] } };
 const USER_EVENT: RawEvent = { type: 'user', message: { content: [] } };
+// Captured verbatim from a real `claude -p` run under a config dir with no valid
+// OAuth session (see src/detector.ts) — the CLI never touches the network.
+const NOT_LOGGED_IN: RawEvent = {
+  type: 'assistant',
+  message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'Not logged in · Please run /login' }] },
+  error: 'authentication_failed',
+};
+const NOT_LOGGED_IN_RESULT: RawEvent = {
+  type: 'result', subtype: 'success', is_error: true, api_error_status: null, result: 'Not logged in · Please run /login',
+};
 
 interface Recorded {
   configDir: string;
@@ -130,6 +140,35 @@ describe('runSession', () => {
     const types = log.read().map((r) => r.type);
     expect(types).toContain('limit_detected');
     expect(types).toContain('failover');
+  });
+
+  it('fails over to b when the CLI reports "Not logged in" (auth_required), marking a unauthenticated (not limited)', async () => {
+    const { registry, log } = fixtures();
+    const recorded: Recorded[] = [];
+    const res = await runSession({
+      ...base, registry, log, now: () => 100,
+      startTurnFn: scriptTurns([[NOT_LOGGED_IN, NOT_LOGGED_IN_RESULT], [SUCCESS]], recorded),
+    });
+    expect(res).toMatchObject({ status: 'completed', finalAccount: 'b', failovers: 1 });
+    expect(recorded[1]).toMatchObject({ configDir: '/cfg/b', mode: 'resume', prompt: CONTINUE_PROMPT });
+    // Not 'limited' — there's no reset time to wait out, only a human re-login clears this.
+    expect(registry.get('a').state).toEqual({ kind: 'unauthenticated' });
+    const types = log.read().map((r) => r.type);
+    expect(types).toContain('auth_required');
+    expect(types).toContain('failover');
+    expect(types).not.toContain('limit_detected');
+  });
+
+  it('parks with a finite parkedUntil when both accounts report auth_required (no reset time exists at all)', async () => {
+    const { registry, log } = fixtures();
+    const res = await runSession({
+      ...base, registry, log, now: () => 100,
+      startTurnFn: scriptTurns([[NOT_LOGGED_IN, NOT_LOGGED_IN_RESULT], [NOT_LOGGED_IN, NOT_LOGGED_IN_RESULT]], []),
+    });
+    expect(res.status).toBe('parked');
+    expect(Number.isFinite(res.parkedUntil)).toBe(true);
+    expect(registry.get('a').state).toEqual({ kind: 'unauthenticated' });
+    expect(registry.get('b').state).toEqual({ kind: 'unauthenticated' });
   });
 
   it('parks when both accounts are limited, with the earliest reset', async () => {

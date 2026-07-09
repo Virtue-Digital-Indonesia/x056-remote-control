@@ -275,6 +275,7 @@
   .qa .act.current:disabled { opacity: 1; background: var(--accent-weak); color: var(--accent); border-color: var(--accent); font-weight: 600; cursor: default; }
   .badge { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: var(--surface-3); color: var(--muted); }
   .badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.limited { background: var(--amber-bg); color: var(--amber); }
+  .badge.auth { background: var(--err-bg); color: var(--err); }
   .badge.next { background: var(--accent-weak); color: var(--accent); }
   .send.ghost { background: transparent; color: var(--text); border: 1px solid var(--border-strong); }
   .send.ghost:hover { filter: none; border-color: var(--accent); color: var(--accent); }
@@ -474,13 +475,13 @@
 <div class="backdrop" id="backdrop" hidden></div>
 <div class="pop" id="quotaPop" hidden><h2>accounts</h2><div id="accounts"></div><div class="pop-footer"><button class="send ghost" id="addAcctBtn" style="width:100%;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div></div>
 <div class="pop" id="addAcctPop" hidden style="top:56px; left:12px; bottom:auto; width:340px;">
-  <h2>add a Claude account</h2>
+  <h2 id="addAcctTitle">add a Claude account</h2>
   <div id="addAcctStep1">
-    <div class="gate-note" style="margin-bottom:10px;">Sign in to another Claude account to add it to the failover pool. A new browser tab will open to authorize; you'll paste back a code.</div>
+    <div class="gate-note" id="addAcctIntro" style="margin-bottom:10px;">Sign in to another Claude account to add it to the failover pool. A new browser tab will open to authorize; you'll paste back a code.</div>
     <button class="send" id="addAcctStart" style="width:100%;">Start sign-in</button>
   </div>
   <div id="addAcctStep2" hidden>
-    <div class="gate-note" style="margin-bottom:6px;">1. Open this link, sign in with the account you want to add, and authorize:</div>
+    <div class="gate-note" id="addAcctStep2Note" style="margin-bottom:6px;">1. Open this link, sign in with the account you want to add, and authorize:</div>
     <a id="addAcctLink" href="#" target="_blank" rel="noopener" class="acct-link">Open sign-in page ↗</a>
     <div class="gate-note" style="margin:10px 0 6px;">2. Copy the code it gives you and paste it here:</div>
     <input id="addAcctCode" class="pk-search" placeholder="paste authorization code" autocomplete="off" />
@@ -836,7 +837,7 @@
     streamStatusEl.classList.remove('fade-out'); streamStatusEl.hidden = true;
   }
 
-  var BANNERS = { limit_detected: 'limit reached — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts limited — parked', turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped' };
+  var BANNERS = { limit_detected: 'limit reached — switching accounts…', auth_required: 'not logged in — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts unavailable — parked', turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped' };
   var active = false, lastLabel = '', runningSubs = 0, subs = {};
   var runningProjects = {}; // projectId -> true while ANY conversation runs there
   // projectId -> { sessionId: true } for every conversation currently running in
@@ -1554,14 +1555,15 @@
         badges.appendChild(rm);
       }
       top.appendChild(badges); card.appendChild(top);
-      // The ready/limited state gets its own full-width row instead of squeezing
-      // into the name row — "limited · resets in 2d 3hr 15min" is a lot wider than
-      // a wall-clock time was. Nothing renders for 'unknown' (never-used account) —
-      // there's nothing useful to say yet, so no pill.
-      if (st.kind === 'ok' || st.kind === 'limited') {
+      // The ready/limited/auth state gets its own full-width row instead of
+      // squeezing into the name row — "limited · resets in 2d 3hr 15min" is a lot
+      // wider than a wall-clock time was. Nothing renders for 'unknown' (never-used
+      // account) — there's nothing useful to say yet, so no pill.
+      if (st.kind === 'ok' || st.kind === 'limited' || st.kind === 'unauthenticated') {
         var stateRow = document.createElement('div'); stateRow.className = 'state-row';
         var badge = document.createElement('span'); badge.className = 'badge';
         if (st.kind === 'ok') { badge.classList.add('ok'); badge.textContent = 'ready'; }
+        else if (st.kind === 'unauthenticated') { badge.classList.add('auth'); badge.textContent = 'needs login'; }
         else {
           badge.classList.add('limited');
           // Only claim a reset time when it's real (Anthropic-reported), never our
@@ -1577,11 +1579,22 @@
         if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = a.quotaAt ? 'cached ' + formatAgo(a.quotaAt) : 'cached — stale'; card.appendChild(s); }
       }
       else { var n = document.createElement('div'); n.className = 'note'; n.textContent = a.quotaError ? 'usage unavailable — retrying' : 'usage unavailable'; card.appendChild(n); }
-      // Per-account action. When the viewed conversation is mid-turn: switch THAT
-      // turn onto this account (ends the current turn, resumes it here) — disabled
-      // for the account already running it or a limited one. When idle: make this
-      // the account the next message uses — disabled for the one already chosen.
-      if (activeCapable) {
+      // Per-account action. A "Not logged in" account needs a human to re-auth it
+      // — nothing else is relevant until then, so this REPLACES the normal
+      // use-for-next/switch-turn action (and isn't gated on activeCapable: it's a
+      // new possible STATE VALUE, not a new API field, so an old backend simply
+      // never sends it).
+      if (st.kind === 'unauthenticated') {
+        var relogin = document.createElement('button'); relogin.className = 'send act';
+        relogin.textContent = 'Log in again';
+        relogin.addEventListener('click', function () { resetAddAcct(a); openPop($('addAcctPop')); });
+        card.appendChild(relogin);
+      }
+      // When the viewed conversation is mid-turn: switch THAT turn onto this
+      // account (ends the current turn, resumes it here) — disabled for the
+      // account already running it or a limited one. When idle: make this the
+      // account the next message uses — disabled for the one already chosen.
+      else if (activeCapable) {
         var act = document.createElement('button'); act.className = 'send ghost act';
         var limited = st.kind === 'limited';
         if (viewedRunning) {
@@ -2149,38 +2162,55 @@
     }).catch(function () {});
   });
 
-  // ---- add-account onboarding (drives `claude auth login` on the server) ----
-  var addAcctLoginId = null;
-  function resetAddAcct() {
+  // ---- add-account onboarding / re-login (drives `claude auth login` on the server) ----
+  var addAcctLoginId = null, addAcctReloginName = null;
+  // Resets step/button state WITHOUT touching which flow (onboard vs relogin) is
+  // active — used when backing up to step 1 after an error within the SAME attempt.
+  function resetAddAcctStep() {
     addAcctLoginId = null;
     $('addAcctStep1').hidden = false; $('addAcctStep2').hidden = true;
     $('addAcctCode').value = ''; $('addAcctErr').textContent = '';
     $('addAcctStart').disabled = false; $('addAcctStart').textContent = 'Start sign-in';
     $('addAcctFinish').disabled = false; $('addAcctFinish').textContent = 'Finish';
   }
-  $('addAcctBtn').addEventListener('click', function () { resetAddAcct(); openPop($('addAcctPop')); });
+  // account: null to onboard a brand-new account, or an existing account object to
+  // re-authenticate it in place (the CLI reported "Not logged in" for it).
+  function resetAddAcct(account) {
+    addAcctReloginName = account ? account.name : null;
+    $('addAcctTitle').textContent = account ? ('Log in again — ' + (account.displayName || account.name)) : 'add a Claude account';
+    $('addAcctIntro').textContent = account
+      ? 'This account’s Claude session expired or was revoked. Sign in again with the SAME Anthropic account to restore it.'
+      : 'Sign in to another Claude account to add it to the failover pool. A new browser tab will open to authorize; you’ll paste back a code.';
+    $('addAcctStep2Note').textContent = account
+      ? '1. Open this link and sign in with the SAME account, then authorize:'
+      : '1. Open this link, sign in with the account you want to add, and authorize:';
+    resetAddAcctStep();
+  }
+  $('addAcctBtn').addEventListener('click', function () { resetAddAcct(null); openPop($('addAcctPop')); });
   $('addAcctStart').addEventListener('click', function () {
     $('addAcctStart').disabled = true; $('addAcctStart').textContent = 'Opening…';
-    api('/api/accounts/login/start', { method: 'POST' }).then(function (r) {
+    var body = addAcctReloginName ? { name: addAcctReloginName } : {};
+    api('/api/accounts/login/start', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
       return r.json().then(function (j) {
-        if (!r.ok) { $('addAcctErr').textContent = j && j.message ? j.message : 'could not start sign-in'; resetAddAcct(); return; }
+        if (!r.ok) { $('addAcctErr').textContent = j && j.message ? j.message : 'could not start sign-in'; resetAddAcctStep(); return; }
         addAcctLoginId = j.loginId;
         var link = $('addAcctLink'); link.href = j.url;
         $('addAcctStep1').hidden = true; $('addAcctStep2').hidden = false;
         try { window.open(j.url, '_blank', 'noopener'); } catch (e) {}
         $('addAcctCode').focus();
       });
-    }).catch(function () { $('addAcctErr').textContent = 'network error'; resetAddAcct(); });
+    }).catch(function () { $('addAcctErr').textContent = 'network error'; resetAddAcctStep(); });
   });
   $('addAcctFinish').addEventListener('click', function () {
     var code = $('addAcctCode').value.trim();
     if (!code) { $('addAcctErr').textContent = 'paste the authorization code first'; return; }
     if (!addAcctLoginId) { $('addAcctErr').textContent = 'sign-in expired — start again'; return; }
-    $('addAcctErr').textContent = ''; $('addAcctFinish').disabled = true; $('addAcctFinish').textContent = 'Adding…';
+    var wasRelogin = !!addAcctReloginName;
+    $('addAcctErr').textContent = ''; $('addAcctFinish').disabled = true; $('addAcctFinish').textContent = wasRelogin ? 'Logging in…' : 'Adding…';
     api('/api/accounts/login/submit', { method: 'POST', body: JSON.stringify({ loginId: addAcctLoginId, code: code }) }).then(function (r) {
       return r.json().then(function (j) {
-        if (!r.ok) { $('addAcctErr').textContent = j && j.message ? j.message : 'could not add account'; $('addAcctFinish').disabled = false; $('addAcctFinish').textContent = 'Finish'; return; }
-        closeAllPops(); addSys('account added: ' + (j.displayName || j.email || j.name), 'banner'); pollAccounts();
+        if (!r.ok) { $('addAcctErr').textContent = j && j.message ? j.message : 'could not finish sign-in'; $('addAcctFinish').disabled = false; $('addAcctFinish').textContent = 'Finish'; return; }
+        closeAllPops(); addSys((wasRelogin ? 'logged back in: ' : 'account added: ') + (j.displayName || j.email || j.name), 'banner'); pollAccounts();
       });
     }).catch(function () { $('addAcctErr').textContent = 'network error'; $('addAcctFinish').disabled = false; $('addAcctFinish').textContent = 'Finish'; });
   });

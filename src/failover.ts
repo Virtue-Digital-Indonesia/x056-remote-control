@@ -105,6 +105,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
 
       const state = {
         limited: null as Verdict | null,
+        authRequired: false,
         forced: false,
         resultText: undefined as string | undefined,
         resultOk: false,
@@ -128,9 +129,20 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       const processEvent = (e: RawEvent) => {
         try { opts.tap?.(e); } catch { /* tap must never affect detection */ }
         const v = classifyEvent(e);
-        if (v.kind === 'limited' && !state.limited && !state.forced) {
+        if (v.kind === 'limited' && !state.limited && !state.authRequired && !state.forced) {
           state.limited = v;
           log.append({ type: 'limit_detected', sessionId, account: account.name, source: v.source, resetsAt: v.resetsAt ?? null });
+          state.killRequested = true;
+          handle?.kill();
+          return;
+        }
+        // The CLI's own "Not logged in" synthetic response — this account's stored
+        // OAuth session is dead. No point letting the turn continue; end it and
+        // fail over like a limit, but there's no reset time — it stays parked until
+        // a human re-authenticates it (the UI surfaces a re-login prompt for this).
+        if (v.kind === 'auth_required' && !state.limited && !state.authRequired && !state.forced) {
+          state.authRequired = true;
+          log.append({ type: 'auth_required', sessionId, account: account.name });
           state.killRequested = true;
           handle?.kill();
           return;
@@ -143,7 +155,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           state.resultText = typeof e.result === 'string' ? e.result : undefined;
         }
         // forced switch: drain until a tool-result-bearing user event or the result event (D7)
-        if (forceSwitchRequested && !state.forced && !state.limited && (e.type === 'user' || e.type === 'result')) {
+        if (forceSwitchRequested && !state.forced && !state.limited && !state.authRequired && (e.type === 'user' || e.type === 'result')) {
           state.forced = true;
           log.append({ type: 'forced_switch', sessionId, account: account.name });
           state.interruptRequested = true;
@@ -178,9 +190,9 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
 
       // forced-switch hard timeout: if requested but nothing drainable arrives, interrupt anyway
       const drainWatch = setInterval(() => {
-        if (forceSwitchRequested && !state.forced && !state.limited && state.drainTimer === null) {
+        if (forceSwitchRequested && !state.forced && !state.limited && !state.authRequired && state.drainTimer === null) {
           state.drainTimer = setTimeout(() => {
-            if (!state.forced && !state.limited) {
+            if (!state.forced && !state.limited && !state.authRequired) {
               state.forced = true;
               log.append({ type: 'forced_switch_timeout', sessionId, account: account.name });
               state.interruptRequested = true;
@@ -196,7 +208,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       if (state.drainTimer) clearTimeout(state.drainTimer);
       if (state.graceTimer) clearTimeout(state.graceTimer);
 
-      if (!state.limited && !state.forced) {
+      if (!state.limited && !state.forced && !state.authRequired) {
         if (state.resultOk) {
           log.append({ type: 'turn_completed', sessionId, account: account.name });
           return { status: 'completed', finalAccount: account.name, failovers: failoverTimes.length, resultText: state.resultText };
@@ -213,7 +225,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         return { status: 'failed', finalAccount: account.name, failovers: failoverTimes.length, reason };
       }
 
-      // failover path (limit or forced)
+      // failover path (limit, auth-required, or forced)
       // A force request that lost the race to a rate-limit verdict is moot — the
       // session is switching anyway — so clear it unconditionally to avoid a stale
       // flag triggering a spurious forced interrupt on the next account.
@@ -226,6 +238,10 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // estimate, not a fact, so the UI doesn't present a guess as a countdown.
         const hasRealReset = state.limited.resetsAt != null;
         registry.markLimited(account.name, state.limited.resetsAt ?? now() + LIMIT_NO_RESET_FALLBACK, !hasRealReset);
+      } else if (state.authRequired) {
+        // No cooldown to wait out — this account is parked until a human
+        // re-authenticates it via the UI.
+        registry.markUnauthenticated(account.name);
       } else if (bench) {
         // A legacy/automatic forced switch benches the account being left (never
         // backed by an Anthropic-reported reset time). A user-directed switch to a
@@ -234,7 +250,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       }
       // Count toward the flap guard only for limit-driven or legacy forced rotates;
       // a user-directed targeted switch is intentional, not flapping.
-      if (state.limited || bench) {
+      if (state.limited || state.authRequired || bench) {
         failoverTimes.push(now());
         const recent = failoverTimes.filter((t) => t > now() - 3600);
         if (recent.length > maxPerHour) {

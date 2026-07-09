@@ -439,11 +439,13 @@ export class ApiController {
   }
 
   // ---- account onboarding / removal ----
+  // With a `name`, this re-authenticates that EXISTING account in place (the CLI
+  // reported "Not logged in" for it); without one, it onboards a brand-new account.
   @Post('accounts/login/start')
   @HttpCode(200)
-  async accountLoginStart(): Promise<{ loginId: string; url: string }> {
+  async accountLoginStart(@Body() body: { name?: string }): Promise<{ loginId: string; url: string }> {
     try {
-      return await this.manager.startAccountLogin();
+      return body?.name ? await this.manager.startAccountRelogin(body.name) : await this.manager.startAccountLogin();
     } catch (err) {
       throw new BadRequestException((err as Error).message);
     }

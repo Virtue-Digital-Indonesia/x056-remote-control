@@ -7,7 +7,11 @@ export type AccountState =
   // `estimated: true` means `until` is our own retry-cooldown guess (no reset
   // time was available from Anthropic), NOT a real reported reset time — the UI
   // must not present it as a factual countdown.
-  | { kind: 'limited'; until: number; estimated?: boolean };
+  | { kind: 'limited'; until: number; estimated?: boolean }
+  // The CLI reported "Not logged in" for this account (expired/revoked OAuth
+  // session) — unlike 'limited', there's no reset time; it stays unusable until
+  // a human re-authenticates it (see markOk, called once that succeeds).
+  | { kind: 'unauthenticated' };
 
 export interface Account {
   name: string;
@@ -87,6 +91,7 @@ export class AccountRegistry {
   }
 
   private usable(a: Account, now: number): boolean {
+    if (a.state.kind === 'unauthenticated') return false;
     return a.state.kind !== 'limited' || a.state.until <= now;
   }
 
@@ -128,11 +133,19 @@ export class AccountRegistry {
     this.save();
   }
 
+  markUnauthenticated(name: string): void {
+    this.find(name).state = { kind: 'unauthenticated' };
+    this.save();
+  }
+
   earliestReset(): number {
     const untils = this.data.accounts
       .map((a) => a.state)
       .filter((s): s is { kind: 'limited'; until: number } => s.kind === 'limited')
       .map((s) => s.until);
+    // Every account could be parked with no real reset time at all (e.g. all
+    // unauthenticated) — nothing to count down to, so don't report Infinity.
+    if (untils.length === 0) return Math.floor(Date.now() / 1000);
     return Math.min(...untils);
   }
 
