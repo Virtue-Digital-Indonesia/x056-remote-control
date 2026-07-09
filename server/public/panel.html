@@ -147,7 +147,15 @@
   .content table { border-collapse: collapse; margin: 0 0 11px; font-size: 13px; display: block; overflow-x: auto; max-width: 100%; }
   .content th, .content td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; vertical-align: top; }
   .content th { background: var(--surface-2); font-weight: 600; }
-  .cachenote span { color: var(--accent); background: var(--accent-weak); }
+  /* Floats over the top of the thread instead of being inserted into it — so
+     "live"/"showing cached view" appearing and disappearing never reflows or
+     displaces actual messages the way an inline sysline entry would. Deliberately
+     no `display` here (a plain div defaults to block): setting one on an ID/class
+     this specific would outrank `[hidden]`'s `display: none` by specificity and
+     the pill would stop actually hiding, the same bug #quotaPop just had. */
+  .stream-status { position: absolute; top: 62px; left: 50%; transform: translateX(-50%); z-index: 20; pointer-events: none; opacity: 1; transition: opacity .4s; font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 4px 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+  .stream-status.fade-out { opacity: 0; }
+  .stream-status.accent { color: var(--accent); background: var(--accent-weak); }
   #autopilotBar { max-width: 780px; margin: 0 auto 8px; }
   #autopilotBar:empty { display: none; }
   .apbar { display: flex; align-items: center; gap: 10px; background: var(--accent-weak); border: 1px solid var(--accent); border-radius: 12px; padding: 8px 14px; font-size: 13px; color: var(--accent); }
@@ -187,8 +195,7 @@
   .act .ic { opacity: .8; }
   .act.sub { color: var(--accent); }
   .act .el { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sysline { text-align: center; margin: 18px 0; opacity: 1; transition: opacity .4s; } .sysline span { font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 4px 12px; }
-  .sysline.fade-out { opacity: 0; }
+  .sysline { text-align: center; margin: 18px 0; } .sysline span { font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 4px 12px; }
   .banner { text-align: center; margin: 12px 0; } .banner span { font-size: 12.5px; color: var(--amber); background: var(--amber-bg); border-radius: 20px; padding: 5px 14px; }
   .banner.err span { color: var(--err); background: var(--err-bg); }
 
@@ -439,6 +446,7 @@
     <button class="ico moreBtn" id="moreBtn" title="more" aria-label="more"><svg class="ic"><use href="#i-more"/></svg></button>
   </div>
   <div class="scroll"><div class="thread" id="chat"></div></div>
+  <div class="stream-status" id="streamStatus" hidden></div>
   <button id="jumpBtn" title="jump to latest" hidden><svg class="ic sm"><use href="#i-down"/></svg></button>
   <div class="composer-wrap">
     <div id="autopilotBar"></div>
@@ -804,6 +812,29 @@
   function nodeAct(label, isSub) { var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
   function addMsg(role, text, imgUrl, ts) { appendNode(currentProjectId, lastSessionId, nodeMsg(role, text, imgUrl, ts)); }
   function addSys(text, cls) { var node = nodeSys(text, cls); appendNode(currentProjectId, lastSessionId, node); return node; }
+  // "live" / "showing cached view" float over the thread instead of being
+  // inserted into it (see .stream-status) — one singleton pill, shown/faded/hidden
+  // in place, so it never reflows the actual messages as it appears and disappears.
+  var streamStatusEl = document.getElementById('streamStatus');
+  var streamStatusFadeTimer = null, streamStatusHideTimer = null;
+  function showStreamStatus(text, accent) {
+    clearTimeout(streamStatusFadeTimer); clearTimeout(streamStatusHideTimer);
+    streamStatusEl.textContent = text;
+    streamStatusEl.classList.toggle('accent', !!accent);
+    streamStatusEl.classList.remove('fade-out');
+    streamStatusEl.hidden = false;
+  }
+  function fadeStreamStatus(afterMs) {
+    clearTimeout(streamStatusFadeTimer); clearTimeout(streamStatusHideTimer);
+    streamStatusFadeTimer = setTimeout(function () {
+      streamStatusEl.classList.add('fade-out');
+      streamStatusHideTimer = setTimeout(function () { streamStatusEl.hidden = true; }, 400);
+    }, afterMs);
+  }
+  function hideStreamStatusNow() {
+    clearTimeout(streamStatusFadeTimer); clearTimeout(streamStatusHideTimer);
+    streamStatusEl.classList.remove('fade-out'); streamStatusEl.hidden = true;
+  }
 
   var BANNERS = { limit_detected: 'limit reached — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts limited — parked', turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped' };
   var active = false, lastLabel = '', runningSubs = 0, subs = {};
@@ -1350,7 +1381,7 @@
       var v = viewOf(projectId, sessionId);
       if (v.frag.childNodes.length > 0) {
         chatEl.appendChild(v.frag);
-        appendNode(projectId, sessionId, nodeSys('showing cached view — refreshing…', 'sysline cachenote'));
+        showStreamStatus('showing cached view — refreshing…', true);
         down();
       }
       loadProjects(); pollSnapshot().then(loadHistory);
@@ -1422,7 +1453,7 @@
     var hadCache = v.frag.childNodes.length > 0;
     if (hadCache) {
       chatEl.appendChild(v.frag);
-      appendNode(p.id, lastSessionId, nodeSys('showing cached view — refreshing…', 'sysline cachenote'));
+      showStreamStatus('showing cached view — refreshing…', true);
       down();
     }
     active = !!v.active; lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; renderBusy();
@@ -1894,16 +1925,11 @@
         return x.idx - y.idx; // no timestamp on one side: fall back to messages-then-activity order
       });
       items.forEach(function (it) { it.render(); });
-      // "live" just marks the handoff point from replayed history to the real
-      // SSE stream — useful for a moment, clutter if it sits in the transcript
-      // forever, so fade it out rather than leaving it as a permanent divider.
-      if (hasMsgs) {
-        var liveNode = addSys('live');
-        setTimeout(function () {
-          liveNode.classList.add('fade-out');
-          setTimeout(function () { if (liveNode.parentNode) liveNode.parentNode.removeChild(liveNode); }, 400);
-        }, 3000);
-      }
+      // "live" just marks the handoff point from replayed history to the real SSE
+      // stream — useful for a moment, clutter if it lingers, so fade it out. It's
+      // the overlay pill (not an inline entry), so this also supersedes any
+      // "showing cached view" the switch that led here left showing.
+      if (hasMsgs) { showStreamStatus('live'); fadeStreamStatus(3000); } else { hideStreamStatusNow(); }
       // Re-attach a still-open question the transcript doesn't carry — but only
       // if it actually belongs to THIS conversation, not a different one of the
       // same project that happens to have a pending question.
