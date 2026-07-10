@@ -183,6 +183,31 @@ describe('live panel path', () => {
   });
 });
 
+describe('quota cache persistence', () => {
+  it('a persisted quota-cache.json survives an app restart (deploy) instead of every account going blank', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'x056-qcache-'));
+    const stateDir = join(d, 'state'); mkdirSync(stateDir, { recursive: true });
+    const cfgA = join(d, 'cfg-a'); mkdirSync(cfgA, { recursive: true });
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'a', configDir: cfgA }]);
+    // Simulate a prior successful fetch, persisted by an EARLIER app instance
+    // (the in-memory cache alone would be wiped by the restart this simulates).
+    writeFileSync(join(stateDir, 'quota-cache.json'), JSON.stringify({
+      a: { at: Date.now(), quota: { fiveHour: { utilization: 42 }, sevenDay: { utilization: 7 } } },
+    }));
+    const app2 = await createApp({ token: TOKEN, stateDir, workspaceRoot: d, claudePath: FAKE });
+    await app2.listen(0);
+    const url = await app2.getUrl();
+    try {
+      const body = await (await fetch(`${url}/api/accounts`, { headers: auth })).json() as { name: string; quota?: { fiveHour: { utilization: number } } }[];
+      // Served straight from the persisted cache — no live fetch needed (the
+      // fake cfg dir has no credentials, so a live fetch would have failed).
+      expect(body[0].quota?.fiveHour.utilization).toBe(42);
+    } finally {
+      await app2.close();
+    }
+  });
+});
+
 describe('gateway account identity + image upload', () => {
   it('accounts include displayName/email read from .claude.json', async () => {
     const body = await (await fetch(`${base}/api/accounts`, { headers: auth })).json() as { name: string; displayName?: string; email?: string }[];

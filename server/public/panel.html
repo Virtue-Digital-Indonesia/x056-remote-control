@@ -185,10 +185,18 @@
   .qhead { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600; letter-spacing: .3px; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
   .qtext { font-size: 14.5px; color: var(--text); margin-bottom: 10px; }
   .qopts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .qopt-wrap { display: flex; align-items: center; gap: 2px; }
   .qopt { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); border-radius: 9px; padding: 7px 14px; cursor: pointer; font: inherit; font-size: 13px; }
   .qopt:hover { border-color: var(--accent); }
   .qopt.chosen { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .qopt:disabled { cursor: default; }
+  /* Only revealed on hover of the pair — inserts the option's text into the
+     prompt box instead of answering directly, for "use this as a starting
+     point" rather than "this is my answer". */
+  .qopt-insert { flex: none; width: 22px; height: 22px; padding: 0; border: none; background: transparent; color: var(--faint); border-radius: 6px; cursor: pointer; display: inline-grid; place-items: center; opacity: 0; transition: opacity .15s ease; }
+  .qopt-wrap:hover .qopt-insert { opacity: 1; }
+  .qopt-insert:hover { background: var(--surface-3); color: var(--accent); }
+  .qopt-insert:disabled { display: none; }
   .qhint { font-size: 12px; color: var(--muted); }
 
   .act { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 3px 0; padding: 3px 0; }
@@ -273,6 +281,10 @@
      now — gets the accent treatment instead of looking merely disabled like the
      truly-unavailable (limited) case. */
   .qa .act.current:disabled { opacity: 1; background: var(--accent-weak); color: var(--accent); border-color: var(--accent); font-weight: 600; cursor: default; }
+  /* An explicit, confirmed override of a "limited" mark — amber to read as a
+     deliberate risk, not a routine action like the plain ghost buttons above. */
+  .qa .act.force { background: var(--amber-bg); color: var(--amber); border-color: var(--amber); }
+  .qa .act.force:hover { filter: brightness(1.1); }
   .badge { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: var(--surface-3); color: var(--muted); }
   .badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.limited { background: var(--amber-bg); color: var(--amber); }
   .badge.auth { background: var(--err-bg); color: var(--err); }
@@ -413,6 +425,7 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></symbol>
+  <symbol id="i-insert" viewBox="0 0 24 24"><path d="M9 10l-5 5 5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
   <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M10 14h4"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-4 4 3 3m-6-1 2.5 2.5"/></symbol>
@@ -1087,9 +1100,16 @@
     if (opts.length) {
       var row = document.createElement('div'); row.className = 'qopts';
       opts.forEach(function (o) {
+        var wrap = document.createElement('div'); wrap.className = 'qopt-wrap';
+        var ins = document.createElement('button'); ins.type = 'button'; ins.className = 'qopt-insert';
+        ins.title = 'insert into the message box instead of answering directly';
+        ins.appendChild(icon('insert', 'sm'));
+        ins.addEventListener('click', function (e) { e.stopPropagation(); insertIntoPrompt(o); });
+        wrap.appendChild(ins);
         var b = document.createElement('button'); b.className = 'qopt'; b.textContent = o;
         b.addEventListener('click', function () { answerQuestion(pid, d, o); });
-        row.appendChild(b);
+        wrap.appendChild(b);
+        row.appendChild(wrap);
       });
       d.appendChild(row);
     } else {
@@ -1124,9 +1144,23 @@
     card.classList.add('answered');
     var buttons = card.querySelectorAll('.qopt');
     for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; if (buttons[i].textContent === answer) buttons[i].classList.add('chosen'); }
+    var inserts = card.querySelectorAll('.qopt-insert');
+    for (var j = 0; j < inserts.length; j++) inserts[j].disabled = true;
     addMsg('user', answer, null, new Date().toISOString());
     api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, prompt: answer }) })
       .then(function (r) { if (r.status === 409) addSys('a turn is already running there', 'banner'); }).catch(function () {});
+  }
+  // Appends an option's text to whatever's already in the message box — a
+  // starting point to edit/extend, not an immediate answer (that's the .qopt
+  // button itself). Separates from existing content with a newline rather than
+  // concatenating mid-word.
+  function insertIntoPrompt(text) {
+    var cur = promptEl.value;
+    promptEl.value = cur && !/\s$/.test(cur) ? cur + '\n' + text : cur + text;
+    autogrow(); saveDraft();
+    promptEl.focus();
+    var len = promptEl.value.length;
+    promptEl.setSelectionRange(len, len);
   }
   // Persistent card shown when a turn died mid-flight (crash/restart) — click to resume.
   function nodeOrphan(pid, data) {
@@ -1513,7 +1547,6 @@
   function renderAccounts(list) {
     acctList = Array.isArray(list) ? list : [];
     accountsEl.textContent = '';
-    var anyRunning = Object.keys(runningProjects).length > 0;
     // Capability probe: the panel is bind-mount live-served and may be running
     // ahead of a backend that doesn't yet expose account add/remove. The new
     // backend tags every account with `nextUp`; the old one never does. Only
@@ -1544,13 +1577,14 @@
       var badges = document.createElement('div'); badges.className = 'badges';
       // "next up" — the account THIS next prompt will run on (skips a limited one).
       if (a.nextUp) { var nb = document.createElement('span'); nb.className = 'badge next'; nb.textContent = 'next up'; nb.title = 'the next prompt will use this account'; badges.appendChild(nb); }
-      // Remove — only when the backend supports it, there's more than one
-      // account, and nothing is running (account state is global; a live
-      // failover could still reach for it).
+      // Remove — only when the backend supports it and there's more than one
+      // account. Not pre-disabled while turns are running elsewhere: the
+      // backend only actually blocks removing an account a turn is running ON
+      // right now, so a turn on a DIFFERENT account shouldn't stop this one —
+      // attempt it and surface the backend's reason if it does refuse.
       if (capable && acctList.length > 1) {
         var rm = document.createElement('button'); rm.className = 'arm'; rm.appendChild(icon('x', 'sm'));
-        rm.title = anyRunning ? 'stop running turns before removing' : 'remove this account';
-        rm.disabled = anyRunning;
+        rm.title = 'remove this account';
         rm.addEventListener('click', function () { removeAccount(a); });
         badges.appendChild(rm);
       }
@@ -1591,18 +1625,19 @@
         card.appendChild(relogin);
       }
       // When the viewed conversation is mid-turn: switch THAT turn onto this
-      // account (ends the current turn, resumes it here) — disabled for the
-      // account already running it or a limited one. When idle: make this the
-      // account the next message uses — disabled for the one already chosen.
+      // account (ends the current turn, resumes it here) — for the account
+      // already running it, that's a no-op; for a limited one, a confirmed
+      // override (see forceUseAccount). When idle: make this the account the
+      // next message uses — disabled for the one already chosen.
       else if (activeCapable) {
         var act = document.createElement('button'); act.className = 'send ghost act';
         var limited = st.kind === 'limited';
         if (viewedRunning) {
           if (a.name === runningAcct) { act.textContent = 'running this turn'; act.disabled = true; act.classList.add('current'); }
-          else if (limited) { act.textContent = 'limited — unavailable'; act.disabled = true; }
+          else if (limited) { act.textContent = 'Force use anyway'; act.classList.add('force'); act.addEventListener('click', function () { forceUseAccount(a, switchTurnTo); }); }
           else { act.textContent = 'Switch this turn here'; act.addEventListener('click', function () { switchTurnTo(a); }); }
         } else {
-          if (limited) { act.textContent = 'limited — unavailable'; act.disabled = true; }
+          if (limited) { act.textContent = 'Force use anyway'; act.classList.add('force'); act.addEventListener('click', function () { forceUseAccount(a, chooseNextAccount); }); }
           else if (a.active) { act.textContent = 'sends next message'; act.disabled = true; act.classList.add('current'); }
           else { act.textContent = 'Use for next message'; act.addEventListener('click', function () { chooseNextAccount(a); }); }
         }
@@ -1623,21 +1658,34 @@
   }
   // Idle: pick which account the next message runs on (sets the registry's
   // preferred account). Keeps the popover open and re-polls so the badges update.
-  function chooseNextAccount(a) {
-    api('/api/accounts/active', { method: 'POST', body: JSON.stringify({ name: a.name }) }).then(function (r) {
+  // force: true bypasses a still-'limited' mark (clears it server-side) — for
+  // when the user has confirmed the limit already reset in reality but our own
+  // tracked cooldown hasn't caught up. Never applies to 'unauthenticated'.
+  function chooseNextAccount(a, force) {
+    api('/api/accounts/active', { method: 'POST', body: JSON.stringify({ name: a.name, force: !!force }) }).then(function (r) {
       if (!r.ok) { return r.json().then(function (j) { addSys(j && j.message ? j.message : 'could not choose account', 'banner'); }).catch(function () { addSys('could not choose account', 'banner'); }); }
       addSys('next message will use ' + (a.displayName || a.name), 'banner');
       pollAccounts();
     }).catch(function () {});
   }
   // Mid-turn: end the current turn and resume it on the chosen account.
-  function switchTurnTo(a) {
-    var b = { account: a.name };
+  function switchTurnTo(a, force) {
+    var b = { account: a.name, force: !!force };
     if (currentProjectId) { b.projectId = currentProjectId; b.sessionId = lastSessionId; }
     api('/api/switch', { method: 'POST', body: JSON.stringify(b) }).then(function (r) {
       if (r.status === 409) addSys('no running turn to switch, or it is already on that account', 'banner');
       else if (r.ok) { addSys('switching to ' + (a.displayName || a.name) + '…', 'banner'); closeAllPops(); }
     }).catch(function () {});
+  }
+  // A "limited" account's cooldown may be our own estimate (or simply outrun by
+  // reality) — offer an explicit, confirmed override rather than a flat
+  // disabled button, for when the user has checked and knows it's actually fine.
+  function forceUseAccount(a, doIt) {
+    uiConfirm({
+      title: 'Force-use ' + (a.displayName || a.name) + '?',
+      message: 'This account is marked limited. Only do this if you’ve confirmed (e.g. on Anthropic’s own usage page) that it has actually reset — otherwise this turn will likely just hit the limit again.',
+      confirmText: 'Force use', danger: true,
+    }).then(function (ok) { if (ok) doIt(a, true); });
   }
   // The bottom-left chip shows the account actually in use: the one running the
   // viewed project's turn if known, else the server's "next up" account (the one
@@ -2120,13 +2168,33 @@
     addMsg('user', label, files, new Date().toISOString());
     // Capture the compose context so a slow response can't misapply to a blank
     // composer the user has since moved on to.
-    var myProject = currentProjectId, myBlank = blankSeq;
+    var myProject = currentProjectId, myBlank = blankSeq, myConvoSession = useNew ? null : lastSessionId;
+    // Same "is the user still looking at what they were" check the success path
+    // below already uses, reused for the failure path so a restored draft never
+    // lands in the wrong (since switched-to) conversation's composer.
+    function stillSameComposer() {
+      if (currentProjectId !== myProject) return false;
+      return useNew ? (blankSeq === myBlank && !lastSessionId) : (lastSessionId === myConvoSession);
+    }
     // Optimistically clear the composer (the text/files are now sent).
     promptEl.value = ''; autogrow(); saveDraft(); clearAttachments();
     api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
       if (r.status === 409) { // raced a turn start — queue it so it isn't lost
         if (text) api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).catch(function () {});
         addSys('a turn was already running — queued this message instead', 'banner'); return;
+      }
+      if (!r.ok) {
+        // Any other failure (oversized attachments, a bad request, a server
+        // error) — say why instead of silently doing nothing: the optimistic
+        // bubble above LOOKED sent but never actually started a turn. Restore
+        // what was cleared so the user isn't stuck retyping/re-attaching.
+        return r.json().catch(function () { return null; }).then(function (j) {
+          addSys((j && j.message) || 'could not send — try again', 'banner');
+          if (stillSameComposer()) {
+            promptEl.value = text; autogrow(); saveDraft();
+            files.forEach(function (f) { pendingFiles.push(f); }); renderAttachments();
+          }
+        });
       }
       return r.json().then(function (j) {
         if (!j.sessionId) return;
@@ -2136,7 +2204,7 @@
         // conversation, switched conversation, or changed project). Otherwise it
         // simply joins the sidebar (via the 'conversation' broadcast) and the user
         // can open it — we must NOT clobber whatever they're now looking at.
-        if (currentProjectId !== myProject || blankSeq !== myBlank || lastSessionId) return;
+        if (!stillSameComposer()) return;
         pendingNew = false; lastSessionId = j.sessionId;
         // SSE events for this conversation may have raced ahead of this response
         // (the already-open stream is faster than the POST round-trip) and
@@ -2149,7 +2217,13 @@
         renderBusy(); renderStrip(); renderQueue(); renderAutopilot();
         restoreDraft(); restoreAttachments();
       }).catch(function () {});
-    }).catch(function () {});
+    }).catch(function () {
+      addSys('network error — the message may not have been sent', 'banner');
+      if (stillSameComposer()) {
+        promptEl.value = text; autogrow(); saveDraft();
+        files.forEach(function (f) { pendingFiles.push(f); }); renderAttachments();
+      }
+    });
   }
   sendBtn.addEventListener('click', send);
   promptEl.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });

@@ -121,7 +121,36 @@ export class ApiController {
     @Inject(PUSH_SERVICE) private readonly push: PushService,
     @Inject(WEBAUTHN_SERVICE) private readonly webauthn: WebAuthnService,
     @Inject(SESSION_STORE) private readonly sessionStore: SessionStore,
-  ) {}
+  ) {
+    this.loadQuotaCache();
+  }
+
+  private quotaCacheFile(): string {
+    return join(this.stateDir, 'quota-cache.json');
+  }
+
+  /** The oauth usage endpoint rate-limits aggressively and can stay down for a
+   *  while — without this, every deploy's container restart wipes the in-memory
+   *  cache and blanks out every account's usage bars for as long as upstream
+   *  happens to be unavailable, even though nothing about the account changed. */
+  private loadQuotaCache(): void {
+    try {
+      const raw = JSON.parse(readFileSync(this.quotaCacheFile(), 'utf8')) as Record<string, { at: number; quota: unknown }>;
+      for (const [name, entry] of Object.entries(raw)) this.quotaCache.set(name, entry);
+    } catch {
+      // no cache on disk yet (fresh install) — nothing to load
+    }
+  }
+
+  private saveQuotaCache(): void {
+    try {
+      mkdirSync(this.stateDir, { recursive: true });
+      writeFileSync(this.quotaCacheFile(), JSON.stringify(Object.fromEntries(this.quotaCache)));
+    } catch {
+      // best-effort — losing the persisted cache only means a future restart
+      // falls back to the old in-memory-only behavior, not a correctness issue
+    }
+  }
 
   /** Derive the RP id + origin the browser used, validated against an allowlist
    *  (the production host, plus localhost for dev/e2e) so WebAuthn can't be
@@ -403,6 +432,7 @@ export class ApiController {
           const quota = await fetchUsage(acct.configDir);
           const at = Date.now();
           this.quotaCache.set(acct.name, { at, quota });
+          this.saveQuotaCache();
           this.quotaBackoffUntil.delete(acct.name);
           return { ...base, quota, quotaAt: at };
         } catch (err) {
@@ -418,20 +448,22 @@ export class ApiController {
 
   @Post('switch')
   @HttpCode(200)
-  switch(@Body() body: { projectId?: string; sessionId?: string; account?: string }): { switched: boolean } {
-    if (!this.manager.forceSwitch(body?.projectId, body?.sessionId, body?.account)) {
+  switch(@Body() body: { projectId?: string; sessionId?: string; account?: string; force?: boolean }): { switched: boolean } {
+    if (!this.manager.forceSwitch(body?.projectId, body?.sessionId, body?.account, body?.force === true)) {
       throw new ConflictException(body?.account ? 'no running turn to switch, or it is already on that account' : 'no session running');
     }
     return { switched: true };
   }
 
-  /** Choose which account the next message uses (when idle). */
+  /** Choose which account the next message uses (when idle). `force: true`
+   *  clears a still-'limited' account's mark first — for when the user has
+   *  confirmed the limit already reset in reality (see SessionManager.setActiveAccount). */
   @Post('accounts/active')
   @HttpCode(200)
-  setActiveAccount(@Body() body: { name?: string }): { ok: boolean } {
+  setActiveAccount(@Body() body: { name?: string; force?: boolean }): { ok: boolean } {
     if (!body?.name) throw new BadRequestException('name required');
     try {
-      this.manager.setActiveAccount(body.name);
+      this.manager.setActiveAccount(body.name, body.force === true);
       return { ok: true };
     } catch (err) {
       throw new BadRequestException((err as Error).message);

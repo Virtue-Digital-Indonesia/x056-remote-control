@@ -29,6 +29,47 @@ function fakeLoginSpawn(email: string, displayName: string) {
   };
 }
 
+/** Like fakeLoginSpawn, but the credentials write happens `delayMs` after the
+ *  code is submitted — long enough to land after the poll's first tick (300ms
+ *  in manager.ts), so a test can tell "resolved because a NEW file appeared"
+ *  from "resolved because a STALE file was already sitting there". */
+function fakeLoginSpawnDelayed(email: string, displayName: string, delayMs: number, token: string) {
+  return (configDir: string): ChildProcess => {
+    const child = new EventEmitter() as unknown as ChildProcess & EventEmitter;
+    const stdout = new EventEmitter();
+    (child as unknown as { stdout: EventEmitter }).stdout = stdout;
+    (child as unknown as { stderr: EventEmitter }).stderr = new EventEmitter();
+    (child as unknown as { stdin: { write: (s: string) => void } }).stdin = {
+      write: () => {
+        setTimeout(() => {
+          writeFileSync(join(configDir, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: token } }));
+          writeFileSync(join(configDir, '.claude.json'), JSON.stringify({ oauthAccount: { displayName, emailAddress: email } }));
+        }, delayMs);
+      },
+    };
+    (child as unknown as { kill: () => void }).kill = () => { child.emit('exit', 0); };
+    setImmediate(() => stdout.emit('data', Buffer.from('If the browser did not open, visit: https://claude.com/cai/oauth/authorize?code=true&x=1\nPaste code here if prompted > ')));
+    return child;
+  };
+}
+
+/** A stand-in for a rejected code: writes nothing and exits non-zero, as the
+ *  real CLI would for a wrong/expired authorization code. */
+function fakeLoginSpawnRejectingCode() {
+  return (): ChildProcess => {
+    const child = new EventEmitter() as unknown as ChildProcess & EventEmitter;
+    const stdout = new EventEmitter();
+    (child as unknown as { stdout: EventEmitter }).stdout = stdout;
+    (child as unknown as { stderr: EventEmitter }).stderr = new EventEmitter();
+    (child as unknown as { stdin: { write: (s: string) => void } }).stdin = {
+      write: () => { setImmediate(() => child.emit('exit', 1)); },
+    };
+    (child as unknown as { kill: () => void }).kill = () => {};
+    setImmediate(() => stdout.emit('data', Buffer.from('visit: https://claude.com/cai/oauth/authorize?code=true&x=1\n')));
+    return child;
+  };
+}
+
 function fixture(result: SessionResult, opts?: { emitEvents?: boolean; delayMs?: number }) {
   const dir = mkdtempSync(join(tmpdir(), 'x056-mgr-'));
   const stateDir = join(dir, 'state');
@@ -400,7 +441,7 @@ describe('SessionManager targeted account switch', () => {
     }) as unknown as typeof import('../src/failover.js').runSession;
     const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, runSessionFn });
     const p = mgr.createProject('P', dir);
-    return { mgr, p, calls };
+    return { mgr, p, calls, sd };
   }
 
   it('refuses a targeted switch to the same/unknown account, performs it (bench:false) to a different one', async () => {
@@ -432,6 +473,50 @@ describe('SessionManager targeted account switch', () => {
     mgr.setActiveAccount('b');
     expect(mgr.nextUpAccount()).toBe('b');
     expect(() => mgr.setActiveAccount('nope')).toThrow();
+  });
+
+  it('setActiveAccount on a still-limited account is silently overridden by pickActive WITHOUT force', () => {
+    const { mgr, sd } = setup();
+    AccountRegistry.load(join(sd, 'accounts.json')).markLimited('b', Math.floor(Date.now() / 1000) + 3600);
+    mgr.setActiveAccount('b'); // "chosen" but still marked limited
+    // pickActive re-checks usability every time — a stale/estimated 'limited'
+    // mark silently wins over the explicit choice unless force clears it.
+    expect(mgr.nextUpAccount()).toBe('a');
+    expect(AccountRegistry.load(join(sd, 'accounts.json')).get('b').state.kind).toBe('limited');
+  });
+
+  it('setActiveAccount(name, force) clears a stale "limited" mark so the choice actually sticks', () => {
+    const { mgr, sd } = setup();
+    AccountRegistry.load(join(sd, 'accounts.json')).markLimited('b', Math.floor(Date.now() / 1000) + 3600);
+    mgr.setActiveAccount('b', true);
+    expect(AccountRegistry.load(join(sd, 'accounts.json')).get('b').state).toEqual({ kind: 'ok' });
+    expect(mgr.nextUpAccount()).toBe('b'); // now actually usable
+  });
+
+  it('force never touches an "unauthenticated" account — that needs a real re-login, not an override', () => {
+    const { mgr, sd } = setup();
+    AccountRegistry.load(join(sd, 'accounts.json')).markUnauthenticated('b');
+    mgr.setActiveAccount('b', true);
+    expect(AccountRegistry.load(join(sd, 'accounts.json')).get('b').state).toEqual({ kind: 'unauthenticated' });
+    expect(mgr.nextUpAccount()).toBe('a'); // still skipped
+  });
+
+  it('forceSwitch(force) clears a still-limited TARGET so the resumed turn actually lands there', async () => {
+    const { mgr, p, sd, calls } = setup();
+    // Mutate the on-disk registry BEFORE anything gives the manager a chance to
+    // lazily cache its own (would-be-stale) AccountRegistry instance — it holds
+    // that cache for its whole lifetime, so a write via a separate loaded
+    // instance afterward would just get clobbered by the manager's next save.
+    AccountRegistry.load(join(sd, 'accounts.json')).markLimited('b', Math.floor(Date.now() / 1000) + 3600);
+    const sid = mgr.start('go', undefined, undefined, p.id);
+    // forceSwitch itself doesn't gate on usability (the drain/interrupt still
+    // happens either way) — what matters is that pickActive(), re-run once the
+    // turn actually resumes, doesn't just skip straight back past 'b'.
+    expect(mgr.forceSwitch(p.id, sid, 'b', true)).toBe(true);
+    expect(calls).toEqual([{ bench: false }]);
+    expect(AccountRegistry.load(join(sd, 'accounts.json')).get('b').state).toEqual({ kind: 'ok' });
+    expect(mgr.nextUpAccount()).toBe('b');
+    await waitFor(() => mgr.listProjects().projects.every((pp) => !pp.running));
   });
 });
 
@@ -693,11 +778,12 @@ describe('SessionManager account management', () => {
     expect(existsSync(cfgA)).toBe(true); // preserved — unlike an abandoned ONBOARDING pending dir
   });
 
-  it('relogin refuses a code that authenticates a DIFFERENT already-registered account (mixup guard)', async () => {
+  it('relogin refuses a code that authenticates a DIFFERENT already-registered account (mixup guard), restoring the original credentials', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'x056-relog-'));
     const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
     const cfgA = join(dir, 'cfg-a'); mkdirSync(cfgA, { recursive: true });
     const cfgB = join(dir, 'cfg-b'); mkdirSync(cfgB, { recursive: true });
+    writeFileSync(join(cfgA, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'original-tok' } }));
     writeFileSync(join(cfgB, '.claude.json'), JSON.stringify({ oauthAccount: { displayName: 'Bob', emailAddress: 'bob@example.com' } }));
     AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: cfgA }, { name: 'b', configDir: cfgB }]);
     // the login flow will authenticate as Bob — but we're re-logging in account 'a'
@@ -706,6 +792,44 @@ describe('SessionManager account management', () => {
     await expect(mgr.submitAccountLoginCode(loginId, 'THE-CODE')).rejects.toThrow(/different account/);
     // 'a' is untouched — still whatever it was, not silently repointed at Bob's identity
     expect(AccountRegistry.load(join(sd, 'accounts.json')).get('a').state).toEqual({ kind: 'unknown' });
+    const creds = JSON.parse(readFileSync(join(cfgA, '.credentials.json'), 'utf8')) as { claudeAiOauth: { accessToken: string } };
+    expect(creds.claudeAiOauth.accessToken).toBe('original-tok'); // NOT Bob's — reverted, not left mismatched
+    expect(existsSync(join(cfgA, '.credentials.json.relogin-backup'))).toBe(false);
+  });
+
+  it('relogin does not report success before the CLI actually rewrites credentials (race regression)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-relog-race-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    const cfgA = join(dir, 'cfg-a'); mkdirSync(cfgA, { recursive: true });
+    // The account's OWN (broken) credentials are already sitting here — this is
+    // exactly what made "does .credentials.json exist" a false-positive success
+    // signal for a relogin (it's onboarding's brand-new-empty-dir check, reused).
+    writeFileSync(join(cfgA, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'stale-broken-tok' } }));
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: cfgA }, { name: 'b', configDir: join(dir, 'cfg-b') }]);
+    AccountRegistry.load(join(sd, 'accounts.json')).markUnauthenticated('a');
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, loginSpawnFn: fakeLoginSpawnDelayed('carol@example.com', 'Carol', 600, 'fresh-tok') });
+    const { loginId } = await mgr.startAccountRelogin('a');
+    // mid-flow: the stale credentials are moved aside, not left in place
+    expect(existsSync(join(cfgA, '.credentials.json'))).toBe(false);
+    const res = await mgr.submitAccountLoginCode(loginId, 'THE-CODE');
+    expect(res.name).toBe('a');
+    const creds = JSON.parse(readFileSync(join(cfgA, '.credentials.json'), 'utf8')) as { claudeAiOauth: { accessToken: string } };
+    expect(creds.claudeAiOauth.accessToken).toBe('fresh-tok'); // the NEW token — proves it actually waited
+    expect(AccountRegistry.load(join(sd, 'accounts.json')).get('a').state).toEqual({ kind: 'ok' });
+    expect(existsSync(join(cfgA, '.credentials.json.relogin-backup'))).toBe(false); // cleaned up
+  });
+
+  it('a rejected code (wrong/expired) restores the original credentials instead of leaving the account with none', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-relog-fail-'));
+    const sd = join(dir, 'state'); mkdirSync(sd, { recursive: true });
+    const cfgA = join(dir, 'cfg-a'); mkdirSync(cfgA, { recursive: true });
+    writeFileSync(join(cfgA, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'original-tok' } }));
+    AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: cfgA }, { name: 'b', configDir: join(dir, 'cfg-b') }]);
+    const mgr = new SessionManager({ stateDir: sd, workspaceRoot: dir, loginSpawnFn: fakeLoginSpawnRejectingCode() });
+    const { loginId } = await mgr.startAccountRelogin('a');
+    await expect(mgr.submitAccountLoginCode(loginId, 'WRONG-CODE')).rejects.toThrow(/did not complete/);
+    const creds = JSON.parse(readFileSync(join(cfgA, '.credentials.json'), 'utf8')) as { claudeAiOauth: { accessToken: string } };
+    expect(creds.claudeAiOauth.accessToken).toBe('original-tok'); // restored, not left missing
   });
 
   it('removeAccount drops an account and refuses the last one', () => {
@@ -715,12 +839,40 @@ describe('SessionManager account management', () => {
     expect(() => mgr.removeAccount('a')).toThrow(/last account/);
   });
 
-  it('removeAccount is blocked while a turn is running', async () => {
+  it('removeAccount is blocked while a turn\'s account is still unresolved (conservative default)', async () => {
+    // fixture()'s fake run never emits turn_started, so its account stays
+    // unknown for the whole run — every account is blocked until we'd know
+    // which one it actually landed on.
     const { mgr } = fixture(COMPLETED, { delayMs: 150 });
     mgr.start('go');
     expect(() => mgr.removeAccount('b')).toThrow(BusyError);
     await waitFor(() => mgr.snapshot().running === false, 3000);
     mgr.removeAccount('b'); // fine once idle
     expect(mgr.accountsInfo().map((a) => a.name)).toEqual(['a']);
+  });
+
+  it('removeAccount only blocks the SPECIFIC account a running turn reported using, not every account', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-mgr-'));
+    const stateDir = join(dir, 'state'); mkdirSync(stateDir, { recursive: true });
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [
+      { name: 'a', configDir: '/cfg/a' },
+      { name: 'b', configDir: '/cfg/b' },
+      { name: 'c', configDir: '/cfg/c' },
+    ]);
+    const runSessionFn = (async (o: RunSessionOptions) => {
+      o.log.append({ type: 'turn_started', sessionId: o.sessionId, account: 'a' }); // this run is on 'a'
+      await new Promise((r) => setTimeout(r, 150));
+      return { status: 'completed', finalAccount: 'a', failovers: 0 };
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+    mgr.start('go');
+    // 'c' isn't involved in this turn at all — no longer has to wait for it.
+    mgr.removeAccount('c');
+    expect(mgr.accountsInfo().map((a) => a.name)).toEqual(['a', 'b']);
+    // 'a' IS the account this turn is actually running on — still blocked.
+    expect(() => mgr.removeAccount('a')).toThrow(BusyError);
+    await waitFor(() => mgr.snapshot().running === false, 3000);
+    mgr.removeAccount('a'); // fine once idle
+    expect(mgr.accountsInfo().map((a) => a.name)).toEqual(['b']);
   });
 });

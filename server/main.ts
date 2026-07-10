@@ -18,7 +18,12 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
     bodyParser: true,
     rawBody: false,
   });
-  (app as unknown as { useBodyParser: (t: string, o: { limit: string }) => void }).useBodyParser('json', { limit: '12mb' });
+  // api.controller.ts caps each individual attachment at 50MB (MAX_UPLOAD_BYTES)
+  // but base64 adds ~33% overhead and a message can carry more than one
+  // attachment — 12mb rejected two ordinary photos outright (each already
+  // ~33% larger encoded), well under that per-file cap. 160mb comfortably
+  // covers a small handful of max-sized attachments in one message.
+  (app as unknown as { useBodyParser: (t: string, o: { limit: string }) => void }).useBodyParser('json', { limit: '160mb' });
   const express = app.getHttpAdapter().getInstance() as import('express').Express;
   // Read per request so a bind-mounted panelPath serves UI changes without a
   // rebuild; ~15KB from page cache is negligible for a single-user panel.

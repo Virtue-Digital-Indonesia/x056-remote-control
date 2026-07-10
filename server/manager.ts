@@ -606,7 +606,31 @@ export class SessionManager {
    *  success the same account's credentials are simply refreshed. */
   async startAccountRelogin(name: string): Promise<{ loginId: string; url: string }> {
     const acct = this.registry().get(name); // throws if unknown
+    // submitAccountLoginCode's "did the login finish?" check is "does
+    // .credentials.json exist now that didn't before" — true for onboarding's
+    // brand-new empty dir, but for a relogin the account's OWN (broken)
+    // .credentials.json is already sitting right there. Without moving it aside
+    // first, that check is satisfied instantly, before the CLI has even
+    // exchanged the pasted code — reporting success while the OLD, still-dead
+    // token stays in place. Restored automatically if this attempt is
+    // cancelled, times out, or fails.
+    const credPath = join(acct.configDir, '.credentials.json');
+    const backupPath = this.reloginBackupPath(acct.configDir);
+    if (existsSync(credPath)) renameSync(credPath, backupPath);
     return this.spawnPendingLogin(randomUUID(), acct.configDir, name);
+  }
+
+  private reloginBackupPath(configDir: string): string {
+    return join(configDir, '.credentials.json.relogin-backup');
+  }
+
+  /** Put the pre-relogin credentials back — used whenever an in-progress
+   *  relogin doesn't end in a verified success, so the account is never left
+   *  with no credentials at all (or, worse, someone else's). */
+  private restoreReloginBackup(configDir: string): void {
+    const credPath = join(configDir, '.credentials.json');
+    const backupPath = this.reloginBackupPath(configDir);
+    if (existsSync(backupPath)) { try { renameSync(backupPath, credPath); } catch { /* best effort */ } }
   }
 
   /** Finish onboarding or re-login: feed the pasted code to the waiting login
@@ -618,20 +642,27 @@ export class SessionManager {
     if (!pending) throw new Error('no such login (it may have timed out — start again)');
     const { configDir, child } = pending;
     child.stdin?.write(code.trim() + '\n');
-    // Wait for the CLI to exchange the code for credentials (or fail).
-    await new Promise<void>((resolvePromise, reject) => {
-      const deadline = setTimeout(() => reject(new Error('timed out exchanging the code — check it and try again')), 45_000);
-      const poll = setInterval(() => {
-        if (existsSync(join(configDir, '.credentials.json'))) { clearTimeout(deadline); clearInterval(poll); resolvePromise(); }
-      }, 300);
-      child.on('exit', () => {
-        setTimeout(() => {
-          clearTimeout(deadline); clearInterval(poll);
-          if (existsSync(join(configDir, '.credentials.json'))) resolvePromise();
-          else reject(new Error('login did not complete — the code may be wrong or expired'));
+    // Wait for the CLI to exchange the code for credentials (or fail). For a
+    // relogin, startAccountRelogin already moved the OLD .credentials.json
+    // aside, so "the file exists now" genuinely means THIS attempt wrote it.
+    try {
+      await new Promise<void>((resolvePromise, reject) => {
+        const deadline = setTimeout(() => reject(new Error('timed out exchanging the code — check it and try again')), 45_000);
+        const poll = setInterval(() => {
+          if (existsSync(join(configDir, '.credentials.json'))) { clearTimeout(deadline); clearInterval(poll); resolvePromise(); }
         }, 300);
+        child.on('exit', () => {
+          setTimeout(() => {
+            clearTimeout(deadline); clearInterval(poll);
+            if (existsSync(join(configDir, '.credentials.json'))) resolvePromise();
+            else reject(new Error('login did not complete — the code may be wrong or expired'));
+          }, 300);
+        });
       });
-    });
+    } catch (err) {
+      if (pending.relogin) this.restoreReloginBackup(configDir); // don't leave the account with NO credentials at all
+      throw err;
+    }
     clearTimeout(pending.timer);
     this.pendingLogins.delete(loginId);
     try { child.kill(); } catch { /* already gone */ }
@@ -646,10 +677,12 @@ export class SessionManager {
       if (identity.email) {
         for (const a of reg.list()) {
           if (a.name !== pending.relogin && readAccountIdentity(a.configDir).email === identity.email) {
+            this.restoreReloginBackup(configDir); // revert — don't leave a mismatched identity active under this name
             throw new Error(`that's ${identity.email}, already added here as a different account — log in with the account this one was originally connected to`);
           }
         }
       }
+      try { rmSync(this.reloginBackupPath(configDir), { force: true }); } catch { /* best effort */ }
       reg.markOk(pending.relogin);
       this.emitAccounts();
       return { name: pending.relogin, email: identity.email, displayName: identity.displayName };
@@ -683,8 +716,10 @@ export class SessionManager {
     this.pendingLogins.delete(loginId);
     try { pending.child.kill(); } catch { /* already gone */ }
     // A re-login's configDir IS the existing account's real, permanent directory
-    // — never delete it, even if the attempt is abandoned or times out.
-    if (!pending.relogin) this.discardPending(pending.configDir);
+    // — never delete it, even if the attempt is abandoned or times out. Put its
+    // pre-relogin credentials back rather than leaving it with none at all.
+    if (pending.relogin) this.restoreReloginBackup(pending.configDir);
+    else this.discardPending(pending.configDir);
   }
 
   private discardPending(dir: string): void {
@@ -707,10 +742,15 @@ export class SessionManager {
     try { symlinkSync(shared, own); } catch { /* a concurrent create is fine */ }
   }
 
-  /** Forget an account. Blocked while any turn runs (account state is global and
-   *  an in-flight failover may still reach for it) and for the last account. */
+  /** Forget an account. Blocked for the last account, and for one a turn is
+   *  ACTUALLY running on right now (an in-flight failover may still reach for
+   *  it) — unresolved runs (no turn_started account seen yet) count as blocking
+   *  every account, conservatively, until we know which one they landed on.
+   *  Turns on OTHER accounts, in other projects/conversations, don't apply — you
+   *  no longer have to stop all of them just to remove one unrelated account. */
   removeAccount(name: string): void {
-    if (this.runs.size > 0) throw new BusyError();
+    const inUse = Array.from(this.runs.values()).some((r) => r.account === undefined || r.account === name);
+    if (inUse) throw new BusyError();
     const acct = this.registry().get(name); // throws if unknown
     this.registry().remove(name); // throws on last-account
     // Drop the config dir only if WE created it (under state/accounts); a
@@ -1144,9 +1184,17 @@ export class SessionManager {
   }
 
   /** Choose the account the NEXT turn will run on (idle). Sets the registry's
-   *  preferred account; the next pickActive() returns it when it's usable. */
-  setActiveAccount(name: string): void {
-    this.registry().get(name); // throws if unknown
+   *  preferred account; the next pickActive() returns it when it's usable —
+   *  which a still-'limited' account never is, no matter what `active` says
+   *  (pickActive re-checks usability every turn). `force` clears that mark
+   *  first, for when the user has confirmed (e.g. checked Anthropic's own
+   *  usage page) the limit already reset in reality but our own tracked
+   *  cooldown — an estimate, or just outrun by reality — hasn't caught up.
+   *  Deliberately never touches 'unauthenticated': that needs an actual
+   *  re-login, forcing it would just fail the same way again immediately. */
+  setActiveAccount(name: string, force?: boolean): void {
+    const acct = this.registry().get(name); // throws if unknown
+    if (force && acct.state.kind === 'limited') this.registry().markOk(name);
     this.registry().setActive(name);
     this.emitAccounts();
   }
@@ -1155,8 +1203,11 @@ export class SessionManager {
    *  current turn and resumes it on THAT account (leaving the old one available,
    *  not benched); refuses when it's already the account in use. Without a
    *  target, does the legacy automatic rotate (benches the account being left).
-   *  Returns false when there's no in-flight turn or the target is invalid/same. */
-  forceSwitch(projectId?: string, sessionId?: string, targetAccount?: string): boolean {
+   *  `force` clears a still-'limited' target the same way setActiveAccount does
+   *  (see there) — otherwise the resumed turn's own pickActive() would silently
+   *  skip right back past it. Returns false when there's no in-flight turn or
+   *  the target is invalid/same. */
+  forceSwitch(projectId?: string, sessionId?: string, targetAccount?: string, force?: boolean): boolean {
     let run: ActiveRun | undefined;
     if (sessionId) run = this.runs.get(sessionId);
     else {
@@ -1165,8 +1216,10 @@ export class SessionManager {
     }
     if (!run?.control) return false;
     if (targetAccount) {
-      if (!this.registry().has(targetAccount)) return false;
+      const target = this.registry().list().find((a) => a.name === targetAccount);
+      if (!target) return false;
       if (run.account && run.account === targetAccount) return false; // already on it — nothing to switch
+      if (force && target.state.kind === 'limited') this.registry().markOk(targetAccount);
       this.registry().setActive(targetAccount); // the resumed turn will pick this one
       this.emitAccounts();
       run.control.forceSwitch({ bench: false });
