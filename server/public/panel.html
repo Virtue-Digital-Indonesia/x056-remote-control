@@ -10,6 +10,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="x056" />
+<link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png" />
+<link rel="icon" type="image/png" sizes="16x16" href="/icon-16.png" />
 <link rel="apple-touch-icon" href="/icon-180.png" />
 <link rel="manifest" href="/manifest.webmanifest" />
 <style>
@@ -398,6 +400,35 @@
     .proj { padding: 11px 10px; }
     .msg, .sysline, .act, .qcard, .orphan { max-width: 100%; }
     .msg .mmeta { opacity: .65; } /* no hover on touch — keep copy/time visible */
+    .msg .mmeta button { min-height: 30px; padding: 3px 6px; margin: -3px 0; } /* comfortable tap target for copy */
+
+    /* Popovers become bottom sheets on phones. As desktop dropdowns they're
+       fixed-width boxes pinned with hardcoded top/left/right offsets (several set
+       inline), and — critically — the account popover opens from a chip that
+       lives INSIDE the drawer, so at its z-index 30 it rendered buried under the
+       z-index 60 drawer and bled off the screen edge. A full-width, bottom-anchored
+       sheet above the drawer fixes every popover at once. !important is needed to
+       beat the per-popover inline top/left/right/width. */
+    .pop {
+      position: fixed !important;
+      left: 8px !important; right: 8px !important; bottom: 0 !important; top: auto !important;
+      width: auto !important; max-width: none !important;
+      max-height: min(78vh, calc(100vh - 80px)) !important;
+      overflow-y: auto; -webkit-overflow-scrolling: touch;
+      border-radius: 16px 16px 0 0;
+      padding-bottom: calc(14px + env(safe-area-inset-bottom));
+      margin-bottom: 0;
+      z-index: 70; /* above the drawer (60) and its backdrop (55) */
+      animation: sheetUp .2s ease;
+    }
+    /* The account popover has its own desktop flex-column sizing (#quotaPop) that
+       would otherwise keep its 380px width / 560px cap — reset those for the sheet. */
+    #quotaPop { width: auto !important; max-height: min(78vh, calc(100vh - 80px)) !important; }
+    .backdrop { z-index: 65; } /* the popover backdrop must also sit above the drawer */
+    @keyframes sheetUp { from { transform: translateY(14px); opacity: .4; } to { transform: none; opacity: 1; } }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pop { animation: none !important; }
   }
 </style>
 <script>
@@ -1744,7 +1775,10 @@
     openPop($('morePop'));
   });
   function closeAllPops() { hidePops(); backdrop.hidden = true; }
-  function openPop(el) { hidePops(); el.hidden = false; backdrop.hidden = false; }
+  // Close the mobile nav drawer when a popover opens: the account chip lives
+  // inside the drawer, and a popover left racing an open drawer would render
+  // underneath it. Harmless on desktop, where the drawer is always "closed".
+  function openPop(el) { hidePops(); setNav(false); el.hidden = false; backdrop.hidden = false; }
   function togglePop(show) { var open = show === undefined ? quotaPop.hidden : show; if (open) { openPop(quotaPop); pollAccounts(); } else closeAllPops(); }
   acctChip.addEventListener('click', function () { togglePop(); });
   backdrop.addEventListener('click', closeAllPops);
@@ -2069,6 +2103,10 @@
   function saveDraft() { var k = draftKey(); if (!k) return; try { if (promptEl.value) localStorage.setItem(k, promptEl.value); else localStorage.removeItem(k); } catch (e) {} }
   function restoreDraft() { var k = draftKey(), v = ''; try { v = (k && localStorage.getItem(k)) || ''; } catch (e) {} promptEl.value = v; autogrow(); }
   promptEl.addEventListener('input', function () { autogrow(); saveDraft(); });
+  // The default placeholder spells out desktop keyboard shortcuts (⏎ send · ⇧⏎
+  // newline · drag-drop) that don't apply on a touch device — where they only
+  // wrap to three lines of noise. Swap to a clean prompt on a coarse pointer.
+  try { if (matchMedia('(pointer: coarse)').matches) promptEl.placeholder = 'Message x056…'; } catch (e) {}
   // Attachments of ANY type: pendingFiles holds {name,type,url} objects (Claude
   // can Read any file), one array PER CONVERSATION (pendingFilesByConv, keyed
   // like the text draft) — NOT persisted to localStorage, unlike the text draft,
@@ -2226,7 +2264,15 @@
     });
   }
   sendBtn.addEventListener('click', send);
-  promptEl.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+  // On a real keyboard, Enter sends and Shift+Enter inserts a newline. On a
+  // touch keyboard (phone), the on-screen "return" key should insert a newline
+  // like any mobile chat box — sending is the send button's job — so let Enter
+  // fall through to its default there. `.matches` on the live MediaQueryList
+  // stays current if the primary pointer ever changes mid-session.
+  var coarsePointer = null; try { coarsePointer = matchMedia('(pointer: coarse)'); } catch (e) {}
+  promptEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey && !(coarsePointer && coarsePointer.matches)) { e.preventDefault(); send(); }
+  });
   $('switchAcctBtn').addEventListener('click', function () {
     var b = currentProjectId ? { projectId: currentProjectId, sessionId: lastSessionId } : {};
     api('/api/switch', { method: 'POST', body: JSON.stringify(b) }).then(function (r) {

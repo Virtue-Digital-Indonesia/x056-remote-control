@@ -79,6 +79,17 @@ describe('gateway e2e', () => {
     expect(html).not.toContain(TOKEN);
   });
 
+  it('serves every favicon/PWA icon the panel links to, unauthenticated', async () => {
+    const html = await (await fetch(`${base}/`)).text();
+    const linked = [...html.matchAll(/href="(\/icon-[\w.]+\.png)"/g)].map((m) => m[1]);
+    expect(linked).toEqual(expect.arrayContaining(['/icon-16.png', '/icon-32.png', '/icon-180.png']));
+    for (const path of [...linked, '/icon-192.png', '/icon-512.png']) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.status, path).toBe(200);
+      expect(res.headers.get('content-type')).toBe('image/png');
+    }
+  });
+
   it('runs a full failover session over HTTP + SSE', async () => {
     const started = await fetch(`${base}/api/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ prompt: 'do the task' }) });
     expect(started.status).toBe(201);
