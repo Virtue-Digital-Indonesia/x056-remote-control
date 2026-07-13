@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
+import type { ProviderId } from '../src/provider.js';
 
 /** One Claude Code conversation (a resumable session) within a project. */
 export interface Conversation {
@@ -15,6 +16,10 @@ export interface Project {
   id: string;
   name: string;
   cwd: string;
+  /** Which agent CLI this project's sessions run on. Absent = 'claude' (every
+   *  project predating multi-provider is a Claude project). A project's provider
+   *  is fixed at creation — it decides the account pool and adapter for its runs. */
+  provider?: ProviderId;
   lastSessionId?: string;
   /** All conversations under this project, newest last. */
   conversations?: Conversation[];
@@ -66,8 +71,8 @@ export class ProjectRegistry {
     return this.data.current ? this.get(this.data.current) : undefined;
   }
 
-  create(name: string, cwd: string): Project {
-    const proj: Project = { id: randomUUID(), name: name.trim() || 'Untitled', cwd };
+  create(name: string, cwd: string, provider: ProviderId = 'claude'): Project {
+    const proj: Project = { id: randomUUID(), name: name.trim() || 'Untitled', cwd, provider };
     this.data.projects.push(proj);
     if (!this.data.current) this.data.current = proj.id;
     this.save();

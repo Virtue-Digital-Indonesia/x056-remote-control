@@ -74,6 +74,14 @@ export interface ProviderAdapter {
   isDrainBoundary(e: RawEvent): boolean;
   /** Map one raw stream event to zero or more UI activity rows. */
   toActivity(e: RawEvent): ActivityEvent[];
+  /** The main-turn model resolved for this event (e.g. "claude-fable-5"), for
+   *  the UI's live model indicator — undefined for events that don't carry it or
+   *  that come from a subagent. Optional: omit when the provider doesn't surface
+   *  a per-event model. */
+  activeModel?(e: RawEvent): string | undefined;
+  /** Displayable assistant text carried by this event (one entry per chunk),
+   *  for streaming into the chat. Empty when the event carries none. */
+  assistantText?(e: RawEvent): string[];
 
   // --- account plumbing ---
   /** Read the human identity a completed login wrote into the config dir. */

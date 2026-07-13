@@ -120,6 +120,18 @@ describe('SessionManager', () => {
     expect(mgr.snapshot().lastResult).toEqual(COMPLETED);
   });
 
+  it('runs a codex project through the codex adapter, and claude projects through claude', async () => {
+    const { mgr, calls } = fixture(COMPLETED);
+    const cx = mgr.createProject('CX', undefined, 'codex');
+    const cl = mgr.createProject('CL', undefined, 'claude');
+    mgr.start('do codex', undefined, undefined, cx.id);
+    await waitFor(() => calls.length === 1);
+    expect(calls[0].adapter?.id).toBe('codex'); // the run was handed the codex adapter
+    mgr.start('do claude', undefined, undefined, cl.id);
+    await waitFor(() => calls.length === 2);
+    expect(calls[1].adapter?.id).toBe('claude');
+  });
+
   it('reuses a project\'s last chosen model/effort on a continue that specifies none', async () => {
     const { mgr, calls } = fixture(COMPLETED);
     mgr.start('first', undefined, { model: 'fable', effort: 'high' });

@@ -6,10 +6,11 @@ import { join, resolve, sep } from 'node:path';
 import { AccountRegistry } from '../src/accounts.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
-import { toActivity } from './activity.js';
+import { getAdapter } from '../src/adapters/registry.js';
 import { ProjectRegistry, type Project, type Conversation } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
+import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
 import { parseQuestion, stripAsk, stripAskInstructions } from './question.js';
 
@@ -844,10 +845,17 @@ export class SessionManager {
    *  per-step completion pushes). */
   hasAutopilot(sessionId: string): boolean { return !!this.loadAutopilot()[sessionId]; }
 
-  createProject(name: string, cwd?: string): Project {
+  createProject(name: string, cwd?: string, provider: ProviderId = 'claude'): Project {
     const dir = this.resolveCwd(cwd ?? this.opts.workspaceRoot);
-    const proj = this.projects().create(name, dir);
+    const proj = this.projects().create(name, dir, provider);
     return proj;
+  }
+
+  /** The adapter a project's sessions run on (Claude unless the project opted
+   *  into another provider). Central so launch + activity + accounts agree. */
+  private adapterFor(projectId?: string): ProviderAdapter {
+    const proj = projectId ? this.projects().get(projectId) : this.projects().current();
+    return getAdapter(proj?.provider ?? 'claude');
   }
 
   private get interactiveDir(): string {
@@ -1027,6 +1035,7 @@ export class SessionManager {
     const stored = reg.get(pid);
     const model = runOpts?.model ?? stored?.model;
     const effort = runOpts?.effort ?? stored?.effort;
+    const adapter = this.adapterFor(pid);
     const run: ActiveRun = { sessionId, projectId: pid, cwd };
     this.runs.set(sessionId, run);
     // Every event from this run carries its projectId AND sessionId so the panel
@@ -1068,6 +1077,7 @@ export class SessionManager {
         cwd,
         prompt,
         resume,
+        adapter,
         claudePath: this.opts.claudePath,
         model,
         effort,
@@ -1076,7 +1086,7 @@ export class SessionManager {
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {
           saveStateOnce();
-          this.tapToEvents(e, emit, pid);
+          this.tapToEvents(e, emit, adapter, pid);
         },
       })
         .then((res) => {
@@ -1109,33 +1119,24 @@ export class SessionManager {
     }
   }
 
-  private tapToEvents(e: RawEvent, emit: (kind: string, data: Record<string, unknown>) => void, pid?: string): void {
+  private tapToEvents(e: RawEvent, emit: (kind: string, data: Record<string, unknown>) => void, adapter: ProviderAdapter, pid?: string): void {
     // Surface tool calls + subagent spawns as activity so the UI can show a
-    // live "working / N running tasks" state instead of appearing to hang.
-    for (const a of toActivity(e)) {
+    // live "working / N running tasks" state instead of appearing to hang. The
+    // adapter knows its own provider's stream shape.
+    for (const a of adapter.toActivity(e)) {
       emit('activity', a as unknown as Record<string, unknown>);
     }
-    if (e.type !== 'assistant') return;
-    const msg = e.message as { content?: unknown; model?: unknown } | undefined;
-    // The actual model resolved for this turn (e.g. "claude-fable-5"), which is
-    // what the UI shows as the live model. Ignore subagent messages (they carry
-    // parent_tool_use_id and may run a different model) so the indicator tracks
-    // the MAIN turn's model instead of flip-flopping with each subagent reply.
-    const fromSubagent = e.parent_tool_use_id != null;
-    const model = typeof msg?.model === 'string' ? msg.model : undefined;
-    if (model && !fromSubagent && pid && this.lastModelByPid.get(pid) !== model) {
+    // The model resolved for this turn (e.g. "claude-fable-5"), shown as the live
+    // model. The adapter returns undefined for subagent/irrelevant events so the
+    // indicator tracks the MAIN turn instead of flip-flopping.
+    const model = adapter.activeModel?.(e);
+    if (model && pid && this.lastModelByPid.get(pid) !== model) {
       this.lastModelByPid.set(pid, model);
       emit('active_model', { model }); // envelope ts (emit time) carries ordering
     }
-    const content = Array.isArray(msg?.content) ? msg.content : [];
-    for (const block of content) {
-      if (block && typeof block === 'object' && (block as { type?: string }).type === 'text') {
-        const text = (block as { text?: unknown }).text;
-        if (typeof text === 'string' && text.length > 0) {
-          const shown = stripAsk(text); // hide the raw <<<ASK>>> marker from the chat
-          if (shown.length > 0) emit('assistant_text', { text: shown });
-        }
-      }
+    for (const raw of adapter.assistantText?.(e) ?? []) {
+      const shown = stripAsk(raw); // hide the raw <<<ASK>>> marker from the chat
+      if (shown.length > 0) emit('assistant_text', { text: shown });
     }
   }
 

@@ -161,6 +161,16 @@ function toActivity(e: RawEvent): ActivityEvent[] {
   }
 }
 
+/** The assistant's displayable text — codex streams it as `agent_message`
+ *  items. VERIFY the text field name against an authed run (`text` vs `message`). */
+function assistantText(e: RawEvent): string[] {
+  if (evType(e) !== 'item.completed') return [];
+  const it = asObj(e.item);
+  if (firstStr(it.type) !== 'agent_message') return [];
+  const text = firstStr(it.text, it.message);
+  return text ? [text] : [];
+}
+
 /** The session id codex assigned (thread.started.thread_id). The manager reads
  *  this off the stream on a NEW turn — unlike Claude, codex won't take an id we
  *  dictate — and later passes it to `exec resume <id>` for failover. Returns ''
@@ -241,6 +251,9 @@ export const codexAdapter: ProviderAdapter = {
   // A completed item (tool round) or the completed turn is a resumable point.
   isDrainBoundary: (e) => evType(e) === 'item.completed' || evType(e) === 'turn.completed',
   toActivity,
+  assistantText,
+  // Codex doesn't stamp a per-event model on the stream the way Claude does; the
+  // UI shows the model the project requested. (activeModel intentionally omitted.)
 
   readIdentity,
   // No pollable usage endpoint on ChatGPT plans — usage arrives inline on

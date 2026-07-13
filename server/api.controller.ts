@@ -15,7 +15,8 @@ import type { Request, Response } from 'express';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { AccountRegistry } from '../src/accounts.js';
-import { UsageRateLimitedError, fetchUsage } from '../src/quota.js';
+import { UsageRateLimitedError } from '../src/quota.js';
+import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
 import { readSessionHistory, type HistoryEntry } from './history.js';
@@ -41,17 +42,6 @@ function safeBaseName(name: string | undefined, fallbackExt: string): string {
   return `attachment.${fallbackExt}`;
 }
 
-/** Read the human-facing account identity the login stored in <configDir>/.claude.json. */
-function accountIdentity(configDir: string): { displayName?: string; email?: string } {
-  try {
-    const o = (JSON.parse(readFileSync(join(configDir, '.claude.json'), 'utf8')) as {
-      oauthAccount?: { displayName?: string; emailAddress?: string };
-    }).oauthAccount;
-    return { displayName: o?.displayName, email: o?.emailAddress };
-  } catch {
-    return {};
-  }
-}
 
 /** Persist a data-URL attachment of ANY type under state/uploads, keeping its
  *  original filename (sanitized) so Claude — which can Read any file — sees a
@@ -294,10 +284,13 @@ export class ApiController {
   }
 
   @Post('projects')
-  createProject(@Body() body: { name?: string; cwd?: string }): unknown {
+  createProject(@Body() body: { name?: string; cwd?: string; provider?: string }): unknown {
     if (!body?.name) throw new BadRequestException('name required');
+    // A project is pinned to one provider at creation (default Claude); only the
+    // known providers are accepted.
+    const provider = body.provider === 'codex' ? 'codex' : 'claude';
     try {
-      return this.manager.createProject(body.name, body.cwd);
+      return this.manager.createProject(body.name, body.cwd, provider);
     } catch (err) {
       throw new BadRequestException((err as Error).message);
     }
@@ -399,22 +392,29 @@ export class ApiController {
     } catch {
       return [];
     }
-    // Which account the next turn would run on (skipping any still-limited one),
-    // so the panel can show "this prompt will use X".
-    const nextUp = registry.peekActive(Math.floor(Date.now() / 1000))?.name ?? null;
-    const activeName = registry.activeName(); // the preferred account (also flags the new-backend account-selection capability)
+    // "Next up" and "active" are PER PROVIDER now — a Claude session and a Codex
+    // session each have their own next account — so compute them per provider
+    // and match each account against its own provider's pointer.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const providers = [...new Set(registry.list().map((a) => a.provider))];
+    const nextUpByProvider = new Map(providers.map((p) => [p, registry.peekActive(nowSec, p)?.name ?? null]));
+    const activeByProvider = new Map(providers.map((p) => [p, registry.activeName(p)]));
     return Promise.all(
       registry.list().map(async (acct) => {
-        const id = accountIdentity(acct.configDir);
+        const adapter = getAdapter(acct.provider);
+        const id = adapter.readIdentity(acct.configDir);
         // registry.list() returns the raw persisted verdict, which only gets
         // re-evaluated the next time a turn actually tries this account — so a
         // 'limited' mark can sit stale (badge says "limited" long after the
         // cooldown passed). pickActive() already treats an expired `until` as
         // usable; make the badge agree with that instead of the raw record.
-        const state = acct.state.kind === 'limited' && acct.state.until <= Math.floor(Date.now() / 1000)
+        const state = acct.state.kind === 'limited' && acct.state.until <= nowSec
           ? ({ kind: 'ok' } as const)
           : acct.state;
-        const base = { ...acct, state, displayName: id.displayName ?? acct.name, email: id.email, nextUp: acct.name === nextUp, active: acct.name === activeName };
+        const base = { ...acct, providerLabel: adapter.label, state, displayName: id.displayName ?? acct.name, email: id.email, nextUp: acct.name === nextUpByProvider.get(acct.provider), active: acct.name === activeByProvider.get(acct.provider) };
+        // A provider with no pollable usage endpoint (e.g. Codex on a ChatGPT
+        // plan) simply shows no usage bars — never an error.
+        if (!adapter.fetchUsage) return { ...base, quota: null };
         const cached = this.quotaCache.get(acct.name);
         if (cached && Date.now() - cached.at < QUOTA_TTL_MS) {
           return { ...base, quota: cached.quota, quotaAt: cached.at };
@@ -429,7 +429,7 @@ export class ApiController {
           return { ...base, quota: null, quotaError: `rate-limited upstream; retrying after ${new Date(backoffUntil).toISOString()}` };
         }
         try {
-          const quota = await fetchUsage(acct.configDir);
+          const quota = await adapter.fetchUsage(acct.configDir);
           const at = Date.now();
           this.quotaCache.set(acct.name, { at, quota });
           this.saveQuotaCache();

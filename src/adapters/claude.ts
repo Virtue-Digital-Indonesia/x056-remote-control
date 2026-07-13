@@ -88,6 +88,30 @@ function toActivity(e: RawEvent): ActivityEvent[] {
   return out;
 }
 
+/** The main-turn model on an assistant event (e.g. "claude-fable-5"). Ignores
+ *  subagent messages (they carry parent_tool_use_id and may run a different
+ *  model) so the live indicator tracks the MAIN turn, not each subagent reply. */
+function activeModel(e: RawEvent): string | undefined {
+  if (e.type !== 'assistant' || e.parent_tool_use_id != null) return undefined;
+  const model = (e.message as { model?: unknown } | undefined)?.model;
+  return typeof model === 'string' ? model : undefined;
+}
+
+/** The assistant's displayable text blocks on an assistant event. */
+function assistantText(e: RawEvent): string[] {
+  if (e.type !== 'assistant') return [];
+  const content = (e.message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+  const out: string[] = [];
+  for (const block of content) {
+    if (block && typeof block === 'object' && (block as { type?: string }).type === 'text') {
+      const text = (block as { text?: unknown }).text;
+      if (typeof text === 'string' && text.length > 0) out.push(text);
+    }
+  }
+  return out;
+}
+
 /** The human-facing identity a `claude` login stores in <configDir>/.claude.json. */
 function readIdentity(configDir: string): AccountIdentity {
   try {
@@ -122,6 +146,8 @@ export const claudeAdapter: ProviderAdapter = {
   // at each resumable boundary; interrupting there leaves a clean transcript.
   isDrainBoundary: (e) => e.type === 'user' || e.type === 'result',
   toActivity,
+  activeModel,
+  assistantText,
 
   readIdentity,
   fetchUsage,
