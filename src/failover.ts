@@ -1,12 +1,14 @@
 import type { AccountRegistry } from './accounts.js';
-import { classifyEvent } from './detector.js';
+import { claudeAdapter } from './adapters/claude.js';
 import type { EventLog } from './eventlog.js';
-import { startTurn } from './turn.js';
-import type { TurnHandle } from './turn.js';
+import { DEFAULT_CONTINUE_PROMPT } from './provider.js';
+import type { ProviderAdapter } from './provider.js';
+import type { TurnHandle, TurnOptions } from './turn.js';
 import type { RawEvent, Verdict } from './types.js';
 
-export const CONTINUE_PROMPT =
-  'Continue exactly where you left off. If your last action was a command or edit that may have partially applied, verify its actual effect before re-running anything with side effects.';
+/** Re-exported for callers/tests that assert the post-failover resume prompt.
+ *  The value a given session actually uses is `adapter.continuePrompt`. */
+export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
 
 export interface SessionResult {
   status: 'completed' | 'parked' | 'failed';
@@ -24,7 +26,10 @@ export interface RunSessionOptions {
   cwd: string;
   prompt: string;
   resume?: boolean;
-  startTurnFn?: typeof startTurn;
+  /** Which agent CLI backs this session. Defaults to Claude, so every existing
+   *  caller and test keeps its current behavior with no change. */
+  adapter?: ProviderAdapter;
+  startTurnFn?: (opts: TurnOptions) => TurnHandle;
   now?: () => number;
   maxFailoversPerHour?: number;
   claudePath?: string;
@@ -58,7 +63,8 @@ const FORCED_COOLDOWN = 30 * 60;
 
 export async function runSession(opts: RunSessionOptions): Promise<SessionResult> {
   const { registry, log, sessionId, cwd } = opts;
-  const startTurnFn = opts.startTurnFn ?? startTurn;
+  const adapter = opts.adapter ?? claudeAdapter;
+  const startTurnFn = opts.startTurnFn ?? adapter.startTurn;
   const now = opts.now ?? (() => Math.floor(Date.now() / 1000));
   const maxPerHour = opts.maxFailoversPerHour ?? 3;
   const drainTimeoutMs = opts.drainTimeoutMs ?? 30_000;
@@ -94,9 +100,9 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
 
   try {
     for (;;) {
-      const account = registry.pickActive(now());
+      const account = registry.pickActive(now(), adapter.id);
       if (!account) {
-        const until = registry.earliestReset();
+        const until = registry.earliestReset(adapter.id);
         log.append({ type: 'parked', sessionId, until });
         return { status: 'parked', parkedUntil: until, failovers: failoverTimes.length };
       }
@@ -128,7 +134,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       };
       const processEvent = (e: RawEvent) => {
         try { opts.tap?.(e); } catch { /* tap must never affect detection */ }
-        const v = classifyEvent(e);
+        const v = adapter.classify(e);
         if (v.kind === 'limited' && !state.limited && !state.authRequired && !state.forced) {
           state.limited = v;
           log.append({ type: 'limit_detected', sessionId, account: account.name, source: v.source, resetsAt: v.resetsAt ?? null });
@@ -150,12 +156,12 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         if (v.kind === 'warning') {
           log.append({ type: 'quota_warning', sessionId, account: account.name, resetsAt: v.resetsAt ?? null });
         }
-        if (e.type === 'result' && e.is_error === false) {
+        if (adapter.isResult(e) && adapter.resultOk(e)) {
           state.resultOk = true;
-          state.resultText = typeof e.result === 'string' ? e.result : undefined;
+          state.resultText = adapter.resultText(e);
         }
-        // forced switch: drain until a tool-result-bearing user event or the result event (D7)
-        if (forceSwitchRequested && !state.forced && !state.limited && !state.authRequired && (e.type === 'user' || e.type === 'result')) {
+        // forced switch: drain until the provider's next resumable boundary (D7)
+        if (forceSwitchRequested && !state.forced && !state.limited && !state.authRequired && adapter.isDrainBoundary(e)) {
           state.forced = true;
           log.append({ type: 'forced_switch', sessionId, account: account.name });
           state.interruptRequested = true;
@@ -232,12 +238,15 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       forceSwitchRequested = false;
       const bench = forceBench; forceBench = true; // consume; default back to benching
       if (state.limited) {
-        // A real resetsAt came from Anthropic (rate_limit_event); its absence
-        // means the verdict came from a path that never carries one (a bare 429
-        // result or a synthetic error message) — mark that cooldown as our own
-        // estimate, not a fact, so the UI doesn't present a guess as a countdown.
-        const hasRealReset = state.limited.resetsAt != null;
-        registry.markLimited(account.name, state.limited.resetsAt ?? now() + LIMIT_NO_RESET_FALLBACK, !hasRealReset);
+        // Resolve the reset to an absolute unix time: prefer a provider-reported
+        // absolute (Anthropic's rate_limit_event), else convert a relative
+        // countdown (Codex's resets_in_seconds) with our OWN clock, else fall
+        // back to a 30m guess. Only that last case is a guess, so only it is
+        // flagged `estimated` — the UI must not show a guess as a hard countdown.
+        const rel = state.limited.resetsInSeconds;
+        const until = state.limited.resetsAt ?? (rel != null ? now() + rel : now() + LIMIT_NO_RESET_FALLBACK);
+        const hasRealReset = state.limited.resetsAt != null || rel != null;
+        registry.markLimited(account.name, until, !hasRealReset);
       } else if (state.authRequired) {
         // No cooldown to wait out — this account is parked until a human
         // re-authenticates it via the UI.
@@ -260,7 +269,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       }
       log.append({ type: 'failover', sessionId, from: account.name });
       mode = 'resume';
-      prompt = CONTINUE_PROMPT;
+      prompt = adapter.continuePrompt;
     }
   } finally {
     if (opts.forceSwitchSignal !== false) {

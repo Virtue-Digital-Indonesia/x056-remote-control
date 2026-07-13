@@ -15,7 +15,10 @@ export interface TurnHandle {
 }
 
 export interface TurnOptions {
+  /** Legacy override for the Claude binary path (kept for existing callers). */
   claudePath?: string;
+  /** Generic override for the CLI binary path (used by any adapter). */
+  binPath?: string;
   configDir: string;
   cwd: string;
   sessionId: string;
@@ -25,6 +28,43 @@ export interface TurnOptions {
   effort?: string;
   appendSystemPrompt?: string;
   onEvent: (e: RawEvent) => void;
+}
+
+/**
+ * Spawn a CLI that streams NDJSON on stdout, parsing each `{...}` line into a
+ * RawEvent. The spawn + line-parse + exit plumbing is identical across agent
+ * CLIs (claude, codex) — only the argv and the per-account env var differ — so
+ * each provider adapter builds those and delegates the rest here.
+ */
+export function spawnJsonlTurn(
+  bin: string,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  onEvent: (e: RawEvent) => void,
+): TurnHandle {
+  const child = spawn(bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'inherit'] });
+
+  const rl = createInterface({ input: child.stdout });
+  rl.on('line', (line) => {
+    if (!line.trim().startsWith('{')) return;
+    try {
+      onEvent(JSON.parse(line) as RawEvent);
+    } catch {
+      // partial/garbled line — ignore
+    }
+  });
+
+  const done = new Promise<TurnExit>((resolve) => {
+    child.on('error', (err) => resolve({ code: null, signal: null, spawnError: err.message }));
+    child.on('close', (code, signal) => resolve({ code, signal }));
+  });
+
+  return {
+    kill: () => child.kill('SIGKILL'),
+    interrupt: () => child.kill('SIGINT'),
+    done,
+  };
 }
 
 export function startTurn(opts: TurnOptions): TurnHandle {
@@ -42,30 +82,11 @@ export function startTurn(opts: TurnOptions): TurnHandle {
     '--',
     opts.prompt,
   ];
-  const child = spawn(opts.claudePath ?? 'claude', args, {
-    cwd: opts.cwd,
-    env: { ...process.env, CLAUDE_CONFIG_DIR: opts.configDir },
-    stdio: ['ignore', 'pipe', 'inherit'],
-  });
-
-  const rl = createInterface({ input: child.stdout });
-  rl.on('line', (line) => {
-    if (!line.trim().startsWith('{')) return;
-    try {
-      opts.onEvent(JSON.parse(line) as RawEvent);
-    } catch {
-      // partial/garbled line — ignore
-    }
-  });
-
-  const done = new Promise<TurnExit>((resolve) => {
-    child.on('error', (err) => resolve({ code: null, signal: null, spawnError: err.message }));
-    child.on('close', (code, signal) => resolve({ code, signal }));
-  });
-
-  return {
-    kill: () => child.kill('SIGKILL'),
-    interrupt: () => child.kill('SIGINT'),
-    done,
-  };
+  return spawnJsonlTurn(
+    opts.claudePath ?? opts.binPath ?? 'claude',
+    args,
+    opts.cwd,
+    { ...process.env, CLAUDE_CONFIG_DIR: opts.configDir },
+    opts.onEvent,
+  );
 }

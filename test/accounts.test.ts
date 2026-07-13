@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -125,7 +125,7 @@ describe('AccountRegistry', () => {
     const reg = AccountRegistry.init(file, specs);
     reg.add('c', '/cfg/c');
     expect(reg.list().map((a) => a.name)).toEqual(['a', 'b', 'c']);
-    expect(AccountRegistry.load(file).get('c')).toEqual({ name: 'c', configDir: '/cfg/c', state: { kind: 'unknown' } });
+    expect(AccountRegistry.load(file).get('c')).toEqual({ name: 'c', configDir: '/cfg/c', provider: 'claude', state: { kind: 'unknown' } });
     expect(() => reg.add('c', '/cfg/c2')).toThrow(/already exists/);
   });
 
@@ -162,6 +162,53 @@ describe('AccountRegistry', () => {
     const reg = AccountRegistry.init(file, specs);
     expect(reg.has('a')).toBe(true);
     expect(reg.has('z')).toBe(false);
+  });
+
+  it('never fails over across providers: a limited claude account does NOT hand off to a codex account', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, [
+      { name: 'ca', configDir: '/cfg/ca', provider: 'claude' },
+      { name: 'cb', configDir: '/cfg/cb', provider: 'claude' },
+      { name: 'xa', configDir: '/cfg/xa', provider: 'codex' },
+    ]);
+    reg.markLimited('ca', 5000);
+    reg.markLimited('cb', 5000);
+    // Both claude accounts limited — the codex account is NOT a valid fallback.
+    expect(reg.pickActive(1000, 'claude')).toBeNull();
+    // …and the codex pool is independently usable.
+    expect(reg.pickActive(1000, 'codex')?.name).toBe('xa');
+  });
+
+  it('keeps a separate active pointer per provider', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, [
+      { name: 'ca', configDir: '/cfg/ca', provider: 'claude' },
+      { name: 'xa', configDir: '/cfg/xa', provider: 'codex' },
+      { name: 'xb', configDir: '/cfg/xb', provider: 'codex' },
+    ]);
+    reg.setActive('xb'); // move the CODEX pointer
+    expect(reg.activeName('codex')).toBe('xb');
+    expect(reg.activeName('claude')).toBe('ca'); // claude pointer untouched
+    expect(AccountRegistry.load(file).activeName('codex')).toBe('xb'); // persists
+  });
+
+  it('migrates a legacy single-`active` file into a claude provider pointer', () => {
+    const file = freshFile();
+    // Hand-write the OLD on-disk shape (pre-multi-provider): a bare `active`
+    // string and accounts with no `provider` field.
+    writeFileSync(file, JSON.stringify({
+      active: 'b',
+      accounts: [
+        { name: 'a', configDir: '/cfg/a', state: { kind: 'ok' } },
+        { name: 'b', configDir: '/cfg/b', state: { kind: 'ok' } },
+      ],
+    }));
+    const reg = AccountRegistry.load(file);
+    expect(reg.get('a').provider).toBe('claude'); // back-filled
+    expect(reg.activeName('claude')).toBe('b'); // legacy `active` became the claude pointer
+    // …and re-saving drops the legacy field.
+    reg.markOk('a');
+    expect(JSON.parse(readFileSync(file, 'utf8')).active).toBeUndefined();
   });
 });
 
