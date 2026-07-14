@@ -3,11 +3,15 @@ import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import type { ProviderId } from '../src/provider.js';
 
-/** One Claude Code conversation (a resumable session) within a project. */
+/** One conversation (a resumable session) within a project. */
 export interface Conversation {
   sessionId: string;
   title: string;
   createdAt: number;
+  /** The CLI's OWN session id used to resume. For Claude this equals sessionId
+   *  (we dictate it); for Codex it's the thread id the CLI assigned and we
+   *  captured off the stream. Absent until the first turn has run. */
+  providerSessionId?: string;
 }
 
 /** A workspace the panel can switch between. Holds N conversations grouped under
@@ -126,6 +130,23 @@ export class ProjectRegistry {
 
   conversations(id: string): Conversation[] {
     return (this.get(id)?.conversations ?? []).map((c) => ({ ...c }));
+  }
+
+  /** The CLI session id to resume this conversation with (Codex thread id, or
+   *  the Claude session id which is just the sessionId itself). */
+  providerSessionId(projectId: string, sessionId: string): string | undefined {
+    const p = this.data.projects.find((x) => x.id === projectId);
+    return p?.conversations?.find((c) => c.sessionId === sessionId)?.providerSessionId;
+  }
+
+  /** Record the CLI's own session id once the first turn surfaced it, so later
+   *  continuations resume the right underlying session. */
+  setProviderSessionId(projectId: string, sessionId: string, providerSessionId: string): void {
+    const p = this.data.projects.find((x) => x.id === projectId);
+    const c = p?.conversations?.find((x) => x.sessionId === sessionId);
+    if (!c || c.providerSessionId === providerSessionId) return;
+    c.providerSessionId = providerSessionId;
+    this.save();
   }
 
   /** Make a specific conversation the current one for its project. */

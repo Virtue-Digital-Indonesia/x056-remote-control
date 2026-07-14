@@ -30,6 +30,9 @@ export interface RunSessionOptions {
   cwd: string;
   prompt: string;
   resume?: boolean;
+  /** The CLI's own session id to resume (Codex thread id). Only needed for
+   *  providers that assign their own id; Claude resumes by `sessionId` directly. */
+  providerSessionId?: string;
   /** Which agent CLI backs this session. Defaults to Claude, so every existing
    *  caller and test keeps its current behavior with no change. */
   adapter?: ProviderAdapter;
@@ -83,7 +86,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   // session, else undefined — and capture the assigned id off the first turn's
   // stream so a failover resumes THE SAME session on the next account.
   let cliSessionId: string | undefined = adapter.captureSessionId
-    ? (opts.resume ? opts.sessionId : undefined)
+    ? (opts.resume ? (opts.providerSessionId ?? opts.sessionId) : undefined)
     : opts.sessionId;
   let forceSwitchRequested = false;
   let forceBench = true; // whether the account being left is benched on the pending forced switch

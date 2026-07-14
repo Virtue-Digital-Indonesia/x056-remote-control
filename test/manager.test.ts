@@ -132,6 +132,17 @@ describe('SessionManager', () => {
     expect(calls[1].adapter?.id).toBe('claude');
   });
 
+  it('stores a codex run\'s captured session id and resumes THAT (not the manager key) on continue', async () => {
+    const { mgr, calls } = fixture({ ...COMPLETED, providerSessionId: 'codex-thread-1' });
+    const p = mgr.createProject('CX', undefined, 'codex');
+    const sid = mgr.start('go', undefined, undefined, p.id);
+    await waitFor(() => mgr.snapshot().running === false && calls.length === 1);
+    mgr.continueSession(p.id, sid, 'again');
+    await waitFor(() => calls.length === 2);
+    expect(calls[1].resume).toBe(true);
+    expect(calls[1].providerSessionId).toBe('codex-thread-1'); // the captured codex thread, not sid
+  });
+
   it('reuses a project\'s last chosen model/effort on a continue that specifies none', async () => {
     const { mgr, calls } = fixture(COMPLETED);
     mgr.start('first', undefined, { model: 'fable', effort: 'high' });

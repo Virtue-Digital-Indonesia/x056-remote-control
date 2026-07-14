@@ -1036,6 +1036,10 @@ export class SessionManager {
     const model = runOpts?.model ?? stored?.model;
     const effort = runOpts?.effort ?? stored?.effort;
     const adapter = this.adapterFor(pid);
+    // Resuming a provider-assigned session (Codex) needs the CLI's own id, not
+    // our conversation key; look up what the first turn captured. (For Claude
+    // this is just the sessionId, so it's a harmless no-op.)
+    const providerSessionId = resume ? reg.providerSessionId(pid, sessionId) : undefined;
     const run: ActiveRun = { sessionId, projectId: pid, cwd };
     this.runs.set(sessionId, run);
     // Every event from this run carries its projectId AND sessionId so the panel
@@ -1077,6 +1081,7 @@ export class SessionManager {
         cwd,
         prompt,
         resume,
+        providerSessionId,
         adapter,
         claudePath: this.opts.claudePath,
         model,
@@ -1091,6 +1096,9 @@ export class SessionManager {
       })
         .then((res) => {
           this.lastResults.set(pid, res);
+          // Remember the CLI's own session id (Codex thread id) so the next
+          // continuation of this conversation resumes the same underlying session.
+          if (res.providerSessionId) this.projects().setProviderSessionId(pid, sessionId, res.providerSessionId);
           // Queued follow-ups for THIS conversation take priority: on a clean
           // completion, drain its head (ahead of autopilot). A queued message is
           // the user's explicit next step, so it also pre-empts a question card.
