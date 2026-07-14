@@ -501,6 +501,19 @@ export class ApiController {
     return { ok: true };
   }
 
+  /** Register an already-authenticated Codex account by its CODEX_HOME path
+   *  (bridge until in-panel Codex login). */
+  @Post('accounts/codex/register')
+  @HttpCode(200)
+  registerCodexAccount(@Body() body: { codexHome?: string }): unknown {
+    if (!body?.codexHome) throw new BadRequestException('codexHome required');
+    try {
+      return this.manager.registerCodexAccount(body.codexHome);
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
   @Post('accounts/remove')
   @HttpCode(200)
   accountRemove(@Body() body: { name?: string }): { removed: boolean } {

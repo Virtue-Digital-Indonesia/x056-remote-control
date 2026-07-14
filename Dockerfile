@@ -3,7 +3,9 @@ FROM node:22-bookworm
 # world-readable path so any session can screenshot/verify UI work — the
 # post-reset container previously had no browser at all.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npm install -g @anthropic-ai/claude-code playwright \
+# @openai/codex is the second failover provider (ChatGPT-plan GPT models); the
+# gateway spawns `codex exec --json` alongside `claude` for codex projects.
+RUN npm install -g @anthropic-ai/claude-code @openai/codex playwright \
  && apt-get update && apt-get install -y --no-install-recommends ripgrep curl openssh-client \
  && npx playwright install --with-deps chromium \
  && chmod -R a+rX /ms-playwright \

@@ -559,6 +559,32 @@ export class SessionManager {
     return `acct-${randomUUID().slice(0, 8)}`;
   }
 
+  /** Register an EXISTING, already-authenticated Codex account by its CODEX_HOME
+   *  (a dir where `codex login` has written auth.json). A bridge until in-panel
+   *  Codex login lands — mirrors how the first Claude accounts were pre-authed
+   *  dirs registered by the setup wizard. Refuses a dir with no codex auth, and
+   *  won't add the same ChatGPT account twice. */
+  registerCodexAccount(codexHome: string): { name: string; email?: string; displayName?: string } {
+    const dir = resolve(codexHome);
+    const codex = getAdapter('codex');
+    if (!existsSync(join(dir, 'auth.json'))) {
+      throw new Error(`no auth.json in ${dir} — run \`CODEX_HOME=${dir} codex login\` first`);
+    }
+    const identity = codex.readIdentity(dir);
+    const reg = this.registry();
+    if (identity.email) {
+      for (const a of reg.list()) {
+        if (a.provider === 'codex' && codex.readIdentity(a.configDir).email === identity.email) {
+          throw new Error(`${identity.email} is already added as account "${a.name}"`);
+        }
+      }
+    }
+    const name = this.nextAccountName();
+    reg.add(name, dir, 'codex');
+    this.emitAccounts();
+    return { name, email: identity.email, displayName: identity.displayName };
+  }
+
   private emitAccounts(): void { this.emit('accounts', {}); }
 
   /** Spawn `claude auth login` on a PTY against `configDir` and resolve once it
