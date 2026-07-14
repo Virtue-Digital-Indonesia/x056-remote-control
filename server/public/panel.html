@@ -304,6 +304,12 @@
   .g .track > i.amber { background: var(--amber); } .g .track > i.red { background: var(--err); }
   .note { font-size: 11px; color: var(--faint); margin-top: 6px; }
   .backdrop { position: fixed; inset: 0; z-index: 25; } .backdrop[hidden] { display: none; }
+  /* Provider selector (new project) + register-codex divider + provider chip. */
+  .provseg { display: flex; gap: 6px; margin-bottom: 10px; }
+  .provbtn { flex: 1; padding: 7px 10px; font: inherit; font-size: 13px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text-dim); border-radius: 8px; cursor: pointer; }
+  .provbtn.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+  .acct-or { margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+  .badge.prov { background: var(--surface-3); color: var(--text-dim); border: 1px solid var(--border-strong); }
   /* Centered in-app dialogs (replace native prompt/confirm) + the ⌘K palette. */
   .modal-wrap { position: fixed; inset: 0; z-index: 120; display: grid; place-items: start center; padding: 12vh 20px 20px; background: rgba(0,0,0,.5); }
   .modal { width: 100%; max-width: 420px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 16px; box-shadow: var(--shadow); padding: 18px; }
@@ -523,6 +529,11 @@
   <div id="addAcctStep1">
     <div class="gate-note" id="addAcctIntro" style="margin-bottom:10px;">Sign in to another Claude account to add it to the failover pool. A new browser tab will open to authorize; you'll paste back a code.</div>
     <button class="send" id="addAcctStart" style="width:100%;">Start sign-in</button>
+    <div class="acct-or">or register an existing ChatGPT (Codex) login</div>
+    <div class="gate-note" style="margin-bottom:6px;">Run <code>CODEX_HOME=&lt;dir&gt; codex login</code> on the host, then give that dir here:</div>
+    <input id="addCodexHome" class="pk-search" placeholder="/path/to/CODEX_HOME (has auth.json)" autocomplete="off" />
+    <div id="addCodexErr" class="gate-err" style="text-align:left;"></div>
+    <button class="send ghost" id="addCodexBtn" style="width:100%; margin-top:6px;">Register Codex account</button>
   </div>
   <div id="addAcctStep2" hidden>
     <div class="gate-note" id="addAcctStep2Note" style="margin-bottom:6px;">1. Open this link, sign in with the account you want to add, and authorize:</div>
@@ -538,6 +549,10 @@
 </div>
 <div class="pop" id="projPicker" hidden style="top:100px; left:12px; bottom:auto; width:300px;">
   <h2>add a project from your repos</h2>
+  <div class="provseg" id="projProviderSeg">
+    <button type="button" class="provbtn on" data-provider="claude">Claude</button>
+    <button type="button" class="provbtn" data-provider="codex">ChatGPT</button>
+  </div>
   <input id="projSearch" class="pk-search" placeholder="filter repos…" />
   <div id="projPickList" class="pk-list"></div>
 </div>
@@ -636,8 +651,13 @@
   // the global default) so switching projects shows what that one actually runs.
   function syncPicker(pid) {
     var p = projCache[pid]; if (!p) return;
+    // The model list is Claude-specific (Fable/Opus/…); a Codex project must not
+    // send those to `codex -m`. For codex, collapse the picker to Auto (the
+    // account's default GPT) — a specific model is set per-project server-side.
+    var codex = p.provider === 'codex';
+    Array.prototype.forEach.call(modelEl.options, function (o) { if (o.value) { o.hidden = codex; o.disabled = codex; } });
     try {
-      modelEl.value = p.model || localStorage.getItem(MODEL_KEY) || '';
+      modelEl.value = codex ? '' : (p.model || localStorage.getItem(MODEL_KEY) || '');
       effortEl.value = p.effort || localStorage.getItem(EFFORT_KEY) || '';
     } catch (e) {}
   }
@@ -1550,8 +1570,20 @@
       projPickList.appendChild(it);
     });
   }
+  // Which provider a newly-created project runs on (chosen in the picker's
+  // Claude/ChatGPT toggle). A project's provider is fixed at creation.
+  var newProjectProvider = 'claude';
+  (function () {
+    var seg = $('projProviderSeg');
+    if (!seg) return;
+    seg.addEventListener('click', function (e) {
+      var b = e.target.closest('.provbtn'); if (!b) return;
+      newProjectProvider = b.getAttribute('data-provider') || 'claude';
+      Array.prototype.forEach.call(seg.querySelectorAll('.provbtn'), function (x) { x.classList.toggle('on', x === b); });
+    });
+  })();
   function createProjectFromDir(d) {
-    api('/api/projects', { method: 'POST', body: JSON.stringify({ name: d.name, cwd: d.path }) }).then(function (r) {
+    api('/api/projects', { method: 'POST', body: JSON.stringify({ name: d.name, cwd: d.path, provider: newProjectProvider }) }).then(function (r) {
       if (!r.ok) return r.json().then(function (j) { addSys('could not add project: ' + (j.message || r.status), 'banner'); });
       return r.json().then(function (p) { closeAllPops(); switchProject(p); });
     }).catch(function () {});
@@ -1606,6 +1638,9 @@
       if (a.email) { var em = document.createElement('span'); em.className = 'em'; em.textContent = ' · ' + a.email; left.appendChild(em); }
       top.appendChild(left);
       var badges = document.createElement('div'); badges.className = 'badges';
+      // Provider chip — flag which agent CLI this account runs on once a
+      // non-Claude account exists (Codex accounts get a "ChatGPT (Codex)" chip).
+      if (a.provider && a.provider !== 'claude') { var pv = document.createElement('span'); pv.className = 'badge prov'; pv.textContent = a.providerLabel || a.provider; pv.title = 'runs on ' + (a.providerLabel || a.provider); badges.appendChild(pv); }
       // "next up" — the account THIS next prompt will run on (skips a limited one).
       if (a.nextUp) { var nb = document.createElement('span'); nb.className = 'badge next'; nb.textContent = 'next up'; nb.title = 'the next prompt will use this account'; badges.appendChild(nb); }
       // Remove — only when the backend supports it and there's more than one
@@ -2307,6 +2342,20 @@
     resetAddAcctStep();
   }
   $('addAcctBtn').addEventListener('click', function () { resetAddAcct(null); openPop($('addAcctPop')); });
+  $('addCodexBtn').addEventListener('click', function () {
+    var home = $('addCodexHome').value.trim();
+    $('addCodexErr').textContent = '';
+    if (!home) { $('addCodexErr').textContent = 'enter the CODEX_HOME path'; return; }
+    var btn = $('addCodexBtn'); btn.disabled = true; btn.textContent = 'Registering…';
+    var reset = function () { btn.disabled = false; btn.textContent = 'Register Codex account'; };
+    api('/api/accounts/codex/register', { method: 'POST', body: JSON.stringify({ codexHome: home }) }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) { $('addCodexErr').textContent = (j && j.message) || 'could not register'; reset(); return; }
+        $('addCodexHome').value = ''; reset(); closeAllPops(); pollAccounts();
+        addSys('added ChatGPT account ' + (j.displayName || j.name) + (j.email ? ' (' + j.email + ')' : ''), 'banner');
+      });
+    }).catch(function () { $('addCodexErr').textContent = 'network error'; reset(); });
+  });
   $('addAcctStart').addEventListener('click', function () {
     $('addAcctStart').disabled = true; $('addAcctStart').textContent = 'Opening…';
     var body = addAcctReloginName ? { name: addAcctReloginName } : {};
