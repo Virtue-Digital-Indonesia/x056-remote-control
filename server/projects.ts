@@ -8,6 +8,11 @@ export interface Conversation {
   sessionId: string;
   title: string;
   createdAt: number;
+  /** Which agent CLI this conversation runs on. Stamped when it's created (from
+   *  the project's provider) and then FIXED: its transcript is that provider's
+   *  own format, so it can't be resumed by the other one. Absent on
+   *  conversations that predate multi-provider — they're Claude. */
+  provider?: ProviderId;
   /** The CLI's OWN session id used to resume. For Claude this equals sessionId
    *  (we dictate it); for Codex it's the thread id the CLI assigned and we
    *  captured off the stream. Absent until the first turn has run. */
@@ -20,9 +25,10 @@ export interface Project {
   id: string;
   name: string;
   cwd: string;
-  /** Which agent CLI this project's sessions run on. Absent = 'claude' (every
-   *  project predating multi-provider is a Claude project). A project's provider
-   *  is fixed at creation — it decides the account pool and adapter for its runs. */
+  /** The provider NEW conversations in this project start on (changeable —
+   *  see setProvider). Existing conversations keep whatever they were created
+   *  with; only Conversation.provider decides what a given turn actually runs on.
+   *  Absent = 'claude' (every project predating multi-provider). */
   provider?: ProviderId;
   lastSessionId?: string;
   /** All conversations under this project, newest last. */
@@ -104,27 +110,46 @@ export class ProjectRegistry {
 
   /** Record the session a project should resume next time it's selected, and
    *  make sure it's registered as a conversation (idempotent) and set current. */
-  setLastSession(id: string, sessionId: string, title?: string): void {
+  setLastSession(id: string, sessionId: string, title?: string, provider?: ProviderId): void {
     const p = this.data.projects.find((x) => x.id === id);
     if (!p) return;
     p.lastSessionId = sessionId;
     p.conversations = p.conversations ?? [];
     if (!p.conversations.some((c) => c.sessionId === sessionId)) {
-      p.conversations.push({ sessionId, title: (title ?? '').trim() || 'Conversation', createdAt: Date.now() });
+      p.conversations.push({ sessionId, title: (title ?? '').trim() || 'Conversation', createdAt: Date.now(), provider: provider ?? p.provider ?? 'claude' });
     }
     this.save();
   }
 
   /** Add a brand-new conversation and make it current (used when starting a fresh
    *  session so it can carry a prompt-derived title). */
-  addConversation(id: string, sessionId: string, title: string): void {
+  addConversation(id: string, sessionId: string, title: string, provider?: ProviderId): void {
     const p = this.data.projects.find((x) => x.id === id);
     if (!p) return;
     p.conversations = p.conversations ?? [];
     if (!p.conversations.some((c) => c.sessionId === sessionId)) {
-      p.conversations.push({ sessionId, title: title.trim() || 'New conversation', createdAt: Date.now() });
+      // Stamp the provider now — this conversation is bound to it for life.
+      p.conversations.push({ sessionId, title: title.trim() || 'New conversation', createdAt: Date.now(), provider: provider ?? p.provider ?? 'claude' });
     }
     p.lastSessionId = sessionId;
+    this.save();
+  }
+
+  /** The provider a specific conversation runs on (what its transcript is in).
+   *  Falls back to the project's default, then Claude, for pre-provider rows. */
+  conversationProvider(projectId: string, sessionId: string): ProviderId {
+    const p = this.data.projects.find((x) => x.id === projectId);
+    const c = p?.conversations?.find((x) => x.sessionId === sessionId);
+    return c?.provider ?? p?.provider ?? 'claude';
+  }
+
+  /** Change which provider this project's NEW conversations start on. Existing
+   *  conversations are untouched — each stays on the provider it was created
+   *  with, because its transcript can only be resumed by that CLI. */
+  setProvider(id: string, provider: ProviderId): void {
+    const p = this.data.projects.find((x) => x.id === id);
+    if (!p) throw new Error(`unknown project ${id}`);
+    p.provider = provider;
     this.save();
   }
 

@@ -322,6 +322,21 @@ export class ApiController {
     }
   }
 
+  /** Change which provider a project's NEW conversations start on. Existing
+   *  conversations keep the provider they were created with. */
+  @Post('projects/provider')
+  @HttpCode(200)
+  setProjectProvider(@Body() body: { id?: string; provider?: string }): { ok: boolean } {
+    if (!body?.id) throw new BadRequestException('id required');
+    if (body.provider !== 'claude' && body.provider !== 'codex') throw new BadRequestException('unknown provider');
+    try {
+      this.manager.setProjectProvider(body.id, body.provider);
+      return { ok: true };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
   @Post('projects/rename')
   @HttpCode(200)
   renameProject(@Body() body: { id?: string; name?: string }): { ok: boolean } {

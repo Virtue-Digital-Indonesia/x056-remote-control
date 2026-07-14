@@ -964,11 +964,23 @@ export class SessionManager {
     return proj;
   }
 
-  /** The adapter a project's sessions run on (Claude unless the project opted
-   *  into another provider). Central so launch + activity + accounts agree. */
-  private adapterFor(projectId?: string): ProviderAdapter {
-    const proj = projectId ? this.projects().get(projectId) : this.projects().current();
+  /** The adapter a turn runs on. Keyed by the CONVERSATION, not the project: a
+   *  conversation is bound to the provider it was created with (its transcript is
+   *  that CLI's format), so changing a project's provider must never re-point an
+   *  existing conversation at the other one. Falls back to the project's default
+   *  (for a not-yet-created conversation) and then Claude. */
+  private adapterFor(projectId?: string, sessionId?: string): ProviderAdapter {
+    const pid = projectId ?? this.projects().currentId() ?? undefined;
+    if (pid && sessionId) return getAdapter(this.projects().conversationProvider(pid, sessionId));
+    const proj = pid ? this.projects().get(pid) : this.projects().current();
     return getAdapter(proj?.provider ?? 'claude');
+  }
+
+  /** Change the provider NEW conversations in a project start on. Existing
+   *  conversations keep theirs (a Claude thread can't resume on GPT). */
+  setProjectProvider(projectId: string, provider: ProviderId): void {
+    this.projects().setProvider(projectId, provider);
+    this.emit('projects', { id: projectId, provider });
   }
 
   private get interactiveDir(): string {
@@ -1148,7 +1160,7 @@ export class SessionManager {
     const stored = reg.get(pid);
     const model = runOpts?.model ?? stored?.model;
     const effort = runOpts?.effort ?? stored?.effort;
-    const adapter = this.adapterFor(pid);
+    const adapter = this.adapterFor(pid, sessionId);
     // Resuming a provider-assigned session (Codex) needs the CLI's own id, not
     // our conversation key; look up what the first turn captured. (For Claude
     // this is just the sessionId, so it's a harmless no-op.)

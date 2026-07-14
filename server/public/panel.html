@@ -517,6 +517,9 @@
       <div id="attachRow"></div>
       <textarea id="prompt" rows="1" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste or drop a file)"></textarea>
       <div class="bar">
+        <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
+          <option value="claude">Claude</option><option value="codex">ChatGPT</option>
+        </select></div>
         <div class="select"><select id="model" title="model">
           <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
         </select></div>
@@ -620,6 +623,19 @@
   // the markup; a Codex account publishes its OWN catalog (GPT-5.6-Sol etc.),
   // which the backend reads from that account and serves at /api/models. Capture
   // the Claude presets up-front so we can swap back when switching projects.
+  var providerEl = $('provider'), providerWrap = $('providerWrap');
+  var PROV_LABEL = { claude: 'Claude', codex: 'ChatGPT' };
+  // What the CURRENT conversation actually runs on. A conversation is bound to
+  // the provider it was created with (its transcript is that CLI's format), so
+  // that wins; an unstarted one falls back to the project's default.
+  function currentProvider() {
+    var p = projCache[currentProjectId]; if (!p) return 'claude';
+    if (lastSessionId) {
+      var cs = p.conversations || [];
+      for (var i = 0; i < cs.length; i++) if (cs[i].sessionId === lastSessionId && cs[i].provider) return cs[i].provider;
+    }
+    return p.provider || 'claude';
+  }
   var CLAUDE_MODEL_OPTS = [].slice.call(modelEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
   var providerModels = {}; // { codex: [{slug,label,efforts,…}] }
   function setModelOptions(opts, value) {
@@ -628,6 +644,38 @@
     modelEl.value = value;
     if (modelEl.value !== value) modelEl.value = ''; // stale/unknown model → Auto
   }
+  /** Point this project's NEW conversations at a provider (existing ones keep
+   *  theirs — a Claude thread can't resume on GPT and vice versa). */
+  function setProjectProvider(prov) {
+    return api('/api/projects/provider', { method: 'POST', body: JSON.stringify({ id: currentProjectId, provider: prov }) })
+      .then(function (r) {
+        if (!r.ok) { addSys('could not switch provider', 'banner'); return false; }
+        if (projCache[currentProjectId]) projCache[currentProjectId].provider = prov;
+        return true;
+      }).catch(function () { return false; });
+  }
+  providerEl.addEventListener('change', function () {
+    var want = providerEl.value, cur = currentProvider();
+    if (!currentProjectId || want === cur) return;
+    // An already-started conversation is bound to its provider — offer the only
+    // thing that CAN honor the request: a fresh conversation on the new one.
+    var started = !!lastSessionId && !pendingNew;
+    if (!started) {
+      setProjectProvider(want).then(function (ok) { if (ok) syncPicker(currentProjectId); else providerEl.value = cur; refreshAccountsPop(); renderAccountChip(); });
+      return;
+    }
+    uiConfirm({
+      title: 'Start a new conversation on ' + PROV_LABEL[want] + '?',
+      message: 'This conversation runs on ' + PROV_LABEL[cur] + ' and can’t move — its transcript is ' + PROV_LABEL[cur] + '’s own format, which ' + PROV_LABEL[want] + ' can’t resume. New conversations in this project will use ' + PROV_LABEL[want] + '.',
+      confirmText: 'New conversation',
+    }).then(function (ok) {
+      if (!ok) { providerEl.value = cur; return; }
+      setProjectProvider(want).then(function (done) {
+        if (!done) { providerEl.value = cur; return; }
+        newConversation(currentProjectId);
+      });
+    });
+  });
   function loadProviderModels() {
     return api('/api/models').then(function (r) { return r.ok ? r.json() : {}; }).then(function (m) {
       providerModels = m || {};
@@ -693,7 +741,8 @@
     // The model list is Claude-specific (Fable/Opus/…); a Codex project must not
     // send those to `codex -m`. For codex, collapse the picker to Auto (the
     // account's default GPT) — a specific model is set per-project server-side.
-    var prov = p.provider || 'claude';
+    var prov = currentProvider();
+    providerEl.value = prov;
     try {
       if (prov === 'claude') {
         setModelOptions(CLAUDE_MODEL_OPTS, p.model || localStorage.getItem(MODEL_KEY) || '');
@@ -1666,6 +1715,9 @@
     // so a live panel ahead of that backend still just shows the old global button.
     var activeCapable = acctList.some(function (a) { return 'active' in a; });
     $('addAcctBtn').style.display = capable ? '' : 'none';
+    // The provider switch only makes sense once you have accounts on >1 provider.
+    providerWrap.hidden = [].concat(acctList.map(function (x) { return x.provider || 'claude'; }))
+      .filter(function (v, i, arr) { return arr.indexOf(v) === i; }).length < 2;
     // The global "Force-switch active account" button is superseded by the
     // per-account "Switch this turn here" action once the backend supports it.
     $('switchAcctBtn').style.display = activeCapable ? 'none' : '';
@@ -1675,7 +1727,7 @@
     // own pool. Only the one matching THIS project's provider will actually run
     // the next message — scope the highlighting to that, and dim the rest, so the
     // popover answers "which account am I about to use?" unambiguously.
-    var curProvider = (projCache[currentProjectId] || {}).provider || 'claude';
+    var curProvider = currentProvider();
     var curLabel = (acctList.filter(function (x) { return (x.provider || 'claude') === curProvider; })[0] || {}).providerLabel || (curProvider === 'codex' ? 'ChatGPT (Codex)' : 'Claude');
     var mixed = acctList.some(function (x) { return (x.provider || 'claude') !== curProvider; });
     var scopeNote = $('acctScopeNote');
@@ -1825,7 +1877,7 @@
     // Only this project's provider pool can serve its next prompt — a Claude
     // account is never "sends next" for a ChatGPT project — so pick within that
     // pool (falling back to everything if the provider has no accounts yet).
-    var curProvider = (projCache[currentProjectId] || {}).provider || 'claude';
+    var curProvider = currentProvider();
     var pool = acctList.filter(function (a) { return (a.provider || 'claude') === curProvider; });
     if (!pool.length) pool = acctList;
     function byName(n) { for (var i = 0; i < pool.length; i++) if (pool[i].name === n) return pool[i]; return null; }
