@@ -9,35 +9,32 @@ import type { RawEvent, Verdict } from '../types.js';
 /*
  * OpenAI `codex` CLI adapter (ChatGPT-plan / GPT models).
  *
- * The event model below was CAPTURED from codex-cli 0.144.3: the flag surface
- * (`codex exec --help`, `codex exec resume --help`), an unauthenticated
- * `codex exec --json` run (real thread/turn/error events), and the serde type
- * tags embedded in the shipped binary. What's confirmed vs. still-VERIFY:
+ * The event model below is CONFIRMED against codex-cli 0.144.3 with a real
+ * ChatGPT login: the flag surface, an authenticated `codex exec --json` run
+ * (agent_message + command_execution + turn.completed), and a verified
+ * `codex exec resume <thread_id>` that continued the session with full context.
  *
- *  CONFIRMED
- *   - `--json` emits flat JSONL, one event per line, dotted `type` names:
- *     thread.started {thread_id} · turn.started · turn.completed · turn.failed
- *     {error} · thread.failed · item.started/updated/completed {item:{id,type}}
- *   - The SESSION ID is `thread.started.thread_id` (codex assigns it — we don't
- *     dictate one; the manager must capture it to resume. See captureSessionId.)
- *   - Terminal success = turn.completed; terminal failure = turn.failed.
- *   - turn.failed reason codes include `usage_limit_exceeded` (the ChatGPT-plan
- *     limit), `context_window_exceeded`, `server_overloaded`, etc.
- *   - Pre-terminal `{type:"error", message:"Reconnecting… 401…"}` events are
- *     transient retry chatter — NOT a failover trigger (only turn.failed is).
- *   - item types: agent_message, reasoning, command_execution (command, cwd,
- *     exit_code, status, aggregated_output), file_change (changes),
- *     mcp_tool_call, web_search, todo_list, error.
- *   - argv: `exec [--json --dangerously-bypass-approvals-and-sandbox
- *     --skip-git-repo-check -m MODEL -c model_reasoning_effort=…] PROMPT`;
- *     resume: `exec resume SESSION_ID [same flags] PROMPT` (--json supported).
+ *  CONFIRMED (authenticated capture)
+ *   - `--json` emits flat JSONL, dotted `type` names: thread.started {thread_id}
+ *     · turn.started · item.started/completed {item:{id,type,…}} · turn.completed
+ *     {usage:{input_tokens,output_tokens,cached_input_tokens,reasoning_output_tokens}}.
+ *   - SESSION ID = `thread.started.thread_id`; codex ASSIGNS it (no id we dictate).
+ *     `exec resume <thread_id>` resumes the same thread with context intact.
+ *   - agent_message item: `item.text` (arrives as item.completed, no item.started).
+ *   - command_execution item: `command` is a STRING, plus cwd/exit_code/status
+ *     ("in_progress"→"completed"); emits BOTH item.started and item.completed.
+ *   - Terminal success = turn.completed. Failure = turn.failed {error}.
+ *   - Pre-terminal `{type:"error", message:"Reconnecting… 401…"}` is transient
+ *     retry chatter — NOT a failover trigger (only turn.failed is).
+ *   - Sessions persist at $CODEX_HOME/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl.
  *
- *  VERIFY (needs an AUTHENTICATED run — no ChatGPT creds in the build sandbox)
- *   - exact field carrying the turn.failed reason code (`error.code` vs `.type`)
- *   - the `rate_limits` object: presence, which event carries it, field casing
- *     (usedPercent/used_percent, resets_in_seconds, windowDurationMins)
- *   - whether item.started fires for commands or only item.completed
- *   - the agent_message item's text field name (final-answer text)
+ *  VERIFY (couldn't be triggered on a healthy authed turn — needs the condition)
+ *   - `rate_limits` was ABSENT from a normal turn.completed (only token `usage`
+ *     was present) — it likely only appears near/at a limit; field casing and
+ *     which event still unconfirmed, so the near-limit `warning` path is dormant
+ *     until then (safe: it no-ops when the object is absent).
+ *   - the exact turn.failed reason-code field (`error.code` vs `.type`) for
+ *     `usage_limit_exceeded` — matched by code OR message regex either way.
  */
 
 function evType(e: RawEvent): string {
@@ -240,6 +237,7 @@ export const codexAdapter: ProviderAdapter = {
   continuePrompt: DEFAULT_CONTINUE_PROMPT,
 
   startTurn: startCodexTurn,
+  captureSessionId,
 
   classify: classifyCodexEvent,
   isResult: (e) => evType(e) === 'turn.completed',

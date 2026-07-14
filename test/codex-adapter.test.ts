@@ -113,14 +113,46 @@ describe('codexAdapter.readIdentity', () => {
   });
 });
 
+// Replay of the ACTUAL authenticated stream captured from codex-cli 0.144.3
+// (agent_message → command_execution → turn.completed), asserting the adapter
+// reads the real field shapes, not just my synthetic ones.
+describe('codexAdapter against the real captured authed stream', () => {
+  const stream: RawEvent[] = [
+    { type: 'thread.started', thread_id: '019f5ffe-867a-7e91-b667-bd2a62578c36' },
+    { type: 'turn.started' },
+    { type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text: 'I’ll run the requested command now.' } },
+    { type: 'item.started', item: { id: 'item_1', type: 'command_execution', command: "/bin/sh -lc 'echo x056-probe-ok'", aggregated_output: '', exit_code: null, status: 'in_progress' } },
+    { type: 'item.completed', item: { id: 'item_1', type: 'command_execution', command: "/bin/sh -lc 'echo x056-probe-ok'", aggregated_output: 'x056-probe-ok\n', exit_code: 0, status: 'completed' } },
+    { type: 'item.completed', item: { id: 'item_2', type: 'agent_message', text: 'DONE' } },
+    { type: 'turn.completed', usage: { input_tokens: 23734, cached_input_tokens: 19968, output_tokens: 76, reasoning_output_tokens: 0 } },
+  ];
+
+  it('captures the thread id, streams the real agent_message text, and maps the command item', () => {
+    expect(captureSessionId(stream[0])).toBe('019f5ffe-867a-7e91-b667-bd2a62578c36');
+    // agent_message text (field `text`, arriving as item.completed)
+    expect(codexAdapter.assistantText?.(stream[2])).toEqual(['I’ll run the requested command now.']);
+    expect(codexAdapter.assistantText?.(stream[5])).toEqual(['DONE']);
+    // command_execution: string command → start row, then done on exit_code 0
+    expect(codexAdapter.toActivity(stream[3])).toEqual([
+      { toolUseId: 'item_1', parentToolUseId: null, tool: 'Bash', label: "Running: /bin/sh -lc 'echo x056-probe-ok'", status: 'start', isSubagent: false },
+    ]);
+    expect(codexAdapter.toActivity(stream[4])[0]).toMatchObject({ toolUseId: 'item_1', status: 'done' });
+    // turn.completed is the terminal success; no rate_limits present → no warning
+    expect(codexAdapter.isResult(stream[6])).toBe(true);
+    expect(codexAdapter.classify(stream[6]).kind).toBe('irrelevant');
+    // no spurious activity/limit from lifecycle events
+    expect(codexAdapter.classify(stream[0]).kind).toBe('irrelevant');
+  });
+});
+
 // End-to-end: the real codexAdapter drives a full failover through runSession
 // using real-shaped codex events — the transient reconnect must NOT trigger it;
 // only turn.failed(usage_limit_exceeded) does.
 describe('runSession with the real codexAdapter', () => {
-  function scriptTurns(script: RawEvent[][], recorded: { mode: string; prompt: string }[]) {
+  function scriptTurns(script: RawEvent[][], recorded: { mode: string; prompt: string; sessionId: string }[]) {
     let call = 0;
     return (opts: TurnOptions): TurnHandle => {
-      recorded.push({ mode: opts.mode, prompt: opts.prompt });
+      recorded.push({ mode: opts.mode, prompt: opts.prompt, sessionId: opts.sessionId });
       const events = script[call];
       call += 1;
       let killed = false;
@@ -143,28 +175,31 @@ describe('runSession with the real codexAdapter', () => {
       { name: 'xb', configDir: '/cfg/xb', provider: 'codex' },
     ]);
     const log = new EventLog(join(dir, 'events.jsonl'));
-    const recorded: { mode: string; prompt: string }[] = [];
+    const recorded: { mode: string; prompt: string; sessionId: string }[] = [];
     const res = await runSession({
-      sessionId: 'cx', cwd: '/tmp', prompt: 'ship it', forceSwitchSignal: false,
+      sessionId: 'cx-internal-key', cwd: '/tmp', prompt: 'ship it', forceSwitchSignal: false,
       registry, log, now: () => 100, adapter: codexAdapter,
       startTurnFn: scriptTurns(
         [
           [
-            { type: 'thread.started', thread_id: 't1' },
+            { type: 'thread.started', thread_id: 't-CODEX-99' }, // codex assigns this id
             { type: 'turn.started' },
             { type: 'error', message: 'Reconnecting... 1/5 (401)' }, // must NOT trigger failover
             { type: 'turn.failed', error: { code: 'usage_limit_exceeded' }, rate_limits: { primary: { resets_in_seconds: 300 } } },
           ],
           [
-            { type: 'thread.started', thread_id: 't1' },
             { type: 'turn.completed' },
           ],
         ],
         recorded,
       ),
     });
-    expect(res).toMatchObject({ status: 'completed', finalAccount: 'xb', failovers: 1 });
-    expect(recorded[1]).toMatchObject({ mode: 'resume', prompt: codexAdapter.continuePrompt });
+    expect(res).toMatchObject({ status: 'completed', finalAccount: 'xb', failovers: 1, providerSessionId: 't-CODEX-99' });
+    // The NEW turn got the manager's key (codex ignores it and assigns its own);
+    // the RESUME turn got the CAPTURED codex thread id, so it continues the same
+    // thread on the other account — the crux of codex failover.
+    expect(recorded[0]).toMatchObject({ mode: 'new', sessionId: 'cx-internal-key' });
+    expect(recorded[1]).toMatchObject({ mode: 'resume', prompt: codexAdapter.continuePrompt, sessionId: 't-CODEX-99' });
     expect(registry.get('xa').state).toEqual({ kind: 'limited', until: 400 }); // now(100) + 300
     expect(log.read().map((r) => r.type)).toContain('failover');
   });

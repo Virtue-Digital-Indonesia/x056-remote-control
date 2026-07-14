@@ -17,6 +17,10 @@ export interface SessionResult {
   failovers: number;
   resultText?: string;
   reason?: string;
+  /** The provider's real session id to resume next time. For Claude this equals
+   *  the id we dictated; for Codex it's the thread id the CLI assigned and we
+   *  captured. Lets the manager store the right id for a later continuation. */
+  providerSessionId?: string;
 }
 
 export interface RunSessionOptions {
@@ -73,6 +77,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
 
   let mode: 'new' | 'resume' = opts.resume ? 'resume' : 'new';
   let prompt = opts.prompt;
+  // The id the CLI actually uses to resume. For Claude it's the id we dictate
+  // (opts.sessionId). For a provider that assigns its own (Codex's thread id),
+  // we start with what the caller knows — the real id when resuming an existing
+  // session, else undefined — and capture the assigned id off the first turn's
+  // stream so a failover resumes THE SAME session on the next account.
+  let cliSessionId: string | undefined = adapter.captureSessionId
+    ? (opts.resume ? opts.sessionId : undefined)
+    : opts.sessionId;
   let forceSwitchRequested = false;
   let forceBench = true; // whether the account being left is benched on the pending forced switch
   let currentHandle: TurnHandle | undefined;
@@ -134,6 +146,10 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       };
       const processEvent = (e: RawEvent) => {
         try { opts.tap?.(e); } catch { /* tap must never affect detection */ }
+        // Capture a provider-assigned session id (Codex thread id) as soon as it
+        // appears, so a mid-run failover — and later continuations — resume it.
+        const captured = adapter.captureSessionId?.(e);
+        if (captured) cliSessionId = captured;
         const v = adapter.classify(e);
         if (v.kind === 'limited' && !state.limited && !state.authRequired && !state.forced) {
           state.limited = v;
@@ -174,7 +190,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         claudePath: opts.claudePath,
         configDir: account.configDir,
         cwd,
-        sessionId,
+        // On a resume turn, use the provider's real session id (the captured
+        // Codex thread id) so it continues the SAME session; on a new turn the
+        // provider either takes this id (Claude) or ignores it and assigns its
+        // own (Codex).
+        sessionId: mode === 'resume' ? (cliSessionId ?? sessionId) : sessionId,
         mode,
         prompt,
         model: opts.model,
@@ -217,7 +237,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       if (!state.limited && !state.forced && !state.authRequired) {
         if (state.resultOk) {
           log.append({ type: 'turn_completed', sessionId, account: account.name });
-          return { status: 'completed', finalAccount: account.name, failovers: failoverTimes.length, resultText: state.resultText };
+          return { status: 'completed', finalAccount: account.name, failovers: failoverTimes.length, resultText: state.resultText, providerSessionId: cliSessionId };
         }
         const reason = exit.spawnError ?? (exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`);
         log.append({
@@ -228,7 +248,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           signal: exit.signal,
           spawnError: exit.spawnError ?? null,
         });
-        return { status: 'failed', finalAccount: account.name, failovers: failoverTimes.length, reason };
+        return { status: 'failed', finalAccount: account.name, failovers: failoverTimes.length, reason, providerSessionId: cliSessionId };
       }
 
       // failover path (limit, auth-required, or forced)

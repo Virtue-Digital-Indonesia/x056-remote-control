@@ -60,6 +60,13 @@ export interface ProviderAdapter {
    *  the manager can still inject a stand-in via `startTurnFn`. */
   startTurn(opts: TurnOptions): TurnHandle;
 
+  /** For providers that ASSIGN their own session id (Codex emits a thread id on
+   *  `thread.started`) rather than accepting one we dictate (Claude's
+   *  --session-id): pull that id off an event so runSession can resume the same
+   *  session after a failover. Returns '' for events that don't carry it.
+   *  Omit entirely when the provider takes a caller-supplied id. */
+  captureSessionId?(e: RawEvent): string;
+
   // --- event interpretation (each provider's own stream shape) ---
   /** Rate-limit / auth-required / warning classification for one raw event. */
   classify(e: RawEvent): Verdict;
