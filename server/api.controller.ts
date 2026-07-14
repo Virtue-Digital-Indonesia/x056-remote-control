@@ -501,8 +501,39 @@ export class ApiController {
     return { ok: true };
   }
 
+  /** Start an in-panel ChatGPT (Codex) device-auth login → { loginId, url, code }.
+   *  The user opens `url`, enters `code`, and the panel polls .../login/status. */
+  @Post('accounts/codex/login/start')
+  @HttpCode(200)
+  async codexLoginStart(): Promise<unknown> {
+    try {
+      return await this.manager.startCodexLogin();
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  /** Poll a Codex device-auth login; { done, account? } once auth.json lands. */
+  @Post('accounts/codex/login/status')
+  @HttpCode(200)
+  codexLoginStatus(@Body() body: { loginId?: string }): unknown {
+    if (!body?.loginId) throw new BadRequestException('loginId required');
+    try {
+      return this.manager.codexLoginStatus(body.loginId);
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('accounts/codex/login/cancel')
+  @HttpCode(200)
+  codexLoginCancel(@Body() body: { loginId?: string }): { ok: boolean } {
+    if (body?.loginId) this.manager.cancelCodexLogin(body.loginId);
+    return { ok: true };
+  }
+
   /** Register an already-authenticated Codex account by its CODEX_HOME path
-   *  (bridge until in-panel Codex login). */
+   *  (advanced: for a login done on the host rather than in-panel). */
   @Post('accounts/codex/register')
   @HttpCode(200)
   registerCodexAccount(@Body() body: { codexHome?: string }): unknown {

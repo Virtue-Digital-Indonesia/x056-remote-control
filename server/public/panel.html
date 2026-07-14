@@ -310,6 +310,12 @@
   .provbtn.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
   .acct-or { margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
   .badge.prov { background: var(--surface-3); color: var(--text-dim); border: 1px solid var(--border-strong); }
+  .codex-code { font-family: var(--mono); font-size: 22px; font-weight: 600; letter-spacing: .12em; text-align: center; padding: 10px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; color: var(--accent); user-select: all; }
+  .codex-adv { margin-top: 12px; }
+  .codex-adv summary { font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
+  .codex-adv[open] summary { margin-bottom: 4px; }
+  .modeltext { width: 116px; font: inherit; font-size: 13px; padding: 6px 9px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); border-radius: 8px; }
+  .modeltext::placeholder { color: var(--text-dim); }
   /* Centered in-app dialogs (replace native prompt/confirm) + the ⌘K palette. */
   .modal-wrap { position: fixed; inset: 0; z-index: 120; display: grid; place-items: start center; padding: 12vh 20px 20px; background: rgba(0,0,0,.5); }
   .modal { width: 100%; max-width: 420px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 16px; box-shadow: var(--shadow); padding: 18px; }
@@ -511,6 +517,7 @@
         <div class="select"><select id="model" title="model">
           <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
         </select></div>
+        <input id="modelText" class="modeltext" hidden placeholder="Auto model" title="Codex model, e.g. gpt-5.6 (blank = account default)" autocomplete="off" spellcheck="false" />
         <div class="select"><select id="effort" title="effort">
           <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
         </select></div>
@@ -529,11 +536,23 @@
   <div id="addAcctStep1">
     <div class="gate-note" id="addAcctIntro" style="margin-bottom:10px;">Sign in to another Claude account to add it to the failover pool. A new browser tab will open to authorize; you'll paste back a code.</div>
     <button class="send" id="addAcctStart" style="width:100%;">Start sign-in</button>
-    <div class="acct-or">or register an existing ChatGPT (Codex) login</div>
-    <div class="gate-note" style="margin-bottom:6px;">Run <code>CODEX_HOME=&lt;dir&gt; codex login</code> on the host, then give that dir here:</div>
-    <input id="addCodexHome" class="pk-search" placeholder="/path/to/CODEX_HOME (has auth.json)" autocomplete="off" />
+    <div class="acct-or">or add a ChatGPT (Codex) account</div>
+    <button class="send" id="addCodexSignin" style="width:100%;">Sign in with ChatGPT</button>
+    <div id="addCodexWait" hidden style="margin-top:10px;">
+      <div class="gate-note" style="margin-bottom:6px;">1. Open this link and sign in with the ChatGPT account you want to add:</div>
+      <a id="addCodexLink" href="#" target="_blank" rel="noopener" class="acct-link">Open sign-in page ↗</a>
+      <div class="gate-note" style="margin:10px 0 6px;">2. Enter this one-time code there:</div>
+      <div id="addCodexCode" class="codex-code"></div>
+      <div class="gate-note" id="addCodexWaitNote" style="margin-top:10px;">Waiting for you to authorize…</div>
+      <button class="send ghost" id="addCodexCancel" style="width:100%; margin-top:8px;">Cancel</button>
+    </div>
     <div id="addCodexErr" class="gate-err" style="text-align:left;"></div>
-    <button class="send ghost" id="addCodexBtn" style="width:100%; margin-top:6px;">Register Codex account</button>
+    <details class="codex-adv">
+      <summary>Advanced: register an existing CODEX_HOME</summary>
+      <div class="gate-note" style="margin:8px 0 6px;">Run <code>CODEX_HOME=&lt;dir&gt; codex login</code> on the host, then give that dir here:</div>
+      <input id="addCodexHome" class="pk-search" placeholder="/path/to/CODEX_HOME (has auth.json)" autocomplete="off" />
+      <button class="send ghost" id="addCodexBtn" style="width:100%; margin-top:6px;">Register by path</button>
+    </details>
   </div>
   <div id="addAcctStep2" hidden>
     <div class="gate-note" id="addAcctStep2Note" style="margin-bottom:6px;">1. Open this link, sign in with the account you want to add, and authorize:</div>
@@ -595,6 +614,10 @@
   var $ = function (id) { return document.getElementById(id); };
   var dot = $('dot'), chatEl = $('chat'), promptEl = $('prompt'), sendBtn = $('sendBtn');
   var modelEl = $('model'), effortEl = $('effort'), fileEl = $('file'), attachRow = $('attachRow'), busyEl = $('busy');
+  var modelTextEl = $('modelText');
+  // The effective model to send: a Codex project uses the free-text field (any
+  // GPT id, e.g. gpt-5.6); a Claude project uses the preset dropdown.
+  function currentModel() { return modelTextEl.hidden ? modelEl.value : modelTextEl.value.trim(); }
   var projListEl = $('projectList'), projTitleEl = $('projTitle'), projCwdEl = $('projCwd');
   var acctChip = $('acctChip'), acctAv = $('acctAv'), acctNameEl = $('acctName'), acctPlan = $('acctPlan');
   var quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts'), themeBtn = $('themeBtn');
@@ -655,9 +678,13 @@
     // send those to `codex -m`. For codex, collapse the picker to Auto (the
     // account's default GPT) — a specific model is set per-project server-side.
     var codex = p.provider === 'codex';
-    Array.prototype.forEach.call(modelEl.options, function (o) { if (o.value) { o.hidden = codex; o.disabled = codex; } });
+    // Codex: swap the Claude preset dropdown for a free-text model field so any
+    // GPT id (e.g. gpt-5.6) can be entered; blank = the account's default model.
+    modelEl.closest('.select').hidden = codex;
+    modelTextEl.hidden = !codex;
     try {
-      modelEl.value = codex ? '' : (p.model || localStorage.getItem(MODEL_KEY) || '');
+      if (codex) modelTextEl.value = p.model || '';
+      else modelEl.value = p.model || localStorage.getItem(MODEL_KEY) || '';
       effortEl.value = p.effort || localStorage.getItem(EFFORT_KEY) || '';
     } catch (e) {}
   }
@@ -2214,7 +2241,7 @@
     for (var i = 0; i < e.dataTransfer.files.length; i++) addFile(e.dataTransfer.files[i]);
   });
 
-  function queueBody(text) { var b = { projectId: currentProjectId, sessionId: lastSessionId, prompt: text }; if (modelEl.value) b.model = modelEl.value; if (effortEl.value) b.effort = effortEl.value; return b; }
+  function queueBody(text) { var b = { projectId: currentProjectId, sessionId: lastSessionId, prompt: text }; var m = currentModel(); if (m) b.model = m; if (effortEl.value) b.effort = effortEl.value; return b; }
   function send() {
     var text = promptEl.value.trim(); if (!text && !pendingFiles.length) return;
     // Busy is now per-CONVERSATION: only THIS conversation's own running turn
@@ -2233,7 +2260,7 @@
       return;
     }
     var files = pendingFiles.slice();
-    var body = { prompt: text }; if (modelEl.value) body.model = modelEl.value; if (effortEl.value) body.effort = effortEl.value;
+    var body = { prompt: text }; var m = currentModel(); if (m) body.model = m; if (effortEl.value) body.effort = effortEl.value;
     if (files.length) body.attachments = files.map(function (f) { return { name: f.name, data: f.url }; });
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
@@ -2340,8 +2367,41 @@
       ? '1. Open this link and sign in with the SAME account, then authorize:'
       : '1. Open this link, sign in with the account you want to add, and authorize:';
     resetAddAcctStep();
+    resetCodexSignin(); // clear any prior in-panel Codex device-auth state
   }
   $('addAcctBtn').addEventListener('click', function () { resetAddAcct(null); openPop($('addAcctPop')); });
+  // ---- Codex device-auth sign-in (in-panel) ----
+  var codexLoginId = null, codexPoll = null;
+  function stopCodexPoll() { if (codexPoll) { clearInterval(codexPoll); codexPoll = null; } }
+  function resetCodexSignin() {
+    stopCodexPoll(); codexLoginId = null;
+    $('addCodexWait').hidden = true; $('addCodexErr').textContent = '';
+    var b = $('addCodexSignin'); b.disabled = false; b.textContent = 'Sign in with ChatGPT'; b.hidden = false;
+  }
+  $('addCodexSignin').addEventListener('click', function () {
+    var b = $('addCodexSignin'); b.disabled = true; b.textContent = 'Starting…'; $('addCodexErr').textContent = '';
+    api('/api/accounts/codex/login/start', { method: 'POST', body: '{}' }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) { $('addCodexErr').textContent = (j && j.message) || 'could not start sign-in'; b.disabled = false; b.textContent = 'Sign in with ChatGPT'; return; }
+        codexLoginId = j.loginId;
+        $('addCodexLink').href = j.url; $('addCodexCode').textContent = j.code;
+        b.hidden = true; $('addCodexWait').hidden = false;
+        try { window.open(j.url, '_blank', 'noopener'); } catch (e) {}
+        codexPoll = setInterval(function () {
+          api('/api/accounts/codex/login/status', { method: 'POST', body: JSON.stringify({ loginId: codexLoginId }) }).then(function (r2) {
+            return r2.json().then(function (s) {
+              if (!r2.ok) { $('addCodexErr').textContent = (s && s.message) || 'sign-in failed'; resetCodexSignin(); return; }
+              if (s.done) { var a = s.account || {}; resetCodexSignin(); closeAllPops(); pollAccounts(); addSys('added ChatGPT account ' + (a.displayName || a.name) + (a.email ? ' (' + a.email + ')' : ''), 'banner'); }
+            });
+          }).catch(function () {});
+        }, 3000);
+      });
+    }).catch(function () { $('addCodexErr').textContent = 'network error'; b.disabled = false; b.textContent = 'Sign in with ChatGPT'; });
+  });
+  $('addCodexCancel').addEventListener('click', function () {
+    if (codexLoginId) api('/api/accounts/codex/login/cancel', { method: 'POST', body: JSON.stringify({ loginId: codexLoginId }) }).catch(function () {});
+    resetCodexSignin();
+  });
   $('addCodexBtn').addEventListener('click', function () {
     var home = $('addCodexHome').value.trim();
     $('addCodexErr').textContent = '';

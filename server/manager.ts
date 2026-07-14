@@ -538,6 +538,9 @@ export class SessionManager {
 
   // ---- accounts: onboarding (panel-driven login), removal, and "who's next" ----
   private pendingLogins = new Map<string, PendingLogin>();
+  // In-flight Codex device-auth logins: the CLI polls in the background until the
+  // user enters the code in their browser, then writes auth.json. Keyed by loginId.
+  private pendingCodexLogins = new Map<string, { configDir: string; child: ChildProcess; buf: string }>();
   private get accountsDir(): string { return join(this.opts.stateDir, 'accounts'); }
 
   /** Public snapshot of accounts for the panel, tagging the one the NEXT turn
@@ -583,6 +586,90 @@ export class SessionManager {
     reg.add(name, dir, 'codex');
     this.emitAccounts();
     return { name, email: identity.email, displayName: identity.displayName };
+  }
+
+  /** Start an in-panel ChatGPT (Codex) device-auth login. Spawns
+   *  `codex login --device-auth` under a fresh CODEX_HOME and scrapes the sign-in
+   *  URL + one-time code it prints. Unlike the Claude flow there's no code to
+   *  paste BACK — the user enters the code in their browser and codex polls in
+   *  the background; codexLoginStatus() reports when it lands. */
+  async startCodexLogin(): Promise<{ loginId: string; url: string; code: string }> {
+    const loginId = randomUUID();
+    const configDir = join(this.accountsDir, `codex-pending-${loginId}`);
+    mkdirSync(configDir, { recursive: true });
+    const child = spawn('codex', ['login', '--device-auth'], {
+      env: { ...process.env, CODEX_HOME: configDir },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    this.pendingCodexLogins.set(loginId, { configDir, child, buf: '' });
+    return new Promise((resolvePromise, reject) => {
+      let settled = false;
+      const fail = (msg: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        try { child.kill(); } catch { /* already gone */ }
+        try { rmSync(configDir, { recursive: true, force: true }); } catch { /* best effort */ }
+        this.pendingCodexLogins.delete(loginId);
+        reject(new Error(msg));
+      };
+      const deadline = setTimeout(() => fail('timed out starting codex login — try again'), 25_000);
+      const onData = (d: Buffer) => {
+        const p = this.pendingCodexLogins.get(loginId);
+        if (!p || settled) return;
+        p.buf += d.toString();
+        const clean = p.buf.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '');
+        const url = /https?:\/\/\S*device\S*/.exec(clean)?.[0] ?? extractLoginUrl(clean);
+        const code = /\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b/.exec(clean)?.[0];
+        if (url && code) {
+          settled = true;
+          clearTimeout(deadline);
+          resolvePromise({ loginId, url, code });
+        }
+      };
+      child.stdout?.on('data', onData);
+      child.stderr?.on('data', onData);
+      child.on('exit', () => fail('codex login exited before printing a code'));
+    });
+  }
+
+  /** Poll whether an in-progress Codex device-auth login has completed. On
+   *  success codex has written auth.json; finalize by registering the account
+   *  (under a permanent home in accountsDir). */
+  codexLoginStatus(loginId: string): { done: boolean; account?: { name: string; email?: string; displayName?: string } } {
+    const p = this.pendingCodexLogins.get(loginId);
+    if (!p) throw new Error('no such login (it may have timed out — start again)');
+    if (!existsSync(join(p.configDir, 'auth.json'))) return { done: false };
+    // auth.json exists → login is complete. Claim it (stop a concurrent poll from
+    // double-registering) and stop the now-finished CLI.
+    this.pendingCodexLogins.delete(loginId);
+    try { p.child.kill(); } catch { /* already exiting */ }
+    const codex = getAdapter('codex');
+    const identity = codex.readIdentity(p.configDir);
+    const reg = this.registry();
+    if (identity.email) {
+      for (const a of reg.list()) {
+        if (a.provider === 'codex' && codex.readIdentity(a.configDir).email === identity.email) {
+          try { rmSync(p.configDir, { recursive: true, force: true }); } catch { /* best effort */ }
+          throw new Error(`${identity.email} is already added as account "${a.name}"`);
+        }
+      }
+    }
+    const name = this.nextAccountName();
+    let dir = p.configDir;
+    try { const finalDir = join(this.accountsDir, name); renameSync(p.configDir, finalDir); dir = finalDir; } catch { /* keep the pending dir */ }
+    reg.add(name, dir, 'codex');
+    this.emitAccounts();
+    return { done: true, account: { name, email: identity.email, displayName: identity.displayName } };
+  }
+
+  /** Abandon an in-progress Codex login (user cancelled / navigated away). */
+  cancelCodexLogin(loginId: string): void {
+    const p = this.pendingCodexLogins.get(loginId);
+    if (!p) return;
+    try { p.child.kill(); } catch { /* already gone */ }
+    if (p.configDir.startsWith(this.accountsDir + sep)) { try { rmSync(p.configDir, { recursive: true, force: true }); } catch { /* best effort */ } }
+    this.pendingCodexLogins.delete(loginId);
   }
 
   private emitAccounts(): void { this.emit('accounts', {}); }
