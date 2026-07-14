@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { DEFAULT_CONTINUE_PROMPT } from '../provider.js';
 import { spawnJsonlTurn } from '../turn.js';
 import type { TurnHandle, TurnOptions } from '../turn.js';
-import type { AccountIdentity, ActivityEvent, ProviderAdapter } from '../provider.js';
+import type { AccountIdentity, ActivityEvent, ProviderAdapter, ProviderModel } from '../provider.js';
 import type { RawEvent, Verdict } from '../types.js';
 
 /*
@@ -204,6 +204,35 @@ function readIdentity(configDir: string): AccountIdentity {
   return {};
 }
 
+/** The models this ChatGPT account can use. Codex caches the account's own
+ *  catalog at $CODEX_HOME/models_cache.json (fetched from the API), so read that
+ *  rather than hardcode ids — it stays correct per-account and as OpenAI ships
+ *  new models. `visibility: "list"` is the catalog's own "show this to the user"
+ *  flag (internal entries like codex-auto-review are marked "hide"). */
+function listModels(configDir: string): ProviderModel[] {
+  try {
+    const cache = JSON.parse(readFileSync(join(configDir, 'models_cache.json'), 'utf8')) as {
+      models?: {
+        slug?: string; display_name?: string; description?: string; visibility?: string;
+        default_reasoning_level?: string;
+        supported_reasoning_levels?: { effort?: string }[];
+      }[];
+    };
+    return (cache.models ?? [])
+      .filter((m) => m.slug && m.visibility === 'list')
+      .map((m) => ({
+        slug: m.slug as string,
+        label: m.display_name || (m.slug as string),
+        description: m.description,
+        efforts: (m.supported_reasoning_levels ?? []).map((e) => e.effort).filter((e): e is string => !!e),
+        defaultEffort: m.default_reasoning_level,
+      }));
+  } catch {
+    // no cache yet (account never ran a turn) — the UI falls back to Auto only
+    return [];
+  }
+}
+
 function startCodexTurn(opts: TurnOptions): TurnHandle {
   const flags = [
     '--json',
@@ -254,6 +283,7 @@ export const codexAdapter: ProviderAdapter = {
   // UI shows the model the project requested. (activeModel intentionally omitted.)
 
   readIdentity,
+  listModels,
   // No pollable usage endpoint on ChatGPT plans — usage arrives inline on
   // turn.completed's rate_limits — so no fetchUsage (UI shows no bars for codex).
 };

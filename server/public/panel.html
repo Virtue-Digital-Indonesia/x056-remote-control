@@ -314,8 +314,11 @@
   .codex-adv { margin-top: 12px; }
   .codex-adv summary { font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
   .codex-adv[open] summary { margin-bottom: 4px; }
-  .modeltext { width: 116px; font: inherit; font-size: 13px; padding: 6px 9px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); border-radius: 8px; }
-  .modeltext::placeholder { color: var(--text-dim); }
+  /* Accounts from a provider this project doesn't use: present but clearly not
+     the one about to run — dimmed, no next-up claim. */
+  .qa.offprov { opacity: .5; }
+  .qa.offprov:hover { opacity: .8; }
+  .acct-scope { margin: -4px 0 10px; font-size: 12px; color: var(--text-dim); }
   /* Centered in-app dialogs (replace native prompt/confirm) + the ⌘K palette. */
   .modal-wrap { position: fixed; inset: 0; z-index: 120; display: grid; place-items: start center; padding: 12vh 20px 20px; background: rgba(0,0,0,.5); }
   .modal { width: 100%; max-width: 420px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 16px; box-shadow: var(--shadow); padding: 18px; }
@@ -517,7 +520,6 @@
         <div class="select"><select id="model" title="model">
           <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
         </select></div>
-        <input id="modelText" class="modeltext" hidden placeholder="Auto model" title="Codex model, e.g. gpt-5.6 (blank = account default)" autocomplete="off" spellcheck="false" />
         <div class="select"><select id="effort" title="effort">
           <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
         </select></div>
@@ -530,7 +532,7 @@
 </main>
 
 <div class="backdrop" id="backdrop" hidden></div>
-<div class="pop" id="quotaPop" hidden><h2>accounts</h2><div id="accounts"></div><div class="pop-footer"><button class="send ghost" id="addAcctBtn" style="width:100%;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div></div>
+<div class="pop" id="quotaPop" hidden><h2>accounts</h2><div id="acctScopeNote" class="acct-scope" hidden></div><div id="accounts"></div><div class="pop-footer"><button class="send ghost" id="addAcctBtn" style="width:100%;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div></div>
 <div class="pop" id="addAcctPop" hidden style="top:56px; left:12px; bottom:auto; width:340px;">
   <h2 id="addAcctTitle">add a Claude account</h2>
   <div id="addAcctStep1">
@@ -614,10 +616,24 @@
   var $ = function (id) { return document.getElementById(id); };
   var dot = $('dot'), chatEl = $('chat'), promptEl = $('prompt'), sendBtn = $('sendBtn');
   var modelEl = $('model'), effortEl = $('effort'), fileEl = $('file'), attachRow = $('attachRow'), busyEl = $('busy');
-  var modelTextEl = $('modelText');
-  // The effective model to send: a Codex project uses the free-text field (any
-  // GPT id, e.g. gpt-5.6); a Claude project uses the preset dropdown.
-  function currentModel() { return modelTextEl.hidden ? modelEl.value : modelTextEl.value.trim(); }
+  // The composer's model list is per-provider: Claude's presets are baked into
+  // the markup; a Codex account publishes its OWN catalog (GPT-5.6-Sol etc.),
+  // which the backend reads from that account and serves at /api/models. Capture
+  // the Claude presets up-front so we can swap back when switching projects.
+  var CLAUDE_MODEL_OPTS = [].slice.call(modelEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
+  var providerModels = {}; // { codex: [{slug,label,efforts,…}] }
+  function setModelOptions(opts, value) {
+    modelEl.textContent = '';
+    opts.forEach(function (o) { var e = document.createElement('option'); e.value = o.value; e.textContent = o.label; modelEl.appendChild(e); });
+    modelEl.value = value;
+    if (modelEl.value !== value) modelEl.value = ''; // stale/unknown model → Auto
+  }
+  function loadProviderModels() {
+    return api('/api/models').then(function (r) { return r.ok ? r.json() : {}; }).then(function (m) {
+      providerModels = m || {};
+      if (currentProjectId) syncPicker(currentProjectId);
+    }).catch(function () {});
+  }
   var projListEl = $('projectList'), projTitleEl = $('projTitle'), projCwdEl = $('projCwd');
   var acctChip = $('acctChip'), acctAv = $('acctAv'), acctNameEl = $('acctName'), acctPlan = $('acctPlan');
   var quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts'), themeBtn = $('themeBtn');
@@ -677,14 +693,16 @@
     // The model list is Claude-specific (Fable/Opus/…); a Codex project must not
     // send those to `codex -m`. For codex, collapse the picker to Auto (the
     // account's default GPT) — a specific model is set per-project server-side.
-    var codex = p.provider === 'codex';
-    // Codex: swap the Claude preset dropdown for a free-text model field so any
-    // GPT id (e.g. gpt-5.6) can be entered; blank = the account's default model.
-    modelEl.closest('.select').hidden = codex;
-    modelTextEl.hidden = !codex;
+    var prov = p.provider || 'claude';
     try {
-      if (codex) modelTextEl.value = p.model || '';
-      else modelEl.value = p.model || localStorage.getItem(MODEL_KEY) || '';
+      if (prov === 'claude') {
+        setModelOptions(CLAUDE_MODEL_OPTS, p.model || localStorage.getItem(MODEL_KEY) || '');
+      } else {
+        // This provider's real catalog for the configured account. Empty until
+        // /api/models loads (or if the account has no catalog yet) — Auto still works.
+        var list = (providerModels[prov] || []).map(function (m) { return { value: m.slug, label: m.label }; });
+        setModelOptions([{ value: '', label: 'Auto model' }].concat(list), p.model || '');
+      }
       effortEl.value = p.effort || localStorage.getItem(EFFORT_KEY) || '';
     } catch (e) {}
   }
@@ -1570,7 +1588,7 @@
       down();
     }
     active = !!v.active; lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; renderBusy();
-    renderStrip(); renderAutopilot(); renderAccountChip(); renderQueue();
+    renderStrip(); renderAutopilot(); renderAccountChip(); refreshAccountsPop(); renderQueue();
     // Commit the selection server-side FIRST — /history and /sessions are keyed to
     // the server's "current" project, so loading before the select lands fetches
     // the wrong project's thread. Guard each step against a newer switch.
@@ -1653,10 +1671,21 @@
     $('switchAcctBtn').style.display = activeCapable ? 'none' : '';
     var viewedRunning = isSessionRunning(currentProjectId, lastSessionId);
     var runningAcct = viewedRunning ? activeAccount[currentProjectId] : null;
+    // Accounts are pooled PER PROVIDER, so several can each be "next up" for their
+    // own pool. Only the one matching THIS project's provider will actually run
+    // the next message — scope the highlighting to that, and dim the rest, so the
+    // popover answers "which account am I about to use?" unambiguously.
+    var curProvider = (projCache[currentProjectId] || {}).provider || 'claude';
+    var curLabel = (acctList.filter(function (x) { return (x.provider || 'claude') === curProvider; })[0] || {}).providerLabel || (curProvider === 'codex' ? 'ChatGPT (Codex)' : 'Claude');
+    var mixed = acctList.some(function (x) { return (x.provider || 'claude') !== curProvider; });
+    var scopeNote = $('acctScopeNote');
+    if (scopeNote) { scopeNote.textContent = mixed ? 'this project runs on ' + curLabel : ''; scopeNote.hidden = !mixed; }
     acctList.forEach(function (a) {
       acctNames[a.name] = a.displayName || a.name; // for done-banners etc.
       var st = a.state || { kind: 'unknown' };
-      var card = document.createElement('div'); card.className = 'qa' + (a.nextUp ? ' nextup' : '');
+      // Does this account belong to the pool the CURRENT project draws from?
+      var inScope = (a.provider || 'claude') === curProvider;
+      var card = document.createElement('div'); card.className = 'qa' + (a.nextUp && inScope ? ' nextup' : '') + (inScope ? '' : ' offprov');
       var top = document.createElement('div'); top.className = 'top';
       // Name + email on one line (wide card, not a tall stack) — ellipsized
       // if the pair is too long for the available width.
@@ -1668,8 +1697,9 @@
       // Provider chip — flag which agent CLI this account runs on once a
       // non-Claude account exists (Codex accounts get a "ChatGPT (Codex)" chip).
       if (a.provider && a.provider !== 'claude') { var pv = document.createElement('span'); pv.className = 'badge prov'; pv.textContent = a.providerLabel || a.provider; pv.title = 'runs on ' + (a.providerLabel || a.provider); badges.appendChild(pv); }
-      // "next up" — the account THIS next prompt will run on (skips a limited one).
-      if (a.nextUp) { var nb = document.createElement('span'); nb.className = 'badge next'; nb.textContent = 'next up'; nb.title = 'the next prompt will use this account'; badges.appendChild(nb); }
+      // "next up" — only meaningful for the pool this project draws from; an
+      // off-provider account's next-up refers to a different kind of project.
+      if (a.nextUp && inScope) { var nb = document.createElement('span'); nb.className = 'badge next'; nb.textContent = 'next up'; nb.title = 'the next prompt in this project will use this account'; badges.appendChild(nb); }
       // Remove — only when the backend supports it and there's more than one
       // account. Not pre-disabled while turns are running elsewhere: the
       // backend only actually blocks removing an account a turn is running ON
@@ -1722,6 +1752,14 @@
       // already running it, that's a no-op; for a limited one, a confirmed
       // override (see forceUseAccount). When idle: make this the account the
       // next message uses — disabled for the one already chosen.
+      // An account from another provider's pool can't run THIS project's next
+      // message (a project's provider is fixed at creation), so don't offer it —
+      // just say which kind of project it serves.
+      else if (activeCapable && !inScope) {
+        var off = document.createElement('button'); off.className = 'send ghost act'; off.disabled = true;
+        off.textContent = (a.active ? 'sends next in ' : 'for ') + (a.providerLabel || a.provider) + ' projects';
+        card.appendChild(off);
+      }
       else if (activeCapable) {
         var act = document.createElement('button'); act.className = 'send ghost act';
         var limited = st.kind === 'limited';
@@ -1784,17 +1822,23 @@
   // viewed project's turn if known, else the server's "next up" account (the one
   // THIS next prompt would run on), else a fallback so it never blanks to "—/?".
   function pickPrimaryAccount() {
-    function byName(n) { for (var i = 0; i < acctList.length; i++) if (acctList[i].name === n) return acctList[i]; return null; }
+    // Only this project's provider pool can serve its next prompt — a Claude
+    // account is never "sends next" for a ChatGPT project — so pick within that
+    // pool (falling back to everything if the provider has no accounts yet).
+    var curProvider = (projCache[currentProjectId] || {}).provider || 'claude';
+    var pool = acctList.filter(function (a) { return (a.provider || 'claude') === curProvider; });
+    if (!pool.length) pool = acctList;
+    function byName(n) { for (var i = 0; i < pool.length; i++) if (pool[i].name === n) return pool[i]; return null; }
     if (isSessionRunning(currentProjectId, lastSessionId)) { var live = byName(activeAccount[currentProjectId]); if (live) return live; }
-    for (var i = 0; i < acctList.length; i++) if (acctList[i].nextUp) return acctList[i]; // who the next prompt uses
+    for (var i = 0; i < pool.length; i++) if (pool[i].nextUp) return pool[i]; // who the next prompt uses
     var ok = null, nonLim = null, soonest = null;
-    acctList.forEach(function (a) {
+    pool.forEach(function (a) {
       var k = (a.state && a.state.kind) || 'unknown';
       if (k === 'ok' && !ok) ok = a;
       if (k !== 'limited' && !nonLim) nonLim = a;
       if (k === 'limited' && (!soonest || (a.state.until || 0) < (soonest.state.until || 0))) soonest = a;
     });
-    return ok || nonLim || soonest || acctList[0] || null;
+    return ok || nonLim || soonest || pool[0] || null;
   }
   function renderAccountChip() {
     var a = pickPrimaryAccount(); if (!a) return;
@@ -1802,8 +1846,11 @@
     acctNameEl.textContent = nm; acctAv.textContent = (nm[0] || '?').toUpperCase();
     var live = isSessionRunning(currentProjectId, lastSessionId) && activeAccount[currentProjectId] === a.name;
     var lim = a.state && a.state.kind === 'limited';
+    // "Max" is Claude's plan name — a Codex account is a ChatGPT one, so label it
+    // by provider rather than claiming a plan it doesn't have.
+    var plan = a.provider === 'codex' ? 'ChatGPT' : 'Max';
     // Idle: this account is the one the next prompt will use → say so.
-    acctPlan.textContent = live ? 'Max · active now' : (lim ? 'Max · limited' : (a.nextUp ? 'Max · sends next' : 'Max · view usage'));
+    acctPlan.textContent = plan + ' · ' + (live ? 'active now' : (lim ? 'limited' : (a.nextUp ? 'sends next' : 'view usage')));
   }
   function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
   // Re-render the (open) account popover from the cached list so the per-account
@@ -2107,7 +2154,7 @@
       // Cold-opened from a notification tap (service worker openWindow): jump to it.
       try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) switchProject(projCache[want]); } catch (e) {}
     });
-    setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings();
+    setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings(); loadProviderModels();
     // Safety-net reconciliation for the running-turn state: SSE can silently
     // miss turn_state/session_done events (mobile tab backgrounded, reconnect
     // gap), leaving the busy indicator stuck. loadProjects() re-derives it from
@@ -2241,7 +2288,7 @@
     for (var i = 0; i < e.dataTransfer.files.length; i++) addFile(e.dataTransfer.files[i]);
   });
 
-  function queueBody(text) { var b = { projectId: currentProjectId, sessionId: lastSessionId, prompt: text }; var m = currentModel(); if (m) b.model = m; if (effortEl.value) b.effort = effortEl.value; return b; }
+  function queueBody(text) { var b = { projectId: currentProjectId, sessionId: lastSessionId, prompt: text }; if (modelEl.value) b.model = modelEl.value; if (effortEl.value) b.effort = effortEl.value; return b; }
   function send() {
     var text = promptEl.value.trim(); if (!text && !pendingFiles.length) return;
     // Busy is now per-CONVERSATION: only THIS conversation's own running turn
@@ -2260,7 +2307,7 @@
       return;
     }
     var files = pendingFiles.slice();
-    var body = { prompt: text }; var m = currentModel(); if (m) body.model = m; if (effortEl.value) body.effort = effortEl.value;
+    var body = { prompt: text }; if (modelEl.value) body.model = modelEl.value; if (effortEl.value) body.effort = effortEl.value;
     if (files.length) body.attachments = files.map(function (f) { return { name: f.name, data: f.url }; });
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';

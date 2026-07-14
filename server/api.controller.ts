@@ -446,6 +446,29 @@ export class ApiController {
     );
   }
 
+  /** Models each provider offers for the accounts actually configured here —
+   *  read from the provider's own catalog (Codex caches the account's list), so
+   *  the composer's picker shows real, current ids rather than a hardcoded set.
+   *  Shape: { codex: [{slug,label,…}] }. Providers with no catalog are omitted. */
+  @Get('models')
+  models(): Record<string, unknown[]> {
+    let registry: AccountRegistry;
+    try {
+      registry = AccountRegistry.load(join(this.stateDir, 'accounts.json'));
+    } catch {
+      return {};
+    }
+    const out: Record<string, unknown[]> = {};
+    for (const acct of registry.list()) {
+      if (out[acct.provider]) continue; // first account of each provider wins
+      const adapter = getAdapter(acct.provider);
+      if (!adapter.listModels) continue;
+      const models = adapter.listModels(acct.configDir);
+      if (models.length) out[acct.provider] = models;
+    }
+    return out;
+  }
+
   @Post('switch')
   @HttpCode(200)
   switch(@Body() body: { projectId?: string; sessionId?: string; account?: string; force?: boolean }): { switched: boolean } {

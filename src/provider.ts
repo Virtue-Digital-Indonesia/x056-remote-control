@@ -25,6 +25,18 @@ export interface AccountIdentity {
   email?: string;
 }
 
+/** A model the provider offers for this account, for the composer's picker. */
+export interface ProviderModel {
+  /** The id handed to the CLI (`-m <slug>`). */
+  slug: string;
+  /** Display name, e.g. "GPT-5.6-Sol". */
+  label: string;
+  description?: string;
+  /** Reasoning levels this model accepts, when the provider says. */
+  efforts?: string[];
+  defaultEffort?: string;
+}
+
 export type ProviderId = 'claude' | 'codex';
 
 /** The resume nudge sent after a failover. Provider-neutral — an adapter may
@@ -93,6 +105,10 @@ export interface ProviderAdapter {
   // --- account plumbing ---
   /** Read the human identity a completed login wrote into the config dir. */
   readIdentity(configDir: string): AccountIdentity;
+  /** The models this account can actually use, when the provider publishes a
+   *  catalog (Codex caches one per account). Omit when the provider has no
+   *  discoverable list — the UI then falls back to its own preset options. */
+  listModels?(configDir: string): ProviderModel[];
   /** Fetch usage/quota for the account. `undefined` means the provider exposes
    *  no machine-readable usage (the UI then shows no usage bars for it). */
   fetchUsage?(configDir: string): Promise<Usage>;
