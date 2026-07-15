@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseQuestion, stripAsk, stripAskInstructions, withAskInstructions, ASK_SENTINEL } from '../server/question.js';
+import { parseQuestion, stripAsk, stripAskInstructions, withAskInstructions, ASK_SENTINEL } from '../src/question.js';
 
 describe('question parsing', () => {
   it('parses an ASK block with options', () => {

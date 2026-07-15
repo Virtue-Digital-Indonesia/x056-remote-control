@@ -25,6 +25,18 @@ export interface AccountIdentity {
   email?: string;
 }
 
+/** One reconstructed line of a past conversation, for reloading it after a
+ *  page refresh or a project switch. 'model' is a synthetic marker recording
+ *  that the main turn's model changed (text = the model id), derived from the
+ *  transcript rather than stored separately. */
+export interface HistoryEntry {
+  role: 'user' | 'assistant' | 'model';
+  text: string;
+  /** ISO timestamp from the transcript, when present — lets the panel
+   *  interleave this with live activity/subagent events by time. */
+  ts?: string;
+}
+
 /** A model the provider offers for this account, for the composer's picker. */
 export interface ProviderModel {
   /** The id handed to the CLI (`-m <slug>`). */
@@ -112,4 +124,13 @@ export interface ProviderAdapter {
   /** Fetch usage/quota for the account. `undefined` means the provider exposes
    *  no machine-readable usage (the UI then shows no usage bars for it). */
   fetchUsage?(configDir: string): Promise<Usage>;
+  /** Reconstruct a past conversation's history from this provider's OWN
+   *  transcript storage, for reloading it after a refresh or project switch.
+   *  `providerSessionId` is the CLI's own session/thread id (see
+   *  captureSessionId) — for Claude that equals the gateway's id; for Codex
+   *  it's the assigned thread id, since a rollout is filed under that, not the
+   *  gateway's internal conversation key. `configDirs` should be scoped to
+   *  accounts of THIS provider — a transcript can only be under one of them.
+   *  Omit (or return []) when nothing is found; never throws. */
+  readHistory?(configDirs: string[], providerSessionId: string, limit: number): HistoryEntry[];
 }

@@ -1,9 +1,10 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEFAULT_CONTINUE_PROMPT } from '../provider.js';
+import { stripAsk, stripAskInstructions } from '../question.js';
 import { spawnJsonlTurn } from '../turn.js';
 import type { TurnHandle, TurnOptions } from '../turn.js';
-import type { AccountIdentity, ActivityEvent, ProviderAdapter, ProviderModel } from '../provider.js';
+import type { AccountIdentity, ActivityEvent, HistoryEntry, ProviderAdapter, ProviderModel } from '../provider.js';
 import type { RawEvent, Verdict } from '../types.js';
 
 /*
@@ -204,6 +205,73 @@ function readIdentity(configDir: string): AccountIdentity {
   return {};
 }
 
+/** Locate a thread's rollout file — $CODEX_HOME/sessions/YYYY/MM/DD/
+ *  rollout-<timestamp>-<thread_id>.jsonl (confirmed via a real authed run: see
+ *  the adapter header). The thread id is the FILENAME's suffix, not embedded
+ *  content to grep for, so match on that. */
+function findRollout(configDirs: string[], providerSessionId: string): string | null {
+  const suffix = `-${providerSessionId}.jsonl`;
+  for (const configDir of configDirs) {
+    const sessions = join(configDir, 'sessions');
+    if (!existsSync(sessions)) continue;
+    let names: string[];
+    try {
+      names = readdirSync(sessions, { recursive: true }) as string[];
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (name.endsWith(suffix)) return join(sessions, name);
+    }
+  }
+  return null;
+}
+
+/**
+ * Read the human-readable conversation (user prompts + assistant replies) from
+ * a thread's rollout file. The rollout is an append-only log of the WHOLE
+ * thread (every resume keeps writing to the same file), so this reconstructs
+ * the full history across failovers/continuations, not just one turn.
+ *
+ * Confirmed against real rollouts (both a normal run and a failed one — see the
+ * adapter header): each line is `{timestamp, type, payload}`; the two payload
+ * shapes that matter here are `event_msg` with `payload.type === "user_message"`
+ * (the prompt, in `payload.message`) and `payload.type === "task_complete"` (the
+ * turn's final answer, in `payload.last_agent_message` — null when the turn
+ * ended without producing one, e.g. it crashed first).
+ */
+function readHistory(configDirs: string[], providerSessionId: string, limit = 100): HistoryEntry[] {
+  const file = findRollout(configDirs, providerSessionId);
+  if (!file) return [];
+  let raw: string;
+  try {
+    raw = readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const out: HistoryEntry[] = [];
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '') continue;
+    let entry: { timestamp?: unknown; type?: unknown; payload?: unknown };
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry.type !== 'event_msg') continue;
+    const payload = asObj(entry.payload);
+    const ts = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
+    if (payload.type === 'user_message' && typeof payload.message === 'string') {
+      const shown = stripAskInstructions(payload.message.trim());
+      if (shown) out.push({ role: 'user', text: shown, ts });
+    } else if (payload.type === 'task_complete' && typeof payload.last_agent_message === 'string') {
+      const shown = stripAsk(payload.last_agent_message.trim());
+      if (shown) out.push({ role: 'assistant', text: shown, ts });
+    }
+  }
+  return out.slice(-limit);
+}
+
 /** The models this ChatGPT account can use. Codex caches the account's own
  *  catalog at $CODEX_HOME/models_cache.json (fetched from the API), so read that
  *  rather than hardcode ids — it stays correct per-account and as OpenAI ships
@@ -284,6 +352,7 @@ export const codexAdapter: ProviderAdapter = {
 
   readIdentity,
   listModels,
+  readHistory,
   // No pollable usage endpoint on ChatGPT plans — usage arrives inline on
   // turn.completed's rate_limits — so no fetchUsage (UI shows no bars for codex).
 };

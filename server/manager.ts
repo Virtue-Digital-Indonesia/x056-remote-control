@@ -12,7 +12,7 @@ import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } 
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
-import { parseQuestion, stripAsk, stripAskInstructions } from './question.js';
+import { parseQuestion, stripAsk, stripAskInstructions } from '../src/question.js';
 
 export interface GatewayEvent {
   seq: number;
@@ -974,6 +974,17 @@ export class SessionManager {
     if (pid && sessionId) return getAdapter(this.projects().conversationProvider(pid, sessionId));
     const proj = pid ? this.projects().get(pid) : this.projects().current();
     return getAdapter(proj?.provider ?? 'claude');
+  }
+
+  /** What's needed to reload a conversation's history: its adapter, the CLI's
+   *  own session/thread id to look it up by (NOT necessarily the gateway's
+   *  internal conversation key — Codex assigns its own), and the config dirs of
+   *  accounts on THAT provider (a transcript can only be under one of them). */
+  historyContext(projectId: string, sessionId: string): { adapter: ProviderAdapter; providerSessionId: string; configDirs: string[] } {
+    const provider = this.projects().conversationProvider(projectId, sessionId);
+    const providerSessionId = this.projects().providerSessionId(projectId, sessionId) ?? sessionId;
+    const configDirs = this.registry().list().filter((a) => a.provider === provider).map((a) => a.configDir);
+    return { adapter: getAdapter(provider), providerSessionId, configDirs };
   }
 
   /** Change the provider NEW conversations in a project start on. Existing

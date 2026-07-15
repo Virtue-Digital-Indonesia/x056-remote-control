@@ -19,8 +19,8 @@ import { UsageRateLimitedError } from '../src/quota.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
-import { readSessionHistory, type HistoryEntry } from './history.js';
-import { withAskInstructions } from './question.js';
+import type { HistoryEntry } from './history.js';
+import { withAskInstructions } from '../src/question.js';
 import type { PushService } from './push.js';
 import type { WebAuthnService, SessionStore } from './webauthn.js';
 import { Public, readCookie } from './auth.guard.js';
@@ -385,18 +385,20 @@ export class ApiController {
 
   @Get('sessions/current/history')
   history(@Query('limit') limit?: string): HistoryEntry[] {
-    const sessionId = this.manager.snapshot().lastSessionId;
-    if (!sessionId) return [];
-    let configDirs: string[];
+    const snap = this.manager.snapshot();
+    const pid = snap.currentProjectId;
+    const sessionId = snap.lastSessionId;
+    if (!pid || !sessionId) return [];
+    const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 100;
     try {
-      configDirs = AccountRegistry.load(join(this.stateDir, 'accounts.json'))
-        .list()
-        .map((a) => a.configDir);
+      // Read through the CONVERSATION's own provider — a Codex conversation's
+      // transcript lives under sessions/rollout-*.jsonl (its own thread id), not
+      // Claude's projects/*.jsonl, so this can't be a single hardcoded reader.
+      const { adapter, providerSessionId, configDirs } = this.manager.historyContext(pid, sessionId);
+      return adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [];
     } catch {
       return [];
     }
-    const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 100;
-    return readSessionHistory(configDirs, sessionId, n);
   }
 
   @Get('accounts')
