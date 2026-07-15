@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+// Emits canned NDJSON matching codex's real `exec --json` shape, so tests can
+// exercise startCodexTurn's actual argv construction (not an injected stand-in).
+// The first line is test-only introspection (real codex has no such event):
+// echoes argv + CODEX_HOME so a test can assert flag/positional placement,
+// e.g. that a dash-leading prompt lands safely after a `--` separator.
+const args = process.argv.slice(2);
+const emit = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+emit({ type: 'test_argv', argv: args, codex_home: process.env.CODEX_HOME });
+emit({ type: 'thread.started', thread_id: 'stub-thread' });
+emit({ type: 'turn.started' });
+emit({ type: 'item.completed', item: { id: 'i1', type: 'agent_message', text: 'stub done' } });
+emit({ type: 'turn.completed' });
+process.exit(0);

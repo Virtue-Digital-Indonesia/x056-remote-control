@@ -317,10 +317,16 @@ function startCodexTurn(opts: TurnOptions): TurnHandle {
   ];
   // NEW: codex assigns the thread id (surfaced via captureSessionId).
   // RESUME: `exec resume <id>` continues that thread on this account's CODEX_HOME.
+  // `--` ends option parsing so a prompt beginning with '-' (e.g. a markdown
+  // bullet list, or literally "- " as its own line) is taken as the positional
+  // prompt, not an unknown flag — confirmed live: without it, clap rejects such
+  // a prompt with "error: unexpected argument '- ' found" and the process never
+  // even reaches a real turn (no rollout is written at all). Same fix turn.ts
+  // already applies for claude.
   const args =
     opts.mode === 'resume'
-      ? ['exec', 'resume', opts.sessionId, ...flags, opts.prompt]
-      : ['exec', ...flags, opts.prompt];
+      ? ['exec', 'resume', opts.sessionId, ...flags, '--', opts.prompt]
+      : ['exec', ...flags, '--', opts.prompt];
   return spawnJsonlTurn(
     opts.binPath ?? 'codex',
     args,

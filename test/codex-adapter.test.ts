@@ -9,6 +9,8 @@ import { runSession } from '../src/failover.js';
 import type { TurnHandle, TurnOptions } from '../src/turn.js';
 import type { RawEvent } from '../src/types.js';
 
+const STUB = new URL('./bin/stub-codex', import.meta.url).pathname;
+
 // These events use the REAL codex-cli 0.144.3 `exec --json` shape: flat objects
 // with dotted `type` names, tool activity as thread ITEMS, terminal turn.failed
 // carrying a structured reason code. (Captured from a live unauth run + the
@@ -237,5 +239,55 @@ describe('runSession with the real codexAdapter', () => {
     // The LAST agent_message before completion, not the first — a turn can stream
     // several (progress updates), and only the final one is the actual answer.
     expect(res).toMatchObject({ status: 'completed', resultText: 'All done, DONE' });
+  });
+});
+
+describe('codexAdapter.startTurn argv (real spawn, via a stub codex binary)', () => {
+  // A LIVE bug: a real Obscura conversation failed 4 times in a row with codex's
+  // own "error: unexpected argument '- ' found" — the prompt began with "- "
+  // (a markdown bullet line) and, with no `--` before it, clap parsed it as an
+  // unknown flag instead of the positional prompt. The process died at ARGV
+  // parsing, before ever opening a thread — no rollout was even written.
+  // Reproduced live against the real codex binary, confirmed `--` fixes it, and
+  // this test locks the fix in against the REAL startTurn (not an injected
+  // stand-in), the same way test/turn.test.ts covers the identical class of bug
+  // for Claude.
+  function collect() {
+    const events: RawEvent[] = [];
+    return { events, onEvent: (e: RawEvent) => events.push(e) };
+  }
+  function argvOf(events: RawEvent[]): string[] {
+    return (events[0] as { argv: string[] }).argv;
+  }
+
+  it('places a NEW-turn prompt after -- so a dash-leading prompt is not parsed as a flag', async () => {
+    const { events, onEvent } = collect();
+    const h = codexAdapter.startTurn({
+      binPath: STUB, configDir: '/tmp/cfg-cx', cwd: process.cwd(),
+      sessionId: 'unused', mode: 'new', prompt: '- do the thing', onEvent,
+    });
+    await h.done;
+    const argv = argvOf(events);
+    const dd = argv.indexOf('--');
+    expect(dd).toBeGreaterThan(-1);
+    expect(argv[dd + 1]).toBe('- do the thing');
+    expect(argv[argv.length - 1]).toBe('- do the thing'); // nothing sneaks in after the prompt
+  });
+
+  it('places a RESUME-turn prompt after -- too, with the thread id positional BEFORE the flags', async () => {
+    const { events, onEvent } = collect();
+    const h = codexAdapter.startTurn({
+      binPath: STUB, configDir: '/tmp/cfg-cx', cwd: process.cwd(),
+      sessionId: 'thread-abc', mode: 'resume', model: 'gpt-5.6-sol', effort: 'high',
+      prompt: '- continue the bullet list', onEvent,
+    });
+    await h.done;
+    const argv = argvOf(events);
+    expect(argv.slice(0, 2)).toEqual(['exec', 'resume']);
+    expect(argv[2]).toBe('thread-abc'); // the session id — a real positional, not after --
+    const dd = argv.indexOf('--');
+    expect(dd).toBeGreaterThan(2);
+    expect(argv[dd + 1]).toBe('- continue the bullet list');
+    expect(argv[argv.length - 1]).toBe('- continue the bullet list');
   });
 });
