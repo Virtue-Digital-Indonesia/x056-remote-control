@@ -246,6 +246,14 @@
   select { appearance: none; background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 9px; padding: 6px 24px 6px 10px; font: inherit; font-size: 12.5px; cursor: pointer; }
   select:hover { border-color: var(--border-strong); color: var(--text); }
   .select::after { content: "▾"; position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--faint); font-size: 10px; }
+  /* A settled (already-started) conversation's provider is shown as plain text,
+     not a dropdown — so suppress the dropdown chevron for it. */
+  .select.locked::after { content: none; }
+  .provlock { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; cursor: default; }
+  /* A class that sets `display` outranks `[hidden]`'s UA `display: none` by
+     specificity, so the hidden attribute alone wouldn't hide these. */
+  .provlock[hidden] { display: none; }
+  .provlock::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }
   .bar .sp { flex: 1; }
   #busy { max-width: 780px; margin: 0 auto 8px; padding: 0 4px; display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--muted); }
   #busy:empty { display: none; }
@@ -329,6 +337,14 @@
   .qa.offprov { opacity: .5; }
   .qa.offprov:hover { opacity: .8; }
   .acct-scope { margin: -4px 0 10px; font-size: 12px; color: var(--text-dim); }
+  /* Provider tabs on the accounts popover — only shown once accounts span more
+     than one provider (a single-provider setup has nothing to filter). */
+  .acct-tabs { display: flex; gap: 4px; margin: -2px 0 10px; padding: 3px; background: var(--surface-2); border-radius: 9px; }
+  .acct-tabs[hidden] { display: none; } /* see .provlock[hidden] — same specificity trap */
+  .acct-tab { flex: 1; padding: 6px 8px; font: inherit; font-size: 12px; font-weight: 600; border: none; background: none; color: var(--text-dim); border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .acct-tab:hover { color: var(--text); }
+  .acct-tab.on { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+  .acct-tab .n { opacity: .55; font-weight: 500; margin-left: 3px; }
   /* Centered in-app dialogs (replace native prompt/confirm) + the ⌘K palette. */
   .modal-wrap { position: fixed; inset: 0; z-index: 120; display: grid; place-items: start center; padding: 12vh 20px 20px; background: rgba(0,0,0,.5); }
   .modal { width: 100%; max-width: 420px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 16px; box-shadow: var(--shadow); padding: 18px; }
@@ -530,7 +546,7 @@
         <div class="selects">
           <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
             <option value="claude">Claude</option><option value="codex">ChatGPT</option>
-          </select></div>
+          </select><span class="provlock" id="providerLock" hidden></span></div>
           <div class="select"><select id="model" title="model">
             <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
           </select></div>
@@ -547,7 +563,7 @@
 </main>
 
 <div class="backdrop" id="backdrop" hidden></div>
-<div class="pop" id="quotaPop" hidden><h2>accounts</h2><div id="acctScopeNote" class="acct-scope" hidden></div><div id="accounts"></div><div class="pop-footer"><button class="send ghost" id="addAcctBtn" style="width:100%;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div></div>
+<div class="pop" id="quotaPop" hidden><h2>accounts</h2><div class="acct-tabs" id="acctTabs" hidden></div><div id="acctScopeNote" class="acct-scope" hidden></div><div id="accounts"></div><div class="pop-footer"><button class="send ghost" id="addAcctBtn" style="width:100%;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div></div>
 <div class="pop" id="addAcctPop" hidden style="top:56px; left:12px; bottom:auto; width:340px;">
   <h2 id="addAcctTitle">add a Claude account</h2>
   <div id="addAcctStep1">
@@ -627,6 +643,15 @@
 <script>
 (function () {
   var TOKEN_KEY = 'x056_token', THEME_KEY = 'x056_theme', MODEL_KEY = 'x056_model', EFFORT_KEY = 'x056_effort';
+  // The "last model/effort you picked" memory must be PER PROVIDER — a single
+  // shared key let a Codex pick (gpt-5.6-sol / ultra) come back as the fallback
+  // for a Claude project, and vice versa, since a model id is only meaningful to
+  // the CLI that defines it. The unsuffixed keys stay as Claude's so existing
+  // saved prefs carry over unchanged.
+  function modelKeyFor(prov) { return prov === 'claude' ? MODEL_KEY : MODEL_KEY + '_' + prov; }
+  function effortKeyFor(prov) { return prov === 'claude' ? EFFORT_KEY : EFFORT_KEY + '_' + prov; }
+  function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
   var token = localStorage.getItem(TOKEN_KEY) || ''; // may be empty — a passkey session (cookie) also authenticates
   var $ = function (id) { return document.getElementById(id); };
   var dot = $('dot'), chatEl = $('chat'), promptEl = $('prompt'), sendBtn = $('sendBtn');
@@ -635,8 +660,12 @@
   // the markup; a Codex account publishes its OWN catalog (GPT-5.6-Sol etc.),
   // which the backend reads from that account and serves at /api/models. Capture
   // the Claude presets up-front so we can swap back when switching projects.
-  var providerEl = $('provider'), providerWrap = $('providerWrap');
+  var providerEl = $('provider'), providerWrap = $('providerWrap'), providerLockEl = $('providerLock');
   var PROV_LABEL = { claude: 'Claude', codex: 'ChatGPT' };
+  // The VENDOR behind each provider — what the accounts tabs filter by. (The
+  // account you log in with is an Anthropic / OpenAI one; the provider id is the
+  // CLI it drives.)
+  var PROV_VENDOR = { claude: 'Anthropic', codex: 'OpenAI' };
   // What the CURRENT conversation actually runs on. A conversation is bound to
   // the provider it was created with (its transcript is that CLI's format), so
   // that wins; an unstarted one falls back to the project's default.
@@ -659,7 +688,18 @@
   }
   // The CURRENTLY VIEWED conversation's provider — most call sites want this.
   function currentProvider() { return providerFor(currentProjectId, lastSessionId); }
+  // Captured from the markup, then the Auto row's label is filled in below once
+  // AUTO_MODEL is known (it names the model Auto actually resolves to).
   var CLAUDE_MODEL_OPTS = [].slice.call(modelEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
+  // The model actually sent for a turn: an explicit pick, else this provider's
+  // Auto default (AUTO_MODEL). Resolved at SEND time rather than by pre-selecting
+  // the option, so "Auto" stays a real, visible choice in the dropdown — and so a
+  // conversation started on Auto follows the house default if it ever changes,
+  // instead of being silently pinned to whatever it resolved to on day one.
+  function effectiveModel() {
+    if (modelEl.value) return modelEl.value;
+    return AUTO_MODEL[currentProvider()] || '';
+  }
   var CLAUDE_EFFORT_OPTS = [].slice.call(effortEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
   var providerModels = {}; // { codex: [{slug,label,efforts,defaultEffort,…}] }
   function setModelOptions(opts, value) {
@@ -668,6 +708,27 @@
     modelEl.value = value;
     if (modelEl.value !== value) modelEl.value = ''; // stale/unknown model → Auto
   }
+  // What "Auto model" resolves to, per provider. Left to itself each CLI picks
+  // its own top-priority model (codex → gpt-5.6-sol); these are the deliberate
+  // house defaults instead — a balanced everyday model rather than the frontier
+  // one. Auto SENDS these explicitly (it isn't just a label), so "Auto" means the
+  // same thing regardless of what the CLI would have defaulted to on its own.
+  var AUTO_MODEL = { claude: 'sonnet', codex: 'gpt-5.6-terra' };
+  function autoModelLabel(prov) {
+    var slug = AUTO_MODEL[prov];
+    if (!slug) return 'Auto model';
+    var label = slug;
+    if (prov === 'claude') {
+      var co = CLAUDE_MODEL_OPTS.filter(function (o) { return o.value === slug; })[0];
+      if (co) label = co.label;
+    } else {
+      var mo = (providerModels[prov] || []).filter(function (m) { return m.slug === slug; })[0];
+      if (mo) label = mo.label;
+    }
+    return 'Auto (' + label + ')';
+  }
+  // Now that AUTO_MODEL/autoModelLabel exist, name what Claude's Auto resolves to.
+  CLAUDE_MODEL_OPTS.forEach(function (o) { if (!o.value) o.label = autoModelLabel('claude'); });
   var EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
   var EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
   function setEffortOptions(opts, value) {
@@ -707,26 +768,16 @@
         return true;
       }).catch(function () { return false; });
   }
+  // Only reachable for a NOT-yet-started conversation: syncPicker() replaces the
+  // select with static text (providerLock) the moment one is bound to a provider,
+  // so there's no "this conversation can't move" case to handle here any more —
+  // the lock's tooltip explains it instead.
   providerEl.addEventListener('change', function () {
     var want = providerEl.value, cur = currentProvider();
     if (!currentProjectId || want === cur) return;
-    // An already-started conversation is bound to its provider — offer the only
-    // thing that CAN honor the request: a fresh conversation on the new one.
-    var started = !!lastSessionId && !pendingNew;
-    if (!started) {
-      setProjectProvider(want).then(function (ok) { if (ok) syncPicker(currentProjectId); else providerEl.value = cur; refreshAccountsPop(); renderAccountChip(); });
-      return;
-    }
-    uiConfirm({
-      title: 'Start a new conversation on ' + PROV_LABEL[want] + '?',
-      message: 'This conversation runs on ' + PROV_LABEL[cur] + ' and can’t move — its transcript is ' + PROV_LABEL[cur] + '’s own format, which ' + PROV_LABEL[want] + ' can’t resume. New conversations in this project will use ' + PROV_LABEL[want] + '.',
-      confirmText: 'New conversation',
-    }).then(function (ok) {
-      if (!ok) { providerEl.value = cur; return; }
-      setProjectProvider(want).then(function (done) {
-        if (!done) { providerEl.value = cur; return; }
-        newConversation(currentProjectId);
-      });
+    setProjectProvider(want).then(function (ok) {
+      if (ok) syncPicker(currentProjectId); else providerEl.value = cur;
+      refreshAccountsPop(); renderAccountChip();
     });
   });
   function loadProviderModels() {
@@ -740,9 +791,12 @@
       // yet the next time one of those fired — including just sitting idle for
       // a minute. Claude's list never changes here, so this only does anything
       // for a codex project (a newly-added/logged-in account's catalog).
+      // (Also the first time the catalog arrives at all: boot's syncPicker ran
+      // before /api/models resolved, so a codex project's list was just "Auto"
+      // until this fills it in — including naming what Auto resolves to.)
       if (currentProjectId && currentProvider() === 'codex') {
         var list = (providerModels.codex || []).map(function (mo) { return { value: mo.slug, label: mo.label }; });
-        setModelOptions([{ value: '', label: 'Auto model' }].concat(list), modelEl.value);
+        setModelOptions([{ value: '', label: autoModelLabel('codex') }].concat(list), modelEl.value);
         syncEffortOptionsForCodexModel(effortEl.value);
       }
     }).catch(function () {});
@@ -761,9 +815,13 @@
   // conversation, whose message would otherwise be misrouted into the first).
   var blankSeq = 1;
 
-  try { modelEl.value = localStorage.getItem(MODEL_KEY) || ''; effortEl.value = localStorage.getItem(EFFORT_KEY) || ''; } catch (e) {}
+  // Boot: syncPicker() sets these per-project once projects load; this is just
+  // the pre-load default, so read Claude's (the default provider's) memory.
+  modelEl.value = lsGet(MODEL_KEY); effortEl.value = lsGet(EFFORT_KEY);
   modelEl.addEventListener('change', function () {
-    if (currentProvider() === 'codex') {
+    var prov = currentProvider();
+    lsSet(modelKeyFor(prov), modelEl.value);
+    if (prov === 'codex') {
       // Each GPT model supports its own set of reasoning levels (gpt-5.6-sol
       // goes up to "ultra"; gpt-5.5/5.4 top out at "xhigh") — rebuild the effort
       // list for the model just chosen, keeping the current pick if it's still
@@ -771,13 +829,13 @@
       syncEffortOptionsForCodexModel();
       return;
     }
-    try { localStorage.setItem(MODEL_KEY, modelEl.value); } catch (e) {}
     // Auto-fill effort from the saved default for this model, if one is set —
     // a per-model convenience so e.g. picking Fable always starts at High.
+    // Keyed by Claude model ids, so Claude-only.
     var def = modelEffortDefaults[modelEl.value];
-    if (def) { effortEl.value = def; try { localStorage.setItem(EFFORT_KEY, def); } catch (e) {} }
+    if (def) { effortEl.value = def; lsSet(effortKeyFor(prov), def); }
   });
-  effortEl.addEventListener('change', function () { try { localStorage.setItem(EFFORT_KEY, effortEl.value); } catch (e) {} });
+  effortEl.addEventListener('change', function () { lsSet(effortKeyFor(currentProvider()), effortEl.value); });
 
   // ---- default effort per model (global setting, synced across devices/tabs) ----
   var modelEffortDefaults = {};
@@ -811,21 +869,31 @@
   // the global default) so switching projects shows what that one actually runs.
   function syncPicker(pid) {
     var p = projCache[pid]; if (!p) return;
-    // The model list is Claude-specific (Fable/Opus/…); a Codex project must not
-    // send those to `codex -m`. For codex, collapse the picker to Auto (the
-    // account's default GPT) — a specific model is set per-project server-side.
     var prov = currentProvider();
     providerEl.value = prov;
+    // A conversation is bound to the provider it was created with (its transcript
+    // is that CLI's format), so once it's started the choice is settled — show it
+    // as plain text rather than a control that implies it can still be changed.
+    // Only a not-yet-started conversation can still pick.
+    var locked = !!lastSessionId && !pendingNew;
+    providerWrap.classList.toggle('locked', locked); // suppresses the dropdown chevron
+    providerEl.hidden = locked;
+    providerLockEl.hidden = !locked;
+    providerLockEl.textContent = PROV_LABEL[prov] || prov;
+    providerLockEl.title = 'This conversation runs on ' + (PROV_LABEL[prov] || prov) + ' and can’t change — start a new conversation to use another provider.';
     try {
+      // The model list is Claude-specific (Fable/Opus/…); a Codex project must
+      // never send those to `codex -m`, and vice versa — so both the options AND
+      // the remembered "last pick" fallback are per-provider.
       if (prov === 'claude') {
-        setModelOptions(CLAUDE_MODEL_OPTS, p.model || localStorage.getItem(MODEL_KEY) || '');
-        setEffortOptions(CLAUDE_EFFORT_OPTS, p.effort || localStorage.getItem(EFFORT_KEY) || '');
+        setModelOptions(CLAUDE_MODEL_OPTS, p.model || lsGet(modelKeyFor(prov)));
+        setEffortOptions(CLAUDE_EFFORT_OPTS, p.effort || lsGet(effortKeyFor(prov)));
       } else {
         // This provider's real catalog for the configured account. Empty until
         // /api/models loads (or if the account has no catalog yet) — Auto still works.
         var list = (providerModels[prov] || []).map(function (m) { return { value: m.slug, label: m.label }; });
-        setModelOptions([{ value: '', label: 'Auto model' }].concat(list), p.model || '');
-        syncEffortOptionsForCodexModel(p.effort || '');
+        setModelOptions([{ value: '', label: autoModelLabel(prov) }].concat(list), p.model || lsGet(modelKeyFor(prov)));
+        syncEffortOptionsForCodexModel(p.effort || lsGet(effortKeyFor(prov)));
       }
     } catch (e) {}
   }
@@ -1790,6 +1858,10 @@
     var tr = document.createElement('div'); tr.className = 'track'; var i = document.createElement('i'); if (gCls(p)) i.classList.add(gCls(p)); i.style.width = p + '%'; tr.appendChild(i); g.appendChild(tr); return g;
   }
   var acctList = []; // last /api/accounts response (for the bottom-left chip)
+  // Which provider's accounts the popover is showing: 'all' or a provider id.
+  // Starts unset so the first render defaults it to the current project's
+  // provider (see renderAccounts) rather than an arbitrary tab.
+  var acctTab = null;
   function renderAccounts(list) {
     acctList = Array.isArray(list) ? list : [];
     accountsEl.textContent = '';
@@ -1821,8 +1893,37 @@
     var mixed = acctList.some(function (x) { return (x.provider || 'claude') !== curProvider; });
     var scopeNote = $('acctScopeNote');
     if (scopeNote) { scopeNote.textContent = mixed ? 'this project runs on ' + curLabel : ''; scopeNote.hidden = !mixed; }
-    acctList.forEach(function (a) {
-      acctNames[a.name] = a.displayName || a.name; // for done-banners etc.
+    // Provider tabs (Anthropic / OpenAI). Only meaningful once accounts span more
+    // than one provider; a single-provider setup shows every account as before.
+    var provsPresent = [];
+    acctList.forEach(function (x) { var pv = x.provider || 'claude'; if (provsPresent.indexOf(pv) < 0) provsPresent.push(pv); });
+    var tabsEl = $('acctTabs');
+    tabsEl.hidden = provsPresent.length < 2;
+    if (!tabsEl.hidden) {
+      // Default the tab to the pool THIS project actually draws from, so the
+      // popover opens on the accounts that matter right now.
+      if (acctTab !== 'all' && provsPresent.indexOf(acctTab) < 0) acctTab = curProvider;
+      tabsEl.textContent = '';
+      [{ id: 'all', label: 'All' }].concat(provsPresent.map(function (pv) { return { id: pv, label: PROV_VENDOR[pv] || pv }; }))
+        .forEach(function (t) {
+          var b = document.createElement('button'); b.type = 'button';
+          b.className = 'acct-tab' + (acctTab === t.id ? ' on' : '');
+          b.appendChild(document.createTextNode(t.label));
+          var n = document.createElement('span'); n.className = 'n';
+          n.textContent = t.id === 'all' ? acctList.length : acctList.filter(function (x) { return (x.provider || 'claude') === t.id; }).length;
+          b.appendChild(n);
+          b.addEventListener('click', function () { acctTab = t.id; renderAccounts(acctList); });
+          tabsEl.appendChild(b);
+        });
+    }
+    // Name lookup must cover EVERY account, not just the visible tab — it's read
+    // elsewhere (done-banners naming the account a turn ran on), which has
+    // nothing to do with which tab happens to be selected here.
+    acctList.forEach(function (a) { acctNames[a.name] = a.displayName || a.name; });
+    var shown = tabsEl.hidden || acctTab === 'all'
+      ? acctList
+      : acctList.filter(function (x) { return (x.provider || 'claude') === acctTab; });
+    shown.forEach(function (a) {
       var st = a.state || { kind: 'unknown' };
       // Does this account belong to the pool the CURRENT project draws from?
       var inScope = (a.provider || 'claude') === curProvider;
@@ -2324,6 +2425,14 @@
       // unrelated action, like switching projects, happened to redraw them).
       // Re-render now that the ids are authoritative; harmless if already correct.
       renderAutopilot(); renderQueue();
+      // The composer's pickers have the SAME race: boot's syncPicker() runs off
+      // loadProjects(), which can win against this poll — and everything it
+      // decides is keyed on lastSessionId (which conversation's provider/model/
+      // effort to show, and whether the provider is locked because that
+      // conversation has already started). Run it again now that lastSessionId
+      // is authoritative, or a started conversation renders with an unlocked
+      // provider dropdown until you switch away and back.
+      if (currentProjectId) syncPicker(currentProjectId);
       // Same race for the busy/activity bar: renderProjects()'s reconciliation
       // (comparing the viewed conversation's cached active-state against the
       // server's authoritative runningSessionIds) may have already run — via the
@@ -2441,7 +2550,7 @@
     for (var i = 0; i < e.dataTransfer.files.length; i++) addFile(e.dataTransfer.files[i]);
   });
 
-  function queueBody(text) { var b = { projectId: currentProjectId, sessionId: lastSessionId, prompt: text }; if (modelEl.value) b.model = modelEl.value; if (effortEl.value) b.effort = effortEl.value; return b; }
+  function queueBody(text) { var b = { projectId: currentProjectId, sessionId: lastSessionId, prompt: text }; var m = effectiveModel(); if (m) b.model = m; if (effortEl.value) b.effort = effortEl.value; return b; }
   function send() {
     var text = promptEl.value.trim(); if (!text && !pendingFiles.length) return;
     // Busy is now per-CONVERSATION: only THIS conversation's own running turn
@@ -2460,7 +2569,7 @@
       return;
     }
     var files = pendingFiles.slice();
-    var body = { prompt: text }; if (modelEl.value) body.model = modelEl.value; if (effortEl.value) body.effort = effortEl.value;
+    var body = { prompt: text }; var m = effectiveModel(); if (m) body.model = m; if (effortEl.value) body.effort = effortEl.value;
     if (files.length) body.attachments = files.map(function (f) { return { name: f.name, data: f.url }; });
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
