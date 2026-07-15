@@ -134,6 +134,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         graceTimer: null as NodeJS.Timeout | null,
         killRequested: false,
         interruptRequested: false,
+        // The last non-empty assistant text chunk streamed so far. Claude's own
+        // resultText(e) always has a definitive answer (the `result` event carries
+        // it directly); Codex streams its answer as separate agent_message items
+        // and has no such single field, so its resultText(e) returns undefined —
+        // this is the fallback that fills it in below. Without it, autopilot's
+        // stop-phrase check and the question-card detector (both keyed on
+        // resultText) silently never fire for Codex at all.
+        lastAssistantText: undefined as string | undefined,
       };
 
       let handle: TurnHandle | undefined;
@@ -175,9 +183,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         if (v.kind === 'warning') {
           log.append({ type: 'quota_warning', sessionId, account: account.name, resetsAt: v.resetsAt ?? null });
         }
+        const texts = adapter.assistantText?.(e);
+        if (texts && texts.length) state.lastAssistantText = texts[texts.length - 1];
         if (adapter.isResult(e) && adapter.resultOk(e)) {
           state.resultOk = true;
-          state.resultText = adapter.resultText(e);
+          state.resultText = adapter.resultText(e) ?? state.lastAssistantText;
         }
         // forced switch: drain until the provider's next resumable boundary (D7)
         if (forceSwitchRequested && !state.forced && !state.limited && !state.authRequired && adapter.isDrainBoundary(e)) {

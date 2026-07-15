@@ -203,4 +203,39 @@ describe('runSession with the real codexAdapter', () => {
     expect(registry.get('xa').state).toEqual({ kind: 'limited', until: 400 }); // now(100) + 300
     expect(log.read().map((r) => r.type)).toContain('failover');
   });
+
+  it('populates SessionResult.resultText from the streamed agent_message text (codex has no single result field like Claude\'s)', async () => {
+    // codexAdapter.resultText(e) always returns undefined — the answer streams as
+    // separate agent_message items, not a field on turn.completed itself (see the
+    // real captured shape at the top of this file). Both autopilot's stop-phrase
+    // check and the question-card detector read SessionResult.resultText, so
+    // without a fallback neither ever fires for a Codex conversation at all.
+    const dir = mkdtempSync(join(tmpdir(), 'x056-cxresult-'));
+    const registry = AccountRegistry.init(join(dir, 'accounts.json'), [{ name: 'xa', configDir: '/cfg/xa', provider: 'codex' }]);
+    const log = new EventLog(join(dir, 'events.jsonl'));
+    function scriptTurns(script: RawEvent[][]) {
+      let call = 0;
+      return (opts: TurnOptions): TurnHandle => {
+        const events = script[call]; call += 1;
+        const done = (async () => {
+          for (const e of events) { opts.onEvent(e); await new Promise((r) => setTimeout(r, 1)); }
+          return { code: 0, signal: null };
+        })();
+        return { kill: () => {}, interrupt: () => {}, done };
+      };
+    }
+    const res = await runSession({
+      sessionId: 'cx', cwd: '/tmp', prompt: 'go', forceSwitchSignal: false,
+      registry, log, now: () => 100, adapter: codexAdapter,
+      startTurnFn: scriptTurns([[
+        { type: 'thread.started', thread_id: 't1' },
+        { type: 'item.completed', item: { id: 'i1', type: 'agent_message', text: 'working on it' } },
+        { type: 'item.completed', item: { id: 'i2', type: 'agent_message', text: 'All done, DONE' } },
+        { type: 'turn.completed' },
+      ]]),
+    });
+    // The LAST agent_message before completion, not the first — a turn can stream
+    // several (progress updates), and only the final one is the actual answer.
+    expect(res).toMatchObject({ status: 'completed', resultText: 'All done, DONE' });
+  });
 });
