@@ -1916,7 +1916,19 @@
     // Idle: this account is the one the next prompt will use → say so.
     acctPlan.textContent = plan + ' · ' + (live ? 'active now' : (lim ? 'limited' : (a.nextUp ? 'sends next' : 'view usage')));
   }
-  function pollAccounts() { return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {}); }
+  function pollAccounts() {
+    // Every call site here is exactly "the account set (or an account's own
+    // state) may have changed" — a Codex account finishing device-auth login,
+    // one being added by path, an SSE 'accounts' event from another tab, the
+    // popover opening, or the periodic 60s poll. A newly-added account's model
+    // catalog wasn't fetchable until it existed (loadProviderModels() only ran
+    // once at boot), which left the composer stuck on "Auto model" for the rest
+    // of the session even after the account showed up everywhere else. Refresh
+    // it alongside accounts so the composer catches up the same moment the
+    // accounts popover does.
+    loadProviderModels();
+    return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {});
+  }
   // Re-render the (open) account popover from the cached list so the per-account
   // "Switch this turn here" / "Use for next message" buttons flip the instant the
   // viewed conversation starts or ends a turn — no refetch needed.
@@ -2218,7 +2230,7 @@
       // Cold-opened from a notification tap (service worker openWindow): jump to it.
       try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) switchProject(projCache[want]); } catch (e) {}
     });
-    setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings(); loadProviderModels();
+    setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings(); // pollAccounts() also loads the provider model catalog
     // Safety-net reconciliation for the running-turn state: SSE can silently
     // miss turn_state/session_done events (mobile tab backgrounded, reconnect
     // gap), leaving the busy indicator stuck. loadProjects() re-derives it from
