@@ -48,7 +48,15 @@ export function spawnJsonlTurn(
   env: NodeJS.ProcessEnv,
   onEvent: (e: RawEvent) => void,
 ): TurnHandle {
-  const child = spawn(bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'inherit'] });
+  // detached:true puts the turn in its OWN process group so kill() can take out
+  // the whole tree. This matters for codex: its `codex` entrypoint is a Node
+  // wrapper that spawns the real native binary as a child and forwards
+  // SIGINT/SIGTERM/SIGHUP — but SIGKILL is uncatchable, so SIGKILLing just the
+  // wrapper ORPHANED the native process, which kept running the task (observed
+  // live: a "stopped" turn still executing minutes later with PPID 1). Claude
+  // is a single process either way, so group-kill only widens the blast to its
+  // own tool subprocesses — exactly what "stop this turn" should kill anyway.
+  const child = spawn(bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'inherit'], detached: true });
 
   const rl = createInterface({ input: child.stdout });
   rl.on('line', (line) => {
@@ -65,9 +73,19 @@ export function spawnJsonlTurn(
     child.on('close', (code, signal) => resolve({ code, signal }));
   });
 
+  const killGroup = (): void => {
+    // Negative pid = the whole process group (wrapper + native + running tools).
+    try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
+    catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+  };
+
   return {
-    kill: () => child.kill('SIGKILL'),
-    interrupt: () => child.kill('SIGINT'),
+    kill: killGroup,
+    // Interrupt stays targeted at the entry process: claude handles SIGINT
+    // itself, and codex's wrapper forwards it — a group-wide SIGINT would
+    // double-deliver to the native binary (second SIGINT = force quit in many
+    // CLIs), breaking the graceful drain semantics this exists for.
+    interrupt: () => { try { child.kill('SIGINT'); } catch { /* already gone */ } },
     done,
   };
 }

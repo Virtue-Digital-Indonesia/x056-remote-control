@@ -45,6 +45,36 @@ describe('codexAdapter.readHistory', () => {
     ]);
   });
 
+  it('captures EVERY streamed agent_message (commentary + final), deduping the task_complete echo of the final', () => {
+    // Real-world turns stream several phase:"commentary" updates before the
+    // final answer, and task_complete.last_agent_message REPEATS the final
+    // (verified live: 20 of 20 in a real rollout). Reading only task_complete
+    // dropped all the commentary — the reported "chats disappear on reload".
+    const tid = 't-commentary';
+    const dir = rolloutDir(tid, [
+      { timestamp: 't1', type: 'event_msg', payload: { type: 'user_message', message: 'improve the module' } },
+      { timestamp: 't2', type: 'event_msg', payload: { type: 'agent_message', message: 'Mapping the architecture first.', phase: 'commentary' } },
+      { timestamp: 't3', type: 'event_msg', payload: { type: 'agent_message', message: 'Found three hotspots; fixing.', phase: 'commentary' } },
+      { timestamp: 't4', type: 'event_msg', payload: { type: 'agent_message', message: 'Done — all three fixed.', phase: 'final_answer' } },
+      { timestamp: 't5', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'Done — all three fixed.' } },
+    ]);
+    expect(codexAdapter.readHistory!([dir], tid, 100).map((r) => r.text)).toEqual([
+      'improve the module',
+      'Mapping the architecture first.',
+      'Found three hotspots; fixing.',
+      'Done — all three fixed.', // once — the task_complete echo is deduped
+    ]);
+  });
+
+  it('still emits a task_complete text that is NOT an echo (safety net for final-only builds)', () => {
+    const tid = 't-tc-only';
+    const dir = rolloutDir(tid, [
+      { timestamp: 't1', type: 'event_msg', payload: { type: 'user_message', message: 'quick one' } },
+      { timestamp: 't2', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'the answer' } },
+    ]);
+    expect(codexAdapter.readHistory!([dir], tid, 100).map((r) => r.text)).toEqual(['quick one', 'the answer']);
+  });
+
   it('drops a task_complete with last_agent_message: null instead of emitting an empty assistant row (the crashed-turn case)', () => {
     const tid = 't-crashed';
     const dir = rolloutDir(tid, [

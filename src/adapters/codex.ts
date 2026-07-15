@@ -268,6 +268,7 @@ function readHistory(configDirs: string[], providerSessionId: string, limit = 10
     return [];
   }
   const out: HistoryEntry[] = [];
+  let lastAssistant = '';
   for (const line of raw.split('\n')) {
     if (line.trim() === '') continue;
     let entry: { timestamp?: unknown; type?: unknown; payload?: unknown };
@@ -282,9 +283,20 @@ function readHistory(configDirs: string[], providerSessionId: string, limit = 10
     if (payload.type === 'user_message' && typeof payload.message === 'string') {
       const shown = stripAskInstructions(payload.message.trim());
       if (shown) out.push({ role: 'user', text: shown, ts });
+    } else if (payload.type === 'agent_message' && typeof payload.message === 'string') {
+      // EVERY assistant message the turn streamed — confirmed live: a real
+      // rollout held 154 phase:"commentary" + 20 phase:"final_answer" messages,
+      // which is exactly what the panel showed while streaming. Reading only
+      // task_complete (the previous behavior) dropped all the commentary, so a
+      // reload "lost" almost the whole ChatGPT side of the conversation.
+      const shown = stripAsk(payload.message.trim());
+      if (shown) { out.push({ role: 'assistant', text: shown, ts }); lastAssistant = shown; }
     } else if (payload.type === 'task_complete' && typeof payload.last_agent_message === 'string') {
+      // Normally a duplicate of the turn's final_answer agent_message (verified:
+      // 20 of 20 in the live rollout) — only emit when it ISN'T, as a safety net
+      // for builds that put the final text only here.
       const shown = stripAsk(payload.last_agent_message.trim());
-      if (shown) out.push({ role: 'assistant', text: shown, ts });
+      if (shown && shown !== lastAssistant) { out.push({ role: 'assistant', text: shown, ts }); lastAssistant = shown; }
     }
   }
   return out.slice(-limit);
