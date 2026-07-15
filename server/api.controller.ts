@@ -402,31 +402,55 @@ export class ApiController {
     }
   }
 
-  /** Send a message to ANY conversation by address (or start a new conversation
-   *  in a project when no sessionId is given) — the MCP bridge's send tool.
-   *  Unlike /sessions/current/messages this never depends on, or moves, the
-   *  panel's "current" selection. */
+  /** Request sending a message to ANY conversation by address (or starting a
+   *  new conversation in a project when no sessionId is given) — the MCP
+   *  bridge's send tool. This does NOT dispatch: it records a pending approval
+   *  that the human operator must explicitly approve in the panel (see
+   *  mcpApprovalDecide below) before anything is actually sent to another
+   *  conversation. Unlike /sessions/current/messages this never depends on, or
+   *  moves, the panel's "current" selection. */
   @Post('conversations/send')
   @HttpCode(200)
-  conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean }): { sessionId: string } {
+  conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean }): { approvalId: string } {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
-    const prompt = body.interactive !== false ? withAskInstructions(body.prompt) : body.prompt;
-    const opts = { model: body.model, effort: body.effort };
-    try {
-      if (body.sessionId) {
-        // Only an EXISTING conversation can be continued — a made-up id would
-        // spawn a resume against a transcript that doesn't exist.
-        const known = this.manager.listConversations(body.projectId).some((c) => c.sessionId === body.sessionId);
-        if (!known) throw new BadRequestException('unknown conversation for that project');
-        return { sessionId: this.manager.continueSession(body.projectId, body.sessionId, prompt, opts) };
-      }
-      return { sessionId: this.manager.start(prompt, undefined, opts, body.projectId) };
-    } catch (err) {
-      if (err instanceof BusyError) throw new ConflictException('that conversation has a turn running — try again when it finishes');
-      if (err instanceof BadRequestException) throw err;
-      throw new BadRequestException((err as Error).message);
+    if (body.sessionId) {
+      // Only an EXISTING conversation can be a target — a made-up id would
+      // spawn a resume against a transcript that doesn't exist.
+      const known = this.manager.listConversations(body.projectId).some((c) => c.sessionId === body.sessionId);
+      if (!known) throw new BadRequestException('unknown conversation for that project');
     }
+    const opts = { model: body.model, effort: body.effort, interactive: body.interactive };
+    const approval = this.manager.requestMcpSend(body.projectId, body.sessionId, body.prompt, opts);
+    return { approvalId: approval.id };
+  }
+
+  /** Poll the outcome of a requested send — the MCP bridge waits on this until
+   *  the human decides (or it expires) before it can report success/failure. */
+  @Get('conversations/send-status')
+  conversationSendStatus(@Query('id') id?: string) {
+    if (!id) throw new BadRequestException('id required');
+    const a = this.manager.mcpApprovalStatus(id);
+    if (!a) throw new BadRequestException('unknown approval id');
+    return a;
+  }
+
+  /** Pending cross-conversation sends awaiting the operator's decision — what
+   *  the panel renders as approve/deny cards, hydrated on load/reconnect. */
+  @Get('mcp/approvals')
+  mcpApprovalsList() {
+    return this.manager.listMcpApprovals();
+  }
+
+  /** The operator's approve/deny decision from the panel. Approving dispatches
+   *  the send immediately; denying (or letting it expire) means it is never sent. */
+  @Post('mcp/approvals/decide')
+  @HttpCode(200)
+  mcpApprovalDecide(@Body() body: { id?: string; approve?: boolean }) {
+    if (!body?.id) throw new BadRequestException('id required');
+    const a = this.manager.decideMcpApproval(body.id, !!body.approve);
+    if (!a) throw new BadRequestException('unknown or already-decided approval id');
+    return a;
   }
 
   @Get('sessions/current/history')

@@ -13,7 +13,7 @@ import { runSession, type RunControl, type SessionResult } from '../src/failover
 import type { TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
-import { parseQuestion, stripAsk, stripAskInstructions } from '../src/question.js';
+import { parseQuestion, stripAsk, stripAskInstructions, withAskInstructions } from '../src/question.js';
 
 export interface GatewayEvent {
   seq: number;
@@ -80,6 +80,36 @@ export interface QueueItem {
   sessionId?: string;
 }
 
+/** A cross-conversation send requested by an AI model through the MCP bridge's
+ *  send_message tool. It does NOT dispatch on creation — the human operator
+ *  must approve it in the panel first (see decideMcpApproval), which is the
+ *  actual enforcement of "AI models must ask permission before messaging
+ *  another conversation". Denial/expiry means it was never sent. */
+export interface McpApproval {
+  id: string;
+  projectId: string;
+  projectName: string;
+  /** Target conversation; absent means "start a new conversation in the project". */
+  sessionId?: string;
+  targetLabel: string;
+  message: string;
+  model?: string;
+  effort?: string;
+  /** Whether the ASK-protocol convention should be appended at dispatch time
+   *  (mirrors conversations/send's own `interactive` flag). */
+  interactive: boolean;
+  createdAt: string;
+  status: 'pending' | 'approved' | 'denied' | 'expired';
+  /** Set once approved and dispatched: the conversation the message actually landed in. */
+  resultSessionId?: string;
+  /** Set if the approved send itself failed (e.g. the conversation started running
+   *  again in the meantime) — approval isn't revoked, but nothing was sent. */
+  error?: string;
+}
+
+const MCP_APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+const MCP_APPROVAL_RETAIN_MS = 15 * 60 * 1000; // keep decided/expired entries briefly so a late poll still sees the outcome
+
 const BUFFER_MAX = 1000;
 
 // Injected into every spawned session (any project) via --append-system-prompt,
@@ -95,7 +125,8 @@ const BASE_SYSTEM_NOTE =
   '(2) Never say you will continue "in the background" or that you will "be notified when it finishes" — you will not be. ' +
   '(3) For long autonomous or multi-turn work, tell the user to enable Autopilot (the gateway re-invokes you across turns with full context via resume) instead of backgrounding. ' +
   '(4) Your in-container `docker`/`docker compose` drive an isolated Docker-in-Docker sidecar (DOCKER_HOST=tcp://dind:2375), NOT the host Docker — use them for your project\'s own builds/e2e. Two caveats for a project compose: bind mounts resolve on the dind daemon (which shares the workspace at the same absolute path, so mounts under the workspace root work), and published ports are reachable at hostname `dind:<port>`, not localhost. Deploying THIS gateway itself is a host-side actuator (commit, then `touch .deploy/requested`), never docker. ' +
-  'Toolchains you DO have: Node/npm, Go (GOTOOLCHAIN=auto), Java 17 + Maven, Python 3 (create a venv — the system Python is externally-managed), PHP + Composer, gcc/make, git, ripgrep, and a headless Chromium — screenshot any local URL with `node /app/scripts/shot.cjs <url> <out.png>` then read the PNG. If a git push over an SSH remote fails on authentication, the credential for that remote is not configured — surface it to the user instead of retrying.';
+  'Toolchains you DO have: Node/npm, Go (GOTOOLCHAIN=auto), Java 17 + Maven, Python 3 (create a venv — the system Python is externally-managed), PHP + Composer, gcc/make, git, ripgrep, and a headless Chromium — screenshot any local URL with `node /app/scripts/shot.cjs <url> <out.png>` then read the PNG. If a git push over an SSH remote fails on authentication, the credential for that remote is not configured — surface it to the user instead of retrying. ' +
+  '(5) You have an MCP server named "x056" (this gateway itself) wired in automatically — no setup needed. It exposes four tools: list_projects, list_conversations, read_conversation, and send_message, letting you read OTHER conversations (any project, any provider — Claude or ChatGPT/Codex) and message them, e.g. to hand off a subtask or check another project\'s progress. send_message pauses until the human operator explicitly approves it in the panel (denial or timeout means it was NOT sent) — this is a real gate they control, not a formality, so only use it when messaging another conversation is genuinely the right move, and expect it may be denied.';
 const CONTAINER_SYSTEM_NOTE = BASE_SYSTEM_NOTE + (process.env.X056_HOST_NOTE ? ' ' + process.env.X056_HOST_NOTE.trim() : '');
 
 /** EventLog that also forwards every supervisor row to the gateway stream. */
@@ -192,6 +223,8 @@ export class SessionManager {
   private lastResults = new Map<string, SessionResult>();
   private lastModelByPid = new Map<string, string>();
   private sharedRegistry?: AccountRegistry;
+  private mcpApprovals = new Map<string, McpApproval>();
+  private mcpApprovalTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly opts: SessionManagerOptions) {
     mkdirSync(opts.stateDir, { recursive: true });
@@ -1165,6 +1198,81 @@ export class SessionManager {
     const dir = this.resolveCwd(proj?.cwd ?? this.loadState().cwd ?? this.opts.workspaceRoot);
     this.launch(pid, sessionId, prompt, dir, true, opts);
     return sessionId;
+  }
+
+  // ---- MCP cross-conversation send approvals: the human gate on send_message.
+  //      Caller (server/api.controller.ts) has already checked the projectId/
+  //      sessionId are real; this only owns the pending->decided lifecycle. ----
+  private emitMcpApproval(a: McpApproval): void { this.emit('mcp_approval', { ...a }); }
+
+  private scheduleMcpApprovalCleanup(id: string, delayMs: number): void {
+    const existing = this.mcpApprovalTimers.get(id);
+    if (existing) clearTimeout(existing);
+    this.mcpApprovalTimers.set(id, setTimeout(() => { this.mcpApprovalTimers.delete(id); this.mcpApprovals.delete(id); }, delayMs));
+  }
+
+  /** An AI model asked (via MCP) to message projectId/sessionId. Records the
+   *  request as 'pending' and returns immediately — it is NOT sent yet. */
+  requestMcpSend(projectId: string, sessionId: string | undefined, message: string, opts?: TurnRunOptions & { interactive?: boolean }): McpApproval {
+    const proj = this.projects().get(projectId);
+    const targetLabel = sessionId
+      ? (this.listConversations(projectId).find((c) => c.sessionId === sessionId)?.title ?? sessionId)
+      : 'a new conversation';
+    const a: McpApproval = {
+      id: randomUUID(),
+      projectId,
+      projectName: proj?.name ?? projectId,
+      sessionId,
+      targetLabel,
+      message,
+      model: opts?.model,
+      effort: opts?.effort,
+      interactive: opts?.interactive !== false,
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+    };
+    this.mcpApprovals.set(a.id, a);
+    this.emitMcpApproval(a);
+    const timer = setTimeout(() => {
+      const cur = this.mcpApprovals.get(a.id);
+      if (cur && cur.status === 'pending') {
+        cur.status = 'expired';
+        this.emitMcpApproval(cur);
+        this.scheduleMcpApprovalCleanup(a.id, MCP_APPROVAL_RETAIN_MS);
+      }
+    }, MCP_APPROVAL_TIMEOUT_MS);
+    this.mcpApprovalTimers.set(a.id, timer);
+    return a;
+  }
+
+  mcpApprovalStatus(id: string): McpApproval | undefined { return this.mcpApprovals.get(id); }
+
+  /** Only PENDING requests — what the panel renders as actionable cards. */
+  listMcpApprovals(): McpApproval[] { return [...this.mcpApprovals.values()].filter((a) => a.status === 'pending'); }
+
+  /** The human's decision from the panel. Approving dispatches the send right
+   *  here — that dispatch can itself fail (e.g. the conversation started running
+   *  again in the meantime), which is recorded on the approval rather than thrown,
+   *  since by this point there's no one left to catch an HTTP error. */
+  decideMcpApproval(id: string, approve: boolean): McpApproval | undefined {
+    const a = this.mcpApprovals.get(id);
+    if (!a || a.status !== 'pending') return undefined;
+    const existingTimer = this.mcpApprovalTimers.get(id);
+    if (existingTimer) clearTimeout(existingTimer);
+    a.status = approve ? 'approved' : 'denied';
+    if (approve) {
+      const prompt = a.interactive ? withAskInstructions(a.message) : a.message;
+      try {
+        a.resultSessionId = a.sessionId
+          ? this.continueSession(a.projectId, a.sessionId, prompt, { model: a.model, effort: a.effort })
+          : this.start(prompt, undefined, { model: a.model, effort: a.effort }, a.projectId);
+      } catch (err) {
+        a.error = (err as Error).message;
+      }
+    }
+    this.emitMcpApproval(a);
+    this.scheduleMcpApprovalCleanup(id, MCP_APPROVAL_RETAIN_MS);
+    return a;
   }
 
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {

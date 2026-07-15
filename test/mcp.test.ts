@@ -87,6 +87,24 @@ afterAll(async () => {
   await app?.close();
 });
 
+const auth = { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
+/** Wait for a pending approval to show up in GET /api/mcp/approvals (the
+ *  panel's hydration endpoint) — send_message creates it synchronously but the
+ *  test still needs to poll since it races the tool call's own request. */
+async function waitForPendingApproval(message: string): Promise<{ id: string }> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const list = await (await fetch(`${base}/api/mcp/approvals`, { headers: auth })).json() as { id: string; message: string }[];
+    const found = list.find((a) => a.message === message);
+    if (found) return found;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`approval for "${message}" never appeared`);
+}
+function decideApproval(id: string, approve: boolean): Promise<Response> {
+  return fetch(`${base}/api/mcp/approvals/decide`, { method: 'POST', headers: auth, body: JSON.stringify({ id, approve }) });
+}
+
 describe('x056 MCP bridge (real script against a live gateway)', () => {
   it('handshakes: initialize + tools/list expose the four tools', async () => {
     const init = await rpc('initialize', { protocolVersion: '2024-11-05', clientInfo: { name: 'vitest', version: '1' } });
@@ -114,14 +132,44 @@ describe('x056 MCP bridge (real script against a live gateway)', () => {
     expect(text).toMatch(/\[assistant.*\]/);
   });
 
-  it('send_message starts a NEW conversation in the project and reports its sessionId', async () => {
-    const text = toolText(await rpc('tools/call', { name: 'send_message', arguments: { projectId: 'p1', message: 'kick off a fresh thread' } }));
+  it('send_message pauses for approval, lists as pending, and only dispatches once approved', async () => {
+    // The tool call blocks (polling) until a human decides — fire it, then act
+    // as the panel operator would: see it in the pending list and approve it.
+    const call = rpc('tools/call', { name: 'send_message', arguments: { projectId: 'p1', message: 'kick off a fresh thread' } });
+    const pending = await waitForPendingApproval('kick off a fresh thread');
+    const listed = await (await fetch(`${base}/api/mcp/approvals`, { headers: auth })).json() as { id: string; projectName: string; targetLabel: string }[];
+    expect(listed.some((a) => a.id === pending.id && a.projectName === 'SeededProj' && a.targetLabel === 'a new conversation')).toBe(true);
+
+    const decided = await (await decideApproval(pending.id, true)).json() as { status: string; resultSessionId?: string };
+    expect(decided.status).toBe('approved');
+    expect(decided.resultSessionId).toBeTruthy();
+
+    const text = toolText(await call);
     expect(text).toContain('sent');
     const sid = /sessionId: ([0-9a-f-]{36})/.exec(text)?.[1];
-    expect(sid).toBeTruthy();
+    expect(sid).toBe(decided.resultSessionId);
     // The gateway really registered it as a conversation of that project.
     const convs = toolText(await rpc('tools/call', { name: 'list_conversations', arguments: { projectId: 'p1' } }));
     expect(convs).toContain(sid as string);
+    // Decided requests drop out of the pending list.
+    const after = await (await fetch(`${base}/api/mcp/approvals`, { headers: auth })).json() as { id: string }[];
+    expect(after.some((a) => a.id === pending.id)).toBe(false);
+  });
+
+  it('send_message is never sent when the operator denies it', async () => {
+    const before = (await (await fetch(`${base}/api/conversations/history?projectId=p1&sessionId=seeded-conv-1&limit=500`, { headers: auth })).json() as unknown[]).length;
+    const call = rpc('tools/call', { name: 'send_message', arguments: { projectId: 'p1', sessionId: 'seeded-conv-1', message: 'please deny me' } });
+    const pending = await waitForPendingApproval('please deny me');
+    const decided = await (await decideApproval(pending.id, false)).json() as { status: string; resultSessionId?: string };
+    expect(decided.status).toBe('denied');
+    expect(decided.resultSessionId).toBeUndefined();
+
+    const text = toolText(await call);
+    expect(text).toMatch(/denied/i);
+    expect(text).toContain('not sent');
+    // Nothing was appended to the target conversation's history.
+    const after = await (await fetch(`${base}/api/conversations/history?projectId=p1&sessionId=seeded-conv-1&limit=500`, { headers: auth })).json() as unknown[];
+    expect(after.length).toBe(before);
   });
 
   it('send_message to an unknown conversation id is a per-call error, not a crash', async () => {

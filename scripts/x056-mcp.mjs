@@ -64,7 +64,9 @@ const TOOLS = [
   {
     name: 'send_message',
     description:
-      'Send a message to a conversation (it resumes with full context and runs a turn), or omit sessionId to start a NEW conversation in the project. Set waitSeconds > 0 to wait for and return the reply; otherwise returns immediately and the reply can be fetched later with read_conversation. The receiving AI may take minutes on hard tasks — prefer a short wait plus polling over a long block.',
+      'Send a message to a conversation (it resumes with full context and runs a turn), or omit sessionId to start a NEW conversation in the project. ' +
+      'REQUIRES THE HUMAN OPERATOR\'S APPROVAL: this call pauses (polling) until they approve or deny it in the panel, or it times out (~10 minutes) — it is not sent until approved, and may be denied. ' +
+      'Set waitSeconds > 0 to additionally wait for and return the reply once sent; otherwise returns as soon as it is sent, and the reply can be fetched later with read_conversation. The receiving AI may take minutes on hard tasks — prefer a short wait plus polling over a long block.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -111,11 +113,25 @@ async function callTool(name, args) {
     const before = args.sessionId
       ? (await api(`/api/conversations/history?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}&limit=500`)).length
       : 0;
-    const sent = await api('/api/conversations/send', {
+    const requested = await api('/api/conversations/send', {
       method: 'POST',
       body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort }),
     });
-    const sid = sent.sessionId;
+    // The send does NOT happen yet — wait for the human operator's decision in
+    // the panel (or the request to expire) before anything is actually sent.
+    const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000 + 15000; // give the server's own 10min timeout time to land first
+    const approvalDeadline = Date.now() + APPROVAL_TIMEOUT_MS;
+    const statusUrl = `/api/conversations/send-status?id=${encodeURIComponent(requested.approvalId)}`;
+    let approval = await api(statusUrl);
+    while (approval.status === 'pending' && Date.now() < approvalDeadline) {
+      await sleep(2000);
+      approval = await api(statusUrl).catch(() => approval);
+    }
+    if (approval.status === 'pending') return 'still awaiting the operator\'s approval — not sent. It will expire soon; try again later if this is still needed.';
+    if (approval.status === 'expired') return 'the approval request expired before the operator responded — not sent.';
+    if (approval.status === 'denied') return 'the operator DENIED this message — it was not sent.';
+    if (approval.error) return `approved, but the send itself failed: ${approval.error}`;
+    const sid = approval.resultSessionId;
     const waitMs = Math.min(Math.max((args.waitSeconds || 0) * 1000, 0), 10 * 60 * 1000);
     if (waitMs <= 0) {
       return `sent — the turn is running.\nsessionId: ${sid}\nUse read_conversation (projectId=${args.projectId}, sessionId=${sid}) to fetch the reply once it finishes.`;

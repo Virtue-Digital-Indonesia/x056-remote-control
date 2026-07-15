@@ -198,6 +198,15 @@
   .qopt-insert { flex: none; width: 22px; height: 22px; padding: 0; border: none; background: transparent; color: var(--faint); border-radius: 6px; cursor: pointer; display: inline-grid; place-items: center; opacity: 0; transition: opacity .15s ease; }
   .qopt-wrap:hover .qopt-insert { opacity: 1; }
   .qopt-insert:hover { background: var(--surface-3); color: var(--accent); }
+  #mcpApprovalsBtn { position: relative; }
+  .mcpBadge { position: absolute; top: 2px; right: 2px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 8px; background: var(--err); color: #fff; font-size: 9px; line-height: 14px; text-align: center; font-weight: 600; }
+  .mcpBadge:empty { display: none; }
+  .mcp-appr-card { border-bottom: 1px solid var(--border); padding: 10px 0; }
+  .mcp-appr-card:last-child { border-bottom: none; }
+  .mcp-appr-meta { font-size: 11px; color: var(--faint); margin-bottom: 5px; }
+  .mcp-appr-msg { font-size: 13px; color: var(--text); white-space: pre-wrap; max-height: 160px; overflow: auto; margin-bottom: 8px; }
+  .mcp-appr-actions { display: flex; gap: 8px; }
+  .mcp-appr-actions .send { width: auto; padding: 0 14px; flex: 1; }
   .qopt-insert:disabled { display: none; }
   .qhint { font-size: 12px; color: var(--muted); }
 
@@ -522,6 +531,7 @@
     <span class="sp"></span>
     <span id="dot" class="off" title="connection"></span>
     <button class="ico" id="notifyBtn" title="enable phone/desktop notifications"><svg class="ic"><use href="#i-bell"/></svg></button>
+    <button class="ico" id="mcpApprovalsBtn" title="AI cross-conversation send requests awaiting your approval" hidden><svg class="ic"><use href="#i-sparkles"/></svg><span class="mcpBadge" id="mcpApprovalsBadge"></span></button>
     <button class="ico" id="autopilotBtn" title="autopilot — gateway keeps the work going across turns/restarts"><svg class="ic"><use href="#i-repeat"/></svg></button>
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
@@ -619,6 +629,10 @@
 </div>
 <div class="pop" id="morePop" hidden>
   <div id="moreList" class="more-list"></div>
+</div>
+<div class="pop" id="mcpApprovalsPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:360px; max-height:70vh; overflow:auto;">
+  <h2>AI send requests</h2>
+  <div id="mcpApprovalsList"></div>
 </div>
 <div class="pop" id="passkeyPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:320px;">
   <h2>passkeys · Face ID / Touch ID login</h2>
@@ -805,6 +819,8 @@
   var acctChip = $('acctChip'), acctAv = $('acctAv'), acctNameEl = $('acctName'), acctPlan = $('acctPlan');
   var quotaPop = $('quotaPop'), backdrop = $('backdrop'), accountsEl = $('accounts'), themeBtn = $('themeBtn');
   var defaultsPop = $('defaultsPop'), defaultsList = $('defaultsList'), passkeyPop = $('passkeyPop');
+  var mcpApprovalsPop = $('mcpApprovalsPop'), mcpApprovalsListEl = $('mcpApprovalsList'), mcpApprovalsBtn = $('mcpApprovalsBtn'), mcpApprovalsBadge = $('mcpApprovalsBadge');
+  var mcpApprovals = {}; // id -> pending approval (an AI's send_message request awaiting Approve/Deny)
   var lastSessionId = null, lastSeq = 0, pendingFiles = [], pendingNew = false, currentProjectId = null;
   // Monotonic token for the "blank new-conversation composer". It changes every
   // time the composer enters a fresh blank state (New conversation, project
@@ -1369,6 +1385,17 @@
     }
     else if (kind === 'settings') { modelEffortDefaults = data.modelEffort || {}; } // saved from another tab
     else if (kind === 'accounts') { pollAccounts(); } // an account was added/removed (this or another tab)
+    else if (kind === 'mcp_approval') {
+      // Global, not conversation-scoped: the requesting AND target conversation
+      // may be anywhere, so this must show regardless of what's on screen.
+      if (data.status === 'pending') {
+        if (!mcpApprovals[data.id]) notify('AI wants to send a message', String(data.projectName || '') + ' · ' + String(data.targetLabel || '') + ': ' + String(data.message || '').slice(0, 80));
+        mcpApprovals[data.id] = data;
+      } else {
+        delete mcpApprovals[data.id];
+      }
+      renderMcpApprovals();
+    }
     else if (kind === 'project_removed') {
       // removed elsewhere (another tab) — drop caches and reconcile the list
       var wasCur = currentProjectId === data.id;
@@ -1525,6 +1552,54 @@
     api('/api/queue/remove', { method: 'POST', body: JSON.stringify({ projectId: pid, id: id }) })
       .then(function (r) { if (!r.ok) loadQueue(); }).catch(function () { loadQueue(); });
   }
+
+  // ---- MCP cross-conversation send approvals: an AI model (via the x056 MCP
+  //      bridge's send_message tool) wants to message another conversation —
+  //      nothing is sent until it's approved here. Not project-scoped: the
+  //      requesting AND target conversation may be anywhere, so this shows
+  //      regardless of which project/conversation is currently on screen. ----
+  function loadMcpApprovals() {
+    return api('/api/mcp/approvals').then(function (r) { return r.json(); }).then(function (list) {
+      mcpApprovals = {};
+      (list || []).forEach(function (a) { mcpApprovals[a.id] = a; });
+      renderMcpApprovals();
+    }).catch(function () {});
+  }
+  function renderMcpApprovals() {
+    var ids = Object.keys(mcpApprovals);
+    mcpApprovalsBtn.hidden = ids.length === 0;
+    mcpApprovalsBadge.textContent = ids.length ? String(ids.length) : '';
+    mcpApprovalsListEl.textContent = '';
+    if (!ids.length) {
+      var hint = document.createElement('div'); hint.className = 'qhint'; hint.textContent = 'No pending requests.';
+      mcpApprovalsListEl.appendChild(hint);
+      return;
+    }
+    ids.forEach(function (id) {
+      var a = mcpApprovals[id];
+      var card = document.createElement('div'); card.className = 'mcp-appr-card';
+      var meta = document.createElement('div'); meta.className = 'mcp-appr-meta';
+      meta.textContent = 'to ' + a.projectName + ' · ' + a.targetLabel + (a.model ? ' · ' + a.model : '') + (a.effort ? ' · ' + a.effort : '');
+      card.appendChild(meta);
+      var msg = document.createElement('div'); msg.className = 'mcp-appr-msg'; msg.textContent = a.message;
+      card.appendChild(msg);
+      var actions = document.createElement('div'); actions.className = 'mcp-appr-actions';
+      var deny = document.createElement('button'); deny.className = 'send ghost'; deny.textContent = 'Deny';
+      var approve = document.createElement('button'); approve.className = 'send'; approve.textContent = 'Approve';
+      function decide(ok) {
+        deny.disabled = true; approve.disabled = true;
+        api('/api/mcp/approvals/decide', { method: 'POST', body: JSON.stringify({ id: id, approve: ok }) })
+          .then(function () { delete mcpApprovals[id]; renderMcpApprovals(); })
+          .catch(function () { deny.disabled = false; approve.disabled = false; });
+      }
+      deny.addEventListener('click', function () { decide(false); });
+      approve.addEventListener('click', function () { decide(true); });
+      actions.appendChild(deny); actions.appendChild(approve);
+      card.appendChild(actions);
+      mcpApprovalsListEl.appendChild(card);
+    });
+  }
+  mcpApprovalsBtn.addEventListener('click', function () { renderMcpApprovals(); openPop(mcpApprovalsPop); });
   function editQueueItem(pid, it) {
     uiPrompt({ title: 'Edit queued message', value: it.text, okText: 'Save', multiline: true }).then(function (next) {
       if (next === null) return; // cancelled
@@ -2119,7 +2194,7 @@
   // viewed conversation starts or ends a turn — no refetch needed.
   function refreshAccountsPop() { if (!quotaPop.hidden) renderAccounts(acctList); }
   var sessPicker = $('sessPicker'), sessList = $('sessList');
-  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; $('morePop').hidden = true; $('addAcctPop').hidden = true; }
+  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; $('morePop').hidden = true; $('addAcctPop').hidden = true; mcpApprovalsPop.hidden = true; }
   // Mobile "more" menu: labeled rows that trigger the real (CSS-hidden on mobile)
   // topbar buttons, so there's one source of truth for each action's handler.
   var MORE_ITEMS = [
@@ -2415,7 +2490,7 @@
       // Cold-opened from a notification tap (service worker openWindow): jump to it.
       try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) switchProject(projCache[want]); } catch (e) {}
     });
-    setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings(); // pollAccounts() also loads the provider model catalog
+    setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings(); loadMcpApprovals(); // pollAccounts() also loads the provider model catalog
     // Safety-net reconciliation for the running-turn state: SSE can silently
     // miss turn_state/session_done events (mobile tab backgrounded, reconnect
     // gap), leaving the busy indicator stuck. loadProjects() re-derives it from
@@ -2457,9 +2532,9 @@
   function connect() {
     if (es) es.close();
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
-    es.onopen = function () { dot.className = 'on'; loadProjects(); };
+    es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'active_model', 'settings', 'accounts'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'active_model', 'settings', 'accounts', 'mcp_approval'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
