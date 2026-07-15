@@ -7,8 +7,13 @@ export interface WindowUsage {
 }
 
 export interface Usage {
-  fiveHour: WindowUsage;
-  sevenDay: WindowUsage;
+  fiveHour?: WindowUsage;
+  sevenDay?: WindowUsage;
+  /** Provider-shaped usage windows, for providers whose plans don't have
+   *  Claude's fixed 5-hour + 7-day pair (a Codex team plan has a single
+   *  weekly window). When present the panel renders THESE gauges; fiveHour/
+   *  sevenDay stay for Claude (and for old panels during a deploy overlap). */
+  windows?: { label: string; utilization: number; resetsAt?: string }[];
 }
 
 export class TokenExpiredError extends Error {

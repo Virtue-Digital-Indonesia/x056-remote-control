@@ -27,6 +27,11 @@ export interface TurnOptions {
   model?: string;
   effort?: string;
   appendSystemPrompt?: string;
+  /** The gateway's MCP bridge (scripts/x056-mcp.mjs), giving the session tools
+   *  to read/message OTHER conversations and projects through the gateway. Each
+   *  adapter wires it its own way: claude takes a --mcp-config file, codex takes
+   *  -c mcp_servers.* overrides built from the command/args/env pieces. */
+  mcp?: { configPath: string; command: string; args: string[]; env: Record<string, string> };
   onEvent: (e: RawEvent) => void;
 }
 
@@ -74,6 +79,8 @@ export function startTurn(opts: TurnOptions): TurnHandle {
     '--verbose',
     '--dangerously-skip-permissions',
     ...(opts.appendSystemPrompt ? ['--append-system-prompt', opts.appendSystemPrompt] : []),
+    // Extra MCP config MERGES with the session's own servers (no --strict-mcp-config).
+    ...(opts.mcp ? ['--mcp-config', opts.mcp.configPath] : []),
     ...(opts.model ? ['--model', opts.model] : []),
     ...(opts.effort ? ['--effort', opts.effort] : []),
     ...(opts.mode === 'new' ? ['--session-id', opts.sessionId] : ['--resume', opts.sessionId]),

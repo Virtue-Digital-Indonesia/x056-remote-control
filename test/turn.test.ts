@@ -42,6 +42,22 @@ describe('startTurn', () => {
     expect(init.argv[init.argv.length - 1]).toBe('- FAST bullet list item');
   });
 
+  it('wires the x056 MCP bridge as --mcp-config (merging with the session\'s own servers)', async () => {
+    const { events, onEvent } = collect();
+    const h = startTurn({
+      claudePath: STUB, configDir: '/tmp/cfg-a', cwd: process.cwd(),
+      sessionId: 'sid-m', mode: 'new', prompt: 'FAST go',
+      mcp: { configPath: '/state/mcp-x056.json', command: 'node', args: ['/x.mjs'], env: {} },
+      onEvent,
+    });
+    await h.done;
+    const argv = (events[0] as { argv: string[] }).argv;
+    const i = argv.indexOf('--mcp-config');
+    expect(i).toBeGreaterThan(-1);
+    expect(argv[i + 1]).toBe('/state/mcp-x056.json');
+    expect(argv).not.toContain('--strict-mcp-config'); // must MERGE, not replace, the session's own servers
+  });
+
   it('builds resume args', async () => {
     const { events, onEvent } = collect();
     const h = startTurn({

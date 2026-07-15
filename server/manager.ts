@@ -10,6 +10,7 @@ import { getAdapter } from '../src/adapters/registry.js';
 import { ProjectRegistry, type Project, type Conversation } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
+import type { TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
 import { parseQuestion, stripAsk, stripAskInstructions } from '../src/question.js';
@@ -44,6 +45,10 @@ export interface SessionManagerOptions {
    *  wired to a pseudo-terminal so the CLI prints its URL and reads the pasted
    *  code. Overridable in tests with a fake that emits a URL and writes creds. */
   loginSpawnFn?: (configDir: string, claudePath?: string) => ChildProcess;
+  /** The gateway's MCP bridge wiring, handed to every spawned turn so sessions
+   *  get tools to read/message other conversations and projects (built by the
+   *  server entrypoint, which knows the token + port; absent in tests). */
+  mcp?: TurnOptions['mcp'];
 }
 
 /** A pending account login, keyed by an opaque id the panel holds. */
@@ -1163,15 +1168,33 @@ export class SessionManager {
   }
 
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
-    // Persist an explicitly-chosen model/effort, and reuse the last choice when a
-    // continuation doesn't carry one (autopilot, orphan-resume, question answers),
-    // so a Fable session doesn't silently revert to the CLI default on continue.
     const reg = this.projects();
-    if (runOpts?.model || runOpts?.effort) reg.setPrefs(pid, { model: runOpts.model, effort: runOpts.effort });
-    const stored = reg.get(pid);
-    const model = runOpts?.model ?? stored?.model;
-    const effort = runOpts?.effort ?? stored?.effort;
     const adapter = this.adapterFor(pid, sessionId);
+    // A model id is only meaningful to the CLI that defines it — "opus" means
+    // nothing to `codex -m` and "gpt-5.6-sol" nothing to `claude --model`. A
+    // stale client (or a pref persisted before this guard existed — it really
+    // happened: a codex project stored model "fable") could still send a
+    // mismatched id, so validate server-side rather than trusting the panel:
+    // drop a model that doesn't belong to this conversation's provider, and an
+    // effort level the provider doesn't have ("ultra" is codex-only).
+    const modelFitsProvider = (m: string | undefined): boolean => {
+      if (!m) return true;
+      const isGpt = /^(gpt-|codex-)/i.test(m);
+      return adapter.id === 'codex' ? isGpt : !isGpt;
+    };
+    const effortFitsProvider = (e: string | undefined): boolean => !e || adapter.id === 'codex' || e !== 'ultra';
+    const optModel = modelFitsProvider(runOpts?.model) ? runOpts?.model : undefined;
+    const optEffort = effortFitsProvider(runOpts?.effort) ? runOpts?.effort : undefined;
+    // Persist an explicitly-chosen (valid) model/effort, and reuse the last
+    // choice when a continuation doesn't carry one (autopilot, orphan-resume,
+    // question answers), so a Fable session doesn't silently revert to the CLI
+    // default on continue.
+    if (optModel || optEffort) reg.setPrefs(pid, { model: optModel, effort: optEffort });
+    const stored = reg.get(pid);
+    const storedModel = modelFitsProvider(stored?.model) ? stored?.model : undefined;
+    const storedEffort = effortFitsProvider(stored?.effort) ? stored?.effort : undefined;
+    const model = optModel ?? storedModel;
+    const effort = optEffort ?? storedEffort;
     // Resuming a provider-assigned session (Codex) needs the CLI's own id, not
     // our conversation key; look up what the first turn captured. (For Claude
     // this is just the sessionId, so it's a harmless no-op.)
@@ -1223,6 +1246,7 @@ export class SessionManager {
         model,
         effort,
         appendSystemPrompt: CONTAINER_SYSTEM_NOTE,
+        mcp: this.opts.mcp,
         forceSwitchSignal: false,
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {

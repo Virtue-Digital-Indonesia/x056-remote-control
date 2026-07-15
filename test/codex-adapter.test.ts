@@ -274,6 +274,24 @@ describe('codexAdapter.startTurn argv (real spawn, via a stub codex binary)', ()
     expect(argv[argv.length - 1]).toBe('- do the thing'); // nothing sneaks in after the prompt
   });
 
+  it('wires the x056 MCP bridge as -c mcp_servers overrides (codex has no --mcp-config flag)', async () => {
+    const { events, onEvent } = collect();
+    const h = codexAdapter.startTurn({
+      binPath: STUB, configDir: '/tmp/cfg-cx', cwd: process.cwd(),
+      sessionId: 'unused', mode: 'new', prompt: 'go',
+      mcp: { configPath: '/state/mcp-x056.json', command: 'node', args: ['/app/scripts/x056-mcp.mjs'], env: { X056_URL: 'http://localhost:4056', X056_TOKEN: 'tok' } },
+      onEvent,
+    });
+    await h.done;
+    const argv = argvOf(events);
+    const joined = argv.join(' ');
+    expect(joined).toContain('mcp_servers.x056.command="node"');
+    expect(joined).toContain('mcp_servers.x056.args=["/app/scripts/x056-mcp.mjs"]');
+    expect(joined).toContain('"X056_TOKEN" = "tok"');
+    // the -c overrides come BEFORE the -- prompt separator
+    expect(argv.indexOf('--')).toBeGreaterThan(argv.findIndex((a) => a.startsWith('mcp_servers.')));
+  });
+
   it('places a RESUME-turn prompt after -- too, with the thread id positional BEFORE the flags', async () => {
     const { events, onEvent } = collect();
     const h = codexAdapter.startTurn({

@@ -1,5 +1,8 @@
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { join } from 'node:path';
+import type { Usage } from '../quota.js';
 import { DEFAULT_CONTINUE_PROMPT } from '../provider.js';
 import { stripAsk, stripAskInstructions } from '../question.js';
 import { spawnJsonlTurn } from '../turn.js';
@@ -29,11 +32,14 @@ import type { RawEvent, Verdict } from '../types.js';
  *     retry chatter — NOT a failover trigger (only turn.failed is).
  *   - Sessions persist at $CODEX_HOME/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl.
  *
+ *  ALSO CONFIRMED: `codex app-server` (JSON-RPC/stdio) `account/rateLimits/read`
+ *  returns the account's real usage meters (camelCase: usedPercent,
+ *  windowDurationMins, resetsAt absolute unix secs, planType) — the basis of
+ *  fetchUsage below, verified live against a team-plan login.
+ *
  *  VERIFY (couldn't be triggered on a healthy authed turn — needs the condition)
- *   - `rate_limits` was ABSENT from a normal turn.completed (only token `usage`
- *     was present) — it likely only appears near/at a limit; field casing and
- *     which event still unconfirmed, so the near-limit `warning` path is dormant
- *     until then (safe: it no-ops when the object is absent).
+ *   - whether/where the STREAM carries rate_limits near a limit; classify()
+ *     accepts it on any event, both casings, so wherever it lands it's caught.
  *   - the exact turn.failed reason-code field (`error.code` vs `.type`) for
  *     `usage_limit_exceeded` — matched by code OR message regex either way.
  */
@@ -61,8 +67,11 @@ function base(path: unknown): string {
 const LIMIT_RE = /rate.?limit|usage.?limit|quota|limit reached|limit_exceeded|too many requests|\b429\b/i;
 const AUTH_RE = /not logged in|unauthor|unauthenticated|\b401\b|please (run )?.*login|sign in|invalid api key|no api key/i;
 
-/** Codex reports usage as a rolling-window meter (rate_limits.primary). Field
- *  casing is unconfirmed, so read snake_case and camelCase. VERIFY on a real run. */
+/** Codex reports usage as a rolling-window meter (rate_limits.primary). The
+ *  authoritative shape is CONFIRMED from the app-server's account/rateLimits/read
+ *  (camelCase: usedPercent, windowDurationMins, resetsAt = ABSOLUTE unix secs,
+ *  rateLimitReachedType) — the stream may carry the snake_case variant
+ *  (resets_in_seconds relative), so read both. */
 function rateLimits(e: RawEvent): Record<string, unknown> {
   const rl = asObj(e.rate_limits ?? (asObj(e.usage).rate_limits as unknown) ?? e.rateLimits);
   return asObj(rl.primary);
@@ -71,6 +80,11 @@ function resetsInSeconds(e: RawEvent): number | undefined {
   const p = rateLimits(e);
   const secs = p.resets_in_seconds ?? p.resetsInSeconds;
   return typeof secs === 'number' && secs > 0 ? Math.floor(secs) : undefined;
+}
+function resetsAtAbs(e: RawEvent): number | undefined {
+  const p = rateLimits(e);
+  const at = p.resets_at ?? p.resetsAt;
+  return typeof at === 'number' && at > 0 ? Math.floor(at) : undefined;
 }
 function usedPercent(e: RawEvent): number | undefined {
   const p = rateLimits(e);
@@ -87,7 +101,7 @@ export function classifyCodexEvent(e: RawEvent): Verdict {
     const code = firstStr(err.code, err.type, typeof e.error === 'string' ? e.error : '');
     const msg = firstStr(err.message, e.message);
     if (code === 'usage_limit_exceeded' || LIMIT_RE.test(code) || LIMIT_RE.test(msg)) {
-      return { kind: 'limited', resetsInSeconds: resetsInSeconds(e), source: 'codex_turn_failed' };
+      return { kind: 'limited', resetsAt: resetsAtAbs(e), resetsInSeconds: resetsInSeconds(e), source: 'codex_turn_failed' };
     }
     if (AUTH_RE.test(code) || AUTH_RE.test(msg)) {
       return { kind: 'auth_required', source: 'codex_turn_failed' };
@@ -97,11 +111,15 @@ export function classifyCodexEvent(e: RawEvent): Verdict {
     return { kind: 'irrelevant', source: 'codex_turn_failed' };
   }
 
-  // A usage meter already at/over the cap is a near-limit warning (mirrors
-  // Claude's allowed_warning): the turn finished, but the next may be rejected.
-  if (t === 'turn.completed') {
-    const pct = usedPercent(e);
-    if (pct != null && pct >= 100) return { kind: 'warning', resetsInSeconds: resetsInSeconds(e), source: 'codex_rate_limits' };
+  // A usage meter at/over the cap is a near-limit warning (mirrors Claude's
+  // allowed_warning): the current turn keeps going, but the next may be
+  // rejected. Checked on ANY event carrying rate_limits — healthy turns don't
+  // carry the object at all (confirmed live), so wherever codex chooses to
+  // surface it near the limit, this catches it rather than betting on one
+  // event type.
+  const pct = usedPercent(e);
+  if (pct != null && pct >= 100 && t !== 'error') {
+    return { kind: 'warning', resetsAt: resetsAtAbs(e), resetsInSeconds: resetsInSeconds(e), source: 'codex_rate_limits' };
   }
 
   // Pre-terminal reconnect chatter (`{type:"error", message:"Reconnecting…"}`)
@@ -301,6 +319,66 @@ function listModels(configDir: string): ProviderModel[] {
   }
 }
 
+/**
+ * Real usage/quota for a ChatGPT account. There's no REST endpoint like
+ * Anthropic's oauth/usage, but `codex app-server` (JSON-RPC over stdio)
+ * exposes `account/rateLimits/read` — confirmed live against a real team-plan
+ * login: `{rateLimits:{primary:{usedPercent:62, windowDurationMins:10080,
+ * resetsAt:<unix-secs>}, secondary:null, planType:"team", …}}`. Spawn it under
+ * the account's CODEX_HOME, initialize, read, kill. Costs ~1-2s, which the
+ * controller's existing 90s quota cache absorbs (same policy as Claude's poll).
+ */
+function fetchUsage(configDir: string): Promise<Usage> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn('codex', ['app-server'], {
+      env: { ...process.env, CODEX_HOME: configDir },
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    let settled = false;
+    const finish = (err: Error | null, usage?: Usage) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      try { child.kill(); } catch { /* already gone */ }
+      if (err) reject(err); else resolvePromise(usage as Usage);
+    };
+    const deadline = setTimeout(() => finish(new Error('codex app-server timed out')), 15_000);
+    child.on('error', (e) => finish(e));
+    child.on('exit', () => finish(new Error('codex app-server exited before answering')));
+    const windowLabel = (mins: unknown): string => {
+      const m = typeof mins === 'number' ? mins : 0;
+      if (m === 300) return '5-hour';
+      if (m === 10080) return '7-day';
+      if (m > 0 && m % 1440 === 0) return `${m / 1440}-day`;
+      if (m > 0) return `${Math.round(m / 60)}-hour`;
+      return 'usage';
+    };
+    const rl = createInterface({ input: child.stdout });
+    rl.on('line', (line) => {
+      if (!line.trim().startsWith('{')) return;
+      let msg: { id?: number; result?: unknown; error?: { message?: string } };
+      try { msg = JSON.parse(line); } catch { return; }
+      if (msg.id !== 2) return;
+      if (msg.error) return finish(new Error(msg.error.message || 'rateLimits read failed'));
+      const rl2 = asObj(asObj(msg.result).rateLimits);
+      const windows: NonNullable<Usage['windows']> = [];
+      for (const key of ['primary', 'secondary']) {
+        const w = asObj(rl2[key]);
+        if (typeof w.usedPercent !== 'number') continue;
+        windows.push({
+          label: windowLabel(w.windowDurationMins),
+          utilization: w.usedPercent / 100,
+          resetsAt: typeof w.resetsAt === 'number' ? new Date(w.resetsAt * 1000).toISOString() : undefined,
+        });
+      }
+      if (!windows.length) return finish(new Error('no rate-limit windows in app-server response'));
+      finish(null, { windows });
+    });
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'x056', title: 'x056', version: '1.0' } } }) + '\n');
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: {} }) + '\n');
+  });
+}
+
 function startCodexTurn(opts: TurnOptions): TurnHandle {
   const flags = [
     '--json',
@@ -314,6 +392,15 @@ function startCodexTurn(opts: TurnOptions): TurnHandle {
     // value passed here (tested "high" and "ultra" — a level only some GPT
     // models support, e.g. gpt-5.6-sol; Claude has no equivalent).
     ...(opts.effort ? ['-c', `model_reasoning_effort="${opts.effort}"`] : []),
+    // The gateway's MCP bridge, as config overrides (codex has no --mcp-config
+    // file flag; -c takes dotted TOML keys, values parsed as TOML).
+    ...(opts.mcp
+      ? [
+          '-c', `mcp_servers.x056.command=${JSON.stringify(opts.mcp.command)}`,
+          '-c', `mcp_servers.x056.args=${JSON.stringify(opts.mcp.args)}`,
+          '-c', `mcp_servers.x056.env={ ${Object.entries(opts.mcp.env).map(([k, v]) => `${JSON.stringify(k)} = ${JSON.stringify(v)}`).join(', ')} }`,
+        ]
+      : []),
   ];
   // NEW: codex assigns the thread id (surfaced via captureSessionId).
   // RESUME: `exec resume <id>` continues that thread on this account's CODEX_HOME.
@@ -362,6 +449,5 @@ export const codexAdapter: ProviderAdapter = {
   readIdentity,
   listModels,
   readHistory,
-  // No pollable usage endpoint on ChatGPT plans — usage arrives inline on
-  // turn.completed's rate_limits — so no fetchUsage (UI shows no bars for codex).
+  fetchUsage,
 };

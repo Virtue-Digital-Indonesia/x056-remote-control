@@ -65,7 +65,12 @@ async function main(): Promise<number> {
       let quota = '';
       try {
         const u = await fetchUsage(acct.configDir);
-        quota = `5h ${u.fiveHour.utilization}% (resets ${u.fiveHour.resetsAt}) · 7d ${u.sevenDay.utilization}%`;
+        // The CLI only manages Claude accounts (the setup wizard), whose usage
+        // always carries both fixed windows; guard anyway now that Usage allows
+        // provider-shaped windows instead.
+        quota = u.fiveHour && u.sevenDay
+          ? `5h ${u.fiveHour.utilization}% (resets ${u.fiveHour.resetsAt}) · 7d ${u.sevenDay.utilization}%`
+          : (u.windows ?? []).map((w) => `${w.label} ${Math.round(w.utilization * 100)}%`).join(' · ');
       } catch (err) {
         quota = `quota: unavailable (${(err as Error).message})`;
       }

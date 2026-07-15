@@ -1973,7 +1973,14 @@
       }
       if (a.quota) {
         var gRow = document.createElement('div'); gRow.className = 'gauges';
-        gRow.appendChild(gauge('5-hour', a.quota.fiveHour)); gRow.appendChild(gauge('7-day', a.quota.sevenDay));
+        // A provider's plan defines its own windows (Codex team plan = one weekly
+        // meter; Claude = the fixed 5-hour + 7-day pair, kept as the fallback).
+        if (a.quota.windows && a.quota.windows.length) {
+          a.quota.windows.forEach(function (w) { gRow.appendChild(gauge(w.label, w)); });
+        } else {
+          if (a.quota.fiveHour) gRow.appendChild(gauge('5-hour', a.quota.fiveHour));
+          if (a.quota.sevenDay) gRow.appendChild(gauge('7-day', a.quota.sevenDay));
+        }
         card.appendChild(gRow);
         if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = a.quotaAt ? 'cached ' + formatAgo(a.quotaAt) : 'cached — stale'; card.appendChild(s); }
       }

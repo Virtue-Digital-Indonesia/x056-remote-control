@@ -383,6 +383,52 @@ export class ApiController {
     }
   }
 
+  /** Read ANY conversation's history by address — the MCP bridge's read tool
+   *  (the /sessions/current/history endpoint below only reads the currently
+   *  selected one, which a cross-conversation reader must not depend on). */
+  @Get('conversations/history')
+  conversationHistory(
+    @Query('projectId') projectId?: string,
+    @Query('sessionId') sessionId?: string,
+    @Query('limit') limit?: string,
+  ): HistoryEntry[] {
+    if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 100;
+    try {
+      const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
+      return adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Send a message to ANY conversation by address (or start a new conversation
+   *  in a project when no sessionId is given) — the MCP bridge's send tool.
+   *  Unlike /sessions/current/messages this never depends on, or moves, the
+   *  panel's "current" selection. */
+  @Post('conversations/send')
+  @HttpCode(200)
+  conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean }): { sessionId: string } {
+    if (!body?.projectId) throw new BadRequestException('projectId required');
+    if (!body?.prompt) throw new BadRequestException('prompt required');
+    const prompt = body.interactive !== false ? withAskInstructions(body.prompt) : body.prompt;
+    const opts = { model: body.model, effort: body.effort };
+    try {
+      if (body.sessionId) {
+        // Only an EXISTING conversation can be continued — a made-up id would
+        // spawn a resume against a transcript that doesn't exist.
+        const known = this.manager.listConversations(body.projectId).some((c) => c.sessionId === body.sessionId);
+        if (!known) throw new BadRequestException('unknown conversation for that project');
+        return { sessionId: this.manager.continueSession(body.projectId, body.sessionId, prompt, opts) };
+      }
+      return { sessionId: this.manager.start(prompt, undefined, opts, body.projectId) };
+    } catch (err) {
+      if (err instanceof BusyError) throw new ConflictException('that conversation has a turn running — try again when it finishes');
+      if (err instanceof BadRequestException) throw err;
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
   @Get('sessions/current/history')
   history(@Query('limit') limit?: string): HistoryEntry[] {
     const snap = this.manager.snapshot();

@@ -43,6 +43,9 @@ export interface RunSessionOptions {
   model?: string;
   effort?: string;
   appendSystemPrompt?: string;
+  /** The gateway's MCP bridge wiring, passed through to every turn (see
+   *  TurnOptions.mcp) so sessions can read/message other conversations. */
+  mcp?: TurnOptions['mcp'];
   tap?: (e: RawEvent) => void;
   forceSwitchSignal?: boolean;
   drainTimeoutMs?: number;
@@ -213,6 +216,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         model: opts.model,
         effort: opts.effort,
         appendSystemPrompt: opts.appendSystemPrompt,
+        mcp: opts.mcp,
         onEvent: (e) => processEvent(e),
       });
       currentHandle = handle;
