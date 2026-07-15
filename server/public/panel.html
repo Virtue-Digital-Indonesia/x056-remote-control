@@ -727,7 +727,19 @@
   function loadProviderModels() {
     return api('/api/models').then(function (r) { return r.ok ? r.json() : {}; }).then(function (m) {
       providerModels = m || {};
-      if (currentProjectId) syncPicker(currentProjectId);
+      // Refresh the AVAILABLE options only — never reset the actual selection
+      // to the project's stored default here. pollAccounts() calls this on the
+      // 60s poll and on every account-state-change (device-auth completing,
+      // the popover opening, another tab's SSE event, …), so a full syncPicker()
+      // reset silently discarded any model/effort you'd picked but hadn't sent
+      // yet the next time one of those fired — including just sitting idle for
+      // a minute. Claude's list never changes here, so this only does anything
+      // for a codex project (a newly-added/logged-in account's catalog).
+      if (currentProjectId && currentProvider() === 'codex') {
+        var list = (providerModels.codex || []).map(function (mo) { return { value: mo.slug, label: mo.label }; });
+        setModelOptions([{ value: '', label: 'Auto model' }].concat(list), modelEl.value);
+        syncEffortOptionsForCodexModel(effortEl.value);
+      }
     }).catch(function () {});
   }
   var projListEl = $('projectList'), projTitleEl = $('projTitle'), projCwdEl = $('projCwd');
