@@ -640,9 +640,12 @@
   // What the CURRENT conversation actually runs on. A conversation is bound to
   // the provider it was created with (its transcript is that CLI's format), so
   // that wins; an unstarted one falls back to the project's default.
-  function currentProvider() {
-    var p = projCache[currentProjectId]; if (!p) return 'claude';
-    if (lastSessionId) {
+  // Which provider a SPECIFIC conversation runs on (pid/sid explicit, so a
+  // background event for a conversation the user ISN'T currently viewing can
+  // still be labeled correctly — see handleEvent's assistant_text case).
+  function providerFor(pid, sid) {
+    var p = projCache[pid]; if (!p) return 'claude';
+    if (sid) {
       var cs = p.conversations || [];
       // An EXISTING conversation with no stamped provider predates multi-provider
       // — it's definitively Claude, not "whatever the project defaults to now".
@@ -650,10 +653,12 @@
       // or a legacy conversation in a project whose default has since moved to
       // Codex gets mislabeled — and stuck showing it, since switching away from
       // a wrong-but-"already started" value looks like it can't be changed.
-      for (var i = 0; i < cs.length; i++) if (cs[i].sessionId === lastSessionId) return cs[i].provider || 'claude';
+      for (var i = 0; i < cs.length; i++) if (cs[i].sessionId === sid) return cs[i].provider || 'claude';
     }
     return p.provider || 'claude';
   }
+  // The CURRENTLY VIEWED conversation's provider — most call sites want this.
+  function currentProvider() { return providerFor(currentProjectId, lastSessionId); }
   var CLAUDE_MODEL_OPTS = [].slice.call(modelEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
   var CLAUDE_EFFORT_OPTS = [].slice.call(effortEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
   var providerModels = {}; // { codex: [{slug,label,efforts,defaultEffort,…}] }
@@ -1002,9 +1007,11 @@
   function fallbackCopy(txt) {
     try { var ta = document.createElement('textarea'); ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); } catch (e) {}
   }
-  function nodeMsg(role, text, atts, ts) {
+  function nodeMsg(role, text, atts, ts, provider) {
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role;
-    var lab = document.createElement('div'); lab.className = 'role'; lab.textContent = role === 'user' ? 'you' : 'claude'; wrap.appendChild(lab);
+    var lab = document.createElement('div'); lab.className = 'role';
+    lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
+    wrap.appendChild(lab);
     var content = document.createElement('div'); content.className = 'content';
     if (role === 'assistant') content.appendChild(renderMarkdown(text)); else content.appendChild(document.createTextNode(text));
     // atts: a single data URL (legacy), or an array of data URLs / {name,type,url}
@@ -1038,7 +1045,7 @@
   }
   function nodeSys(text, cls) { var d = document.createElement('div'); d.className = cls || 'sysline'; var s = document.createElement('span'); s.textContent = text; d.appendChild(s); return d; }
   function nodeAct(label, isSub) { var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
-  function addMsg(role, text, imgUrl, ts) { appendNode(currentProjectId, lastSessionId, nodeMsg(role, text, imgUrl, ts)); }
+  function addMsg(role, text, imgUrl, ts) { appendNode(currentProjectId, lastSessionId, nodeMsg(role, text, imgUrl, ts, currentProvider())); }
   function addSys(text, cls) { var node = nodeSys(text, cls); appendNode(currentProjectId, lastSessionId, node); return node; }
   // "live" / "showing cached view" float over the thread instead of being
   // inserted into it (see .stream-status) — one singleton pill, shown/faded/hidden
@@ -1222,7 +1229,7 @@
       if (mineConvo) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); renderAccountChip(); refreshAccountsPop(); }
       return;
     }
-    if (kind === 'assistant_text') appendNode(pid, sid, nodeMsg('assistant', data.text, null, data.ts));
+    if (kind === 'assistant_text') appendNode(pid, sid, nodeMsg('assistant', data.text, null, data.ts, providerFor(pid, sid)));
     else if (kind === 'supervisor') {
       if (data.type === 'turn_started' && data.account) { activeAccount[pid] = data.account; if (mineConvo) { renderBusy(); renderAccountChip(); refreshAccountsPop(); } }
       var l = BANNERS[data.type]; if (l) appendNode(pid, sid, nodeSys(l, 'banner'));
