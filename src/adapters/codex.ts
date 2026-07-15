@@ -309,7 +309,10 @@ function startCodexTurn(opts: TurnOptions): TurnHandle {
     // Sessions run in arbitrary workspace dirs that may not be git repos.
     '--skip-git-repo-check',
     ...(opts.model ? ['-m', opts.model] : []),
-    // TOML value; a bare word parses as a string. VERIFY the key name.
+    // Confirmed against a real authenticated run: the resulting rollout's
+    // turn_context.collaboration_mode.settings.reasoning_effort held the exact
+    // value passed here (tested "high" and "ultra" — a level only some GPT
+    // models support, e.g. gpt-5.6-sol; Claude has no equivalent).
     ...(opts.effort ? ['-c', `model_reasoning_effort="${opts.effort}"`] : []),
   ];
   // NEW: codex assigns the thread id (surfaced via captureSessionId).

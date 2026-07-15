@@ -655,12 +655,42 @@
     return p.provider || 'claude';
   }
   var CLAUDE_MODEL_OPTS = [].slice.call(modelEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
-  var providerModels = {}; // { codex: [{slug,label,efforts,…}] }
+  var CLAUDE_EFFORT_OPTS = [].slice.call(effortEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
+  var providerModels = {}; // { codex: [{slug,label,efforts,defaultEffort,…}] }
   function setModelOptions(opts, value) {
     modelEl.textContent = '';
     opts.forEach(function (o) { var e = document.createElement('option'); e.value = o.value; e.textContent = o.label; modelEl.appendChild(e); });
     modelEl.value = value;
     if (modelEl.value !== value) modelEl.value = ''; // stale/unknown model → Auto
+  }
+  var EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
+  var EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  function setEffortOptions(opts, value) {
+    effortEl.textContent = '';
+    opts.forEach(function (o) { var e = document.createElement('option'); e.value = o.value; e.textContent = o.label; effortEl.appendChild(e); });
+    effortEl.value = value;
+    if (effortEl.value !== value) effortEl.value = ''; // this model doesn't support the previous choice → Auto
+  }
+  // Codex publishes each model's OWN supported reasoning levels (e.g. gpt-5.6-sol
+  // goes up to "ultra" — Claude has no such level; gpt-5.5/5.4 top out at "xhigh",
+  // no "max"/"ultra" at all) — a single hardcoded list (the Claude one) would both
+  // hide a real option and offer ones the selected model rejects. With no specific
+  // model chosen (Auto), fall back to the union of every level ANY codex model
+  // supports, so nothing is hidden — codex resolves its own default model.
+  function codexEffortsFor(modelSlug) {
+    var list = providerModels.codex || [];
+    var m = modelSlug && list.filter(function (x) { return x.slug === modelSlug; })[0];
+    var efforts;
+    if (m) efforts = m.efforts || [];
+    else {
+      var seen = {}; efforts = [];
+      list.forEach(function (x) { (x.efforts || []).forEach(function (e) { if (!seen[e]) { seen[e] = 1; efforts.push(e); } }); });
+    }
+    return efforts.slice().sort(function (a, b) { return EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b); });
+  }
+  function syncEffortOptionsForCodexModel(value) {
+    var opts = [{ value: '', label: 'Auto effort' }].concat(codexEffortsFor(modelEl.value).map(function (e) { return { value: e, label: EFFORT_LABELS[e] || e }; }));
+    setEffortOptions(opts, value !== undefined ? value : effortEl.value);
   }
   /** Point this project's NEW conversations at a provider (existing ones keep
    *  theirs — a Claude thread can't resume on GPT and vice versa). */
@@ -716,6 +746,14 @@
 
   try { modelEl.value = localStorage.getItem(MODEL_KEY) || ''; effortEl.value = localStorage.getItem(EFFORT_KEY) || ''; } catch (e) {}
   modelEl.addEventListener('change', function () {
+    if (currentProvider() === 'codex') {
+      // Each GPT model supports its own set of reasoning levels (gpt-5.6-sol
+      // goes up to "ultra"; gpt-5.5/5.4 top out at "xhigh") — rebuild the effort
+      // list for the model just chosen, keeping the current pick if it's still
+      // valid there, else falling back to Auto.
+      syncEffortOptionsForCodexModel();
+      return;
+    }
     try { localStorage.setItem(MODEL_KEY, modelEl.value); } catch (e) {}
     // Auto-fill effort from the saved default for this model, if one is set —
     // a per-model convenience so e.g. picking Fable always starts at High.
@@ -764,13 +802,14 @@
     try {
       if (prov === 'claude') {
         setModelOptions(CLAUDE_MODEL_OPTS, p.model || localStorage.getItem(MODEL_KEY) || '');
+        setEffortOptions(CLAUDE_EFFORT_OPTS, p.effort || localStorage.getItem(EFFORT_KEY) || '');
       } else {
         // This provider's real catalog for the configured account. Empty until
         // /api/models loads (or if the account has no catalog yet) — Auto still works.
         var list = (providerModels[prov] || []).map(function (m) { return { value: m.slug, label: m.label }; });
         setModelOptions([{ value: '', label: 'Auto model' }].concat(list), p.model || '');
+        syncEffortOptionsForCodexModel(p.effort || '');
       }
-      effortEl.value = p.effort || localStorage.getItem(EFFORT_KEY) || '';
     } catch (e) {}
   }
 
