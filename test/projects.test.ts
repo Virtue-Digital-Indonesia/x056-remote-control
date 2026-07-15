@@ -51,6 +51,22 @@ describe('ProjectRegistry', () => {
     expect(() => r.selectConversation(p.id, 'gone')).toThrow(/unknown conversation/);
   });
 
+  it('conversationProvider: a legacy conversation with no stamped provider stays Claude even after the project default moves to codex', () => {
+    const f = join(stateDir(), 'projects.json');
+    const r = ProjectRegistry.load(f);
+    const p = r.create('Obscura', '/w/obscura'); // defaults to 'claude'
+    r.addConversation(p.id, 'old-1', 'SaaS'); // pre-multi-provider conversation, no .provider stamped
+    r.setProvider(p.id, 'codex'); // user starts a NEW codex conversation, flipping the project default
+    r.addConversation(p.id, 'new-1', 'Codex', 'codex');
+    // The OLD conversation must stay Claude — it predates multi-provider, full
+    // stop — not silently become "whatever the project defaults to now".
+    expect(r.conversationProvider(p.id, 'old-1')).toBe('claude');
+    expect(r.conversationProvider(p.id, 'new-1')).toBe('codex');
+    // A hypothetical not-yet-started session genuinely has nothing else to go
+    // on, so it DOES read the project's current default.
+    expect(r.conversationProvider(p.id, 'never-started')).toBe('codex');
+  });
+
   it('migrateConversations backfills a pre-existing lastSessionId into a conversation', () => {
     const f = join(stateDir(), 'projects.json');
     writeFileSync(f, JSON.stringify({ current: 'p1', projects: [{ id: 'p1', name: 'Old', cwd: '/w', lastSessionId: 'legacy-sess' }] }));

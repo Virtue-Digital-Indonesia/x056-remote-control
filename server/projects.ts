@@ -136,11 +136,18 @@ export class ProjectRegistry {
   }
 
   /** The provider a specific conversation runs on (what its transcript is in).
-   *  Falls back to the project's default, then Claude, for pre-provider rows. */
+   *  An EXISTING conversation with no stamped provider predates multi-provider
+   *  entirely — it's definitively Claude, NOT "whatever the project's default
+   *  happens to be now" (the project default is mutable going forward; using it
+   *  here would flip an old Claude conversation to codex the moment the project
+   *  default changes, breaking its next continuation). Only when the
+   *  conversation doesn't exist yet (not yet started) does the project's
+   *  current default apply — there's genuinely nothing else to go on. */
   conversationProvider(projectId: string, sessionId: string): ProviderId {
     const p = this.data.projects.find((x) => x.id === projectId);
     const c = p?.conversations?.find((x) => x.sessionId === sessionId);
-    return c?.provider ?? p?.provider ?? 'claude';
+    if (c) return c.provider ?? 'claude';
+    return p?.provider ?? 'claude';
   }
 
   /** Change which provider this project's NEW conversations start on. Existing

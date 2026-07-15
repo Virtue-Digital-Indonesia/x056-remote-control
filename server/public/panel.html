@@ -644,7 +644,13 @@
     var p = projCache[currentProjectId]; if (!p) return 'claude';
     if (lastSessionId) {
       var cs = p.conversations || [];
-      for (var i = 0; i < cs.length; i++) if (cs[i].sessionId === lastSessionId && cs[i].provider) return cs[i].provider;
+      // An EXISTING conversation with no stamped provider predates multi-provider
+      // — it's definitively Claude, not "whatever the project defaults to now".
+      // Stop at the match (don't fall through to the project default) once found,
+      // or a legacy conversation in a project whose default has since moved to
+      // Codex gets mislabeled — and stuck showing it, since switching away from
+      // a wrong-but-"already started" value looks like it can't be changed.
+      for (var i = 0; i < cs.length; i++) if (cs[i].sessionId === lastSessionId) return cs[i].provider || 'claude';
     }
     return p.provider || 'claude';
   }
@@ -1566,6 +1572,10 @@
       while (chatEl.firstChild) oldView.frag.appendChild(chatEl.firstChild); // stash the outgoing conversation's own thread
       if (projCache[projectId]) projCache[projectId].lastSessionId = sessionId;
       lastSessionId = sessionId; chatEl.textContent = '';
+      // Each conversation is bound to its own provider (see currentProvider()) —
+      // re-sync the model/effort/provider picker to THIS one, not whatever the
+      // previously-viewed conversation left selected.
+      syncPicker(projectId);
       restoreDraft(); // load this conversation's own unsent text
       restoreAttachments(); // and its own pending (unsent) attachments
       renderQueue(); renderAutopilot(); // re-scope the queue + autopilot bars to this conversation
@@ -1587,6 +1597,10 @@
       while (chatEl.firstChild) oldView.frag.appendChild(chatEl.firstChild); // stash it before showing the blank composer
     }
     pendingNew = true; lastSessionId = null; blankSeq++; chatEl.textContent = '';
+    // A not-yet-started conversation has no provider of its own yet — show the
+    // project's current default (see currentProvider()), not whatever the
+    // previously-viewed conversation left selected.
+    syncPicker(projectId);
     restoreDraft(); // the fresh conversation's own (usually empty) draft
     restoreAttachments();
     renderQueue(); renderAutopilot(); // no session yet → both bars clear
