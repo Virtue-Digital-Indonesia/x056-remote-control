@@ -232,6 +232,16 @@
   .chip button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 15px; flex: none; display: inline-flex; }
   textarea { width: 100%; border: none; background: transparent; color: var(--text); resize: none; padding: 15px 16px 6px; font: inherit; max-height: 240px; outline: none; }
   .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px 10px; }
+  /* The model/effort/provider selects can outgrow the composer on a narrow
+     phone (three selects' natural width easily exceeds a portrait viewport).
+     Isolate them in their own horizontally-scrollable strip — min-width:0 lets
+     this flex child shrink below its content's width instead of forcing `.bar`
+     to overflow and push the attach/send buttons off-screen entirely. Attach
+     and send stay outside this strip, pinned and always visible. */
+  .bar .selects { display: flex; gap: 8px; overflow-x: auto; min-width: 0; flex-shrink: 1; scrollbar-width: none; -ms-overflow-style: none; }
+  .bar .selects::-webkit-scrollbar { display: none; }
+  .bar .selects .select { flex: none; } /* keep each dropdown at full readable width; the STRIP scrolls, not the dropdown */
+  .bar .attach, .bar .send { flex: none; }
   .select { position: relative; }
   select { appearance: none; background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 9px; padding: 6px 24px 6px 10px; font: inherit; font-size: 12.5px; cursor: pointer; }
   select:hover { border-color: var(--border-strong); color: var(--text); }
@@ -517,15 +527,17 @@
       <div id="attachRow"></div>
       <textarea id="prompt" rows="1" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste or drop a file)"></textarea>
       <div class="bar">
-        <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
-          <option value="claude">Claude</option><option value="codex">ChatGPT</option>
-        </select></div>
-        <div class="select"><select id="model" title="model">
-          <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
-        </select></div>
-        <div class="select"><select id="effort" title="effort">
-          <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
-        </select></div>
+        <div class="selects">
+          <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
+            <option value="claude">Claude</option><option value="codex">ChatGPT</option>
+          </select></div>
+          <div class="select"><select id="model" title="model">
+            <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
+          </select></div>
+          <div class="select"><select id="effort" title="effort">
+            <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
+          </select></div>
+        </div>
         <label class="attach" title="attach files (any type — drag &amp; drop or paste too)"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" multiple hidden /></label>
         <span class="sp"></span>
         <button class="send" id="sendBtn" title="send"><svg class="ic sm"><use href="#i-up"/></svg></button>
