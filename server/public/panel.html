@@ -1573,9 +1573,12 @@
       if (projCache[projectId]) projCache[projectId].lastSessionId = sessionId;
       lastSessionId = sessionId; chatEl.textContent = '';
       // Each conversation is bound to its own provider (see currentProvider()) —
-      // re-sync the model/effort/provider picker to THIS one, not whatever the
-      // previously-viewed conversation left selected.
+      // re-sync the model/effort/provider picker AND the account chip to THIS
+      // one, not whatever the previously-viewed conversation left showing (the
+      // chip has its own account-name + plan text derived from currentProvider()
+      // too, but nothing re-renders it on a plain conversation switch otherwise).
       syncPicker(projectId);
+      renderAccountChip();
       restoreDraft(); // load this conversation's own unsent text
       restoreAttachments(); // and its own pending (unsent) attachments
       renderQueue(); renderAutopilot(); // re-scope the queue + autopilot bars to this conversation
@@ -1599,8 +1602,10 @@
     pendingNew = true; lastSessionId = null; blankSeq++; chatEl.textContent = '';
     // A not-yet-started conversation has no provider of its own yet — show the
     // project's current default (see currentProvider()), not whatever the
-    // previously-viewed conversation left selected.
+    // previously-viewed conversation left selected (same reasoning as
+    // switchConversation() — the chip needs an explicit re-render too).
     syncPicker(projectId);
+    renderAccountChip();
     restoreDraft(); // the fresh conversation's own (usually empty) draft
     restoreAttachments();
     renderQueue(); renderAutopilot(); // no session yet → both bars clear
