@@ -37,6 +37,13 @@ RUN install -m0755 -d /etc/apt/keyrings; \
     apt-get update; \
     apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin; \
     rm -rf /var/lib/apt/lists/*
+# Bun — a separate JS/TS runtime + package manager some projects use directly
+# (bun install/bun test/bun run), independent of the system Node above. Shared,
+# world-readable location, same pattern as Go.
+ENV BUN_INSTALL=/usr/local/share/bun
+ENV PATH="${BUN_INSTALL}/bin:${PATH}"
+RUN curl -fsSL https://bun.sh/install | bash \
+ && chmod -R a+rX "${BUN_INSTALL}"
 RUN useradd -m -u 1001 efran
 USER efran
 WORKDIR /app
