@@ -163,6 +163,22 @@
   .apbar { display: flex; align-items: center; gap: 10px; background: var(--accent-weak); border: 1px solid var(--accent); border-radius: 12px; padding: 8px 14px; font-size: 13px; color: var(--accent); }
   .apbar .lbl { flex: 1; }
   .apbar button { background: transparent; border: 1px solid var(--accent); color: var(--accent); border-radius: 8px; padding: 4px 12px; cursor: pointer; font: inherit; font-size: 12px; }
+  /* MCP cross-conversation send approval — the prominent, always-visible prompt
+     (an AI asked to message another conversation; nothing is sent until you
+     decide). Deliberately eye-catching: it's a gate, not a passive notice. */
+  #mcpApprovalBar { max-width: 780px; margin: 0 auto 8px; display: flex; flex-direction: column; gap: 8px; }
+  #mcpApprovalBar:empty { display: none; }
+  .mcpbar { border: 1px solid var(--accent); border-radius: 12px; background: var(--accent-weak); padding: 10px 14px; box-shadow: var(--shadow); }
+  .mcpbar .mcphdr { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600; letter-spacing: .3px; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .mcpbar .mcphdr .ic { flex: none; }
+  .mcpbar .mcpto { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .mcpbar .mcpmsg { font-size: 13px; color: var(--text); white-space: pre-wrap; max-height: 84px; overflow: auto; margin-bottom: 10px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+  .mcpbar .mcpacts { display: flex; gap: 8px; }
+  .mcpbar .mcpacts button { flex: 1; border-radius: 9px; padding: 8px 14px; cursor: pointer; font: inherit; font-size: 13px; font-weight: 500; }
+  .mcpbar .mcpacts .deny { background: transparent; border: 1px solid var(--border-strong); color: var(--text); }
+  .mcpbar .mcpacts .deny:hover { border-color: var(--err); color: var(--err); }
+  .mcpbar .mcpacts .approve { background: var(--accent); border: 1px solid var(--accent); color: var(--on-accent); }
+  .mcpbar .mcpacts button:disabled { opacity: .5; cursor: default; }
   #queueBar { max-width: 780px; margin: 0 auto 8px; display: flex; flex-direction: column; gap: 6px; }
   #queueBar:empty { display: none; }
   .qhdr { font-size: 11px; font-weight: 600; letter-spacing: .3px; text-transform: uppercase; color: var(--faint); padding: 0 2px; }
@@ -545,6 +561,7 @@
   <div class="stream-status" id="streamStatus" hidden></div>
   <button id="jumpBtn" title="jump to latest" hidden><svg class="ic sm"><use href="#i-down"/></svg></button>
   <div class="composer-wrap">
+    <div id="mcpApprovalBar"></div>
     <div id="autopilotBar"></div>
     <div id="otherRuns"></div>
     <div id="busy"></div>
@@ -1565,7 +1582,42 @@
       renderMcpApprovals();
     }).catch(function () {});
   }
-  function renderMcpApprovals() {
+  var mcpDeciding = {}; // id -> true while a decision is in flight (both surfaces disable)
+  function mcpDecide(id, ok) {
+    if (mcpDeciding[id]) return;
+    mcpDeciding[id] = true; renderMcpApprovals();
+    api('/api/mcp/approvals/decide', { method: 'POST', body: JSON.stringify({ id: id, approve: ok }) })
+      .then(function (r) { if (!r.ok) throw new Error('decide failed'); delete mcpApprovals[id]; })
+      .catch(function () { /* leave it pending so it can be retried */ })
+      .then(function () { delete mcpDeciding[id]; renderMcpApprovals(); });
+  }
+  function mcpToLine(a) { return 'to ' + a.projectName + ' · ' + a.targetLabel + (a.model ? ' · ' + a.model : '') + (a.effort ? ' · ' + a.effort : ''); }
+  // Two surfaces, one state: the prominent bar above the composer (the actual
+  // prompt — impossible to miss) AND the topbar badge/popover (count + review).
+  function renderMcpApprovals() { renderMcpApprovalBar(); renderMcpApprovalPop(); }
+  function renderMcpApprovalBar() {
+    var bar = $('mcpApprovalBar'); if (!bar) return;
+    bar.textContent = '';
+    Object.keys(mcpApprovals).forEach(function (id) {
+      var a = mcpApprovals[id];
+      var card = document.createElement('div'); card.className = 'mcpbar';
+      var hdr = document.createElement('div'); hdr.className = 'mcphdr';
+      hdr.appendChild(icon('sparkles', 'sm'));
+      hdr.appendChild(document.createTextNode('AI wants to message another conversation'));
+      card.appendChild(hdr);
+      var to = document.createElement('div'); to.className = 'mcpto'; to.textContent = mcpToLine(a); card.appendChild(to);
+      var msg = document.createElement('div'); msg.className = 'mcpmsg'; msg.textContent = a.message; card.appendChild(msg);
+      var acts = document.createElement('div'); acts.className = 'mcpacts';
+      var deny = document.createElement('button'); deny.className = 'deny'; deny.textContent = 'Deny';
+      var approve = document.createElement('button'); approve.className = 'approve'; approve.textContent = 'Approve & send';
+      if (mcpDeciding[id]) { deny.disabled = true; approve.disabled = true; }
+      deny.addEventListener('click', function () { mcpDecide(id, false); });
+      approve.addEventListener('click', function () { mcpDecide(id, true); });
+      acts.appendChild(deny); acts.appendChild(approve); card.appendChild(acts);
+      bar.appendChild(card);
+    });
+  }
+  function renderMcpApprovalPop() {
     var ids = Object.keys(mcpApprovals);
     mcpApprovalsBtn.hidden = ids.length === 0;
     mcpApprovalsBadge.textContent = ids.length ? String(ids.length) : '';
@@ -1573,27 +1625,23 @@
     if (!ids.length) {
       var hint = document.createElement('div'); hint.className = 'qhint'; hint.textContent = 'No pending requests.';
       mcpApprovalsListEl.appendChild(hint);
+      if (!mcpApprovalsPop.hidden) closeAllPops(); // nothing left to act on — close the popover
       return;
     }
     ids.forEach(function (id) {
       var a = mcpApprovals[id];
       var card = document.createElement('div'); card.className = 'mcp-appr-card';
       var meta = document.createElement('div'); meta.className = 'mcp-appr-meta';
-      meta.textContent = 'to ' + a.projectName + ' · ' + a.targetLabel + (a.model ? ' · ' + a.model : '') + (a.effort ? ' · ' + a.effort : '');
+      meta.textContent = mcpToLine(a);
       card.appendChild(meta);
       var msg = document.createElement('div'); msg.className = 'mcp-appr-msg'; msg.textContent = a.message;
       card.appendChild(msg);
       var actions = document.createElement('div'); actions.className = 'mcp-appr-actions';
       var deny = document.createElement('button'); deny.className = 'send ghost'; deny.textContent = 'Deny';
       var approve = document.createElement('button'); approve.className = 'send'; approve.textContent = 'Approve';
-      function decide(ok) {
-        deny.disabled = true; approve.disabled = true;
-        api('/api/mcp/approvals/decide', { method: 'POST', body: JSON.stringify({ id: id, approve: ok }) })
-          .then(function () { delete mcpApprovals[id]; renderMcpApprovals(); })
-          .catch(function () { deny.disabled = false; approve.disabled = false; });
-      }
-      deny.addEventListener('click', function () { decide(false); });
-      approve.addEventListener('click', function () { decide(true); });
+      if (mcpDeciding[id]) { deny.disabled = true; approve.disabled = true; }
+      deny.addEventListener('click', function () { mcpDecide(id, false); });
+      approve.addEventListener('click', function () { mcpDecide(id, true); });
       actions.appendChild(deny); actions.appendChild(approve);
       card.appendChild(actions);
       mcpApprovalsListEl.appendChild(card);
@@ -2499,6 +2547,10 @@
     // gap), leaving the busy indicator stuck. loadProjects() re-derives it from
     // the server's authoritative state.
     setInterval(loadProjects, 20000);
+    // Same safety net for pending MCP approvals: a request is a blocking gate an
+    // AI is actively waiting on, so a missed SSE event must not leave it
+    // invisible until the next reconnect. Re-hydrate on a short interval.
+    setInterval(loadMcpApprovals, 15000);
     pollSnapshot().then(function () {
       restoreDraft();
       restoreAttachments();
