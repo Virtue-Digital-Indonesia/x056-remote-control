@@ -68,8 +68,12 @@ async function main(): Promise<number> {
         // The CLI only manages Claude accounts (the setup wizard), whose usage
         // always carries both fixed windows; guard anyway now that Usage allows
         // provider-shaped windows instead.
+        // Model-scoped weekly caps (e.g. Fable) share the 0–100 percent
+        // convention of the fixed windows; the provider-shaped `windows` use a
+        // 0–1 fraction, hence the different scaling below.
+        const scoped = (u.weeklyScoped ?? []).map((w) => ` · ${w.label} ${w.utilization}%`).join('');
         quota = u.fiveHour && u.sevenDay
-          ? `5h ${u.fiveHour.utilization}% (resets ${u.fiveHour.resetsAt}) · 7d ${u.sevenDay.utilization}%`
+          ? `5h ${u.fiveHour.utilization}% (resets ${u.fiveHour.resetsAt}) · 7d ${u.sevenDay.utilization}%${scoped}`
           : (u.windows ?? []).map((w) => `${w.label} ${Math.round(w.utilization * 100)}%`).join(' · ');
       } catch (err) {
         quota = `quota: unavailable (${(err as Error).message})`;

@@ -9,6 +9,12 @@ export interface WindowUsage {
 export interface Usage {
   fiveHour?: WindowUsage;
   sevenDay?: WindowUsage;
+  /** Model-scoped weekly limits, distinct from the all-models 7-day window —
+   *  e.g. a "Fable" cap that Max plans meter separately (the usage endpoint's
+   *  `limits[]` entries of kind `weekly_scoped`, labelled by the scoped model's
+   *  display name). One entry per scoped model; empty/absent when the plan has
+   *  none. Rendered as extra gauges beside 5-hour/7-day. */
+  weeklyScoped?: { label: string; utilization: number; resetsAt?: string }[];
   /** Provider-shaped usage windows, for providers whose plans don't have
    *  Claude's fixed 5-hour + 7-day pair (a Codex team plan has a single
    *  weekly window). When present the panel renders THESE gauges; fiveHour/
@@ -36,6 +42,15 @@ export class UsageRateLimitedError extends Error {
 interface UsageBody {
   five_hour: { utilization: number; resets_at: string };
   seven_day: { utilization: number; resets_at: string };
+  /** Modern, structured limits list. Carries the same session/weekly-all data
+   *  as the two fields above PLUS model-scoped weekly caps (the Fable window),
+   *  which have no dedicated top-level field. Absent on older plan shapes. */
+  limits?: {
+    kind: string;
+    percent: number;
+    resets_at?: string;
+    scope?: { model?: { id?: string | null; display_name?: string | null } | null } | null;
+  }[];
 }
 
 export async function fetchUsage(configDir: string, fetchFn: typeof fetch = fetch): Promise<Usage> {
@@ -62,8 +77,16 @@ export async function fetchUsage(configDir: string, fetchFn: typeof fetch = fetc
   if (res.status === 429) throw new UsageRateLimitedError(Number(res.headers.get('retry-after')));
   if (!res.ok) throw new Error(`usage endpoint returned ${res.status}`);
   const body = (await res.json()) as UsageBody;
+  // Model-scoped weekly caps (e.g. Fable) live only in the structured `limits[]`
+  // — the top-level seven_day is the ALL-models window. Each scoped entry is
+  // labelled by its model's display name; utilization is a 0–100 percent, the
+  // same convention as five_hour/seven_day.
+  const weeklyScoped = (body.limits ?? [])
+    .filter((l) => l.kind === 'weekly_scoped' && l.scope?.model?.display_name)
+    .map((l) => ({ label: l.scope!.model!.display_name as string, utilization: l.percent, resetsAt: l.resets_at }));
   return {
     fiveHour: { utilization: body.five_hour.utilization, resetsAt: body.five_hour.resets_at },
     sevenDay: { utilization: body.seven_day.utilization, resetsAt: body.seven_day.resets_at },
+    ...(weeklyScoped.length ? { weeklyScoped } : {}),
   };
 }

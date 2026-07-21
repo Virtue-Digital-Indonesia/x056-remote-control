@@ -2055,6 +2055,9 @@
         } else {
           if (a.quota.fiveHour) gRow.appendChild(gauge('5-hour', a.quota.fiveHour));
           if (a.quota.sevenDay) gRow.appendChild(gauge('7-day', a.quota.sevenDay));
+          // Model-scoped weekly caps (e.g. "Fable"), metered separately from the
+          // all-models 7-day window. Absent on old backends → simply not shown.
+          (a.quota.weeklyScoped || []).forEach(function (w) { gRow.appendChild(gauge(w.label, w)); });
         }
         card.appendChild(gRow);
         if (a.quotaStale) { var s = document.createElement('div'); s.className = 'note'; s.textContent = a.quotaAt ? 'cached ' + formatAgo(a.quotaAt) : 'cached — stale'; card.appendChild(s); }

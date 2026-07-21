@@ -35,6 +35,42 @@ describe('fetchUsage', () => {
     });
   });
 
+  it('surfaces model-scoped weekly caps (Fable) from the limits[] array', async () => {
+    const dir = configDirWithToken('tok');
+    // The real endpoint shape (captured live): scoped weekly caps live ONLY in
+    // limits[], labelled by scope.model.display_name; seven_day is all-models.
+    const body = {
+      five_hour: { utilization: 35, resets_at: '2026-07-21T08:40:00+00:00' },
+      seven_day: { utilization: 11, resets_at: '2026-07-24T18:00:00+00:00' },
+      limits: [
+        { kind: 'session', percent: 35, resets_at: '2026-07-21T08:40:00+00:00', scope: null },
+        { kind: 'weekly_all', percent: 11, resets_at: '2026-07-24T18:00:00+00:00', scope: null },
+        { kind: 'weekly_scoped', percent: 9, resets_at: '2026-07-24T18:00:00+00:00', scope: { model: { id: null, display_name: 'Fable' }, surface: null } },
+      ],
+    };
+    const fakeFetch = (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
+    const usage = await fetchUsage(dir, fakeFetch);
+    expect(usage.weeklyScoped).toEqual([
+      { label: 'Fable', utilization: 9, resetsAt: '2026-07-24T18:00:00+00:00' },
+    ]);
+    // The fixed windows are unchanged by the scoped parsing.
+    expect(usage.fiveHour).toEqual({ utilization: 35, resetsAt: '2026-07-21T08:40:00+00:00' });
+    expect(usage.sevenDay).toEqual({ utilization: 11, resetsAt: '2026-07-24T18:00:00+00:00' });
+  });
+
+  it('omits weeklyScoped entirely when the plan has no model-scoped caps', async () => {
+    const dir = configDirWithToken('tok');
+    // A limits[] with only session + weekly_all (no scoped model) → no field.
+    const body = {
+      five_hour: { utilization: 5, resets_at: 'a' },
+      seven_day: { utilization: 2, resets_at: 'b' },
+      limits: [{ kind: 'session', percent: 5, scope: null }, { kind: 'weekly_all', percent: 2, scope: null }],
+    };
+    const fakeFetch = (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
+    const usage = await fetchUsage(dir, fakeFetch);
+    expect('weeklyScoped' in usage).toBe(false);
+  });
+
   it('throws TokenExpiredError on 401', async () => {
     const dir = configDirWithToken('stale');
     const fakeFetch = (async () => new Response('unauthorized', { status: 401 })) as typeof fetch;
