@@ -16,6 +16,7 @@ function controller(stateDir: string): ApiController {
     {} as never, // PushService
     {} as never, // WebAuthnService
     {} as never, // SessionStore
+    {} as never, // PluginManager
   );
 }
 

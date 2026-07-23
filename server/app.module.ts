@@ -4,9 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { Module } from '@nestjs/common';
 import { APP_GUARD, Reflector } from '@nestjs/core';
 import { AuthGuard } from './auth.guard.js';
-import { ApiController, STATE_DIR, PUSH_SERVICE, WEBAUTHN_SERVICE, SESSION_STORE } from './api.controller.js';
+import { ApiController, STATE_DIR, PUSH_SERVICE, WEBAUTHN_SERVICE, SESSION_STORE, PLUGIN_MANAGER } from './api.controller.js';
 import { SessionManager } from './manager.js';
 import { PushService } from './push.js';
+import { PluginManager } from './plugins.js';
 import { WebAuthnService, SessionStore } from './webauthn.js';
 import type { TurnOptions } from '../src/turn.js';
 
@@ -60,6 +61,13 @@ export function buildModule(cfg: GatewayConfig): unknown {
   const webauthn = new WebAuthnService(cfg.stateDir);
   const sessions = new SessionStore(cfg.stateDir);
 
+  // Claude Code plugin management, replicated across every Claude failover
+  // account so an installed plugin is usable no matter which account is active.
+  const plugins = new PluginManager({
+    claudePath: cfg.claudePath,
+    claudeDirs: PluginManager.claudeDirsFromRegistry(join(cfg.stateDir, 'accounts.json')),
+  });
+
   @Module({
     controllers: [ApiController],
     providers: [
@@ -67,6 +75,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: PUSH_SERVICE, useValue: push },
       { provide: WEBAUTHN_SERVICE, useValue: webauthn },
       { provide: SESSION_STORE, useValue: sessions },
+      { provide: PLUGIN_MANAGER, useValue: plugins },
       { provide: STATE_DIR, useValue: cfg.stateDir },
       { provide: APP_GUARD, useFactory: (reflector: Reflector) => new AuthGuard(cfg.token, sessions, reflector), inject: [Reflector] },
     ],

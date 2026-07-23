@@ -1,0 +1,35 @@
+#!/usr/bin/env node
+// Stub `claude` for PluginManager tests. Exercises `claude plugin ...` only.
+// (ESM — the package is type:module, so a shebang script with no extension
+// runs as an ES module and `require` is unavailable.)
+// - Appends every invocation (argv + CLAUDE_CONFIG_DIR) to $STUB_LOG (if set),
+//   so a test can assert the manager replicated a command across config dirs.
+// - `plugin list --json`            -> prints <configDir>/plugins.json or []
+// - `plugin marketplace list --json`-> prints <configDir>/marketplaces.json or []
+// - any mutation                    -> errors + exit 1 if <configDir>/FAIL exists,
+//                                       else prints a ✔ success line and exit 0.
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const argv = process.argv.slice(2);
+const cfg = process.env.CLAUDE_CONFIG_DIR || '';
+if (process.env.STUB_LOG) appendFileSync(process.env.STUB_LOG, JSON.stringify({ argv, cfg }) + '\n');
+
+function readJson(name) {
+  try { return readFileSync(join(cfg, name), 'utf8'); } catch { return null; }
+}
+const sub = argv[1]; // argv[0] is always "plugin"
+if (sub === 'list' && argv.includes('--json')) {
+  process.stdout.write(readJson('plugins.json') || '[]');
+  process.exit(0);
+}
+if (sub === 'marketplace' && argv[2] === 'list' && argv.includes('--json')) {
+  process.stdout.write(readJson('marketplaces.json') || '[]');
+  process.exit(0);
+}
+if (existsSync(join(cfg, 'FAIL'))) {
+  process.stderr.write('✘ Error: simulated failure in ' + cfg + '\n');
+  process.exit(1);
+}
+process.stdout.write('✔ Successfully ran ' + argv.join(' ') + '\n');
+process.exit(0);

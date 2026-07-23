@@ -311,6 +311,37 @@
   #quotaPop[hidden] { display: none; }
   #quotaPop #accounts { overflow-y: auto; flex: 1 1 auto; min-height: 0; }
   #quotaPop .pop-footer { flex: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+  /* Plugins popover */
+  .plug-note { font-size: 11px; color: var(--faint); margin: 0 4px 10px; }
+  .plug-status { font-size: 12px; padding: 7px 10px; border-radius: 8px; margin-bottom: 10px; white-space: pre-wrap; }
+  .plug-status.ok { background: var(--ok-bg); color: var(--ok); }
+  .plug-status.err { background: var(--err-bg); color: var(--err); }
+  .plug-status.busy { background: var(--surface-2); color: var(--muted); }
+  .plug-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 7px; }
+  .plug-item .pi-main { flex: 1; min-width: 0; }
+  .plug-item .pi-name { font-size: 13px; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .plug-item .pi-meta { font-size: 11px; color: var(--faint); margin-top: 2px; }
+  .plug-item .pi-warn { color: var(--amber); }
+  .plug-item .pi-x { flex: none; width: 26px; height: 26px; border: none; background: transparent; color: var(--faint); border-radius: 7px; cursor: pointer; display: grid; place-items: center; }
+  .plug-item .pi-x:hover { background: var(--err-bg); color: var(--err); }
+  /* toggle switch */
+  .pi-toggle { flex: none; width: 38px; height: 22px; border-radius: 12px; background: var(--surface-3); border: none; cursor: pointer; position: relative; transition: background .15s ease; }
+  .pi-toggle.on { background: var(--accent); }
+  .pi-toggle i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .15s ease; }
+  .pi-toggle.on i { left: 18px; }
+  .pi-toggle:disabled { opacity: .5; cursor: default; }
+  .plug-add { display: flex; gap: 6px; margin: 8px 0; }
+  .plug-add input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); border-radius: 9px; padding: 8px 10px; font: inherit; font-size: 12.5px; }
+  .plug-add .send { flex: none; width: auto; padding: 0 14px; height: auto; }
+  .plug-sec { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .plug-sec-h { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); margin: 0 2px 8px; }
+  .mkt-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); padding: 5px 2px; }
+  .mkt-item .mk-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mkt-item .pi-x { flex: none; width: 22px; height: 22px; border: none; background: transparent; color: var(--faint); border-radius: 6px; cursor: pointer; display: grid; place-items: center; }
+  .mkt-item .pi-x:hover { background: var(--err-bg); color: var(--err); }
+  .plug-foot { font-size: 11px; color: var(--faint); margin-top: 12px; line-height: 1.5; }
+  .plug-foot code { background: var(--surface-3); padding: 1px 5px; border-radius: 5px; font-size: 10.5px; }
+  .plug-empty { font-size: 12px; color: var(--faint); padding: 6px 2px; }
   .qa { padding: 10px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 8px; }
   .qa:last-child { margin-bottom: 0; }
   .qa.nextup { border-color: var(--accent); }
@@ -439,7 +470,7 @@
     /* On mobile the crowded action icons collapse into the "more" menu; keep
        only the projects drawer, title, connection dot, and the more button. */
     .topbar #notifyBtn, .topbar #autopilotBtn, .topbar #resumeBtn,
-    .topbar #defaultsBtn, .topbar #passkeyBtn, .topbar #themeBtn, .topbar #tokenBtn, .topbar #shortcutsBtn { display: none; }
+    .topbar #defaultsBtn, .topbar #pluginsBtn, .topbar #passkeyBtn, .topbar #themeBtn, .topbar #tokenBtn, .topbar #shortcutsBtn { display: none; }
     .topbar .title { flex: 1; min-width: 0; }
     .topbar .sp { display: none; }
     #morePop { top: calc(52px + env(safe-area-inset-top)); }
@@ -527,6 +558,7 @@
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-4 4 3 3m-6-1 2.5 2.5"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M19.44 7.85c-.05.32.06.65.29.88l1.56 1.56c.47.47.71 1.09.71 1.71s-.24 1.23-.71 1.7l-1.6 1.61a.98.98 0 0 1-.84.28c-.47-.07-.8-.48-.97-.93a2.5 2.5 0 1 0-3.21 3.22c.44.16.85.5.92.97a.98.98 0 0 1-.28.84l-1.6 1.6c-.48.48-1.1.71-1.71.71s-1.23-.23-1.7-.7l-1.57-1.57a1.03 1.03 0 0 0-.88-.29c-.49.07-.84.5-1.02.97a2.5 2.5 0 1 1-3.24-3.24c.46-.18.9-.53.97-1.02a1.03 1.03 0 0 0-.29-.88L2.7 13.7A2.4 2.4 0 0 1 2 12c0-.62.24-1.23.71-1.7l1.52-1.53c.24-.24.58-.35.92-.3.51.08.87.53 1.07 1.01a2.5 2.5 0 1 0 3.26-3.26c-.48-.2-.93-.56-1.01-1.07-.05-.34.06-.68.3-.92l1.53-1.52A2.4 2.4 0 0 1 12 2c.62 0 1.23.24 1.7.71l1.57 1.57c.23.23.56.33.88.29.49-.08.84-.5 1.02-.97a2.5 2.5 0 1 1 3.24 3.24c-.47.18-.9.53-.97 1.02Z"/></symbol>
 </defs></svg>
 <aside>
   <div class="brand"><span class="mark">x0</span><span>remote control</span><span class="sub">self-hosted</span></div>
@@ -551,6 +583,7 @@
     <button class="ico" id="autopilotBtn" title="autopilot — gateway keeps the work going across turns/restarts"><svg class="ic"><use href="#i-repeat"/></svg></button>
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
+    <button class="ico" id="pluginsBtn" title="Claude Code plugins"><svg class="ic"><use href="#i-plug"/></svg></button>
     <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
     <button class="ico" id="shortcutsBtn" title="keyboard shortcuts (⌘/)"><svg class="ic"><use href="#i-keyboard"/></svg></button>
     <button class="ico" id="themeBtn" title="theme"><svg class="ic"><use href="#i-moon"/></svg></button>
@@ -646,6 +679,25 @@
 </div>
 <div class="pop" id="morePop" hidden>
   <div id="moreList" class="more-list"></div>
+</div>
+<div class="pop" id="pluginsPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:380px; max-height:78vh; overflow:auto;">
+  <h2>Claude Code plugins</h2>
+  <div class="plug-note" id="plugScope">installed across all Claude accounts, so they survive failover</div>
+  <div id="plugStatus" class="plug-status" hidden></div>
+  <div id="pluginsList"></div>
+  <div class="plug-add">
+    <input id="plugInstallInput" type="text" placeholder="plugin@marketplace  (e.g. claude-security@claude-plugins-official)" autocomplete="off" spellcheck="false" />
+    <button class="send" id="plugInstallBtn">Install</button>
+  </div>
+  <div class="plug-sec">
+    <div class="plug-sec-h">Marketplaces</div>
+    <div id="marketplacesList"></div>
+    <div class="plug-add">
+      <input id="plugMktInput" type="text" placeholder="owner/repo, URL, or path" autocomplete="off" spellcheck="false" />
+      <button class="send ghost" id="plugMktAddBtn">Add</button>
+    </div>
+  </div>
+  <div class="plug-foot">Changes apply to the next turn. Invoke a plugin command by sending it as a message, e.g. <code>/claude-security scan my branch</code>.</div>
 </div>
 <div class="pop" id="mcpApprovalsPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:360px; max-height:70vh; overflow:auto;">
   <h2>AI send requests</h2>
@@ -888,6 +940,111 @@
     });
   }
   $('defaultsBtn').addEventListener('click', function () { renderDefaults(); openPop(defaultsPop); });
+
+  // ---- Claude Code plugins. Every mutation is replicated by the server across
+  //      all Claude failover accounts; this UI shows the aggregated state and
+  //      surfaces per-account results (and any "not on every account" drift). ----
+  var plugState = { plugins: [], marketplaces: [], dirs: 0 };
+  var plugBusy = false;
+  function plugSetStatus(kind, text) {
+    var el = $('plugStatus');
+    if (!text) { el.hidden = true; el.textContent = ''; return; }
+    el.hidden = false; el.className = 'plug-status ' + kind; el.textContent = text;
+  }
+  function summarizeOp(res) {
+    // res = { ok, perDir:[{account, ok, message}] }. Report failures explicitly.
+    if (!res || !Array.isArray(res.perDir)) return { ok: false, text: 'no response' };
+    if (res.perDir.length === 0) return { ok: false, text: 'no Claude accounts configured' };
+    var bad = res.perDir.filter(function (p) { return !p.ok; });
+    if (res.ok) return { ok: true, text: 'done on all ' + res.perDir.length + ' account(s)' };
+    return { ok: false, text: 'failed on ' + bad.map(function (p) { return p.account + ' (' + p.message + ')'; }).join('; ') };
+  }
+  function loadPlugins() {
+    return api('/api/plugins').then(function (r) { return r.json(); }).then(function (d) {
+      plugState = d && d.plugins ? d : { plugins: [], marketplaces: [], dirs: 0 };
+      renderPlugins();
+    }).catch(function () { plugSetStatus('err', 'could not load plugins'); });
+  }
+  function renderPlugins() {
+    var list = $('pluginsList'); list.textContent = '';
+    if (!plugState.plugins.length) {
+      var e = document.createElement('div'); e.className = 'plug-empty'; e.textContent = 'No plugins installed yet.'; list.appendChild(e);
+    }
+    plugState.plugins.forEach(function (p) {
+      var row = document.createElement('div'); row.className = 'plug-item';
+      var tog = document.createElement('button'); tog.className = 'pi-toggle' + (p.enabled ? ' on' : ''); tog.title = p.enabled ? 'enabled — click to disable' : 'disabled — click to enable';
+      var knob = document.createElement('i'); tog.appendChild(knob);
+      tog.disabled = plugBusy;
+      tog.addEventListener('click', function () { plugToggle(p); });
+      row.appendChild(tog);
+      var main = document.createElement('div'); main.className = 'pi-main';
+      var nm = document.createElement('div'); nm.className = 'pi-name'; nm.textContent = p.name; main.appendChild(nm);
+      var meta = document.createElement('div'); meta.className = 'pi-meta';
+      var bits = [p.marketplace];
+      if (p.version && p.version !== 'unknown') bits.push('v' + p.version);
+      // Drift warning: present on fewer than all accounts, or enabled on only some.
+      if (p.installedCount < p.totalDirs) bits.push('⚠ on ' + p.installedCount + '/' + p.totalDirs + ' accounts');
+      else if (p.enabledCount > 0 && p.enabledCount < p.totalDirs) bits.push('⚠ enabled on ' + p.enabledCount + '/' + p.totalDirs);
+      meta.textContent = bits.join(' · ');
+      if (p.installedCount < p.totalDirs || (p.enabledCount > 0 && p.enabledCount < p.totalDirs)) meta.classList.add('pi-warn');
+      main.appendChild(meta);
+      row.appendChild(main);
+      var x = document.createElement('button'); x.className = 'pi-x'; x.title = 'uninstall'; x.appendChild(icon('x', 'sm'));
+      x.disabled = plugBusy;
+      x.addEventListener('click', function () { plugUninstall(p); });
+      row.appendChild(x);
+      list.appendChild(row);
+    });
+    var mkts = $('marketplacesList'); mkts.textContent = '';
+    if (!plugState.marketplaces.length) {
+      var em = document.createElement('div'); em.className = 'plug-empty'; em.textContent = 'No marketplaces added.'; mkts.appendChild(em);
+    }
+    plugState.marketplaces.forEach(function (m) {
+      var row = document.createElement('div'); row.className = 'mkt-item';
+      var nm = document.createElement('span'); nm.className = 'mk-name'; nm.textContent = m.name + (m.repo ? ' (' + m.repo + ')' : ''); row.appendChild(nm);
+      var x = document.createElement('button'); x.className = 'pi-x'; x.title = 'remove marketplace'; x.appendChild(icon('x', 'sm'));
+      x.disabled = plugBusy;
+      x.addEventListener('click', function () { plugRemoveMarketplace(m); });
+      row.appendChild(x);
+      mkts.appendChild(row);
+    });
+  }
+  // Run a mutation, show progress, then reload the aggregated state.
+  function plugOp(path, body, busyMsg) {
+    if (plugBusy) return;
+    plugBusy = true; renderPlugins(); plugSetStatus('busy', busyMsg + ' — running on every Claude account…');
+    return api('/api/plugins/' + path, { method: 'POST', body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
+      .then(function (o) {
+        if (!o.r.ok) { plugSetStatus('err', (o.j && o.j.message) || ('failed (' + o.r.status + ')')); return; }
+        var s = summarizeOp(o.j);
+        plugSetStatus(s.ok ? 'ok' : 'err', s.text);
+      })
+      .catch(function () { plugSetStatus('err', 'request failed'); })
+      .then(function () { plugBusy = false; return loadPlugins(); });
+  }
+  function plugToggle(p) { plugOp('enabled', { plugin: p.id, enabled: !p.enabled }, (p.enabled ? 'Disabling ' : 'Enabling ') + p.name); }
+  function plugUninstall(p) {
+    uiConfirm({ title: 'Uninstall ' + p.name + '?', message: 'Removes it from every Claude account.', confirmText: 'Uninstall', danger: true }).then(function (ok) {
+      if (ok) plugOp('uninstall', { plugin: p.id }, 'Uninstalling ' + p.name);
+    });
+  }
+  function plugRemoveMarketplace(m) {
+    uiConfirm({ title: 'Remove marketplace ' + m.name + '?', message: 'Its plugins stay installed but you can no longer install/update from it.', confirmText: 'Remove', danger: true }).then(function (ok) {
+      if (ok) plugOp('marketplace/remove', { name: m.name }, 'Removing ' + m.name);
+    });
+  }
+  $('pluginsBtn').addEventListener('click', function () { openPop($('pluginsPop')); plugSetStatus(); loadPlugins(); });
+  $('plugInstallBtn').addEventListener('click', function () {
+    var v = $('plugInstallInput').value.trim(); if (!v) return;
+    plugOp('install', { plugin: v }, 'Installing ' + v).then(function () { $('plugInstallInput').value = ''; });
+  });
+  $('plugInstallInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('plugInstallBtn').click(); } });
+  $('plugMktAddBtn').addEventListener('click', function () {
+    var v = $('plugMktInput').value.trim(); if (!v) return;
+    plugOp('marketplace/add', { source: v }, 'Adding marketplace ' + v).then(function () { $('plugMktInput').value = ''; });
+  });
+  $('plugMktInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('plugMktAddBtn').click(); } });
   $('defaultsSave').addEventListener('click', function () {
     var map = {};
     [].slice.call(defaultsList.querySelectorAll('select')).forEach(function (sel) { if (sel.value) map[sel.getAttribute('data-model')] = sel.value; });
@@ -2245,7 +2402,7 @@
   // viewed conversation starts or ends a turn — no refetch needed.
   function refreshAccountsPop() { if (!quotaPop.hidden) renderAccounts(acctList); }
   var sessPicker = $('sessPicker'), sessList = $('sessList');
-  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; $('morePop').hidden = true; $('addAcctPop').hidden = true; mcpApprovalsPop.hidden = true; }
+  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; $('morePop').hidden = true; $('addAcctPop').hidden = true; mcpApprovalsPop.hidden = true; $('pluginsPop').hidden = true; }
   // Mobile "more" menu: labeled rows that trigger the real (CSS-hidden on mobile)
   // topbar buttons, so there's one source of truth for each action's handler.
   var MORE_ITEMS = [
@@ -2253,6 +2410,7 @@
     { id: 'autopilotBtn', label: 'Autopilot', icon: 'repeat' },
     { id: 'resumeBtn', label: 'Resume a session', icon: 'history' },
     { id: 'defaultsBtn', label: 'Default effort per model', icon: 'gear' },
+    { id: 'pluginsBtn', label: 'Plugins', icon: 'plug' },
     { id: 'shortcutsBtn', label: 'Keyboard shortcuts', icon: 'keyboard' },
     { id: 'passkeyBtn', label: 'Passkeys', icon: 'key' },
     { id: 'themeBtn', label: 'Theme', icon: 'moon' },

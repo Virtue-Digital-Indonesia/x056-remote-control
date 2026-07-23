@@ -19,6 +19,7 @@ import { UsageRateLimitedError } from '../src/quota.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
+import { PluginManager } from './plugins.js';
 import type { HistoryEntry } from './history.js';
 import { withAskInstructions } from '../src/question.js';
 import type { PushService } from './push.js';
@@ -92,6 +93,7 @@ export const STATE_DIR = Symbol('x056-state-dir');
 export const PUSH_SERVICE = Symbol('x056-push-service');
 export const WEBAUTHN_SERVICE = Symbol('x056-webauthn-service');
 export const SESSION_STORE = Symbol('x056-session-store');
+export const PLUGIN_MANAGER = Symbol('x056-plugin-manager');
 
 const QUOTA_TTL_MS = 90_000;
 
@@ -111,6 +113,7 @@ export class ApiController {
     @Inject(PUSH_SERVICE) private readonly push: PushService,
     @Inject(WEBAUTHN_SERVICE) private readonly webauthn: WebAuthnService,
     @Inject(SESSION_STORE) private readonly sessionStore: SessionStore,
+    @Inject(PLUGIN_MANAGER) private readonly plugins: PluginManager,
   ) {
     this.loadQuotaCache();
   }
@@ -186,8 +189,12 @@ export class ApiController {
       prompt += `\n\n[The user attached ${saved.length} files. Read them with the Read tool at:\n${saved.map((f) => `- ${f.path}`).join('\n')}]`;
     }
     // Teach the model the ASK convention so it can pose questions the panel can
-    // surface with quick-reply buttons (opt out with interactive:false).
-    if (body.interactive !== false) prompt = withAskInstructions(prompt);
+    // surface with quick-reply buttons (opt out with interactive:false). But a
+    // prompt that IS a slash command (e.g. `/claude-security scan`, from a
+    // plugin) must reach the CLI verbatim — appending the ASK block would fold
+    // it into the command's arguments and break the invocation.
+    const isSlashCommand = (body.prompt ?? '').trimStart().startsWith('/');
+    if (body.interactive !== false && !isSlashCommand) prompt = withAskInstructions(prompt);
     return { prompt, opts: { model: body.model, effort: body.effort } };
   }
 
@@ -451,6 +458,49 @@ export class ApiController {
     const a = this.manager.decideMcpApproval(body.id, !!body.approve);
     if (!a) throw new BadRequestException('unknown or already-decided approval id');
     return a;
+  }
+
+  // ---- Claude Code plugins. Every mutation is replicated across all Claude
+  //      failover accounts (see PluginManager) so a plugin stays usable after a
+  //      failover, and reads aggregate the pool so drift is visible. ----
+  @Get('plugins')
+  listPlugins() {
+    return this.plugins.list();
+  }
+
+  @Post('plugins/install')
+  @HttpCode(200)
+  async installPlugin(@Body() body: { plugin?: string }) {
+    if (!body?.plugin) throw new BadRequestException('plugin required (name@marketplace)');
+    return this.plugins.install(body.plugin.trim());
+  }
+
+  @Post('plugins/uninstall')
+  @HttpCode(200)
+  async uninstallPlugin(@Body() body: { plugin?: string }) {
+    if (!body?.plugin) throw new BadRequestException('plugin required');
+    return this.plugins.uninstall(body.plugin.trim());
+  }
+
+  @Post('plugins/enabled')
+  @HttpCode(200)
+  async setPluginEnabled(@Body() body: { plugin?: string; enabled?: boolean }) {
+    if (!body?.plugin) throw new BadRequestException('plugin required');
+    return this.plugins.setEnabled(body.plugin.trim(), !!body.enabled);
+  }
+
+  @Post('plugins/marketplace/add')
+  @HttpCode(200)
+  async addMarketplace(@Body() body: { source?: string }) {
+    if (!body?.source) throw new BadRequestException('source required (URL, path, or owner/repo)');
+    return this.plugins.addMarketplace(body.source.trim());
+  }
+
+  @Post('plugins/marketplace/remove')
+  @HttpCode(200)
+  async removeMarketplace(@Body() body: { name?: string }) {
+    if (!body?.name) throw new BadRequestException('name required');
+    return this.plugins.removeMarketplace(body.name.trim());
   }
 
   @Get('sessions/current/history')
