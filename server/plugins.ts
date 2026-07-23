@@ -32,7 +32,8 @@ export interface MarketplaceInfo {
  *  of sync, which the caller surfaces rather than hiding. */
 export interface OpResult {
   ok: boolean;
-  perDir: { account: string; ok: boolean; message: string }[];
+  /** noop = the account was already in the desired state (nothing changed). */
+  perDir: { account: string; ok: boolean; message: string; noop?: boolean }[];
 }
 
 interface RawPlugin {
@@ -102,13 +103,26 @@ export class PluginManager {
     return summary.replace(/^[✔✘•\-\s]+/, '').slice(0, 240) || (stdout || stderr ? 'done' : 'no output');
   }
 
-  private async eachDir(args: string[]): Promise<OpResult> {
+  /** A mutation that "fails" only because the target state already holds is a
+   *  no-op success — the CLI exits non-zero for `enable` on an already-enabled
+   *  plugin, `disable` on a disabled one, `uninstall`/`marketplace remove` on a
+   *  missing one. Replicating across accounts routinely hits these (a plugin
+   *  already enabled on 2 of 3 accounts), so treat "already in the desired
+   *  state" as done rather than surfacing it as an error. */
+  private async eachDir(args: string[], okAnyway?: RegExp): Promise<OpResult> {
     const dirs = this.opts.claudeDirs();
     if (dirs.length === 0) return { ok: false, perDir: [] };
     const perDir = await Promise.all(
       dirs.map(async (d) => {
         const r = await this.run(d.configDir, args);
-        return { account: d.name, ok: r.ok, message: PluginManager.oneLine(r.stdout, r.stderr) };
+        const combined = r.stdout + '\n' + r.stderr;
+        const noop = !r.ok && !!okAnyway && okAnyway.test(combined);
+        return {
+          account: d.name,
+          ok: r.ok || noop,
+          noop,
+          message: noop ? 'already up to date' : PluginManager.oneLine(r.stdout, r.stderr),
+        };
       }),
     );
     return { ok: perDir.every((p) => p.ok), perDir };
@@ -162,11 +176,13 @@ export class PluginManager {
     return { plugins, marketplaces, dirs: total };
   }
 
-  addMarketplace(source: string): Promise<OpResult> { return this.eachDir(['marketplace', 'add', source]); }
-  removeMarketplace(name: string): Promise<OpResult> { return this.eachDir(['marketplace', 'remove', name]); }
-  install(plugin: string): Promise<OpResult> { return this.eachDir(['install', plugin]); }
-  uninstall(plugin: string): Promise<OpResult> { return this.eachDir(['uninstall', plugin]); }
+  addMarketplace(source: string): Promise<OpResult> { return this.eachDir(['marketplace', 'add', source], /already/i); }
+  removeMarketplace(name: string): Promise<OpResult> { return this.eachDir(['marketplace', 'remove', name], /not found|no such|unknown|not configured/i); }
+  install(plugin: string): Promise<OpResult> { return this.eachDir(['install', plugin], /already (installed|enabled)/i); }
+  uninstall(plugin: string): Promise<OpResult> { return this.eachDir(['uninstall', plugin], /not found|not installed|no such/i); }
   setEnabled(plugin: string, enabled: boolean): Promise<OpResult> {
-    return this.eachDir([enabled ? 'enable' : 'disable', plugin]);
+    return enabled
+      ? this.eachDir(['enable', plugin], /already enabled/i)
+      : this.eachDir(['disable', plugin], /already disabled/i);
   }
 }

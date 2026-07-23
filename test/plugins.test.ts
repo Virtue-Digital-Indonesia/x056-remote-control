@@ -93,6 +93,32 @@ describe('PluginManager', () => {
     expect(res).toEqual({ ok: false, perDir: [] });
   });
 
+  it('treats "already enabled" as a no-op success, not a failure (the reported bug)', async () => {
+    const s = scenario();
+    // every dir already has it enabled → CLI exits 1 with "already enabled"
+    for (const d of s.dirs) writeFileSync(join(d.configDir, 'ALREADY'), '1');
+    const res = await mgr(s.dirs).setEnabled('frontend-design@claude-plugins-official', true);
+    expect(res.ok).toBe(true);
+    expect(res.perDir.every((p) => p.ok && p.noop)).toBe(true);
+    expect(res.perDir[0].message).toBe('already up to date');
+  });
+
+  it('treats "already disabled" and "not installed" as no-op successes too', async () => {
+    const s = scenario();
+    for (const d of s.dirs) writeFileSync(join(d.configDir, 'ALREADY'), '1');
+    expect((await mgr(s.dirs).setEnabled('p@m', false)).ok).toBe(true); // already disabled
+    expect((await mgr(s.dirs).uninstall('p@m')).ok).toBe(true); // not found in installed
+  });
+
+  it('still reports a GENUINE failure (not an "already" no-op) as failed', async () => {
+    const s = scenario();
+    writeFileSync(join(s.dirs[0].configDir, 'FAIL'), '1'); // hard error, no "already" text
+    const res = await mgr(s.dirs).setEnabled('p@m', true);
+    expect(res.ok).toBe(false);
+    expect(res.perDir.find((p) => p.account === 'a')?.ok).toBe(false);
+    expect(res.perDir.find((p) => p.account === 'a')?.noop).toBe(false);
+  });
+
   it('claudeDirsFromRegistry reads accounts.json and keeps only Claude accounts', () => {
     const root = mkdtempSync(join(tmpdir(), 'x056-reg-'));
     const file = join(root, 'accounts.json');

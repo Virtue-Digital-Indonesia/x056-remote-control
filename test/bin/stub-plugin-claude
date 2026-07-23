@@ -31,5 +31,13 @@ if (existsSync(join(cfg, 'FAIL'))) {
   process.stderr.write('✘ Error: simulated failure in ' + cfg + '\n');
   process.exit(1);
 }
+// Simulate the CLI's real "already in the desired state" non-zero exits (enable
+// on an already-enabled plugin, disable on a disabled one, uninstall a missing
+// one) when the config dir is marked for it — so idempotency handling is tested.
+if (existsSync(join(cfg, 'ALREADY'))) {
+  if (sub === 'enable') { process.stderr.write('✘ Failed to enable plugin "' + argv[2] + '": Plugin "' + argv[2] + '" is already enabled\n'); process.exit(1); }
+  if (sub === 'disable') { process.stderr.write('✘ Failed to disable plugin "' + argv[2] + '": Plugin "' + argv[2] + '" is already disabled\n'); process.exit(1); }
+  if (sub === 'uninstall') { process.stderr.write('✘ Failed to uninstall plugin "' + argv[2] + '": Plugin "' + argv[2] + '" not found in installed plugins\n'); process.exit(1); }
+}
 process.stdout.write('✔ Successfully ran ' + argv.join(' ') + '\n');
 process.exit(0);

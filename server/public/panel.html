@@ -456,7 +456,12 @@
   .sess-msg { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sess-meta { font-size: 11px; color: var(--faint); margin-top: 2px; }
   .hamburger { display: none; }
-  .moreBtn { display: none; }
+  /* The ⋯ overflow menu is used on desktop too now, to keep the topbar tidy:
+     the settings/account cluster lives in here, leaving only the workflow
+     actions (notifications, autopilot, resume) inline. */
+  .moreBtn { display: inline-grid; place-items: center; }
+  .topbar #defaultsBtn, .topbar #pluginsBtn, .topbar #passkeyBtn,
+  .topbar #shortcutsBtn, .topbar #themeBtn, .topbar #tokenBtn { display: none; }
   .nav-backdrop { display: none; }
   #morePop { top: 52px; right: 8px; left: auto; bottom: auto; width: 232px; }
   .more-list { display: flex; flex-direction: column; gap: 1px; }
@@ -466,11 +471,10 @@
   @media (max-width: 720px) {
     body { grid-template-columns: 1fr; }
     .hamburger { display: inline-grid; place-items: center; }
-    .moreBtn { display: inline-grid; place-items: center; }
-    /* On mobile the crowded action icons collapse into the "more" menu; keep
-       only the projects drawer, title, connection dot, and the more button. */
-    .topbar #notifyBtn, .topbar #autopilotBtn, .topbar #resumeBtn,
-    .topbar #defaultsBtn, .topbar #pluginsBtn, .topbar #passkeyBtn, .topbar #themeBtn, .topbar #tokenBtn, .topbar #shortcutsBtn { display: none; }
+    /* On mobile the remaining inline actions also collapse into the "more" menu
+       (the settings cluster is already hidden at the base level), keeping only
+       the projects drawer, title, connection dot, and the more button. */
+    .topbar #notifyBtn, .topbar #autopilotBtn, .topbar #resumeBtn { display: none; }
     .topbar .title { flex: 1; min-width: 0; }
     .topbar .sp { display: none; }
     #morePop { top: calc(52px + env(safe-area-inset-top)); }
@@ -952,11 +956,17 @@
     el.hidden = false; el.className = 'plug-status ' + kind; el.textContent = text;
   }
   function summarizeOp(res) {
-    // res = { ok, perDir:[{account, ok, message}] }. Report failures explicitly.
+    // res = { ok, perDir:[{account, ok, message, noop}] }. Report failures explicitly.
     if (!res || !Array.isArray(res.perDir)) return { ok: false, text: 'no response' };
     if (res.perDir.length === 0) return { ok: false, text: 'no Claude accounts configured' };
     var bad = res.perDir.filter(function (p) { return !p.ok; });
-    if (res.ok) return { ok: true, text: 'done on all ' + res.perDir.length + ' account(s)' };
+    if (res.ok) {
+      var n = res.perDir.length;
+      // Everything a no-op (already in the desired state) → say so, don't claim
+      // we changed anything.
+      if (res.perDir.every(function (p) { return p.noop; })) return { ok: true, text: 'already up to date on all ' + n + ' account(s)' };
+      return { ok: true, text: 'done on all ' + n + ' account(s)' };
+    }
     return { ok: false, text: 'failed on ' + bad.map(function (p) { return p.account + ' (' + p.message + ')'; }).join('; ') };
   }
   function loadPlugins() {
@@ -2419,7 +2429,12 @@
   $('shortcutsBtn').addEventListener('click', openShortcuts);
   $('moreBtn').addEventListener('click', function () {
     var list = $('moreList'); list.textContent = '';
-    MORE_ITEMS.forEach(function (it) {
+    // Only surface actions whose topbar button isn't currently shown inline —
+    // so on desktop the menu holds just the settings/account cluster, and on
+    // mobile (where every action icon is CSS-hidden) it holds them all. Reading
+    // the live layout (offsetParent) keeps this correct at any viewport without
+    // duplicating the breakpoint here.
+    MORE_ITEMS.filter(function (it) { var el = $(it.id); return el && el.offsetParent === null; }).forEach(function (it) {
       var b = document.createElement('button'); b.className = 'more-item';
       b.appendChild(icon(it.icon, 'sm'));
       var s = document.createElement('span'); s.textContent = it.label; b.appendChild(s);
