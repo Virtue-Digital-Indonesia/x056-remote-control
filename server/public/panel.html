@@ -612,7 +612,7 @@
             <option value="claude">Claude</option><option value="codex">ChatGPT</option>
           </select><span class="provlock" id="providerLock" hidden></span></div>
           <div class="select"><select id="model" title="model">
-            <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
+            <option value="">Auto model</option><option value="fable">Fable</option><option value="claude-opus-5">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
           </select></div>
           <div class="select"><select id="effort" title="effort">
             <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
@@ -1086,7 +1086,13 @@
       // never send those to `codex -m`, and vice versa — so both the options AND
       // the remembered "last pick" fallback are per-provider.
       if (prov === 'claude') {
-        setModelOptions(CLAUDE_MODEL_OPTS, p.model || lsGet(modelKeyFor(prov)));
+        // The "Opus" picker entry now means Opus 5 (value claude-opus-5). A
+        // project/localStorage still holding the legacy bare "opus" alias (which
+        // resolves to the older Opus) maps onto that same entry, so it shows
+        // "Opus" and upgrades to Opus 5 on the next send rather than resetting to Auto.
+        var claudeModel = p.model || lsGet(modelKeyFor(prov));
+        if (claudeModel === 'opus') claudeModel = 'claude-opus-5';
+        setModelOptions(CLAUDE_MODEL_OPTS, claudeModel);
         setEffortOptions(CLAUDE_EFFORT_OPTS, p.effort || lsGet(effortKeyFor(prov)));
       } else {
         // This provider's real catalog for the configured account. Empty until
@@ -1418,9 +1424,13 @@
   function modelLabel(m) {
     if (!m) return '';
     var s = String(m).toLowerCase();
-    if (s.indexOf('fable') >= 0) return 'Fable'; if (s.indexOf('opus') >= 0) return 'Opus';
-    if (s.indexOf('sonnet') >= 0) return 'Sonnet'; if (s.indexOf('haiku') >= 0) return 'Haiku';
-    return String(m).replace(/^claude-/, '');
+    var fam = s.indexOf('fable') >= 0 ? 'Fable' : s.indexOf('opus') >= 0 ? 'Opus'
+      : s.indexOf('sonnet') >= 0 ? 'Sonnet' : s.indexOf('haiku') >= 0 ? 'Haiku' : '';
+    if (!fam) return String(m).replace(/^claude-/, '');
+    // Append the version right after the family (opus-5 → "Opus 5",
+    // opus-4-8 → "Opus 4.8"); bare aliases like "opus" stay unversioned.
+    var vm = new RegExp(fam.toLowerCase() + '-(\\d+(?:-\\d+)?)').exec(s);
+    return fam + (vm ? ' ' + vm[1].replace('-', '.') : '');
   }
   function renderBusy() {
     busyEl.textContent = '';
