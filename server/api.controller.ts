@@ -460,6 +460,15 @@ export class ApiController {
     return a;
   }
 
+  /** Unanswered questions across all conversations. A question ends its turn and
+   *  waits for a human, so the panel hydrates from this on load/reconnect —
+   *  otherwise a refresh (or a container swap) drops the card while the
+   *  conversation is still genuinely waiting. */
+  @Get('questions')
+  pendingQuestions() {
+    return this.manager.listPendingQuestions();
+  }
+
   // ---- Claude Code plugins. Every mutation is replicated across all Claude
   //      failover accounts (see PluginManager) so a plugin stays usable after a
   //      failover, and reads aggregate the pool so drift is visible. ----

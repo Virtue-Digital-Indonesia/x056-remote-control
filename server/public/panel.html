@@ -1363,7 +1363,12 @@
   }
   var acctNames = {}; // registry name (a/b) -> display name
   var activeModel = {}, activeAccount = {}; // per pid: model id / account name in this turn
-  var pendingQ = {};   // pid -> unanswered question data (survives history reloads / SSE replays)
+  // sessionId -> unanswered question data (survives history reloads / SSE replays,
+  // and is rehydrated from /api/questions after a refresh or container swap).
+  // Keyed by CONVERSATION, not project: several conversations in one project can
+  // each be waiting on their own question, and a project-wide key let one
+  // overwrite (and one conversation's new turn erase) another's card.
+  var pendingQ = {};
   // Sidebar notification bells: an unseen notable event on a conversation the
   // user isn't currently viewing (a question, a failed turn, or a finished turn).
   // Keyed by project+conversation (viewKey); a project row aggregates its convos.
@@ -1553,7 +1558,8 @@
       renderStrip();
     }
     else if (kind === 'question') {
-      pendingQ[pid] = data; showQuestion(pid, data);
+      if (sid) pendingQ[sid] = { projectId: pid, sessionId: sid, question: data.question, options: data.options };
+      showQuestion(pid, data);
       if (!mineConvo) { setConvNotif(pid, sid, 'question'); notify('Claude has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80)); }
     }
     else if (kind === 'autopilot') {
@@ -1646,11 +1652,29 @@
     var sid = sessionId !== undefined ? sessionId : lastSessionId;
     var c = qContainer(pid, sid), old = c.querySelectorAll('.qcard.pending');
     for (var i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
-    delete pendingQ[pid];
+    // Only THIS conversation's question is resolved — a sibling conversation in
+    // the same project may still be waiting on its own.
+    if (sid) delete pendingQ[sid];
+  }
+  // Rehydrate unanswered questions from the server. The card is not part of the
+  // transcript, so without this a refresh (or the container swap every deploy
+  // does) leaves a conversation silently waiting with no visible question.
+  function loadQuestions() {
+    return api('/api/questions').then(function (r) { return r.json(); }).then(function (list) {
+      (list || []).forEach(function (q) {
+        if (!q.sessionId) return;
+        pendingQ[q.sessionId] = q;
+        // Render it if that conversation is the one on screen; otherwise flag it
+        // in the sidebar so it's discoverable from wherever you are.
+        if (q.sessionId === lastSessionId) showQuestion(q.projectId, q);
+        else setConvNotif(q.projectId, q.sessionId, 'question');
+      });
+    }).catch(function () {});
   }
   function answerQuestion(pid, card, answer) {
     // this question is handled now — stop tracking it as pending (keep the card, locked)
-    delete pendingQ[pid]; card.classList.remove('pending');
+    if (lastSessionId) delete pendingQ[lastSessionId];
+    card.classList.remove('pending');
     card.classList.add('answered');
     var buttons = card.querySelectorAll('.qopt');
     for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; if (buttons[i].textContent === answer) buttons[i].classList.add('chosen'); }
@@ -2704,10 +2728,9 @@
       // the overlay pill (not an inline entry), so this also supersedes any
       // "showing cached view" the switch that led here left showing.
       if (hasMsgs) { showStreamStatus('live'); fadeStreamStatus(3000); } else { hideStreamStatusNow(); }
-      // Re-attach a still-open question the transcript doesn't carry — but only
-      // if it actually belongs to THIS conversation, not a different one of the
-      // same project that happens to have a pending question.
-      if (pendingQ[pid] && (!pendingQ[pid].sessionId || pendingQ[pid].sessionId === sid)) showQuestion(pid, pendingQ[pid]);
+      // Re-attach a still-open question the transcript doesn't carry. Keyed by
+      // conversation, so this is exactly THIS conversation's question.
+      if (sid && pendingQ[sid]) showQuestion(pid, pendingQ[sid]);
       // Sync the live busy state from this conversation's view — events may have
       // set it before currentProjectId/lastSessionId were known (so the global
       // `active` never caught it).
@@ -2760,7 +2783,10 @@
       // was set, silently no-oping. Re-run it now so a turn already running when
       // the page loaded shows up without needing to switch conversations first.
       loadProjects();
-      return loadHistory();
+      // Load pending questions BEFORE the history render, which is what
+      // re-attaches the card for the viewed conversation — otherwise the fetch
+      // can land after it and the question stays invisible until a switch.
+      return loadQuestions().then(loadHistory);
     });
     connect();
   }
@@ -2770,7 +2796,9 @@
   function connect() {
     if (es) es.close();
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
-    es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); };
+    // A reconnect may have missed the 'question' event entirely (the gap, or a
+    // restart that cleared the replay buffer) — re-hydrate so the card returns.
+    es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
     ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'active_model', 'settings', 'accounts', 'mcp_approval'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {

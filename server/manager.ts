@@ -107,6 +107,15 @@ export interface McpApproval {
   error?: string;
 }
 
+/** A question the model ended its turn with, awaiting the user's answer. */
+export interface PendingQuestion {
+  projectId: string;
+  sessionId: string;
+  question: string;
+  options: string[];
+  at: string;
+}
+
 const MCP_APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
 const MCP_APPROVAL_RETAIN_MS = 15 * 60 * 1000; // keep decided/expired entries briefly so a late poll still sees the outcome
 
@@ -225,11 +234,18 @@ export class SessionManager {
   private sharedRegistry?: AccountRegistry;
   private mcpApprovals = new Map<string, McpApproval>();
   private mcpApprovalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Unanswered questions, keyed by the CONVERSATION that asked. A question ends
+  // its turn and waits for a human, so it must outlive the SSE event that
+  // announced it: the panel kept it in browser memory only, so a page refresh,
+  // an SSE buffer eviction, or a container swap (every deploy) silently dropped
+  // the card while the conversation was still genuinely waiting for an answer.
+  private pendingQuestions = new Map<string, PendingQuestion>();
 
   constructor(private readonly opts: SessionManagerOptions) {
     mkdirSync(opts.stateDir, { recursive: true });
     this.migrateProjects();
     this.projects().migrateConversations();
+    this.loadPendingQuestions();
     this.detectOrphans();
     this.resumeAutopilots();
     if (opts.manageProcessSignals) {
@@ -1275,7 +1291,34 @@ export class SessionManager {
     return a;
   }
 
+  // Persisted to disk, not just held in memory: a container swap (every deploy)
+  // or a crash restarts the gateway, and an in-memory-only map lost the question
+  // exactly when the conversation was still waiting on it.
+  private get questionsFile(): string { return join(this.opts.stateDir, 'questions.json'); }
+  private loadPendingQuestions(): void {
+    try {
+      const raw = JSON.parse(readFileSync(this.questionsFile, 'utf8')) as Record<string, PendingQuestion>;
+      if (raw && typeof raw === 'object') for (const [sid, q] of Object.entries(raw)) this.pendingQuestions.set(sid, q);
+    } catch { /* none on disk yet */ }
+  }
+  private savePendingQuestions(): void {
+    try {
+      const obj: Record<string, PendingQuestion> = {};
+      for (const [sid, q] of this.pendingQuestions) obj[sid] = q;
+      const tmp = `${this.questionsFile}.tmp`;
+      writeFileSync(tmp, JSON.stringify(obj, null, 2));
+      renameSync(tmp, this.questionsFile);
+    } catch { /* best effort — never break a turn over this */ }
+  }
+
+  /** Unanswered questions across all conversations — the panel hydrates from
+   *  this so a refresh/reconnect/restart restores the cards. */
+  listPendingQuestions(): PendingQuestion[] { return [...this.pendingQuestions.values()]; }
+
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
+    // Any new turn for this conversation supersedes its unanswered question
+    // (answering one IS a new turn), so the card never outlives its moment.
+    if (this.pendingQuestions.delete(sessionId)) this.savePendingQuestions();
     const reg = this.projects();
     const adapter = this.adapterFor(pid, sessionId);
     // A model id is only meaningful to the CLI that defines it — "opus" means
@@ -1375,7 +1418,15 @@ export class SessionManager {
           // an answerable card (only when not on autopilot/queue, which drive it).
           const onAutopilot = !!this.loadAutopilot()[sessionId];
           const q = onAutopilot || drained ? null : parseQuestion(res.resultText ?? '');
-          if (q) emit('question', { sessionId, question: q.question, options: q.options });
+          if (q) {
+            // Persist alongside the event so the card can be rehydrated after a
+            // refresh/reconnect/swap — the turn is over and waiting on a human.
+            this.pendingQuestions.set(sessionId, {
+              projectId: pid, sessionId, question: q.question, options: q.options, at: new Date().toISOString(),
+            });
+            this.savePendingQuestions();
+            emit('question', { sessionId, question: q.question, options: q.options });
+          }
           emit('session_done', { sessionId, ...res });
           if (!drained) this.maybeAutopilot(pid, sessionId, res);
         })
