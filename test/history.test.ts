@@ -104,3 +104,51 @@ describe('readSessionHistory', () => {
     expect(rows.map((r) => r.text)).toEqual(['msg 7', 'msg 8', 'msg 9']);
   });
 });
+
+describe('readSessionHistory on a very large transcript', () => {
+  // Real transcripts reach hundreds of MB (every base64 screenshot is stored
+  // inline). Reading the whole file cost seconds per request and, past V8's
+  // ~512MB max string length, threw outright — which surfaced as a live
+  // conversation rendering zero messages. Only the tail is ever needed.
+  it('reads the recent messages from a huge file without loading it all', () => {
+    const sid = 'sess-huge';
+    const configDir = mkdtempSync(join(tmpdir(), 'x056-hist-big-'));
+    const projectDir = join(configDir, 'projects', '-some-project');
+    mkdirSync(projectDir, { recursive: true });
+    const file = join(projectDir, `${sid}.jsonl`);
+    // ~40MB of bulky tool results (stand-ins for base64 screenshots), then the
+    // real messages at the end.
+    const blob = 'x'.repeat(400_000);
+    const bulk: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      bulk.push(JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: blob }] } }));
+    }
+    bulk.push(JSON.stringify({ type: 'user', message: { role: 'user', content: 'the real question' } }));
+    bulk.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'the real answer' }] } }));
+    writeFileSync(file, bulk.join('\n') + '\n');
+
+    const rows = readSessionHistory([configDir], sid, 10);
+    const texts = rows.filter((r) => r.role !== 'model').map((r) => r.text);
+    expect(texts).toContain('the real question');
+    expect(texts).toContain('the real answer');
+  });
+
+  it('does not emit a mangled entry from the line the tail window cuts in half', () => {
+    const sid = 'sess-cut';
+    const configDir = mkdtempSync(join(tmpdir(), 'x056-hist-cut-'));
+    const projectDir = join(configDir, 'projects', '-some-project');
+    mkdirSync(projectDir, { recursive: true });
+    // One line far larger than the initial 2MB window, so the window lands
+    // mid-line; the partial must be discarded, not parsed into garbage.
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'A'.repeat(3_000_000) }] } }),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'tail question' } }),
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'tail answer' }] } }),
+    ];
+    writeFileSync(join(projectDir, `${sid}.jsonl`), lines.join('\n') + '\n');
+    // limit 2 is satisfied by the first (2MB) window, so it never widens — the
+    // half-line at the window's start must be dropped, not parsed into garbage.
+    const rows = readSessionHistory([configDir], sid, 2).filter((r) => r.role !== 'model');
+    expect(rows.map((r) => r.text)).toEqual(['tail question', 'tail answer']);
+  });
+});

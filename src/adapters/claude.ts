@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { classifyEvent } from '../detector.js';
 import { fetchUsage } from '../quota.js';
@@ -169,15 +169,53 @@ function textFromContent(content: unknown): string {
 export function readHistory(configDirs: string[], sessionId: string, limit = 100): HistoryEntry[] {
   const file = findTranscript(configDirs, sessionId);
   if (!file) return [];
-  let raw: string;
-  try {
-    raw = readFileSync(file, 'utf8');
-  } catch {
-    return [];
+  // Only the TAIL is ever needed (we return the last `limit` entries), and these
+  // files grow without bound — a long-running conversation that screenshots a lot
+  // reaches hundreds of MB, because every base64 image lands in the transcript.
+  // Reading the whole thing cost seconds per request AND would eventually throw:
+  // past V8's ~512MB max string length readFileSync(utf8) fails outright, whereupon
+  // the caller's catch turned a live conversation into a blank panel. So walk
+  // backwards from the end, widening only until enough entries are found.
+  let size: number;
+  try { size = statSync(file).size; } catch { return []; }
+  let window = Math.min(TAIL_START_BYTES, size);
+  for (;;) {
+    const atStart = window >= size;
+    const rows = parseTranscript(readTail(file, window), !atStart);
+    if (rows.length >= limit || atStart || window >= TAIL_MAX_BYTES) return rows.slice(-limit);
+    window = Math.min(window * 4, size);
   }
+}
+
+/** Start small (most reads want a handful of recent messages) and widen. */
+const TAIL_START_BYTES = 1 << 21; // 2 MB
+const TAIL_MAX_BYTES = 1 << 27; // 128 MB — far under the string limit, still ample
+
+/** Read the last `bytes` bytes of a file as text (no whole-file allocation). */
+function readTail(file: string, bytes: number): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, 'r');
+    const size = fstatSync(fd).size;
+    const len = Math.min(bytes, size);
+    const buf = Buffer.allocUnsafe(len);
+    readSync(fd, buf, 0, len, size - len);
+    return buf.toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+/** Parse transcript lines into displayable history. `partial` drops the first
+ *  line, which a mid-file window almost certainly cut in half. */
+function parseTranscript(raw: string, partial: boolean): HistoryEntry[] {
   const out: HistoryEntry[] = [];
   let lastModel: string | undefined;
-  for (const line of raw.split('\n')) {
+  const lines = raw.split('\n');
+  if (partial) lines.shift();
+  for (const line of lines) {
     if (line.trim() === '') continue;
     let entry: Record<string, unknown>;
     try {
@@ -217,7 +255,7 @@ export function readHistory(configDirs: string[], sessionId: string, limit = 100
     if (shown === '') continue;
     out.push({ role: type, text: shown, ts });
   }
-  return out.slice(-limit);
+  return out;
 }
 
 /**
