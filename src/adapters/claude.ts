@@ -167,23 +167,50 @@ function textFromContent(content: unknown): string {
  * Returns the last `limit` entries.
  */
 export function readHistory(configDirs: string[], sessionId: string, limit = 100): HistoryEntry[] {
+  return readHistoryPage(configDirs, sessionId, limit).rows;
+}
+
+/** One page of history plus the cursor needed to fetch the page before it. */
+export interface HistoryPage {
+  rows: HistoryEntry[];
+  /** Byte offset where this page starts — pass as `before` to get older rows. */
+  cursor: number;
+  /** True when there is nothing older (the page reached the file's start). */
+  done: boolean;
+}
+
+/**
+ * Read up to `limit` entries ending just before byte offset `before` (default:
+ * end of file), newest page first. Paging is by BYTE OFFSET rather than message
+ * index so no request ever has to know — or read — the whole file: these
+ * transcripts grow without bound (every base64 screenshot is stored inline;
+ * real ones pass 350MB), and reading it all both cost seconds and would throw
+ * past V8's ~512MB max string length, blanking the conversation entirely.
+ */
+export function readHistoryPage(configDirs: string[], sessionId: string, limit = 100, before?: number): HistoryPage {
   const file = findTranscript(configDirs, sessionId);
-  if (!file) return [];
-  // Only the TAIL is ever needed (we return the last `limit` entries), and these
-  // files grow without bound — a long-running conversation that screenshots a lot
-  // reaches hundreds of MB, because every base64 image lands in the transcript.
-  // Reading the whole thing cost seconds per request AND would eventually throw:
-  // past V8's ~512MB max string length readFileSync(utf8) fails outright, whereupon
-  // the caller's catch turned a live conversation into a blank panel. So walk
-  // backwards from the end, widening only until enough entries are found.
+  if (!file) return { rows: [], cursor: 0, done: true };
   let size: number;
-  try { size = statSync(file).size; } catch { return []; }
-  let window = Math.min(TAIL_START_BYTES, size);
+  try { size = statSync(file).size; } catch { return { rows: [], cursor: 0, done: true }; }
+  const end = before === undefined ? size : Math.max(0, Math.min(before, size));
+  if (end <= 0) return { rows: [], cursor: 0, done: true };
+  // Walk backwards from `end`, widening only until enough entries are found.
+  let window = Math.min(TAIL_START_BYTES, end);
   for (;;) {
-    const atStart = window >= size;
-    const rows = parseTranscript(readTail(file, window), !atStart);
-    if (rows.length >= limit || atStart || window >= TAIL_MAX_BYTES) return rows.slice(-limit);
-    window = Math.min(window * 4, size);
+    const start = Math.max(0, end - window);
+    const parsed = parseTranscript(readLines(file, start, end));
+    const atStart = start === 0;
+    if (parsed.rows.length >= limit || atStart || window >= TAIL_MAX_BYTES) {
+      const from = Math.max(0, parsed.rows.length - limit);
+      const rows = parsed.rows.slice(from);
+      // Older content remains if this window didn't reach the file start, or it
+      // did but we had to drop rows off the front of it to honour `limit`.
+      const done = atStart && from === 0;
+      // The next page ends where this one begins.
+      const cursor = rows.length ? parsed.offsets[from] : start;
+      return { rows, cursor, done };
+    }
+    window = Math.min(window * 4, end);
   }
 }
 
@@ -191,31 +218,46 @@ export function readHistory(configDirs: string[], sessionId: string, limit = 100
 const TAIL_START_BYTES = 1 << 21; // 2 MB
 const TAIL_MAX_BYTES = 1 << 27; // 128 MB — far under the string limit, still ample
 
-/** Read the last `bytes` bytes of a file as text (no whole-file allocation). */
-function readTail(file: string, bytes: number): string {
+interface RawLine { start: number; text: string }
+
+/** Read byte range [from, to) and split it into whole lines, each tagged with
+ *  its absolute byte offset. A leading partial line (the window almost always
+ *  cuts one in half) is dropped rather than parsed into garbage. */
+function readLines(file: string, from: number, to: number): RawLine[] {
   let fd: number | undefined;
   try {
     fd = openSync(file, 'r');
-    const size = fstatSync(fd).size;
-    const len = Math.min(bytes, size);
+    const len = Math.max(0, Math.min(to, fstatSync(fd).size) - from);
+    if (len === 0) return [];
     const buf = Buffer.allocUnsafe(len);
-    readSync(fd, buf, 0, len, size - len);
-    return buf.toString('utf8');
+    readSync(fd, buf, 0, len, from);
+    const out: RawLine[] = [];
+    let lineStart = 0;
+    for (let i = 0; i < len; i++) {
+      if (buf[i] !== 0x0a) continue; // '\n'
+      // Slicing on newline boundaries keeps every line's UTF-8 intact, even
+      // though the window itself may have cut a multi-byte char.
+      if (!(from > 0 && lineStart === 0)) out.push({ start: from + lineStart, text: buf.toString('utf8', lineStart, i) });
+      lineStart = i + 1;
+    }
+    if (lineStart < len && !(from > 0 && lineStart === 0)) out.push({ start: from + lineStart, text: buf.toString('utf8', lineStart, len) });
+    return out;
   } catch {
-    return '';
+    return [];
   } finally {
     if (fd !== undefined) try { closeSync(fd); } catch { /* already closed */ }
   }
 }
 
-/** Parse transcript lines into displayable history. `partial` drops the first
- *  line, which a mid-file window almost certainly cut in half. */
-function parseTranscript(raw: string, partial: boolean): HistoryEntry[] {
+/** Parse transcript lines into displayable history, keeping each row's source
+ *  byte offset so the caller can build a paging cursor. */
+function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: number[] } {
   const out: HistoryEntry[] = [];
+  const offsets: number[] = [];
   let lastModel: string | undefined;
-  const lines = raw.split('\n');
-  if (partial) lines.shift();
-  for (const line of lines) {
+  for (const rawLine of input) {
+    const line = rawLine.text;
+    const at = rawLine.start;
     if (line.trim() === '') continue;
     let entry: Record<string, unknown>;
     try {
@@ -233,7 +275,7 @@ function parseTranscript(raw: string, partial: boolean): HistoryEntry[] {
     // may run a different model) so the timeline shows what handled each part.
     if (type === 'assistant' && entry.isSidechain !== true && typeof message.model === 'string' && message.model !== '<synthetic>') {
       if (message.model !== lastModel) {
-        out.push({ role: 'model', text: message.model, ts });
+        out.push({ role: 'model', text: message.model, ts }); offsets.push(at);
         lastModel = message.model;
       }
     }
@@ -253,9 +295,9 @@ function parseTranscript(raw: string, partial: boolean): HistoryEntry[] {
     // the rendered transcript on reload. Drop a message that was only an ASK.
     const shown = type === 'user' ? stripAskInstructions(text) : stripAsk(text);
     if (shown === '') continue;
-    out.push({ role: type, text: shown, ts });
+    out.push({ role: type, text: shown, ts }); offsets.push(at);
   }
-  return out;
+  return { rows: out, offsets };
 }
 
 /**
@@ -286,4 +328,5 @@ export const claudeAdapter: ProviderAdapter = {
   readIdentity,
   fetchUsage,
   readHistory,
+  readHistoryPage,
 };

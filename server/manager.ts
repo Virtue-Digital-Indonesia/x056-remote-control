@@ -1131,6 +1131,12 @@ export class SessionManager {
     this.projects().rename(id, name);
   }
 
+  /** Persist the sidebar's project order (drag-to-reorder). */
+  reorderProjects(ids: string[]): void {
+    this.projects().reorder(ids);
+    this.emit('projects', { reordered: true });
+  }
+
   /** Remove a project from the list. Refuses while it has a turn running; stops
    *  its autopilot; repoints state.json if the removed one was current. */
   removeProject(id: string): void {

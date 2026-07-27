@@ -108,6 +108,21 @@ export class ProjectRegistry {
     this.save();
   }
 
+  /** Reorder the sidebar. `ids` is the desired order; any project omitted (or
+   *  added concurrently by another tab) keeps its relative position at the end,
+   *  so a stale client list can never drop a project from the registry. */
+  reorder(ids: string[]): void {
+    const byId = new Map(this.data.projects.map((p) => [p.id, p]));
+    const ordered: Project[] = [];
+    for (const id of ids) {
+      const p = byId.get(id);
+      if (p && !ordered.includes(p)) ordered.push(p);
+    }
+    for (const p of this.data.projects) if (!ordered.includes(p)) ordered.push(p);
+    this.data.projects = ordered;
+    this.save();
+  }
+
   /** Record the session a project should resume next time it's selected, and
    *  make sure it's registered as a conversation (idempotent) and set current. */
   setLastSession(id: string, sessionId: string, title?: string, provider?: ProviderId): void {

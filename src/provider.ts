@@ -133,4 +133,14 @@ export interface ProviderAdapter {
    *  accounts of THIS provider — a transcript can only be under one of them.
    *  Omit (or return []) when nothing is found; never throws. */
   readHistory?(configDirs: string[], providerSessionId: string, limit: number): HistoryEntry[];
+
+  /** Paginated history for scroll-back: up to `limit` entries ending just
+   *  before the opaque `before` cursor (omit for the newest page), plus the
+   *  cursor for the page older than this one. Providers that don't implement it
+   *  simply don't support scroll-back — the panel loads the newest page only. */
+  readHistoryPage?(configDirs: string[], providerSessionId: string, limit: number, before?: number): {
+    rows: HistoryEntry[];
+    cursor: number;
+    done: boolean;
+  };
 }

@@ -58,6 +58,10 @@
   .side-head button { background: none; border: none; color: var(--faint); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px; border-radius: 6px; }
   .side-head button:hover { background: var(--surface-2); color: var(--text); }
   .proj { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; color: var(--text); }
+  /* Drag-to-reorder affordances */
+  .proj.dragging { opacity: .45; }
+  .proj.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
+  .proj.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
   .proj:hover { background: var(--surface-2); }
   .proj.active { background: var(--surface-3); font-weight: 600; }
   /* The dot is a plain IDLE/BUSY status light: faint when idle, accent only when
@@ -77,6 +81,7 @@
   .nbell.k-question { color: var(--accent); }
   .nbell.k-failed { color: #e5484d; }
   .nbell.k-done { color: var(--ok); }
+  .nbell.k-unread { color: var(--accent); }
   .proj .projrm { width: 18px; height: 18px; flex: none; display: none; align-items: center; justify-content: center; border: none; background: transparent; color: var(--faint); border-radius: 5px; cursor: pointer; padding: 0; }
   .proj:hover .projrm { display: inline-flex; }
   .proj.busy .projrm { display: none !important; }
@@ -429,6 +434,25 @@
   kbd, .kbd { font-family: var(--font); font-size: 11px; line-height: 1.6; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--muted); white-space: nowrap; }
   .sc-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 2px; border-bottom: 1px solid var(--border); }
   .sc-row:last-child { border-bottom: none; }
+  /* Scroll-back affordance at the top of the thread */
+  .older-bar { display: flex; justify-content: center; padding: 6px 0 12px; }
+  .older-note { font-size: 11.5px; color: var(--faint); }
+  .older-btn { width: auto; padding: 0 16px; height: 30px; font-size: 12.5px; }
+  /* Right-click context menu (projects + conversations) */
+  .ctxmenu { position: fixed; z-index: 200; min-width: 208px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 11px; box-shadow: var(--shadow); padding: 5px; }
+  .ctxmenu hr { border: none; border-top: 1px solid var(--border); margin: 5px 4px; }
+  .ctx-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 9px; border: none; background: none; border-radius: 7px; cursor: pointer; font: inherit; font-size: 13px; color: var(--text); text-align: left; }
+  .ctx-item:hover:not(:disabled) { background: var(--surface-2); }
+  .ctx-item .ic { color: var(--muted); flex: none; }
+  .ctx-item.danger { color: var(--err); } .ctx-item.danger .ic { color: var(--err); }
+  .ctx-item.danger:hover:not(:disabled) { background: var(--err-bg); }
+  .ctx-item:disabled { opacity: .4; cursor: default; }
+  .ctx-lbl { flex: 1; min-width: 0; }
+  .ctx-hint { flex: none; font-size: 11px; color: var(--faint); }
+  .sc-toggle { padding-bottom: 10px; margin-bottom: 4px; border-bottom: 1px solid var(--border-strong); }
+  .sc-toggle .desc { font-weight: 500; }
+  /* When shortcuts are off, dim the list so the modal reads as "these are inactive". */
+  .sc-disabled .sc-row:not(.sc-toggle) { opacity: .45; }
   .sc-row .desc { font-size: 13px; color: var(--text); }
   .sc-row .keys { display: flex; gap: 4px; flex: none; }
   .pk-search { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13px; background: var(--bg); color: var(--text); margin-bottom: 8px; outline: none; }
@@ -1388,7 +1412,18 @@
     seenSeq[viewKey(pid, sid)] = lastSeq;
     try { localStorage.setItem(SEEN_KEY, JSON.stringify(seenSeq)); } catch (e) {}
   }
-  function notifRank(k) { return k === 'question' ? 3 : k === 'failed' ? 2 : k === 'done' ? 1 : 0; }
+  function notifRank(k) { return k === 'question' ? 3 : k === 'failed' ? 2 : k === 'unread' ? 1.5 : k === 'done' ? 1 : 0; }
+  /** Explicit "mark as unread" from the context menu. Unlike setConvNotif this
+   *  bypasses the replay guard (the user is asking for the bell, not an event
+   *  raising it) and drops the seen-watermark so it survives a refresh. */
+  function markConvUnread(pid, sid) {
+    if (!pid) return;
+    var k = viewKey(pid, sid);
+    convNotif[k] = 'unread';
+    delete seenSeq[k];
+    try { localStorage.setItem(SEEN_KEY, JSON.stringify(seenSeq)); } catch (e) {}
+    applyNotifs();
+  }
   function setConvNotif(pid, sid, kind) {
     if (!pid) return;
     var k = viewKey(pid, sid);
@@ -1412,7 +1447,7 @@
     Object.keys(convNotif).forEach(function (k) { if (k.indexOf(prefix) === 0 && notifRank(convNotif[k]) > notifRank(best)) best = convNotif[k]; });
     return best;
   }
-  var NOTIF_TITLE = { question: 'waiting for your answer', failed: 'turn ended with an error', done: 'turn finished' };
+  var NOTIF_TITLE = { question: 'waiting for your answer', failed: 'turn ended with an error', done: 'turn finished', unread: 'marked unread' };
   function setRowBell(row, kind) {
     var bell = row.querySelector('.nbell'); if (!bell) return;
     if (kind) { bell.className = 'nbell k-' + kind; bell.hidden = false; bell.title = NOTIF_TITLE[kind] || 'update'; }
@@ -1977,6 +2012,11 @@
       rm.addEventListener('click', function (e) { e.stopPropagation(); removeProject(p); });
       row.appendChild(rm);
       row.addEventListener('click', function () { if (p.id !== currentProjectId) switchProject(p); });
+      attachCtxMenu(row, function () {
+        var ids = orderedProjectIds();
+        return projMenuItems(p, ids.indexOf(p.id), ids.length);
+      });
+      makeProjectDraggable(row, p);
       projListEl.appendChild(row);
       if (p.id === cur) { projTitleEl.textContent = p.name; projCwdEl.textContent = p.cwd; projListEl.appendChild(renderConvList(p)); }
     });
@@ -1998,6 +2038,7 @@
       var rm = document.createElement('button'); rm.className = 'cbtn crm'; rm.title = 'remove conversation'; rm.appendChild(icon('x', 'sm'));
       rm.addEventListener('click', function (e) { e.stopPropagation(); removeConv(p.id, c); }); row.appendChild(rm);
       row.addEventListener('click', function () { switchConversation(p.id, c.sessionId); });
+      attachCtxMenu(row, function () { return convMenuItems(p, c); });
       wrap.appendChild(row);
     });
     var add = document.createElement('div'); add.className = 'conv conv-new'; add.appendChild(icon('plus', 'sm'));
@@ -2091,6 +2132,123 @@
         });
       }).catch(function () {});
     });
+  }
+  function renameProject(p) {
+    uiPrompt({ title: 'Rename project', value: p.name || '', okText: 'Rename' }).then(function (next) {
+      if (next === null || !next.trim()) return;
+      api('/api/projects/rename', { method: 'POST', body: JSON.stringify({ id: p.id, name: next.trim() }) })
+        .then(function (r) { if (!r.ok) { addSys('could not rename project', 'banner'); return; } loadProjects(); })
+        .catch(function () {});
+    });
+  }
+  // ---- context menu contents ----
+  function convMenuItems(p, c) {
+    var running = isSessionRunning(p.id, c.sessionId);
+    var unread = !!convNotif[viewKey(p.id, c.sessionId)];
+    return [
+      { label: 'Open', icon: 'compose', disabled: c.sessionId === lastSessionId && p.id === currentProjectId,
+        onClick: function () { switchConversation(p.id, c.sessionId); } },
+      { label: 'Rename…', icon: 'compose', onClick: function () { renameConv(p.id, c); } },
+      { sep: true },
+      unread
+        ? { label: 'Mark as read', icon: 'bell', onClick: function () { clearConvNotif(p.id, c.sessionId); } }
+        : { label: 'Mark as unread', icon: 'bell', onClick: function () { markConvUnread(p.id, c.sessionId); } },
+      { label: 'Stop turn', icon: 'x', disabled: !running,
+        onClick: function () { switchConversation(p.id, c.sessionId); setTimeout(stopCurrentTurn, 60); } },
+      { sep: true },
+      { label: 'New conversation', icon: 'plus', onClick: function () { newConversation(p.id); } },
+      { label: 'Copy conversation id', icon: 'copy', onClick: function () { copyText(c.sessionId, 'Conversation id'); } },
+      { sep: true },
+      { label: 'Remove', icon: 'x', danger: true, onClick: function () { removeConv(p.id, c); } },
+    ];
+  }
+  function projMenuItems(p, idx, total) {
+    return [
+      { label: 'Open', icon: 'folder', disabled: p.id === currentProjectId, onClick: function () { switchProject(p); } },
+      { label: 'Rename…', icon: 'compose', onClick: function () { renameProject(p); } },
+      { label: 'New conversation', icon: 'plus', onClick: function () { if (p.id !== currentProjectId) switchProject(p); newConversation(p.id); } },
+      { sep: true },
+      { label: 'Move up', icon: 'up', disabled: idx <= 0, onClick: function () { moveProject(p.id, -1); } },
+      { label: 'Move down', icon: 'down', disabled: idx >= total - 1, onClick: function () { moveProject(p.id, 1); } },
+      { sep: true },
+      { label: 'Mark all as read', icon: 'bell', onClick: function () { markProjectRead(p.id); } },
+      { label: 'Copy path', icon: 'copy', onClick: function () { copyText(p.cwd || '', 'Path'); } },
+      { sep: true },
+      { label: 'Remove', icon: 'x', danger: true, onClick: function () { removeProject(p); } },
+    ];
+  }
+  // ---- project reordering (drag, or Move up/down from the context menu) ----
+  function orderedProjectIds() {
+    var out = [], rows = projListEl.querySelectorAll('.proj');
+    for (var i = 0; i < rows.length; i++) out.push(rows[i].getAttribute('data-id'));
+    return out;
+  }
+  function persistProjectOrder(ids) {
+    // Optimistic: the sidebar already shows the new order. Reconcile from the
+    // server on failure so the UI can't drift from what's stored.
+    api('/api/projects/reorder', { method: 'POST', body: JSON.stringify({ ids: ids }) })
+      .then(function (r) { if (!r.ok) { addSys('could not save project order', 'banner'); loadProjects(); } })
+      .catch(function () { loadProjects(); });
+  }
+  function moveProject(id, delta) {
+    var ids = orderedProjectIds(), i = ids.indexOf(id), j = i + delta;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    ids.splice(j, 0, ids.splice(i, 1)[0]);
+    reorderProjectRows(ids);
+    persistProjectOrder(ids);
+  }
+  /** Re-order the DOM rows in place (keeps the current project's conversation
+   *  sublist attached to its row) so there's no full re-render flicker. */
+  function reorderProjectRows(ids) {
+    var rows = {}, subs = {};
+    [].slice.call(projListEl.querySelectorAll('.proj')).forEach(function (r) {
+      var id = r.getAttribute('data-id'); rows[id] = r;
+      var next = r.nextSibling;
+      if (next && next.className === 'conv-list') subs[id] = next;
+    });
+    ids.forEach(function (id) {
+      if (!rows[id]) return;
+      projListEl.appendChild(rows[id]);
+      if (subs[id]) projListEl.appendChild(subs[id]);
+    });
+  }
+  function makeProjectDraggable(row, p) {
+    row.draggable = true;
+    row.addEventListener('dragstart', function (e) {
+      closeCtxMenu();
+      row.classList.add('dragging');
+      try { e.dataTransfer.setData('text/plain', p.id); e.dataTransfer.effectAllowed = 'move'; } catch (err) {}
+    });
+    row.addEventListener('dragend', function () {
+      row.classList.remove('dragging');
+      [].slice.call(projListEl.querySelectorAll('.proj')).forEach(function (r) { r.classList.remove('drop-before', 'drop-after'); });
+      persistProjectOrder(orderedProjectIds());
+    });
+    row.addEventListener('dragover', function (e) {
+      var dragging = projListEl.querySelector('.proj.dragging');
+      if (!dragging || dragging === row) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'move'; } catch (err) {}
+      // Drop above or below depending on which half of the row you're over.
+      var r = row.getBoundingClientRect(), after = e.clientY > r.top + r.height / 2;
+      row.classList.toggle('drop-before', !after);
+      row.classList.toggle('drop-after', after);
+      var ids = orderedProjectIds(), from = ids.indexOf(dragging.getAttribute('data-id')), at = ids.indexOf(p.id);
+      if (from < 0 || at < 0) return;
+      ids.splice(from, 1);
+      var target = ids.indexOf(p.id) + (after ? 1 : 0);
+      ids.splice(target, 0, dragging.getAttribute('data-id'));
+      reorderProjectRows(ids);
+    });
+    row.addEventListener('dragleave', function () { row.classList.remove('drop-before', 'drop-after'); });
+    row.addEventListener('drop', function (e) { e.preventDefault(); row.classList.remove('drop-before', 'drop-after'); });
+  }
+  function markProjectRead(pid) {
+    var prefix = pid + '::';
+    Object.keys(convNotif).forEach(function (k) { if (k.indexOf(prefix) === 0) delete convNotif[k]; });
+    // Persist the dismissal so a refresh's event replay doesn't resurrect them.
+    ((projCache[pid] || {}).conversations || []).forEach(function (c) { markConvSeen(pid, c.sessionId); });
+    applyNotifs();
   }
   function loadProjects() { return api('/api/projects').then(function (r) { return r.json(); }).then(renderProjects).catch(function () {}); }
   function switchProject(p) {
@@ -2556,10 +2714,29 @@
     { keys: [K_CMD + '/'], desc: 'Show this shortcuts help' },
     { keys: ['Esc'], desc: 'Close a dialog, menu, or the quick switcher' },
   ];
+  // Shortcuts can be turned off entirely (they collide with browser/OS bindings
+  // and with password managers for some people). Escape is deliberately NOT
+  // covered: closing a modal/popover must always work, or the UI can trap you.
+  var SHORTCUTS_KEY = 'x056_shortcuts';
+  function shortcutsOn() { return lsGet(SHORTCUTS_KEY) !== 'off'; }
+  function setShortcutsOn(on) { lsSet(SHORTCUTS_KEY, on ? 'on' : 'off'); }
   function openShortcuts() {
     if (anyModalOpen()) { closeTopModal(); }
     showModal('', false, function (card, done) {
       var h = document.createElement('h3'); h.textContent = 'Keyboard shortcuts'; card.appendChild(h);
+      var tRow = document.createElement('div'); tRow.className = 'sc-row sc-toggle';
+      var tD = document.createElement('div'); tD.className = 'desc'; tD.textContent = 'Enable keyboard shortcuts'; tRow.appendChild(tD);
+      var tog = document.createElement('button'); tog.type = 'button';
+      tog.className = 'pi-toggle' + (shortcutsOn() ? ' on' : '');
+      tog.title = 'toggle all shortcuts (Escape always works)';
+      tog.appendChild(document.createElement('i'));
+      tog.addEventListener('click', function () {
+        setShortcutsOn(!shortcutsOn());
+        tog.classList.toggle('on', shortcutsOn());
+        card.classList.toggle('sc-disabled', !shortcutsOn());
+      });
+      tRow.appendChild(tog); card.appendChild(tRow);
+      if (!shortcutsOn()) card.classList.add('sc-disabled');
       SHORTCUTS.forEach(function (s) {
         var row = document.createElement('div'); row.className = 'sc-row';
         var d = document.createElement('div'); d.className = 'desc'; d.textContent = s.desc; row.appendChild(d);
@@ -2573,6 +2750,76 @@
       setTimeout(function () { ok.focus(); }, 20);
     });
   }
+  // ---- shared right-click context menu (projects + conversations) ----
+  // One menu element reused by every caller: built from an item list, positioned
+  // at the cursor and flipped when it would overflow the viewport, and closed by
+  // any outside click / Esc / scroll / resize.
+  var ctxEl = null;
+  function closeCtxMenu() { if (ctxEl && ctxEl.parentNode) ctxEl.parentNode.removeChild(ctxEl); ctxEl = null; }
+  /** items: [{label, icon?, danger?, disabled?, hint?, sep?, onClick}] */
+  function openCtxMenu(x, y, items) {
+    closeCtxMenu();
+    var m = document.createElement('div'); m.className = 'ctxmenu';
+    items.forEach(function (it) {
+      if (it.sep) { m.appendChild(document.createElement('hr')); return; }
+      var b = document.createElement('button'); b.type = 'button';
+      b.className = 'ctx-item' + (it.danger ? ' danger' : '');
+      if (it.disabled) b.disabled = true;
+      if (it.icon) b.appendChild(icon(it.icon, 'sm'));
+      var s = document.createElement('span'); s.className = 'ctx-lbl'; s.textContent = it.label; b.appendChild(s);
+      if (it.hint) { var h = document.createElement('span'); h.className = 'ctx-hint'; h.textContent = it.hint; b.appendChild(h); }
+      b.addEventListener('click', function (ev) { ev.stopPropagation(); closeCtxMenu(); it.onClick(); });
+      m.appendChild(b);
+    });
+    // Off-screen first so it can be measured, then placed within the viewport.
+    m.style.left = '-9999px'; m.style.top = '-9999px';
+    document.body.appendChild(m); ctxEl = m;
+    var r = m.getBoundingClientRect();
+    var left = Math.min(x, window.innerWidth - r.width - 8);
+    var top = Math.min(y, window.innerHeight - r.height - 8);
+    m.style.left = Math.max(8, left) + 'px';
+    m.style.top = Math.max(8, top) + 'px';
+    return m;
+  }
+  document.addEventListener('click', function () { closeCtxMenu(); });
+  document.addEventListener('contextmenu', function (e) {
+    // A right-click anywhere that isn't a menu-bearing row closes an open menu.
+    if (ctxEl && !ctxEl.contains(e.target)) closeCtxMenu();
+  });
+  window.addEventListener('resize', closeCtxMenu);
+  window.addEventListener('scroll', closeCtxMenu, true);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && ctxEl) { e.stopPropagation(); closeCtxMenu(); } }, true);
+  /** Wire a row to open a context menu on right-click AND long-press (touch). */
+  function attachCtxMenu(row, buildItems) {
+    row.addEventListener('contextmenu', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      openCtxMenu(e.clientX, e.clientY, buildItems());
+    });
+    var lpTimer = null, lpPoint = null;
+    row.addEventListener('touchstart', function (e) {
+      var t = e.touches[0]; if (!t) return;
+      lpPoint = { x: t.clientX, y: t.clientY };
+      lpTimer = setTimeout(function () { lpTimer = null; openCtxMenu(lpPoint.x, lpPoint.y, buildItems()); }, 500);
+    }, { passive: true });
+    var cancelLp = function () { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } };
+    row.addEventListener('touchend', cancelLp, { passive: true });
+    row.addEventListener('touchcancel', cancelLp, { passive: true });
+    row.addEventListener('touchmove', function (e) {
+      var t = e.touches[0];
+      if (lpTimer && t && lpPoint && (Math.abs(t.clientX - lpPoint.x) > 10 || Math.abs(t.clientY - lpPoint.y) > 10)) cancelLp();
+    }, { passive: true });
+  }
+  function copyText(text, what) {
+    var done = function () { addSys((what || 'copied') + ' copied to clipboard', 'banner'); };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done).catch(function () {}); return; }
+    } catch (e) {}
+    try {
+      var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); done();
+    } catch (e) {}
+  }
+
   // Projects in sidebar order (the DOM is the source of truth for ordering).
   function orderedProjects() {
     var out = [], rows = projListEl.querySelectorAll('.proj');
@@ -2641,6 +2888,7 @@
       return;
     }
     if (anyModalOpen()) return; // a dialog/palette is up; let it own the keyboard
+    if (!shortcutsOn()) return; // turned off in the shortcuts dialog (Escape above still works)
     var mod = e.metaKey || e.ctrlKey;
     if (mod && !e.altKey) {
       if (e.code === 'KeyK') { e.preventDefault(); openPalette(); return; }
@@ -2699,10 +2947,18 @@
   function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; if (!currentProjectId) currentProjectId = s.currentProjectId; return s; }); }
   function loadHistory() {
     var pid = currentProjectId, sid = lastSessionId;
-    return api('/api/sessions/current/history?limit=80').then(function (r) { return r.json(); }).then(function (rows) {
+    if (!pid || !sid) return Promise.resolve();
+    var url = '/api/conversations/history-page?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid) + '&limit=80';
+    return api(url).then(function (r) { return r.json(); }).then(function (page) {
       if (currentProjectId !== pid || lastSessionId !== sid) return; // user switched project OR conversation while loading
+      var rows = (page && page.rows) || [];
       chatEl.textContent = ''; // replace cached view with the fresh transcript
       var lv = viewOf(pid, sid); lv.loaded = true;
+      // Remember where this page starts so scrolling up can fetch what precedes it.
+      lv.histCursor = page ? page.cursor : 0;
+      lv.histDone = !page || !!page.done;
+      lv.histRows = rows.length;
+      lv.histLoading = false;
       var hasMsgs = Array.isArray(rows) && rows.length > 0;
       addSys(hasMsgs ? (rows.length + ' earlier messages') : 'no messages yet — say hello, or use the resume button for an existing session');
       // Merge historical messages with the durable activity/subagent log by
@@ -2736,8 +2992,75 @@
       // `active` never caught it).
       active = !!lv.active; lastLabel = lv.label || ''; runningSubs = lv.subCount || 0; subs = lv.subs || {}; renderBusy();
       down();
+      updateOlderBar();
     }).catch(function () {});
   }
+
+  // ---- scroll-back: load older messages as you scroll up ----
+  // Each page is fetched by byte cursor, so going far back never makes the
+  // server read the whole (potentially 350MB+) transcript. The DOM is the part
+  // that can't grow forever, so auto-loading stops at AUTOLOAD_CAP rendered
+  // rows and hands over to an explicit "Load older messages" button.
+  var AUTOLOAD_CAP = 1200;
+  var olderBar = null;
+  function olderBarEl() {
+    if (olderBar && olderBar.parentNode === chatEl) return olderBar;
+    olderBar = document.createElement('div'); olderBar.className = 'older-bar';
+    return olderBar;
+  }
+  function updateOlderBar() {
+    var lv = currentProjectId && lastSessionId ? viewOf(currentProjectId, lastSessionId) : null;
+    if (olderBar && olderBar.parentNode) olderBar.parentNode.removeChild(olderBar);
+    if (!lv || !lv.loaded || lv.histDone) return;
+    var bar = olderBarEl(); bar.textContent = '';
+    if (lv.histLoading) {
+      var s = document.createElement('span'); s.className = 'older-note'; s.textContent = 'Loading older messages…'; bar.appendChild(s);
+    } else if ((lv.histRows || 0) >= AUTOLOAD_CAP) {
+      var b = document.createElement('button'); b.className = 'send ghost older-btn'; b.textContent = 'Load older messages';
+      b.addEventListener('click', function () { loadOlder(true); });
+      bar.appendChild(b);
+    } else {
+      var h = document.createElement('span'); h.className = 'older-note'; h.textContent = 'Scroll up for older messages'; bar.appendChild(h);
+    }
+    chatEl.insertBefore(bar, chatEl.firstChild);
+  }
+  function loadOlder(force) {
+    var pid = currentProjectId, sid = lastSessionId;
+    if (!pid || !sid) return;
+    var lv = viewOf(pid, sid);
+    if (!lv.loaded || lv.histLoading || lv.histDone) return;
+    if (!force && (lv.histRows || 0) >= AUTOLOAD_CAP) return; // cap reached — wait for the button
+    lv.histLoading = true; updateOlderBar();
+    var url = '/api/conversations/history-page?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid)
+      + '&limit=60&before=' + encodeURIComponent(String(lv.histCursor || 0));
+    api(url).then(function (r) { return r.json(); }).then(function (page) {
+      lv.histLoading = false;
+      // The user may have switched away mid-flight — the fetched page belongs to
+      // a thread that's no longer on screen, so don't splice it into this one.
+      if (currentProjectId !== pid || lastSessionId !== sid) return;
+      var rows = (page && page.rows) || [];
+      lv.histDone = !page || !!page.done || rows.length === 0;
+      if (page && typeof page.cursor === 'number') lv.histCursor = page.cursor;
+      lv.histRows = (lv.histRows || 0) + rows.length;
+      if (rows.length) {
+        // Preserve the reading position: keep the distance from the BOTTOM
+        // constant while content is inserted above.
+        var fromBottom = scroller.scrollHeight - scroller.scrollTop;
+        var frag = document.createDocumentFragment();
+        rows.forEach(function (m) {
+          frag.appendChild(m.role === 'model'
+            ? nodeModelMark(m.text, m.ts)
+            : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, providerFor(pid, sid)));
+        });
+        chatEl.insertBefore(frag, chatEl.firstChild);
+        scroller.scrollTop = scroller.scrollHeight - fromBottom;
+      }
+      updateOlderBar();
+    }).catch(function () { lv.histLoading = false; updateOlderBar(); });
+  }
+  scroller.addEventListener('scroll', function () {
+    if (scroller.scrollTop < 160) loadOlder(false);
+  }, { passive: true });
 
   var booted = false;
   function boot() {

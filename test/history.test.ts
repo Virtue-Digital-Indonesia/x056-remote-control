@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readSessionHistory } from '../server/history.js';
+import { readHistoryPage } from '../src/adapters/claude.js';
 
 function configDirWithTranscript(sessionId: string, lines: unknown[]): string {
   const configDir = mkdtempSync(join(tmpdir(), 'x056-hist-'));
@@ -150,5 +151,63 @@ describe('readSessionHistory on a very large transcript', () => {
     // half-line at the window's start must be dropped, not parsed into garbage.
     const rows = readSessionHistory([configDir], sid, 2).filter((r) => r.role !== 'model');
     expect(rows.map((r) => r.text)).toEqual(['tail question', 'tail answer']);
+  });
+});
+
+describe('paginated history (scroll-back)', () => {
+  function bigTranscript(n: number): { configDir: string; sid: string } {
+    const sid = 'sess-page';
+    const configDir = mkdtempSync(join(tmpdir(), 'x056-hist-page-'));
+    const projectDir = join(configDir, 'projects', '-some-project');
+    mkdirSync(projectDir, { recursive: true });
+    const lines: string[] = [];
+    for (let i = 0; i < n; i++) {
+      lines.push(JSON.stringify({ type: 'user', message: { role: 'user', content: `q${i}` } }));
+      lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `a${i}` }] } }));
+    }
+    writeFileSync(join(projectDir, `${sid}.jsonl`), lines.join('\n') + '\n');
+    return { configDir, sid };
+  }
+
+  it('walks the whole conversation backwards, page by page, without gaps or repeats', () => {
+    const { configDir, sid } = bigTranscript(50); // 100 rows
+    const seen: string[] = [];
+    let before: number | undefined;
+    let done = false;
+    let guard = 0;
+    while (!done && guard++ < 50) {
+      const page = readHistoryPage([configDir], sid, 15, before);
+      // newest-first pages, each internally in chronological order
+      seen.unshift(...page.rows.map((r) => r.text));
+      before = page.cursor;
+      done = page.done;
+    }
+    expect(done).toBe(true);
+    const expected: string[] = [];
+    for (let i = 0; i < 50; i++) { expected.push(`q${i}`); expected.push(`a${i}`); }
+    expect(seen).toEqual(expected); // every row, in order, exactly once
+  });
+
+  it('reports done on a conversation that fits in one page', () => {
+    const { configDir, sid } = bigTranscript(2); // 4 rows
+    const page = readHistoryPage([configDir], sid, 50);
+    expect(page.rows.map((r) => r.text)).toEqual(['q0', 'a0', 'q1', 'a1']);
+    expect(page.done).toBe(true);
+  });
+
+  it('is not done when older rows remain, and the next page is contiguous with no overlap', () => {
+    const { configDir, sid } = bigTranscript(10); // rows q0,a0 … q9,a9
+    const first = readHistoryPage([configDir], sid, 5);
+    expect(first.done).toBe(false);
+    // Newest page: the last 5 rows, chronological within the page.
+    expect(first.rows.map((r) => r.text)).toEqual(['a7', 'q8', 'a8', 'q9', 'a9']);
+    // The page before it: contiguous, ending immediately before 'a7'.
+    const second = readHistoryPage([configDir], sid, 5, first.cursor);
+    expect(second.rows.map((r) => r.text)).toEqual(['q5', 'a5', 'q6', 'a6', 'q7']);
+  });
+
+  it('returns an empty done page for an unknown session instead of throwing', () => {
+    const { configDir } = bigTranscript(1);
+    expect(readHistoryPage([configDir], 'nope', 10)).toEqual({ rows: [], cursor: 0, done: true });
   });
 });

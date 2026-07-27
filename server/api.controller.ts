@@ -356,6 +356,18 @@ export class ApiController {
     }
   }
 
+  @Post('projects/reorder')
+  @HttpCode(200)
+  reorderProjects(@Body() body: { ids?: string[] }): { ok: boolean } {
+    if (!Array.isArray(body?.ids)) throw new BadRequestException('ids array required');
+    try {
+      this.manager.reorderProjects(body.ids.filter((x) => typeof x === 'string'));
+      return { ok: true };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
   // ---- conversations (multiple sessions grouped under a project) ----
   @Post('conversations/select')
   @HttpCode(200)
@@ -430,6 +442,30 @@ export class ApiController {
     const opts = { model: body.model, effort: body.effort, interactive: body.interactive };
     const approval = this.manager.requestMcpSend(body.projectId, body.sessionId, body.prompt, opts);
     return { approvalId: approval.id };
+  }
+
+  /** A page of older history for scroll-back. Paging is by opaque cursor (a byte
+   *  offset into the transcript), so scrolling far back never requires reading
+   *  the whole file — these grow past 350MB and would otherwise blow up. */
+  @Get('conversations/history-page')
+  conversationHistoryPage(
+    @Query('projectId') projectId?: string,
+    @Query('sessionId') sessionId?: string,
+    @Query('limit') limit?: string,
+    @Query('before') before?: string,
+  ): { rows: HistoryEntry[]; cursor: number; done: boolean } {
+    if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.min(Number(limit), 500) : 60;
+    const cur = Number.isFinite(Number(before)) && Number(before) >= 0 ? Number(before) : undefined;
+    try {
+      const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
+      if (adapter.readHistoryPage) return adapter.readHistoryPage(configDirs, providerSessionId, n, cur);
+      // Provider without pagination: serve the newest page and report no more.
+      const rows = adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [];
+      return { rows, cursor: 0, done: true };
+    } catch {
+      return { rows: [], cursor: 0, done: true };
+    }
   }
 
   /** Poll the outcome of a requested send — the MCP bridge waits on this until

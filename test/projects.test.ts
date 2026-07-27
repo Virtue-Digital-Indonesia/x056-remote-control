@@ -105,3 +105,33 @@ describe('SessionManager projects', () => {
     expect(m.snapshot().currentProjectId).toBe(b.id);
   });
 });
+
+describe('ProjectRegistry.reorder', () => {
+  it('applies the given order and persists it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-proj-order-'));
+    const reg = ProjectRegistry.load(join(dir, 'projects.json'));
+    const a = reg.create('A', join(dir, 'a')), b = reg.create('B', join(dir, 'b')), c = reg.create('C', join(dir, 'c'));
+    reg.reorder([c.id, a.id, b.id]);
+    expect(reg.list().map((p) => p.name)).toEqual(['C', 'A', 'B']);
+    // survives a reload from disk
+    expect(ProjectRegistry.load(join(dir, 'projects.json')).list().map((p) => p.name)).toEqual(['C', 'A', 'B']);
+  });
+
+  it('never drops a project the client did not know about (stale list)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-proj-order2-'));
+    const reg = ProjectRegistry.load(join(dir, 'projects.json'));
+    const a = reg.create('A', join(dir, 'a')), b = reg.create('B', join(dir, 'b'));
+    const c = reg.create('C', join(dir, 'c')); // added after the client fetched its list
+    reg.reorder([b.id, a.id]); // stale order, omits C
+    expect(reg.list().map((p) => p.name)).toEqual(['B', 'A', 'C']);
+    expect(reg.list().some((p) => p.id === c.id)).toBe(true);
+  });
+
+  it('ignores unknown/duplicate ids', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-proj-order3-'));
+    const reg = ProjectRegistry.load(join(dir, 'projects.json'));
+    const a = reg.create('A', join(dir, 'a')), b = reg.create('B', join(dir, 'b'));
+    reg.reorder([b.id, 'ghost-id', b.id, a.id]);
+    expect(reg.list().map((p) => p.name)).toEqual(['B', 'A']);
+  });
+});
