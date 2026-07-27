@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import type { Usage } from '../quota.js';
@@ -259,17 +259,90 @@ function findRollout(configDirs: string[], providerSessionId: string): string | 
  * ended without producing one, e.g. it crashed first).
  */
 function readHistory(configDirs: string[], providerSessionId: string, limit = 100): HistoryEntry[] {
+  return readHistoryPage(configDirs, providerSessionId, limit).rows;
+}
+
+/** Start small (most reads want a handful of recent messages) and widen. */
+const TAIL_START_BYTES = 1 << 20; // 1 MB
+const TAIL_MAX_BYTES = 1 << 27; // 128 MB — far under V8's max string length
+/** Extra bytes read BEFORE the page window, parsed only to recover the
+ *  `lastAssistant` dedup state (see below). Never returned as rows. */
+const DEDUP_CONTEXT_BYTES = 1 << 18; // 256 KB
+
+/**
+ * A page of history ending just before byte offset `before` (default: end of
+ * file). Paged by byte offset so scrolling far back never reads the whole
+ * rollout — these are append-only across every resume and grow without bound.
+ *
+ * Codex's parse is STATEFUL: a `task_complete` is dropped when it merely
+ * repeats the preceding `agent_message`. A page boundary landing between that
+ * pair would lose that context and emit a duplicate, so each window is parsed
+ * with a short run-up whose rows are discarded — they exist only to restore
+ * `lastAssistant`.
+ */
+export function readHistoryPage(
+  configDirs: string[], providerSessionId: string, limit = 100, before?: number,
+): { rows: HistoryEntry[]; cursor: number; done: boolean } {
   const file = findRollout(configDirs, providerSessionId);
-  if (!file) return [];
-  let raw: string;
+  if (!file) return { rows: [], cursor: 0, done: true };
+  let size: number;
+  try { size = statSync(file).size; } catch { return { rows: [], cursor: 0, done: true }; }
+  const end = before === undefined ? size : Math.max(0, Math.min(before, size));
+  if (end <= 0) return { rows: [], cursor: 0, done: true };
+  let window = Math.min(TAIL_START_BYTES, end);
+  for (;;) {
+    const start = Math.max(0, end - window);
+    const from = Math.max(0, start - DEDUP_CONTEXT_BYTES);
+    const parsed = parseRollout(readLines(file, from, end), start);
+    const atStart = start === 0;
+    if (parsed.rows.length >= limit || atStart || window >= TAIL_MAX_BYTES) {
+      const cut = Math.max(0, parsed.rows.length - limit);
+      const rows = parsed.rows.slice(cut);
+      return { rows, cursor: rows.length ? parsed.offsets[cut] : start, done: atStart && cut === 0 };
+    }
+    window = Math.min(window * 4, end);
+  }
+}
+
+interface RawLine { start: number; text: string }
+
+/** Read byte range [from, to) as whole lines tagged with absolute offsets,
+ *  dropping the leading partial line the window almost always cuts. */
+function readLines(file: string, from: number, to: number): RawLine[] {
+  let fd: number | undefined;
   try {
-    raw = readFileSync(file, 'utf8');
+    fd = openSync(file, 'r');
+    const len = Math.max(0, Math.min(to, fstatSync(fd).size) - from);
+    if (len === 0) return [];
+    const buf = Buffer.allocUnsafe(len);
+    readSync(fd, buf, 0, len, from);
+    const out: RawLine[] = [];
+    let lineStart = 0;
+    for (let i = 0; i < len; i++) {
+      if (buf[i] !== 0x0a) continue;
+      if (!(from > 0 && lineStart === 0)) out.push({ start: from + lineStart, text: buf.toString('utf8', lineStart, i) });
+      lineStart = i + 1;
+    }
+    if (lineStart < len && !(from > 0 && lineStart === 0)) out.push({ start: from + lineStart, text: buf.toString('utf8', lineStart, len) });
+    return out;
   } catch {
     return [];
+  } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch { /* already closed */ }
   }
+}
+
+/** Parse rollout lines; rows starting before `keepFrom` are context only. */
+function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[]; offsets: number[] } {
   const out: HistoryEntry[] = [];
+  const offsets: number[] = [];
   let lastAssistant = '';
-  for (const line of raw.split('\n')) {
+  const push = (row: HistoryEntry, at: number): void => {
+    if (at >= keepFrom) { out.push(row); offsets.push(at); }
+  };
+  for (const rawLine of input) {
+    const line = rawLine.text;
+    const at = rawLine.start;
     if (line.trim() === '') continue;
     let entry: { timestamp?: unknown; type?: unknown; payload?: unknown };
     try {
@@ -282,7 +355,7 @@ function readHistory(configDirs: string[], providerSessionId: string, limit = 10
     const ts = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
     if (payload.type === 'user_message' && typeof payload.message === 'string') {
       const shown = stripAskInstructions(payload.message.trim());
-      if (shown) out.push({ role: 'user', text: shown, ts });
+      if (shown) push({ role: 'user', text: shown, ts }, at);
     } else if (payload.type === 'agent_message' && typeof payload.message === 'string') {
       // EVERY assistant message the turn streamed — confirmed live: a real
       // rollout held 154 phase:"commentary" + 20 phase:"final_answer" messages,
@@ -290,16 +363,16 @@ function readHistory(configDirs: string[], providerSessionId: string, limit = 10
       // task_complete (the previous behavior) dropped all the commentary, so a
       // reload "lost" almost the whole ChatGPT side of the conversation.
       const shown = stripAsk(payload.message.trim());
-      if (shown) { out.push({ role: 'assistant', text: shown, ts }); lastAssistant = shown; }
+      if (shown) { push({ role: 'assistant', text: shown, ts }, at); lastAssistant = shown; }
     } else if (payload.type === 'task_complete' && typeof payload.last_agent_message === 'string') {
       // Normally a duplicate of the turn's final_answer agent_message (verified:
       // 20 of 20 in the live rollout) — only emit when it ISN'T, as a safety net
       // for builds that put the final text only here.
       const shown = stripAsk(payload.last_agent_message.trim());
-      if (shown && shown !== lastAssistant) { out.push({ role: 'assistant', text: shown, ts }); lastAssistant = shown; }
+      if (shown && shown !== lastAssistant) { push({ role: 'assistant', text: shown, ts }, at); lastAssistant = shown; }
     }
   }
-  return out.slice(-limit);
+  return { rows: out, offsets };
 }
 
 /** The models this ChatGPT account can use. Codex caches the account's own
@@ -461,5 +534,6 @@ export const codexAdapter: ProviderAdapter = {
   readIdentity,
   listModels,
   readHistory,
+  readHistoryPage,
   fetchUsage,
 };

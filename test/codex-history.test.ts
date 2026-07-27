@@ -126,3 +126,120 @@ describe('codexAdapter.readHistory', () => {
     ]);
   });
 });
+
+describe('codexAdapter.readHistoryPage (scroll-back)', () => {
+  function rollout(threadId: string, lines: unknown[]): string {
+    const configDir = mkdtempSync(join(tmpdir(), 'x056-cxpage-'));
+    const day = join(configDir, 'sessions', '2026', '07', '15');
+    mkdirSync(day, { recursive: true });
+    writeFileSync(join(day, `rollout-2026-07-15T01-51-33-${threadId}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    return configDir;
+  }
+  function convo(turns: number): unknown[] {
+    const out: unknown[] = [];
+    for (let i = 0; i < turns; i++) {
+      out.push({ timestamp: `t${i}a`, type: 'event_msg', payload: { type: 'user_message', message: `q${i}` } });
+      out.push({ timestamp: `t${i}b`, type: 'event_msg', payload: { type: 'agent_message', message: `a${i}`, phase: 'final_answer' } });
+      // the usual duplicate echo — must stay deduped even across a page boundary
+      out.push({ timestamp: `t${i}c`, type: 'event_msg', payload: { type: 'task_complete', last_agent_message: `a${i}` } });
+    }
+    return out;
+  }
+
+  it('walks the whole rollout backwards page by page, with no gaps or repeats', () => {
+    const tid = 'cx-walk';
+    const dir = rollout(tid, convo(40));
+    const seen: string[] = [];
+    let before: number | undefined; let done = false; let guard = 0;
+    while (!done && guard++ < 60) {
+      const page = codexAdapter.readHistoryPage!([dir], tid, 9, before);
+      seen.unshift(...page.rows.map((r) => r.text));
+      before = page.cursor; done = page.done;
+    }
+    expect(done).toBe(true);
+    const expected: string[] = [];
+    for (let i = 0; i < 40; i++) { expected.push(`q${i}`); expected.push(`a${i}`); }
+    expect(seen).toEqual(expected);
+  });
+
+  it('does not resurrect the task_complete echo when a page boundary splits the pair', () => {
+    const tid = 'cx-dedup';
+    const dir = rollout(tid, convo(12));
+    // Page at every possible size; the echo must never appear twice anywhere.
+    for (const limit of [1, 2, 3, 5, 7]) {
+      const seen: string[] = [];
+      let before: number | undefined; let done = false; let guard = 0;
+      while (!done && guard++ < 100) {
+        const page = codexAdapter.readHistoryPage!([dir], tid, limit, before);
+        seen.unshift(...page.rows.map((r) => r.text));
+        before = page.cursor; done = page.done;
+      }
+      const dupes = seen.filter((t, i) => i > 0 && seen[i - 1] === t);
+      expect({ limit, dupes }).toEqual({ limit, dupes: [] });
+      expect(seen.length).toBe(24); // 12 prompts + 12 answers, echo never counted
+    }
+  });
+
+  it('reports done for a short rollout and for an unknown thread', () => {
+    const tid = 'cx-short';
+    const dir = rollout(tid, convo(2));
+    const page = codexAdapter.readHistoryPage!([dir], tid, 50);
+    expect(page.rows.map((r) => r.text)).toEqual(['q0', 'a0', 'q1', 'a1']);
+    expect(page.done).toBe(true);
+    expect(codexAdapter.readHistoryPage!([dir], 'nope', 10)).toEqual({ rows: [], cursor: 0, done: true });
+  });
+});
+
+describe('codexAdapter.readHistoryPage on a rollout bigger than one window', () => {
+  // The windowed read only kicks in past TAIL_START_BYTES (1MB); below that the
+  // whole file fits one window and page boundaries never land mid-file. These
+  // use bulky messages so windows genuinely split, which is the case that
+  // exercises the dedup context prefix.
+  const PAD = 'p'.repeat(120_000);
+  function bigRollout(turns: number): { dir: string; tid: string } {
+    const tid = 'cx-big';
+    const dir = mkdtempSync(join(tmpdir(), 'x056-cxbig-'));
+    const day = join(dir, 'sessions', '2026', '07', '15');
+    mkdirSync(day, { recursive: true });
+    const lines: string[] = [];
+    for (let i = 0; i < turns; i++) {
+      lines.push(JSON.stringify({ timestamp: `t${i}a`, type: 'event_msg', payload: { type: 'user_message', message: `q${i} ${PAD}` } }));
+      lines.push(JSON.stringify({ timestamp: `t${i}b`, type: 'event_msg', payload: { type: 'agent_message', message: `a${i} ${PAD}`, phase: 'final_answer' } }));
+      lines.push(JSON.stringify({ timestamp: `t${i}c`, type: 'event_msg', payload: { type: 'task_complete', last_agent_message: `a${i} ${PAD}` } }));
+    }
+    writeFileSync(join(day, `rollout-2026-07-15T01-51-33-${tid}.jsonl`), lines.join('\n') + '\n');
+    return { dir, tid };
+  }
+
+  it('stays correct across many page sizes (some land a boundary between an answer and its echo)', () => {
+    const { dir, tid } = bigRollout(30);
+    for (let limit = 1; limit <= 10; limit++) {
+      const seen: string[] = [];
+      let before: number | undefined; let done = false; let guard = 0;
+      while (!done && guard++ < 400) {
+        const page = codexAdapter.readHistoryPage!([dir], tid, limit, before);
+        seen.unshift(...page.rows.map((r) => r.text.split(' ')[0]));
+        before = page.cursor; done = page.done;
+      }
+      const expected: string[] = [];
+      for (let i = 0; i < 30; i++) { expected.push(`q${i}`); expected.push(`a${i}`); }
+      expect({ limit, seen }).toEqual({ limit, seen: expected });
+    }
+  }, 60000);
+
+  it('pages a multi-megabyte rollout with no gaps, repeats, or resurrected echoes', () => {
+    const { dir, tid } = bigRollout(40); // ~14MB, well past the 1MB window
+    const seen: string[] = [];
+    let before: number | undefined; let done = false; let guard = 0;
+    while (!done && guard++ < 200) {
+      const page = codexAdapter.readHistoryPage!([dir], tid, 4, before);
+      expect(before === undefined || page.cursor < before).toBe(true); // always makes progress
+      seen.unshift(...page.rows.map((r) => r.text.split(' ')[0]));
+      before = page.cursor; done = page.done;
+    }
+    expect(done).toBe(true);
+    const expected: string[] = [];
+    for (let i = 0; i < 40; i++) { expected.push(`q${i}`); expected.push(`a${i}`); }
+    expect(seen).toEqual(expected);
+  });
+});
