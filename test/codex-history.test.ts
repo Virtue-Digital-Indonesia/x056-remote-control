@@ -243,3 +243,33 @@ describe('codexAdapter.readHistoryPage on a rollout bigger than one window', () 
     expect(seen).toEqual(expected);
   });
 });
+
+describe('codex tool-call history', () => {
+  it('replays rollout tool calls as labelled action rows (shapes from a real rollout)', () => {
+    const tid = 'cx-actions';
+    const configDir = mkdtempSync(join(tmpdir(), 'x056-cxact-'));
+    const day = join(configDir, 'sessions', '2026', '07', '15');
+    mkdirSync(day, { recursive: true });
+    writeFileSync(join(day, `rollout-2026-07-15T01-51-33-${tid}.jsonl`), [
+      { timestamp: 't1', type: 'event_msg', payload: { type: 'user_message', message: 'improve the copy' } },
+      // function_call: JSON `arguments`
+      { timestamp: 't2', type: 'response_item', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: 'npm run build' }) } },
+      { timestamp: 't3', type: 'response_item', payload: { type: 'function_call', name: 'update_plan', arguments: JSON.stringify({ plan: [] }) } },
+      // custom_tool_call: raw `input`
+      { timestamp: 't4', type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', input: '*** Begin Patch\n*** Update File: /repo/web/src/App.tsx\n@@\n-a\n+b\n' } },
+      // not tool calls — must not become rows
+      { timestamp: 't5', type: 'response_item', payload: { type: 'reasoning', summary: [] } },
+      { timestamp: 't6', type: 'response_item', payload: { type: 'function_call_output', output: 'ok' } },
+      { timestamp: 't7', type: 'event_msg', payload: { type: 'agent_message', message: 'done', phase: 'final_answer' } },
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+    const rows = codexAdapter.readHistory!([configDir], tid, 100);
+    expect(rows.map((r) => `${r.role}:${r.text}`)).toEqual([
+      'user:improve the copy',
+      'action:Running: npm run build',
+      'action:Updating the plan',
+      'action:Editing App.tsx',
+      'assistant:done',
+    ]);
+  });
+});

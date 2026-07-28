@@ -332,6 +332,39 @@ function readLines(file: string, from: number, to: number): RawLine[] {
   }
 }
 
+/** Display label for a rollout tool call, mirroring the live activity rows.
+ *  Shapes confirmed against a real rollout: `function_call` carries a JSON
+ *  `arguments` string (exec_command's `cmd`, update_plan's `plan`, …) and
+ *  `custom_tool_call` a raw `input` (apply_patch's patch text). Returns '' for
+ *  entries that aren't tool calls (reasoning, message, …). */
+function rolloutActionLabel(p: Record<string, unknown>): string {
+  const kind = firstStr(p.type);
+  if (kind !== 'function_call' && kind !== 'custom_tool_call') return '';
+  const name = firstStr(p.name);
+  const rawInput = firstStr(p.arguments as string, p.input as string);
+  let args: Record<string, unknown> = {};
+  try { args = asObj(JSON.parse(rawInput)); } catch { /* not JSON (apply_patch) */ }
+  switch (name) {
+    case 'exec_command':
+    case 'exec':
+    case 'shell': {
+      const cmd = firstStr(args.cmd as string, args.command as string, rawInput);
+      return 'Running: ' + truncate(cmd.replace(/\s+/g, ' ').trim());
+    }
+    case 'apply_patch': {
+      // "*** Update File: /abs/path" — show the first file it touches.
+      const m = /\*\*\* (?:Update|Add|Delete) File: (.+)/.exec(rawInput);
+      return m ? 'Editing ' + base(m[1].trim()) : 'Applying changes';
+    }
+    case 'update_plan':
+      return 'Updating the plan';
+    case 'view_image':
+      return 'Viewing an image';
+    default:
+      return name ? 'Used ' + name : '';
+  }
+}
+
 /** Parse rollout lines; rows starting before `keepFrom` are context only. */
 function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[]; offsets: number[] } {
   const out: HistoryEntry[] = [];
@@ -348,6 +381,15 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
     try {
       entry = JSON.parse(line);
     } catch {
+      continue;
+    }
+    // Tool calls live under `response_item`, so the trail of what the agent DID
+    // survives a reload — the live activity rows are browser-memory only, so a
+    // refresh previously left the messages with no actions between them.
+    if (entry.type === 'response_item') {
+      const p = asObj(entry.payload);
+      const label = rolloutActionLabel(p);
+      if (label) { push({ role: 'action', text: label, ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined }, at); }
       continue;
     }
     if (entry.type !== 'event_msg') continue;

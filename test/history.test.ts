@@ -14,12 +14,12 @@ function configDirWithTranscript(sessionId: string, lines: unknown[]): string {
 }
 
 describe('readSessionHistory', () => {
-  it('extracts user prompts and assistant text, skipping tool/thinking/synthetic/meta noise', () => {
+  it('extracts user prompts, assistant text and tool calls, skipping thinking/synthetic/meta noise', () => {
     const sid = 'sess-1';
     const dir = configDirWithTranscript(sid, [
       { type: 'user', message: { role: 'user', content: 'first question' } },
       { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'hmm' }, { type: 'text', text: 'first answer' }] } },
-      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls -la' } }] } },
       { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'output' }] } },
       { type: 'assistant', model: '<synthetic>', message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: "You've hit your limit" }] }, isApiErrorMessage: true },
       { type: 'user', isMeta: true, message: { role: 'user', content: 'meta noise' } },
@@ -34,6 +34,9 @@ describe('readSessionHistory', () => {
     expect(rows).toEqual([
       { role: 'user', text: 'first question' },
       { role: 'assistant', text: 'first answer' },
+      // the tool call is surfaced as an action row so the trail of what the
+      // agent DID survives a reload, not just what it said
+      { role: 'action', text: 'Running: ls -la', sub: false },
       { role: 'user', text: 'second question' },
       { role: 'assistant', text: 'second answer' },
     ]);
@@ -209,5 +212,36 @@ describe('paginated history (scroll-back)', () => {
   it('returns an empty done page for an unknown session instead of throwing', () => {
     const { configDir } = bigTranscript(1);
     expect(readHistoryPage([configDir], 'nope', 10)).toEqual({ rows: [], cursor: 0, done: true });
+  });
+});
+
+describe('tool-call history survives a reload', () => {
+  it('replays claude tool calls as action rows, interleaved with the messages', () => {
+    const sid = 'sess-act';
+    const dir = configDirWithTranscript(sid, [
+      { type: 'user', message: { role: 'user', content: 'fix the build' } },
+      { type: 'assistant', message: { role: 'assistant', content: [
+        { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/a/b/App.tsx' } },
+      ] } },
+      { type: 'assistant', message: { role: 'assistant', content: [
+        { type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'npm test' } },
+        { type: 'text', text: 'running the tests' },
+      ] } },
+      { type: 'assistant', message: { role: 'assistant', content: [
+        { type: 'tool_use', id: 't3', name: 'Task', input: { description: 'audit the config' } },
+      ] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'all green' }] } },
+    ]);
+    const rows = readSessionHistory([dir], sid);
+    expect(rows.map((r) => `${r.role}:${r.text}`)).toEqual([
+      'user:fix the build',
+      'action:Reading App.tsx',
+      'action:Running: npm test',
+      'assistant:running the tests',
+      'action:Subagent: audit the config',
+      'assistant:all green',
+    ]);
+    expect(rows.find((r) => r.text.startsWith('Subagent'))?.sub).toBe(true);
+    expect(rows.find((r) => r.text === 'Running: npm test')?.sub).toBe(false);
   });
 });

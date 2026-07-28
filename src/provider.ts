@@ -30,8 +30,13 @@ export interface AccountIdentity {
  *  that the main turn's model changed (text = the model id), derived from the
  *  transcript rather than stored separately. */
 export interface HistoryEntry {
-  role: 'user' | 'assistant' | 'model';
+  /** 'action' = a tool call reconstructed from the transcript, so the trail of
+   *  what the agent DID survives a reload (the live activity rows only ever
+   *  existed in browser memory). `text` is the display label. */
+  role: 'user' | 'assistant' | 'model' | 'action';
   text: string;
+  /** For 'action': the call was a subagent/task spawn (rendered differently). */
+  sub?: boolean;
   /** ISO timestamp from the transcript, when present — lets the panel
    *  interleave this with live activity/subagent events by time. */
   ts?: string;

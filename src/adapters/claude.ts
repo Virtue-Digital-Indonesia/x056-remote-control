@@ -280,6 +280,18 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
       }
     }
     if (type === 'assistant' && message.model === '<synthetic>') continue;
+    // Tool calls, so the trail of what the agent DID survives a reload. The
+    // live activity rows are browser-memory only, so before this a refresh left
+    // the transcript's messages with no actions between them.
+    if (type === 'assistant' && Array.isArray(message.content)) {
+      for (const block of message.content as unknown[]) {
+        const b = block as { type?: string; name?: string; input?: Record<string, unknown> };
+        if (b && b.type === 'tool_use' && b.name) {
+          out.push({ role: 'action', text: labelFor(b.name, b.input ?? {}), sub: SUBAGENT_TOOLS.has(b.name), ts });
+          offsets.push(at);
+        }
+      }
+    }
     const text = textFromContent(message.content).trim();
     if (text === '') continue;
     // Skip system-injected content Claude Code records as "user" turns:

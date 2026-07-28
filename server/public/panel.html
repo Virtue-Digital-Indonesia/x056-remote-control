@@ -2975,13 +2975,21 @@
       // happened between — appending the whole log after all messages (the
       // previous fix) always dumped the entire trail at the bottom instead.
       var items = [];
+      var transcriptActions = 0;
       if (hasMsgs) rows.forEach(function (m, i) {
+        if (m.role === 'action') transcriptActions++;
         items.push({ ts: m.ts, idx: i, render: m.role === 'model'
           ? function () { appendNode(pid, sid, nodeModelMark(m.text, m.ts)); }        // model-switch marker from the transcript
-          : function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts); } });
+          : m.role === 'action'
+            ? function () { appendNode(pid, sid, nodeAct(m.text, m.sub)); }           // tool call replayed from the transcript
+            : function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts); } });
       });
+      // The transcript now carries the action trail itself, so replaying the
+      // in-memory log on top would double every row from this browser session.
+      // Only fall back to it when the transcript gave us none (e.g. a provider
+      // whose reader doesn't emit them).
       var base = items.length;
-      lv.activityLog.forEach(function (a, i) { items.push({ ts: a.ts, idx: base + i, render: function () { appendNode(pid, sid, nodeAct(a.label, a.isSubagent)); } }); });
+      if (!transcriptActions) lv.activityLog.forEach(function (a, i) { items.push({ ts: a.ts, idx: base + i, render: function () { appendNode(pid, sid, nodeAct(a.label, a.isSubagent)); } }); });
       items.sort(function (x, y) {
         var tx = x.ts ? Date.parse(x.ts) : NaN, ty = y.ts ? Date.parse(y.ts) : NaN;
         if (!isNaN(tx) && !isNaN(ty)) return tx - ty;
@@ -3059,7 +3067,9 @@
         rows.forEach(function (m) {
           frag.appendChild(m.role === 'model'
             ? nodeModelMark(m.text, m.ts)
-            : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, providerFor(pid, sid)));
+            : m.role === 'action'
+              ? nodeAct(m.text, m.sub)
+              : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, providerFor(pid, sid)));
         });
         chatEl.insertBefore(frag, chatEl.firstChild);
         scroller.scrollTop = scroller.scrollHeight - fromBottom;
