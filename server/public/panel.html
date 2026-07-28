@@ -1254,10 +1254,15 @@
     if (!views[key]) views[key] = { frag: document.createDocumentFragment(), label: '', subs: {}, subCount: 0, active: false, loaded: false, activityLog: [] };
     return views[key];
   }
-  function forgetView(pid, sessionId) { delete views[viewKey(pid, sessionId)]; }
+  function forgetView(pid, sessionId) {
+    var k = viewKey(pid, sessionId);
+    delete views[k]; delete activeModel[k]; delete activeAccount[k];
+  }
   function forgetProjectViews(pid) {
     var prefix = pid + '::';
-    Object.keys(views).forEach(function (k) { if (k.indexOf(prefix) === 0) delete views[k]; });
+    [views, activeModel, activeAccount].forEach(function (m) {
+      Object.keys(m).forEach(function (k) { if (k.indexOf(prefix) === 0) delete m[k]; });
+    });
   }
   // A node belongs in the live thread only if it's for the project AND
   // conversation currently being viewed; otherwise it's stashed in that OTHER
@@ -1386,7 +1391,10 @@
     }
   }
   var acctNames = {}; // registry name (a/b) -> display name
-  var activeModel = {}, activeAccount = {}; // per pid: model id / account name in this turn
+  // Per CONVERSATION (viewKey), not per project: sibling conversations run at
+  // the same time and on different providers, so a project-wide key showed one
+  // conversation's model/account on another (a Codex chat reporting "Opus 5").
+  var activeModel = {}, activeAccount = {};
   // sessionId -> unanswered question data (survives history reloads / SSE replays,
   // and is rehydrated from /api/questions after a refresh or container swap).
   // Keyed by CONVERSATION, not project: several conversations in one project can
@@ -1478,8 +1486,9 @@
     var s = document.createElement('span'); s.className = 'spin'; busyEl.appendChild(s);
     var l = document.createElement('span'); l.className = 'lbl'; l.textContent = lastLabel || 'working…'; busyEl.appendChild(l);
     if (runningSubs > 0) { var t = document.createElement('span'); t.className = 'tasks'; t.textContent = '· ' + runningSubs + ' running'; busyEl.appendChild(t); }
-    var meta = []; var ml = modelLabel(activeModel[currentProjectId]); if (ml) meta.push(ml);
-    var ac = activeAccount[currentProjectId]; if (ac) meta.push(acctName(ac));
+    var vk = viewKey(currentProjectId, lastSessionId);
+    var meta = []; var ml = modelLabel(activeModel[vk]); if (ml) meta.push(ml);
+    var ac = activeAccount[vk]; if (ac) meta.push(acctName(ac));
     if (meta.length) { var mm = document.createElement('span'); mm.className = 'bmeta'; mm.textContent = '· ' + meta.join(' · '); busyEl.appendChild(mm); }
     var stop = document.createElement('button'); stop.className = 'stopbtn'; stop.title = 'stop this turn'; stop.appendChild(icon('x', 'sm'));
     var sl = document.createElement('span'); sl.textContent = 'Stop'; stop.appendChild(sl);
@@ -1549,13 +1558,13 @@
     }
     if (kind === 'assistant_text') appendNode(pid, sid, nodeMsg('assistant', data.text, null, data.ts, providerFor(pid, sid)));
     else if (kind === 'supervisor') {
-      if (data.type === 'turn_started' && data.account) { activeAccount[pid] = data.account; if (mineConvo) { renderBusy(); renderAccountChip(); refreshAccountsPop(); } }
+      if (data.type === 'turn_started' && data.account) { activeAccount[viewKey(pid, sid)] = data.account; if (mineConvo) { renderBusy(); renderAccountChip(); refreshAccountsPop(); } }
       var l = BANNERS[data.type]; if (l) appendNode(pid, sid, nodeSys(l, 'banner'));
     }
     else if (kind === 'active_model') {
       if (data.model) {
-        var changed = activeModel[pid] !== data.model;
-        activeModel[pid] = data.model;
+        var changed = activeModel[viewKey(pid, sid)] !== data.model;
+        activeModel[viewKey(pid, sid)] = data.model;
         if (changed) appendNode(pid, sid, nodeModelMark(data.model, data.ts)); // a switch — mark it inline
         if (mineConvo) renderBusy();
       }
@@ -1578,7 +1587,7 @@
       clearQuestion(pid, sid);
       var v = viewOf(pid, sid);
       if (data.resume === false) v.activityLog = []; // brand-new session — don't inherit the prior one's trail
-      if (data.model) activeModel[pid] = data.model; if (mineConvo) { active = true; renderBusy(); }
+      if (data.model) activeModel[viewKey(pid, sid)] = data.model; if (mineConvo) { active = true; renderBusy(); }
     }
     else if (kind === 'session_done') {
       appendNode(pid, sid, nodeSys('done: ' + data.status + (data.finalAccount ? ' · ' + acctName(data.finalAccount) : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')));
@@ -2365,7 +2374,7 @@
     // per-account "Switch this turn here" action once the backend supports it.
     $('switchAcctBtn').style.display = activeCapable ? 'none' : '';
     var viewedRunning = isSessionRunning(currentProjectId, lastSessionId);
-    var runningAcct = viewedRunning ? activeAccount[currentProjectId] : null;
+    var runningAcct = viewedRunning ? activeAccount[viewKey(currentProjectId, lastSessionId)] : null;
     // Accounts are pooled PER PROVIDER, so several can each be "next up" for their
     // own pool. Only the one matching THIS project's provider will actually run
     // the next message — scope the highlighting to that, and dim the rest, so the
@@ -2563,7 +2572,7 @@
     var pool = acctList.filter(function (a) { return (a.provider || 'claude') === curProvider; });
     if (!pool.length) pool = acctList;
     function byName(n) { for (var i = 0; i < pool.length; i++) if (pool[i].name === n) return pool[i]; return null; }
-    if (isSessionRunning(currentProjectId, lastSessionId)) { var live = byName(activeAccount[currentProjectId]); if (live) return live; }
+    if (isSessionRunning(currentProjectId, lastSessionId)) { var live = byName(activeAccount[viewKey(currentProjectId, lastSessionId)]); if (live) return live; }
     for (var i = 0; i < pool.length; i++) if (pool[i].nextUp) return pool[i]; // who the next prompt uses
     var ok = null, nonLim = null, soonest = null;
     pool.forEach(function (a) {
@@ -2578,7 +2587,7 @@
     var a = pickPrimaryAccount(); if (!a) return;
     var nm = a.displayName || a.name;
     acctNameEl.textContent = nm; acctAv.textContent = (nm[0] || '?').toUpperCase();
-    var live = isSessionRunning(currentProjectId, lastSessionId) && activeAccount[currentProjectId] === a.name;
+    var live = isSessionRunning(currentProjectId, lastSessionId) && activeAccount[viewKey(currentProjectId, lastSessionId)] === a.name;
     var lim = a.state && a.state.kind === 'limited';
     // "Max" is Claude's plan name — a Codex account is a ChatGPT one, so label it
     // by provider rather than claiming a plan it doesn't have.

@@ -1408,7 +1408,17 @@ export class SessionManager {
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {
           saveStateOnce();
-          this.tapToEvents(e, emit, adapter, pid);
+          // Persist the CLI's own session id THE MOMENT the stream reveals it
+          // (codex announces its thread id in thread.started), not just when the
+          // turn finishes. A Codex conversation's transcript is filed under that
+          // thread id, so until it was stored, reading history fell back to the
+          // gateway's own uuid, matched no rollout, and the conversation rendered
+          // zero messages — only live activity — for the whole first turn.
+          const captured = adapter.captureSessionId?.(e);
+          if (captured && this.projects().providerSessionId(pid, sessionId) !== captured) {
+            this.projects().setProviderSessionId(pid, sessionId, captured);
+          }
+          this.tapToEvents(e, emit, adapter, pid, sessionId);
         },
       })
         .then((res) => {
@@ -1452,7 +1462,7 @@ export class SessionManager {
     }
   }
 
-  private tapToEvents(e: RawEvent, emit: (kind: string, data: Record<string, unknown>) => void, adapter: ProviderAdapter, pid?: string): void {
+  private tapToEvents(e: RawEvent, emit: (kind: string, data: Record<string, unknown>) => void, adapter: ProviderAdapter, pid?: string, sessionId?: string): void {
     // Surface tool calls + subagent spawns as activity so the UI can show a
     // live "working / N running tasks" state instead of appearing to hang. The
     // adapter knows its own provider's stream shape.
@@ -1462,9 +1472,13 @@ export class SessionManager {
     // The model resolved for this turn (e.g. "claude-fable-5"), shown as the live
     // model. The adapter returns undefined for subagent/irrelevant events so the
     // indicator tracks the MAIN turn instead of flip-flopping.
+    // Deduped per CONVERSATION, not per project: sibling conversations run
+    // concurrently (and on different providers), so a project-wide "last model"
+    // let one suppress the other's switch — or report the other's model.
     const model = adapter.activeModel?.(e);
-    if (model && pid && this.lastModelByPid.get(pid) !== model) {
-      this.lastModelByPid.set(pid, model);
+    const modelKey = sessionId ?? pid;
+    if (model && modelKey && this.lastModelByPid.get(modelKey) !== model) {
+      this.lastModelByPid.set(modelKey, model);
       emit('active_model', { model }); // envelope ts (emit time) carries ordering
     }
     for (const raw of adapter.assistantText?.(e) ?? []) {

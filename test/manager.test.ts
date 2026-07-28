@@ -899,3 +899,38 @@ describe('SessionManager account management', () => {
     expect(mgr.accountsInfo().map((a) => a.name)).toEqual(['b']);
   });
 });
+
+describe('provider session id is captured LIVE, not only at turn end', () => {
+  it('stores the codex thread id as soon as the stream announces it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-psid-'));
+    const stateDir = join(dir, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'd', configDir: '/cfg/d', provider: 'codex' }]);
+
+    let release: () => void = () => {};
+    const finished = new Promise<void>((r) => { release = r; });
+    let tapped: ((e: unknown) => void) | undefined;
+    const runSessionFn = (async (o: { tap?: (e: unknown) => void }) => {
+      tapped = o.tap;
+      // codex announces its own thread id at the start of the stream…
+      o.tap?.({ type: 'thread.started', thread_id: 'thread-abc-123' });
+      await finished; // …and the turn keeps running for a long while after that
+      return { status: 'completed', finalAccount: 'd', failovers: 0 };
+    }) as unknown as typeof import('../src/failover.js').runSession;
+
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+    const p = mgr.createProject('CX', dir, 'codex');
+    const sid = mgr.start('write copy', undefined, undefined, p.id);
+    await waitFor(() => tapped !== undefined);
+
+    // MID-TURN: history must already resolve to the codex thread id. Before this
+    // fix it fell back to the gateway's own uuid, matched no rollout, and the
+    // conversation showed zero messages for the whole first turn.
+    const ctx = mgr.historyContext(p.id, sid);
+    expect(ctx.providerSessionId).toBe('thread-abc-123');
+    expect(ctx.adapter.id).toBe('codex');
+
+    release();
+    await waitFor(() => !mgr.listProjects().projects.some((x) => (x.runningSessionIds ?? []).includes(sid)));
+  });
+});
