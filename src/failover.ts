@@ -50,6 +50,10 @@ export interface RunSessionOptions {
   forceSwitchSignal?: boolean;
   drainTimeoutMs?: number;
   interruptGraceMs?: number;
+  /** How many times to retry a turn the API failed with a transient 5xx. */
+  maxOverloadRetries?: number;
+  /** Base backoff before an overload retry (multiplied by the attempt number). */
+  overloadRetryDelayMs?: number;
   /** Hands the caller per-run controls so multiple concurrent runs can be
    *  driven individually (the process-wide SIGUSR1 path can't distinguish
    *  between them). Called once, synchronously, before the first turn. */
@@ -71,6 +75,8 @@ export interface RunControl {
 const LIMIT_NO_RESET_FALLBACK = 30 * 60;
 const FORCED_COOLDOWN = 30 * 60;
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 export async function runSession(opts: RunSessionOptions): Promise<SessionResult> {
   const { registry, log, sessionId, cwd } = opts;
   const adapter = opts.adapter ?? claudeAdapter;
@@ -80,6 +86,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   const drainTimeoutMs = opts.drainTimeoutMs ?? 30_000;
   const graceMs = opts.interruptGraceMs ?? 10_000;
   const failoverTimes: number[] = [];
+  // Transient API 5xx retries are bounded and on the SAME account (a different
+  // account would hit the same overloaded servers).
+  const maxOverloadRetries = opts.maxOverloadRetries ?? 2;
+  const overloadRetryDelayMs = opts.overloadRetryDelayMs ?? 20_000;
+  let overloadRetries = 0;
 
   let mode: 'new' | 'resume' = opts.resume ? 'resume' : 'new';
   let prompt = opts.prompt;
@@ -137,6 +148,10 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         graceTimer: null as NodeJS.Timeout | null,
         killRequested: false,
         interruptRequested: false,
+        // Set when the API reported a transient 5xx (529 Overloaded). Not a
+        // limit — the account is fine and every account hits the same servers —
+        // so the turn is retried on THIS account after a backoff.
+        overloaded: false,
         // The last non-empty assistant text chunk streamed so far. Claude's own
         // resultText(e) always has a definitive answer (the `result` event carries
         // it directly); Codex streams its answer as separate agent_message items
@@ -186,6 +201,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         if (v.kind === 'warning') {
           log.append({ type: 'quota_warning', sessionId, account: account.name, resetsAt: v.resetsAt ?? null });
         }
+        if (v.kind === 'transient' && v.source === 'api_overloaded') state.overloaded = true;
         const texts = adapter.assistantText?.(e);
         if (texts && texts.length) state.lastAssistantText = texts[texts.length - 1];
         if (adapter.isResult(e) && adapter.resultOk(e)) {
@@ -256,7 +272,20 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           log.append({ type: 'turn_completed', sessionId, account: account.name });
           return { status: 'completed', finalAccount: account.name, failovers: failoverTimes.length, resultText: state.resultText, providerSessionId: cliSessionId };
         }
-        const reason = exit.spawnError ?? (exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`);
+        // A transient API 5xx: the CLI printed "try again in a moment" and quit.
+        // Retry the SAME account (resuming, so no context is lost) rather than
+        // reporting a failure the user has to notice and resend by hand.
+        if (state.overloaded && overloadRetries < maxOverloadRetries) {
+          overloadRetries++;
+          log.append({ type: 'api_overloaded_retry', sessionId, account: account.name, attempt: overloadRetries });
+          await sleep(overloadRetryDelayMs * overloadRetries); // linear backoff
+          mode = 'resume';
+          prompt = adapter.continuePrompt;
+          continue;
+        }
+        const reason = state.overloaded
+          ? `the API was overloaded (5xx) — still failing after ${overloadRetries} retr${overloadRetries === 1 ? 'y' : 'ies'}`
+          : exit.spawnError ?? (exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`);
         log.append({
           type: 'turn_failed',
           sessionId,
@@ -264,6 +293,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           code: exit.code,
           signal: exit.signal,
           spawnError: exit.spawnError ?? null,
+          overloaded: state.overloaded,
         });
         return { status: 'failed', finalAccount: account.name, failovers: failoverTimes.length, reason, providerSessionId: cliSessionId };
       }

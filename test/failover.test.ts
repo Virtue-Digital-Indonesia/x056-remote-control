@@ -348,3 +348,83 @@ describe('runSession', () => {
     expect(registry.get('a').state).toEqual({ kind: 'limited', until: 100 + 30 * 60, estimated: true });
   }, 10000);
 });
+
+/** The real shape: the CLI records a synthetic 529 message, then exits 1. */
+const OVERLOADED: RawEvent = {
+  type: 'assistant',
+  isApiErrorMessage: true,
+  message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment.' }] },
+};
+
+/** Replays one scripted list per call and exits with the given code. */
+function scriptTurnsExit(script: { events: RawEvent[]; code: number }[], recorded: Recorded[]): (opts: TurnOptions) => TurnHandle {
+  let call = 0;
+  return (opts: TurnOptions) => {
+    recorded.push({ configDir: opts.configDir, mode: opts.mode, prompt: opts.prompt });
+    const step = script[Math.min(call, script.length - 1)];
+    call += 1;
+    const done = (async () => {
+      for (const e of step.events) { opts.onEvent(e); await new Promise((r) => setTimeout(r, 1)); }
+      return { code: step.code, signal: null };
+    })();
+    return { kill: () => {}, interrupt: () => {}, done };
+  };
+}
+
+describe('transient API overload (529) is retried, not reported as a dead turn', () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-ovl-'));
+    const registry = AccountRegistry.init(join(dir, 'accounts.json'), [
+      { name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' },
+    ]);
+    return { registry, log: new EventLog(join(dir, 'events.jsonl')) };
+  }
+
+  it('retries on the SAME account and succeeds, resuming so no context is lost', async () => {
+    const { registry, log } = setup();
+    const recorded: Recorded[] = [];
+    const res = await runSession({
+      registry, log, sessionId: 's-ovl', cwd: '/w', prompt: 'do it',
+      startTurnFn: scriptTurnsExit([
+        { events: [OVERLOADED], code: 1 },   // API overloaded
+        { events: [SUCCESS], code: 0 },      // retry works
+      ], recorded),
+      forceSwitchSignal: false, overloadRetryDelayMs: 1,
+    });
+    expect(res.status).toBe('completed');
+    expect(res.finalAccount).toBe('a');   // never switched accounts…
+    expect(res.failovers).toBe(0);        // …and it isn't counted as a failover
+    expect(recorded.map((r) => r.configDir)).toEqual(['/cfg/a', '/cfg/a']);
+    expect(recorded[1].mode).toBe('resume'); // retry resumes, keeping context
+    // the account must NOT be benched — it was the API that was busy, not the quota
+    expect(registry.get('a').state.kind).not.toBe('limited');
+  });
+
+  it('gives up after the retry budget with a reason that names the overload', async () => {
+    const { registry, log } = setup();
+    const recorded: Recorded[] = [];
+    const res = await runSession({
+      registry, log, sessionId: 's-ovl2', cwd: '/w', prompt: 'do it',
+      startTurnFn: scriptTurnsExit([{ events: [OVERLOADED], code: 1 }], recorded),
+      forceSwitchSignal: false, overloadRetryDelayMs: 1, maxOverloadRetries: 2,
+    });
+    expect(res.status).toBe('failed');
+    expect(recorded.length).toBe(3); // initial + 2 retries
+    expect(res.reason).toMatch(/overloaded/i);
+    expect(res.reason).not.toMatch(/exit code/);
+    expect(registry.get('a').state.kind).not.toBe('limited'); // still usable
+  });
+
+  it('a plain non-zero exit (not an overload) still fails immediately, unchanged', async () => {
+    const { registry, log } = setup();
+    const recorded: Recorded[] = [];
+    const res = await runSession({
+      registry, log, sessionId: 's-plain', cwd: '/w', prompt: 'do it',
+      startTurnFn: scriptTurnsExit([{ events: [ASSISTANT], code: 1 }], recorded),
+      forceSwitchSignal: false, overloadRetryDelayMs: 1,
+    });
+    expect(res.status).toBe('failed');
+    expect(res.reason).toBe('exit code 1');
+    expect(recorded.length).toBe(1); // no retries
+  });
+});

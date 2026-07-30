@@ -1590,7 +1590,14 @@
       if (data.model) activeModel[viewKey(pid, sid)] = data.model; if (mineConvo) { active = true; renderBusy(); }
     }
     else if (kind === 'session_done') {
-      appendNode(pid, sid, nodeSys('done: ' + data.status + (data.finalAccount ? ' · ' + acctName(data.finalAccount) : '') + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')));
+      // Show WHY a turn failed. The reason was previously dropped, so a failure
+      // caused by something transient and self-explanatory (e.g. "the API was
+      // overloaded") read as an unexplained "failed" the user had to guess at.
+      var doneLine = 'done: ' + data.status
+        + (data.finalAccount ? ' · ' + acctName(data.finalAccount) : '')
+        + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')
+        + (data.status !== 'completed' && data.reason ? ' · ' + data.reason : '');
+      appendNode(pid, sid, nodeSys(doneLine, data.status === 'failed' ? 'banner err' : ''));
       if (mineConvo) { active = false; renderBusy(); }
       else setConvNotif(pid, sid, data.status === 'completed' ? 'done' : 'failed'); // bell on a convo you're not watching
       pollAccounts(); renderStrip();

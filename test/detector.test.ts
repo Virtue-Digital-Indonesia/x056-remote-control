@@ -75,3 +75,34 @@ describe('classifyEvent', () => {
     expect(classifyEvent({ type: 'result', subtype: 'success', is_error: false, api_error_status: null }).kind).toBe('irrelevant');
   });
 });
+
+describe('transient API 5xx (server overloaded)', () => {
+  // Real capture: the CLI records "API Error: 529 Overloaded. This is a
+  // server-side issue…" as a synthetic assistant message and exits 1. It is NOT
+  // a quota limit — switching accounts hits the same servers.
+  it('classifies the synthetic 529 assistant message as transient, not limited', () => {
+    const v = classifyEvent({
+      type: 'assistant',
+      isApiErrorMessage: true,
+      message: { model: '<synthetic>', content: [{ type: 'text', text: 'API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment.' }] },
+    } as never);
+    expect(v).toEqual({ kind: 'transient', source: 'api_overloaded' });
+  });
+
+  it('classifies a result event with a 5xx api_error_status as transient', () => {
+    expect(classifyEvent({ type: 'result', api_error_status: 529 } as never)).toEqual({ kind: 'transient', source: 'api_overloaded' });
+    expect(classifyEvent({ type: 'result', api_error_status: 503 } as never)).toEqual({ kind: 'transient', source: 'api_overloaded' });
+  });
+
+  it('still treats a 429 as a real limit (not swallowed by the 5xx rule)', () => {
+    expect(classifyEvent({ type: 'result', api_error_status: 429 } as never)).toEqual({ kind: 'limited', source: 'result' });
+  });
+
+  it('ignores an ordinary assistant message that merely mentions overload', () => {
+    const v = classifyEvent({
+      type: 'assistant',
+      message: { model: 'claude-opus-5', content: [{ type: 'text', text: 'the server was overloaded earlier, retrying the deploy' }] },
+    } as never);
+    expect(v.kind).toBe('irrelevant');
+  });
+});
