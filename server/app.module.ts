@@ -4,10 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { Module } from '@nestjs/common';
 import { APP_GUARD, Reflector } from '@nestjs/core';
 import { AuthGuard } from './auth.guard.js';
-import { ApiController, STATE_DIR, PUSH_SERVICE, WEBAUTHN_SERVICE, SESSION_STORE, PLUGIN_MANAGER } from './api.controller.js';
+import { ApiController, STATE_DIR, PUSH_SERVICE, WEBAUTHN_SERVICE, SESSION_STORE, PLUGIN_MANAGER, MCP_SERVER_MANAGER } from './api.controller.js';
 import { SessionManager } from './manager.js';
 import { PushService } from './push.js';
 import { PluginManager } from './plugins.js';
+import { McpServerManager } from './mcp-servers.js';
 import { WebAuthnService, SessionStore } from './webauthn.js';
 import type { TurnOptions } from '../src/turn.js';
 
@@ -68,6 +69,13 @@ export function buildModule(cfg: GatewayConfig): unknown {
     claudeDirs: PluginManager.claudeDirsFromRegistry(join(cfg.stateDir, 'accounts.json')),
   });
 
+  // MCP servers, likewise replicated across every account of a provider so one
+  // stays configured no matter which account a turn lands on.
+  const mcpServers = new McpServerManager({
+    claudePath: cfg.claudePath,
+    accounts: McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json')),
+  });
+
   @Module({
     controllers: [ApiController],
     providers: [
@@ -76,6 +84,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: WEBAUTHN_SERVICE, useValue: webauthn },
       { provide: SESSION_STORE, useValue: sessions },
       { provide: PLUGIN_MANAGER, useValue: plugins },
+      { provide: MCP_SERVER_MANAGER, useValue: mcpServers },
       { provide: STATE_DIR, useValue: cfg.stateDir },
       { provide: APP_GUARD, useFactory: (reflector: Reflector) => new AuthGuard(cfg.token, sessions, reflector), inject: [Reflector] },
     ],

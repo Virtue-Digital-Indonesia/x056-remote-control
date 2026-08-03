@@ -1,0 +1,74 @@
+#!/usr/bin/env node
+// Stub for BOTH `claude mcp …` and `codex mcp …`, chosen by $STUB_MCP_PROVIDER.
+// Backed by a JSON file per config dir so add/remove/list actually round-trip,
+// and it reproduces the behaviours the manager has to cope with:
+//   - claude REFUSES to overwrite an existing name (exit 1)
+//   - codex silently overwrites
+//   - claude has no list command here (the manager reads .claude.json directly)
+// Every invocation is appended to $STUB_LOG for argv assertions.
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const argv = process.argv.slice(2);
+const provider = process.env.STUB_MCP_PROVIDER || 'claude';
+const cfg = (provider === 'codex' ? process.env.CODEX_HOME : process.env.CLAUDE_CONFIG_DIR) || '';
+if (process.env.STUB_LOG) appendFileSync(process.env.STUB_LOG, JSON.stringify({ argv, cfg, provider }) + '\n');
+
+mkdirSync(cfg, { recursive: true });
+// claude's real store is .claude.json {mcpServers}; codex's is opaque here.
+const file = join(cfg, provider === 'codex' ? 'codex-mcp.json' : '.claude.json');
+const load = () => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return {}; } };
+const save = (o) => writeFileSync(file, JSON.stringify(o, null, 1));
+
+const sub = argv[1]; // argv[0] === 'mcp'
+const store = load();
+store.mcpServers = store.mcpServers || {};
+
+if (sub === 'list' && argv.includes('--json')) {
+  // codex shape
+  const out = Object.entries(store.mcpServers).map(([name, s]) => ({
+    name,
+    enabled: true,
+    transport: s.type === 'http'
+      ? { type: 'streamable_http', url: s.url }
+      : { type: 'stdio', command: s.command, args: s.args || [], env: s.env ?? null },
+  }));
+  process.stdout.write(JSON.stringify(out));
+  process.exit(0);
+}
+
+if (sub === 'add-json') { // claude
+  const name = argv[2];
+  if (store.mcpServers[name]) { process.stdout.write(`MCP server ${name} already exists in user config\n`); process.exit(1); }
+  store.mcpServers[name] = JSON.parse(argv[3]);
+  save(store);
+  process.stdout.write(`Added stdio MCP server ${name} to user config\n`);
+  process.exit(0);
+}
+
+if (sub === 'add') { // codex: add <name> [--env K=V]... [--url U | -- cmd args...]
+  const name = argv[2];
+  const rest = argv.slice(3);
+  const env = {};
+  for (let i = 0; i < rest.length; i++) if (rest[i] === '--env') { const [k, ...v] = rest[++i].split('='); env[k] = v.join('='); }
+  const urlAt = rest.indexOf('--url');
+  const ddAt = rest.indexOf('--');
+  store.mcpServers[name] = urlAt >= 0
+    ? { type: 'http', url: rest[urlAt + 1] }
+    : { type: 'stdio', command: rest[ddAt + 1], args: rest.slice(ddAt + 2), ...(Object.keys(env).length ? { env } : {}) };
+  save(store); // codex OVERWRITES without complaint
+  process.stdout.write(`Added global MCP server '${name}'.\n`);
+  process.exit(0);
+}
+
+if (sub === 'remove') {
+  const name = argv[2];
+  if (!store.mcpServers[name]) { process.stderr.write(`No MCP server named '${name}'\n`); process.exit(1); }
+  delete store.mcpServers[name];
+  save(store);
+  process.stdout.write(`Removed global MCP server '${name}'.\n`);
+  process.exit(0);
+}
+
+process.stderr.write(`stub: unsupported: ${argv.join(' ')}\n`);
+process.exit(1);

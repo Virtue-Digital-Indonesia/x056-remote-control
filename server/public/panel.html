@@ -347,6 +347,23 @@
   .plug-foot { font-size: 11px; color: var(--faint); margin-top: 12px; line-height: 1.5; }
   .plug-foot code { background: var(--surface-3); padding: 1px 5px; border-radius: 5px; font-size: 10.5px; }
   .plug-empty { font-size: 12px; color: var(--faint); padding: 6px 2px; }
+  /* MCP servers */
+  .mcp-form { display: flex; flex-direction: column; gap: 6px; }
+  .mcp-form input, .mcp-form select { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); border-radius: 9px; padding: 8px 10px; font: inherit; font-size: 12.5px; width: 100%; }
+  .mcp-row { display: flex; gap: 6px; }
+  .mcp-row select { flex: 1; }
+  #mcpStdioFields, #mcpHttpFields { display: flex; flex-direction: column; gap: 6px; }
+  #mcpHttpFields[hidden], #mcpStdioFields[hidden] { display: none; }
+  .mcp-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 2px; }
+  .mcp-actions .send { width: auto; padding: 0 14px; height: 32px; }
+  .mcp-item { display: flex; align-items: flex-start; gap: 9px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 7px; }
+  .mcp-item .mi-main { flex: 1; min-width: 0; }
+  .mcp-item .mi-name { font-size: 13px; color: var(--text); font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .mcp-item .mi-meta { font-size: 11px; color: var(--faint); margin-top: 3px; overflow-wrap: anywhere; }
+  .mcp-item .mi-warn { color: var(--amber); }
+  .mcp-item .mi-btn { flex: none; width: 26px; height: 26px; border: none; background: transparent; color: var(--faint); border-radius: 7px; cursor: pointer; display: grid; place-items: center; }
+  .mcp-item .mi-btn:hover { background: var(--surface-2); color: var(--text); }
+  .mcp-item .mi-btn.del:hover { background: var(--err-bg); color: var(--err); }
   .qa { padding: 10px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 8px; }
   .qa:last-child { margin-bottom: 0; }
   .qa.nextup { border-color: var(--accent); }
@@ -484,7 +501,7 @@
      the settings/account cluster lives in here, leaving only the workflow
      actions (notifications, autopilot, resume) inline. */
   .moreBtn { display: inline-grid; place-items: center; }
-  .topbar #defaultsBtn, .topbar #pluginsBtn, .topbar #passkeyBtn,
+  .topbar #defaultsBtn, .topbar #pluginsBtn, .topbar #mcpSrvBtn, .topbar #passkeyBtn,
   .topbar #shortcutsBtn, .topbar #themeBtn, .topbar #tokenBtn { display: none; }
   .nav-backdrop { display: none; }
   #morePop { top: 52px; right: 8px; left: auto; bottom: auto; width: 232px; }
@@ -612,6 +629,7 @@
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
     <button class="ico" id="pluginsBtn" title="Claude Code plugins"><svg class="ic"><use href="#i-plug"/></svg></button>
+    <button class="ico" id="mcpSrvBtn" title="MCP servers"><svg class="ic"><use href="#i-terminal"/></svg></button>
     <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
     <button class="ico" id="shortcutsBtn" title="keyboard shortcuts (⌘/)"><svg class="ic"><use href="#i-keyboard"/></svg></button>
     <button class="ico" id="themeBtn" title="theme"><svg class="ic"><use href="#i-moon"/></svg></button>
@@ -726,6 +744,40 @@
     </div>
   </div>
   <div class="plug-foot">Changes apply to the next turn. Invoke a plugin command by sending it as a message, e.g. <code>/claude-security scan my branch</code>.</div>
+</div>
+<div class="pop" id="mcpSrvPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:420px; max-height:80vh; overflow:auto;">
+  <h2>MCP servers</h2>
+  <div class="plug-note">configured on every account of the provider, so they survive failover</div>
+  <div id="mcpSrvStatus" class="plug-status" hidden></div>
+  <div id="mcpSrvList"></div>
+  <div class="plug-sec">
+    <div class="plug-sec-h" id="mcpFormTitle">Add a server</div>
+    <div class="mcp-form">
+      <div class="mcp-row">
+        <select id="mcpFProvider" title="which agent's accounts to configure">
+          <option value="claude">Claude</option><option value="codex">ChatGPT</option>
+        </select>
+        <select id="mcpFTransport" title="transport">
+          <option value="stdio">stdio (command)</option><option value="http">http (url)</option>
+        </select>
+      </div>
+      <input id="mcpFName" type="text" placeholder="name (e.g. sentry)" autocomplete="off" spellcheck="false" />
+      <div id="mcpStdioFields">
+        <input id="mcpFCommand" type="text" placeholder="command (e.g. npx)" autocomplete="off" spellcheck="false" />
+        <input id="mcpFArgs" type="text" placeholder="args, space-separated (e.g. -y @modelcontextprotocol/server-github)" autocomplete="off" spellcheck="false" />
+      </div>
+      <div id="mcpHttpFields" hidden>
+        <input id="mcpFUrl" type="text" placeholder="https://example.com/mcp" autocomplete="off" spellcheck="false" />
+        <input id="mcpFHeaders" type="text" placeholder="headers, one per line or K: V, comma-separated" autocomplete="off" spellcheck="false" />
+      </div>
+      <input id="mcpFEnv" type="text" placeholder="env, comma-separated (e.g. API_KEY=xxx, DEBUG=1)" autocomplete="off" spellcheck="false" />
+      <div class="mcp-actions">
+        <button class="send ghost" id="mcpFCancel" hidden>Cancel</button>
+        <button class="send" id="mcpFSave">Add server</button>
+      </div>
+    </div>
+  </div>
+  <div class="plug-foot">Applies to the next turn. The gateway's own <code>x056</code> bridge is wired in automatically and isn't listed here.</div>
 </div>
 <div class="pop" id="mcpApprovalsPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:360px; max-height:70vh; overflow:auto;">
   <h2>AI send requests</h2>
@@ -1079,6 +1131,162 @@
     plugOp('marketplace/add', { source: v }, 'Adding marketplace ' + v).then(function () { $('plugMktInput').value = ''; });
   });
   $('plugMktInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('plugMktAddBtn').click(); } });
+
+  // ---- MCP servers. Each server is configured on EVERY account of its provider
+  //      (the server replicates), so the list shows drift when one drops out. ----
+  var mcpSrvState = { servers: [], accounts: {} };
+  var mcpEditing = null; // {provider, name} while editing an existing server
+  var mcpBusy = false;
+  function mcpSetStatus(kind, text) {
+    var el = $('mcpSrvStatus');
+    if (!text) { el.hidden = true; el.textContent = ''; return; }
+    el.hidden = false; el.className = 'plug-status ' + kind; el.textContent = text;
+  }
+  /** "K=V, K2=V2" -> object. Also accepts newlines and "K: V" (headers). */
+  function parsePairs(raw, sep) {
+    var out = {};
+    (raw || '').split(/[\n,]+/).forEach(function (chunk) {
+      var s = chunk.trim(); if (!s) return;
+      var i = s.indexOf(sep);
+      if (i <= 0) return;
+      out[s.slice(0, i).trim()] = s.slice(i + 1).trim();
+    });
+    return out;
+  }
+  function fmtPairs(obj, sep) {
+    return Object.keys(obj || {}).map(function (k) { return k + sep + obj[k]; }).join(', ');
+  }
+  function loadMcpServers() {
+    return api('/api/mcp/servers').then(function (r) { return r.json(); }).then(function (d) {
+      mcpSrvState = d && d.servers ? d : { servers: [], accounts: {} };
+      renderMcpServers();
+    }).catch(function () { mcpSetStatus('err', 'could not load MCP servers'); });
+  }
+  function renderMcpServers() {
+    var list = $('mcpSrvList'); list.textContent = '';
+    if (!mcpSrvState.servers.length) {
+      var e = document.createElement('div'); e.className = 'plug-empty'; e.textContent = 'No MCP servers configured yet.'; list.appendChild(e);
+    }
+    mcpSrvState.servers.forEach(function (s) {
+      var row = document.createElement('div'); row.className = 'mcp-item';
+      var main = document.createElement('div'); main.className = 'mi-main';
+      var nm = document.createElement('div'); nm.className = 'mi-name';
+      nm.appendChild(document.createTextNode(s.name));
+      var badge = document.createElement('span'); badge.className = 'badge prov';
+      badge.textContent = s.provider === 'codex' ? 'ChatGPT' : 'Claude';
+      nm.appendChild(badge);
+      main.appendChild(nm);
+      var meta = document.createElement('div'); meta.className = 'mi-meta';
+      var desc = s.transport === 'http'
+        ? (s.url || '')
+        : ([s.command].concat(s.args || []).join(' ')).trim();
+      var bits = [desc];
+      if (s.env && Object.keys(s.env).length) bits.push(Object.keys(s.env).join(', '));
+      // Drift: present on fewer than all accounts, or defined differently on some.
+      if (s.accountCount < s.totalAccounts) bits.push('⚠ on ' + s.accountCount + '/' + s.totalAccounts + ' accounts');
+      else if (s.differing && s.differing.length) bits.push('⚠ differs on ' + s.differing.join(', '));
+      meta.textContent = bits.filter(Boolean).join(' · ');
+      if (!s.synced) meta.classList.add('mi-warn');
+      main.appendChild(meta);
+      row.appendChild(main);
+      var ed = document.createElement('button'); ed.className = 'mi-btn'; ed.title = 'edit'; ed.appendChild(icon('compose', 'sm'));
+      ed.disabled = mcpBusy;
+      ed.addEventListener('click', function () { mcpEditServer(s); });
+      row.appendChild(ed);
+      var rm = document.createElement('button'); rm.className = 'mi-btn del'; rm.title = 'remove'; rm.appendChild(icon('x', 'sm'));
+      rm.disabled = mcpBusy;
+      rm.addEventListener('click', function () { mcpRemoveServer(s); });
+      row.appendChild(rm);
+      list.appendChild(row);
+    });
+  }
+  function mcpSyncTransportFields() {
+    var http = $('mcpFTransport').value === 'http';
+    $('mcpHttpFields').hidden = !http;
+    $('mcpStdioFields').hidden = http;
+    // env only applies to a stdio server the CLI launches
+    $('mcpFEnv').hidden = http;
+  }
+  $('mcpFTransport').addEventListener('change', mcpSyncTransportFields);
+  function mcpResetForm() {
+    mcpEditing = null;
+    $('mcpFormTitle').textContent = 'Add a server';
+    $('mcpFSave').textContent = 'Add server';
+    $('mcpFCancel').hidden = true;
+    $('mcpFName').disabled = false;
+    ['mcpFName', 'mcpFCommand', 'mcpFArgs', 'mcpFUrl', 'mcpFHeaders', 'mcpFEnv'].forEach(function (id) { $(id).value = ''; });
+    $('mcpFTransport').value = 'stdio';
+    mcpSyncTransportFields();
+  }
+  function mcpEditServer(s) {
+    mcpEditing = { provider: s.provider, name: s.name };
+    $('mcpFormTitle').textContent = 'Edit ' + s.name;
+    $('mcpFSave').textContent = 'Save changes';
+    $('mcpFCancel').hidden = false;
+    $('mcpFProvider').value = s.provider;
+    // The name identifies the server being replaced — changing it here would
+    // create a second one instead of editing this, so it's locked while editing.
+    $('mcpFName').value = s.name; $('mcpFName').disabled = true;
+    $('mcpFTransport').value = s.transport || 'stdio';
+    $('mcpFCommand').value = s.command || '';
+    $('mcpFArgs').value = (s.args || []).join(' ');
+    $('mcpFUrl').value = s.url || '';
+    $('mcpFHeaders').value = fmtPairs(s.headers, ': ');
+    $('mcpFEnv').value = fmtPairs(s.env, '=');
+    mcpSyncTransportFields();
+    $('mcpSrvPop').scrollTop = $('mcpSrvPop').scrollHeight;
+  }
+  $('mcpFCancel').addEventListener('click', mcpResetForm);
+  function mcpOp(path, body, busyMsg) {
+    if (mcpBusy) return Promise.resolve();
+    mcpBusy = true; renderMcpServers(); mcpSetStatus('busy', busyMsg + ' — applying to every account…');
+    return api('/api/mcp/servers/' + path, { method: 'POST', body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
+      .then(function (o) {
+        if (!o.r.ok) { mcpSetStatus('err', (o.j && o.j.message) || ('failed (' + o.r.status + ')')); return false; }
+        var s = summarizeOp(o.j);
+        mcpSetStatus(s.ok ? 'ok' : 'err', s.text);
+        return s.ok;
+      })
+      .catch(function () { mcpSetStatus('err', 'request failed'); return false; })
+      .then(function (ok) { mcpBusy = false; return loadMcpServers().then(function () { return ok; }); });
+  }
+  function mcpFormSpec() {
+    var transport = $('mcpFTransport').value === 'http' ? 'http' : 'stdio';
+    var spec = { name: $('mcpFName').value.trim(), transport: transport };
+    if (transport === 'http') {
+      spec.url = $('mcpFUrl').value.trim();
+      spec.headers = parsePairs($('mcpFHeaders').value, ':');
+    } else {
+      spec.command = $('mcpFCommand').value.trim();
+      spec.args = $('mcpFArgs').value.trim() ? $('mcpFArgs').value.trim().split(/\s+/) : [];
+      spec.env = parsePairs($('mcpFEnv').value, '=');
+    }
+    return spec;
+  }
+  $('mcpFSave').addEventListener('click', function () {
+    var spec = mcpFormSpec();
+    var provider = mcpEditing ? mcpEditing.provider : $('mcpFProvider').value;
+    if (!spec.name) { mcpSetStatus('err', 'name is required'); return; }
+    if (spec.transport === 'http' ? !spec.url : !spec.command) {
+      mcpSetStatus('err', spec.transport === 'http' ? 'url is required' : 'command is required'); return;
+    }
+    var editing = !!mcpEditing;
+    mcpOp(editing ? 'update' : 'add', { provider: provider, server: spec }, (editing ? 'Updating ' : 'Adding ') + spec.name)
+      .then(function (ok) { if (ok) mcpResetForm(); });
+  });
+  function mcpRemoveServer(s) {
+    uiConfirm({ title: 'Remove ' + s.name + '?', message: 'Removes it from every ' + (s.provider === 'codex' ? 'ChatGPT' : 'Claude') + ' account.', confirmText: 'Remove', danger: true })
+      .then(function (ok) {
+        if (!ok) return;
+        if (mcpEditing && mcpEditing.name === s.name) mcpResetForm();
+        mcpOp('remove', { provider: s.provider, name: s.name }, 'Removing ' + s.name);
+      });
+  }
+  $('mcpSrvBtn').addEventListener('click', function () {
+    openPop($('mcpSrvPop')); mcpSetStatus(); mcpResetForm(); loadMcpServers();
+  });
+
   $('defaultsSave').addEventListener('click', function () {
     var map = {};
     [].slice.call(defaultsList.querySelectorAll('select')).forEach(function (sel) { if (sel.value) map[sel.getAttribute('data-model')] = sel.value; });
@@ -2620,7 +2828,7 @@
   // viewed conversation starts or ends a turn — no refetch needed.
   function refreshAccountsPop() { if (!quotaPop.hidden) renderAccounts(acctList); }
   var sessPicker = $('sessPicker'), sessList = $('sessList');
-  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; $('morePop').hidden = true; $('addAcctPop').hidden = true; mcpApprovalsPop.hidden = true; $('pluginsPop').hidden = true; }
+  function hidePops() { quotaPop.hidden = true; projPicker.hidden = true; sessPicker.hidden = true; defaultsPop.hidden = true; passkeyPop.hidden = true; $('morePop').hidden = true; $('addAcctPop').hidden = true; mcpApprovalsPop.hidden = true; $('pluginsPop').hidden = true; $('mcpSrvPop').hidden = true; }
   // Mobile "more" menu: labeled rows that trigger the real (CSS-hidden on mobile)
   // topbar buttons, so there's one source of truth for each action's handler.
   var MORE_ITEMS = [
@@ -2629,6 +2837,7 @@
     { id: 'resumeBtn', label: 'Resume a session', icon: 'history' },
     { id: 'defaultsBtn', label: 'Default effort per model', icon: 'gear' },
     { id: 'pluginsBtn', label: 'Plugins', icon: 'plug' },
+    { id: 'mcpSrvBtn', label: 'MCP servers', icon: 'terminal' },
     { id: 'shortcutsBtn', label: 'Keyboard shortcuts', icon: 'keyboard' },
     { id: 'passkeyBtn', label: 'Passkeys', icon: 'key' },
     { id: 'themeBtn', label: 'Theme', icon: 'moon' },

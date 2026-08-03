@@ -20,6 +20,7 @@ import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
+import { McpServerManager, type McpServerSpec } from './mcp-servers.js';
 import type { HistoryEntry } from './history.js';
 import { withAskInstructions } from '../src/question.js';
 import type { PushService } from './push.js';
@@ -94,6 +95,7 @@ export const PUSH_SERVICE = Symbol('x056-push-service');
 export const WEBAUTHN_SERVICE = Symbol('x056-webauthn-service');
 export const SESSION_STORE = Symbol('x056-session-store');
 export const PLUGIN_MANAGER = Symbol('x056-plugin-manager');
+export const MCP_SERVER_MANAGER = Symbol('x056-mcp-server-manager');
 
 const QUOTA_TTL_MS = 90_000;
 
@@ -114,6 +116,7 @@ export class ApiController {
     @Inject(WEBAUTHN_SERVICE) private readonly webauthn: WebAuthnService,
     @Inject(SESSION_STORE) private readonly sessionStore: SessionStore,
     @Inject(PLUGIN_MANAGER) private readonly plugins: PluginManager,
+    @Inject(MCP_SERVER_MANAGER) private readonly mcpServers: McpServerManager,
   ) {
     this.loadQuotaCache();
   }
@@ -503,6 +506,65 @@ export class ApiController {
   @Get('questions')
   pendingQuestions() {
     return this.manager.listPendingQuestions();
+  }
+
+  // ---- MCP servers. Replicated across every account of the chosen provider:
+  //      a turn can run on any of them, so a server configured on only one
+  //      silently vanishes on failover. ----
+  @Get('mcp/servers')
+  listMcpServers() {
+    return this.mcpServers.list();
+  }
+
+  @Post('mcp/servers/add')
+  @HttpCode(200)
+  addMcpServer(@Body() body: { provider?: string; server?: McpServerSpec }) {
+    const { provider, server } = this.validateMcpBody(body);
+    return this.mcpServers.add(provider, server);
+  }
+
+  /** Neither CLI has an edit; the manager does remove-then-add. */
+  @Post('mcp/servers/update')
+  @HttpCode(200)
+  updateMcpServer(@Body() body: { provider?: string; server?: McpServerSpec }) {
+    const { provider, server } = this.validateMcpBody(body);
+    return this.mcpServers.update(provider, server);
+  }
+
+  @Post('mcp/servers/remove')
+  @HttpCode(200)
+  removeMcpServer(@Body() body: { provider?: string; name?: string }) {
+    const provider = body?.provider === 'codex' ? 'codex' : 'claude';
+    const name = (body?.name ?? '').trim();
+    if (!name) throw new BadRequestException('name required');
+    return this.mcpServers.remove(provider, name);
+  }
+
+  /** Reject a half-specified server here rather than letting the CLI write a
+   *  broken entry to every account. */
+  private validateMcpBody(body: { provider?: string; server?: McpServerSpec }): { provider: 'claude' | 'codex'; server: McpServerSpec } {
+    const provider = body?.provider === 'codex' ? 'codex' : 'claude';
+    const s = body?.server;
+    const name = (s?.name ?? '').trim();
+    if (!name) throw new BadRequestException('server name required');
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new BadRequestException('name may only contain letters, numbers, dot, dash, underscore');
+    const transport = s?.transport === 'http' ? 'http' : 'stdio';
+    if (transport === 'http') {
+      const url = (s?.url ?? '').trim();
+      if (!/^https?:\/\//i.test(url)) throw new BadRequestException('http server needs an http(s) url');
+      return { provider, server: { name, transport, url, headers: s?.headers ?? {} } };
+    }
+    const command = (s?.command ?? '').trim();
+    if (!command) throw new BadRequestException('stdio server needs a command');
+    return {
+      provider,
+      server: {
+        name, transport,
+        command,
+        args: Array.isArray(s?.args) ? s!.args!.map(String).filter((x) => x !== '') : [],
+        env: s?.env ?? {},
+      },
+    };
   }
 
   // ---- Claude Code plugins. Every mutation is replicated across all Claude
