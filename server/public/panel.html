@@ -1628,6 +1628,21 @@
     seenSeq[viewKey(pid, sid)] = lastSeq;
     try { localStorage.setItem(SEEN_KEY, JSON.stringify(seenSeq)); } catch (e) {}
   }
+  // A pending question is DURABLE state, not a replayed event, so the seq
+  // watermark above is the wrong tool for it: that counter is global, so any
+  // other conversation running a turn pushes it past the mark you dismissed at,
+  // and the next refresh re-bells a question you'd already read. Track instead
+  // WHICH question was dismissed, by the server's per-question timestamp — a
+  // genuinely new question in the same conversation has a new one and still
+  // rings.
+  var QSEEN_KEY = 'x056_q_seen';
+  var qSeen = (function () { try { return JSON.parse(localStorage.getItem(QSEEN_KEY) || '{}'); } catch (e) { return {}; } })();
+  function markQuestionSeen(pid, sid, at) {
+    if (!pid || !sid || !at) return;
+    qSeen[viewKey(pid, sid)] = at;
+    try { localStorage.setItem(QSEEN_KEY, JSON.stringify(qSeen)); } catch (e) {}
+  }
+  function questionAlreadySeen(pid, sid, at) { return !!at && qSeen[viewKey(pid, sid)] === at; }
   function notifRank(k) { return k === 'question' ? 3 : k === 'failed' ? 2 : k === 'unread' ? 1.5 : k === 'done' ? 1 : 0; }
   /** Explicit "mark as unread" from the context menu. Unlike setConvNotif this
    *  bypasses the replay guard (the user is asking for the bell, not an event
@@ -1637,7 +1652,10 @@
     var k = viewKey(pid, sid);
     convNotif[k] = 'unread';
     delete seenSeq[k];
-    try { localStorage.setItem(SEEN_KEY, JSON.stringify(seenSeq)); } catch (e) {}
+    // Also un-dismiss its pending question, so one that's still open rings
+    // again on the next load rather than staying silently read.
+    delete qSeen[k];
+    try { localStorage.setItem(SEEN_KEY, JSON.stringify(seenSeq)); localStorage.setItem(QSEEN_KEY, JSON.stringify(qSeen)); } catch (e) {}
     applyNotifs();
   }
   function setConvNotif(pid, sid, kind) {
@@ -1656,6 +1674,9 @@
     var k = viewKey(pid, sid);
     if (convNotif[k]) { delete convNotif[k]; applyNotifs(); }
     markConvSeen(pid, sid);
+    // Opening a conversation dismisses its pending question too — otherwise the
+    // next hydration rings for a question you've already read.
+    if (sid && pendingQ[sid]) markQuestionSeen(pid, sid, pendingQ[sid].at);
   }
   function forgetProjectNotifs(pid) {
     var prefix = pid + '::';
@@ -1823,9 +1844,13 @@
       renderStrip();
     }
     else if (kind === 'question') {
-      if (sid) pendingQ[sid] = { projectId: pid, sessionId: sid, question: data.question, options: data.options };
+      // `at` identifies THIS question for the dismissal record; the live event
+      // has no field of its own, so fall back to the envelope's timestamp.
+      var qAt = data.at || data.ts;
+      if (sid) pendingQ[sid] = { projectId: pid, sessionId: sid, question: data.question, options: data.options, at: qAt };
       showQuestion(pid, data);
-      if (!mineConvo) { setConvNotif(pid, sid, 'question'); notify('Claude has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80)); }
+      if (mineConvo) markQuestionSeen(pid, sid, qAt); // you're looking at it
+      else { setConvNotif(pid, sid, 'question'); notify('Claude has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80)); }
     }
     else if (kind === 'autopilot') {
       // Autopilot is per-conversation now — keyed by the run's sessionId, not
@@ -1934,10 +1959,15 @@
         if (!q.sessionId) return;
         pendingQ[q.sessionId] = q;
         if (!known) return;
-        // Render it if that conversation is the one on screen; otherwise flag it
-        // in the sidebar so it's discoverable from wherever you are.
-        if (q.sessionId === lastSessionId) showQuestion(q.projectId, q);
-        else setConvNotif(q.projectId, q.sessionId, 'question');
+        // Render it if that conversation is the one on screen (and remember you
+        // saw THIS question, so a later refresh doesn't ring for it again);
+        // otherwise flag it in the sidebar — unless you already dismissed it.
+        if (q.sessionId === lastSessionId) {
+          showQuestion(q.projectId, q);
+          markQuestionSeen(q.projectId, q.sessionId, q.at);
+        } else if (!questionAlreadySeen(q.projectId, q.sessionId, q.at)) {
+          setConvNotif(q.projectId, q.sessionId, 'question');
+        }
       });
     }).catch(function () {});
   }
