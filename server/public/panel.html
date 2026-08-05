@@ -1642,6 +1642,12 @@
   }
   function setConvNotif(pid, sid, kind) {
     if (!pid) return;
+    // Never flag the conversation that's on screen — you are, by definition,
+    // reading it. Callers already try to check this, but they raced boot: a
+    // hydration that ran before lastSessionId was known belled the very
+    // conversation being viewed, and since you can't "open" what's already open,
+    // nothing ever cleared it. Enforcing the invariant here can't race.
+    if (pid === currentProjectId && sid === lastSessionId) return;
     var k = viewKey(pid, sid);
     if ((seenSeq[k] || 0) >= lastSeq) return; // already viewed at/after this event — a replay of something already dismissed
     if (notifRank(kind) > notifRank(convNotif[k])) { convNotif[k] = kind; applyNotifs(); }
@@ -1920,9 +1926,14 @@
   // does) leaves a conversation silently waiting with no visible question.
   function loadQuestions() {
     return api('/api/questions').then(function (r) { return r.json(); }).then(function (list) {
+      // Until the snapshot lands we don't know WHICH conversation is on screen,
+      // so only record the questions; boot re-runs this once lastSessionId is
+      // authoritative. Belling on a guess flagged the conversation being viewed.
+      var known = !!lastSessionId;
       (list || []).forEach(function (q) {
         if (!q.sessionId) return;
         pendingQ[q.sessionId] = q;
+        if (!known) return;
         // Render it if that conversation is the one on screen; otherwise flag it
         // in the sidebar so it's discoverable from wherever you are.
         if (q.sessionId === lastSessionId) showQuestion(q.projectId, q);
@@ -3344,6 +3355,11 @@
       // Load pending questions BEFORE the history render, which is what
       // re-attaches the card for the viewed conversation — otherwise the fetch
       // can land after it and the question stays invisible until a switch.
+      // Whatever raced before the snapshot landed — the SSE buffer replaying old
+      // 'question'/'session_done' events, a hydration that didn't yet know which
+      // conversation was on screen — must not leave an unread marker on the
+      // conversation you're actually looking at. Now that it's known, clear it.
+      clearConvNotif(currentProjectId, lastSessionId);
       return loadQuestions().then(loadHistory);
     });
     connect();
