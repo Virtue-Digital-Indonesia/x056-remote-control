@@ -9,6 +9,7 @@ import { SessionManager } from './manager.js';
 import { PushService } from './push.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
+import { McpHttpController, MCP_HTTP_CONFIG } from './mcp-http.controller.js';
 import { WebAuthnService, SessionStore } from './webauthn.js';
 import type { TurnOptions } from '../src/turn.js';
 
@@ -77,7 +78,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   });
 
   @Module({
-    controllers: [ApiController],
+    controllers: [ApiController, McpHttpController],
     providers: [
       { provide: SessionManager, useValue: manager },
       { provide: PUSH_SERVICE, useValue: push },
@@ -85,6 +86,10 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: SESSION_STORE, useValue: sessions },
       { provide: PLUGIN_MANAGER, useValue: plugins },
       { provide: MCP_SERVER_MANAGER, useValue: mcpServers },
+      // The HTTP MCP endpoint calls back into this gateway with the same
+      // credentials the spawned stdio bridge uses. No URL: it derives its own
+      // loopback address per request, so it is right on any port.
+      { provide: MCP_HTTP_CONFIG, useValue: { token: cfg.token } },
       { provide: STATE_DIR, useValue: cfg.stateDir },
       { provide: APP_GUARD, useFactory: (reflector: Reflector) => new AuthGuard(cfg.token, sessions, reflector), inject: [Reflector] },
     ],

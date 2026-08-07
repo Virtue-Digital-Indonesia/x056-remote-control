@@ -64,6 +64,52 @@ Press **⌘/** (Ctrl+/ on Windows/Linux), or the ⌨️ icon in the top bar, to 
 
 ---
 
+## Connect from another MCP client
+
+The gateway is itself an **MCP server**, so Claude Desktop, another Claude Code, or
+any MCP client can read and drive the conversations running here. It speaks the
+standard **Streamable HTTP** transport at `/mcp`:
+
+```
+https://<your-host>/mcp
+```
+
+Auth is the gateway's own token, either as a header or in the URL — use whichever
+your client supports:
+
+```bash
+# Claude Code (or anything that can set a header)
+claude mcp add --transport http x056 https://<your-host>/mcp \
+  --header "Authorization: Bearer $X056_TOKEN"
+
+# clients that can't set headers (paste the URL as-is)
+https://<your-host>/mcp?token=<X056_TOKEN>
+```
+
+Claude Desktop can also run the bridge locally over stdio, in
+`claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "x056": {
+  "command": "node",
+  "args": ["/path/to/x056-remote-control/scripts/x056-mcp.mjs"],
+  "env": { "X056_URL": "https://<your-host>", "X056_TOKEN": "<token>" }
+} } }
+```
+
+Tools: `list_projects`, `list_conversations`, `read_conversation`, `send_message`.
+Both transports share one implementation, so they always expose the same set.
+
+**`send_message` is gated:** it blocks until you approve it in the panel, so an
+outside client can read freely but can't put words into a conversation without
+your say-so. See [Cross-conversation messaging](#using-the-panel).
+
+> The token grants full control of the gateway. Prefer the header form where you
+> can — a token in a URL tends to end up in proxy logs and browser history.
+> `?token=` exists for clients that offer no other way.
+
+---
+
 ## Deploying your own instance
 
 ### Prerequisites
