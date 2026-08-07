@@ -24,6 +24,8 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   // ~33% larger encoded), well under that per-file cap. 160mb comfortably
   // covers a small handful of max-sized attachments in one message.
   (app as unknown as { useBodyParser: (t: string, o: { limit: string }) => void }).useBodyParser('json', { limit: '160mb' });
+  // OAuth token/consent posts are form-encoded (RFC 6749), not JSON.
+  (app as unknown as { useBodyParser: (t: string, o: { extended: boolean }) => void }).useBodyParser('urlencoded', { extended: true });
   const express = app.getHttpAdapter().getInstance() as import('express').Express;
   // Read per request so a bind-mounted panelPath serves UI changes without a
   // rebuild; ~15KB from page cache is negligible for a single-user panel.

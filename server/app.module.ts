@@ -10,6 +10,8 @@ import { PushService } from './push.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
 import { McpHttpController, MCP_HTTP_CONFIG } from './mcp-http.controller.js';
+import { OAuthController, OAUTH_STORE, OAUTH_DEPS } from './oauth.controller.js';
+import { OAuthStore } from './oauth.js';
 import { WebAuthnService, SessionStore } from './webauthn.js';
 import type { TurnOptions } from '../src/turn.js';
 
@@ -63,6 +65,10 @@ export function buildModule(cfg: GatewayConfig): unknown {
   const webauthn = new WebAuthnService(cfg.stateDir);
   const sessions = new SessionStore(cfg.stateDir);
 
+  // OAuth 2.1 for remote MCP clients (Claude Desktop / claude.ai connectors
+  // refuse a bare token and insist on discovery + dynamic registration + PKCE).
+  const oauth = new OAuthStore(cfg.stateDir);
+
   // Claude Code plugin management, replicated across every Claude failover
   // account so an installed plugin is usable no matter which account is active.
   const plugins = new PluginManager({
@@ -78,7 +84,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   });
 
   @Module({
-    controllers: [ApiController, McpHttpController],
+    controllers: [ApiController, McpHttpController, OAuthController],
     providers: [
       { provide: SessionManager, useValue: manager },
       { provide: PUSH_SERVICE, useValue: push },
@@ -90,8 +96,10 @@ export function buildModule(cfg: GatewayConfig): unknown {
       // credentials the spawned stdio bridge uses. No URL: it derives its own
       // loopback address per request, so it is right on any port.
       { provide: MCP_HTTP_CONFIG, useValue: { token: cfg.token } },
+      { provide: OAUTH_STORE, useValue: oauth },
+      { provide: OAUTH_DEPS, useValue: { sessions, token: cfg.token } },
       { provide: STATE_DIR, useValue: cfg.stateDir },
-      { provide: APP_GUARD, useFactory: (reflector: Reflector) => new AuthGuard(cfg.token, sessions, reflector), inject: [Reflector] },
+      { provide: APP_GUARD, useFactory: (reflector: Reflector) => new AuthGuard(cfg.token, sessions, reflector, oauth), inject: [Reflector] },
     ],
   })
   class AppModule {}

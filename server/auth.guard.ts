@@ -34,6 +34,8 @@ export class AuthGuard implements CanActivate {
     private readonly token: string,
     private readonly sessions: SessionStore,
     private readonly reflector: Reflector,
+    /** OAuth tokens issued to approved MCP connectors (optional: unset in tests). */
+    private readonly oauth?: { validAccessToken: (t: string) => boolean },
   ) {}
 
   canActivate(ctx: ExecutionContext): boolean {
@@ -45,9 +47,17 @@ export class AuthGuard implements CanActivate {
     const query = typeof req.query.token === 'string' ? req.query.token : '';
     const presented = bearer || query;
     if (presented && safeEqual(presented, this.token)) return true;
+    // 1b. A token we issued to an MCP connector through the OAuth flow.
+    if (bearer && this.oauth?.validAccessToken(bearer)) return true;
     // 2. A passkey session cookie (set after a WebAuthn login).
     const sid = readCookie(req.headers.cookie, 'x056_session');
     if (sid && this.sessions.valid(sid)) return true;
+    // MCP clients discover how to authenticate from this header (RFC 9728);
+    // without it Claude Desktop can't start the OAuth flow at all.
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? 'https';
+    const host = (req.headers['x-forwarded-host'] as string | undefined) ?? req.headers.host ?? '';
+    ctx.switchToHttp().getResponse<{ setHeader: (k: string, v: string) => void }>()
+      .setHeader('WWW-Authenticate', `Bearer resource_metadata="${proto}://${host}/.well-known/oauth-protected-resource"`);
     throw new UnauthorizedException();
   }
 }

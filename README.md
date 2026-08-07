@@ -86,6 +86,12 @@ claude mcp add --transport http x056 https://<your-host>/mcp \
 https://<your-host>/mcp?token=<X056_TOKEN>
 ```
 
+**Claude Desktop / claude.ai connectors** don't accept a token at all — they
+require OAuth. The gateway is its own authorization server, so just give them
+the bare URL (`https://<your-host>/mcp`): the client registers itself, you get
+an approval page, and approving requires being **signed in to the x056 panel in
+that browser**. That login is the gate.
+
 Claude Desktop can also run the bridge locally over stdio, in
 `claude_desktop_config.json`:
 
