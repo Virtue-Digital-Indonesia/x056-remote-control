@@ -44,6 +44,8 @@ The gateway spawns `claude -p --output-format stream-json --resume <id>` under a
 
 **Passkeys.** Register a device once (key icon) to log in with Face ID / Touch ID afterward instead of the access token.
 
+**Theme.** The theme icon (in the ⋯ menu) cycles **follow your device → light → dark**. It follows your device by default, including live changes like a sunset schedule.
+
 **Install as an app.** On mobile, "Add to Home Screen" installs the panel as a PWA — full-screen, with the safe-area-aware layout and push notifications.
 
 ### Keyboard shortcuts
