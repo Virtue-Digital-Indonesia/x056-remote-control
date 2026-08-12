@@ -111,9 +111,16 @@ Claude Desktop can also run the bridge locally over stdio, in
 Tools: `list_projects`, `list_conversations`, `read_conversation`, `send_message`.
 Both transports share one implementation, so they always expose the same set.
 
-**`send_message` is gated:** it blocks until you approve it in the panel, so an
-outside client can read freely but can't put words into a conversation without
-your say-so. See [Cross-conversation messaging](#using-the-panel).
+**`send_message` has two modes**, chosen by you in the MCP servers panel (never
+by the calling AI — otherwise the gate would be self-bypassable):
+
+- **Approval** (default) — every cross-conversation send waits for your click.
+- **Automatic** — sends are delivered straight away.
+
+Either way, if the target conversation is mid-turn the message goes on **its
+queue** and is delivered when that turn ends. A queued message always takes
+priority over an autopilot continuation; autopilot resumes once the queue is
+empty. See [Cross-conversation messaging](#using-the-panel).
 
 > The token grants full control of the gateway. Prefer the header form where you
 > can — a token in a URL tends to end up in proxy logs and browser history.

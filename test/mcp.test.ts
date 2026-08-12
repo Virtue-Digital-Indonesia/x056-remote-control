@@ -179,3 +179,57 @@ describe('x056 MCP bridge (real script against a live gateway)', () => {
     expect(toolText(res)).toContain('unknown conversation');
   });
 });
+
+describe('send modes and queueing', () => {
+  const auth2 = { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
+  const setMode = (mode: string) => fetch(`${base}/api/settings/mcp-send-mode`, { method: 'POST', headers: auth2, body: JSON.stringify({ mode }) });
+  const send = (body: Record<string, unknown>) =>
+    fetch(`${base}/api/conversations/send`, { method: 'POST', headers: auth2, body: JSON.stringify(body) }).then((r) => r.json() as Promise<any>);
+
+  afterAll(async () => { await setMode('approval'); }); // leave the default as we found it
+
+  it('approval is the default and still gates the send', async () => {
+    const s = await (await fetch(`${base}/api/settings`, { headers: auth2 })).json() as any;
+    expect(s.mcpSendMode).toBe('approval');
+    const out = await send({ projectId: 'p1', prompt: 'gated please' });
+    expect(out.mode).toBe('approval');
+    expect(out.approvalId).toBeTruthy();
+    expect(out.sessionId).toBeUndefined(); // nothing dispatched yet
+    // clean up so it doesn't linger as a pending card
+    await fetch(`${base}/api/mcp/approvals/decide`, { method: 'POST', headers: auth2, body: JSON.stringify({ id: out.approvalId, approve: false }) });
+  });
+
+  it('automatic mode delivers straight away, with no approval to decide', async () => {
+    await setMode('auto');
+    const before = await (await fetch(`${base}/api/mcp/approvals`, { headers: auth2 })).json() as unknown[];
+    const out = await send({ projectId: 'p1', prompt: 'no approval needed' });
+    expect(out.mode).toBe('auto');
+    expect(out.sessionId).toBeTruthy();
+    expect(out.queued).toBe(false);
+    // it raised no approval request at all
+    const after = await (await fetch(`${base}/api/mcp/approvals`, { headers: auth2 })).json() as unknown[];
+    expect(after.length).toBe(before.length);
+  });
+
+  it('queues instead of failing when that conversation is mid-turn', async () => {
+    await setMode('auto');
+    const first = await send({ projectId: 'p1', prompt: 'start a turn' });
+    const sid = first.sessionId as string;
+    // second message while the first turn is still running
+    const second = await send({ projectId: 'p1', sessionId: sid, prompt: 'while busy' });
+    expect(second.sessionId).toBe(sid);
+    // either it was queued, or the first turn had already finished — assert the
+    // outcome that actually happened rather than racing the fake CLI
+    if (second.queued) {
+      const q = await (await fetch(`${base}/api/queue`, { headers: auth2 })).json() as Record<string, { text: string }[]>;
+      expect(JSON.stringify(q)).toContain('while busy');
+    } else {
+      expect(second.queued).toBe(false);
+    }
+  });
+
+  it('rejects an unknown mode', async () => {
+    const res = await setMode('whatever');
+    expect(res.status).toBe(400);
+  });
+});

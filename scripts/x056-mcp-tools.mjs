@@ -47,7 +47,8 @@ export const TOOLS = [
     name: 'send_message',
     description:
       'Send a message to a conversation (it resumes with full context and runs a turn), or omit sessionId to start a NEW conversation in the project. ' +
-      'REQUIRES THE HUMAN OPERATOR\'S APPROVAL: this call pauses (polling) until they approve or deny it in the panel, or it times out (~10 minutes) — it is not sent until approved, and may be denied. ' +
+      'The operator chooses the delivery mode in the panel: in APPROVAL mode (the default) this call pauses until they approve or deny it — it is not sent until approved, and may be denied; in AUTOMATIC mode it is delivered immediately. You cannot choose the mode. '
+      + 'If that conversation is mid-turn the message is QUEUED and delivered when its current turn ends, ahead of any autopilot continuation. ' +
       'Set waitSeconds > 0 to additionally wait for and return the reply once sent; otherwise returns as soon as it is sent, and the reply can be fetched later with read_conversation. The receiving AI may take minutes on hard tasks — prefer a short wait plus polling over a long block.',
     inputSchema: {
       type: 'object',
@@ -71,6 +72,20 @@ function fmtHistory(rows) {
     .filter((r) => r.role === 'user' || r.role === 'assistant')
     .map((r) => `[${r.role}${r.ts ? ' ' + r.ts : ''}]\n${r.text}`)
     .join('\n\n');
+}
+
+/** Poll a conversation's history until an assistant row appears past `before`. */
+async function waitForReply(api, projectId, sid, before, waitSeconds) {
+  const waitMs = Math.min(Math.max((waitSeconds || 0) * 1000, 0), 10 * 60 * 1000);
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    await sleep(3000);
+    const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(projectId)}&sessionId=${encodeURIComponent(sid)}&limit=500`).catch(() => null);
+    if (!rows) continue;
+    const reply = rows.slice(before).filter((r) => r.role === 'assistant');
+    if (reply.length) return `reply from ${sid}:\n\n${reply.map((r) => r.text).join('\n\n')}`;
+  }
+  return `sent (sessionId: ${sid}), but no reply within ${Math.round(waitMs / 1000)}s — the turn may still be running. Poll read_conversation for the result.`;
 }
 
 export async function callTool(api, name, args) {
@@ -99,8 +114,21 @@ export async function callTool(api, name, args) {
       method: 'POST',
       body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort }),
     });
-    // The send does NOT happen yet — wait for the human operator's decision in
-    // the panel (or the request to expire) before anything is actually sent.
+    // Two modes, chosen by the OPERATOR in the panel (not by us): 'auto' delivers
+    // straight away, 'approval' waits for them to approve it. Either way, if that
+    // conversation is mid-turn the message goes on its queue rather than failing.
+    if (requested.mode === 'auto') {
+      const sid = requested.sessionId;
+      const where = requested.queued
+        ? `queued — that conversation is mid-turn, so it will be delivered the moment its current turn ends.`
+        : `delivered — its turn is running now.`;
+      if (!args.waitSeconds || requested.queued) {
+        return `sent (automatic mode). ${where}\nsessionId: ${sid}\nUse read_conversation to fetch the reply later.`;
+      }
+      return await waitForReply(api, args.projectId, sid, before, args.waitSeconds);
+    }
+    // Approval mode: the send does NOT happen yet — wait for the human operator's
+    // decision in the panel (or the request to expire) before anything is sent.
     const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000 + 15000; // give the server's own 10min timeout time to land first
     const approvalDeadline = Date.now() + APPROVAL_TIMEOUT_MS;
     const statusUrl = `/api/conversations/send-status?id=${encodeURIComponent(requested.approvalId)}`;
@@ -114,6 +142,9 @@ export async function callTool(api, name, args) {
     if (approval.status === 'denied') return 'the operator DENIED this message — it was not sent.';
     if (approval.error) return `approved, but the send itself failed: ${approval.error}`;
     const sid = approval.resultSessionId;
+    if (approval.queued) {
+      return `approved and queued — that conversation is mid-turn, so it will be delivered when its current turn ends.\nsessionId: ${sid}\nUse read_conversation to fetch the reply later.`;
+    }
     const waitMs = Math.min(Math.max((args.waitSeconds || 0) * 1000, 0), 10 * 60 * 1000);
     if (waitMs <= 0) {
       return `sent — the turn is running.\nsessionId: ${sid}\nUse read_conversation (projectId=${args.projectId}, sessionId=${sid}) to fetch the reply once it finishes.`;

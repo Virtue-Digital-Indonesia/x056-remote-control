@@ -102,6 +102,8 @@ export interface McpApproval {
   status: 'pending' | 'approved' | 'denied' | 'expired';
   /** Set once approved and dispatched: the conversation the message actually landed in. */
   resultSessionId?: string;
+  /** True when that conversation was busy, so the message went on its queue. */
+  queued?: boolean;
   /** Set if the approved send itself failed (e.g. the conversation started running
    *  again in the meantime) — approval isn't revoked, but nothing was sent. */
   error?: string;
@@ -118,6 +120,14 @@ export interface PendingQuestion {
 
 const MCP_APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
 const MCP_APPROVAL_RETAIN_MS = 15 * 60 * 1000; // keep decided/expired entries briefly so a late poll still sees the outcome
+
+/** Persisted gateway-wide settings (state/settings.json). */
+export interface GatewaySettings {
+  modelEffort: Record<string, string>;
+  /** 'approval' (default) = a cross-conversation MCP send waits for the operator
+   *  to approve it in the panel; 'auto' = it is delivered straight away. */
+  mcpSendMode: 'approval' | 'auto';
+}
 
 const BUFFER_MAX = 1000;
 
@@ -554,21 +564,35 @@ export class SessionManager {
   // ---- settings: global user preferences (not per-project), e.g. which effort
   //      to auto-fill when a given model is picked in the composer. ----
   private get settingsFile(): string { return join(this.opts.stateDir, 'settings.json'); }
-  private loadSettings(): { modelEffort: Record<string, string> } {
+  private loadSettings(): GatewaySettings {
     try {
-      const s = JSON.parse(readFileSync(this.settingsFile, 'utf8')) as { modelEffort?: Record<string, string> };
-      return { modelEffort: s.modelEffort && typeof s.modelEffort === 'object' ? s.modelEffort : {} };
+      const s = JSON.parse(readFileSync(this.settingsFile, 'utf8')) as Partial<GatewaySettings>;
+      return {
+        modelEffort: s.modelEffort && typeof s.modelEffort === 'object' ? s.modelEffort : {},
+        mcpSendMode: s.mcpSendMode === 'auto' ? 'auto' : 'approval',
+      };
     } catch {
-      return { modelEffort: {} };
+      return { modelEffort: {}, mcpSendMode: 'approval' };
     }
   }
-  private saveSettings(s: { modelEffort: Record<string, string> }): void {
+  private saveSettings(s: GatewaySettings): void {
     const tmp = `${this.settingsFile}.tmp`;
     writeFileSync(tmp, JSON.stringify(s, null, 2));
     renameSync(tmp, this.settingsFile);
   }
 
-  getSettings(): { modelEffort: Record<string, string> } { return this.loadSettings(); }
+  getSettings(): GatewaySettings { return this.loadSettings(); }
+
+  /** How a cross-conversation MCP send is handled. Deliberately the OPERATOR's
+   *  setting rather than something the calling AI passes: if the caller could
+   *  choose, the approval gate would be self-bypassable and worth nothing. */
+  mcpSendMode(): 'approval' | 'auto' { return this.loadSettings().mcpSendMode; }
+  setMcpSendMode(mode: 'approval' | 'auto'): void {
+    const s = this.loadSettings();
+    s.mcpSendMode = mode;
+    this.saveSettings(s);
+    this.emit('settings', { mcpSendMode: mode });
+  }
 
   /** Replace the whole model->effort default map (the panel submits its full
    *  current form on save; empty/missing entries just mean "no default"). */
@@ -577,7 +601,7 @@ export class SessionManager {
     for (const [model, effort] of Object.entries(map ?? {})) {
       if (typeof effort === 'string' && effort.trim()) clean[model] = effort.trim();
     }
-    this.saveSettings({ modelEffort: clean });
+    this.saveSettings({ ...this.loadSettings(), modelEffort: clean });
     this.emit('settings', { modelEffort: clean });
   }
 
@@ -1283,11 +1307,12 @@ export class SessionManager {
     if (existingTimer) clearTimeout(existingTimer);
     a.status = approve ? 'approved' : 'denied';
     if (approve) {
-      const prompt = a.interactive ? withAskInstructions(a.message) : a.message;
       try {
-        a.resultSessionId = a.sessionId
-          ? this.continueSession(a.projectId, a.sessionId, prompt, { model: a.model, effort: a.effort })
-          : this.start(prompt, undefined, { model: a.model, effort: a.effort }, a.projectId);
+        const out = this.deliverMcpMessage(a.projectId, a.sessionId, a.message, {
+          model: a.model, effort: a.effort, interactive: a.interactive,
+        });
+        a.resultSessionId = out.sessionId;
+        a.queued = out.queued;
       } catch (err) {
         a.error = (err as Error).message;
       }
@@ -1315,6 +1340,34 @@ export class SessionManager {
       writeFileSync(tmp, JSON.stringify(obj, null, 2));
       renameSync(tmp, this.questionsFile);
     } catch { /* best effort — never break a turn over this */ }
+  }
+
+  /** Deliver a cross-conversation message. If that conversation already has a
+   *  turn running the message goes on ITS queue instead of failing — the caller
+   *  is another AI that can't sit and retry, and dropping the message was the
+   *  worst of the options. Composing the prompt here means a queued message
+   *  carries the same ASK convention a delivered one would. */
+  deliverMcpMessage(
+    projectId: string,
+    sessionId: string | undefined,
+    message: string,
+    opts: TurnRunOptions & { interactive?: boolean } = {},
+  ): { sessionId: string; queued: boolean } {
+    const prompt = opts.interactive !== false ? withAskInstructions(message) : message;
+    const run = { model: opts.model, effort: opts.effort };
+    if (!sessionId) return { sessionId: this.start(prompt, undefined, run, projectId), queued: false };
+    const queue = (): { sessionId: string; queued: boolean } => {
+      this.enqueue(projectId, { text: prompt, model: opts.model, effort: opts.effort, sessionId });
+      return { sessionId, queued: true };
+    };
+    if (this.sessionBusy(sessionId)) return queue();
+    try {
+      return { sessionId: this.continueSession(projectId, sessionId, prompt, run), queued: false };
+    } catch (err) {
+      // Lost a race with a turn that started between the check and the call.
+      if (err instanceof BusyError) return queue();
+      throw err;
+    }
   }
 
   /** Unanswered questions across all conversations — the panel hydrates from
@@ -1429,7 +1482,12 @@ export class SessionManager {
           // Queued follow-ups for THIS conversation take priority: on a clean
           // completion, drain its head (ahead of autopilot). A queued message is
           // the user's explicit next step, so it also pre-empts a question card.
-          const drained = res.status === 'completed' ? this.maybeDrainQueue(pid, sessionId) : false;
+          // PRIORITY: a queued message always beats autopilot — it's an explicit
+          // instruction from the operator or another conversation, while
+          // autopilot is just "keep going". Draining on a FAILED/parked turn too,
+          // because autopilot deliberately pauses there and nothing else would
+          // ever pick the item up: it would sit in the queue forever.
+          const drained = this.maybeDrainQueue(pid, sessionId);
           // If the model ended its turn asking the user something, surface it as
           // an answerable card (only when not on autopilot/queue, which drive it).
           const onAutopilot = !!this.loadAutopilot()[sessionId];
@@ -1444,6 +1502,8 @@ export class SessionManager {
             emit('question', { sessionId, question: q.question, options: q.options });
           }
           emit('session_done', { sessionId, ...res });
+          // Only when the queue had nothing — autopilot must never jump ahead of
+          // a real message, and it resumes by itself once the queue empties.
           if (!drained) this.maybeAutopilot(pid, sessionId, res);
         })
         .catch((err: unknown) => {

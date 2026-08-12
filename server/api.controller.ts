@@ -433,7 +433,8 @@ export class ApiController {
    *  moves, the panel's "current" selection. */
   @Post('conversations/send')
   @HttpCode(200)
-  conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean }): { approvalId: string } {
+  conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean }):
+    { mode: 'auto'; sessionId: string; queued: boolean } | { mode: 'approval'; approvalId: string } {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
     if (body.sessionId) {
@@ -443,8 +444,14 @@ export class ApiController {
       if (!known) throw new BadRequestException('unknown conversation for that project');
     }
     const opts = { model: body.model, effort: body.effort, interactive: body.interactive };
+    // The MODE is the operator's setting, never the caller's choice — an AI that
+    // could ask for 'auto' would make the approval gate worthless.
+    if (this.manager.mcpSendMode() === 'auto') {
+      const out = this.manager.deliverMcpMessage(body.projectId, body.sessionId, body.prompt, opts);
+      return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued };
+    }
     const approval = this.manager.requestMcpSend(body.projectId, body.sessionId, body.prompt, opts);
-    return { approvalId: approval.id };
+    return { mode: 'approval' as const, approvalId: approval.id };
   }
 
   /** A page of older history for scroll-back. Paging is by opaque cursor (a byte
@@ -972,6 +979,15 @@ export class ApiController {
   @Get('settings')
   settings(): unknown {
     return this.manager.getSettings();
+  }
+
+  @Post('settings/mcp-send-mode')
+  @HttpCode(200)
+  setMcpSendMode(@Body() body: { mode?: string }): { ok: boolean; mode: 'approval' | 'auto' } {
+    const mode = body?.mode === 'auto' ? 'auto' : body?.mode === 'approval' ? 'approval' : null;
+    if (!mode) throw new BadRequestException("mode must be 'approval' or 'auto'");
+    this.manager.setMcpSendMode(mode);
+    return { ok: true, mode };
   }
 
   @Post('settings/model-effort')

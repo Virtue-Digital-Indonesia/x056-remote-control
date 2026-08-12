@@ -755,6 +755,12 @@
 <div class="pop" id="mcpSrvPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:420px; max-height:80vh; overflow:auto;">
   <h2>MCP servers</h2>
   <div class="plug-note">configured on every account of the provider, so they survive failover</div>
+  <div class="sc-row sc-toggle" style="margin-bottom:10px">
+    <div class="desc">Cross-conversation sends need my approval
+      <div class="mi-meta" id="mcpSendModeHint">off = an AI can message another conversation without asking</div>
+    </div>
+    <button type="button" class="pi-toggle" id="mcpSendModeToggle" title="approval required / automatic"><i></i></button>
+  </div>
   <div id="mcpSrvStatus" class="plug-status" hidden></div>
   <div id="mcpSrvList"></div>
   <div class="plug-sec">
@@ -1011,7 +1017,22 @@
 
   // ---- default effort per model (global setting, synced across devices/tabs) ----
   var modelEffortDefaults = {};
-  function loadSettings() { return api('/api/settings').then(function (r) { return r.json(); }).then(function (s) { modelEffortDefaults = (s && s.modelEffort) || {}; }).catch(function () {}); }
+  var mcpSendMode = 'approval'; // operator policy for cross-conversation MCP sends
+  function renderMcpSendMode() {
+    var t = $('mcpSendModeToggle'); if (!t) return;
+    var approval = mcpSendMode !== 'auto';
+    t.classList.toggle('on', approval);
+    $('mcpSendModeHint').textContent = approval
+      ? 'on — every cross-conversation send waits for your approval'
+      : 'off — an AI can message another conversation without asking you';
+  }
+  function loadSettings() {
+    return api('/api/settings').then(function (r) { return r.json(); }).then(function (s) {
+      modelEffortDefaults = (s && s.modelEffort) || {};
+      mcpSendMode = (s && s.mcpSendMode) === 'auto' ? 'auto' : 'approval';
+      renderMcpSendMode();
+    }).catch(function () {});
+  }
   function renderDefaults() {
     defaultsList.textContent = '';
     var models = [].slice.call(modelEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
@@ -1290,8 +1311,21 @@
         mcpOp('remove', { provider: s.provider, name: s.name }, 'Removing ' + s.name);
       });
   }
+  $('mcpSendModeToggle').addEventListener('click', function () {
+    var next = mcpSendMode === 'auto' ? 'approval' : 'auto';
+    api('/api/settings/mcp-send-mode', { method: 'POST', body: JSON.stringify({ mode: next }) })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j) { mcpSetStatus('err', 'could not change the mode'); return; }
+        mcpSendMode = j.mode; renderMcpSendMode();
+        mcpSetStatus('ok', j.mode === 'auto'
+          ? 'Automatic — cross-conversation sends are delivered without asking you.'
+          : 'Approval required — you will be asked before each cross-conversation send.');
+      })
+      .catch(function () { mcpSetStatus('err', 'could not change the mode'); });
+  });
   $('mcpSrvBtn').addEventListener('click', function () {
-    openPop($('mcpSrvPop')); mcpSetStatus(); mcpResetForm(); loadMcpServers();
+    openPop($('mcpSrvPop')); mcpSetStatus(); mcpResetForm(); renderMcpSendMode(); loadSettings(); loadMcpServers();
   });
 
   $('defaultsSave').addEventListener('click', function () {
@@ -1920,7 +1954,10 @@
       if (projCache[pid]) { projCache[pid].conversations = data.conversations || []; if (data.currentSessionId) projCache[pid].lastSessionId = data.currentSessionId; }
       if (pid === currentProjectId) loadProjects(); // re-render the sidebar sublist
     }
-    else if (kind === 'settings') { modelEffortDefaults = data.modelEffort || {}; } // saved from another tab
+    else if (kind === 'settings') { // saved from another tab
+      if (data.modelEffort) modelEffortDefaults = data.modelEffort;
+      if (data.mcpSendMode) { mcpSendMode = data.mcpSendMode; renderMcpSendMode(); }
+    }
     else if (kind === 'accounts') { pollAccounts(); } // an account was added/removed (this or another tab)
     else if (kind === 'mcp_approval') {
       // Global, not conversation-scoped: the requesting AND target conversation

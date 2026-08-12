@@ -93,6 +93,7 @@ function fixture(result: SessionResult, opts?: { emitEvents?: boolean; delayMs?:
 }
 
 const COMPLETED: SessionResult = { status: 'completed', finalAccount: 'b', failovers: 1, resultText: 'done' };
+const FAILED: SessionResult = { status: 'failed', finalAccount: 'a', failovers: 0, reason: 'exit code 1' };
 
 async function waitFor(pred: () => boolean, ms = 2000): Promise<void> {
   const t0 = Date.now();
@@ -159,14 +160,15 @@ describe('SessionManager', () => {
 
   it('persists the model->effort default map, replacing on save and dropping blank entries', () => {
     const { mgr, stateDir } = fixture(COMPLETED);
-    expect(mgr.getSettings()).toEqual({ modelEffort: {} });
+    expect(mgr.getSettings()).toEqual({ modelEffort: {}, mcpSendMode: 'approval' }); // approval is the default
     mgr.setModelEffortDefaults({ fable: 'high', opus: 'max' });
-    expect(mgr.getSettings()).toEqual({ modelEffort: { fable: 'high', opus: 'max' } });
+    expect(mgr.getSettings().modelEffort).toEqual({ fable: 'high', opus: 'max' });
     const onDisk = JSON.parse(readFileSync(join(stateDir, 'settings.json'), 'utf8'));
-    expect(onDisk).toEqual({ modelEffort: { fable: 'high', opus: 'max' } });
+    expect(onDisk.modelEffort).toEqual({ fable: 'high', opus: 'max' });
+    expect(onDisk.mcpSendMode).toBe('approval'); // saving one setting keeps the other
     // A later save fully replaces the map (form semantics) and blank values drop.
     mgr.setModelEffortDefaults({ fable: 'low', sonnet: '' });
-    expect(mgr.getSettings()).toEqual({ modelEffort: { fable: 'low' } });
+    expect(mgr.getSettings().modelEffort).toEqual({ fable: 'low' });
   });
 
   it('enqueue/edit/remove maintain a per-project queue', () => {
@@ -933,4 +935,35 @@ describe('provider session id is captured LIVE, not only at turn end', () => {
     release();
     await waitFor(() => !mgr.listProjects().projects.some((x) => (x.runningSessionIds ?? []).includes(sid)));
   });
+});
+
+describe('queue vs autopilot priority', () => {
+  it('a queued message beats autopilot: the QUEUED text is what runs next', async () => {
+    const { mgr, calls } = fixture(COMPLETED);
+    const pid = mgr.listProjects().current as string;
+    const sid = mgr.start('first');
+    await waitFor(() => !mgr.listProjects().projects.some((p) => (p.runningSessionIds ?? []).includes(sid)));
+    mgr.setAutopilot(pid, sid, { count: 5, prompt: 'AUTOPILOT_PROMPT' });
+    mgr.enqueue(pid, { text: 'REAL MESSAGE', sessionId: sid });
+    await waitFor(() => (mgr.queues()[pid] ?? []).length === 0, 8000);
+    await waitFor(() => calls.length >= 2, 8000);
+    // The turn after the first one carries the queued message, not the
+    // autopilot prompt — that is the priority rule, asserted on the real prompt.
+    expect(calls[1].prompt).toContain('REAL MESSAGE');
+    expect(calls[1].prompt).not.toContain('AUTOPILOT_PROMPT');
+    // and autopilot is still armed, to resume once the queue is empty
+    expect(mgr.hasAutopilot(sid)).toBe(true);
+  }, 20000);
+
+  it('a queued message still drains after a FAILED turn instead of stranding', async () => {
+    // autopilot deliberately pauses on failure; if the queue also skipped, the
+    // item would sit there forever with nothing left to trigger it.
+    const { mgr } = fixture(FAILED);
+    const pid = mgr.listProjects().current as string;
+    const sid = mgr.start('will fail');
+    await waitFor(() => !mgr.listProjects().projects.some((p) => (p.runningSessionIds ?? []).includes(sid)));
+    mgr.enqueue(pid, { text: 'after the failure', sessionId: sid });
+    await waitFor(() => (mgr.queues()[pid] ?? []).length === 0, 8000);
+    expect((mgr.queues()[pid] ?? []).length).toBe(0);
+  }, 20000);
 });
