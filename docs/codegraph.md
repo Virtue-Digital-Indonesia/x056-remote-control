@@ -14,7 +14,7 @@ reroutes to a cheaper model. See `docs/research-2026-08-13-memory-and-toolkit.md
 | | |
 | --- | --- |
 | Container | `x056-codegraph` on the **dind sidecar** (not the host, not this container) |
-| Image | `x056-codegraph:0.1.0`, built from `Dockerfile.x056` |
+| Image | `x056-codegraph:0.4.0`, built from `Dockerfile.x056` |
 | Endpoint | `http://dind:8421` from a session; `/v3` API prefix |
 | Source | `/app/state/tools/TencentDB-Agent-Memory/` (sparse checkout, MemoryKnowledge only) |
 | Data | docker volume `x056-codegraph-data` |
@@ -30,7 +30,7 @@ use it.
 
 ## Local patches
 
-Three changes were needed on top of v0.1.0. They live in the sparse checkout, not
+Six changes were needed on top of v0.1.0. They live in the sparse checkout, not
 in this repo.
 
 **1. `src/source-fetcher/local-fetcher.ts` (new) — index a local checkout.**
@@ -65,12 +65,63 @@ field`.
 `docker/entrypoint.sh` and `docker/smoke-test.sh`, neither of which exists in
 the v0.1.0 tree, so it cannot build.
 
+**3b. `src/middleware/bearer-auth.ts` (new) — the API had NO authentication.**
+`KNOWLEDGE_API_TOKEN` existed only as something the MCP bridge *sends*; nothing
+server-side ever checked it. The service hands out repository source and wiki
+content to any caller that can reach the port — which on dind includes other
+projects' throwaway e2e containers. Now gated on the `/v3` prefix (health stays
+open for the container healthcheck), constant-time compare, and it logs loudly
+at boot when the token is unset. Token lives at
+`/app/state/tools/codegraph-token.txt` (mode 600) and in each account's MCP
+server env. Verified: unauthenticated request → `401`.
+
+## Memory wiki (`wiki-h0cbwx1t`)
+
+`scripts/codegraph-sync-memories.mjs` mirrors every project's auto-memory files
+into a wiki so any session can search **all** projects' memories, not just its
+own. 176 files across 9 projects; re-run the script to refresh (idempotent,
+upserts by ref; `--dry-run` to preview, `--prune` to drop pages whose source
+file is gone).
+
+It writes pages **directly** rather than using `/wiki/ingest`, because ingest is
+the LLM path and memories are already structured markdown. So this needs no API
+key and nothing leaves the machine.
+
+Three more upstream fixes were required to make that work (numbered 4–6 above's three):
+
+**4. Directly-written wikis were invisible.** `status` only reached `ready` via
+`runBuild()` (the LLM ingest pipeline), and `pageLs()` returns `[]` for anything
+not `ready`. Pages written via `page/write` landed on disk and then could not be
+listed or searched — the write returned `200` and silently did nothing useful.
+Added `WikiService.markReadyFromDirectWrites()`, a no-op while a real build is
+in flight so it cannot race `runBuild()`.
+
+**5. The search index was never registered.** `page/write` called
+`wikiMgr.sync()`, which throws `Not found` until the engine is registered — and
+only ingest registered it. Now falls back to `wikiMgr.init()`, the same no-LLM
+registration the boot-time restore path uses.
+
+**6. Ranking put the wrong project first.** Query terms are OR'd with prefix
+wildcards, so plain BM25 let a page repeating one common term beat a page
+matching every term — `"obscura demo credentials reset"` returned a ClickUp note
+above every obscura page. `ftsSearch` now sorts by count of **distinct** query
+terms matched, then BM25. Recall is unchanged (matching-any still returns, just
+lower); the failing query now returns obscura pages, and previously-good queries
+are unaffected.
+
+Retrieval is lexical, not semantic — embeddings would need an inference
+endpoint. Concrete nouns work; paraphrase does not.
+
+> **Note on contents.** The memories include real credentials (e.g. a live demo
+> login). They are no more exposed than the source files — same machine, same
+> sessions — but that is *why* the API token below is not optional.
+
 ## Rebuild / redeploy
 
 ```bash
 cd /app/state/tools/TencentDB-Agent-Memory/MemoryKnowledge
 ./node_modules/.bin/tsdown                                    # local dist (for the MCP bridge)
-docker build -f Dockerfile.x056 -t x056-codegraph:0.1.0 .     # dind image
+docker build -f Dockerfile.x056 -t x056-codegraph:0.4.0 .     # dind image
 
 docker rm -f x056-codegraph
 docker run -d --name x056-codegraph --restart unless-stopped -p 8421:8421 \
@@ -80,7 +131,8 @@ docker run -d --name x056-codegraph --restart unless-stopped -p 8421:8421 \
   -e KNOWLEDGE_PUBLIC_BASE_URL=http://dind:8421/v3 \
   -e KNOWLEDGE_AUTO_SYNC_ENABLED=true \
   -e KNOWLEDGE_AUTO_SYNC_SCAN_INTERVAL_MIN=10 \
-  x056-codegraph:0.1.0
+  -e KNOWLEDGE_API_TOKEN="$(cat /app/state/tools/codegraph-token.txt)" \
+  x056-codegraph:0.4.0
 ```
 
 **`PORT` must be forced.** This container exports `PORT=4056` for the gateway and
@@ -92,6 +144,7 @@ the gateway's port and dies with `EADDRINUSE`. The image pins `PORT=8421`.
 ```bash
 curl -s -X POST http://dind:8421/v3/code-graph/create \
   -H 'Content-Type: application/json' -H 'x-tdai-service-id: x056' \
+  -H "Authorization: Bearer $(cat /app/state/tools/codegraph-token.txt)" \
   -d '{"team_id":"x056","repo_url":"/home/efran/remote-development/<repo>",
        "branch":"main","repo_name":"<repo>"}'
 ```
@@ -107,4 +160,6 @@ docker rm -f x056-codegraph && docker volume rm x056-codegraph-data
 ```
 
 Then drop the `codegraph` entry from the MCP servers panel. Nothing in the
-gateway depends on it.
+gateway depends on it. The memory wiki is a mirror — the auto-memory files under
+`/app/state/accounts/*/projects/*/memory/` remain the source of truth and are
+untouched by any of this.

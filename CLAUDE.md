@@ -44,6 +44,22 @@ this"** — questions ripgrep answers only as line numbers you then have to read
   in this container and not on the host — so it survives gateway deploys. It holds
   no API key and makes no outbound calls. Ops notes: `docs/codegraph.md`.
 
+### Cross-project memory search
+
+The same server also indexes **every project's auto-memory files** as a wiki, so
+you can search memories from projects other than the one you're in — the
+auto-memory injection only ever gives you the *current* project's.
+
+- **Wiki id: `wiki-h0cbwx1t`** (`wiki_search`, `wiki_read`, `wiki_list`,
+  `wiki_graph`). 176 memories across 9 projects.
+- Reach for it when a problem smells like one already solved elsewhere —
+  deployment, auth, e2e, dind networking. Your own project's memories are
+  already in context; this is for the other eight.
+- It is a **mirror**, refreshed by `node scripts/codegraph-sync-memories.mjs`
+  (idempotent). Edits to memory files do not appear until that runs.
+- Search is lexical (BM25 + a distinct-term-match re-rank), not semantic — so
+  name things concretely. Two or three specific words beat a sentence.
+
 ## Session rules
 
 - **Markdown uploads:** whenever you create or modify any `.md` file during a session, upload it so the rendered version can be read, and share the returned URL:
