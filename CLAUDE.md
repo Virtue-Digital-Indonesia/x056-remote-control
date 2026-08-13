@@ -26,6 +26,24 @@ Sessions started through the panel run **inside the Docker container** this repo
 - **You CAN screenshot** to eyeball UI work: a headless Chromium (Playwright) is baked into the image at `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`. Start the project's dev server, then `node /app/scripts/shot.cjs <url> <out.png> [width] [height]` and Read the PNG. Any project's own Playwright/Puppeteer also finds the browser via that env var. (Requires a container built after this note — if `shot.cjs` says playwright not found, the image predates it; commit + request a deploy.)
 - **Toolchains baked into the image** (so any project builds, not just Node): Go (`GOTOOLCHAIN=auto`), Java 17 + Maven (Gradle via each project's `./gradlew`), Python 3 with pip/venv (system Python is PEP-668 externally-managed — always work in a venv), PHP + Composer, plus gcc/make/git/ripgrep/jq. `git push` over SSH works to GitHub, the VPN host `192.168.83.20` (`ssh ocr`), and the gateway host `ssh valbox` (dedicated keys in `state/ssh/`).
 
+## Code graph (`codegraph` MCP server)
+
+This repo is indexed as a call graph, exposed to every Claude account as the
+`codegraph` MCP server. Use it for **"what calls this / what breaks if I change
+this"** — questions ripgrep answers only as line numbers you then have to read.
+
+- **Graph id: `cg-t54lyf43`** — every tool needs it as `code_graph_id`, and there
+  is no tool that lists graphs, so take it from here.
+- Tools: `code_search`, `code_explore`, `code_callers`, `code_callees`,
+  `code_impact`, `code_node`, `code_files`, `code_status`.
+- It indexes **committed `main`**, not your working tree — uncommitted edits are
+  invisible to it. Re-indexes itself every 10 min; force one with
+  `POST http://dind:8421/v3/code-graph/sync` (header `x-tdai-service-id: x056`,
+  body `{"team_id":"x056","code_graph_id":"cg-t54lyf43"}`).
+- Backing service runs on the **dind sidecar** (`x056-codegraph`, port 8421), not
+  in this container and not on the host — so it survives gateway deploys. It holds
+  no API key and makes no outbound calls. Ops notes: `docs/codegraph.md`.
+
 ## Session rules
 
 - **Markdown uploads:** whenever you create or modify any `.md` file during a session, upload it so the rendered version can be read, and share the returned URL:
