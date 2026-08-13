@@ -87,6 +87,19 @@ It writes pages **directly** rather than using `/wiki/ingest`, because ingest is
 the LLM path and memories are already structured markdown. So this needs no API
 key and nothing leaves the machine.
 
+**Runs hourly** from the host crontab (`:17`), same `flock` pattern as the
+deployer, logging the last run to `/home/efran/x056-memsync.log`:
+
+```
+17 * * * * /usr/bin/flock -n /tmp/x056-memsync.lock docker exec x056-remote-control-x056-1 \
+  node /home/efran/remote-development/x056-remote-control/scripts/codegraph-sync-memories.mjs
+```
+
+It has to run *inside* the gateway container: the memory files live in the
+`/app/state` volume and the service is reachable only as `dind:8421`, neither of
+which exists from the host. Nothing here ever *writes* memories — it mirrors
+what the auto-memory system has already put on disk.
+
 Three more upstream fixes were required to make that work (numbered 4–6 above's three):
 
 **4. Directly-written wikis were invisible.** `status` only reached `ready` via
