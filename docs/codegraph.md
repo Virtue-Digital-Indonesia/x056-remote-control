@@ -129,6 +129,41 @@ endpoint. Concrete nouns work; paraphrase does not.
 > login). They are no more exposed than the source files — same machine, same
 > sessions — but that is *why* the API token below is not optional.
 
+## Using it from Claude Desktop / claude.ai
+
+The `codegraph` MCP server is **stdio-only** and talks to `dind:8421`, a hostname
+that does not exist outside this container — so an external client cannot use it
+directly. Instead the tools are re-exposed through the gateway's own MCP endpoint
+(`https://<host>/mcp`), which already speaks Streamable HTTP with OAuth 2.1.
+
+`server/codegraph.ts` + `POST /api/codegraph/call` proxy each query, so:
+
+- **no second public surface** — same endpoint and same OAuth consent as the
+  conversation tools;
+- **the knowledge-service token never leaves the machine** — the gateway holds it
+  and forwards server-side;
+- **ids are optional** — the gateway fills in this repo's graph and the memory
+  wiki, since nothing exposes a way to discover them.
+
+Tools added: `code_search`, `code_explore`, `code_callers`, `code_callees`,
+`code_impact`, `code_node`, `wiki_search`, `wiki_read`. Left out deliberately:
+`code_files` / `code_status` (low value remotely) and `wiki_list` / `wiki_graph`
+(a 177-entry dump is not useful in a chat) — every extra tool costs context in
+every client that connects.
+
+> Worth knowing: this widens what an approved connector can reach. Previously
+> `/mcp` exposed conversations; it now also exposes **repository source and all
+> memories, including the real credentials some contain**. Same OAuth gate,
+> bigger prize behind it. Revoke a connector from the panel if that changes.
+
+Two contract mismatches worth remembering (both cost a live round trip to find,
+because a mock accepts anything):
+
+- code queries are registered under **short** names — `/code-graph/callers`, not
+  `/code-graph/code_callers`;
+- `page/read` takes a **batch** (`refs: string[]`) and 400s on `ref`, and it
+  answers `[{ref, content}]` — render the content, not the path.
+
 ## Rebuild / redeploy
 
 ```bash

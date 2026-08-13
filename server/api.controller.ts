@@ -16,6 +16,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { AccountRegistry } from '../src/accounts.js';
 import { UsageRateLimitedError } from '../src/quota.js';
+import { CODEGRAPH, CodegraphClient } from './codegraph.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
@@ -117,6 +118,7 @@ export class ApiController {
     @Inject(SESSION_STORE) private readonly sessionStore: SessionStore,
     @Inject(PLUGIN_MANAGER) private readonly plugins: PluginManager,
     @Inject(MCP_SERVER_MANAGER) private readonly mcpServers: McpServerManager,
+    @Inject(CODEGRAPH) private readonly codegraph: CodegraphClient,
   ) {
     this.loadQuotaCache();
   }
@@ -1022,5 +1024,26 @@ export class ApiController {
   pushUnsubscribe(@Body() body: { endpoint?: string }): { ok: boolean } {
     if (body?.endpoint) this.push.remove(body.endpoint);
     return { ok: true };
+  }
+
+  /**
+   * Proxy one code-graph / memory-wiki query to the knowledge service.
+   *
+   * Exists so the MCP tools work over BOTH transports without either of them
+   * knowing the service URL or holding its token: the gateway keeps the
+   * credential and the dind-only address server-side. An external client
+   * (Claude Desktop) reaches this through the gateway's normal auth.
+   */
+  @Post('codegraph/call')
+  @HttpCode(200)
+  async codegraphCall(@Body() body: { tool?: string; args?: Record<string, unknown> }) {
+    const tool = typeof body?.tool === 'string' ? body.tool : '';
+    if (!tool) throw new BadRequestException('tool is required');
+    if (!this.codegraph.enabled) throw new ConflictException('code graph is not configured on this gateway');
+    try {
+      return { data: await this.codegraph.call(tool, body?.args ?? {}) };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
   }
 }

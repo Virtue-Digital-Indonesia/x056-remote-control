@@ -61,9 +61,11 @@ describe('MCP over Streamable HTTP (generic client compatibility)', () => {
 
   it('lists the same tools the stdio bridge exposes', async () => {
     const r = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-    expect(r.json.result.tools.map((t: { name: string }) => t.name)).toEqual(
-      ['list_projects', 'list_conversations', 'read_conversation', 'send_message'],
-    );
+    const names = r.json.result.tools.map((t: { name: string }) => t.name);
+    expect(names.slice(0, 4)).toEqual(['list_projects', 'list_conversations', 'read_conversation', 'send_message']);
+    // Both transports share one TOOLS definition, so the code-graph/memory
+    // tools must appear here too — that shared surface is the point.
+    expect(names).toEqual(expect.arrayContaining(['code_search', 'code_callers', 'wiki_search']));
     for (const t of r.json.result.tools) expect(t.inputSchema).toBeTruthy(); // clients need a schema to call it
   });
 
@@ -100,7 +102,7 @@ describe('MCP over Streamable HTTP (generic client compatibility)', () => {
     expect((await rpc({ jsonrpc: '2.0', id: 6, method: 'tools/list' }, { token: null, query: '?token=wrong' })).status).toBe(401);
     const okQ = await rpc({ jsonrpc: '2.0', id: 6, method: 'tools/list' }, { token: null, query: `?token=${TOKEN}` });
     expect(okQ.status).toBe(200);
-    expect(okQ.json.result.tools.length).toBe(4);
+    expect(okQ.json.result.tools.length).toBeGreaterThanOrEqual(4);
   });
 
   it('refuses GET (no server-initiated stream) with an Allow header', async () => {

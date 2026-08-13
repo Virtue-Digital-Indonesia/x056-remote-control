@@ -95,7 +95,10 @@ describe('OAuth for MCP connectors (Claude Desktop / claude.ai refuse a bare tok
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(mcp.status).toBe(200);
-    expect(((await mcp.json()) as any).result.tools).toHaveLength(4);
+    // What matters here is that an OAuth-issued token reaches the real tool
+    // surface, not how many tools that surface currently has.
+    const names = ((await mcp.json()) as any).result.tools.map((t: { name: string }) => t.name);
+    expect(names).toEqual(expect.arrayContaining(['list_projects', 'send_message', 'wiki_search']));
   });
 
   it('refuses to issue a code to a browser that is not logged in to the panel', async () => {

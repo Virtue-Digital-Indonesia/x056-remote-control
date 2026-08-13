@@ -106,13 +106,16 @@ function decideApproval(id: string, approve: boolean): Promise<Response> {
 }
 
 describe('x056 MCP bridge (real script against a live gateway)', () => {
-  it('handshakes: initialize + tools/list expose the four tools', async () => {
+  it('handshakes: initialize + tools/list expose the conversation and code-graph tools', async () => {
     const init = await rpc('initialize', { protocolVersion: '2024-11-05', clientInfo: { name: 'vitest', version: '1' } });
     expect((init.result as { serverInfo: { name: string } }).serverInfo.name).toBe('x056');
     mcp.stdin!.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
     const tools = await rpc('tools/list');
     const names = (tools.result as { tools: { name: string }[] }).tools.map((t) => t.name);
-    expect(names).toEqual(['list_projects', 'list_conversations', 'read_conversation', 'send_message']);
+    // The four conversation tools are the invariant; code-graph/memory tools
+    // were added alongside them and must not displace any.
+    expect(names.slice(0, 4)).toEqual(['list_projects', 'list_conversations', 'read_conversation', 'send_message']);
+    expect(names).toEqual(expect.arrayContaining(['code_callers', 'code_impact', 'wiki_search', 'wiki_read']));
   });
 
   it('list_projects / list_conversations expose the gateway state with providers', async () => {

@@ -18,6 +18,7 @@ function controller(stateDir: string): ApiController {
     {} as never, // SessionStore
     {} as never, // PluginManager
     {} as never, // McpServerManager
+    {} as never, // CodegraphClient
   );
 }
 

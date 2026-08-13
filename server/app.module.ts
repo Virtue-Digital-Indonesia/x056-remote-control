@@ -9,6 +9,7 @@ import { SessionManager } from './manager.js';
 import { PushService } from './push.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
+import { CODEGRAPH, CodegraphClient, codegraphConfigFromEnv, type CodegraphConfig } from './codegraph.js';
 import { McpHttpController, MCP_HTTP_CONFIG } from './mcp-http.controller.js';
 import { OAuthController, OAUTH_STORE, OAUTH_DEPS } from './oauth.controller.js';
 import { OAuthStore } from './oauth.js';
@@ -38,6 +39,8 @@ export interface GatewayConfig {
   panelPath?: string;
   /** Read-only mount of the user's interactive ~/.claude/projects for resume. */
   interactiveProjectsDir?: string;
+  /** Code-graph / memory-wiki service. Defaults from env; tests inject their own. */
+  codegraph?: CodegraphConfig;
 }
 
 export function buildModule(cfg: GatewayConfig): unknown {
@@ -92,6 +95,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: SESSION_STORE, useValue: sessions },
       { provide: PLUGIN_MANAGER, useValue: plugins },
       { provide: MCP_SERVER_MANAGER, useValue: mcpServers },
+      { provide: CODEGRAPH, useValue: new CodegraphClient(cfg.codegraph ?? codegraphConfigFromEnv()) },
       // The HTTP MCP endpoint calls back into this gateway with the same
       // credentials the spawned stdio bridge uses. No URL: it derives its own
       // loopback address per request, so it is right on any port.

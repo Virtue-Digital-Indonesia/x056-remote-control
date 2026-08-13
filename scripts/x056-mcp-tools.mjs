@@ -66,6 +66,64 @@ export const TOOLS = [
   },
 ];
 
+/**
+ * Code-graph + memory tools, served through the gateway (POST /api/codegraph/call)
+ * rather than by talking to the knowledge service directly: the service lives on
+ * the dind sidecar and is unreachable from outside the container, and the gateway
+ * holds its token. That is what lets an external client — Claude Desktop, claude.ai —
+ * use these over the same OAuth-gated endpoint as everything else.
+ *
+ * ids are optional everywhere: the gateway fills in this repo's graph and the
+ * memory wiki, because there is no tool to discover those ids.
+ */
+const CODEGRAPH_TOOLS = [
+  ['code_search', 'Find a symbol by name in the indexed codebase. Returns locations and signatures, not source — follow with code_node or code_explore for the code itself.',
+    { query: { type: 'string', description: 'symbol name or partial name' }, limit: { type: 'number' } }, ['query']],
+  ['code_callers', 'List the functions that CALL a symbol, by name and location. Use this for "what breaks if I change this" — it resolves each call site to its enclosing function, which a text search cannot.',
+    { symbol: { type: 'string' }, limit: { type: 'number' } }, ['symbol']],
+  ['code_callees', 'List the functions a symbol calls.', { symbol: { type: 'string' }, limit: { type: 'number' } }, ['symbol']],
+  ['code_impact', 'Walk the dependency chain out from a symbol to the given depth — the transitive blast radius of changing it.',
+    { symbol: { type: 'string' }, depth: { type: 'number', description: '1-10, default 2' } }, ['symbol']],
+  ['code_explore', 'Find files matching a query and return their source.', { query: { type: 'string' }, maxFiles: { type: 'number' } }, ['query']],
+  ['code_node', 'Details of one symbol; set includeCode for its source.',
+    { symbol: { type: 'string' }, includeCode: { type: 'boolean' }, file: { type: 'string' }, line: { type: 'number' } }, ['symbol']],
+  ['wiki_search', 'Search saved memories across ALL projects on this gateway (deployment gotchas, auth decisions, e2e recipes, user preferences). Lexical search, so prefer two or three concrete words over a sentence. Returns page paths — read one with wiki_read.',
+    { query: { type: 'string' }, limit: { type: 'number' } }, ['query']],
+  ['wiki_read', 'Read one memory page in full, by the path wiki_search returned.', { ref: { type: 'string', description: 'page path from wiki_search' } }, ['ref']],
+];
+
+for (const [name, description, props, required] of CODEGRAPH_TOOLS) {
+  TOOLS.push({
+    name,
+    description,
+    inputSchema: { type: 'object', properties: props, required, additionalProperties: false },
+  });
+}
+
+const CODEGRAPH_TOOL_NAMES = new Set(CODEGRAPH_TOOLS.map(([n]) => n));
+
+/** Render whatever shape a code-graph/wiki route returns as readable text. */
+function fmtCodegraph(tool, data) {
+  if (data == null) return '(no result)';
+  if (typeof data === 'string') return data;
+  // Code query routes answer {text, isError}; wiki search answers {results:[…]}.
+  if (typeof data.text === 'string') return data.text || '(no result)';
+  if (Array.isArray(data.results)) {
+    if (!data.results.length) return '(no matches)';
+    return data.results.map((r) => `${r.path ?? r.ref ?? r.title ?? '?'}${r.score != null ? `  (score ${Number(r.score).toFixed(2)})` : ''}`).join('\n');
+  }
+  if (Array.isArray(data.items)) {
+    if (!data.items.length) return '(none)';
+    // page/read answers [{ref, content}] — the CONTENT is the point of the call,
+    // so render it under its ref rather than listing bare paths.
+    if (data.items.some((i) => i && typeof i.content === 'string')) {
+      return data.items.map((i) => `# ${i.ref ?? '?'}\n\n${i.content ?? '(empty)'}`).join('\n\n---\n\n');
+    }
+    return data.items.map((i) => (typeof i === 'string' ? i : i.path ?? i.ref ?? i.title ?? JSON.stringify(i))).join('\n');
+  }
+  return JSON.stringify(data, null, 2);
+}
+
 function fmtHistory(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return '(no messages)';
   return rows
@@ -89,6 +147,13 @@ async function waitForReply(api, projectId, sid, before, waitSeconds) {
 }
 
 export async function callTool(api, name, args) {
+  if (CODEGRAPH_TOOL_NAMES.has(name)) {
+    const res = await api('/api/codegraph/call', {
+      method: 'POST',
+      body: JSON.stringify({ tool: name, args }),
+    });
+    return fmtCodegraph(name, res?.data ?? res);
+  }
   if (name === 'list_projects') {
     const reg = await api('/api/projects');
     const list = (reg.projects || reg || []).map((p) => ({ id: p.id, name: p.name, cwd: p.cwd, provider: p.provider || 'claude', current: p.id === reg.current }));
