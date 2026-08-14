@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { AccountRegistry } from '../src/accounts.js';
 import { UsageRateLimitedError } from '../src/quota.js';
 import { CODEGRAPH, CodegraphClient } from './codegraph.js';
+import { MEMORY_WRITER, MemoryWriter } from './memories.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
@@ -119,6 +120,7 @@ export class ApiController {
     @Inject(PLUGIN_MANAGER) private readonly plugins: PluginManager,
     @Inject(MCP_SERVER_MANAGER) private readonly mcpServers: McpServerManager,
     @Inject(CODEGRAPH) private readonly codegraph: CodegraphClient,
+    @Inject(MEMORY_WRITER) private readonly memories: MemoryWriter,
   ) {
     this.loadQuotaCache();
   }
@@ -1042,6 +1044,32 @@ export class ApiController {
     if (!this.codegraph.enabled) throw new ConflictException('code graph is not configured on this gateway');
     try {
       return { data: await this.codegraph.call(tool, body?.args ?? {}) };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  /**
+   * Save a memory into a project, from an external MCP client.
+   *
+   * The caller names a project by ID, never a path — the cwd is resolved here
+   * from the registry, so an unknown project is a 400 rather than a new
+   * directory somewhere on disk.
+   */
+  @Post('memories/save')
+  @HttpCode(200)
+  saveMemory(@Body() body: { projectId?: string; name?: string; description?: string; content?: string; source?: string }) {
+    const projectId = typeof body?.projectId === 'string' ? body.projectId : '';
+    const proj = this.manager.listProjects().projects.find((p) => p.id === projectId);
+    if (!proj) throw new BadRequestException('unknown projectId — use list_projects');
+    try {
+      return this.memories.save({
+        cwd: proj.cwd,
+        name: body?.name ?? '',
+        description: body?.description ?? '',
+        content: body?.content ?? '',
+        source: body?.source,
+      });
     } catch (err) {
       throw new BadRequestException((err as Error).message);
     }

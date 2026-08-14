@@ -10,6 +10,7 @@ import { PushService } from './push.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
 import { CODEGRAPH, CodegraphClient, codegraphConfigFromEnv, type CodegraphConfig } from './codegraph.js';
+import { MEMORY_WRITER, MemoryWriter } from './memories.js';
 import { McpHttpController, MCP_HTTP_CONFIG } from './mcp-http.controller.js';
 import { OAuthController, OAUTH_STORE, OAUTH_DEPS } from './oauth.controller.js';
 import { OAuthStore } from './oauth.js';
@@ -96,6 +97,8 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: PLUGIN_MANAGER, useValue: plugins },
       { provide: MCP_SERVER_MANAGER, useValue: mcpServers },
       { provide: CODEGRAPH, useValue: new CodegraphClient(cfg.codegraph ?? codegraphConfigFromEnv()) },
+      // Memories live in the Claude config dirs; codex accounts have no such tree.
+      { provide: MEMORY_WRITER, useValue: new MemoryWriter(() => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude')) },
       // The HTTP MCP endpoint calls back into this gateway with the same
       // credentials the spawned stdio bridge uses. No URL: it derives its own
       // loopback address per request, so it is right on any port.

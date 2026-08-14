@@ -102,6 +102,30 @@ for (const [name, description, props, required] of CODEGRAPH_TOOLS) {
 
 const CODEGRAPH_TOOL_NAMES = new Set(CODEGRAPH_TOOLS.map(([n]) => n));
 
+// MCP gives a server no way to READ a client's conversation — roots, sampling
+// and elicitation are the only client primitives and none expose the transcript.
+// So the only possible direction is the client pushing to us: this is how an
+// external client (Claude Desktop, claude.ai) hands over what it worked out.
+TOOLS.push({
+  name: 'save_memory',
+  description:
+    'Save a durable note into one of this gateway\'s projects, so its future sessions know it. '
+    + 'Use for a conclusion worth keeping — a decision, a gotcha, a convention — not for chat transcripts or anything already in the repo. '
+    + 'The note is written into that project\'s memory directory (so it is loaded into that project\'s future sessions) and becomes searchable from every project via wiki_search. '
+    + 'It is stamped as externally authored and its name is prefixed "desktop-", so it can never overwrite a memory this gateway wrote itself. Re-saving the same name replaces it.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', description: 'id from list_projects' },
+      name: { type: 'string', description: 'short kebab-case slug, e.g. "postgres-pool-limit"' },
+      description: { type: 'string', description: 'one line explaining what this is, used when deciding relevance later' },
+      content: { type: 'string', description: 'the note itself, markdown; state the fact and why it matters' },
+    },
+    required: ['projectId', 'name', 'description', 'content'],
+    additionalProperties: false,
+  },
+});
+
 /** Render whatever shape a code-graph/wiki route returns as readable text. */
 function fmtCodegraph(tool, data) {
   if (data == null) return '(no result)';
@@ -153,6 +177,22 @@ export async function callTool(api, name, args) {
       body: JSON.stringify({ tool: name, args }),
     });
     return fmtCodegraph(name, res?.data ?? res);
+  }
+  if (name === 'save_memory') {
+    const res = await api('/api/memories/save', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId: args.projectId,
+        name: args.name,
+        description: args.description,
+        content: args.content,
+        source: 'claude-desktop',
+      }),
+    });
+    const where = res?.accounts?.length ? ` on ${res.accounts.length} account(s)` : '';
+    return `${res?.existed ? 'Replaced' : 'Saved'} memory ${res?.file}${where}.\n`
+      + 'It loads into that project\'s future sessions, and is searchable from any project with wiki_search '
+      + '(within the hour, once the memory mirror next runs).';
   }
   if (name === 'list_projects') {
     const reg = await api('/api/projects');

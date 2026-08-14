@@ -164,6 +164,38 @@ because a mock accepts anything):
 - `page/read` takes a **batch** (`refs: string[]`) and 400s on `ref`, and it
   answers `[{ref, content}]` — render the content, not the path.
 
+## Pushing knowledge back in (`save_memory`)
+
+MCP gives a server **no way to read a client's conversation**. The only client
+primitives are roots (filesystem URIs), sampling (server supplies the messages)
+and elicitation (ask the user) — none expose the transcript, by design. So
+"x056 reads Claude Desktop" is not achievable; the only possible direction is the
+client pushing to us.
+
+`save_memory` is that direction. Desktop names a project and a note; the gateway
+writes a real memory **file** into that project's memory dir on every Claude
+account. The hourly mirror then makes it searchable from every project, and the
+auto-memory system loads it into that project's future sessions.
+
+Files, not wiki pages, deliberately: files are the source of truth here. Writing
+the wiki directly would give search but no injection, and the next `--prune`
+would erase it.
+
+This writes into text future sessions read, so it is a **prompt-injection
+surface**. Three limits, each covered by a test:
+
+- **Projects, not paths.** The caller passes a project id; the cwd is resolved
+  from the registry, so an unknown project is a 400 rather than a new directory.
+- **Names are slugified and force-prefixed `desktop-`.** An external write can
+  never impersonate or overwrite a memory this system wrote itself. Verified
+  live: `../../etc/passwd` lands as `desktop-etc-passwd.md` inside the project's
+  own memory dir, and no sibling directory is created.
+- **Provenance is stamped** in frontmatter (`origin:`) and in a visible banner
+  telling the reader to treat it as a note from the user, not as instructions.
+
+Re-saving the same name replaces the file and rewrites its single `MEMORY.md`
+index line rather than appending a duplicate.
+
 ## Rebuild / redeploy
 
 ```bash
