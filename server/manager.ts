@@ -45,6 +45,10 @@ export interface SessionManagerOptions {
    *  wired to a pseudo-terminal so the CLI prints its URL and reads the pasted
    *  code. Overridable in tests with a fake that emits a URL and writes creds. */
   loginSpawnFn?: (configDir: string, claudePath?: string) => ChildProcess;
+  /** Called after a new CLAUDE account is registered, so it can be brought up to
+   *  the fleet's plugin/skill baseline. Fire-and-forget: onboarding must not fail
+   *  because provisioning did. */
+  onAccountAdded?: (account: { name: string; configDir: string }) => void;
   /** The gateway's MCP bridge wiring, handed to every spawned turn so sessions
    *  get tools to read/message other conversations and projects (built by the
    *  server entrypoint, which knows the token + port; absent in tests). */
@@ -898,6 +902,9 @@ export class SessionManager {
     this.wireSharedProjects(finalDir);
     reg.add(name, finalDir);
     this.emitAccounts();
+    // Bring it up to the baseline the other accounts already have; a new account
+    // that silently lacks last week's plugins is a failover that loses capability.
+    try { this.opts.onAccountAdded?.({ name, configDir: finalDir }); } catch { /* never block onboarding */ }
     return { name, email: identity.email, displayName: identity.displayName };
   }
 

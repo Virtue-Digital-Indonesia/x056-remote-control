@@ -11,6 +11,7 @@ import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
 import { CODEGRAPH, CodegraphClient, codegraphConfigFromEnv, type CodegraphConfig } from './codegraph.js';
 import { MEMORY_WRITER, MemoryWriter } from './memories.js';
+import { PROVISIONER, AccountProvisioner } from './provision.js';
 import { McpHttpController, MCP_HTTP_CONFIG } from './mcp-http.controller.js';
 import { OAuthController, OAUTH_STORE, OAUTH_DEPS } from './oauth.controller.js';
 import { OAuthStore } from './oauth.js';
@@ -45,6 +46,8 @@ export interface GatewayConfig {
 }
 
 export function buildModule(cfg: GatewayConfig): unknown {
+  // Declared before the manager so the onAccountAdded hook can reach it.
+  let provisioner: AccountProvisioner;
   const manager = new SessionManager({
     stateDir: cfg.stateDir,
     workspaceRoot: cfg.workspaceRoot,
@@ -52,6 +55,15 @@ export function buildModule(cfg: GatewayConfig): unknown {
     interactiveProjectsDir: cfg.interactiveProjectsDir,
     manageProcessSignals: true,
     mcp: buildMcpWiring(cfg),
+    onAccountAdded: (acct) => {
+      provisioner.provision(acct)
+        .then((r) => {
+          const n = r.plugins.length + r.skills.length + r.flags.length;
+          if (n) console.log(`[provision] ${acct.name}: ${r.plugins.length} plugin(s), ${r.skills.length} skill(s), ${r.flags.length} flag(s)`);
+          for (const e of r.errors) console.warn(`[provision] ${acct.name}: ${e}`);
+        })
+        .catch((e) => console.warn(`[provision] ${acct.name} failed:`, e));
+    },
   });
 
   // Web Push: notify the (installed) panel when a turn needs the user, finishes,
@@ -87,6 +99,11 @@ export function buildModule(cfg: GatewayConfig): unknown {
     accounts: McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json')),
   });
 
+  provisioner = new AccountProvisioner(
+    () => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude'),
+    plugins,
+  );
+
   @Module({
     controllers: [ApiController, McpHttpController, OAuthController],
     providers: [
@@ -98,6 +115,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: MCP_SERVER_MANAGER, useValue: mcpServers },
       { provide: CODEGRAPH, useValue: new CodegraphClient(cfg.codegraph ?? codegraphConfigFromEnv()) },
       // Memories live in the Claude config dirs; codex accounts have no such tree.
+      { provide: PROVISIONER, useValue: provisioner },
       { provide: MEMORY_WRITER, useValue: new MemoryWriter(() => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude')) },
       // The HTTP MCP endpoint calls back into this gateway with the same
       // credentials the spawned stdio bridge uses. No URL: it derives its own

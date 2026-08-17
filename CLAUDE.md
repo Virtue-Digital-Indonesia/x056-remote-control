@@ -21,7 +21,7 @@ Sessions started through the panel run **inside the Docker container** this repo
 - **The panel needs NO deploy**: `server/public/panel.html` is bind-mount live-served (`X056_PANEL_PATH`) — edits appear on browser refresh. **Backend changes (`server/`, `src/`, `Dockerfile`, `compose.yaml`) need the actuator flow above.**
 - **A container swap restarts every session, including you.** Graceful swaps wait for idle so no turn is killed; your session resumes on the user's next message. Ungraceful restarts (crash/reboot) kill in-flight turns — they resume on next message too.
 - **Background work DIES when your turn ends.** Your process is the turn: backgrounded subagents, workflows, or `run_in_background` shells are killed at turn completion. Run long orchestration synchronously within the turn, or don't run it. Never promise "I'll be notified when it finishes."
-- Mounts you can see: the two failover config dirs (`~/.claude-x056-a`, `~/.claude-x056-b`), the workspace (`/home/efran/remote-development`), `~/.claude/projects` **read-only** (interactive transcripts, for session adoption), and the `/app/state` volume. The host's `~/.claude` credentials are NOT visible.
+- Mounts you can see: the failover config dirs (see "Accounts are a fleet" below — `~/.claude-x056-b` is account **b**; `~/.claude-x056-a` is an orphan, the live `a` is `/app/state/accounts/a`), the workspace (`/home/efran/remote-development`), `~/.claude/projects` **read-only** (interactive transcripts, for session adoption), and the `/app/state` volume. The host's `~/.claude` credentials are NOT visible.
 - Tests: `npm test` (vitest, serialized files — keep it green), `npm run typecheck`. Both must pass before requesting a deploy.
 - **You CAN screenshot** to eyeball UI work: a headless Chromium (Playwright) is baked into the image at `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`. Start the project's dev server, then `node /app/scripts/shot.cjs <url> <out.png> [width] [height]` and Read the PNG. Any project's own Playwright/Puppeteer also finds the browser via that env var. (Requires a container built after this note — if `shot.cjs` says playwright not found, the image predates it; commit + request a deploy.)
 - **Toolchains baked into the image** (so any project builds, not just Node): Go (`GOTOOLCHAIN=auto`), Java 17 + Maven (Gradle via each project's `./gradlew`), Python 3 with pip/venv (system Python is PEP-668 externally-managed — always work in a venv), PHP + Composer, plus gcc/make/git/ripgrep/jq. `git push` over SSH works to GitHub, the VPN host `192.168.83.20` (`ssh ocr`), and the gateway host `ssh valbox` (dedicated keys in `state/ssh/`).
@@ -59,6 +59,27 @@ auto-memory injection only ever gives you the *current* project's.
   (idempotent). Edits to memory files do not appear until that runs.
 - Search is lexical (BM25 + a distinct-term-match re-rank), not semantic — so
   name things concretely. Two or three specific words beat a sentence.
+
+## Accounts are a fleet — keep them identical
+
+There are **three Claude accounts** (`a`, `b`, `c`) plus a codex one (`d`). Note
+that account **b lives at `/home/efran/.claude-x056-b`**, a HOME path — it is
+live, not stale. Only `~/.claude-x056-a` is orphaned. Reading plugin state from
+the wrong one is an easy and repeated mistake; take the truth from
+`/app/state/accounts.json`.
+
+Anything per-account must be applied to **all** of them, or it fires only when
+failover happens to land on the right one — which reads as "randomly broken":
+
+- **Plugins / MCP servers** — use the panel or the API, never the `claude` CLI
+  directly; `PluginManager` and `McpServerManager` fan out across every account.
+- **Opt-in flag files** (e.g. `.i-have-adhd-always`, resolved by hooks through
+  `$CLAUDE_CONFIG_DIR`) — `POST /api/accounts/flag {flag, on}`. Note `$HOME/.claude`
+  is only the fallback when `CLAUDE_CONFIG_DIR` is unset, which it never is here,
+  so touching `~/.claude/...` does nothing.
+- **A newly onboarded account** is provisioned automatically to the fleet's
+  baseline (`server/provision.ts`). `GET /api/accounts/baseline` shows that
+  baseline and which accounts lag; `POST /api/accounts/provision` re-applies it.
 
 ## Session rules
 

@@ -20,6 +20,7 @@ function controller(stateDir: string): ApiController {
     {} as never, // McpServerManager
     {} as never, // CodegraphClient
     {} as never, // MemoryWriter
+    {} as never, // AccountProvisioner
   );
 }
 

@@ -18,6 +18,7 @@ import { AccountRegistry } from '../src/accounts.js';
 import { UsageRateLimitedError } from '../src/quota.js';
 import { CODEGRAPH, CodegraphClient } from './codegraph.js';
 import { MEMORY_WRITER, MemoryWriter } from './memories.js';
+import { PROVISIONER, AccountProvisioner } from './provision.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
@@ -121,6 +122,7 @@ export class ApiController {
     @Inject(MCP_SERVER_MANAGER) private readonly mcpServers: McpServerManager,
     @Inject(CODEGRAPH) private readonly codegraph: CodegraphClient,
     @Inject(MEMORY_WRITER) private readonly memories: MemoryWriter,
+    @Inject(PROVISIONER) private readonly provisioner: AccountProvisioner,
   ) {
     this.loadQuotaCache();
   }
@@ -1070,6 +1072,45 @@ export class ApiController {
         content: body?.content ?? '',
         source: body?.source,
       });
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  /** What the fleet collectively has, and which accounts lag behind it. */
+  @Get('accounts/baseline')
+  accountBaseline(): unknown {
+    return { plan: this.provisioner.plan(), adhd: this.provisioner.flagState('.i-have-adhd-always') };
+  }
+
+  /** Re-apply the fleet baseline to one account (or every account). */
+  @Post('accounts/provision')
+  @HttpCode(200)
+  async provisionAccount(@Body() body: { account?: string }) {
+    const accounts = AccountRegistry.load(join(this.stateDir, 'accounts.json'))
+      .list()
+      .filter((a) => a.provider === 'claude')
+      .filter((a) => !body?.account || a.name === body.account);
+    if (!accounts.length) throw new BadRequestException('no matching claude account');
+    const results = [];
+    for (const a of accounts) results.push(await this.provisioner.provision({ name: a.name, configDir: a.configDir }));
+    return { results };
+  }
+
+  /**
+   * Toggle an opt-in flag file across EVERY Claude account.
+   *
+   * The i-have-adhd hook resolves its flag through $CLAUDE_CONFIG_DIR, which is
+   * per-account — so setting it on one account makes always-on fire only when
+   * failover happens to land there, which reads as "randomly broken".
+   */
+  @Post('accounts/flag')
+  @HttpCode(200)
+  setAccountFlag(@Body() body: { flag?: string; on?: boolean }) {
+    if (typeof body?.flag !== 'string') throw new BadRequestException('flag is required');
+    try {
+      const res = this.provisioner.setFlag(body.flag, !!body.on);
+      return { ...res, state: this.provisioner.flagState(body.flag) };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
     }
