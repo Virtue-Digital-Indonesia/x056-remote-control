@@ -654,7 +654,11 @@
     <div id="queueBar"></div>
     <div class="composer">
       <div id="attachRow"></div>
-      <textarea id="prompt" rows="1" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste or drop a file)"></textarea>
+      <!-- autocomplete/name: without these, iOS and Android treat a lone text
+           field as a form input and offer a Contact card from AutoFill. The
+           name is deliberately non-contact-shaped so the heuristics have
+           nothing to match on. -->
+      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="off" data-form-type="other" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste or drop a file)"></textarea>
       <div class="bar">
         <div class="selects">
           <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
@@ -718,7 +722,7 @@
     <button type="button" class="provbtn on" data-provider="claude">Claude</button>
     <button type="button" class="provbtn" data-provider="codex">ChatGPT</button>
   </div>
-  <input id="projSearch" class="pk-search" placeholder="filter repos…" />
+  <input id="projSearch" class="pk-search" placeholder="filter repos…" autocomplete="off" autocorrect="off" spellcheck="false" />
   <div id="projPickList" class="pk-list"></div>
 </div>
 <div class="pop" id="sessPicker" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:360px;">
