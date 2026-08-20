@@ -224,6 +224,8 @@ export class ApiController {
     if (!body?.prompt && !hasAttachments(body)) throw new BadRequestException('prompt or attachment required');
     try {
       const { prompt, opts } = this.composePrompt(body);
+      // A human spoke: the self-message brake resets.
+      if (body.sessionId) this.manager.clearSelfQueueStreak(body.sessionId);
       return { sessionId: this.manager.continueLast(prompt, opts, body.projectId) };
     } catch (err) {
       if (err instanceof BusyError) throw new ConflictException('busy');
@@ -959,6 +961,7 @@ export class ApiController {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
     try {
+      if (body.sessionId) this.manager.clearSelfQueueStreak(body.sessionId);
       const item = this.manager.enqueue(body.projectId, { text: body.prompt, model: body.model, effort: body.effort, sessionId: body.sessionId });
       return { queued: true, id: item.id };
     } catch (err) {
@@ -1113,6 +1116,23 @@ export class ApiController {
       return { ...res, state: this.provisioner.flagState(body.flag) };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  /**
+   * Queue a message from a conversation to ITSELF, delivered when its current
+   * turn ends. Identity comes from the per-turn MCP config, not the request, so
+   * a caller cannot claim to be a conversation it is not.
+   */
+  @Post('queue/self')
+  @HttpCode(200)
+  queueSelf(@Body() body: { projectId?: string; sessionId?: string; prompt?: string }) {
+    if (!body?.projectId || !body?.sessionId) throw new BadRequestException('projectId and sessionId required');
+    if (!body?.prompt?.trim()) throw new BadRequestException('prompt required');
+    try {
+      return this.manager.queueSelfMessage(body.projectId, body.sessionId, body.prompt);
+    } catch (err) {
+      throw new ConflictException((err as Error).message);
     }
   }
 }

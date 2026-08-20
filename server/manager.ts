@@ -246,6 +246,9 @@ export class SessionManager {
   private lastResults = new Map<string, SessionResult>();
   private lastModelByPid = new Map<string, string>();
   private sharedRegistry?: AccountRegistry;
+  /** Consecutive self-queued messages per conversation, reset by any message
+   *  that did NOT come from the session itself. Bounds a self-message loop. */
+  private selfQueueStreak = new Map<string, number>();
   private mcpApprovals = new Map<string, McpApproval>();
   private mcpApprovalTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // Unanswered questions, keyed by the CONVERSATION that asked. A question ends
@@ -490,6 +493,36 @@ export class SessionManager {
   }
 
   queues(): Record<string, QueueItem[]> { return this.loadQueues(); }
+
+  /** Max self-messages a conversation may chain without a human in between. */
+  static readonly SELF_QUEUE_LIMIT = 5;
+
+  /**
+   * Queue a message from a conversation TO ITSELF, delivered as a new turn when
+   * the current one ends.
+   *
+   * This is the one send that can loop: a turn that always queues itself never
+   * stops, and unlike autopilot there is no interval to slow it. The streak
+   * counter is the brake — it only resets when a message arrives that the
+   * session did not send itself, so a human (or another conversation) has to
+   * intervene before it can continue.
+   */
+  queueSelfMessage(pid: string, sessionId: string, text: string): { id: string; remaining: number } {
+    const used = this.selfQueueStreak.get(sessionId) ?? 0;
+    const limit = SessionManager.SELF_QUEUE_LIMIT;
+    if (used >= limit) {
+      throw new Error(
+        `self-message limit reached (${limit} in a row). Waiting for a message from someone else before this conversation can queue itself again.`,
+      );
+    }
+    const item = this.enqueue(pid, { text, sessionId });
+    this.selfQueueStreak.set(sessionId, used + 1);
+    return { id: item.id, remaining: limit - (used + 1) };
+  }
+
+  /** Clear the self-message brake — any message not from the session itself. */
+  clearSelfQueueStreak(sessionId: string): void { this.selfQueueStreak.delete(sessionId); }
+
 
   enqueue(pid: string, item: { text: string; model?: string; effort?: string; sessionId?: string }): QueueItem {
     const proj = this.projects().get(pid);
@@ -1354,12 +1387,14 @@ export class SessionManager {
    *  is another AI that can't sit and retry, and dropping the message was the
    *  worst of the options. Composing the prompt here means a queued message
    *  carries the same ASK convention a delivered one would. */
+  /** A message from ANOTHER conversation also clears the self-message brake. */
   deliverMcpMessage(
     projectId: string,
     sessionId: string | undefined,
     message: string,
     opts: TurnRunOptions & { interactive?: boolean } = {},
   ): { sessionId: string; queued: boolean } {
+    if (sessionId) this.clearSelfQueueStreak(sessionId);
     const prompt = opts.interactive !== false ? withAskInstructions(message) : message;
     const run = { model: opts.model, effort: opts.effort };
     if (!sessionId) return { sessionId: this.start(prompt, undefined, run, projectId), queued: false };
@@ -1380,6 +1415,33 @@ export class SessionManager {
   /** Unanswered questions across all conversations — the panel hydrates from
    *  this so a refresh/reconnect/restart restores the cards. */
   listPendingQuestions(): PendingQuestion[] { return [...this.pendingQuestions.values()]; }
+
+
+  /**
+   * A per-turn MCP config so the bridge knows WHICH conversation it is running
+   * in. The shared config written at boot cannot carry this: one file, every
+   * session. Without it a session has no way to name itself, so it cannot queue
+   * a follow-up for itself or manage its own queue — it would have to guess its
+   * session id from `list_conversations`, and guessing wrong messages someone
+   * else's conversation.
+   *
+   * Falls back to the shared config if anything here fails; identity is a
+   * convenience, not a reason to lose every tool.
+   */
+  private mcpWiringFor(pid: string, sessionId: string): TurnOptions['mcp'] {
+    const base = this.opts.mcp;
+    if (!base) return undefined;
+    try {
+      const dir = join(this.opts.stateDir, 'mcp');
+      mkdirSync(dir, { recursive: true });
+      const env = { ...base.env, X056_SELF_PROJECT_ID: pid, X056_SELF_SESSION_ID: sessionId };
+      const configPath = join(dir, `${sessionId}.json`);
+      writeFileSync(configPath, JSON.stringify({ mcpServers: { x056: { command: base.command, args: base.args, env } } }, null, 2));
+      return { ...base, configPath, env };
+    } catch {
+      return base;
+    }
+  }
 
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
     // Any new turn for this conversation supersedes its unanswered question
@@ -1463,7 +1525,7 @@ export class SessionManager {
         model,
         effort,
         appendSystemPrompt: CONTAINER_SYSTEM_NOTE,
-        mcp: this.opts.mcp,
+        mcp: this.mcpWiringFor(pid, sessionId),
         forceSwitchSignal: false,
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {

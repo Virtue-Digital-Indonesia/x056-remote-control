@@ -102,6 +102,93 @@ for (const [name, description, props, required] of CODEGRAPH_TOOLS) {
 
 const CODEGRAPH_TOOL_NAMES = new Set(CODEGRAPH_TOOLS.map(([n]) => n));
 
+/** The conversation this bridge is running inside, injected per turn by the
+ *  manager. Absent for an external client (Claude Desktop has no "self"). */
+const SELF = {
+  projectId: process.env.X056_SELF_PROJECT_ID || '',
+  sessionId: process.env.X056_SELF_SESSION_ID || '',
+};
+
+const QUEUE_TOOLS = [
+  {
+    name: 'list_queued',
+    description:
+      'List messages waiting to be delivered to a conversation. A message sent to a conversation that is mid-turn is queued rather than dropped, so this is how you see what will arrive next, and in what order. Omit projectId to list every project\'s queue.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'omit for all projects' },
+        sessionId: { type: 'string', description: 'omit to include every conversation of that project' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'cancel_queued',
+    description:
+      'Cancel a queued message before it is delivered, by the id from list_queued. Use when a queued follow-up has been overtaken by events — the answer arrived another way, or the request is no longer wanted. Cannot recall a message already delivered.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectId: { type: 'string' }, id: { type: 'string', description: 'id from list_queued' } },
+      required: ['projectId', 'id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'edit_queued',
+    description:
+      'Rewrite a queued message before it is delivered. Use to add what you have since learned rather than cancelling and re-sending, which would lose its place in the queue.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        id: { type: 'string', description: 'id from list_queued' },
+        message: { type: 'string', description: 'replacement text' },
+      },
+      required: ['projectId', 'id', 'message'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'message_self',
+    description:
+      'Queue a message to YOUR OWN conversation, delivered as a new turn the moment this one ends. '
+      + 'Use it to hand yourself work you cannot finish now — a long build to check, a follow-up after a deploy lands — so it survives the end of this turn, which otherwise kills any background work. '
+      + 'It is a note to your future self, so write the context that self will need; it will not remember this turn\'s reasoning beyond the transcript. '
+      + 'Only available to a session running on this gateway. Bounded: a few consecutive self-messages with no human message in between are refused, so this cannot become a silent infinite loop.',
+    inputSchema: {
+      type: 'object',
+      properties: { message: { type: 'string' } },
+      required: ['message'],
+      additionalProperties: false,
+    },
+  },
+];
+
+for (const t of QUEUE_TOOLS) TOOLS.push(t);
+const QUEUE_TOOL_NAMES = new Set(QUEUE_TOOLS.map((t) => t.name));
+
+function fmtQueue(map, filter) {
+  const rows = [];
+  for (const [pid, items] of Object.entries(map ?? {})) {
+    if (filter.projectId && pid !== filter.projectId) continue;
+    for (const it of items ?? []) {
+      if (filter.sessionId && it.sessionId !== filter.sessionId) continue;
+      rows.push({ pid, ...it });
+    }
+  }
+  if (!rows.length) return '(nothing queued)';
+  rows.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  return rows
+    .map((r, i) => {
+      const when = r.at ? new Date(r.at).toISOString() : '?';
+      const head = `${i + 1}. id=${r.id}  project=${r.pid}  conversation=${r.sessionId ?? '?'}  queued=${when}`;
+      const text = String(r.text ?? '').replace(/\s+/g, ' ').slice(0, 300);
+      return `${head}\n   ${text}`;
+    })
+    .join('\n');
+}
+
 // MCP gives a server no way to READ a client's conversation — roots, sampling
 // and elicitation are the only client primitives and none expose the transcript.
 // So the only possible direction is the client pushing to us: this is how an
@@ -171,6 +258,31 @@ async function waitForReply(api, projectId, sid, before, waitSeconds) {
 }
 
 export async function callTool(api, name, args) {
+  if (QUEUE_TOOL_NAMES.has(name)) {
+    if (name === 'list_queued') {
+      const map = await api('/api/queue');
+      return fmtQueue(map, { projectId: args.projectId, sessionId: args.sessionId });
+    }
+    if (name === 'cancel_queued') {
+      await api('/api/queue/remove', { method: 'POST', body: JSON.stringify({ projectId: args.projectId, id: args.id }) });
+      return `cancelled queued message ${args.id} — it will not be delivered.`;
+    }
+    if (name === 'edit_queued') {
+      await api('/api/queue/edit', { method: 'POST', body: JSON.stringify({ projectId: args.projectId, id: args.id, prompt: args.message }) });
+      return `rewrote queued message ${args.id}; it keeps its place in the queue.`;
+    }
+    if (name === 'message_self') {
+      if (!SELF.projectId || !SELF.sessionId) {
+        throw new Error('message_self is only available to a conversation running on this gateway (no self identity in this client)');
+      }
+      const res = await api('/api/queue/self', {
+        method: 'POST',
+        body: JSON.stringify({ projectId: SELF.projectId, sessionId: SELF.sessionId, prompt: args.message }),
+      });
+      return `queued for yourself (id ${res?.id ?? '?'}). It starts a new turn as soon as this one ends.\n`
+        + `${res?.remaining != null ? `${res.remaining} consecutive self-message(s) left before a human message is required.` : ''}`;
+    }
+  }
   if (CODEGRAPH_TOOL_NAMES.has(name)) {
     const res = await api('/api/codegraph/call', {
       method: 'POST',
