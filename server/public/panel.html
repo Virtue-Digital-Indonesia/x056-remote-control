@@ -654,11 +654,13 @@
     <div id="queueBar"></div>
     <div class="composer">
       <div id="attachRow"></div>
-      <!-- autocomplete/name: without these, iOS and Android treat a lone text
-           field as a form input and offer a Contact card from AutoFill. The
-           name is deliberately non-contact-shaped so the heuristics have
-           nothing to match on. -->
-      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="off" data-form-type="other" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste or drop a file)"></textarea>
+      <!-- autocomplete/name kill the mobile AutoFill Contact card: without them
+           iOS and Android treat a lone text field as a form input, and the name
+           is deliberately non-contact-shaped so the heuristics match nothing.
+           autocorrect/spellcheck/autocapitalize stay ON — they drive the
+           keyboard's word suggestions, which are wanted when typing prose and
+           are a SEPARATE mechanism from AutoFill. -->
+      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" data-form-type="other" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste or drop a file)"></textarea>
       <div class="bar">
         <div class="selects">
           <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
