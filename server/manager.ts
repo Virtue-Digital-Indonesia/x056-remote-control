@@ -1461,7 +1461,14 @@ export class SessionManager {
       const isGpt = /^(gpt-|codex-)/i.test(m);
       return adapter.id === 'codex' ? isGpt : !isGpt;
     };
-    const effortFitsProvider = (e: string | undefined): boolean => !e || adapter.id === 'codex' || e !== 'ultra';
+    // Each provider has one effort the other does not: 'ultra' is codex-only,
+    // 'ultracode' is claude-only. Dropping a mismatched one server-side matters
+    // because a stale client or a persisted preference can still send it, and
+    // the CLI would reject the flag outright.
+    const effortFitsProvider = (e: string | undefined): boolean => {
+      if (!e) return true;
+      return adapter.id === 'codex' ? e !== 'ultracode' : e !== 'ultra';
+    };
     const optModel = modelFitsProvider(runOpts?.model) ? runOpts?.model : undefined;
     const optEffort = effortFitsProvider(runOpts?.effort) ? runOpts?.effort : undefined;
     // Persist an explicitly-chosen (valid) model/effort, and reuse the last

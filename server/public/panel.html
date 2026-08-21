@@ -670,7 +670,7 @@
             <option value="">Auto model</option><option value="fable">Fable</option><option value="claude-opus-5">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
           </select></div>
           <div class="select"><select id="effort" title="effort">
-            <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
+            <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option><option value="ultracode">Ultracode</option>
           </select></div>
         </div>
         <label class="attach" title="attach files (any type — drag &amp; drop or paste too)"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" multiple hidden /></label>
@@ -912,7 +912,7 @@
   // Now that AUTO_MODEL/autoModelLabel exist, name what Claude's Auto resolves to.
   CLAUDE_MODEL_OPTS.forEach(function (o) { if (!o.value) o.label = autoModelLabel('claude'); });
   var EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
-  var EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  var EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'];
   function setEffortOptions(opts, value) {
     effortEl.textContent = '';
     opts.forEach(function (o) { var e = document.createElement('option'); e.value = o.value; e.textContent = o.label; effortEl.appendChild(e); });
