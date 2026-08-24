@@ -81,6 +81,21 @@ failover happens to land on the right one — which reads as "randomly broken":
   baseline (`server/provision.ts`). `GET /api/accounts/baseline` shows that
   baseline and which accounts lag; `POST /api/accounts/provision` re-applies it.
 
+## Scheduled tasks (cron)
+
+A conversation can schedule a prompt to be sent on a repeating schedule, via the
+`schedule_task` / `list_scheduled` / `pause_scheduled` / `cancel_scheduled` MCP
+tools; the panel's ⋯ → **Scheduled tasks** lists, pauses and deletes them.
+
+- **Times are Asia/Jakarta by default, not UTC** — this container runs UTC, so a
+  job stores an IANA zone and is matched against the wall clock in it. Override
+  per job with `tz`.
+- 5-field cron (`minute hour day-of-month month day-of-week`). Both day fields
+  restricted means OR, as in standard cron.
+- Delivery goes through the same path a cross-conversation send uses, so a job
+  firing at a busy conversation queues behind the running turn.
+- Jobs live in `state/cron.json` and survive restarts and deploys.
+
 ## Session rules
 
 - **Markdown uploads:** whenever you create or modify any `.md` file during a session, upload it so the rendered version can be read, and share the returned URL:

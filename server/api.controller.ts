@@ -19,6 +19,7 @@ import { UsageRateLimitedError } from '../src/quota.js';
 import { CODEGRAPH, CodegraphClient } from './codegraph.js';
 import { MEMORY_WRITER, MemoryWriter } from './memories.js';
 import { PROVISIONER, AccountProvisioner } from './provision.js';
+import { CRON, CronScheduler } from './cron.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
@@ -123,6 +124,7 @@ export class ApiController {
     @Inject(CODEGRAPH) private readonly codegraph: CodegraphClient,
     @Inject(MEMORY_WRITER) private readonly memories: MemoryWriter,
     @Inject(PROVISIONER) private readonly provisioner: AccountProvisioner,
+    @Inject(CRON) private readonly cron: CronScheduler,
   ) {
     this.loadQuotaCache();
   }
@@ -1134,5 +1136,44 @@ export class ApiController {
     } catch (err) {
       throw new ConflictException((err as Error).message);
     }
+  }
+
+  @Get('cron')
+  listCron(): unknown {
+    return { jobs: this.cron.list(), defaultTz: this.cron.defaultTimezone };
+  }
+
+  @Post('cron')
+  @HttpCode(200)
+  addCron(@Body() body: { schedule?: string; projectId?: string; sessionId?: string; prompt?: string; tz?: string; label?: string; createdBy?: string }) {
+    try {
+      return this.cron.add({
+        schedule: body?.schedule ?? '',
+        projectId: body?.projectId ?? '',
+        sessionId: body?.sessionId,
+        prompt: body?.prompt ?? '',
+        tz: body?.tz,
+        label: body?.label,
+        createdBy: body?.createdBy,
+      });
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('cron/remove')
+  @HttpCode(200)
+  removeCron(@Body() body: { id?: string }): { ok: boolean } {
+    if (!body?.id) throw new BadRequestException('id required');
+    return { ok: this.cron.remove(body.id) };
+  }
+
+  @Post('cron/enabled')
+  @HttpCode(200)
+  setCronEnabled(@Body() body: { id?: string; enabled?: boolean }) {
+    if (!body?.id) throw new BadRequestException('id required');
+    const job = this.cron.setEnabled(body.id, !!body.enabled);
+    if (!job) throw new BadRequestException('unknown job id');
+    return job;
   }
 }

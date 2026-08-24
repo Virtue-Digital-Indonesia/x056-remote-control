@@ -21,6 +21,7 @@ function controller(stateDir: string): ApiController {
     {} as never, // CodegraphClient
     {} as never, // MemoryWriter
     {} as never, // AccountProvisioner
+    {} as never, // CronScheduler
   );
 }
 

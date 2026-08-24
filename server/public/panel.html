@@ -233,11 +233,21 @@
 
   /* A slash command the user ran. Rendered as its own chip rather than a chat
      bubble: it is an instruction to the harness, not something said. */
-  .cmd { display: flex; align-items: center; gap: 8px; margin: 8px 0; padding: 7px 11px; border: 1px solid var(--line);
-         border-radius: 10px; background: var(--panel); font-size: 13px; }
-  .cmd .nm { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .cmd .what { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cmd .args { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; opacity: .85; }
+  /* Two rows, not one: the description and the arguments are both arbitrary
+     length, so a single nowrap line either truncated them or stretched the
+     component past the column. The head stays on one line (it is short and
+     fixed-shape); everything variable wraps underneath. */
+  .cmd { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 8px 0; padding: 8px 11px;
+         border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font-size: 13px; min-width: 0; }
+  .cmd .ic { grid-row: 1; align-self: center; }
+  .cmd .head { grid-row: 1; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .cmd .nm { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+  .cmd .when { color: var(--muted); margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* Variable-length parts wrap instead of overflowing. break-word so one long
+     unbroken argument (a path, a URL) cannot widen the whole chat column. */
+  .cmd .what { grid-column: 2; color: var(--muted); overflow-wrap: anywhere; }
+  .cmd .args { grid-column: 2; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                opacity: .85; overflow-wrap: anywhere; }
   /* Session-level events (compacted, cleared) — a rule across the transcript so
      a gap in the history has a visible reason. */
   .notice { display: flex; align-items: center; gap: 10px; margin: 14px 0; color: var(--muted); font-size: 12px; }
@@ -365,6 +375,16 @@
   .plug-foot { font-size: 11px; color: var(--faint); margin-top: 12px; line-height: 1.5; }
   .plug-foot code { background: var(--surface-3); padding: 1px 5px; border-radius: 5px; font-size: 10.5px; }
   .plug-empty { font-size: 12px; color: var(--faint); padding: 6px 2px; }
+  /* Scheduled tasks */
+  .cronj { border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; margin-bottom: 8px; }
+  .cronj .top { display: flex; align-items: baseline; gap: 8px; }
+  .cronj .sched { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
+  .cronj .lbl { color: var(--muted); overflow-wrap: anywhere; }
+  .cronj .meta { color: var(--muted); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
+  .cronj .pr { font-size: 12px; margin-top: 5px; overflow-wrap: anywhere; opacity: .9; }
+  .cronj.off { opacity: .55; }
+  .cronj .btns { margin-left: auto; display: flex; gap: 6px; }
+  .cronj .btns button { font-size: 12px; padding: 2px 8px; }
   /* MCP servers */
   .mcp-form { display: flex; flex-direction: column; gap: 6px; }
   .mcp-form input, .mcp-form select { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); border-radius: 9px; padding: 8px 10px; font: inherit; font-size: 12.5px; width: 100%; }
@@ -655,6 +675,7 @@
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
     <button class="ico" id="pluginsBtn" title="Claude Code plugins"><svg class="ic"><use href="#i-plug"/></svg></button>
     <button class="ico" id="mcpSrvBtn" title="MCP servers"><svg class="ic"><use href="#i-terminal"/></svg></button>
+    <button class="ico" id="cronBtn" title="Scheduled tasks"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
     <button class="ico" id="shortcutsBtn" title="keyboard shortcuts (⌘/)"><svg class="ic"><use href="#i-keyboard"/></svg></button>
     <button class="ico" id="themeBtn" title="theme"><svg class="ic"><use href="#i-moon"/></svg></button>
@@ -775,6 +796,13 @@
     </div>
   </div>
   <div class="plug-foot">Changes apply to the next turn. Invoke a plugin command by sending it as a message, e.g. <code>/claude-security scan my branch</code>.</div>
+</div>
+<div class="pop" id="cronPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:440px; max-height:80vh; overflow:auto;">
+  <h2>Scheduled tasks</h2>
+  <div class="plug-note">a prompt sent to a conversation on a schedule · times are in <span id="cronTz">—</span></div>
+  <div id="cronStatus" class="plug-status" hidden></div>
+  <div id="cronList"></div>
+  <div class="plug-foot">Chats can create these themselves with the <code>schedule_task</code> tool.</div>
 </div>
 <div class="pop" id="mcpSrvPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:420px; max-height:80vh; overflow:auto;">
   <h2>MCP servers</h2>
@@ -1183,6 +1211,64 @@
     plugOp('marketplace/add', { source: v }, 'Adding marketplace ' + v).then(function () { $('plugMktInput').value = ''; });
   });
   $('plugMktInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('plugMktAddBtn').click(); } });
+
+  // ---- Scheduled tasks. Read/inspect/remove only: creating one needs a prompt
+  // and a target, which is a conversation's job (schedule_task), not a form's.
+  function cronSetStatus(kind, text) {
+    var el = $('cronStatus');
+    if (!kind) { el.hidden = true; el.textContent = ''; return; }
+    el.hidden = false; el.className = 'plug-status ' + kind; el.textContent = text;
+  }
+  function cronWhen(ms) {
+    if (!ms) return 'never run';
+    var d = new Date(ms), now = Date.now(), mins = Math.round((now - ms) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    if (mins < 1440) return Math.round(mins / 60) + 'h ago';
+    return d.toISOString().slice(0, 16).replace('T', ' ');
+  }
+  function renderCron(data) {
+    var list = $('cronList'); list.textContent = '';
+    $('cronTz').textContent = (data && data.defaultTz) || '—';
+    var jobs = (data && data.jobs) || [];
+    if (!jobs.length) {
+      var e = document.createElement('div'); e.className = 'plug-empty';
+      e.textContent = 'Nothing scheduled. Ask a chat to schedule something.';
+      list.appendChild(e); return;
+    }
+    jobs.forEach(function (j) {
+      var d = document.createElement('div'); d.className = 'cronj' + (j.enabled ? '' : ' off');
+      var top = document.createElement('div'); top.className = 'top';
+      var sc = document.createElement('span'); sc.className = 'sched'; sc.textContent = j.schedule; top.appendChild(sc);
+      if (j.label) { var l = document.createElement('span'); l.className = 'lbl'; l.textContent = j.label; top.appendChild(l); }
+      var btns = document.createElement('div'); btns.className = 'btns';
+      var toggle = document.createElement('button'); toggle.className = 'btn'; toggle.textContent = j.enabled ? 'Pause' : 'Resume';
+      toggle.addEventListener('click', function () {
+        api('/api/cron/enabled', { method: 'POST', body: JSON.stringify({ id: j.id, enabled: !j.enabled }) })
+          .then(loadCron).catch(function () { cronSetStatus('err', 'could not update the job'); });
+      });
+      var del = document.createElement('button'); del.className = 'btn'; del.textContent = 'Delete';
+      del.addEventListener('click', function () {
+        if (!confirm('Delete this scheduled task?\n\n' + j.schedule + '\n' + (j.prompt || '').slice(0, 120))) return;
+        api('/api/cron/remove', { method: 'POST', body: JSON.stringify({ id: j.id }) })
+          .then(loadCron).catch(function () { cronSetStatus('err', 'could not delete the job'); });
+      });
+      btns.appendChild(toggle); btns.appendChild(del); top.appendChild(btns);
+      d.appendChild(top);
+      var meta = document.createElement('div'); meta.className = 'meta';
+      meta.textContent = j.tz + ' · ' + cronWhen(j.lastRunAt) + (j.lastResult ? ' · ' + j.lastResult : '')
+        + ' · ' + (j.runCount || 0) + ' run(s)' + (j.enabled ? '' : ' · paused');
+      d.appendChild(meta);
+      var pr = document.createElement('div'); pr.className = 'pr'; pr.textContent = j.prompt || ''; d.appendChild(pr);
+      list.appendChild(d);
+    });
+  }
+  function loadCron() {
+    cronSetStatus();
+    return api('/api/cron').then(function (r) { return r.json(); }).then(renderCron)
+      .catch(function () { cronSetStatus('err', 'could not load scheduled tasks'); });
+  }
+  $('cronBtn').addEventListener('click', function () { openPop($('cronPop')); loadCron(); });
 
   // ---- MCP servers. Each server is configured on EVERY account of its provider
   //      (the server replicates), so the list shows drift when one drops out. ----
@@ -1682,11 +1768,13 @@
   function nodeCmd(name, args, ts) {
     var d = document.createElement('div'); d.className = 'cmd';
     d.appendChild(icon('terminal', 'sm'));
-    var n = document.createElement('span'); n.className = 'nm'; n.textContent = name; d.appendChild(n);
-    if (args) { var a = document.createElement('span'); a.className = 'args'; a.textContent = args; d.appendChild(a); }
+    var head = document.createElement('div'); head.className = 'head';
+    var n = document.createElement('span'); n.className = 'nm'; n.textContent = name; head.appendChild(n);
+    if (ts) { var t = document.createElement('span'); t.className = 'when'; t.textContent = clockTime(ts); head.appendChild(t); }
+    d.appendChild(head);
+    if (args) { var a = document.createElement('div'); a.className = 'args'; a.textContent = args; d.appendChild(a); }
     var what = CMD_WHAT[String(name).toLowerCase()];
-    if (what) { var w = document.createElement('span'); w.className = 'what'; w.textContent = '— ' + what; d.appendChild(w); }
-    if (ts) { var t = document.createElement('span'); t.className = 'what'; t.style.marginLeft = 'auto'; t.textContent = clockTime(ts); d.appendChild(t); }
+    if (what) { var w = document.createElement('div'); w.className = 'what'; w.textContent = what; d.appendChild(w); }
     return d;
   }
   function nodeNotice(text) {
@@ -3032,6 +3120,7 @@
     { id: 'defaultsBtn', label: 'Default effort per model', icon: 'gear' },
     { id: 'pluginsBtn', label: 'Plugins', icon: 'plug' },
     { id: 'mcpSrvBtn', label: 'MCP servers', icon: 'terminal' },
+    { id: 'cronBtn', label: 'Scheduled tasks', icon: 'history' },
     { id: 'shortcutsBtn', label: 'Keyboard shortcuts', icon: 'keyboard' },
     { id: 'passkeyBtn', label: 'Passkeys', icon: 'key' },
     { id: 'themeBtn', label: 'Theme', icon: 'moon' },

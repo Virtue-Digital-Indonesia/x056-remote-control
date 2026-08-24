@@ -12,6 +12,7 @@ import { McpServerManager } from './mcp-servers.js';
 import { CODEGRAPH, CodegraphClient, codegraphConfigFromEnv, type CodegraphConfig } from './codegraph.js';
 import { MEMORY_WRITER, MemoryWriter } from './memories.js';
 import { PROVISIONER, AccountProvisioner } from './provision.js';
+import { CRON, CronScheduler } from './cron.js';
 import { McpHttpController, MCP_HTTP_CONFIG } from './mcp-http.controller.js';
 import { OAuthController, OAUTH_STORE, OAUTH_DEPS } from './oauth.controller.js';
 import { OAuthStore } from './oauth.js';
@@ -99,6 +100,15 @@ export function buildModule(cfg: GatewayConfig): unknown {
     accounts: McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json')),
   });
 
+  // Scheduled prompts. Delivery goes through the same path a cross-conversation
+  // send uses, so a job firing at a conversation that is mid-turn queues behind
+  // it instead of failing.
+  const cron = new CronScheduler({
+    stateDir: cfg.stateDir,
+    deliver: (projectId, sessionId, prompt) => manager.deliverMcpMessage(projectId, sessionId, prompt),
+  });
+  cron.start();
+
   provisioner = new AccountProvisioner(
     () => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude'),
     plugins,
@@ -116,6 +126,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: CODEGRAPH, useValue: new CodegraphClient(cfg.codegraph ?? codegraphConfigFromEnv()) },
       // Memories live in the Claude config dirs; codex accounts have no such tree.
       { provide: PROVISIONER, useValue: provisioner },
+      { provide: CRON, useValue: cron },
       { provide: MEMORY_WRITER, useValue: new MemoryWriter(() => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude')) },
       // The HTTP MCP endpoint calls back into this gateway with the same
       // credentials the spawned stdio bridge uses. No URL: it derives its own

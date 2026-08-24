@@ -102,6 +102,70 @@ for (const [name, description, props, required] of CODEGRAPH_TOOLS) {
 
 const CODEGRAPH_TOOL_NAMES = new Set(CODEGRAPH_TOOLS.map(([n]) => n));
 
+const CRON_TOOLS = [
+  {
+    name: 'schedule_task',
+    description:
+      'Schedule a prompt to be sent to a conversation on a repeating cron schedule — a daily standup, an hourly health check, a Monday-morning review. '
+      + 'The prompt runs as a real turn in that conversation, so write it as an instruction to whoever picks it up, with the context they will need; they will not remember why it was scheduled. '
+      + 'Omit sessionId to target your own conversation. Schedule is 5-field cron (minute hour day-of-month month day-of-week). '
+      + 'Times are interpreted in the operator\'s timezone unless you pass tz, NOT in UTC — "0 9 * * *" means 9am where they are.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        schedule: { type: 'string', description: '5-field cron, e.g. "0 9 * * 1-5" for 9am on weekdays' },
+        prompt: { type: 'string', description: 'the message to send each time' },
+        projectId: { type: 'string', description: 'omit to use your own project' },
+        sessionId: { type: 'string', description: 'target conversation; omit for your own' },
+        tz: { type: 'string', description: 'IANA timezone, e.g. Asia/Jakarta. Defaults to the operator\'s.' },
+        label: { type: 'string', description: 'short note on what this job is for' },
+      },
+      required: ['schedule', 'prompt'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_scheduled',
+    description: 'List the scheduled jobs on this gateway: id, schedule, timezone, target conversation, when each last ran and what happened.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'cancel_scheduled',
+    description: 'Delete a scheduled job by the id from list_scheduled. To pause without losing it, use pause_scheduled instead.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'pause_scheduled',
+    description: 'Pause or resume a scheduled job without deleting it.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' }, paused: { type: 'boolean', description: 'true to pause, false to resume' } },
+      required: ['id', 'paused'],
+      additionalProperties: false,
+    },
+  },
+];
+for (const t of CRON_TOOLS) TOOLS.push(t);
+const CRON_TOOL_NAMES = new Set(CRON_TOOLS.map((t) => t.name));
+
+function fmtJobs(data) {
+  const jobs = data?.jobs ?? [];
+  if (!jobs.length) return '(nothing scheduled)';
+  return jobs.map((j) => {
+    const when = j.lastRunAt ? new Date(j.lastRunAt).toISOString() : 'never';
+    return `${j.enabled ? '●' : '○'} id=${j.id}  ${j.schedule}  (${j.tz})`
+      + `${j.label ? '  — ' + j.label : ''}\n   project=${j.projectId} conversation=${j.sessionId ?? '(new each run)'}`
+      + `\n   last run: ${when}${j.lastResult ? ' · ' + j.lastResult : ''} · ${j.runCount} run(s)`
+      + `\n   prompt: ${String(j.prompt ?? '').replace(/\s+/g, ' ').slice(0, 160)}`;
+  }).join('\n\n');
+}
+
+
 /** The conversation this bridge is running inside, injected per turn by the
  *  manager. Absent for an external client (Claude Desktop has no "self"). */
 const SELF = {
@@ -258,6 +322,29 @@ async function waitForReply(api, projectId, sid, before, waitSeconds) {
 }
 
 export async function callTool(api, name, args) {
+  if (CRON_TOOL_NAMES.has(name)) {
+    if (name === 'list_scheduled') return fmtJobs(await api('/api/cron'));
+    if (name === 'cancel_scheduled') {
+      const res = await api('/api/cron/remove', { method: 'POST', body: JSON.stringify({ id: args.id }) });
+      return res?.ok ? `cancelled scheduled job ${args.id}.` : `no scheduled job with id ${args.id}.`;
+    }
+    if (name === 'pause_scheduled') {
+      const job = await api('/api/cron/enabled', { method: 'POST', body: JSON.stringify({ id: args.id, enabled: !args.paused }) });
+      return `job ${job.id} is now ${job.enabled ? 'active' : 'paused'} (${job.schedule}, ${job.tz}).`;
+    }
+    if (name === 'schedule_task') {
+      const projectId = args.projectId ?? SELF.projectId;
+      if (!projectId) throw new Error('projectId is required (this client has no project of its own)');
+      const sessionId = args.sessionId ?? (args.projectId ? undefined : SELF.sessionId || undefined);
+      const job = await api('/api/cron', {
+        method: 'POST',
+        body: JSON.stringify({ schedule: args.schedule, prompt: args.prompt, projectId, sessionId, tz: args.tz, label: args.label, createdBy: SELF.sessionId || 'mcp' }),
+      });
+      return `scheduled job ${job.id}: "${job.schedule}" in ${job.tz}`
+        + `${job.sessionId ? ` → conversation ${job.sessionId}` : ' → a new conversation each run'}.`
+        + `\nUse list_scheduled to see it, cancel_scheduled to remove it.`;
+    }
+  }
   if (QUEUE_TOOL_NAMES.has(name)) {
     if (name === 'list_queued') {
       const map = await api('/api/queue');
