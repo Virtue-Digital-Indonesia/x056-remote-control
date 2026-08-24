@@ -33,10 +33,20 @@ export interface HistoryEntry {
   /** 'action' = a tool call reconstructed from the transcript, so the trail of
    *  what the agent DID survives a reload (the live activity rows only ever
    *  existed in browser memory). `text` is the display label. */
-  role: 'user' | 'assistant' | 'model' | 'action';
+  /** 'command' = a slash command the user ran (`text` is the command name,
+   *  `args` its arguments). Previously dropped as system noise, which left the
+   *  transcript claiming the user said nothing before a summary appeared.
+   *  'notice' = a session-level event worth a divider — context compacted,
+   *  conversation cleared.
+   *  'summary' = the recap injected after a compaction. It arrives as a `user`
+   *  turn, so rendering it as one made a 15k-token block look like something
+   *  the user typed. */
+  role: 'user' | 'assistant' | 'model' | 'action' | 'command' | 'notice' | 'summary';
   text: string;
   /** For 'action': the call was a subagent/task spawn (rendered differently). */
   sub?: boolean;
+  /** For 'command': everything typed after the command name. */
+  args?: string;
   /** ISO timestamp from the transcript, when present — lets the panel
    *  interleave this with live activity/subagent events by time. */
   ts?: string;

@@ -266,6 +266,22 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
       continue;
     }
     const type = entry.type;
+    // Compaction is a session-level event the transcript records as a `system`
+    // entry. It was skipped with everything else non-user/assistant, so the
+    // history jumped from a full conversation to a summary with no explanation
+    // of where the middle went.
+    if (type === 'system' && entry.subtype === 'compact_boundary') {
+      const meta = entry.compactMetadata as { trigger?: string; preTokens?: number } | undefined;
+      const auto = meta?.trigger === 'auto';
+      const size = typeof meta?.preTokens === 'number' ? ` · ${Math.round(meta.preTokens / 1000)}k tokens` : '';
+      out.push({
+        role: 'notice',
+        text: `context compacted${auto ? ' automatically' : ''}${size}`,
+        ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined,
+      });
+      offsets.push(at);
+      continue;
+    }
     if (type !== 'user' && type !== 'assistant') continue;
     if (entry.isApiErrorMessage || entry.isMeta) continue;
     const message = entry.message as { role?: string; content?: unknown; model?: unknown } | undefined;
@@ -294,8 +310,26 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
     }
     const text = textFromContent(message.content).trim();
     if (text === '') continue;
-    // Skip system-injected content Claude Code records as "user" turns:
-    // command wrappers, task/agent notifications, system reminders, caveats.
+    // The post-compaction recap is injected as a user turn; label it as what it
+    // is rather than letting it masquerade as something the user wrote.
+    if (type === 'user' && entry.isCompactSummary === true) {
+      out.push({ role: 'summary', text, ts }); offsets.push(at);
+      continue;
+    }
+    // A slash command is recorded as a `user` turn wrapping <command-name>.
+    // Surfacing it matters: dropping it left "/recap" invisible on reload, so
+    // a summary appeared out of nowhere with no visible request behind it.
+    if (type === 'user' && /^\s*<command-name>/.test(text)) {
+      const name = /<command-name>([^<]*)<\/command-name>/.exec(text)?.[1]?.trim() ?? '';
+      const args = /<command-args>([^<]*)<\/command-args>/.exec(text)?.[1]?.trim() ?? '';
+      if (name) {
+        out.push({ role: 'command', text: name, args: args || undefined, ts });
+        offsets.push(at);
+      }
+      continue;
+    }
+    // Other system-injected content Claude Code records as "user" turns:
+    // wrappers, task/agent notifications, system reminders, caveats.
     if (
       type === 'user' &&
       /^\s*(<(command-|local-command|task-notification|system-reminder|teammate-message)|Caveat:)/.test(text)

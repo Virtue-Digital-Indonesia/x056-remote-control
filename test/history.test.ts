@@ -14,7 +14,7 @@ function configDirWithTranscript(sessionId: string, lines: unknown[]): string {
 }
 
 describe('readSessionHistory', () => {
-  it('extracts user prompts, assistant text and tool calls, skipping thinking/synthetic/meta noise', () => {
+  it('extracts user prompts, assistant text, tool calls and slash commands, skipping thinking/synthetic/meta noise', () => {
     const sid = 'sess-1';
     const dir = configDirWithTranscript(sid, [
       { type: 'user', message: { role: 'user', content: 'first question' } },
@@ -37,6 +37,9 @@ describe('readSessionHistory', () => {
       // the tool call is surfaced as an action row so the trail of what the
       // agent DID survives a reload, not just what it said
       { role: 'action', text: 'Running: ls -la', sub: false },
+      // a slash command is surfaced too: dropping it left the transcript
+      // claiming the user said nothing before whatever the command produced
+      { role: 'command', text: '/model', args: undefined },
       { role: 'user', text: 'second question' },
       { role: 'assistant', text: 'second answer' },
     ]);

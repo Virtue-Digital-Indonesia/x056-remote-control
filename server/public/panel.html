@@ -231,6 +231,24 @@
   .qopt-insert:disabled { display: none; }
   .qhint { font-size: 12px; color: var(--muted); }
 
+  /* A slash command the user ran. Rendered as its own chip rather than a chat
+     bubble: it is an instruction to the harness, not something said. */
+  .cmd { display: flex; align-items: center; gap: 8px; margin: 8px 0; padding: 7px 11px; border: 1px solid var(--line);
+         border-radius: 10px; background: var(--panel); font-size: 13px; }
+  .cmd .nm { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .cmd .what { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmd .args { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; opacity: .85; }
+  /* Session-level events (compacted, cleared) — a rule across the transcript so
+     a gap in the history has a visible reason. */
+  .notice { display: flex; align-items: center; gap: 10px; margin: 14px 0; color: var(--muted); font-size: 12px; }
+  .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  /* The post-compaction recap, collapsed by default: it is often thousands of
+     words and would otherwise bury the conversation it summarises. */
+  .sumblk { margin: 10px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; }
+  .sumblk > summary { cursor: pointer; padding: 9px 12px; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; list-style: none; }
+  .sumblk > summary::-webkit-details-marker { display: none; }
+  .sumblk > summary b { color: var(--fg); font-weight: 600; }
+  .sumblk .body { padding: 0 12px 12px; font-size: 14px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
   .act { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 3px 0; padding: 3px 0; }
   .act .ic { opacity: .8; }
   .act.sub { color: var(--accent); }
@@ -1642,6 +1660,51 @@
     d.appendChild(s); return d;
   }
   function nodeSys(text, cls) { var d = document.createElement('div'); d.className = cls || 'sysline'; var s = document.createElement('span'); s.textContent = text; d.appendChild(s); return d; }
+  // What the common slash commands actually DO. The transcript records the name
+  // only, so without this a chip would say "/compact" and no more. Unknown or
+  // plugin commands fall back to the bare name rather than guessing.
+  var CMD_WHAT = {
+    '/clear': 'cleared the conversation — earlier turns are no longer in context',
+    '/compact': 'compacted the context into a summary',
+    '/recap': 'summarised the conversation so far',
+    '/model': 'switched the model',
+    '/effort': 'changed the reasoning effort',
+    '/rename': 'renamed the conversation',
+    '/login': 'signed in to an account',
+    '/loop': 'scheduled this prompt to repeat',
+    '/init': 'generated a CLAUDE.md for the repo',
+    '/review': 'reviewed the current changes',
+    '/security-review': 'ran a security review of the changes',
+    '/resume': 'resumed an earlier session',
+    '/cost': 'reported token cost for this session',
+    '/help': 'listed the available commands',
+  };
+  function nodeCmd(name, args, ts) {
+    var d = document.createElement('div'); d.className = 'cmd';
+    d.appendChild(icon('terminal', 'sm'));
+    var n = document.createElement('span'); n.className = 'nm'; n.textContent = name; d.appendChild(n);
+    if (args) { var a = document.createElement('span'); a.className = 'args'; a.textContent = args; d.appendChild(a); }
+    var what = CMD_WHAT[String(name).toLowerCase()];
+    if (what) { var w = document.createElement('span'); w.className = 'what'; w.textContent = '— ' + what; d.appendChild(w); }
+    if (ts) { var t = document.createElement('span'); t.className = 'what'; t.style.marginLeft = 'auto'; t.textContent = clockTime(ts); d.appendChild(t); }
+    return d;
+  }
+  function nodeNotice(text) {
+    var d = document.createElement('div'); d.className = 'notice';
+    var s2 = document.createElement('span'); s2.textContent = text; d.appendChild(s2); return d;
+  }
+  function nodeSummary(text, ts) {
+    var d = document.createElement('details'); d.className = 'sumblk';
+    var sm = document.createElement('summary');
+    sm.appendChild(icon('sparkles', 'sm'));
+    var b = document.createElement('b'); b.textContent = 'Summary of earlier conversation'; sm.appendChild(b);
+    var hint = document.createElement('span');
+    hint.textContent = '· ' + Math.max(1, Math.round(String(text).length / 1000)) + 'k chars' + (ts ? ' · ' + clockTime(ts) : '') + ' · tap to expand';
+    sm.appendChild(hint);
+    d.appendChild(sm);
+    var body = document.createElement('div'); body.className = 'body'; body.textContent = text; d.appendChild(body);
+    return d;
+  }
   function nodeAct(label, isSub) { var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
   function addMsg(role, text, imgUrl, ts) { appendNode(currentProjectId, lastSessionId, nodeMsg(role, text, imgUrl, ts, currentProvider())); }
   function addSys(text, cls) { var node = nodeSys(text, cls); appendNode(currentProjectId, lastSessionId, node); return node; }
@@ -3329,7 +3392,13 @@
           ? function () { appendNode(pid, sid, nodeModelMark(m.text, m.ts)); }        // model-switch marker from the transcript
           : m.role === 'action'
             ? function () { appendNode(pid, sid, nodeAct(m.text, m.sub)); }           // tool call replayed from the transcript
-            : function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts); } });
+            : m.role === 'command'
+              ? function () { appendNode(pid, sid, nodeCmd(m.text, m.args, m.ts)); }  // a slash command the user ran
+              : m.role === 'notice'
+                ? function () { appendNode(pid, sid, nodeNotice(m.text)); }           // compacted / cleared divider
+                : m.role === 'summary'
+                  ? function () { appendNode(pid, sid, nodeSummary(m.text, m.ts)); }  // post-compaction recap
+                  : function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts); } });
       });
       // The transcript now carries the action trail itself, so replaying the
       // in-memory log on top would double every row from this browser session.
@@ -3416,7 +3485,13 @@
             ? nodeModelMark(m.text, m.ts)
             : m.role === 'action'
               ? nodeAct(m.text, m.sub)
-              : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, providerFor(pid, sid)));
+              : m.role === 'command'
+                ? nodeCmd(m.text, m.args, m.ts)
+                : m.role === 'notice'
+                  ? nodeNotice(m.text)
+                  : m.role === 'summary'
+                    ? nodeSummary(m.text, m.ts)
+                    : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, providerFor(pid, sid)));
         });
         chatEl.insertBefore(frag, chatEl.firstChild);
         scroller.scrollTop = scroller.scrollHeight - fromBottom;
@@ -3616,7 +3691,14 @@
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
     var label = text || (files.length > 1 ? '(' + files.length + ' files)' : '(' + (files[0] && files[0].name || 'file') + ')');
-    addMsg('user', label, files, new Date().toISOString());
+    // Echo a slash command as the same chip the transcript will show on reload,
+    // so the live view and the reloaded view do not disagree about what it was.
+    var slash = !files.length && /^\/[\w:-]+/.exec(text || '');
+    if (slash) {
+      appendNode(currentProjectId, lastSessionId, nodeCmd(slash[0], (text || '').slice(slash[0].length).trim(), new Date().toISOString()));
+    } else {
+      addMsg('user', label, files, new Date().toISOString());
+    }
     // Capture the compose context so a slow response can't misapply to a blank
     // composer the user has since moved on to.
     var myProject = currentProjectId, myBlank = blankSeq, myConvoSession = useNew ? null : lastSessionId;
