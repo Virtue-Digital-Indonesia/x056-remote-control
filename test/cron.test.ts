@@ -181,3 +181,26 @@ describe('scheduler', () => {
     expect(s.list()).toEqual([]);
   });
 });
+
+describe('panel wiring', () => {
+  const html = readFileSync('server/public/panel.html', 'utf8');
+
+  // Regression: hidePops() used a hand-maintained list of ids, so a newly-added
+  // popover was never hidden — the backdrop vanished and left it stuck open.
+  it('hides every .pop by enumeration, not a list that can go stale', () => {
+    expect(html).toContain("document.querySelectorAll('.pop')");
+    expect(html).not.toMatch(/function hidePops\(\) \{ quotaPop\.hidden/);
+  });
+
+  it('gives scheduled tasks its own icon, not the one "Resume a session" uses', () => {
+    expect(html).toContain('id="i-alarm"');
+    expect(html).toContain('id="cronBtn" title="Scheduled tasks"><svg class="ic"><use href="#i-alarm"/>');
+    expect(html).toContain("{ id: 'cronBtn', label: 'Scheduled tasks', icon: 'alarm' }");
+  });
+
+  it('confirms a delete through the in-app modal, since native confirm() was replaced', () => {
+    const del = html.slice(html.indexOf("del.addEventListener"), html.indexOf("del.addEventListener") + 700);
+    expect(del).toContain('uiConfirm(');
+    expect(del).not.toMatch(/\bif \(!confirm\(/);
+  });
+});
