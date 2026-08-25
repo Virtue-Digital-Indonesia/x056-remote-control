@@ -23,6 +23,7 @@ function controller(stateDir: string): ApiController {
     {} as never, // AccountProvisioner
     {} as never, // CronScheduler
     {} as never, // DesignLoginManager
+    {} as never, // DesignConsentGranter
   );
 }
 

@@ -77,9 +77,26 @@ failover happens to land on the right one — which reads as "randomly broken":
   `$CLAUDE_CONFIG_DIR`) — `POST /api/accounts/flag {flag, on}`. Note `$HOME/.claude`
   is only the fallback when `CLAUDE_CONFIG_DIR` is unset, which it never is here,
   so touching `~/.claude/...` does nothing.
+- **Claude Design** needs a per-account grant, and it is **not** the login you
+  would guess. Two different things:
+  - `/design-consent` (`POST /api/accounts/design-consent`, or the panel's
+    **Grant design access**) is what the `mcp__claude-design__*` tools check.
+    Without it every call returns *"the user hasn't granted this — run
+    `/design consent`… (it can't be approved automatically in this permission
+    mode)"*. That last clause is the trap: turns run with
+    `--dangerously-skip-permissions`, so the prompt can never fire and the grant
+    must be made out of band. It is non-interactive — a plain `claude -p`.
+  - `/design-login` (panel: **Claude Design login**) is design-*system* access
+    for `/design-sync`, and is interactive-only, hence the PTY in
+    `server/design-login.ts`. It does **not** unlock the MCP tools.
+  - The grant is server-side per **claude.ai identity**, and the three accounts
+    are three different identities — so each sees its own Design projects, and a
+    failover changes which projects `list_projects` returns. Sharing one
+    workspace across them means adding the others as project members.
 - **A newly onboarded account** is provisioned automatically to the fleet's
-  baseline (`server/provision.ts`). `GET /api/accounts/baseline` shows that
-  baseline and which accounts lag; `POST /api/accounts/provision` re-applies it.
+  baseline (`server/provision.ts`), design consent included. `GET
+  /api/accounts/baseline` shows that baseline and which accounts lag; `POST
+  /api/accounts/provision` re-applies it.
 
 ## Scheduled tasks (cron)
 

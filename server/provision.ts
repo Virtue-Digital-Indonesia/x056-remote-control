@@ -32,6 +32,12 @@ export interface ProvisionPlan {
 
 export interface ProvisionResult extends ProvisionPlan {
   account: string;
+  /**
+   * Whether Claude Design agent access was granted. Not derived from the fleet
+   * like everything else: it is a server-side grant per claude.ai identity, so
+   * there is no file to copy and no way to inherit one account's from another.
+   */
+  designConsent?: string;
   /** Non-fatal problems; provisioning never blocks onboarding. */
   errors: string[];
 }
@@ -54,6 +60,10 @@ export class AccountProvisioner {
       addMarketplace(source: string): Promise<unknown>;
       install(plugin: string): Promise<unknown>;
       setEnabled(plugin: string, enabled: boolean): Promise<unknown>;
+    },
+    /** Optional so tests and older callers need not wire the CLI. */
+    private readonly designConsent?: {
+      grant(account: ProvisionAccount): Promise<{ ok: boolean; message: string }>;
     },
   ) {}
 
@@ -120,7 +130,18 @@ export class AccountProvisioner {
       catch (err) { errors.push(`flag ${flag}: ${(err as Error).message}`); }
     }
 
-    return { account: target.name, ...done, errors };
+    // Design agent access last: it reaches the network, and a failure here says
+    // nothing about the plugins and skills already in place.
+    let designConsent: string | undefined;
+    if (this.designConsent) {
+      try {
+        const res = await this.designConsent.grant(target);
+        designConsent = res.message;
+        if (!res.ok) errors.push(`design consent: ${res.message}`);
+      } catch (err) { errors.push(`design consent: ${(err as Error).message}`); }
+    }
+
+    return { account: target.name, ...done, designConsent, errors };
   }
 
   /** Set or clear an opt-in flag file on EVERY Claude account at once. */

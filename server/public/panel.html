@@ -2857,6 +2857,26 @@
   // Starts unset so the first render defaults it to the current project's
   // provider (see renderAccounts) rather than an arbitrary tab.
   var acctTab = null;
+  // Design AGENT access — the grant the mcp__claude-design__* tools check, and
+  // NOT the same thing as the login below. Turns run with permissions bypassed,
+  // where the consent prompt can never fire, so without this every design tool
+  // call fails with "the user hasn't granted this". No browser: the CLI command
+  // is non-interactive, so this is one request.
+  function grantDesignConsent(a, btn) {
+    var was = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Granting…';
+    api('/api/accounts/design-consent', { method: 'POST', body: JSON.stringify({ account: a.name }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var res = (j && j.results && j.results[0]) || {};
+        // Report the CLI's own words: a logged-out account answers 401, and the
+        // fix for that is /login, not retrying this.
+        uiAlert(res.ok ? 'Design access granted' : 'Could not grant design access',
+          (res.message || 'no response') + (res.ok ? '' : '\n\nIf this says 401, account ' + a.name + ' needs to sign in again.'));
+      })
+      .catch(function (e) { uiAlert('Could not grant design access', String(e && e.message || e)); })
+      .then(function () { btn.disabled = false; btn.textContent = was; });
+  }
   // Claude Design login. /design-login only exists in an INTERACTIVE session, so
   // the gateway drives one on a PTY and hands back the URL; the session stays
   // alive there (not in this browser) until the code is pasted.
@@ -3096,9 +3116,14 @@
       // account — a Claude Code login does not carry it, and failover means one
       // granted account is not enough.
       if ((a.provider || 'claude') === 'claude') {
+        var dc = document.createElement('button'); dc.className = 'send ghost act';
+        dc.textContent = 'Grant design access';
+        dc.title = 'Lets sessions on this account use the Claude Design tools';
+        dc.addEventListener('click', function () { grantDesignConsent(a, dc); });
+        card.appendChild(dc);
         var dl = document.createElement('button'); dl.className = 'send ghost act';
         dl.textContent = 'Claude Design login';
-        dl.title = 'Grants design read/write on this account via your browser';
+        dl.title = 'Design-system access for /design-sync, via your browser';
         dl.addEventListener('click', function () { startDesignLogin(a); });
         card.appendChild(dl);
       }

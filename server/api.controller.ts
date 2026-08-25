@@ -21,6 +21,7 @@ import { MEMORY_WRITER, MemoryWriter } from './memories.js';
 import { PROVISIONER, AccountProvisioner } from './provision.js';
 import { CRON, CronScheduler } from './cron.js';
 import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
+import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
@@ -127,6 +128,7 @@ export class ApiController {
     @Inject(PROVISIONER) private readonly provisioner: AccountProvisioner,
     @Inject(CRON) private readonly cron: CronScheduler,
     @Inject(DESIGN_LOGIN) private readonly designLogin: DesignLoginManager,
+    @Inject(DESIGN_CONSENT) private readonly designConsent: DesignConsentGranter,
   ) {
     this.loadQuotaCache();
   }
@@ -1211,5 +1213,26 @@ export class ApiController {
   designLoginCancel(@Body() body: { loginId?: string }): { ok: boolean } {
     if (body?.loginId) this.designLogin.cancel(body.loginId);
     return { ok: true };
+  }
+
+  /**
+   * Grant Claude Design AGENT access — the grant the mcp__claude-design__* tools
+   * check, which is not the same as the design login above. Turns run with
+   * --dangerously-skip-permissions, where the consent prompt can never fire, so
+   * without this every design tool call fails with "the user hasn't granted
+   * this". Idempotent, and per claude.ai identity, so it runs on every account.
+   */
+  @Post('accounts/design-consent')
+  @HttpCode(200)
+  async grantDesignConsent(@Body() body: { account?: string }) {
+    const accounts = AccountRegistry.load(join(this.stateDir, 'accounts.json'))
+      .list()
+      .filter((a) => a.provider === 'claude')
+      .filter((a) => !body?.account || a.name === body.account);
+    if (!accounts.length) throw new BadRequestException('no matching claude account');
+    const results = await this.designConsent.grantAll(
+      accounts.map((a) => ({ name: a.name, configDir: a.configDir })),
+    );
+    return { results };
   }
 }

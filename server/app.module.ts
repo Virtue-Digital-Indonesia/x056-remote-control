@@ -14,6 +14,7 @@ import { MEMORY_WRITER, MemoryWriter } from './memories.js';
 import { PROVISIONER, AccountProvisioner } from './provision.js';
 import { CRON, CronScheduler } from './cron.js';
 import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
+import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { McpHttpController, MCP_HTTP_CONFIG } from './mcp-http.controller.js';
 import { OAuthController, OAUTH_STORE, OAUTH_DEPS } from './oauth.controller.js';
 import { OAuthStore } from './oauth.js';
@@ -114,9 +115,15 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // operator authorizes in a browser and pastes a code back.
   const designLogin = new DesignLoginManager({ claudePath: cfg.claudePath, cwd: cfg.workspaceRoot });
 
+  // Design AGENT access — a different grant from the login above, and the one
+  // the mcp__claude-design__* tools actually check. Non-interactive, so a plain
+  // `claude -p` does it.
+  const designConsent = new DesignConsentGranter({ claudePath: cfg.claudePath, cwd: cfg.workspaceRoot });
+
   provisioner = new AccountProvisioner(
     () => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude'),
     plugins,
+    designConsent,
   );
 
   @Module({
@@ -133,6 +140,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: PROVISIONER, useValue: provisioner },
       { provide: CRON, useValue: cron },
       { provide: DESIGN_LOGIN, useValue: designLogin },
+      { provide: DESIGN_CONSENT, useValue: designConsent },
       { provide: MEMORY_WRITER, useValue: new MemoryWriter(() => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude')) },
       // The HTTP MCP endpoint calls back into this gateway with the same
       // credentials the spawned stdio bridge uses. No URL: it derives its own
