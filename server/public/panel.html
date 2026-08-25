@@ -2857,6 +2857,31 @@
   // Starts unset so the first render defaults it to the current project's
   // provider (see renderAccounts) rather than an arbitrary tab.
   var acctTab = null;
+  // Claude Design login. /design-login only exists in an INTERACTIVE session, so
+  // the gateway drives one on a PTY and hands back the URL; the session stays
+  // alive there (not in this browser) until the code is pasted.
+  function startDesignLogin(a) {
+    api('/api/accounts/design-login/start', { method: 'POST', body: JSON.stringify({ account: a.name }) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || 'could not start'); return j; }); })
+      .then(function (j) {
+        return uiPrompt({
+          title: 'Claude Design login — account ' + a.name,
+          message: 'Open this in your browser, authorize, then paste the code it gives you:\n\n' + j.url,
+          placeholder: 'paste the code here',
+          multiline: false,
+        }).then(function (code) {
+          if (!code) { api('/api/accounts/design-login/cancel', { method: 'POST', body: JSON.stringify({ loginId: j.loginId }) }); return; }
+          return api('/api/accounts/design-login/submit', { method: 'POST', body: JSON.stringify({ loginId: j.loginId, code: code }) })
+            .then(function (r2) { return r2.json(); })
+            .then(function (out) {
+              uiAlert({ title: out.ok ? 'Design access granted on ' + a.name : 'That did not look like it worked',
+                        message: out.message || '' });
+            });
+        });
+      })
+      .catch(function (e) { uiAlert({ title: 'Design login failed', message: String(e && e.message || e) }); });
+  }
+
   function renderAccounts(list) {
     acctList = Array.isArray(list) ? list : [];
     accountsEl.textContent = '';
@@ -3020,6 +3045,16 @@
           else { act.textContent = 'Use for next message'; act.addEventListener('click', function () { chooseNextAccount(a); }); }
         }
         card.appendChild(act);
+      }
+      // Claude Design needs its own browser grant (user:design:read/write) per
+      // account — a Claude Code login does not carry it, and failover means one
+      // granted account is not enough.
+      if ((a.provider || 'claude') === 'claude') {
+        var dl = document.createElement('button'); dl.className = 'send ghost act';
+        dl.textContent = 'Claude Design login';
+        dl.title = 'Grants design read/write on this account via your browser';
+        dl.addEventListener('click', function () { startDesignLogin(a); });
+        card.appendChild(dl);
       }
       accountsEl.appendChild(card);
     });
@@ -3195,6 +3230,18 @@
       var cancel = document.createElement('button'); cancel.className = 'send ghost'; cancel.textContent = o.cancelText || 'Cancel'; cancel.addEventListener('click', function () { done(false); });
       var ok = document.createElement('button'); ok.className = 'send' + (o.danger ? ' danger' : ''); ok.textContent = o.confirmText || 'Confirm'; ok.addEventListener('click', function () { done(true); });
       acts.appendChild(cancel); acts.appendChild(ok); card.appendChild(acts);
+      setTimeout(function () { ok.focus(); }, 20);
+    });
+  }
+  /** One-button informational modal — uiConfirm's shape without a choice to make. */
+  function uiAlert(o) {
+    return showModal('', false, function (card, done) {
+      var h = document.createElement('h3'); h.textContent = o.title; card.appendChild(h);
+      if (o.message) { var p = document.createElement('p'); p.textContent = o.message; card.appendChild(p); }
+      var acts = document.createElement('div'); acts.className = 'modal-actions';
+      var ok = document.createElement('button'); ok.className = 'send'; ok.textContent = o.okText || 'OK';
+      ok.addEventListener('click', function () { done(true); });
+      acts.appendChild(ok); card.appendChild(acts);
       setTimeout(function () { ok.focus(); }, 20);
     });
   }

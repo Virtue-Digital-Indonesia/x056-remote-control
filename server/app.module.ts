@@ -13,6 +13,7 @@ import { CODEGRAPH, CodegraphClient, codegraphConfigFromEnv, type CodegraphConfi
 import { MEMORY_WRITER, MemoryWriter } from './memories.js';
 import { PROVISIONER, AccountProvisioner } from './provision.js';
 import { CRON, CronScheduler } from './cron.js';
+import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { McpHttpController, MCP_HTTP_CONFIG } from './mcp-http.controller.js';
 import { OAuthController, OAUTH_STORE, OAUTH_DEPS } from './oauth.controller.js';
 import { OAuthStore } from './oauth.js';
@@ -109,6 +110,10 @@ export function buildModule(cfg: GatewayConfig): unknown {
   });
   cron.start();
 
+  // Claude Design's browser login, per account. Must outlive a turn: the
+  // operator authorizes in a browser and pastes a code back.
+  const designLogin = new DesignLoginManager({ claudePath: cfg.claudePath, cwd: cfg.workspaceRoot });
+
   provisioner = new AccountProvisioner(
     () => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude'),
     plugins,
@@ -127,6 +132,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       // Memories live in the Claude config dirs; codex accounts have no such tree.
       { provide: PROVISIONER, useValue: provisioner },
       { provide: CRON, useValue: cron },
+      { provide: DESIGN_LOGIN, useValue: designLogin },
       { provide: MEMORY_WRITER, useValue: new MemoryWriter(() => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude')) },
       // The HTTP MCP endpoint calls back into this gateway with the same
       // credentials the spawned stdio bridge uses. No URL: it derives its own

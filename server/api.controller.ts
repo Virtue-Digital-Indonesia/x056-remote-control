@@ -20,6 +20,7 @@ import { CODEGRAPH, CodegraphClient } from './codegraph.js';
 import { MEMORY_WRITER, MemoryWriter } from './memories.js';
 import { PROVISIONER, AccountProvisioner } from './provision.js';
 import { CRON, CronScheduler } from './cron.js';
+import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
@@ -125,6 +126,7 @@ export class ApiController {
     @Inject(MEMORY_WRITER) private readonly memories: MemoryWriter,
     @Inject(PROVISIONER) private readonly provisioner: AccountProvisioner,
     @Inject(CRON) private readonly cron: CronScheduler,
+    @Inject(DESIGN_LOGIN) private readonly designLogin: DesignLoginManager,
   ) {
     this.loadQuotaCache();
   }
@@ -1175,5 +1177,39 @@ export class ApiController {
     const job = this.cron.setEnabled(body.id, !!body.enabled);
     if (!job) throw new BadRequestException('unknown job id');
     return job;
+  }
+
+  /**
+   * Claude Design login for ONE account. `/design-login` exists only in an
+   * interactive session, so the gateway drives one on a PTY and hands back the
+   * URL; the session stays alive until the code is submitted.
+   */
+  @Post('accounts/design-login/start')
+  @HttpCode(200)
+  async designLoginStart(@Body() body: { account?: string }) {
+    const name = body?.account;
+    if (!name) throw new BadRequestException('account required');
+    const acct = AccountRegistry.load(join(this.stateDir, 'accounts.json')).list()
+      .find((a) => a.name === name && a.provider === 'claude');
+    if (!acct) throw new BadRequestException(`unknown claude account: ${name}`);
+    try {
+      return await this.designLogin.start(acct.name, acct.configDir);
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('accounts/design-login/submit')
+  @HttpCode(200)
+  async designLoginSubmit(@Body() body: { loginId?: string; code?: string }) {
+    if (!body?.loginId || !body?.code) throw new BadRequestException('loginId and code required');
+    return this.designLogin.submit(body.loginId, body.code);
+  }
+
+  @Post('accounts/design-login/cancel')
+  @HttpCode(200)
+  designLoginCancel(@Body() body: { loginId?: string }): { ok: boolean } {
+    if (body?.loginId) this.designLogin.cancel(body.loginId);
+    return { ok: true };
   }
 }
