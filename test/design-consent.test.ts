@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -91,4 +91,27 @@ describe('onboarding a new account', () => {
     expect(res.designConsent).toBeUndefined();
     expect(res.errors).toEqual([]);
   });
+});
+
+describe('the real CLI invocation', () => {
+  // Left open, stdin makes the CLI wait 3s and then print "no stdin data
+  // received, proceeding without it", which landed mid-sentence in the one-line
+  // result the panel shows. Observed with a stand-in that reports what it saw,
+  // so the assertion fails if stdin is ever left open again.
+  it('closes stdin so the CLI does not wait for piped input', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-dc-'));
+    const fake = join(dir, 'fake-claude');
+    writeFileSync(fake, [
+      '#!/usr/bin/env node',
+      "let ended = false;",
+      "process.stdin.on('end', () => { ended = true; });",
+      'process.stdin.resume();',
+      "setTimeout(() => { console.log(ended ? 'stdin closed' : 'stdin left open'); }, 300);",
+    ].join('\n'));
+    chmodSync(fake, 0o755);
+
+    const g = new DesignConsentGranter({ cwd: dir, claudePath: fake });
+    const res = await g.grant({ name: 'x', configDir: dir });
+    expect(res.message).toContain('stdin closed');
+  }, 30000);
 });

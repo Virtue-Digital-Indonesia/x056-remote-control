@@ -78,6 +78,10 @@ export class DesignConsentGranter {
         // there, and an empty message would hide the reason.
         (err, stdout, stderr) => resolve(`${stdout ?? ''}\n${stderr ?? ''}${err ? `\n${err.message}` : ''}`),
       );
+      // Close stdin immediately. Left open, the CLI waits 3s for piped input and
+      // then prints a "no stdin data received" warning, which lands in the middle
+      // of the one sentence the panel shows.
+      child.stdin?.end();
       child.on('error', (err) => resolve(String(err)));
     });
   }
