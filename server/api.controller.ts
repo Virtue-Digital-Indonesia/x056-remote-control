@@ -673,9 +673,15 @@ export class ApiController {
         // 'limited' mark can sit stale (badge says "limited" long after the
         // cooldown passed). pickActive() already treats an expired `until` as
         // usable; make the badge agree with that instead of the raw record.
-        const state = acct.state.kind === 'limited' && acct.state.until <= nowSec
-          ? ({ kind: 'ok' } as const)
-          : acct.state;
+        // A signed-out account is otherwise only noticed when a turn tries it,
+        // so one left alone for days keeps a long-expired 'limited' badge and
+        // never offers the re-login it actually needs. Disk knows better.
+        const signedOut = adapter.hasCredentials?.(acct.configDir) === false;
+        const state = signedOut
+          ? ({ kind: 'unauthenticated' } as const)
+          : acct.state.kind === 'limited' && acct.state.until <= nowSec
+            ? ({ kind: 'ok' } as const)
+            : acct.state;
         const base = { ...acct, providerLabel: adapter.label, state, displayName: id.displayName ?? acct.name, email: id.email, nextUp: acct.name === nextUpByProvider.get(acct.provider), active: acct.name === activeByProvider.get(acct.provider) };
         // A provider with no pollable usage endpoint (e.g. Codex on a ChatGPT
         // plan) simply shows no usage bars — never an error.

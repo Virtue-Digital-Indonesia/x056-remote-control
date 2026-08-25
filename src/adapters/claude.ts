@@ -125,6 +125,29 @@ function readIdentity(configDir: string): AccountIdentity {
   }
 }
 
+/**
+ * Whether this config dir still holds a usable claude.ai login.
+ *
+ * A revoked or failed-refresh session does not delete `.credentials.json` — it
+ * leaves the record in place with the two secrets blanked to empty strings, so
+ * the shape still parses and every field except the tokens still reads fine. An
+ * account in that state falls back to API billing rather than the subscription,
+ * which is why it is worth catching from the panel instead of on the next turn.
+ *
+ * Returns null when nothing can be concluded (no file, unreadable, or an
+ * install that keeps credentials somewhere else) so the caller keeps whatever
+ * state it already had.
+ */
+function hasCredentials(configDir: string): boolean | null {
+  let raw: string;
+  try { raw = readFileSync(join(configDir, '.credentials.json'), 'utf8'); } catch { return null; }
+  try {
+    const o = (JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string; refreshToken?: string } }).claudeAiOauth;
+    if (!o) return null;
+    return Boolean(o.accessToken || o.refreshToken);
+  } catch { return null; }
+}
+
 /** Locate <sessionId>.jsonl anywhere under any of the config dirs' projects
  *  trees. Exported separately from readHistory because the manager's session
  *  ADOPTION check (a Claude-only concept — there's no equivalent for Codex)
@@ -387,6 +410,7 @@ export const claudeAdapter: ProviderAdapter = {
   assistantText,
 
   readIdentity,
+  hasCredentials,
   fetchUsage,
   readHistory,
   readHistoryPage,

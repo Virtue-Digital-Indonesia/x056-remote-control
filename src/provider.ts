@@ -132,6 +132,17 @@ export interface ProviderAdapter {
   // --- account plumbing ---
   /** Read the human identity a completed login wrote into the config dir. */
   readIdentity(configDir: string): AccountIdentity;
+  /**
+   * Whether this config dir still holds a usable login, when that is knowable
+   * from disk. `false` means definitely signed out; `null` means "can't tell"
+   * and the caller must leave the recorded state alone.
+   *
+   * Without this, a signed-out account is only discovered the next time a turn
+   * lands on it — so one that has not been used for days keeps whatever badge
+   * it had (typically a long-expired "limited") and the panel never offers the
+   * re-login it needs.
+   */
+  hasCredentials?(configDir: string): boolean | null;
   /** The models this account can actually use, when the provider publishes a
    *  catalog (Codex caches one per account). Omit when the provider has no
    *  discoverable list — the UI then falls back to its own preset options. */

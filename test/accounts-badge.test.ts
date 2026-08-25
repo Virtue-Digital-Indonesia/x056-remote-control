@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -63,5 +63,49 @@ describe('GET /api/accounts — badge staleness', () => {
   it('returns [] when accounts.json does not exist, without throwing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'x056-badge-'));
     expect(await controller(dir).accounts()).toEqual([]);
+  });
+});
+
+describe('GET /api/accounts — a signed-out account', () => {
+  // A revoked session leaves .credentials.json in place with the two secrets
+  // blanked, so nothing in the registry changes and the account keeps whatever
+  // badge it had — for one unused for days, a long-expired 'limited'. The panel
+  // only offers "Log in again" on 'unauthenticated', so it never appears.
+  function withCreds(dir: string, name: string, oauth: unknown): string {
+    const cfg = join(dir, `cfg-${name}`);
+    mkdirSync(cfg, { recursive: true });
+    writeFileSync(join(cfg, '.credentials.json'), JSON.stringify({ claudeAiOauth: oauth }));
+    return cfg;
+  }
+
+  it('reports blank tokens as unauthenticated, overriding a stale limited mark', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-badge-'));
+    const now = Math.floor(Date.now() / 1000);
+    const reg = AccountRegistry.init(join(dir, 'accounts.json'), [
+      { name: 'a', configDir: withCreds(dir, 'a', { accessToken: '', refreshToken: '', expiresAt: 0 }) },
+      { name: 'b', configDir: withCreds(dir, 'b', { accessToken: 'live', refreshToken: 'r', expiresAt: now * 1000 }) },
+    ]);
+    reg.markLimited('a', now - 3600);
+    reg.markLimited('b', now + 3600);
+
+    const result = (await controller(dir).accounts()) as { name: string; state: { kind: string } }[];
+    expect(result.find((r) => r.name === 'a')!.state.kind).toBe('unauthenticated');
+    // A live account is untouched — the check must not swallow a real limit.
+    expect(result.find((r) => r.name === 'b')!.state.kind).toBe('limited');
+  });
+
+  it('leaves the recorded state alone when the file says nothing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-badge-'));
+    const now = Math.floor(Date.now() / 1000);
+    const noFile = join(dir, 'cfg-none');
+    mkdirSync(noFile, { recursive: true });
+    const reg = AccountRegistry.init(join(dir, 'accounts.json'), [
+      { name: 'a', configDir: noFile },
+      { name: 'b', configDir: withCreds(dir, 'junk', undefined) },
+    ]);
+    reg.markLimited('a', now + 3600);
+    reg.markLimited('b', now + 3600);
+    const result = (await controller(dir).accounts()) as { name: string; state: { kind: string } }[];
+    expect(result.map((r) => r.state.kind)).toEqual(['limited', 'limited']);
   });
 });
