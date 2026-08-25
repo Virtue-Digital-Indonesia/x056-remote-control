@@ -22,6 +22,7 @@ import { PROVISIONER, AccountProvisioner } from './provision.js';
 import { CRON, CronScheduler } from './cron.js';
 import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
+import { TEMPLATES, TemplateStore } from './templates.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
@@ -129,6 +130,7 @@ export class ApiController {
     @Inject(CRON) private readonly cron: CronScheduler,
     @Inject(DESIGN_LOGIN) private readonly designLogin: DesignLoginManager,
     @Inject(DESIGN_CONSENT) private readonly designConsent: DesignConsentGranter,
+    @Inject(TEMPLATES) private readonly templates: TemplateStore,
   ) {
     this.loadQuotaCache();
   }
@@ -1184,6 +1186,49 @@ export class ApiController {
     } catch (err) {
       throw new ConflictException((err as Error).message);
     }
+  }
+
+  // ---- prompt templates: saved snippets the composer inserts at the caret ----
+
+  @Get('templates')
+  listTemplates(): unknown {
+    return { templates: this.templates.list() };
+  }
+
+  @Post('templates')
+  @HttpCode(200)
+  addTemplate(@Body() body: { name?: string; body?: string }) {
+    try { return this.templates.add({ name: body?.name, body: body?.body }); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  @Post('templates/update')
+  @HttpCode(200)
+  updateTemplate(@Body() body: { id?: string; name?: string; body?: string }) {
+    if (!body?.id) throw new BadRequestException('id required');
+    try {
+      const t = this.templates.update(body.id, { name: body.name, body: body.body });
+      if (!t) throw new BadRequestException('unknown template');
+      return t;
+    } catch (err) {
+      if (err instanceof BadRequestException) throw err;
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
+  @Post('templates/remove')
+  @HttpCode(200)
+  removeTemplate(@Body() body: { id?: string }): { ok: boolean } {
+    if (!body?.id) throw new BadRequestException('id required');
+    return { ok: this.templates.remove(body.id) };
+  }
+
+  /** Record that a template was inserted, so the picker can rank by use. */
+  @Post('templates/used')
+  @HttpCode(200)
+  usedTemplate(@Body() body: { id?: string }): { ok: boolean } {
+    if (!body?.id) throw new BadRequestException('id required');
+    return { ok: !!this.templates.used(body.id) };
   }
 
   @Get('cron')

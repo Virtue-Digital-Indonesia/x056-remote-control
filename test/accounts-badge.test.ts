@@ -24,6 +24,7 @@ function controller(stateDir: string): ApiController {
     {} as never, // CronScheduler
     {} as never, // DesignLoginManager
     {} as never, // DesignConsentGranter
+    {} as never, // TemplateStore
   );
 }
 

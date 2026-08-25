@@ -376,6 +376,12 @@
   .plug-foot code { background: var(--surface-3); padding: 1px 5px; border-radius: 5px; font-size: 10.5px; }
   .plug-empty { font-size: 12px; color: var(--faint); padding: 6px 2px; }
   /* Scheduled tasks */
+  .tplr { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; cursor: pointer; }
+  .tplr:hover { border-color: var(--accent, var(--fg)); }
+  .tplr .tw { min-width: 0; flex: 1; }
+  .tplr .tn { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tplr .tb { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .tplr .btn { flex: none; }
   .cronj { border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; margin-bottom: 8px; }
   .cronj .top { display: flex; align-items: baseline; gap: 8px; }
   .cronj .sched { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
@@ -647,6 +653,7 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></symbol>
+  <symbol id="i-snippet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h10"/><path d="M7 13h7"/><path d="M7 17h4"/></symbol>
   <symbol id="i-insert" viewBox="0 0 24 24"><path d="M9 10l-5 5 5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
   <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M10 14h4"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
@@ -716,7 +723,8 @@
             <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option><option value="ultracode">Ultracode</option>
           </select></div>
         </div>
-        <label class="attach" title="attach files (any type — drag &amp; drop or paste too)"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" multiple hidden /></label>
+        <button class="attach" id="tplBtn" title="insert a saved prompt template (Alt+T)"><svg class="ic sm"><use href="#i-snippet"/></svg></button>
+      <label class="attach" title="attach files (any type — drag &amp; drop or paste too)"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" multiple hidden /></label>
         <span class="sp"></span>
         <button class="send" id="sendBtn" title="send"><svg class="ic sm"><use href="#i-up"/></svg></button>
       </div>
@@ -800,6 +808,14 @@
     </div>
   </div>
   <div class="plug-foot">Changes apply to the next turn. Invoke a plugin command by sending it as a message, e.g. <code>/claude-security scan my branch</code>.</div>
+</div>
+<div class="pop" id="tplPop" hidden style="top:auto; bottom:96px; right:12px; left:auto; width:400px; max-height:70vh; overflow:auto;">
+  <h2>Prompt templates</h2>
+  <div class="plug-note">click one to insert it where your cursor is</div>
+  <input id="tplSearch" class="pk-search" type="text" placeholder="filter…" autocomplete="off" hidden />
+  <div id="tplStatus" class="plug-status" hidden></div>
+  <div id="tplList"></div>
+  <div class="pop-footer"><button class="send ghost" id="tplNewBtn" style="width:100%;">+ New template</button></div>
 </div>
 <div class="pop" id="cronPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:440px; max-height:80vh; overflow:auto;">
   <h2>Scheduled tasks</h2>
@@ -3248,6 +3264,7 @@
     { id: 'pluginsBtn', label: 'Plugins', icon: 'plug' },
     { id: 'mcpSrvBtn', label: 'MCP servers', icon: 'terminal' },
     { id: 'cronBtn', label: 'Scheduled tasks', icon: 'alarm' },
+    { id: 'tplBtn', label: 'Prompt templates', icon: 'snippet' },
     { id: 'shortcutsBtn', label: 'Keyboard shortcuts', icon: 'keyboard' },
     { id: 'passkeyBtn', label: 'Passkeys', icon: 'key' },
     { id: 'themeBtn', label: 'Theme', icon: 'moon' },
@@ -3356,6 +3373,7 @@
     { keys: [K_ALT + 'M'], desc: 'Open the model selector' },
     { keys: [K_ALT + 'E'], desc: 'Open the effort selector' },
     { keys: [K_ALT + 'U'], desc: 'Attach a file' },
+    { keys: [K_ALT + 'T'], desc: 'Insert a saved prompt template' },
     { keys: ['Enter'], desc: 'Send message' },
     { keys: [K_SH + 'Enter'], desc: 'New line in the message' },
     { keys: [K_CMD + '/'], desc: 'Show this shortcuts help' },
@@ -3549,6 +3567,7 @@
       if (e.code === 'KeyM') { e.preventDefault(); openSelect(modelEl); return; }
       if (e.code === 'KeyE') { e.preventDefault(); openSelect(effortEl); return; }
       if (e.code === 'KeyU') { e.preventDefault(); fileEl.click(); return; }
+      if (e.code === 'KeyT') { e.preventDefault(); openTemplates(); return; }
       if (e.code === 'KeyN') { e.preventDefault(); if (currentProjectId) newConversation(currentProjectId); return; }
     }
     // "?" opens help too, but only when you're not typing into a field.
@@ -3823,6 +3842,126 @@
   // newline · drag-drop) that don't apply on a touch device — where they only
   // wrap to three lines of noise. Swap to a clean prompt on a coarse pointer.
   try { if (matchMedia('(pointer: coarse)').matches) promptEl.placeholder = 'Message x056…'; } catch (e) {}
+
+  // ---- prompt templates -----------------------------------------------------
+  // Saved snippets, inserted into the composer AT THE CARET.
+  //
+  // The caret has to be REMEMBERED rather than read at insert time. Opening the
+  // picker moves focus off the textarea, and on a phone the on-screen keyboard
+  // closes and the field scrolls away — by the time a template is clicked,
+  // selectionStart is wherever the browser happened to leave it, which is
+  // usually 0. So track it while the field still has it.
+  var tplCaret = { start: 0, end: 0 };
+  function rememberCaret() {
+    // No activeElement check: on 'blur' focus has already moved, but the
+    // selection is still readable, and that is exactly the moment worth keeping.
+    try { tplCaret = { start: promptEl.selectionStart, end: promptEl.selectionEnd }; } catch (e) {}
+  }
+  ['keyup', 'mouseup', 'input', 'select', 'blur'].forEach(function (ev) {
+    promptEl.addEventListener(ev, rememberCaret);
+  });
+
+  function insertTemplate(t) {
+    var v = promptEl.value;
+    var start = Math.min(Math.max(tplCaret.start | 0, 0), v.length);
+    var end = Math.min(Math.max(tplCaret.end | 0, start), v.length);
+    // A selection is REPLACED, matching what typing would do at that moment.
+    promptEl.value = v.slice(0, start) + t.body + v.slice(end);
+    var caret = start + t.body.length;
+    closeAllPops();
+    promptEl.focus();
+    try { promptEl.setSelectionRange(caret, caret); } catch (e) {}
+    tplCaret = { start: caret, end: caret };
+    // Drive the composer's own listener rather than duplicating it: this is what
+    // resizes the box and saves the draft.
+    promptEl.dispatchEvent(new Event('input'));
+    api('/api/templates/used', { method: 'POST', body: JSON.stringify({ id: t.id }) }).catch(function () {});
+  }
+
+  var tplCache = [];
+  function tplSetStatus(kind, msg) {
+    var el = $('tplStatus');
+    if (!msg) { el.hidden = true; el.textContent = ''; return; }
+    el.hidden = false; el.className = 'plug-status' + (kind ? ' ' + kind : ''); el.textContent = msg;
+  }
+  function renderTemplates() {
+    var list = $('tplList'); list.textContent = '';
+    var q = ($('tplSearch').value || '').toLowerCase().trim();
+    // The filter only earns its space once scanning the list stops being quick.
+    $('tplSearch').hidden = tplCache.length < 7;
+    var shown = tplCache.filter(function (t) {
+      return !q || (t.name + ' ' + t.body).toLowerCase().indexOf(q) >= 0;
+    });
+    if (!shown.length) {
+      var e = document.createElement('div'); e.className = 'plug-empty';
+      e.textContent = tplCache.length ? 'Nothing matches that.' : 'No templates yet. Save one with + New template.';
+      list.appendChild(e); return;
+    }
+    shown.forEach(function (t) {
+      var row = document.createElement('div'); row.className = 'tplr'; row.title = t.body;
+      var w = document.createElement('div'); w.className = 'tw';
+      var n = document.createElement('div'); n.className = 'tn'; n.textContent = t.name; w.appendChild(n);
+      var b = document.createElement('div'); b.className = 'tb';
+      b.textContent = t.body.replace(/\s+/g, ' ').slice(0, 90); w.appendChild(b);
+      row.appendChild(w);
+      row.addEventListener('click', function (ev) { if (ev.target.closest('.btn')) return; insertTemplate(t); });
+      var edit = document.createElement('button'); edit.className = 'btn'; edit.textContent = 'Edit';
+      edit.addEventListener('click', function () { tplEditor(t); });
+      var del = document.createElement('button'); del.className = 'btn'; del.textContent = 'Delete';
+      del.addEventListener('click', function () {
+        uiConfirm({ title: 'Delete this template?', message: t.name, confirmText: 'Delete', danger: true })
+          .then(function (ok) {
+            if (!ok) return;
+            api('/api/templates/remove', { method: 'POST', body: JSON.stringify({ id: t.id }) })
+              .then(loadTemplates).catch(function () { tplSetStatus('err', 'could not delete it'); });
+          });
+      });
+      row.appendChild(edit); row.appendChild(del);
+      list.appendChild(row);
+    });
+  }
+  function loadTemplates() {
+    tplSetStatus();
+    return api('/api/templates').then(function (r) { return r.json(); }).then(function (d) {
+      tplCache = (d && d.templates) || [];
+      renderTemplates();
+    }).catch(function () { tplSetStatus('err', 'could not load templates'); });
+  }
+  /** New (no `existing`) or edit. Name and body in ONE dialog: two chained
+   *  prompts made editing an existing template retype both. */
+  function tplEditor(existing) {
+    return showModal('wide', null, function (card, done) {
+      var h = document.createElement('h3'); h.textContent = existing ? 'Edit template' : 'New template'; card.appendChild(h);
+      var name = document.createElement('input'); name.className = 'm-in'; name.type = 'text';
+      name.placeholder = 'name — e.g. "bug report"'; name.value = existing ? existing.name : '';
+      card.appendChild(name);
+      var body = document.createElement('textarea'); body.className = 'm-in'; body.style.marginTop = '8px';
+      body.placeholder = 'the text to insert'; body.value = existing ? existing.body : '';
+      body.addEventListener('input', function () { body.style.height = 'auto'; body.style.height = Math.min(body.scrollHeight, 320) + 'px'; });
+      card.appendChild(body);
+      var err = document.createElement('div'); err.className = 'gate-err'; card.appendChild(err);
+      var acts = document.createElement('div'); acts.className = 'modal-actions';
+      var cancel = document.createElement('button'); cancel.className = 'send ghost'; cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', function () { done(null); });
+      var ok = document.createElement('button'); ok.className = 'send'; ok.textContent = 'Save';
+      ok.addEventListener('click', function () {
+        if (!name.value.trim() || !body.value.trim()) { err.textContent = 'both a name and a body are needed'; return; }
+        var url = existing ? '/api/templates/update' : '/api/templates';
+        var payload = { name: name.value, body: body.value };
+        if (existing) payload.id = existing.id;
+        ok.disabled = true;
+        api(url, { method: 'POST', body: JSON.stringify(payload) })
+          .then(function (r) { if (!r.ok) throw new Error('save failed'); done(true); loadTemplates(); })
+          .catch(function () { ok.disabled = false; err.textContent = 'could not save it'; });
+      });
+      acts.appendChild(cancel); acts.appendChild(ok); card.appendChild(acts);
+      setTimeout(function () { (existing ? body : name).focus(); body.dispatchEvent(new Event('input')); }, 20);
+    });
+  }
+  function openTemplates() { openPop($('tplPop')); loadTemplates(); }
+  $('tplBtn').addEventListener('click', openTemplates);
+  $('tplNewBtn').addEventListener('click', function () { tplEditor(null); });
+  $('tplSearch').addEventListener('input', renderTemplates);
   // Attachments of ANY type: pendingFiles holds {name,type,url} objects (Claude
   // can Read any file), one array PER CONVERSATION (pendingFilesByConv, keyed
   // like the text draft) — NOT persisted to localStorage, unlike the text draft,
