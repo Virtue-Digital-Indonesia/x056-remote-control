@@ -282,6 +282,21 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
       offsets.push(at);
       continue;
     }
+    // A slash command's OUTPUT is a system entry, not an assistant message:
+    // {type:"system", subtype:"local_command", content:"<local-command-stdout>…"}.
+    // Skipping it is why /recap showed while the browser streamed it and then
+    // vanished on reload — the chip stayed, the answer did not.
+    if (type === 'system' && entry.subtype === 'local_command') {
+      const raw = typeof entry.content === 'string' ? entry.content : '';
+      const body = /<local-command-(?:stdout|stderr)>([\s\S]*?)<\/local-command-(?:stdout|stderr)>/.exec(raw)?.[1]
+        ?? raw.replace(/<\/?local-command-(?:stdout|stderr)>/g, '');
+      const shown = body.trim();
+      if (shown) {
+        out.push({ role: 'assistant', text: shown, ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined });
+        offsets.push(at);
+      }
+      continue;
+    }
     if (type !== 'user' && type !== 'assistant') continue;
     if (entry.isApiErrorMessage || entry.isMeta) continue;
     const message = entry.message as { role?: string; content?: unknown; model?: unknown } | undefined;

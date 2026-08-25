@@ -61,6 +61,46 @@ describe('slash commands in the transcript', () => {
   });
 });
 
+describe('slash command OUTPUT', () => {
+  // Regression for the real failure: a command's answer is NOT an assistant
+  // message. Claude Code files it as {type:"system", subtype:"local_command"}
+  // with the text wrapped in <local-command-stdout>. Skipping every system
+  // entry meant /recap kept its chip on reload and lost its answer.
+  const stdout = (text: string) => ({
+    type: 'system', subtype: 'local_command', level: 'info',
+    timestamp: '2026-08-25T04:35:33Z',
+    content: `<local-command-stdout>${text}</local-command-stdout>`,
+  });
+
+  it('renders the command output that follows the command', () => {
+    const rows = read([userText(CMD), stdout('Building the hotel PMS: M6 is done.')]);
+    expect(rows.map((r) => r.role)).toEqual(['command', 'assistant']);
+    expect(rows[1].text).toBe('Building the hotel PMS: M6 is done.');
+  });
+
+  it('strips the wrapper rather than showing raw XML', () => {
+    const rows = read([stdout('plain text')]);
+    expect(rows[0].text).not.toContain('local-command-stdout');
+  });
+
+  it('handles stderr the same way', () => {
+    const rows = read([{
+      type: 'system', subtype: 'local_command', level: 'info',
+      content: '<local-command-stderr>it failed</local-command-stderr>',
+    }]);
+    expect(rows[0]?.text).toBe('it failed');
+  });
+
+  it('drops an empty output instead of leaving a blank bubble', () => {
+    expect(read([stdout('   ')])).toEqual([]);
+  });
+
+  it('leaves other system subtypes alone', () => {
+    const rows = read([{ type: 'system', subtype: 'something_else', content: 'noise' }]);
+    expect(rows).toEqual([]);
+  });
+});
+
 describe('compaction in the transcript', () => {
   const boundary = {
     type: 'system',
