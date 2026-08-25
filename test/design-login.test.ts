@@ -92,11 +92,13 @@ describe('DesignLoginManager', () => {
       { after: 50, text: WRAPPED, whenTyped: /design-login/ },
     ]);
     const out = await m.start('a', dir);
-    expect(typed[0]).toBe('\r');                    // trust confirmed
-    expect(typed[1]).toBe('/design-login\r');       // then the command
+    expect(typed[0]).toBe('\r');                                     // trust confirmed
+    expect(typed).toContain('/design-login\r');                      // then the command
+    // and the line is cleared before typing, so a retry cannot append
+    expect(typed.indexOf('\x15')).toBeLessThan(typed.indexOf('/design-login\r'));
     expect(out.url).toContain('scope=user%3Adesign%3Aread');
     m.cancel(out.loginId);
-  }, 20000);
+  }, 25000);
 
   it('marks onboarding done first, or the theme wizard eats the command', async () => {
     const { m, dir } = manager([{ after: 20, text: WRAPPED }]);
@@ -156,5 +158,20 @@ describe('regression: the already-trusted folder', () => {
     expect(typed.filter((t) => t.includes('/design-login')).length).toBeGreaterThan(0);
     expect(typed).not.toContain('\r'); // nothing to confirm — no trust prompt
     m.cancel(out.loginId);
-  }, 20000);
+  }, 25000);
+
+  it('never types the command twice without clearing between — that yields /design-login/design-login', async () => {
+    // The CLI stays silent (a swallowed keystroke), forcing retries.
+    const { m, dir, typed } = manager([
+      { after: 20, text: '? for shortcuts\n' },
+      { after: 60, text: WRAPPED, whenTyped: /design-login/ },
+    ]);
+    const out = await m.start('a', dir);
+    const cmds = typed.map((t, i) => ({ t, i })).filter((x) => x.t.includes('/design-login'));
+    for (const c of cmds) {
+      const before = typed.slice(0, c.i);
+      expect(before[before.length - 1]).toBe('\x15'); // line cleared immediately prior
+    }
+    m.cancel(out.loginId);
+  }, 25000);
 });

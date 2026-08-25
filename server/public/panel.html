@@ -2861,25 +2861,71 @@
   // the gateway drives one on a PTY and hands back the URL; the session stays
   // alive there (not in this browser) until the code is pasted.
   function startDesignLogin(a) {
-    api('/api/accounts/design-login/start', { method: 'POST', body: JSON.stringify({ account: a.name }) })
-      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || 'could not start'); return j; }); })
-      .then(function (j) {
-        return uiPrompt({
-          title: 'Claude Design login — account ' + a.name,
-          message: 'Open this in your browser, authorize, then paste the code it gives you:\n\n' + j.url,
-          placeholder: 'paste the code here',
-          multiline: false,
-        }).then(function (code) {
-          if (!code) { api('/api/accounts/design-login/cancel', { method: 'POST', body: JSON.stringify({ loginId: j.loginId }) }); return; }
-          return api('/api/accounts/design-login/submit', { method: 'POST', body: JSON.stringify({ loginId: j.loginId, code: code }) })
-            .then(function (r2) { return r2.json(); })
-            .then(function (out) {
-              uiAlert({ title: out.ok ? 'Design access granted on ' + a.name : 'That did not look like it worked',
-                        message: out.message || '' });
-            });
+    // Open the modal FIRST, then fetch. Starting the login drives a real
+    // terminal session and takes 15-40s; showing nothing until it resolves read
+    // as "the button does nothing", which is exactly how this was reported.
+    var loginId = null, settled = false;
+    showModal('', false, function (card, done) {
+      function clear() { while (card.firstChild) card.removeChild(card.firstChild); }
+      function head(t) { var h = document.createElement('h3'); h.textContent = t; card.appendChild(h); return h; }
+      function para(t) { var el = document.createElement('p'); el.textContent = t; card.appendChild(el); return el; }
+      function actions() { var d = document.createElement('div'); d.className = 'modal-actions'; card.appendChild(d); return d; }
+
+      head('Claude Design login — account ' + a.name);
+      para('Starting a terminal session for this account… this usually takes 15-40 seconds.');
+      var cancelRow = actions();
+      var cancelBtn = document.createElement('button'); cancelBtn.className = 'send ghost'; cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', function () { settled = true; if (loginId) cancelDesignLogin(loginId); done(null); });
+      cancelRow.appendChild(cancelBtn);
+
+      api('/api/accounts/design-login/start', { method: 'POST', body: JSON.stringify({ account: a.name }) })
+        .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || 'could not start the login'); return j; }); })
+        .then(function (j) {
+          if (settled) { cancelDesignLogin(j.loginId); return; }
+          loginId = j.loginId;
+          clear();
+          head('Claude Design login — account ' + a.name);
+          para('Open this URL, sign in, then paste the code it gives you:');
+          var link = document.createElement('a');
+          link.href = j.url; link.target = '_blank'; link.rel = 'noopener';
+          link.textContent = j.url;
+          link.style.cssText = 'display:block;word-break:break-all;font-size:12px;margin:8px 0;';
+          card.appendChild(link);
+          var inp = document.createElement('input');
+          inp.className = 'm-in'; inp.type = 'text'; inp.placeholder = 'paste the code here';
+          inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { settled = true; done(inp.value); } });
+          card.appendChild(inp);
+          var row = actions();
+          var no = document.createElement('button'); no.className = 'send ghost'; no.textContent = 'Cancel';
+          no.addEventListener('click', function () { settled = true; cancelDesignLogin(loginId); done(null); });
+          var yes = document.createElement('button'); yes.className = 'send'; yes.textContent = 'Submit code';
+          yes.addEventListener('click', function () { settled = true; done(inp.value); });
+          row.appendChild(no); row.appendChild(yes);
+          setTimeout(function () { inp.focus(); }, 20);
+        })
+        .catch(function (e) {
+          if (settled) return;
+          clear();
+          head('Could not start the design login');
+          para(String((e && e.message) || e));
+          var row = actions();
+          var ok = document.createElement('button'); ok.className = 'send'; ok.textContent = 'OK';
+          ok.addEventListener('click', function () { settled = true; done(null); });
+          row.appendChild(ok);
         });
-      })
-      .catch(function (e) { uiAlert({ title: 'Design login failed', message: String(e && e.message || e) }); });
+    }).then(function (code) {
+      if (!code || !loginId) return;
+      return api('/api/accounts/design-login/submit', { method: 'POST', body: JSON.stringify({ loginId: loginId, code: code }) })
+        .then(function (r) { return r.json(); })
+        .then(function (out) {
+          uiAlert({ title: out.ok ? 'Design access granted on ' + a.name : 'That did not look like it worked',
+                    message: out.message || '' });
+        });
+    });
+  }
+  function cancelDesignLogin(loginId) {
+    api('/api/accounts/design-login/cancel', { method: 'POST', body: JSON.stringify({ loginId: loginId }) })
+      .catch(function () { /* the gateway times it out anyway */ });
   }
 
   function renderAccounts(list) {

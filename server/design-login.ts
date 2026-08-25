@@ -159,11 +159,18 @@ export class DesignLoginManager {
 
         // Send once the session has had time to render, then retry: a swallowed
         // keystroke is the common failure and costs nothing to repeat.
-        const ready = /bypass|shortcuts|Message|\?\sfor/i.test(p.buf) || now - started > 8000;
-        if (ready && sends < 3 && now - lastSend > 7000) {
+        //
+        // CLEAR THE LINE FIRST. A retry that just types again APPENDS to whatever
+        // is already in the composer, so a first attempt that landed as text but
+        // did not submit turns into "/design-login/design-login" — not a command,
+        // and the login never starts. Esc then Ctrl-U empties it either way.
+        const ready = /bypass|shortcuts|Message|\?\sfor/i.test(p.buf) || now - started > 6000;
+        if (ready && now - started > 3000 && sends < 3 && now - lastSend > 7000) {
           sends += 1;
           lastSend = now;
-          child.stdin?.write('/design-login\r');
+          child.stdin?.write('\x1b');   // leave any menu/selection
+          child.stdin?.write('\x15');   // Ctrl-U: clear the input line
+          setTimeout(() => child.stdin?.write('/design-login\r'), 250);
         }
       }, 800);
 
