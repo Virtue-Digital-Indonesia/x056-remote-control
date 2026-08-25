@@ -126,42 +126,54 @@ export class DesignLoginManager {
     this.pending.set(loginId, p);
 
     return new Promise((resolve, reject) => {
-      let trusted = false;
-      let asked = false;
-      const onData = (d: Buffer | string) => {
-        p.buf += strip(String(d));
-        const flat = p.buf.replace(/\s+/g, '');
+      const append = (d: Buffer | string) => { p.buf += strip(String(d)); };
+      child.stdout?.on('data', append);
+      child.stderr?.on('data', append);
 
-        // First-run trust question — answer it, then ask for the login.
+      // POLL rather than react to each chunk. Two things make an onData-driven
+      // version unreliable, and both were seen for real: the readiness text can
+      // scroll out of whatever window is inspected once the spinner floods the
+      // buffer, and typing the command exactly once means it is lost if the TUI
+      // was still settling. Polling re-checks, and re-sends a few times.
+      let trusted = false;
+      let sends = 0;
+      let lastSend = 0;
+      const started = Date.now();
+      const poll = setInterval(() => {
+        const flat = p.buf.replace(/\s+/g, '');
+        const now = Date.now();
+
         if (!trusted && /Yes,Itrustthisfolder/i.test(flat)) {
           trusted = true;
           child.stdin?.write('\r');
-          setTimeout(() => { if (!asked) { asked = true; child.stdin?.write('/design-login\r'); } }, 2000);
+          // Let the TUI settle ~2s, not a full retry interval, before typing.
+          lastSend = now - 5000;
           return;
         }
-        // No trust prompt (already trusted): ask once the prompt is up.
-        if (!asked && !trusted && /bypass|shortcuts|Message|\?\sfor/i.test(p.buf.slice(-2000))) {
-          asked = true;
-          setTimeout(() => child.stdin?.write('/design-login\r'), 1500);
+
+        const url = extractAuthUrl(p.buf);
+        if (url && /[?&]state=[^&]{8,}/.test(url)) {
+          if (!p.resolved) { p.resolved = true; clearInterval(poll); resolve({ loginId, url }); }
+          return;
         }
 
-        // Wait for the state param before resolving: it is last in the URL, so
-        // its presence means the wrapped text has fully arrived.
-        const url = extractAuthUrl(p.buf);
-        if (url && /[?&]state=[^&]+/.test(url) && !p.resolved) {
-          p.resolved = true;
-          resolve({ loginId, url });
+        // Send once the session has had time to render, then retry: a swallowed
+        // keystroke is the common failure and costs nothing to repeat.
+        const ready = /bypass|shortcuts|Message|\?\sfor/i.test(p.buf) || now - started > 8000;
+        if (ready && sends < 3 && now - lastSend > 7000) {
+          sends += 1;
+          lastSend = now;
+          child.stdin?.write('/design-login\r');
         }
+      }, 800);
+
+      const fail = (err: Error) => {
+        clearInterval(poll);
+        if (!p.resolved) { this.cancel(loginId); reject(err); }
       };
-      child.stdout?.on('data', onData);
-      child.stderr?.on('data', onData);
-      child.on('error', (err) => { this.cancel(loginId); reject(err); });
-      child.on('exit', () => {
-        if (!p.resolved) { this.pending.delete(loginId); reject(new Error('the login session exited before printing a URL')); }
-      });
-      setTimeout(() => {
-        if (!p.resolved) { this.cancel(loginId); reject(new Error('timed out waiting for the login URL')); }
-      }, 90_000);
+      child.on('error', fail);
+      child.on('exit', () => fail(new Error('the login session exited before printing a URL')));
+      setTimeout(() => fail(new Error('timed out waiting for the login URL')), 120_000);
     });
   }
 

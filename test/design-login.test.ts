@@ -46,8 +46,12 @@ describe('extracting the authorize URL from a wrapped TUI', () => {
   });
 });
 
-/** A stand-in for the PTY: emits scripted output, records what was typed. */
-function fakeCli(script: { after: number; text: string }[]) {
+/**
+ * A stand-in for the PTY. `onTyped` lets a step fire in RESPONSE to input, so a
+ * test cannot pass by having the CLI volunteer a URL nobody asked for — which is
+ * exactly how an earlier version of these tests hid a real bug.
+ */
+function fakeCli(script: { after: number; text: string; whenTyped?: RegExp }[]) {
   const child = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter; stderr: EventEmitter;
     stdin: { write: (s: string) => void }; kill: () => void;
@@ -57,11 +61,23 @@ function fakeCli(script: { after: number; text: string }[]) {
   const typed: string[] = [];
   child.stdin = { write: (s: string) => { typed.push(s); } };
   child.kill = () => {};
-  for (const step of script) setTimeout(() => child.stdout.emit('data', step.text), step.after);
+  for (const step of script) {
+    if (step.whenTyped) continue;
+    setTimeout(() => child.stdout.emit('data', step.text), step.after);
+  }
+  const reactive = script.filter((s2) => s2.whenTyped);
+  child.stdin = {
+    write: (s2: string) => {
+      typed.push(s2);
+      for (const step of reactive) {
+        if (step.whenTyped!.test(s2)) setTimeout(() => child.stdout.emit('data', step.text), step.after);
+      }
+    },
+  };
   return { child, typed };
 }
 
-function manager(script: { after: number; text: string }[]) {
+function manager(script: { after: number; text: string; whenTyped?: RegExp }[]) {
   const dir = mkdtempSync(join(tmpdir(), 'x056-dl-'));
   mkdirSync(dir, { recursive: true });
   const made = fakeCli(script);
@@ -73,14 +89,14 @@ describe('DesignLoginManager', () => {
   it('answers the first-run trust prompt, then asks for the login', async () => {
     const { m, dir, typed } = manager([
       { after: 20, text: 'Is this a project you trust?\n❯ 1. Yes, I trust this folder\n' },
-      { after: 2600, text: WRAPPED },
+      { after: 50, text: WRAPPED, whenTyped: /design-login/ },
     ]);
     const out = await m.start('a', dir);
     expect(typed[0]).toBe('\r');                    // trust confirmed
     expect(typed[1]).toBe('/design-login\r');       // then the command
     expect(out.url).toContain('scope=user%3Adesign%3Aread');
     m.cancel(out.loginId);
-  });
+  }, 20000);
 
   it('marks onboarding done first, or the theme wizard eats the command', async () => {
     const { m, dir } = manager([{ after: 20, text: WRAPPED }]);
@@ -123,4 +139,22 @@ describe('DesignLoginManager', () => {
     m.cancel(out.loginId);
     expect(m.list()).toEqual([]);
   });
+});
+
+describe('regression: the already-trusted folder', () => {
+  // The first live run worked only because the folder was UNTRUSTED, so the
+  // trust branch fired and typed the command. Once trusted, no prompt appears
+  // and the command must still be sent — otherwise start() just times out,
+  // which is exactly what the deployed gateway did.
+  it('types /design-login even when no trust prompt is shown', async () => {
+    const { m, dir, typed } = manager([
+      { after: 20, text: '\n ▐▛███▜▌ Claude Code v2.1.220\n' },
+      { after: 300, text: '? for shortcuts\n' },
+      { after: 8000, text: WRAPPED },
+    ]);
+    const out = await m.start('a', dir);
+    expect(typed.filter((t) => t.includes('/design-login')).length).toBeGreaterThan(0);
+    expect(typed).not.toContain('\r'); // nothing to confirm — no trust prompt
+    m.cancel(out.loginId);
+  }, 20000);
 });
