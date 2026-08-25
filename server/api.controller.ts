@@ -24,7 +24,7 @@ import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { join } from 'node:path';
-import { BusyError, SessionManager, type TurnRunOptions } from './manager.js';
+import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager, type McpServerSpec } from './mcp-servers.js';
 import type { HistoryEntry } from './history.js';
@@ -230,8 +230,12 @@ export class ApiController {
     if (!body?.prompt && !hasAttachments(body)) throw new BadRequestException('prompt or attachment required');
     try {
       const { prompt, opts } = this.composePrompt(body);
-      // A human spoke: the self-message brake resets.
-      if (body.sessionId) this.manager.clearSelfQueueStreak(body.sessionId);
+      // A human spoke: both brakes reset — the self-message streak and the
+      // AI-to-AI relay chain. This is the ONLY thing that clears the relay one.
+      if (body.sessionId) {
+        this.manager.clearSelfQueueStreak(body.sessionId);
+        this.manager.clearRelayChain(body.sessionId);
+      }
       return { sessionId: this.manager.continueLast(prompt, opts, body.projectId) };
     } catch (err) {
       if (err instanceof BusyError) throw new ConflictException('busy');
@@ -447,8 +451,8 @@ export class ApiController {
    *  moves, the panel's "current" selection. */
   @Post('conversations/send')
   @HttpCode(200)
-  conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean }):
-    { mode: 'auto'; sessionId: string; queued: boolean } | { mode: 'approval'; approvalId: string } {
+  conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean; from?: string }):
+    { mode: 'auto'; sessionId: string; queued: boolean; hopsLeft: number } | { mode: 'approval'; approvalId: string } {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
     if (body.sessionId) {
@@ -457,15 +461,46 @@ export class ApiController {
       const known = this.manager.listConversations(body.projectId).some((c) => c.sessionId === body.sessionId);
       if (!known) throw new BadRequestException('unknown conversation for that project');
     }
-    const opts = { model: body.model, effort: body.effort, interactive: body.interactive };
+    // `from` is the CALLING conversation, supplied by the per-turn MCP config
+    // rather than the model, so a caller cannot disown its own chain by leaving
+    // it out — an external client (Claude Desktop) genuinely has none.
+    const opts = { model: body.model, effort: body.effort, interactive: body.interactive, from: body.from };
     // The MODE is the operator's setting, never the caller's choice — an AI that
     // could ask for 'auto' would make the approval gate worthless.
     if (this.manager.mcpSendMode() === 'auto') {
-      const out = this.manager.deliverMcpMessage(body.projectId, body.sessionId, body.prompt, opts);
-      return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued };
+      try {
+        const out = this.manager.deliverMcpMessage(body.projectId, body.sessionId, body.prompt, opts);
+        return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued, hopsLeft: out.hopsLeft };
+      } catch (err) {
+        // 409, not 400: the request is well-formed, the exchange is just over.
+        if (err instanceof RelayLimitError) throw new ConflictException(err.message);
+        throw err;
+      }
     }
     const approval = this.manager.requestMcpSend(body.projectId, body.sessionId, body.prompt, opts);
     return { mode: 'approval' as const, approvalId: approval.id };
+  }
+
+  /**
+   * Halt a conversation from another one: abort its running turn and drop what
+   * is queued for it. The MCP bridge's stop tool.
+   *
+   * Not gated behind the operator's approval, unlike a send. This is the brake
+   * on a runaway exchange, and a brake that waits for a human is not a brake —
+   * the failure it exists to stop is precisely the one where nobody is watching.
+   * It also cannot inject anything: the worst it does is end a turn early, which
+   * the panel's own Stop button already does.
+   *
+   * Stopping does NOT clear the relay chain. An exhausted pair could otherwise
+   * halt each other to win back hops.
+   */
+  @Post('conversations/halt')
+  @HttpCode(200)
+  conversationHalt(@Body() body: { projectId?: string; sessionId?: string; dropQueued?: boolean }): { stopped: boolean; dropped: number } {
+    if (!body?.projectId || !body?.sessionId) throw new BadRequestException('projectId and sessionId required');
+    const known = this.manager.listConversations(body.projectId).some((c) => c.sessionId === body.sessionId);
+    if (!known) throw new BadRequestException('unknown conversation for that project');
+    return this.manager.haltConversation(body.projectId, body.sessionId, body.dropQueued !== false);
   }
 
   /** A page of older history for scroll-back. Paging is by opaque cursor (a byte
@@ -973,7 +1008,10 @@ export class ApiController {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
     try {
-      if (body.sessionId) this.manager.clearSelfQueueStreak(body.sessionId);
+      if (body.sessionId) {
+        this.manager.clearSelfQueueStreak(body.sessionId);
+        this.manager.clearRelayChain(body.sessionId);
+      }
       const item = this.manager.enqueue(body.projectId, { text: body.prompt, model: body.model, effort: body.effort, sessionId: body.sessionId });
       return { queued: true, id: item.id };
     } catch (err) {

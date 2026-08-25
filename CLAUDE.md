@@ -98,6 +98,33 @@ failover happens to land on the right one — which reads as "randomly broken":
   /api/accounts/baseline` shows that baseline and which accounts lag; `POST
   /api/accounts/provision` re-applies it.
 
+## Conversations messaging each other is BOUNDED
+
+`send_message` lets one conversation drive another, which is also how two of them
+get stuck: A asks B to debug something, B reports back, A asks a follow-up, and
+neither can see that the pair is going nowhere. Both brakes are enforced in the
+gateway, not asked for in a prompt.
+
+- **Relay depth** (`SessionManager.RELAY_HOP_LIMIT`, 6). Every AI→AI send belongs
+  to a chain; each hop increments its depth, and past the cap `deliverMcpMessage`
+  throws `RelayLimitError` (HTTP 409) and nothing is sent. Depth follows the
+  CHAIN, not the pair, so routing through a third conversation does not dodge it.
+  `send_message` reports the hops left on every send, so a caller can wrap up
+  before it is cut off.
+- **Only a human resets it.** A panel message clears the chain
+  (`clearRelayChain`). Stopping a conversation does NOT — otherwise an exhausted
+  pair could halt each other to buy another round. In **approval** mode the
+  operator is the reset: an approved send is human-origin, so the count starts
+  over and the cap never fires on an exchange they are waving through.
+- **`stop_conversation`** aborts a conversation's turn AND drops its queue —
+  stopping the turn alone just lets the queue drain into a new one. Ungated,
+  unlike a send: a brake that waits for a human is not a brake, and the worst it
+  can do is end a turn early. It hands back no hops.
+- **`message_self`** has its own separate bound (`SELF_QUEUE_LIMIT`, 5), reset by
+  any message the conversation did not send itself.
+
+Both counters are in memory. A restart re-earns them, deliberately.
+
 ## Scheduled tasks (cron)
 
 A conversation can schedule a prompt to be sent on a repeating schedule, via the

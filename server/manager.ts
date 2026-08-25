@@ -28,6 +28,18 @@ export class BusyError extends Error {
   }
 }
 
+/** A relay chain ran out of hops — see SessionManager.RELAY_HOP_LIMIT. */
+export class RelayLimitError extends Error {
+  constructor(public readonly depth: number, public readonly limit: number) {
+    super(
+      `relay limit reached: this exchange is already ${depth - 1} AI-to-AI message(s) deep, and the cap is ${limit}. `
+      + 'Nothing was sent. Two conversations handing work back and forth cannot stop themselves, so the chain ends here — '
+      + 'write up what you have (including what is still unresolved) for the human instead of asking the other conversation again. '
+      + 'A message from a person resets the count.',
+    );
+  }
+}
+
 export interface SessionManagerOptions {
   stateDir: string;
   workspaceRoot: string;
@@ -249,6 +261,20 @@ export class SessionManager {
   /** Consecutive self-queued messages per conversation, reset by any message
    *  that did NOT come from the session itself. Bounds a self-message loop. */
   private selfQueueStreak = new Map<string, number>();
+  /**
+   * The relay chain that started each conversation's CURRENT turn: which
+   * AI-to-AI exchange it belongs to and how many hops deep that exchange is.
+   *
+   * Two conversations passing work back and forth ("can you check this?" → "here
+   * is the report" → "can you also check…") have no natural stopping point:
+   * each side is being helpful, and neither can see that the pair is going
+   * nowhere. Depth is the brake — see deliverMcpMessage.
+   *
+   * Not persisted, deliberately: a restart is a real discontinuity, and the
+   * conservative failure is a chain that has to be re-earned, not one that
+   * silently survives. selfQueueStreak works the same way.
+   */
+  private relayChains = new Map<string, { id: string; depth: number; from: string }>();
   private mcpApprovals = new Map<string, McpApproval>();
   private mcpApprovalTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // Unanswered questions, keyed by the CONVERSATION that asked. A question ends
@@ -1348,6 +1374,10 @@ export class SessionManager {
     a.status = approve ? 'approved' : 'denied';
     if (approve) {
       try {
+        // No `from`: an approved send is human-origin by definition, so it
+        // starts the relay count over. In approval mode the operator IS the
+        // circuit breaker, and a hop cap on top of them would only block an
+        // exchange they are explicitly waving through, one card at a time.
         const out = this.deliverMcpMessage(a.projectId, a.sessionId, a.message, {
           model: a.model, effort: a.effort, interactive: a.interactive,
         });
@@ -1392,24 +1422,99 @@ export class SessionManager {
     projectId: string,
     sessionId: string | undefined,
     message: string,
-    opts: TurnRunOptions & { interactive?: boolean } = {},
-  ): { sessionId: string; queued: boolean } {
+    opts: TurnRunOptions & { interactive?: boolean; from?: string } = {},
+  ): { sessionId: string; queued: boolean; hopsLeft: number } {
+    // Where this message sits in an AI-to-AI chain. `from` is the conversation
+    // whose turn is making the call; absent means a human, a scheduled job, or
+    // an external client is the origin, which starts a fresh chain.
+    const hop = this.nextRelayHop(opts.from);
+    if (hop.depth > SessionManager.RELAY_HOP_LIMIT) {
+      throw new RelayLimitError(hop.depth, SessionManager.RELAY_HOP_LIMIT);
+    }
     if (sessionId) this.clearSelfQueueStreak(sessionId);
     const prompt = opts.interactive !== false ? withAskInstructions(message) : message;
     const run = { model: opts.model, effort: opts.effort };
-    if (!sessionId) return { sessionId: this.start(prompt, undefined, run, projectId), queued: false };
-    const queue = (): { sessionId: string; queued: boolean } => {
+    // Record the chain against the TARGET before the turn can start, so a send
+    // it makes in that turn is counted as the next hop rather than a new chain.
+    const land = (sid: string, queued: boolean): { sessionId: string; queued: boolean; hopsLeft: number } => {
+      this.setRelayChain(sid, hop);
+      // Report the remaining budget, so a caller can wrap up on its own rather
+      // than discovering the bound only by being refused.
+      return { sessionId: sid, queued, hopsLeft: SessionManager.RELAY_HOP_LIMIT - hop.depth };
+    };
+    if (!sessionId) return land(this.start(prompt, undefined, run, projectId), false);
+    const queue = (): { sessionId: string; queued: boolean; hopsLeft: number } => {
       this.enqueue(projectId, { text: prompt, model: opts.model, effort: opts.effort, sessionId });
-      return { sessionId, queued: true };
+      return land(sessionId, true);
     };
     if (this.sessionBusy(sessionId)) return queue();
     try {
-      return { sessionId: this.continueSession(projectId, sessionId, prompt, run), queued: false };
+      return land(this.continueSession(projectId, sessionId, prompt, run), false);
     } catch (err) {
       // Lost a race with a turn that started between the check and the call.
       if (err instanceof BusyError) return queue();
       throw err;
     }
+  }
+
+  // ---- relay chains: the bound on conversations messaging each other ----
+
+  /**
+   * How many AI-to-AI hops one exchange may run before a human has to be in it.
+   *
+   * Six is enough for a real hand-off with a couple of follow-ups, and short
+   * enough that a pair stuck in "please debug this" / "here is the report" burns
+   * minutes rather than a whole usage window.
+   */
+  static readonly RELAY_HOP_LIMIT = 6;
+
+  /** The chain a send from `from` would belong to, and its hop number. */
+  private nextRelayHop(from?: string): { id: string; depth: number; from: string } {
+    const prior = from ? this.relayChains.get(from) : undefined;
+    return { id: prior?.id ?? randomUUID(), depth: (prior?.depth ?? 0) + 1, from: from ?? 'human' };
+  }
+
+  /**
+   * A human-origin message resets the target outright — that is the whole point
+   * of the brake, and it is what makes approval mode workable: an operator who
+   * approves every hop is in the loop, so the count starts over.
+   *
+   * An AI-origin message may only ever RAISE the depth. Two chains can queue
+   * onto the same conversation, and taking the shallower of them would hand back
+   * hops for free.
+   */
+  private setRelayChain(sessionId: string, hop: { id: string; depth: number; from: string }): void {
+    const prior = this.relayChains.get(sessionId);
+    if (hop.from === 'human') { this.relayChains.set(sessionId, hop); return; }
+    if (prior && prior.depth > hop.depth) return;
+    this.relayChains.set(sessionId, hop);
+  }
+
+  /** Clear the relay brake. Only a human message does this — an AI message is
+   *  what the brake exists to count, and a stop/kill must not reset it either,
+   *  or an exhausted chain could buy itself hops by halting the other side. */
+  clearRelayChain(sessionId: string): void { this.relayChains.delete(sessionId); }
+
+  /** Hops used by the exchange that started this conversation's current turn. */
+  relayDepth(sessionId?: string): number {
+    return sessionId ? this.relayChains.get(sessionId)?.depth ?? 0 : 0;
+  }
+
+  /**
+   * Halt a conversation: abort its running turn AND drop what is queued for it.
+   * Stopping the turn alone is not enough — the queue would simply drain into a
+   * new turn, which is exactly how a runaway pair keeps going.
+   */
+  haltConversation(projectId: string, sessionId: string, dropQueued = true): { stopped: boolean; dropped: number } {
+    const stopped = this.stopTurn(projectId, sessionId);
+    let dropped = 0;
+    if (dropQueued) {
+      for (const item of (this.loadQueues()[projectId] ?? []).filter((q) => q.sessionId === sessionId)) {
+        this.removeQueueItem(projectId, item.id);
+        dropped += 1;
+      }
+    }
+    return { stopped, dropped };
   }
 
   /** Unanswered questions across all conversations — the panel hydrates from

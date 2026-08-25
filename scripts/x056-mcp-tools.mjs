@@ -49,7 +49,8 @@ export const TOOLS = [
       'Send a message to a conversation (it resumes with full context and runs a turn), or omit sessionId to start a NEW conversation in the project. ' +
       'The operator chooses the delivery mode in the panel: in APPROVAL mode (the default) this call pauses until they approve or deny it — it is not sent until approved, and may be denied; in AUTOMATIC mode it is delivered immediately. You cannot choose the mode. '
       + 'If that conversation is mid-turn the message is QUEUED and delivered when its current turn ends, ahead of any autopilot continuation. ' +
-      'Set waitSeconds > 0 to additionally wait for and return the reply once sent; otherwise returns as soon as it is sent, and the reply can be fetched later with read_conversation. The receiving AI may take minutes on hard tasks — prefer a short wait plus polling over a long block.',
+      'Set waitSeconds > 0 to additionally wait for and return the reply once sent; otherwise returns as soon as it is sent, and the reply can be fetched later with read_conversation. The receiving AI may take minutes on hard tasks — prefer a short wait plus polling over a long block. '
+      + 'BOUNDED: an AI-to-AI exchange may run a limited number of hops before the gateway refuses further sends and requires a human message. Two conversations passing a task back and forth cannot tell that they are stuck, so treat a refusal as the answer: write up what you have, unresolved parts included, for the person. Use stop_conversation to end a runaway exchange early.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -229,6 +230,27 @@ const QUEUE_TOOLS = [
   },
 ];
 
+QUEUE_TOOLS.push({
+  name: 'stop_conversation',
+  description:
+    'STOP another conversation: abort the turn it is running and drop every message queued for it. '
+    + 'This is the brake on an exchange that is going nowhere — two conversations trading "can you check this?" and "here is the report" with no end, '
+    + 'or one you asked for something that is now moot and is burning a usage window on it. '
+    + 'Stopping the turn alone would not be enough, since the queue would simply drain into a new one, so both go together (set dropQueued false to keep the queue). '
+    + 'The stopped turn ends where it is: work already written to disk survives, work still in its head does not, and it will not be resumed automatically. '
+    + 'It does NOT give either side more hops — the relay bound is unaffected. Prefer it over sending "please stop", which costs a hop and may not be obeyed.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string' },
+      sessionId: { type: 'string', description: 'the conversation to stop' },
+      dropQueued: { type: 'boolean', description: 'also discard its queued messages (default true)' },
+    },
+    required: ['projectId', 'sessionId'],
+    additionalProperties: false,
+  },
+});
+
 for (const t of QUEUE_TOOLS) TOOLS.push(t);
 const QUEUE_TOOL_NAMES = new Set(QUEUE_TOOLS.map((t) => t.name));
 
@@ -358,6 +380,16 @@ export async function callTool(api, name, args) {
       await api('/api/queue/edit', { method: 'POST', body: JSON.stringify({ projectId: args.projectId, id: args.id, prompt: args.message }) });
       return `rewrote queued message ${args.id}; it keeps its place in the queue.`;
     }
+    if (name === 'stop_conversation') {
+      const res = await api('/api/conversations/halt', {
+        method: 'POST',
+        body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, dropQueued: args.dropQueued }),
+      });
+      const parts = [];
+      parts.push(res?.stopped ? 'stopped its running turn' : 'it had no turn running');
+      parts.push(res?.dropped ? `dropped ${res.dropped} queued message(s)` : 'nothing was queued for it');
+      return `${args.sessionId}: ${parts.join('; ')}.`;
+    }
     if (name === 'message_self') {
       if (!SELF.projectId || !SELF.sessionId) {
         throw new Error('message_self is only available to a conversation running on this gateway (no self identity in this client)');
@@ -416,7 +448,9 @@ export async function callTool(api, name, args) {
       : 0;
     const requested = await api('/api/conversations/send', {
       method: 'POST',
-      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort }),
+      // `from` is OUR identity from the per-turn config, not something the
+      // model chose: it is what lets the gateway count this exchange's hops.
+      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort, from: SELF.sessionId || undefined }),
     });
     // Two modes, chosen by the OPERATOR in the panel (not by us): 'auto' delivers
     // straight away, 'approval' waits for them to approve it. Either way, if that
@@ -426,10 +460,16 @@ export async function callTool(api, name, args) {
       const where = requested.queued
         ? `queued — that conversation is mid-turn, so it will be delivered the moment its current turn ends.`
         : `delivered — its turn is running now.`;
+      // Say how much of the exchange is left. Knowing there is one hop to go is
+      // what lets a caller close the loop deliberately instead of being cut off.
+      const left = typeof requested.hopsLeft === 'number'
+        ? `\n${requested.hopsLeft} hop(s) left in this exchange before a human message is required.`
+          + (requested.hopsLeft <= 1 ? ' Plan to finish here.' : '')
+        : '';
       if (!args.waitSeconds || requested.queued) {
-        return `sent (automatic mode). ${where}\nsessionId: ${sid}\nUse read_conversation to fetch the reply later.`;
+        return `sent (automatic mode). ${where}\nsessionId: ${sid}\nUse read_conversation to fetch the reply later.${left}`;
       }
-      return await waitForReply(api, args.projectId, sid, before, args.waitSeconds);
+      return (await waitForReply(api, args.projectId, sid, before, args.waitSeconds)) + left;
     }
     // Approval mode: the send does NOT happen yet — wait for the human operator's
     // decision in the panel (or the request to expire) before anything is sent.
