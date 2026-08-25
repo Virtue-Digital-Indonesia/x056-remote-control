@@ -1193,7 +1193,7 @@ export class ApiController {
 
   @Post('cron')
   @HttpCode(200)
-  addCron(@Body() body: { schedule?: string; projectId?: string; sessionId?: string; prompt?: string; tz?: string; label?: string; createdBy?: string }) {
+  addCron(@Body() body: { schedule?: string; projectId?: string; sessionId?: string; prompt?: string; tz?: string; label?: string; createdBy?: string; once?: boolean }) {
     try {
       return this.cron.add({
         schedule: body?.schedule ?? '',
@@ -1202,6 +1202,7 @@ export class ApiController {
         prompt: body?.prompt ?? '',
         tz: body?.tz,
         label: body?.label,
+        once: body?.once,
         createdBy: body?.createdBy,
       });
     } catch (err) {

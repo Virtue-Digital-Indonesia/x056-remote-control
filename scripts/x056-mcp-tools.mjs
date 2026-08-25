@@ -107,10 +107,11 @@ const CRON_TOOLS = [
   {
     name: 'schedule_task',
     description:
-      'Schedule a prompt to be sent to a conversation on a repeating cron schedule — a daily standup, an hourly health check, a Monday-morning review. '
+      'Schedule a prompt to be sent to a conversation — a daily standup, an hourly health check, or a ONE-OFF (set once: true) like "check the deploy at 3am". '
       + 'The prompt runs as a real turn in that conversation, so write it as an instruction to whoever picks it up, with the context they will need; they will not remember why it was scheduled. '
       + 'Omit sessionId to target your own conversation. Schedule is 5-field cron (minute hour day-of-month month day-of-week). '
-      + 'Times are interpreted in the operator\'s timezone unless you pass tz, NOT in UTC — "0 9 * * *" means 9am where they are.',
+      + 'Times are interpreted in the operator\'s timezone unless you pass tz, NOT in UTC — "0 9 * * *" means 9am where they are. '
+      + 'For anything meant to happen only once, PASS once: true — a bare "0 3 * * *" is a job that fires every night forever, and the surprise lands a day after everyone stopped thinking about it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -120,6 +121,7 @@ const CRON_TOOLS = [
         sessionId: { type: 'string', description: 'target conversation; omit for your own' },
         tz: { type: 'string', description: 'IANA timezone, e.g. Asia/Jakarta. Defaults to the operator\'s.' },
         label: { type: 'string', description: 'short note on what this job is for' },
+        once: { type: 'boolean', description: 'run at the next matching time, then delete the job' },
       },
       required: ['schedule', 'prompt'],
       additionalProperties: false,
@@ -159,7 +161,7 @@ function fmtJobs(data) {
   if (!jobs.length) return '(nothing scheduled)';
   return jobs.map((j) => {
     const when = j.lastRunAt ? new Date(j.lastRunAt).toISOString() : 'never';
-    return `${j.enabled ? '●' : '○'} id=${j.id}  ${j.schedule}  (${j.tz})`
+    return `${j.enabled ? '●' : '○'} id=${j.id}  ${j.schedule}  (${j.tz})${j.once ? '  [once]' : ''}`
       + `${j.label ? '  — ' + j.label : ''}\n   project=${j.projectId} conversation=${j.sessionId ?? '(new each run)'}`
       + `\n   last run: ${when}${j.lastResult ? ' · ' + j.lastResult : ''} · ${j.runCount} run(s)`
       + `\n   prompt: ${String(j.prompt ?? '').replace(/\s+/g, ' ').slice(0, 160)}`;
@@ -360,9 +362,9 @@ export async function callTool(api, name, args) {
       const sessionId = args.sessionId ?? (args.projectId ? undefined : SELF.sessionId || undefined);
       const job = await api('/api/cron', {
         method: 'POST',
-        body: JSON.stringify({ schedule: args.schedule, prompt: args.prompt, projectId, sessionId, tz: args.tz, label: args.label, createdBy: SELF.sessionId || 'mcp' }),
+        body: JSON.stringify({ schedule: args.schedule, prompt: args.prompt, projectId, sessionId, tz: args.tz, label: args.label, once: args.once, createdBy: SELF.sessionId || 'mcp' }),
       });
-      return `scheduled job ${job.id}: "${job.schedule}" in ${job.tz}`
+      return `scheduled job ${job.id}: "${job.schedule}" in ${job.tz}${job.once ? ' — ONCE, then deleted' : ' (repeats)'}`
         + `${job.sessionId ? ` → conversation ${job.sessionId}` : ' → a new conversation each run'}.`
         + `\nUse list_scheduled to see it, cancel_scheduled to remove it.`;
     }

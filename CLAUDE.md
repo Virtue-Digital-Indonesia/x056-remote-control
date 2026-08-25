@@ -131,6 +131,11 @@ A conversation can schedule a prompt to be sent on a repeating schedule, via the
 `schedule_task` / `list_scheduled` / `pause_scheduled` / `cancel_scheduled` MCP
 tools; the panel's ⋯ → **Scheduled tasks** lists, pauses and deletes them.
 
+- **`once: true` for anything meant to happen one time.** Written as plain cron,
+  "deploy at 3am tonight" is `0 3 * * *` — a job that fires *every* night, and
+  the surprise lands a day after everyone stopped thinking about it. A one-shot
+  deletes itself after it runs; if its delivery FAILS it is disabled instead, so
+  the reason stays visible and it cannot fire unattended a day later.
 - **Times are Asia/Jakarta by default, not UTC** — this container runs UTC, so a
   job stores an IANA zone and is matched against the wall clock in it. Override
   per job with `tz`.

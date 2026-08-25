@@ -204,3 +204,61 @@ describe('panel wiring', () => {
     expect(del).not.toMatch(/\bif \(!confirm\(/);
   });
 });
+
+describe('one-shot jobs', () => {
+  // "deploy at 3am tonight" written as plain cron is a job that fires EVERY
+  // night, and the surprise arrives a day after everyone stopped thinking about
+  // it. `once` is what makes the schedule mean the next match and no more.
+  const add = (s: CronScheduler, once: boolean) =>
+    s.add({ schedule: '0 3 * * *', projectId: 'p1', sessionId: 'c1', prompt: 'deploy', tz: 'Asia/Jakarta', once });
+
+  it('runs at the next match and then deletes itself', () => {
+    const { s, sent } = scheduler();
+    add(s, true);
+    s.tick(at('2026-08-25T20:00:00Z')); // 03:00 Jakarta
+    expect(sent.map((x) => x.prompt)).toEqual(['deploy']);
+    expect(s.list()).toEqual([]); // gone — not merely paused
+  });
+
+  it('does not fire again the next night, which is the whole point', () => {
+    const { s, sent } = scheduler();
+    add(s, true);
+    s.tick(at('2026-08-25T20:00:00Z'));
+    s.tick(at('2026-08-26T20:00:00Z'));
+    expect(sent.length).toBe(1);
+  });
+
+  it('leaves a repeating job alone — `once` is opt-in', () => {
+    const { s, sent } = scheduler();
+    add(s, false);
+    s.tick(at('2026-08-25T20:00:00Z'));
+    s.tick(at('2026-08-26T20:00:00Z'));
+    expect(sent.length).toBe(2);
+    expect(s.list().length).toBe(1);
+  });
+
+  it('survives a restart still marked one-shot', () => {
+    const { s, stateDir } = scheduler();
+    add(s, true);
+    const reloaded = new CronScheduler({ stateDir, deliver: () => ({ sessionId: 'c1', queued: false }), defaultTz: 'Asia/Jakarta' });
+    expect(reloaded.list()[0].once).toBe(true);
+  });
+
+  it('disables rather than deletes a one-shot whose delivery FAILED', () => {
+    // Deleting would hide why it never ran; leaving it armed would fire it at
+    // the next match — a full day later, unattended.
+    const { s } = scheduler(() => { throw new Error('conversation is gone'); });
+    add(s, true);
+    s.tick(at('2026-08-25T20:00:00Z'));
+    const [job] = s.list();
+    expect(job).toBeTruthy();
+    expect(job.enabled).toBe(false);
+    expect(job.lastResult).toMatch(/conversation is gone/);
+  });
+
+  it('reports itself as one-shot so the panel can say so', () => {
+    const { s } = scheduler();
+    expect(add(s, true).once).toBe(true);
+    expect(add(s, false).once).toBeUndefined();
+  });
+});

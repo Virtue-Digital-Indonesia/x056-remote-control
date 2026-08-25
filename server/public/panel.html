@@ -380,6 +380,9 @@
   .cronj .top { display: flex; align-items: baseline; gap: 8px; }
   .cronj .sched { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
   .cronj .lbl { color: var(--muted); overflow-wrap: anywhere; }
+  /* A one-shot has to be distinguishable at a glance from a nightly job — the
+     schedule text alone is identical for both. */
+  .cronj .lbl.once { color: var(--fg); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
   .cronj .meta { color: var(--muted); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
   .cronj .pr { font-size: 12px; margin-top: 5px; overflow-wrap: anywhere; opacity: .9; }
   .cronj.off { opacity: .55; }
@@ -1241,6 +1244,9 @@
       var d = document.createElement('div'); d.className = 'cronj' + (j.enabled ? '' : ' off');
       var top = document.createElement('div'); top.className = 'top';
       var sc = document.createElement('span'); sc.className = 'sched'; sc.textContent = j.schedule; top.appendChild(sc);
+      // A one-shot and a nightly job read identically from the schedule alone —
+      // "0 3 * * *" is both — so say which it is where the schedule is.
+      if (j.once) { var o = document.createElement('span'); o.className = 'lbl once'; o.textContent = 'once'; top.appendChild(o); }
       if (j.label) { var l = document.createElement('span'); l.className = 'lbl'; l.textContent = j.label; top.appendChild(l); }
       var btns = document.createElement('div'); btns.className = 'btns';
       var toggle = document.createElement('button'); toggle.className = 'btn'; toggle.textContent = j.enabled ? 'Pause' : 'Resume';
@@ -1252,7 +1258,7 @@
       del.addEventListener('click', function () {
         uiConfirm({
           title: 'Delete this scheduled task?',
-          message: j.schedule + ' (' + j.tz + ') — ' + (j.prompt || '').slice(0, 140),
+          message: j.schedule + ' (' + j.tz + ')' + (j.once ? ' · runs once' : '') + ' — ' + (j.prompt || '').slice(0, 140),
           confirmText: 'Delete', danger: true,
         }).then(function (ok) {
           if (!ok) return;
@@ -1264,7 +1270,9 @@
       d.appendChild(top);
       var meta = document.createElement('div'); meta.className = 'meta';
       meta.textContent = j.tz + ' · ' + cronWhen(j.lastRunAt) + (j.lastResult ? ' · ' + j.lastResult : '')
-        + ' · ' + (j.runCount || 0) + ' run(s)' + (j.enabled ? '' : ' · paused');
+        + ' · ' + (j.runCount || 0) + ' run(s)'
+        + (j.once ? ' · deletes itself after it runs' : '')
+        + (j.enabled ? '' : ' · paused');
       d.appendChild(meta);
       var pr = document.createElement('div'); pr.className = 'pr'; pr.textContent = j.prompt || ''; d.appendChild(pr);
       list.appendChild(d);

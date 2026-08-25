@@ -30,6 +30,15 @@ export interface CronJob {
   prompt: string;
   /** Free-form note for the panel; what this job is for. */
   label?: string;
+  /**
+   * Run at the next matching time and then delete itself.
+   *
+   * A repeating schedule is the wrong shape for "deploy at 3am tonight" or
+   * "remind me tomorrow": expressed as plain cron it silently becomes a nightly
+   * job, and the surprise arrives 24 hours after anyone stopped thinking about
+   * it. The schedule field still says WHEN — `once` only says "not again".
+   */
+  once?: boolean;
   enabled: boolean;
   createdAt: number;
   createdBy?: string;
@@ -154,7 +163,7 @@ export class CronScheduler {
 
   add(input: {
     schedule: string; projectId: string; prompt: string;
-    sessionId?: string; tz?: string; label?: string; createdBy?: string;
+    sessionId?: string; tz?: string; label?: string; createdBy?: string; once?: boolean;
   }): CronJob {
     parseCron(input.schedule); // throws on a bad expression, before anything is stored
     const tz = input.tz ?? this.defaultTz;
@@ -169,6 +178,7 @@ export class CronScheduler {
       sessionId: input.sessionId,
       prompt: input.prompt,
       label: input.label,
+      once: input.once ? true : undefined,
       enabled: true,
       createdAt: this.now().getTime(),
       createdBy: input.createdBy,
@@ -199,6 +209,7 @@ export class CronScheduler {
    *  job must not stop the others or kill the interval. */
   tick(at: Date = this.now()): CronJob[] {
     const ran: CronJob[] = [];
+    const spent: string[] = [];
     for (const job of this.jobs) {
       if (!job.enabled) continue;
       let parsed: ParsedCron;
@@ -213,13 +224,22 @@ export class CronScheduler {
         // Bind a job that had no conversation to the one it just created, so a
         // daily job accumulates in one thread instead of littering new ones.
         if (!job.sessionId && out.sessionId) job.sessionId = out.sessionId;
+        // A one-shot that fired is done. Deleting it here, rather than leaving
+        // it for whoever created it to clean up, is the only way "once" is a
+        // guarantee instead of an intention.
+        if (job.once) spent.push(job.id);
       } catch (err) {
         job.lastResult = `failed: ${(err as Error).message}`;
+        // A one-shot that FAILED is disabled, not deleted: deleting it would
+        // hide why, and leaving it armed would fire it at the next match — for a
+        // daily schedule, a full day later, long after anyone is expecting it.
+        if (job.once) job.enabled = false;
       }
       job.lastRunAt = at.getTime();
       job.runCount += 1;
       ran.push({ ...job });
     }
+    if (spent.length) this.jobs = this.jobs.filter((j) => !spent.includes(j.id));
     if (ran.length) this.save();
     if (this.fired.size > 500) this.fired = new Set([...this.fired].slice(-200));
     return ran;
