@@ -257,7 +257,7 @@
   .sumblk { margin: 10px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; }
   .sumblk > summary { cursor: pointer; padding: 9px 12px; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; list-style: none; }
   .sumblk > summary::-webkit-details-marker { display: none; }
-  .sumblk > summary b { color: var(--fg); font-weight: 600; }
+  .sumblk > summary b { color: var(--text); font-weight: 600; }
   .sumblk .body { padding: 0 12px 12px; font-size: 14px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
   .act { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 3px 0; padding: 3px 0; }
   .act .ic { opacity: .8; }
@@ -377,18 +377,29 @@
   .plug-empty { font-size: 12px; color: var(--faint); padding: 6px 2px; }
   /* Scheduled tasks */
   .tplr { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; cursor: pointer; }
-  .tplr:hover { border-color: var(--accent, var(--fg)); }
+  .tplr:hover { background: var(--surface-2); border-color: var(--border-strong); }
   .tplr .tw { min-width: 0; flex: 1; }
   .tplr .tn { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tplr .tb { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
-  .tplr .btn { flex: none; }
+  /* Icon actions. `.btn` has no base style in this stylesheet — the cron dialog
+     styles `.cronj .btns button` — so plain <button>s here fell through to the
+     browser's native chrome, which is why they looked pasted on. */
+  .tplr .ib { flex: none; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: none; border-radius: 8px; background: transparent; color: var(--faint); cursor: pointer; opacity: .5; transition: opacity .12s ease, background .12s ease, color .12s ease; }
+  /* Visible at rest, not hover-only: an action you cannot see is one you cannot
+     find. Quiet enough that the template name stays the thing you read. */
+  .tplr:hover .ib, .tplr:focus-within .ib { opacity: 1; }
+  .tplr .ib:hover { background: var(--surface-3); color: var(--text); }
+  .tplr .ib.danger:hover { color: var(--err); }
+  .tplr .ib:focus-visible { opacity: 1; outline: 2px solid var(--border-strong); outline-offset: -2px; }
+  /* No hover on touch — go straight to full strength there. */
+  @media (hover: none) { .tplr .ib { opacity: 1; } }
   .cronj { border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; margin-bottom: 8px; }
   .cronj .top { display: flex; align-items: baseline; gap: 8px; }
   .cronj .sched { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
   .cronj .lbl { color: var(--muted); overflow-wrap: anywhere; }
   /* A one-shot has to be distinguishable at a glance from a nightly job — the
      schedule text alone is identical for both. */
-  .cronj .lbl.once { color: var(--fg); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+  .cronj .lbl.once { color: var(--text); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
   .cronj .meta { color: var(--muted); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
   .cronj .pr { font-size: 12px; margin-top: 5px; overflow-wrap: anywhere; opacity: .9; }
   .cronj.off { opacity: .55; }
@@ -653,6 +664,7 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></symbol>
   <symbol id="i-snippet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h10"/><path d="M7 13h7"/><path d="M7 17h4"/></symbol>
   <symbol id="i-insert" viewBox="0 0 24 24"><path d="M9 10l-5 5 5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
   <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M10 14h4"/></symbol>
@@ -3878,6 +3890,20 @@
     api('/api/templates/used', { method: 'POST', body: JSON.stringify({ id: t.id }) }).catch(function () {});
   }
 
+  /** Icon-only action button. The label is the tooltip AND the accessible name:
+   *  without it the control is a shape with no meaning to a screen reader. */
+  function iconBtn(icon, label, danger) {
+    var b = document.createElement('button');
+    b.className = 'ib' + (danger ? ' danger' : '');
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'ic sm');
+    var use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute('href', '#i-' + icon);
+    svg.appendChild(use); b.appendChild(svg);
+    return b;
+  }
   var tplCache = [];
   function tplSetStatus(kind, msg) {
     var el = $('tplStatus');
@@ -3904,10 +3930,10 @@
       var b = document.createElement('div'); b.className = 'tb';
       b.textContent = t.body.replace(/\s+/g, ' ').slice(0, 90); w.appendChild(b);
       row.appendChild(w);
-      row.addEventListener('click', function (ev) { if (ev.target.closest('.btn')) return; insertTemplate(t); });
-      var edit = document.createElement('button'); edit.className = 'btn'; edit.textContent = 'Edit';
+      row.addEventListener('click', function (ev) { if (ev.target.closest('.ib')) return; insertTemplate(t); });
+      var edit = iconBtn('compose', 'Edit', false);
       edit.addEventListener('click', function () { tplEditor(t); });
-      var del = document.createElement('button'); del.className = 'btn'; del.textContent = 'Delete';
+      var del = iconBtn('trash', 'Delete', true);
       del.addEventListener('click', function () {
         uiConfirm({ title: 'Delete this template?', message: t.name, confirmText: 'Delete', danger: true })
           .then(function (ok) {
