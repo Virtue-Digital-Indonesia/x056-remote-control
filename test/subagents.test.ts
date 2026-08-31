@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -95,5 +95,24 @@ describe('the brief a subagent was given', () => {
   it('refuses to resolve an agentId that is not in the listing', () => {
     const { cfg, sid } = fixture([{ id: 'aaa', meta: {} }]);
     expect(subagentFile([cfg], sid, '../../escape')).toBeNull();
+  });
+});
+
+describe('a subagent abandoned by an earlier turn', () => {
+  // Status is "no tool_result AND the turn is live" — but a subagent the
+  // PREVIOUS turn abandoned also has no result, so that alone reports it as
+  // running forever. The endpoint additionally requires the transcript to have
+  // been written to recently; this pins the input that decision reads.
+  it('exposes updatedAt, so staleness can be told from silence', () => {
+    const { cfg, sid, dir } = fixture([{ id: 'aaa', meta: {}, lines: [say('user', 'go', '2026-01-01T00:00:00Z')] }]);
+    const [s] = listSubagents([cfg], sid);
+    expect(typeof s.updatedAt).toBe('number');
+    expect(Date.now() - s.updatedAt!).toBeLessThan(60_000); // just written
+
+    // Backdate the transcript the way an hours-old abandoned one would be.
+    const old = Date.now() - 6 * 3600 * 1000;
+    utimesSync(join(dir, 'agent-aaa.jsonl'), old / 1000, old / 1000);
+    const [stale] = listSubagents([cfg], sid);
+    expect(Date.now() - stale.updatedAt!).toBeGreaterThan(3600_000);
   });
 });

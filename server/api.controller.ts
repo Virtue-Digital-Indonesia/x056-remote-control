@@ -108,6 +108,9 @@ export const MCP_SERVER_MANAGER = Symbol('x056-mcp-server-manager');
 
 const QUOTA_TTL_MS = 90_000;
 
+/** How quiet a subagent's transcript may go and still count as running. */
+const LIVE_SUBAGENT_MS = 10 * 60_000;
+
 @Controller('api')
 export class ApiController {
   // The oauth usage endpoint rate-limits aggressively; cache per account and
@@ -581,13 +584,19 @@ export class ApiController {
         const found = s.toolUseId ? tasks[s.toolUseId] : undefined;
         const task = found?.task;
         const own_ = own.get(s.agentId) ?? null;
-        // Three states, not two. A tool_result means it came back. No result but
-        // a live turn means it is still working. No result and no live turn means
-        // it never returned. And when the Task call itself cannot be found at all
-        // — compaction drops old tool calls — say so rather than guess.
+        // A tool_result means it came back. Without one it either is still
+        // working or never returned — and "a turn is running" alone cannot tell
+        // those apart, because a subagent abandoned by an EARLIER turn also has
+        // no result and would be reported as running forever. So require the
+        // transcript to have been written to recently as well.
+        //
+        // The window is generous on purpose: a subagent can sit quiet inside one
+        // long tool call, and calling that one "stopped" is the worse mistake.
+        // An abandoned one is hours stale, not minutes.
+        const fresh = s.updatedAt != null && Date.now() - s.updatedAt < LIVE_SUBAGENT_MS;
         const status = task?.done ? (task.isError ? 'failed' : 'done')
-          : task ? (running ? 'running' : 'stopped')
-          : running ? 'running' : 'unknown';
+          : task ? (running && fresh ? 'running' : 'stopped')
+          : running && fresh ? 'running' : 'unknown';
         return {
           ...s,
           status,
