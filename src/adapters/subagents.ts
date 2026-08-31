@@ -40,6 +40,43 @@ export function subagentFile(configDirs: string[], sessionId: string, agentId: s
   return join(dir, `agent-${agentId}.jsonl`);
 }
 
+/**
+ * Every subagent's path, from ONE directory listing.
+ *
+ * subagentFile() re-lists on each call, which is fine for a single lookup and
+ * quadratic for a whole session: with 90 subagents it cost 536ms of a 540ms
+ * request — ~24,000 syscalls, against 2ms of actual scanning. Anything walking
+ * the full list must use this instead.
+ */
+export function subagentFiles(configDirs: string[], sessionId: string, known?: SubagentMeta[]): Map<string, string> {
+  const dir = subagentDir(configDirs, sessionId);
+  const out = new Map<string, string>();
+  if (!dir) return out;
+  // `known` lets a caller that already listed pass it back in rather than pay
+  // for a second walk. The ids come from the listing either way, so they are
+  // still never taken from user input.
+  for (const s of known ?? listSubagents(configDirs, sessionId)) out.set(s.agentId, join(dir, `agent-${s.agentId}.jsonl`));
+  return out;
+}
+
+/**
+ * A subagent's brief, cached.
+ *
+ * The brief is the FIRST entry of a transcript, so it never changes once
+ * written — but reading it means pulling 96KB off disk, and re-reading all of
+ * them on every poll cost 98ms for 90 subagents.
+ */
+const briefCache = new Map<string, string>();
+export function cachedBrief(file: string): string {
+  const hit = briefCache.get(file);
+  if (hit !== undefined) return hit;
+  const brief = subagentBrief(file);
+  // Only cache a brief that was actually found: an empty one may just mean the
+  // subagent had not written its first entry yet.
+  if (brief) briefCache.set(file, brief);
+  return brief;
+}
+
 /** The parent session's own transcript, for its usage totals and Task results. */
 export function parentTranscript(configDirs: string[], sessionId: string): string | null {
   return findTranscript(configDirs, sessionId);

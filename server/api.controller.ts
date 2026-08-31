@@ -25,7 +25,7 @@ import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { TEMPLATES, TemplateStore } from './templates.js';
 import { TRANSCRIPT_STATS, TranscriptStatsReader, estimateCost } from './transcript-stats.js';
 import { getAdapter } from '../src/adapters/registry.js';
-import { listSubagents, parentTranscript, readSubagentPage, subagentBrief, subagentFile } from '../src/adapters/subagents.js';
+import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles } from '../src/adapters/subagents.js';
 import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
@@ -569,11 +569,13 @@ export class ApiController {
       // one of them as "stopped" when they had all finished. The per-subagent
       // usage below needs the same scan, so this costs no extra reads.
       const list = listSubagents(configDirs, providerSessionId);
+      // One directory listing for the whole request — see subagentFiles.
+      const files = subagentFiles(configDirs, providerSessionId, list);
       const own = new Map<string, ReturnType<typeof this.stats.statsFor>>();
       const tasks: Record<string, { task: NonNullable<typeof parentStats>['tasks'][string]; by: string }> = {};
       for (const [id, t] of Object.entries(parentStats?.tasks ?? {})) tasks[id] = { task: t, by: '' };
       for (const s of list) {
-        const file = subagentFile(configDirs, providerSessionId, s.agentId);
+        const file = files.get(s.agentId);
         if (!file) continue;
         const st = this.stats.statsFor(file);
         own.set(s.agentId, st);
@@ -606,7 +608,7 @@ export class ApiController {
           // work rather than the last write to disk.
           startedAt: task?.startedAt ? Date.parse(task.startedAt) : s.startedAt,
           endedAt: task?.endedAt ? Date.parse(task.endedAt) : undefined,
-          brief: (() => { const f = subagentFile(configDirs, providerSessionId, s.agentId); return f ? subagentBrief(f).slice(0, 600) : ''; })(),
+          brief: (() => { const f = files.get(s.agentId); return f ? cachedBrief(f).slice(0, 600) : ''; })(),
           result: task?.result,
           usage: own_?.usage ?? null,
           cost: own_ ? estimateCost(own_.usage) : null,

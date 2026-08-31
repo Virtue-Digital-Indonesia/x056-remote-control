@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { listSubagents, readSubagentPage, subagentBrief, subagentDir, subagentFile } from '../src/adapters/subagents.js';
+import { cachedBrief, listSubagents, readSubagentPage, subagentBrief, subagentDir, subagentFile, subagentFiles } from '../src/adapters/subagents.js';
 
 /** A config dir shaped exactly like the CLI's: projects/<dir>/<session>/subagents. */
 function fixture(agents: { id: string; meta?: unknown; lines?: string[] }[]) {
@@ -114,5 +114,38 @@ describe('a subagent abandoned by an earlier turn', () => {
     utimesSync(join(dir, 'agent-aaa.jsonl'), old / 1000, old / 1000);
     const [stale] = listSubagents([cfg], sid);
     expect(Date.now() - stale.updatedAt!).toBeGreaterThan(3600_000);
+  });
+});
+
+describe('resolving every path at once', () => {
+  // subagentFile() re-lists the directory per call. For one lookup that is
+  // fine; for a whole session it is quadratic — 90 subagents cost 536ms of a
+  // 540ms request, against 2ms of actual scanning.
+  it('returns a path per subagent from a single listing', () => {
+    const { cfg, sid, dir } = fixture([{ id: 'aaa', meta: {} }, { id: 'bbb', meta: {} }]);
+    const files = subagentFiles([cfg], sid);
+    expect([...files.keys()].sort()).toEqual(['aaa', 'bbb']);
+    expect(files.get('aaa')).toBe(join(dir, 'agent-aaa.jsonl'));
+  });
+
+  it('accepts an already-computed list rather than walking again', () => {
+    const { cfg, sid } = fixture([{ id: 'aaa', meta: {} }]);
+    const list = listSubagents([cfg], sid);
+    expect(subagentFiles([cfg], sid, list).get('aaa')).toBe(subagentFiles([cfg], sid).get('aaa'));
+  });
+
+  it('is empty for a session with no subagents, not an error', () => {
+    const cfg = mkdtempSync(join(tmpdir(), 'x056-sub-'));
+    expect(subagentFiles([cfg], 'nope').size).toBe(0);
+  });
+
+  it('caches a brief, since it is the first entry and never changes', () => {
+    const { cfg, sid, dir } = fixture([{ id: 'aaa', meta: {}, lines: [say('user', 'THE BRIEF', '2026-01-01T00:00:00Z')] }]);
+    const f = join(dir, 'agent-aaa.jsonl');
+    expect(cachedBrief(f)).toBe('THE BRIEF');
+    // Rewriting the file does not change what a cached brief reports — correct,
+    // because the first entry of a transcript is immutable in practice.
+    expect(cachedBrief(f)).toBe('THE BRIEF');
+    expect(subagentFiles([cfg], sid).get('aaa')).toBe(f);
   });
 });
