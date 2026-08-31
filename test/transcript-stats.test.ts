@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -192,5 +192,71 @@ describe('reading the cache without scanning', () => {
 
   it('returns null for a file that does not exist', () => {
     expect(new TranscriptStatsReader(dir()).cached('/nope/missing.jsonl')).toBeNull();
+  });
+});
+
+describe('reading a whole transcript, across calls', () => {
+  // The totals are for the WHOLE file. A capped scan that ignored the first
+  // 600MB of a 627MB transcript answered a different question than the one
+  // asked — but 627MB takes 10.3s at 61MB/s, which cannot happen in one
+  // request. So it is read in budgeted pieces that resume where they stopped.
+  const many = (n: number) => assistant('claude-opus-5', { output_tokens: 10 }).repeat(n);
+
+  it('reaches the exact total over several budgeted calls', () => {
+    const d = dir();
+    const f = join(d, 't.jsonl');
+    writeFileSync(f, many(3000));
+    const r = new TranscriptStatsReader(d);
+    let s = r.statsFor(f, 1); // floored to 64KB — several calls for this file
+    expect(s.partial).toBe(true);
+    expect(s.usage.output).toBeLessThan(30000);
+    let guard = 0;
+    while (s.partial && guard++ < 500) s = r.statsFor(f, 1);
+    expect(s.partial).toBe(false);
+    expect(s.usage.output).toBe(30000); // every one of the 3000 messages
+    expect(s.scanned).toBe(s.size);
+  });
+
+  it('counts from byte 0 even on a file past the old 32MB tail cap', () => {
+    // The fixture has to CROSS that cap, or tail-capping is a no-op on it and
+    // the test proves nothing — which is exactly what an earlier version of
+    // this test did.
+    const d = dir();
+    const f = join(d, 't.jsonl');
+    const filler = many(5000); // ~1MB per block
+    writeFileSync(f, assistant('claude-haiku-4-5', { output_tokens: 7 }));
+    for (let i = 0; i < 40; i++) appendFileSync(f, filler);
+    expect(statSync(f).size).toBeGreaterThan(32 * 1024 * 1024);
+
+    const r = new TranscriptStatsReader(d);
+    let s = r.statsFor(f);
+    let guard = 0;
+    while (s.partial && guard++ < 200) s = r.statsFor(f);
+    expect(s.partial).toBe(false);
+    // The very first entry of the file, which a tail-only scan never sees.
+    expect(s.usage.byModel['claude-haiku-4-5'].output).toBe(7);
+    expect(s.scanned).toBe(s.size);
+  }, 30000);
+
+  it('keeps reading a file that grew while it was still catching up', () => {
+    const d = dir();
+    const f = join(d, 't.jsonl');
+    writeFileSync(f, many(1000));
+    const r = new TranscriptStatsReader(d);
+    r.statsFor(f, 1);
+    appendFileSync(f, many(1000));
+    let s = r.statsFor(f, 1);
+    let guard = 0;
+    while (s.partial && guard++ < 500) s = r.statsFor(f, 1);
+    expect(s.usage.output).toBe(20000);
+  });
+
+  it('discards a cache written under the old tail-capped meaning', () => {
+    const d = dir();
+    const f = join(d, 't.jsonl');
+    writeFileSync(f, many(10));
+    // v1 shape: a bare map, and totals that began mid-file.
+    writeFileSync(join(d, 'transcript-stats.json'), JSON.stringify({ [f]: { usage: { output: 999999 }, tasks: {}, partial: true, scanned: 1, size: 1, offset: 1 } }));
+    expect(new TranscriptStatsReader(d).statsFor(f).usage.output).toBe(100);
   });
 });

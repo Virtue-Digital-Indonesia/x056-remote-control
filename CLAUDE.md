@@ -138,9 +138,17 @@ pass collects both that and the Task outcomes above.
 - **Scanning is incremental and cached** (`state/transcript-stats.json`, keyed by
   path, holding a byte offset + running totals). Transcripts here reach 627MB;
   re-reading one per request is not an option.
-- A **first** scan is capped at 32MB from the tail and reports `partial`, which
-  the panel states outright — silently presenting a fraction of a 600MB
-  transcript as the total would be worse than showing nothing.
+- Totals are for the **whole file**, always read from byte 0. A 627MB transcript
+  takes 10.3s at ~61MB/s, which cannot happen inside one request, so it is read
+  in **budgeted pieces that resume**: each call does bounded work, reports
+  `partial`, and picks up where it stopped. Poll and the figure converges to the
+  exact number (27 calls, ~350ms each, for the 627MB one). The panel says
+  "still reading: 24.0 MB of 627.0 MB" rather than presenting a fraction as a
+  total. `usage/all` sizes each read to the time it has left, so a chunk begun
+  with 30ms remaining cannot overshoot the budget.
+- The cache is **versioned** (`CACHE_VERSION`). v1 entries began mid-file under
+  an older tail cap, so their totals are not whole-file numbers and are
+  discarded rather than shown as if they were.
 - Dollars are **API list price for the same work**, not what Max billed (it is a
   flat subscription). An unpriced model is NAMED rather than blanking the figure;
   `<synthetic>` carries no tokens and is skipped.

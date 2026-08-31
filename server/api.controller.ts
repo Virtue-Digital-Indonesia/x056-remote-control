@@ -647,9 +647,9 @@ export class ApiController {
     const started = Date.now();
     const running = new Set(this.manager.runningSessions().map((r) => `${r.projectId}/${r.sessionId}`));
 
-    interface Row { projectId: string; projectName: string; sessionId: string; title: string; running: boolean; usage: unknown; cost: unknown; partial: boolean; size: number }
+    interface Row { projectId: string; projectName: string; sessionId: string; title: string; running: boolean; usage: unknown; cost: unknown; partial: boolean; scanned: number; size: number }
     const rows: Row[] = [];
-    const cold: { key: string; projectId: string; projectName: string; sessionId: string; title: string; file: string; size: number }[] = [];
+    const cold: { key: string; projectId: string; projectName: string; sessionId: string; title: string; file: string; size: number; started: number; running: boolean }[] = [];
 
     const reg = this.manager.listProjects() as { projects: { id: string; name: string; conversations?: { sessionId: string; title?: string }[] }[] };
     // One index for the whole request; see transcriptIndex.
@@ -671,27 +671,33 @@ export class ApiController {
         const live = running.has(key);
         const known = this.stats.cached(file);
         const base = { projectId: proj.id, projectName: proj.name, sessionId: conv.sessionId, title: conv.title ?? conv.sessionId.slice(0, 8), running: live };
-        if (live || known) {
-          // A live conversation is re-read for what it just wrote; a cached one
-          // that has not grown costs a stat and nothing else.
+        // A cached entry that is still PARTIAL has more to read, so it belongs in
+        // the work list — taking it as-is would freeze a big transcript at
+        // whatever fraction the first visit happened to reach.
+        if ((live || known) && !known?.partial) {
           const st = live ? this.stats.statsFor(file) : known!;
-          rows.push({ ...base, usage: st.usage, cost: estimateCost(st.usage), partial: st.partial, size: st.size });
+          rows.push({ ...base, usage: st.usage, cost: estimateCost(st.usage), partial: st.partial, scanned: st.scanned, size: st.size });
         } else {
           let size = 0;
           try { size = statSync(file).size; } catch { continue; }
-          cold.push({ key, projectId: proj.id, projectName: proj.name, sessionId: conv.sessionId, title: base.title, file, size });
+          // Already-started files first: finishing one beats starting another.
+          cold.push({ key, projectId: proj.id, projectName: proj.name, sessionId: conv.sessionId, title: base.title, file, size, started: known ? known.scanned : 0, running: live });
         }
       }
     }
 
-    // Smallest first: the count converges fastest, and the 627MB outlier does
-    // not monopolise the first budget.
-    cold.sort((a, b) => a.size - b.size);
+    // Anything already begun first, then smallest: the count converges fastest,
+    // and the 627MB outlier does not monopolise the first budget.
+    cold.sort((a, b) => Number(b.started > 0) - Number(a.started > 0) || a.size - b.size);
     let scanned = 0;
     for (const c of cold) {
-      if (Date.now() - started >= budget) break;
-      const st = this.stats.statsFor(c.file);
-      rows.push({ projectId: c.projectId, projectName: c.projectName, sessionId: c.sessionId, title: c.title, running: false, usage: st.usage, cost: estimateCost(st.usage), partial: st.partial, size: st.size });
+      const left = budget - (Date.now() - started);
+      if (left <= 0) break;
+      // Size the read to the time remaining rather than always taking a full
+      // chunk: the budget is only checked BETWEEN files, so a 24MB chunk begun
+      // with 30ms left overshot it. ~60MB/s measured on these transcripts.
+      const st = this.stats.statsFor(c.file, Math.max(1, Math.round(left * 60_000)));
+      rows.push({ projectId: c.projectId, projectName: c.projectName, sessionId: c.sessionId, title: c.title, running: c.running, usage: st.usage, cost: estimateCost(st.usage), partial: st.partial, scanned: st.scanned, size: st.size });
       scanned += 1;
     }
 
@@ -710,6 +716,10 @@ export class ApiController {
       totals: { ...totals, unpriced: [...totals.unpriced] },
       // Honest about what is not in the figure yet.
       pending: cold.length - scanned,
+      // Bytes still unread across everything — the honest measure of how far
+      // off the total is, since one 627MB file dwarfs forty small ones.
+      pendingBytes: cold.slice(scanned).reduce((a, c) => a + (c.size - c.started), 0)
+        + rows.reduce((a, r) => a + (r.partial ? Math.max(0, r.size - r.scanned) : 0), 0),
       running: rows.filter((r) => r.running).length,
     };
   }

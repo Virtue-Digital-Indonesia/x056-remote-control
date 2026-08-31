@@ -46,9 +46,9 @@ export interface TaskOutcome {
 export interface TranscriptStats {
   usage: TokenUsage;
   tasks: Record<string, TaskOutcome>;
-  /** True when the first scan started mid-file, so totals cover only the tail. */
+  /** True while bytes remain unread — the totals are still climbing. */
   partial: boolean;
-  /** Bytes actually accounted for. */
+  /** Bytes accounted for so far, from the start of the file. */
   scanned: number;
   size: number;
 }
@@ -98,8 +98,22 @@ export function estimateCost(u: TokenUsage): { usd: number; unpriced: string[] }
 
 const emptyUsage = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, byModel: {}, messages: 0 });
 
-/** Never scan more than this on a FIRST pass; older bytes are reported as partial. */
-const MAX_FIRST_SCAN = 32 * 1024 * 1024;
+/**
+ * Bytes read per call. The totals are for the WHOLE file — a capped scan that
+ * silently ignored the first 600MB of a 627MB transcript answered a different
+ * question than the one being asked — but reading 627MB takes 10.3s at 61MB/s,
+ * which cannot happen inside one request. So a big file is read across several
+ * calls: each does a bounded amount of work, reports itself as `partial`, and
+ * resumes where it stopped. Poll and the figure converges to the exact total.
+ */
+const SCAN_BUDGET = 24 * 1024 * 1024;
+
+/**
+ * Bumped when the meaning of a cached entry changes. v1 entries began mid-file
+ * (the old 32MB tail cap), so their totals are not comparable with these and
+ * are discarded rather than shown as if they were whole-file numbers.
+ */
+const CACHE_VERSION = 2;
 const CHUNK = 4 * 1024 * 1024;
 const MAX_RESULT_CHARS = 4000;
 const MAX_TASKS = 400;
@@ -114,8 +128,9 @@ export class TranscriptStatsReader {
 
   private load(): void {
     try {
-      const raw = JSON.parse(readFileSync(this.file, 'utf8')) as Record<string, CacheEntry>;
-      for (const [k, v] of Object.entries(raw)) this.cache.set(k, v);
+      const raw = JSON.parse(readFileSync(this.file, 'utf8')) as { v?: number; entries?: Record<string, CacheEntry> };
+      if (raw?.v !== CACHE_VERSION || !raw.entries) return; // older shape: rescan
+      for (const [k, v] of Object.entries(raw.entries)) this.cache.set(k, v);
     } catch { /* first run */ }
   }
 
@@ -123,13 +138,19 @@ export class TranscriptStatsReader {
     try {
       mkdirSync(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp`;
-      writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.cache)));
+      writeFileSync(tmp, JSON.stringify({ v: CACHE_VERSION, entries: Object.fromEntries(this.cache) }));
       renameSync(tmp, this.file);
     } catch { /* the cache is an optimisation; losing it only costs a rescan */ }
   }
 
-  /** Totals for one transcript, scanning only what has been appended. */
-  statsFor(path: string): TranscriptStats {
+  /**
+   * Totals for one transcript, reading at most `budget` bytes this call.
+   *
+   * Always starts at byte 0 — the number is for the whole file. A large one
+   * simply takes several calls to get there, and says so via `partial` until it
+   * does.
+   */
+  statsFor(path: string, budget = SCAN_BUDGET): TranscriptStats {
     let size: number;
     try { size = fstatSyncSize(path); } catch { return { usage: emptyUsage(), tasks: {}, partial: false, scanned: 0, size: 0 }; }
 
@@ -138,17 +159,14 @@ export class TranscriptStatsReader {
     // session was rewritten): the cached totals describe bytes that are gone.
     if (entry && entry.size > size) entry = undefined;
 
-    if (!entry) {
-      const from = size > MAX_FIRST_SCAN ? size - MAX_FIRST_SCAN : 0;
-      entry = { usage: emptyUsage(), tasks: {}, partial: from > 0, scanned: 0, size: 0, offset: from };
-    } else if (entry.size === size) {
-      return strip(entry);
-    }
+    if (!entry) entry = { usage: emptyUsage(), tasks: {}, partial: size > 0, scanned: 0, size: 0, offset: 0 };
+    else if (entry.offset >= size) return strip(entry); // nothing new, and complete
 
-    const end = this.scan(path, entry, size);
+    const end = this.scan(path, entry, size, budget);
     entry.offset = end;
     entry.size = size;
-    entry.scanned = end - (entry.partial ? size - MAX_FIRST_SCAN : 0);
+    entry.scanned = end;
+    entry.partial = end < size;
     this.cache.set(path, entry);
     this.save();
     return strip(entry);
@@ -171,27 +189,26 @@ export class TranscriptStatsReader {
   }
 
   /** Read [entry.offset, size) in chunks, folding each complete line in. */
-  private scan(path: string, entry: CacheEntry, size: number): number {
+  private scan(path: string, entry: CacheEntry, size: number, budget: number): number {
     let fd: number | undefined;
     let pos = entry.offset;
+    // Floor the budget rather than rounding it up to a whole CHUNK: a 4MB floor
+    // made every small budget read the entire file. 64KB still guarantees
+    // progress past any single line, so the offset can never stall.
+    const stopAt = Math.min(size, pos + Math.max(budget, 64 * 1024));
     let carry = '';
-    // A first scan that starts mid-file lands inside a line; drop it.
-    let dropFirst = entry.offset > 0 && entry.usage.messages === 0 && Object.keys(entry.tasks).length === 0;
     try {
       fd = openSync(path, 'r');
       const buf = Buffer.allocUnsafe(CHUNK);
-      while (pos < size) {
-        const want = Math.min(CHUNK, size - pos);
+      while (pos < stopAt) {
+        const want = Math.min(CHUNK, stopAt - pos);
         const got = readSync(fd, buf, 0, want, pos);
         if (got <= 0) break;
         pos += got;
         const text = carry + buf.toString('utf8', 0, got);
         const lines = text.split('\n');
         carry = lines.pop() ?? ''; // last piece may be a partial line
-        for (const line of lines) {
-          if (dropFirst) { dropFirst = false; continue; }
-          this.fold(entry, line);
-        }
+        for (const line of lines) this.fold(entry, line);
       }
     } catch {
       return entry.offset; // leave the offset where it was; try again next call
@@ -199,7 +216,7 @@ export class TranscriptStatsReader {
       if (fd !== undefined) try { closeSync(fd); } catch { /* already closed */ }
     }
     // Stop at the last COMPLETE line so the next scan resumes on a boundary.
-    return size - Buffer.byteLength(carry, 'utf8');
+    return pos - Buffer.byteLength(carry, 'utf8');
   }
 
   private fold(entry: CacheEntry, line: string): void {

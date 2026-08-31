@@ -3980,7 +3980,10 @@
     if (!n) return '0 B';
     if (n < 1024) return n + ' B';
     if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
-    return (n / 1048576).toFixed(1) + ' MB';
+    // Totals across every conversation run past a gigabyte, where "1536.0 MB"
+    // stops being readable.
+    if (n < 1024 * 1024 * 1024) return (n / 1048576).toFixed(1) + ' MB';
+    return (n / 1073741824).toFixed(1) + ' GB';
   }
 
   /** Render history rows into any container, reusing the chat's own builders so
@@ -4019,17 +4022,22 @@
     d.appendChild(top);
 
     var counted = allUsage.conversations.length, pending = allUsage.pending || 0;
+    var left = allUsage.pendingBytes || 0;
     var sub = document.createElement('div'); sub.className = 'sub';
-    sub.textContent = pending
-      ? counted + ' of ' + (counted + pending) + ' read — the rest are still being scanned'
-      : counted + ' conversations';
+    // Bytes, not file count: one 627MB transcript outweighs forty small ones,
+    // so "3 of 42 read" alone said nothing about how far off the total was.
+    sub.textContent = (pending || left)
+      ? counted + ' of ' + (counted + pending) + ' conversations · ' + fmtBytes(left) + ' still to read'
+      : counted + ' conversations · complete';
     d.appendChild(sub);
     var un = unpricedNote(allUsage.totals);
     if (un) { var uw = document.createElement('div'); uw.className = 'scw'; uw.textContent = un; d.appendChild(uw); }
 
-    if (pending) {
+    if (pending || left) {
+      var done = allUsage.conversations.reduce(function (a, c) { return a + (c.scanned || 0); }, 0);
       var bar = document.createElement('div'); bar.className = 'bar';
-      var i = document.createElement('i'); i.style.width = Math.round((counted / (counted + pending)) * 100) + '%';
+      var i = document.createElement('i');
+      i.style.width = Math.max(2, Math.round((done / (done + left)) * 100)) + '%';
       bar.appendChild(i); d.appendChild(bar);
     }
 
@@ -4087,9 +4095,11 @@
     if (un) { var uw = document.createElement('div'); uw.className = 'scw'; uw.textContent = un; d.appendChild(uw); }
     // A capped first scan must say so — silently reporting a fraction of a
     // 600MB transcript as the total would be worse than reporting nothing.
+    // Not a cap any more — the whole file is read, just not in one request.
     if (subSelf.partial) {
       var w = document.createElement('div'); w.className = 'scw';
-      w.textContent = 'partial: the newest ' + fmtBytes(subSelf.scanned) + ' of a ' + fmtBytes(subSelf.size) + ' transcript';
+      w.textContent = 'still reading: ' + fmtBytes(subSelf.scanned) + ' of ' + fmtBytes(subSelf.size)
+        + ' — this figure is still climbing';
       d.appendChild(w);
     }
     box.appendChild(d);
@@ -4260,7 +4270,7 @@
     if (active) refreshSubagents();
     // Keep reading the rest only while the popover is open, or while something
     // is running and the figure would otherwise go stale.
-    if (!$('subPop').hidden && (allUsage === null || allUsage.pending > 0 || active)) refreshAllUsage();
+    if (!$('subPop').hidden && (allUsage === null || allUsage.pending > 0 || allUsage.pendingBytes > 0 || active)) refreshAllUsage();
     for (var id in subShells) subShells[id]();
   }, 5000);
 
