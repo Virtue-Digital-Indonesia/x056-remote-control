@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { readFilePage, type HistoryPage } from './claude.js';
+import { findTranscript, readFilePage, type HistoryPage } from './claude.js';
 
 /**
  * Subagents, as Claude Code already records them.
@@ -30,6 +30,54 @@ export interface SubagentMeta {
   updatedAt?: number;
   /** Transcript size in bytes — cheap "did anything happen" signal. */
   bytes: number;
+}
+
+/** The transcript file for one subagent, or null. */
+export function subagentFile(configDirs: string[], sessionId: string, agentId: string): string | null {
+  const dir = subagentDir(configDirs, sessionId);
+  if (!dir) return null;
+  if (!listSubagents(configDirs, sessionId).some((s) => s.agentId === agentId)) return null;
+  return join(dir, `agent-${agentId}.jsonl`);
+}
+
+/** The parent session's own transcript, for its usage totals and Task results. */
+export function parentTranscript(configDirs: string[], sessionId: string): string | null {
+  return findTranscript(configDirs, sessionId);
+}
+
+/**
+ * The brief a subagent was given: the first user entry of its transcript.
+ *
+ * Read from the HEAD, unlike history paging which reads the tail — the brief is
+ * the very first thing written and would otherwise need the whole file.
+ */
+export function subagentBrief(file: string, maxBytes = 96 * 1024): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, 'r');
+    const size = fstatSync(fd).size;
+    const len = Math.min(maxBytes, size);
+    if (!len) return '';
+    const buf = Buffer.allocUnsafe(len);
+    readSync(fd, buf, 0, len, 0);
+    for (const line of buf.toString('utf8').split('\n')) {
+      if (!line || line.charCodeAt(0) !== 0x7b) continue;
+      let d: { type?: string; message?: { role?: string; content?: unknown } };
+      try { d = JSON.parse(line) as typeof d; } catch { continue; }
+      if (d.type !== 'user') continue;
+      const c = d.message?.content;
+      if (typeof c === 'string') return c;
+      if (Array.isArray(c)) {
+        const t = c.find((b) => b && typeof b === 'object' && (b as { type?: string }).type === 'text');
+        if (t) return String((t as { text?: unknown }).text ?? '');
+      }
+    }
+    return '';
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch { /* already closed */ }
+  }
 }
 
 /** Where a session's subagent transcripts live, across every account's tree. */

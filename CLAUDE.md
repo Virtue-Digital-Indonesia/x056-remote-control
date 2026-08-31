@@ -115,9 +115,29 @@ CLI writes each subagent a complete transcript of its own:
 - `toolUseId` ties a subagent back to the Task call in the parent; `spawnDepth`
   is 1 for one the conversation spawned, 2+ for one another subagent spawned.
 - `src/adapters/subagents.ts` lists and reads them; the panel's ✨ topbar button
-  (hidden when there are none) opens the list, and each row opens its own shell.
-  `agentId` is matched against the directory listing before use — it arrives from
-  a query string, and pasting it into a path would let `../` escape the session.
+  opens "Cost & subagents", and each row opens its own shell. `agentId` is matched
+  against the directory listing before use — it arrives from a query string, and
+  pasting it into a path would let `../` escape the session.
+- **Status comes from the PARENT, not from mtime.** A Task's `tool_use` and its
+  later `tool_result` bracket the subagent, so a missing result means it never
+  came back — running if the turn is live, stopped if it is not. Guessing from
+  file mtime calls a subagent that is thinking hard "finished".
+
+## Token cost (`server/transcript-stats.ts`)
+
+Every assistant entry carries `message.usage` and `message.model`, so what a
+conversation or a subagent spent is **recorded, not estimated**. One incremental
+pass collects both that and the Task outcomes above.
+
+- **Scanning is incremental and cached** (`state/transcript-stats.json`, keyed by
+  path, holding a byte offset + running totals). Transcripts here reach 627MB;
+  re-reading one per request is not an option.
+- A **first** scan is capped at 32MB from the tail and reports `partial`, which
+  the panel states outright — silently presenting a fraction of a 600MB
+  transcript as the total would be worse than showing nothing.
+- Dollars are **API list price for the same work**, not what Max billed (it is a
+  flat subscription). An unpriced model is NAMED rather than blanking the figure;
+  `<synthetic>` carries no tokens and is skipped.
 
 ## Conversations messaging each other is BOUNDED
 

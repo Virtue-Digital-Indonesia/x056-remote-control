@@ -23,8 +23,9 @@ import { CRON, CronScheduler } from './cron.js';
 import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { TEMPLATES, TemplateStore } from './templates.js';
+import { TRANSCRIPT_STATS, TranscriptStatsReader, estimateCost } from './transcript-stats.js';
 import { getAdapter } from '../src/adapters/registry.js';
-import { listSubagents, readSubagentPage } from '../src/adapters/subagents.js';
+import { listSubagents, parentTranscript, readSubagentPage, subagentBrief, subagentFile } from '../src/adapters/subagents.js';
 import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
@@ -132,6 +133,7 @@ export class ApiController {
     @Inject(DESIGN_LOGIN) private readonly designLogin: DesignLoginManager,
     @Inject(DESIGN_CONSENT) private readonly designConsent: DesignConsentGranter,
     @Inject(TEMPLATES) private readonly templates: TemplateStore,
+    @Inject(TRANSCRIPT_STATS) private readonly stats: TranscriptStatsReader,
   ) {
     this.loadQuotaCache();
   }
@@ -542,13 +544,50 @@ export class ApiController {
   @Get('conversations/subagents')
   conversationSubagents(@Query('projectId') projectId?: string, @Query('sessionId') sessionId?: string) {
     if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    const empty = { subagents: [], self: null };
+    if (!projectId || !sessionId) return empty;
     try {
       const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
       // Codex has no equivalent; an empty list is the honest answer, not an error.
-      if (adapter.id !== 'claude') return { subagents: [] };
-      return { subagents: listSubagents(configDirs, providerSessionId) };
+      if (adapter.id !== 'claude') return empty;
+
+      // The parent's own transcript answers two questions at once: what the
+      // conversation itself has spent, and — through each Task's tool_result —
+      // which subagents have actually come back.
+      const parent = parentTranscript(configDirs, providerSessionId);
+      const parentStats = parent ? this.stats.statsFor(parent) : null;
+      const running = this.manager.isSessionRunning(sessionId);
+
+      const subagents = listSubagents(configDirs, providerSessionId).map((s) => {
+        const task = s.toolUseId ? parentStats?.tasks[s.toolUseId] : undefined;
+        const file = subagentFile(configDirs, providerSessionId, s.agentId);
+        const own = file ? this.stats.statsFor(file) : null;
+        // A subagent with no tool_result either never returned or is returning
+        // now — only the parent turn's state tells those two apart.
+        const status = task?.done ? (task.isError ? 'failed' : 'done') : running ? 'running' : 'stopped';
+        return {
+          ...s,
+          status,
+          // The Task call's own timestamps beat file mtimes: they bracket the
+          // work rather than the last write to disk.
+          startedAt: task?.startedAt ? Date.parse(task.startedAt) : s.startedAt,
+          endedAt: task?.endedAt ? Date.parse(task.endedAt) : undefined,
+          brief: file ? subagentBrief(file).slice(0, 600) : '',
+          result: task?.result,
+          usage: own?.usage ?? null,
+          cost: own ? estimateCost(own.usage) : null,
+        };
+      });
+
+      return {
+        subagents,
+        // The conversation's own spend, so a fan-out can be compared against it.
+        self: parentStats
+          ? { usage: parentStats.usage, cost: estimateCost(parentStats.usage), partial: parentStats.partial, scanned: parentStats.scanned, size: parentStats.size, running }
+          : null,
+      };
     } catch {
-      return { subagents: [] };
+      return empty;
     }
   }
 

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { listSubagents, readSubagentPage, subagentDir } from '../src/adapters/subagents.js';
+import { listSubagents, readSubagentPage, subagentBrief, subagentDir, subagentFile } from '../src/adapters/subagents.js';
 
 /** A config dir shaped exactly like the CLI's: projects/<dir>/<session>/subagents. */
 function fixture(agents: { id: string; meta?: unknown; lines?: string[] }[]) {
@@ -75,5 +75,25 @@ describe('reading one subagent\'s history', () => {
     const { cfg, sid } = fixture([{ id: 'aaa', meta: {} }]);
     expect(readSubagentPage([cfg], sid, '../../../../etc/passwd', 5).rows).toEqual([]);
     expect(readSubagentPage([cfg], sid, 'unknown', 5).rows).toEqual([]);
+  });
+});
+
+describe('the brief a subagent was given', () => {
+  it('reads the FIRST user entry, not the last — the brief is at the head', () => {
+    const { cfg, sid, dir } = fixture([{
+      id: 'aaa', meta: {},
+      lines: [say('user', 'THE BRIEF', '2026-01-01T00:00:00Z'), say('assistant', 'ok', '2026-01-01T00:00:10Z'), say('user', 'a later turn', '2026-01-01T00:01:00Z')],
+    }]);
+    expect(subagentBrief(join(dir, 'agent-aaa.jsonl'))).toBe('THE BRIEF');
+    expect(subagentFile([cfg], sid, 'aaa')).toBe(join(dir, 'agent-aaa.jsonl'));
+  });
+
+  it('returns empty for a file that does not exist, rather than throwing', () => {
+    expect(subagentBrief('/nope/missing.jsonl')).toBe('');
+  });
+
+  it('refuses to resolve an agentId that is not in the listing', () => {
+    const { cfg, sid } = fixture([{ id: 'aaa', meta: {} }]);
+    expect(subagentFile([cfg], sid, '../../escape')).toBeNull();
   });
 });

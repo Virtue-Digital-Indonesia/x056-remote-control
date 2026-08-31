@@ -378,8 +378,27 @@
   /* Scheduled tasks */
   /* The count badge is informational, not an alert like the approvals one. */
   .subBadge { background: var(--accent); }
-  .subr { display: flex; align-items: center; gap: 9px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; cursor: pointer; }
-  .subr:hover { background: var(--surface-2); border-color: var(--border-strong); }
+  .subr.col { display: block; }
+  .sst { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border-radius: 999px; padding: 1px 7px; flex: none; }
+  .sst.running { background: var(--accent); color: var(--on-accent); }
+  .sst.done { background: var(--ok-bg); color: var(--ok); }
+  .sst.failed { background: var(--err-bg); color: var(--err); }
+  .sst.stopped { background: var(--surface-3); color: var(--muted); }
+  /* Brief and result, so the common question needs no click. */
+  .subr details { margin-top: 6px; }
+  .subr details > summary { font-size: 11.5px; color: var(--muted); cursor: pointer; user-select: none; list-style: none; }
+  .subr details > summary::-webkit-details-marker { display: none; }
+  .subr details > summary::before { content: "▸ "; }
+  .subr details[open] > summary::before { content: "▾ "; }
+  .subr details p { margin: 5px 0 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; color: var(--text); }
+  /* The conversation's own spend, above the subagents it paid for. */
+  .selfcost { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; margin-bottom: 10px; background: var(--surface-2); }
+  .selfcost .sct { font-weight: 600; display: flex; align-items: baseline; gap: 8px; }
+  .selfcost .scn { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .selfcost .scb { color: var(--muted); font-size: 11.5px; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .selfcost .scw { color: var(--amber); font-size: 11px; margin-top: 3px; }
+  .subr { display: flex; align-items: center; gap: 9px; border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; margin-bottom: 8px; }
+  .subr:hover { border-color: var(--border-strong); }
   .subr .sw { min-width: 0; flex: 1; }
   .subr .st { font-weight: 600; display: flex; align-items: center; gap: 7px; }
   .subr .sk { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--on-accent); background: var(--accent); border-radius: 999px; padding: 1px 7px; font-weight: 700; flex: none; }
@@ -838,9 +857,10 @@
   </div>
   <div class="plug-foot">Changes apply to the next turn. Invoke a plugin command by sending it as a message, e.g. <code>/claude-security scan my branch</code>.</div>
 </div>
-<div class="pop" id="subPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:420px; max-height:78vh; overflow:auto;">
-  <h2>Subagents</h2>
-  <div class="plug-note">each one keeps its own transcript · click to open it</div>
+<div class="pop" id="subPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:470px; max-height:78vh; overflow:auto;">
+  <h2>Cost &amp; subagents</h2>
+  <div class="plug-note">tokens are exact · dollars are the API list price for the same work, not what Max billed</div>
+  <div id="selfCost"></div>
   <div id="subList"></div>
 </div>
 <div class="pop" id="tplPop" hidden style="top:auto; bottom:96px; right:12px; left:auto; width:400px; max-height:70vh; overflow:auto;">
@@ -3887,8 +3907,40 @@
   // file read with the same pager — nothing is reconstructed from the event
   // stream, and a finished turn reads exactly like a running one.
   var subMetas = [];          // for the conversation currently on screen
+  var subSelf = null;         // the conversation's OWN usage/cost
   var subShells = {};         // agentId -> refresh() for an open shell
 
+  function fmtTok(n) {
+    n = n || 0;
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return Math.round(n / 1e3) + 'k';
+    return String(n);
+  }
+  /** Just the amount. What it excludes is reported separately — appending it
+   *  here made the figure wrap and pushed the label around. */
+  function fmtUsd(c) {
+    if (!c) return '';
+    var v = c.usd || 0;
+    if (v >= 100) return '$' + Math.round(v).toLocaleString();
+    if (v >= 0.01) return '$' + v.toFixed(2);
+    return v > 0 ? '<$0.01' : '$0';
+  }
+  function unpricedNote(c) {
+    if (!c || !c.unpriced || !c.unpriced.length) return '';
+    return 'excludes ' + c.unpriced.map(function (m) { return m.replace(/^claude-/, ''); }).join(', ') + ' (no public price)';
+  }
+  /** Elapsed between two epoch ms, or "…" while it is still running. */
+  function fmtDur(from, to) {
+    if (!from) return '';
+    var ms = (to || Date.now()) - from;
+    if (ms < 0) return '';
+    var s = Math.round(ms / 1000);
+    if (s < 60) return s + 's';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + (s % 60) + 's';
+    return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+  }
   function fmtBytes(n) {
     if (!n) return '0 B';
     if (n < 1024) return n + ' B';
@@ -3914,22 +3966,55 @@
   function renderSubBadge() {
     var btn = $('subagentsBtn'), badge = $('subagentsBadge');
     if (!btn) return;
-    btn.hidden = subMetas.length === 0;
+    // Shown whenever there is anything to report — the conversation's own cost
+    // counts, so this is no longer hidden just because nothing was delegated.
+    btn.hidden = subMetas.length === 0 && !subSelf;
     badge.textContent = subMetas.length ? String(subMetas.length) : '';
+    var running = subMetas.filter(function (m) { return m.status === 'running'; }).length;
+    btn.title = 'cost' + (subMetas.length ? ' & ' + subMetas.length + ' subagent(s)' + (running ? ', ' + running + ' running' : '') : '')
+      + (subSelf && subSelf.cost ? ' · ≈' + fmtUsd(subSelf.cost) : '');
     // Chat rows that name a subagent become links once the list can resolve them.
     markSubagentRows();
   }
 
+  /** The conversation's own token spend, above the subagents it paid for. */
+  function renderSelfCost() {
+    var box = $('selfCost'); box.textContent = '';
+    if (!subSelf) return;
+    var u = subSelf.usage || {};
+    var d = document.createElement('div'); d.className = 'selfcost';
+    var t = document.createElement('div'); t.className = 'sct';
+    var n = document.createElement('span'); n.textContent = 'This conversation'; t.appendChild(n);
+    if (subSelf.running) { var r = document.createElement('span'); r.className = 'sst running'; r.textContent = 'running'; t.appendChild(r); }
+    var amt = document.createElement('span'); amt.className = 'scn'; amt.textContent = '≈' + fmtUsd(subSelf.cost); t.appendChild(amt);
+    d.appendChild(t);
+    var b = document.createElement('div'); b.className = 'scb';
+    b.textContent = fmtTok(u.output) + ' out · ' + fmtTok(u.input) + ' in · ' + fmtTok(u.cacheRead) + ' cache read · '
+      + fmtTok(u.cacheWrite) + ' cache write · ' + (u.messages || 0) + ' replies';
+    d.appendChild(b);
+    var un = unpricedNote(subSelf.cost);
+    if (un) { var uw = document.createElement('div'); uw.className = 'scw'; uw.textContent = un; d.appendChild(uw); }
+    // A capped first scan must say so — silently reporting a fraction of a
+    // 600MB transcript as the total would be worse than reporting nothing.
+    if (subSelf.partial) {
+      var w = document.createElement('div'); w.className = 'scw';
+      w.textContent = 'partial: the newest ' + fmtBytes(subSelf.scanned) + ' of a ' + fmtBytes(subSelf.size) + ' transcript';
+      d.appendChild(w);
+    }
+    box.appendChild(d);
+  }
+
   function refreshSubagents() {
     var pid = currentProjectId, sid = lastSessionId;
-    if (!pid || !sid) { subMetas = []; renderSubBadge(); return Promise.resolve(); }
+    if (!pid || !sid) { subMetas = []; subSelf = null; renderSubBadge(); return Promise.resolve(); }
     return api('/api/conversations/subagents?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid))
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (currentProjectId !== pid || lastSessionId !== sid) return; // switched while loading
         subMetas = (d && d.subagents) || [];
+        subSelf = (d && d.self) || null;
         renderSubBadge();
-        if (!$('subPop').hidden) renderSubList();
+        if (!$('subPop').hidden) { renderSelfCost(); renderSubList(); }
       })
       .catch(function () {});
   }
@@ -3957,6 +4042,17 @@
     }
   }
 
+  /** A collapsed block of text — used for a subagent's brief and its result. */
+  function disclosure(label, text) {
+    var det = document.createElement('details');
+    var sum = document.createElement('summary');
+    sum.textContent = label + ' (' + text.replace(/\s+/g, ' ').trim().slice(0, 46) + (text.length > 46 ? '…' : '') + ')';
+    det.appendChild(sum);
+    var p = document.createElement('p'); p.textContent = text; det.appendChild(p);
+    // The row opens a shell on click; expanding a disclosure must not do that.
+    det.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    return det;
+  }
   function renderSubList() {
     var list = $('subList'); list.textContent = '';
     if (!subMetas.length) {
@@ -3965,20 +4061,44 @@
       list.appendChild(e); return;
     }
     subMetas.forEach(function (m) {
-      var row = document.createElement('div'); row.className = 'subr';
-      var w = document.createElement('div'); w.className = 'sw';
+      var row = document.createElement('div'); row.className = 'subr col';
       var t = document.createElement('div'); t.className = 'st';
       var k = document.createElement('span'); k.className = 'sk'; k.textContent = m.agentType; t.appendChild(k);
+      // Status comes from the parent's tool_result for this Task — the only
+      // signal that distinguishes "thinking hard" from "came back".
+      var st = document.createElement('span'); st.className = 'sst ' + (m.status || 'done');
+      st.textContent = m.status || 'done'; t.appendChild(st);
       // Depth 1 is the conversation's own; deeper means a subagent spawned it,
       // which is worth seeing since it is not something you asked for directly.
       if (m.spawnDepth > 1) { var d2 = document.createElement('span'); d2.className = 'sm'; d2.textContent = 'depth ' + m.spawnDepth; t.appendChild(d2); }
-      w.appendChild(t);
-      var d = document.createElement('div'); d.className = 'sd'; d.textContent = m.description || '(no description)'; w.appendChild(d);
+      var cost = document.createElement('span'); cost.className = 'scn';
+      cost.style.marginLeft = 'auto';
+      cost.textContent = m.cost ? '≈' + fmtUsd(m.cost) : '';
+      t.appendChild(cost);
+      row.appendChild(t);
+
+      var d = document.createElement('div'); d.className = 'sd'; d.textContent = m.description || '(no description)'; row.appendChild(d);
+
       var meta = document.createElement('div'); meta.className = 'sm';
-      meta.textContent = fmtBytes(m.bytes) + (m.updatedAt ? ' · ' + relTime(new Date(m.updatedAt).toISOString()) : '');
-      w.appendChild(meta);
-      row.appendChild(w);
-      row.addEventListener('click', function () { openSubShell(m); });
+      var bits = [];
+      var dur = fmtDur(m.startedAt, m.endedAt);
+      // A running subagent's elapsed time counts up; a finished one is fixed.
+      if (dur) bits.push(m.status === 'running' ? dur + ' so far' : dur);
+      if (m.usage) bits.push(fmtTok(m.usage.output) + ' out · ' + fmtTok(m.usage.cacheRead) + ' cache read');
+      bits.push(fmtBytes(m.bytes));
+      meta.textContent = bits.join(' · ');
+      row.appendChild(meta);
+
+      // Brief and result inline: between them they are usually the whole
+      // question, and opening the shell to read two paragraphs is a poor trade.
+      if (m.brief) row.appendChild(disclosure('brief', m.brief));
+      if (m.result) row.appendChild(disclosure(m.status === 'failed' ? 'error it returned' : 'what it returned', m.result));
+
+      var open = document.createElement('button'); open.className = 'send ghost';
+      open.style.cssText = 'width:100%; margin-top:8px; height:28px; font-size:12px;';
+      open.textContent = 'Open full transcript';
+      open.addEventListener('click', function (ev) { ev.stopPropagation(); openSubShell(m); });
+      row.appendChild(open);
       list.appendChild(row);
     });
   }
@@ -4027,7 +4147,7 @@
     }).then(function (v) { delete subShells[m.agentId]; return v; });
   }
 
-  $('subagentsBtn').addEventListener('click', function () { openPop($('subPop')); renderSubList(); refreshSubagents(); });
+  $('subagentsBtn').addEventListener('click', function () { openPop($('subPop')); renderSelfCost(); renderSubList(); refreshSubagents(); });
 
   // A running turn spawns and feeds subagents; poll while one is live so the
   // count, the list and any open shell all move on their own.

@@ -16,6 +16,7 @@ import { CRON, CronScheduler } from './cron.js';
 import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { TEMPLATES, TemplateStore } from './templates.js';
+import { TRANSCRIPT_STATS, TranscriptStatsReader } from './transcript-stats.js';
 import { McpHttpController, MCP_HTTP_CONFIG } from './mcp-http.controller.js';
 import { OAuthController, OAUTH_STORE, OAUTH_DEPS } from './oauth.controller.js';
 import { OAuthStore } from './oauth.js';
@@ -143,6 +144,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: DESIGN_LOGIN, useValue: designLogin },
       { provide: DESIGN_CONSENT, useValue: designConsent },
       { provide: TEMPLATES, useValue: new TemplateStore(cfg.stateDir) },
+      { provide: TRANSCRIPT_STATS, useValue: new TranscriptStatsReader(cfg.stateDir) },
       { provide: MEMORY_WRITER, useValue: new MemoryWriter(() => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude')) },
       // The HTTP MCP endpoint calls back into this gateway with the same
       // credentials the spawned stdio bridge uses. No URL: it derives its own
