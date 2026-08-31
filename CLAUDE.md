@@ -118,10 +118,16 @@ CLI writes each subagent a complete transcript of its own:
   opens "Cost & subagents", and each row opens its own shell. `agentId` is matched
   against the directory listing before use — it arrives from a query string, and
   pasting it into a path would let `../` escape the session.
-- **Status comes from the PARENT, not from mtime.** A Task's `tool_use` and its
-  later `tool_result` bracket the subagent, so a missing result means it never
-  came back — running if the turn is live, stopped if it is not. Guessing from
-  file mtime calls a subagent that is thinking hard "finished".
+- **Status comes from a Task's `tool_result`, not from mtime.** A `tool_use` and
+  its later `tool_result` bracket the subagent, so a missing result means it
+  never came back — running if the turn is live, stopped if it is not. Guessing
+  from file mtime calls a subagent that is thinking hard "finished".
+- **A nested subagent's result is in its SPAWNER's transcript, not the parent's**,
+  and nesting is the common case: a real security scan here produced 90
+  subagents, 80 of them depth 2 or 3. Reading only the parent reported all 80 as
+  never having returned. The endpoint merges the Task records from the parent AND
+  every subagent — the same scan already needed for per-subagent usage, so it
+  costs no extra reads — which also yields `spawnedBy`.
 
 ## Token cost (`server/transcript-stats.ts`)
 

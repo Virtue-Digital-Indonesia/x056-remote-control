@@ -558,24 +558,49 @@ export class ApiController {
       const parentStats = parent ? this.stats.statsFor(parent) : null;
       const running = this.manager.isSessionRunning(sessionId);
 
-      const subagents = listSubagents(configDirs, providerSessionId).map((s) => {
-        const task = s.toolUseId ? parentStats?.tasks[s.toolUseId] : undefined;
+      // Scan every transcript ONCE — the parent and each subagent — and merge the
+      // Task records. A nested subagent's tool_result lives in the transcript of
+      // the SUBAGENT that spawned it, not the parent's, and nesting is the common
+      // case rather than an edge one: in a real security scan here, 80 of 90
+      // subagents were depth 2 or 3. Looking only at the parent reported every
+      // one of them as "stopped" when they had all finished. The per-subagent
+      // usage below needs the same scan, so this costs no extra reads.
+      const list = listSubagents(configDirs, providerSessionId);
+      const own = new Map<string, ReturnType<typeof this.stats.statsFor>>();
+      const tasks: Record<string, { task: NonNullable<typeof parentStats>['tasks'][string]; by: string }> = {};
+      for (const [id, t] of Object.entries(parentStats?.tasks ?? {})) tasks[id] = { task: t, by: '' };
+      for (const s of list) {
         const file = subagentFile(configDirs, providerSessionId, s.agentId);
-        const own = file ? this.stats.statsFor(file) : null;
-        // A subagent with no tool_result either never returned or is returning
-        // now — only the parent turn's state tells those two apart.
-        const status = task?.done ? (task.isError ? 'failed' : 'done') : running ? 'running' : 'stopped';
+        if (!file) continue;
+        const st = this.stats.statsFor(file);
+        own.set(s.agentId, st);
+        for (const [id, t] of Object.entries(st.tasks)) tasks[id] = { task: t, by: s.agentId };
+      }
+
+      const subagents = list.map((s) => {
+        const found = s.toolUseId ? tasks[s.toolUseId] : undefined;
+        const task = found?.task;
+        const own_ = own.get(s.agentId) ?? null;
+        // Three states, not two. A tool_result means it came back. No result but
+        // a live turn means it is still working. No result and no live turn means
+        // it never returned. And when the Task call itself cannot be found at all
+        // — compaction drops old tool calls — say so rather than guess.
+        const status = task?.done ? (task.isError ? 'failed' : 'done')
+          : task ? (running ? 'running' : 'stopped')
+          : running ? 'running' : 'unknown';
         return {
           ...s,
           status,
+          // Which agent spawned this one, for anything below the top level.
+          spawnedBy: found?.by ? (list.find((x) => x.agentId === found.by)?.agentType ?? found.by) : undefined,
           // The Task call's own timestamps beat file mtimes: they bracket the
           // work rather than the last write to disk.
           startedAt: task?.startedAt ? Date.parse(task.startedAt) : s.startedAt,
           endedAt: task?.endedAt ? Date.parse(task.endedAt) : undefined,
-          brief: file ? subagentBrief(file).slice(0, 600) : '',
+          brief: (() => { const f = subagentFile(configDirs, providerSessionId, s.agentId); return f ? subagentBrief(f).slice(0, 600) : ''; })(),
           result: task?.result,
-          usage: own?.usage ?? null,
-          cost: own ? estimateCost(own.usage) : null,
+          usage: own_?.usage ?? null,
+          cost: own_ ? estimateCost(own_.usage) : null,
         };
       });
 

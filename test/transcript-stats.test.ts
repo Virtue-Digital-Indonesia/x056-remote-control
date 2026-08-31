@@ -141,3 +141,29 @@ describe('cost estimation', () => {
     expect(c.usd).toBeCloseTo(75);
   });
 });
+
+describe('nested subagents', () => {
+  // The common shape, not an edge case: in a real security scan here, 80 of 90
+  // subagents were depth 2 or 3, and their tool_result sits in the transcript of
+  // the SUBAGENT that spawned them. Reading only the parent reported every one
+  // of them as never having returned.
+  it('finds a nested Task result in the spawning subagent, not the parent', () => {
+    const d = dir();
+    const parent = join(d, 'parent.jsonl');
+    const child = join(d, 'child.jsonl');
+    // The parent spawned `outer`; `outer` in turn spawned `inner` and saw it finish.
+    writeFileSync(parent, taskCall('toolu_outer', 'do the survey'));
+    writeFileSync(child, taskCall('toolu_inner', 'explore one corner') + taskResult('toolu_inner', 'corner mapped'));
+
+    const r = new TranscriptStatsReader(d);
+    const ps = r.statsFor(parent);
+    const cs = r.statsFor(child);
+
+    // The parent alone cannot answer for the nested one.
+    expect(ps.tasks['toolu_inner']).toBeUndefined();
+    // Merging every transcript's tasks — what the endpoint does — can.
+    const merged = { ...ps.tasks, ...cs.tasks };
+    expect(merged['toolu_inner']).toMatchObject({ done: true, result: 'corner mapped' });
+    expect(merged['toolu_outer'].done).toBe(false);
+  });
+});

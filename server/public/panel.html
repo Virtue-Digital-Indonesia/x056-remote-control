@@ -395,13 +395,16 @@
   .selfcost { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; margin-bottom: 10px; background: var(--surface-2); }
   .selfcost .sct { font-weight: 600; display: flex; align-items: baseline; gap: 8px; }
   .selfcost .scn { margin-left: auto; font-variant-numeric: tabular-nums; }
+  /* The figure must never be the thing that gets squeezed — a truncated
+     "≈$21." is worse than no figure at all. */
+  .subr .scn { margin-left: auto; flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .selfcost .scb { color: var(--muted); font-size: 11.5px; margin-top: 3px; font-variant-numeric: tabular-nums; }
   .selfcost .scw { color: var(--amber); font-size: 11px; margin-top: 3px; }
   .subr { display: flex; align-items: center; gap: 9px; border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; margin-bottom: 8px; }
   .subr:hover { border-color: var(--border-strong); }
   .subr .sw { min-width: 0; flex: 1; }
-  .subr .st { font-weight: 600; display: flex; align-items: center; gap: 7px; }
-  .subr .sk { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--on-accent); background: var(--accent); border-radius: 999px; padding: 1px 7px; font-weight: 700; flex: none; }
+  .subr .st { font-weight: 600; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .subr .sk { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--on-accent); background: var(--accent); border-radius: 999px; padding: 1px 7px; font-weight: 700; flex: none; }
   .subr .sd { color: var(--muted); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .subr .sm { color: var(--faint); font-size: 11px; margin-top: 2px; }
   /* A subagent row in the chat is a link into that subagent's shell. */
@@ -3922,9 +3925,18 @@
   function fmtUsd(c) {
     if (!c) return '';
     var v = c.usd || 0;
+    // Zero dollars because every model was unpriced is NOT free — saying "$0"
+    // there is the one wrong answer. Real subagents hit this: a whole run on
+    // fable-5 priced out at nothing.
+    if (!v && c.unpriced && c.unpriced.length) return 'unpriced';
     if (v >= 100) return '$' + Math.round(v).toLocaleString();
     if (v >= 0.01) return '$' + v.toFixed(2);
     return v > 0 ? '<$0.01' : '$0';
+  }
+  /** The figure as shown: approximate when it IS a figure, plain when it is not. */
+  function costLabel(c) {
+    var t = fmtUsd(c);
+    return !t ? '' : t === 'unpriced' ? 'unpriced' : '≈' + t;
   }
   function unpricedNote(c) {
     if (!c || !c.unpriced || !c.unpriced.length) return '';
@@ -3972,7 +3984,7 @@
     badge.textContent = subMetas.length ? String(subMetas.length) : '';
     var running = subMetas.filter(function (m) { return m.status === 'running'; }).length;
     btn.title = 'cost' + (subMetas.length ? ' & ' + subMetas.length + ' subagent(s)' + (running ? ', ' + running + ' running' : '') : '')
-      + (subSelf && subSelf.cost ? ' · ≈' + fmtUsd(subSelf.cost) : '');
+      + (subSelf && subSelf.cost ? ' · ' + costLabel(subSelf.cost) : '');
     // Chat rows that name a subagent become links once the list can resolve them.
     markSubagentRows();
   }
@@ -3986,7 +3998,7 @@
     var t = document.createElement('div'); t.className = 'sct';
     var n = document.createElement('span'); n.textContent = 'This conversation'; t.appendChild(n);
     if (subSelf.running) { var r = document.createElement('span'); r.className = 'sst running'; r.textContent = 'running'; t.appendChild(r); }
-    var amt = document.createElement('span'); amt.className = 'scn'; amt.textContent = '≈' + fmtUsd(subSelf.cost); t.appendChild(amt);
+    var amt = document.createElement('span'); amt.className = 'scn'; amt.textContent = costLabel(subSelf.cost); t.appendChild(amt);
     d.appendChild(t);
     var b = document.createElement('div'); b.className = 'scb';
     b.textContent = fmtTok(u.output) + ' out · ' + fmtTok(u.input) + ' in · ' + fmtTok(u.cacheRead) + ' cache read · '
@@ -4060,7 +4072,13 @@
       e.textContent = 'This conversation has not spawned any subagents.';
       list.appendChild(e); return;
     }
-    subMetas.forEach(function (m) {
+    // Running first, then newest. A long fan-out produces dozens of rows and the
+    // one still working is the only one worth scrolling to.
+    var rank = { running: 0, unknown: 1, failed: 2, stopped: 3, done: 4 };
+    subMetas.slice().sort(function (a, b) {
+      var r = (rank[a.status] == null ? 5 : rank[a.status]) - (rank[b.status] == null ? 5 : rank[b.status]);
+      return r || ((b.startedAt || 0) - (a.startedAt || 0));
+    }).forEach(function (m) {
       var row = document.createElement('div'); row.className = 'subr col';
       var t = document.createElement('div'); t.className = 'st';
       var k = document.createElement('span'); k.className = 'sk'; k.textContent = m.agentType; t.appendChild(k);
@@ -4070,10 +4088,9 @@
       st.textContent = m.status || 'done'; t.appendChild(st);
       // Depth 1 is the conversation's own; deeper means a subagent spawned it,
       // which is worth seeing since it is not something you asked for directly.
-      if (m.spawnDepth > 1) { var d2 = document.createElement('span'); d2.className = 'sm'; d2.textContent = 'depth ' + m.spawnDepth; t.appendChild(d2); }
       var cost = document.createElement('span'); cost.className = 'scn';
       cost.style.marginLeft = 'auto';
-      cost.textContent = m.cost ? '≈' + fmtUsd(m.cost) : '';
+      cost.textContent = costLabel(m.cost);
       t.appendChild(cost);
       row.appendChild(t);
 
@@ -4081,6 +4098,10 @@
 
       var meta = document.createElement('div'); meta.className = 'sm';
       var bits = [];
+      // Who spawned it, for anything below the top level: "depth 2" alone does
+      // not say whose, and it is another subagent's doing, not something the
+      // conversation asked for directly.
+      if (m.spawnDepth > 1) bits.push(m.spawnedBy ? 'via ' + m.spawnedBy : 'depth ' + m.spawnDepth);
       var dur = fmtDur(m.startedAt, m.endedAt);
       // A running subagent's elapsed time counts up; a finished one is fixed.
       if (dur) bits.push(m.status === 'running' ? dur + ' so far' : dur);
