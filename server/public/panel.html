@@ -419,7 +419,20 @@
   .cw .live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   /* Share of the total, drawn under the name — the ranking is the point. */
   .cw .share { height: 3px; border-radius: 2px; background: var(--accent); margin-top: 5px; opacity: .35; max-width: 200px; }
-  .cw td.part { color: var(--amber); }
+  /* Listed after the row-kind rules and matching their specificity, or
+     `tr.proj-row td` wins and a project still being read loses its warning. */
+  .segbar { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; margin: 8px 0 2px; }
+  .segbar button { font: inherit; font-size: 12px; font-weight: 600; padding: 5px 12px; border: none; background: var(--bg); color: var(--muted); cursor: pointer; }
+  .segbar button.on { background: var(--accent); color: var(--on-accent); }
+  /* A project row is a summary of the rows beneath it, so it reads heavier and
+     carries the disclosure arrow. */
+  .cw tr.proj-row td { font-weight: 600; color: var(--text); }
+  .cw tr.proj-row td.l { cursor: pointer; }
+  .cw .caret { display: inline-block; width: 10px; color: var(--faint); }
+  .cw tr.child td { color: var(--muted); }
+  .cw tr.child td.l { padding-left: 24px; font-weight: 400; }
+  .cw .count { color: var(--muted); font-size: 11px; font-weight: 400; margin-left: 6px; }
+  .cw td.part, .cw tr.proj-row td.part, .cw tr.child td.part { color: var(--amber); }
   .allhead { display: flex; align-items: baseline; gap: 10px; margin: -4px 0 2px; }
   .allhead .big { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .allhead .note { color: var(--muted); font-size: 12px; }
@@ -4036,6 +4049,45 @@
   // keep polling until that reaches zero. The total climbs as it converges
   // rather than the panel hanging on it.
   var allUsage = null, allPolling = false, allRender = null;
+  var ALL_MODE_KEY = 'x056_all_mode';
+  var allMode = lsGet(ALL_MODE_KEY) === 'proj' ? 'proj' : 'conv';
+  var allOpen = {}; // which projects are expanded, by id
+
+  /** Roll conversations up into their project. */
+  function groupByProject(rows) {
+    var by = {};
+    rows.forEach(function (r) {
+      var g = by[r.projectId];
+      if (!g) {
+        g = by[r.projectId] = {
+          projectId: r.projectId, projectName: r.projectName, title: r.projectName,
+          running: false, partial: false, size: 0, scanned: 0, convs: [],
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, messages: 0, byModel: {} },
+          cost: { usd: 0, unpriced: [] },
+        };
+      }
+      var u = r.usage || {};
+      g.convs.push(r);
+      g.running = g.running || !!r.running;
+      // A project is "still reading" if ANY of its conversations is: its total
+      // is understating itself just as much as that one row.
+      g.partial = g.partial || !!r.partial;
+      g.size += r.size || 0;
+      g.scanned += r.scanned || 0;
+      ['input', 'output', 'cacheRead', 'cacheWrite', 'messages'].forEach(function (k) { g.usage[k] += u[k] || 0; });
+      Object.keys(u.byModel || {}).forEach(function (m) {
+        var a = g.usage.byModel[m] || (g.usage.byModel[m] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+        var b = u.byModel[m];
+        a.input += b.input || 0; a.output += b.output || 0; a.cacheRead += b.cacheRead || 0; a.cacheWrite += b.cacheWrite || 0;
+      });
+      g.cost.usd += (r.cost && r.cost.usd) || 0;
+      ((r.cost && r.cost.unpriced) || []).forEach(function (m) {
+        if (g.cost.unpriced.indexOf(m) < 0) g.cost.unpriced.push(m);
+      });
+    });
+    return Object.keys(by).map(function (k) { return by[k]; });
+  }
+
   /**
    * Cost across every conversation, in its own modal.
    *
@@ -4057,24 +4109,91 @@
       card.appendChild(note);
       var bar = document.createElement('div'); bar.className = 'allbar'; bar.hidden = true;
       var barI = document.createElement('i'); bar.appendChild(barI); card.appendChild(bar);
+      // Same figures, two groupings. Which one is remembered, because whichever
+      // you think in is the one you will want next time too.
+      var seg = document.createElement('div'); seg.className = 'segbar';
+      var segBtns = {};
+      [['conv', 'By conversation'], ['proj', 'By project']].forEach(function (o) {
+        var b2 = document.createElement('button'); b2.textContent = o[1];
+        b2.addEventListener('click', function () { allMode = o[0]; lsSet(ALL_MODE_KEY, o[0]); paint(); });
+        segBtns[o[0]] = b2; seg.appendChild(b2);
+      });
+      card.appendChild(seg);
       var wrap = document.createElement('div'); wrap.className = 'cw'; card.appendChild(wrap);
       var acts = document.createElement('div'); acts.className = 'modal-actions';
       var close = document.createElement('button'); close.className = 'send'; close.textContent = 'Close';
       close.addEventListener('click', function () { done(true); });
       acts.appendChild(close); card.appendChild(acts);
 
+      /** One data row; `kind` is 'conv', 'proj' or 'child'. */
+      function addRow(tbl, r, kind, max) {
+        var u = r.usage || {};
+        var tr = document.createElement('tr');
+        if (kind !== 'conv') tr.className = kind === 'proj' ? 'proj-row' : 'child';
+        var td = document.createElement('td'); td.className = 'l';
+        var who = document.createElement('div'); who.className = 'who';
+        if (kind === 'proj') {
+          var car = document.createElement('span'); car.className = 'caret';
+          car.textContent = allOpen[r.projectId] ? '▾' : '▸'; who.appendChild(car);
+        }
+        if (r.running) { var dot = document.createElement('span'); dot.className = 'live'; who.appendChild(dot); }
+        var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.title; nm.title = r.title;
+        who.appendChild(nm);
+        if (kind === 'proj') {
+          var ct = document.createElement('span'); ct.className = 'count';
+          ct.textContent = r.convs.length + (r.convs.length === 1 ? ' conversation' : ' conversations');
+          who.appendChild(ct);
+        }
+        td.appendChild(who);
+        // A conversation row names its project; a project row IS the project,
+        // and a child row sits under one, so neither repeats it.
+        if (kind === 'conv') { var pj = document.createElement('div'); pj.className = 'proj'; pj.textContent = r.projectName; td.appendChild(pj); }
+        var share = max > 0 ? ((r.cost ? r.cost.usd : 0) / max) * 100 : 0;
+        if (kind !== 'child' && share >= 3) {
+          var sh = document.createElement('div'); sh.className = 'share'; sh.style.width = Math.round(share) + '%'; td.appendChild(sh);
+        }
+        if (kind === 'proj') {
+          td.addEventListener('click', function () { allOpen[r.projectId] = !allOpen[r.projectId]; paint(); });
+        }
+        tr.appendChild(td);
+
+        var models = Object.keys(u.byModel || {}).filter(function (m) {
+          var x = u.byModel[m]; return (x.input + x.output + x.cacheRead + x.cacheWrite) > 0;
+        }).map(function (m) { return m.replace(/^claude-/, '').replace(/-\d+$/, ''); });
+        [models.join(', ') || '—', String(u.messages || 0), fmtTok(u.output), fmtTok(u.cacheRead), fmtBytes(r.size || 0)]
+          .forEach(function (v, i) {
+            var c = document.createElement('td'); c.textContent = v;
+            if (i === 0) { c.style.whiteSpace = 'normal'; c.style.fontSize = '11.5px'; }
+            tr.appendChild(c);
+          });
+        var money = document.createElement('td'); money.className = 'money' + (r.partial ? ' part' : '');
+        money.textContent = costLabel(r.cost);
+        if (r.partial) money.title = 'still reading ' + fmtBytes(r.scanned || 0) + ' of ' + fmtBytes(r.size || 0) + ' — this will rise';
+        tr.appendChild(money);
+        tbl.appendChild(tr);
+      }
+
       function paint() {
         head.textContent = ''; wrap.textContent = '';
+        Object.keys(segBtns).forEach(function (k) { segBtns[k].classList.toggle('on', k === allMode); });
         if (!allUsage) { var l = document.createElement('div'); l.className = 'plug-empty'; l.textContent = 'reading transcripts…'; wrap.appendChild(l); return; }
-        var rows = allUsage.conversations.slice();
-        // Descending by cost — the question is always "what is expensive".
-        rows.sort(function (a, b) { return (b.cost ? b.cost.usd : 0) - (a.cost ? a.cost.usd : 0); });
+
+        var convs = allUsage.conversations.slice();
+        var byCost = function (a, b) { return (b.cost ? b.cost.usd : 0) - (a.cost ? a.cost.usd : 0); };
+        convs.sort(byCost);
+        var groups = groupByProject(convs);
+        groups.sort(byCost);
+        groups.forEach(function (g) { g.convs.sort(byCost); });
+        // Descending by cost in both groupings — the question is always "what is
+        // expensive", and it should not change shape when the grouping does.
+        var rows = allMode === 'proj' ? groups : convs;
         var t = allUsage.totals || { usd: 0, unpriced: [] };
 
         var big = document.createElement('span'); big.className = 'big'; big.textContent = costLabel(t); head.appendChild(big);
         var n = document.createElement('span'); n.className = 'note';
         var left = allUsage.pendingBytes || 0;
-        n.textContent = rows.length + ' conversations'
+        n.textContent = (allMode === 'proj' ? groups.length + (groups.length === 1 ? ' project' : ' projects') + ' · ' : '')
+          + convs.length + ' conversations'
           + (allUsage.running ? ' · ' + allUsage.running + ' running' : '')
           + (left ? ' · ' + fmtBytes(left) + ' still to read' : '');
         head.appendChild(n);
@@ -4083,53 +4202,22 @@
 
         bar.hidden = !left;
         if (left) {
-          var readSoFar = rows.reduce(function (a, c) { return a + (c.scanned || 0); }, 0);
+          var readSoFar = convs.reduce(function (a, c) { return a + (c.scanned || 0); }, 0);
           barI.style.width = Math.max(2, Math.round((readSoFar / (readSoFar + left)) * 100)) + '%';
         }
 
         var tbl = document.createElement('table');
         var thead = document.createElement('tr');
-        [['conversation', 'l'], ['models', ''], ['replies', ''], ['out', ''], ['cache read', ''], ['size', ''], ['cost', '']].forEach(function (c) {
+        [[allMode === 'proj' ? 'project' : 'conversation', 'l'], ['models', ''], ['replies', ''], ['out', ''], ['cache read', ''], ['size', ''], ['cost', '']].forEach(function (c) {
           var th = document.createElement('th'); th.textContent = c[0]; if (c[1]) th.className = c[1]; thead.appendChild(th);
         });
         tbl.appendChild(thead);
         var max = rows.length ? (rows[0].cost ? rows[0].cost.usd : 0) : 0;
         rows.forEach(function (r) {
-          var u = r.usage || {};
-          var tr = document.createElement('tr');
-          var td = document.createElement('td'); td.className = 'l';
-          var who = document.createElement('div'); who.className = 'who';
-          if (r.running) { var dot = document.createElement('span'); dot.className = 'live'; who.appendChild(dot); }
-          var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.title; nm.title = r.title;
-          who.appendChild(nm); td.appendChild(who);
-          var pj = document.createElement('div'); pj.className = 'proj'; pj.textContent = r.projectName; td.appendChild(pj);
-          // Only draw a bar that can be read as one: below a few percent it is
-          // a 2px speck that looks like a rendering artifact, and the number in
-          // the cost column already says everything.
-          var share = max > 0 ? ((r.cost ? r.cost.usd : 0) / max) * 100 : 0;
-          if (share >= 3) {
-            var sh = document.createElement('div'); sh.className = 'share';
-            sh.style.width = Math.round(share) + '%';
-            td.appendChild(sh);
+          addRow(tbl, r, allMode === 'proj' ? 'proj' : 'conv', max);
+          if (allMode === 'proj' && allOpen[r.projectId]) {
+            r.convs.forEach(function (c) { addRow(tbl, c, 'child', 0); });
           }
-          tr.appendChild(td);
-          // Which models did the work — an opus-heavy conversation explains its
-          // own cost, and a mixed one explains an odd-looking one.
-          var models = Object.keys(u.byModel || {}).filter(function (m) {
-            var x = u.byModel[m]; return (x.input + x.output + x.cacheRead + x.cacheWrite) > 0;
-          }).map(function (m) { return m.replace(/^claude-/, '').replace(/-\d+$/, ''); });
-          [models.join(', ') || '—', String(u.messages || 0), fmtTok(u.output), fmtTok(u.cacheRead), fmtBytes(r.size || 0)]
-            .forEach(function (v, i) {
-              var c = document.createElement('td'); c.textContent = v;
-              if (i === 0) { c.style.whiteSpace = 'normal'; c.style.fontSize = '11.5px'; }
-              tr.appendChild(c);
-            });
-          var money = document.createElement('td'); money.className = 'money' + (r.partial ? ' part' : '');
-          money.textContent = costLabel(r.cost);
-          // A row still being read is understating itself; say so on hover.
-          if (r.partial) money.title = 'still reading ' + fmtBytes(r.scanned || 0) + ' of ' + fmtBytes(r.size || 0) + ' — this will rise';
-          tr.appendChild(money);
-          tbl.appendChild(tr);
         });
         wrap.appendChild(tbl);
       }
