@@ -114,7 +114,10 @@
   .topbar .sp { flex: 1; }
   #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
   #dot.on { background: var(--ok); } #dot.off { background: var(--err); }
-  .ico { background: none; border: 1px solid transparent; border-radius: 8px; height: 32px; min-width: 32px; padding: 0 8px; cursor: pointer; color: var(--muted); font-size: 14px; }
+  /* `position: relative` is load-bearing: the count badges inside these buttons
+     are absolutely positioned, and without a positioned ancestor they escaped to
+     the page and rendered floating in the top-right corner of the window. */
+  .ico { position: relative; background: none; border: 1px solid transparent; border-radius: 8px; height: 32px; min-width: 32px; padding: 0 8px; cursor: pointer; color: var(--muted); font-size: 14px; }
   .ico:hover { background: var(--surface-2); color: var(--text); }
   .ico.on { color: var(--accent); }
 
@@ -220,7 +223,7 @@
   .qopt-wrap:hover .qopt-insert { opacity: 1; }
   .qopt-insert:hover { background: var(--surface-3); color: var(--accent); }
   #mcpApprovalsBtn { position: relative; }
-  .mcpBadge { position: absolute; top: 2px; right: 2px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 8px; background: var(--err); color: #fff; font-size: 9px; line-height: 14px; text-align: center; font-weight: 600; }
+  .mcpBadge { position: absolute; top: -1px; right: -3px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 8px; background: var(--err); color: #fff; font-size: 9px; line-height: 14px; text-align: center; font-weight: 600; }
   .mcpBadge:empty { display: none; }
   .mcp-appr-card { border-bottom: 1px solid var(--border); padding: 10px 0; }
   .mcp-appr-card:last-child { border-bottom: none; }
