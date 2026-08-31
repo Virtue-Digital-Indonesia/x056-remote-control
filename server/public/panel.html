@@ -384,6 +384,10 @@
   .sst.done { background: var(--ok-bg); color: var(--ok); }
   .sst.failed { background: var(--err-bg); color: var(--err); }
   .sst.stopped { background: var(--surface-3); color: var(--muted); }
+  /* "unknown" is a real outcome, not a fallback: the Task call fell outside the
+     scanned window (compaction, or a capped first scan), so nothing on disk says
+     how it ended. Without its own rule the pill rendered unstyled. */
+  .sst.unknown { background: var(--surface-3); color: var(--faint); }
   /* Brief and result, so the common question needs no click. */
   .subr details { margin-top: 6px; }
   .subr details > summary { font-size: 11.5px; color: var(--muted); cursor: pointer; user-select: none; list-style: none; }
@@ -3951,7 +3955,11 @@
     if (s < 60) return s + 's';
     var m = Math.floor(s / 60);
     if (m < 60) return m + 'm ' + (s % 60) + 's';
-    return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+    var h = Math.floor(m / 60);
+    if (h < 48) return h + 'h ' + (m % 60) + 'm';
+    // Past two days, hours stop meaning anything — an abandoned subagent read
+    // "1176h 0m".
+    return Math.floor(h / 24) + 'd';
   }
   function fmtBytes(n) {
     if (!n) return '0 B';
@@ -4085,7 +4093,10 @@
       // Status comes from the parent's tool_result for this Task — the only
       // signal that distinguishes "thinking hard" from "came back".
       var st = document.createElement('span'); st.className = 'sst ' + (m.status || 'done');
-      st.textContent = m.status || 'done'; t.appendChild(st);
+      st.textContent = m.status || 'done';
+      if (m.status === 'unknown') st.title = 'its Task call is outside the scanned part of the transcript, so how it ended is not recorded';
+      if (m.status === 'stopped') st.title = 'no result was ever recorded for it — it did not come back';
+      t.appendChild(st);
       // Depth 1 is the conversation's own; deeper means a subagent spawned it,
       // which is worth seeing since it is not something you asked for directly.
       var cost = document.createElement('span'); cost.className = 'scn';
