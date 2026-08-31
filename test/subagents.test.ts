@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { cachedBrief, listSubagents, readSubagentPage, subagentBrief, subagentDir, subagentFile, subagentFiles } from '../src/adapters/subagents.js';
+import { cachedBrief, listSubagents, readSubagentPage, subagentBrief, subagentDir, subagentFile, subagentFiles, transcriptIndex } from '../src/adapters/subagents.js';
 
 /** A config dir shaped exactly like the CLI's: projects/<dir>/<session>/subagents. */
 function fixture(agents: { id: string; meta?: unknown; lines?: string[] }[]) {
@@ -147,5 +147,44 @@ describe('resolving every path at once', () => {
     // because the first entry of a transcript is immutable in practice.
     expect(cachedBrief(f)).toBe('THE BRIEF');
     expect(subagentFiles([cfg], sid).get('aaa')).toBe(f);
+  });
+});
+
+describe('indexing transcripts', () => {
+  // findTranscript() lists projects/ RECURSIVELY, which descends into every
+  // session's subagents/ directory. Calling it once per conversation cost 3.5s
+  // to enumerate 52 of them, before a byte was scanned.
+  function withTranscripts(entries: { project: string; sessionId: string }[]) {
+    const cfg = mkdtempSync(join(tmpdir(), 'x056-idx-'));
+    for (const e of entries) {
+      const d = join(cfg, 'projects', e.project);
+      mkdirSync(join(d, e.sessionId, 'subagents'), { recursive: true });
+      writeFileSync(join(d, `${e.sessionId}.jsonl`), '{}\n');
+      // A decoy one level deeper: the index must not pick it up as a session.
+      writeFileSync(join(d, e.sessionId, 'subagents', 'agent-zzz.jsonl'), '{}\n');
+    }
+    return cfg;
+  }
+
+  it('maps every sessionId to its transcript in one walk', () => {
+    const cfg = withTranscripts([{ project: '-a', sessionId: 's1' }, { project: '-b', sessionId: 's2' }]);
+    const idx = transcriptIndex([cfg]);
+    expect([...idx.keys()].sort()).toEqual(['s1', 's2']);
+    expect(idx.get('s1')).toBe(join(cfg, 'projects', '-a', 's1.jsonl'));
+  });
+
+  it('does not mistake a subagent transcript for a session', () => {
+    const cfg = withTranscripts([{ project: '-a', sessionId: 's1' }]);
+    expect([...transcriptIndex([cfg]).keys()]).toEqual(['s1']);
+  });
+
+  it('lets the first account win, matching findTranscript', () => {
+    const a = withTranscripts([{ project: '-a', sessionId: 'dup' }]);
+    const b = withTranscripts([{ project: '-b', sessionId: 'dup' }]);
+    expect(transcriptIndex([a, b]).get('dup')).toBe(join(a, 'projects', '-a', 'dup.jsonl'));
+  });
+
+  it('skips an account with no projects tree instead of throwing', () => {
+    expect(transcriptIndex([mkdtempSync(join(tmpdir(), 'x056-idx-'))]).size).toBe(0);
   });
 });

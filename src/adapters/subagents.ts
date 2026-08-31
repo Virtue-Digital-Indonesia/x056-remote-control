@@ -77,6 +77,35 @@ export function cachedBrief(file: string): string {
   return brief;
 }
 
+/**
+ * sessionId → transcript path, from one shallow walk per account.
+ *
+ * findTranscript() lists `projects/` RECURSIVELY, which now descends into every
+ * session's `subagents/` directory as well — 904 files here. Calling it once per
+ * conversation cost 3.5s just to enumerate 52 of them, before a single byte was
+ * scanned. Transcripts only ever live one level down, so a two-level walk finds
+ * all of them and skips the subtree entirely.
+ */
+export function transcriptIndex(configDirs: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const configDir of configDirs) {
+    const projects = join(configDir, 'projects');
+    let dirs: string[];
+    try { dirs = readdirSync(projects); } catch { continue; }
+    for (const d of dirs) {
+      let names: string[];
+      try { names = readdirSync(join(projects, d)); } catch { continue; }
+      for (const n of names) {
+        if (!n.endsWith('.jsonl')) continue;
+        // First account wins, matching findTranscript's configDir order.
+        const sid = n.slice(0, -'.jsonl'.length);
+        if (!out.has(sid)) out.set(sid, join(projects, d, n));
+      }
+    }
+  }
+  return out;
+}
+
 /** The parent session's own transcript, for its usage totals and Task results. */
 export function parentTranscript(configDirs: string[], sessionId: string): string | null {
   return findTranscript(configDirs, sessionId);

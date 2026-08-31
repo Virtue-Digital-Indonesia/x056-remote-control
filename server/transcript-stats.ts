@@ -154,6 +154,22 @@ export class TranscriptStatsReader {
     return strip(entry);
   }
 
+  /**
+   * What is already known about a transcript, WITHOUT scanning it.
+   *
+   * A cross-conversation total must not trigger a cold scan of every session:
+   * 52 transcripts here come to 587MB even with the 32MB cap, which is ~10s of
+   * synchronous work. This lets a caller take the free answers and budget the
+   * rest.
+   */
+  cached(path: string): TranscriptStats | null {
+    const e = this.cache.get(path);
+    if (!e) return null;
+    // Cached totals describe bytes that may since have been replaced.
+    try { if (fstatSyncSize(path) < e.size) return null; } catch { return null; }
+    return strip(e);
+  }
+
   /** Read [entry.offset, size) in chunks, folding each complete line in. */
   private scan(path: string, entry: CacheEntry, size: number): number {
     let fd: number | undefined;

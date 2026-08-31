@@ -167,3 +167,30 @@ describe('nested subagents', () => {
     expect(merged['toolu_outer'].done).toBe(false);
   });
 });
+
+describe('reading the cache without scanning', () => {
+  // A cross-conversation total must not cold-scan 52 transcripts (587MB, ~10s).
+  it('returns null for a transcript never scanned, rather than scanning it', () => {
+    const d = dir();
+    const f = join(d, 't.jsonl');
+    writeFileSync(f, assistant('claude-opus-5', { output_tokens: 100 }));
+    const r = new TranscriptStatsReader(d);
+    expect(r.cached(f)).toBeNull();          // untouched — no work done
+    expect(r.statsFor(f).usage.output).toBe(100);
+    expect(r.cached(f)!.usage.output).toBe(100); // now free
+  });
+
+  it('refuses a cached entry describing bytes that are gone', () => {
+    const d = dir();
+    const f = join(d, 't.jsonl');
+    writeFileSync(f, assistant('claude-opus-5', { output_tokens: 100 }).repeat(3));
+    const r = new TranscriptStatsReader(d);
+    r.statsFor(f);
+    writeFileSync(f, assistant('claude-opus-5', { output_tokens: 1 })); // rotated
+    expect(r.cached(f)).toBeNull();
+  });
+
+  it('returns null for a file that does not exist', () => {
+    expect(new TranscriptStatsReader(dir()).cached('/nope/missing.jsonl')).toBeNull();
+  });
+});

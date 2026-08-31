@@ -399,6 +399,17 @@
   .subr details[open] > summary::before { content: "▾ "; }
   .subr details p { margin: 5px 0 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; color: var(--text); }
   /* The conversation's own spend, above the subagents it paid for. */
+  .allcost { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; margin-bottom: 10px; }
+  .allcost .act-row { display: flex; align-items: baseline; gap: 8px; font-weight: 600; }
+  .allcost .amt { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .allcost .sub { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  /* .scw is sized under .selfcost; without a rule here it inherited body size. */
+  .allcost .scw { color: var(--amber); font-size: 11px; margin-top: 3px; }
+  .allcost .bar { height: 4px; border-radius: 2px; background: var(--border); margin-top: 7px; overflow: hidden; }
+  .allcost .bar > i { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
+  .allcost table { width: 100%; border-collapse: collapse; margin-top: 7px; font-size: 12px; }
+  .allcost td { padding: 2px 0; color: var(--muted); }
+  .allcost td.c { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; padding-left: 8px; }
   .selfcost { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; margin-bottom: 10px; background: var(--surface-2); }
   .selfcost .sct { font-weight: 600; display: flex; align-items: baseline; gap: 8px; }
   .selfcost .scn { margin-left: auto; font-variant-numeric: tabular-nums; }
@@ -870,6 +881,7 @@
 <div class="pop" id="subPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:470px; max-height:78vh; overflow:auto;">
   <h2>Cost &amp; subagents</h2>
   <div class="plug-note">tokens are exact · dollars are the API list price for the same work, not what Max billed</div>
+  <div id="allCost"></div>
   <div id="selfCost"></div>
   <div id="subList"></div>
 </div>
@@ -3986,6 +3998,62 @@
     });
   }
 
+  // ---- spend across EVERY conversation --------------------------------------
+  // Scanning all of them cold is ~10s of work, so the endpoint is budgeted and
+  // resumable: it returns what it has plus how many are still unread, and we
+  // keep polling until that reaches zero. The total climbs as it converges
+  // rather than the panel hanging on it.
+  var allUsage = null, allPolling = false;
+  function renderAllCost() {
+    var box = $('allCost'); box.textContent = '';
+    if (!allUsage) return;
+    var d = document.createElement('div'); d.className = 'allcost';
+    var top = document.createElement('div'); top.className = 'act-row';
+    var n = document.createElement('span'); n.textContent = 'All conversations'; top.appendChild(n);
+    if (allUsage.running) {
+      var r = document.createElement('span'); r.className = 'sst running';
+      r.textContent = allUsage.running + ' running'; top.appendChild(r);
+    }
+    var amt = document.createElement('span'); amt.className = 'amt';
+    amt.textContent = costLabel(allUsage.totals); top.appendChild(amt);
+    d.appendChild(top);
+
+    var counted = allUsage.conversations.length, pending = allUsage.pending || 0;
+    var sub = document.createElement('div'); sub.className = 'sub';
+    sub.textContent = pending
+      ? counted + ' of ' + (counted + pending) + ' read — the rest are still being scanned'
+      : counted + ' conversations';
+    d.appendChild(sub);
+    var un = unpricedNote(allUsage.totals);
+    if (un) { var uw = document.createElement('div'); uw.className = 'scw'; uw.textContent = un; d.appendChild(uw); }
+
+    if (pending) {
+      var bar = document.createElement('div'); bar.className = 'bar';
+      var i = document.createElement('i'); i.style.width = Math.round((counted / (counted + pending)) * 100) + '%';
+      bar.appendChild(i); d.appendChild(bar);
+    }
+
+    // The few that actually cost something; the long tail is noise.
+    var tbl = document.createElement('table');
+    allUsage.conversations.slice(0, 6).forEach(function (c) {
+      var tr = document.createElement('tr');
+      var td = document.createElement('td');
+      td.textContent = (c.running ? '● ' : '') + c.projectName + ' · ' + c.title;
+      var tdc = document.createElement('td'); tdc.className = 'c'; tdc.textContent = costLabel(c.cost);
+      tr.appendChild(td); tr.appendChild(tdc); tbl.appendChild(tr);
+    });
+    d.appendChild(tbl);
+    box.appendChild(d);
+  }
+  function refreshAllUsage() {
+    if (allPolling) return Promise.resolve();
+    allPolling = true;
+    return api('/api/usage/all?budgetMs=400').then(function (r) { return r.json(); })
+      .then(function (d) { allUsage = d; renderAllCost(); })
+      .catch(function () {})
+      .then(function () { allPolling = false; });
+  }
+
   function renderSubBadge() {
     var btn = $('subagentsBtn'), badge = $('subagentsBadge');
     if (!btn) return;
@@ -4182,7 +4250,7 @@
     }).then(function (v) { delete subShells[m.agentId]; return v; });
   }
 
-  $('subagentsBtn').addEventListener('click', function () { openPop($('subPop')); renderSelfCost(); renderSubList(); refreshSubagents(); });
+  $('subagentsBtn').addEventListener('click', function () { openPop($('subPop')); renderAllCost(); renderSelfCost(); renderSubList(); refreshSubagents(); refreshAllUsage(); });
 
   // A running turn spawns and feeds subagents; poll while one is live so the
   // count, the list and any open shell all move on their own.
@@ -4190,6 +4258,9 @@
     var shellOpen = Object.keys(subShells).length > 0;
     if (!active && !shellOpen && $('subPop').hidden) return;
     if (active) refreshSubagents();
+    // Keep reading the rest only while the popover is open, or while something
+    // is running and the figure would otherwise go stale.
+    if (!$('subPop').hidden && (allUsage === null || allUsage.pending > 0 || active)) refreshAllUsage();
     for (var id in subShells) subShells[id]();
   }, 5000);
 

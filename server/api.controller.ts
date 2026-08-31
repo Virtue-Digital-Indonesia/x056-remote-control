@@ -12,7 +12,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { AccountRegistry } from '../src/accounts.js';
 import { UsageRateLimitedError } from '../src/quota.js';
@@ -25,7 +25,7 @@ import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { TEMPLATES, TemplateStore } from './templates.js';
 import { TRANSCRIPT_STATS, TranscriptStatsReader, estimateCost } from './transcript-stats.js';
 import { getAdapter } from '../src/adapters/registry.js';
-import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles } from '../src/adapters/subagents.js';
+import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles, transcriptIndex } from '../src/adapters/subagents.js';
 import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
@@ -625,6 +625,93 @@ export class ApiController {
     } catch {
       return empty;
     }
+  }
+
+  /**
+   * Token spend across EVERY conversation, not just the one on screen.
+   *
+   * The cold cost of this is the whole problem: 52 transcripts here total 587MB
+   * even with the per-file cap, roughly ten seconds of synchronous scanning. So
+   * it is BUDGETED and resumable rather than done in one stall —
+   *
+   *  - a conversation with a live turn is always brought up to date (few, and
+   *    they are the ones being asked about);
+   *  - one already in the cache is free;
+   *  - the rest are scanned smallest-first until the time budget runs out, and
+   *    whatever is left is reported as `pending` so the caller can poll and
+   *    watch the total converge instead of waiting on it.
+   */
+  @Get('usage/all')
+  usageAll(@Query('budgetMs') budgetMs?: string) {
+    const budget = Math.min(Math.max(Number(budgetMs) || 400, 0), 5000);
+    const started = Date.now();
+    const running = new Set(this.manager.runningSessions().map((r) => `${r.projectId}/${r.sessionId}`));
+
+    interface Row { projectId: string; projectName: string; sessionId: string; title: string; running: boolean; usage: unknown; cost: unknown; partial: boolean; size: number }
+    const rows: Row[] = [];
+    const cold: { key: string; projectId: string; projectName: string; sessionId: string; title: string; file: string; size: number }[] = [];
+
+    const reg = this.manager.listProjects() as { projects: { id: string; name: string; conversations?: { sessionId: string; title?: string }[] }[] };
+    // One index for the whole request; see transcriptIndex.
+    const index = new Map<string, Map<string, string>>();
+    for (const proj of reg.projects ?? []) {
+      for (const conv of proj.conversations ?? []) {
+        let file: string | null = null;
+        try {
+          const { adapter, providerSessionId, configDirs } = this.manager.historyContext(proj.id, conv.sessionId);
+          if (adapter.id !== 'claude') continue; // only Claude records per-message usage
+          const key = configDirs.join('\0');
+          let idx = index.get(key);
+          if (!idx) { idx = transcriptIndex(configDirs); index.set(key, idx); }
+          file = idx.get(providerSessionId) ?? null;
+        } catch { continue; }
+        if (!file) continue;
+
+        const key = `${proj.id}/${conv.sessionId}`;
+        const live = running.has(key);
+        const known = this.stats.cached(file);
+        const base = { projectId: proj.id, projectName: proj.name, sessionId: conv.sessionId, title: conv.title ?? conv.sessionId.slice(0, 8), running: live };
+        if (live || known) {
+          // A live conversation is re-read for what it just wrote; a cached one
+          // that has not grown costs a stat and nothing else.
+          const st = live ? this.stats.statsFor(file) : known!;
+          rows.push({ ...base, usage: st.usage, cost: estimateCost(st.usage), partial: st.partial, size: st.size });
+        } else {
+          let size = 0;
+          try { size = statSync(file).size; } catch { continue; }
+          cold.push({ key, projectId: proj.id, projectName: proj.name, sessionId: conv.sessionId, title: base.title, file, size });
+        }
+      }
+    }
+
+    // Smallest first: the count converges fastest, and the 627MB outlier does
+    // not monopolise the first budget.
+    cold.sort((a, b) => a.size - b.size);
+    let scanned = 0;
+    for (const c of cold) {
+      if (Date.now() - started >= budget) break;
+      const st = this.stats.statsFor(c.file);
+      rows.push({ projectId: c.projectId, projectName: c.projectName, sessionId: c.sessionId, title: c.title, running: false, usage: st.usage, cost: estimateCost(st.usage), partial: st.partial, size: st.size });
+      scanned += 1;
+    }
+
+    const totals = rows.reduce((acc, r) => {
+      const c = r.cost as { usd: number; unpriced: string[] };
+      const u = r.usage as { input: number; output: number; cacheRead: number; cacheWrite: number };
+      acc.usd += c.usd;
+      for (const m of c.unpriced) acc.unpriced.add(m);
+      acc.input += u.input; acc.output += u.output; acc.cacheRead += u.cacheRead; acc.cacheWrite += u.cacheWrite;
+      return acc;
+    }, { usd: 0, unpriced: new Set<string>(), input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+
+    rows.sort((a, b) => Number(b.running) - Number(a.running) || (b.cost as { usd: number }).usd - (a.cost as { usd: number }).usd);
+    return {
+      conversations: rows,
+      totals: { ...totals, unpriced: [...totals.unpriced] },
+      // Honest about what is not in the figure yet.
+      pending: cold.length - scanned,
+      running: rows.filter((r) => r.running).length,
+    };
   }
 
   /** One subagent's own history — the same rows the main chat renders. */

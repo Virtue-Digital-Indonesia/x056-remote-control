@@ -1818,6 +1818,11 @@ export class SessionManager {
     return true;
   }
 
+  /** Every conversation with a live turn, across all projects. */
+  runningSessions(): { projectId: string; sessionId: string }[] {
+    return [...this.runs.values()].map((r) => ({ projectId: r.projectId, sessionId: r.sessionId }));
+  }
+
   /** Is a specific conversation currently running a turn? */
   isSessionRunning(sessionId: string): boolean { return this.sessionBusy(sessionId); }
 
