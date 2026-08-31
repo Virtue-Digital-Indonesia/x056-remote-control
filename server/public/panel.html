@@ -200,8 +200,8 @@
   .orun .rspin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; flex: none; }
   .orun .pn { font-weight: 600; color: var(--text); }
   .orun .pl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
-  .orphan { max-width: 780px; margin: 10px auto; display: flex; align-items: center; gap: 12px; background: var(--warn-bg); border: 1px solid var(--amber); border-radius: 12px; padding: 10px 14px; }
-  .orphan .omsg { flex: 1; display: flex; align-items: center; gap: 8px; color: var(--warn-text); font-size: 13px; }
+  .orphan { max-width: 780px; margin: 10px auto; display: flex; align-items: center; gap: 12px; background: var(--amber-bg); border: 1px solid var(--amber); border-radius: 12px; padding: 10px 14px; }
+  .orphan .omsg { flex: 1; display: flex; align-items: center; gap: 8px; color: var(--amber); font-size: 13px; }
   .orphan .send { flex: none; width: auto; padding: 0 14px; }
   .qcard { max-width: 780px; margin: 12px auto; border: 1px solid var(--accent); border-radius: 14px; padding: 12px 16px; background: var(--accent-weak); }
   .qcard.answered { opacity: .75; }
@@ -238,7 +238,7 @@
      component past the column. The head stays on one line (it is short and
      fixed-shape); everything variable wraps underneath. */
   .cmd { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 8px 0; padding: 8px 11px;
-         border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font-size: 13px; min-width: 0; }
+         border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-size: 13px; min-width: 0; }
   .cmd .ic { grid-row: 1; align-self: center; }
   .cmd .head { grid-row: 1; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .cmd .nm { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
@@ -251,10 +251,10 @@
   /* Session-level events (compacted, cleared) — a rule across the transcript so
      a gap in the history has a visible reason. */
   .notice { display: flex; align-items: center; gap: 10px; margin: 14px 0; color: var(--muted); font-size: 12px; }
-  .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .notice::before, .notice::after { content: ""; flex: 1; height: 1px; background: var(--border); }
   /* The post-compaction recap, collapsed by default: it is often thousands of
      words and would otherwise bury the conversation it summarises. */
-  .sumblk { margin: 10px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; }
+  .sumblk { margin: 10px 0; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); overflow: hidden; }
   .sumblk > summary { cursor: pointer; padding: 9px 12px; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; list-style: none; }
   .sumblk > summary::-webkit-details-marker { display: none; }
   .sumblk > summary b { color: var(--text); font-weight: 600; }
@@ -307,7 +307,7 @@
   /* A settled (already-started) conversation's provider is shown as plain text,
      not a dropdown — so suppress the dropdown chevron for it. */
   .select.locked::after { content: none; }
-  .provlock { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; cursor: default; }
+  .provlock { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; font-size: 12.5px; color: var(--muted); white-space: nowrap; cursor: default; }
   /* A class that sets `display` outranks `[hidden]`'s UA `display: none` by
      specificity, so the hidden attribute alone wouldn't hide these. */
   .provlock[hidden] { display: none; }
@@ -376,7 +376,23 @@
   .plug-foot code { background: var(--surface-3); padding: 1px 5px; border-radius: 5px; font-size: 10.5px; }
   .plug-empty { font-size: 12px; color: var(--faint); padding: 6px 2px; }
   /* Scheduled tasks */
-  .tplr { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; cursor: pointer; }
+  /* The count badge is informational, not an alert like the approvals one. */
+  .subBadge { background: var(--accent); }
+  .subr { display: flex; align-items: center; gap: 9px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; cursor: pointer; }
+  .subr:hover { background: var(--surface-2); border-color: var(--border-strong); }
+  .subr .sw { min-width: 0; flex: 1; }
+  .subr .st { font-weight: 600; display: flex; align-items: center; gap: 7px; }
+  .subr .sk { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--on-accent); background: var(--accent); border-radius: 999px; padding: 1px 7px; font-weight: 700; flex: none; }
+  .subr .sd { color: var(--muted); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .subr .sm { color: var(--faint); font-size: 11px; margin-top: 2px; }
+  /* A subagent row in the chat is a link into that subagent's shell. */
+  .act.sub.open { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+  .act.sub.open:hover { color: var(--text); }
+  /* The shell itself: a transcript in a modal, so it scrolls on its own. */
+  .subshell { max-height: 62vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-top: 4px; }
+  .subshell .msg { max-width: 100%; }
+  .subhead { color: var(--muted); font-size: 12px; margin: -4px 0 8px; }
+  .tplr { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; cursor: pointer; }
   .tplr:hover { background: var(--surface-2); border-color: var(--border-strong); }
   .tplr .tw { min-width: 0; flex: 1; }
   .tplr .tn { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -393,13 +409,13 @@
   .tplr .ib:focus-visible { opacity: 1; outline: 2px solid var(--border-strong); outline-offset: -2px; }
   /* No hover on touch — go straight to full strength there. */
   @media (hover: none) { .tplr .ib { opacity: 1; } }
-  .cronj { border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; margin-bottom: 8px; }
+  .cronj { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; margin-bottom: 8px; }
   .cronj .top { display: flex; align-items: baseline; gap: 8px; }
   .cronj .sched { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
   .cronj .lbl { color: var(--muted); overflow-wrap: anywhere; }
   /* A one-shot has to be distinguishable at a glance from a nightly job — the
      schedule text alone is identical for both. */
-  .cronj .lbl.once { color: var(--text); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+  .cronj .lbl.once { color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
   .cronj .meta { color: var(--muted); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
   .cronj .pr { font-size: 12px; margin-top: 5px; overflow-wrap: anywhere; opacity: .9; }
   .cronj.off { opacity: .55; }
@@ -460,24 +476,24 @@
   .backdrop { position: fixed; inset: 0; z-index: 25; } .backdrop[hidden] { display: none; }
   /* Provider selector (new project) + register-codex divider + provider chip. */
   .provseg { display: flex; gap: 6px; margin-bottom: 10px; }
-  .provbtn { flex: 1; padding: 7px 10px; font: inherit; font-size: 13px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text-dim); border-radius: 8px; cursor: pointer; }
+  .provbtn { flex: 1; padding: 7px 10px; font: inherit; font-size: 13px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--muted); border-radius: 8px; cursor: pointer; }
   .provbtn.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
-  .acct-or { margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
-  .badge.prov { background: var(--surface-3); color: var(--text-dim); border: 1px solid var(--border-strong); }
+  .acct-or { margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .badge.prov { background: var(--surface-3); color: var(--muted); border: 1px solid var(--border-strong); }
   .codex-code { font-family: var(--mono); font-size: 22px; font-weight: 600; letter-spacing: .12em; text-align: center; padding: 10px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; color: var(--accent); user-select: all; }
   .codex-adv { margin-top: 12px; }
-  .codex-adv summary { font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
+  .codex-adv summary { font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; }
   .codex-adv[open] summary { margin-bottom: 4px; }
   /* Accounts from a provider this project doesn't use: present but clearly not
      the one about to run — dimmed, no next-up claim. */
   .qa.offprov { opacity: .5; }
   .qa.offprov:hover { opacity: .8; }
-  .acct-scope { margin: -4px 0 10px; font-size: 12px; color: var(--text-dim); }
+  .acct-scope { margin: -4px 0 10px; font-size: 12px; color: var(--muted); }
   /* Provider tabs on the accounts popover — only shown once accounts span more
      than one provider (a single-provider setup has nothing to filter). */
   .acct-tabs { display: flex; gap: 4px; margin: -2px 0 10px; padding: 3px; background: var(--surface-2); border-radius: 9px; }
   .acct-tabs[hidden] { display: none; } /* see .provlock[hidden] — same specificity trap */
-  .acct-tab { flex: 1; padding: 6px 8px; font: inherit; font-size: 12px; font-weight: 600; border: none; background: none; color: var(--text-dim); border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .acct-tab { flex: 1; padding: 6px 8px; font: inherit; font-size: 12px; font-weight: 600; border: none; background: none; color: var(--muted); border-radius: 6px; cursor: pointer; white-space: nowrap; }
   .acct-tab:hover { color: var(--text); }
   .acct-tab.on { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.18); }
   .acct-tab .n { opacity: .55; font-weight: 500; margin-left: 3px; }
@@ -693,6 +709,7 @@
     <span id="dot" class="off" title="connection"></span>
     <button class="ico" id="notifyBtn" title="enable phone/desktop notifications"><svg class="ic"><use href="#i-bell"/></svg></button>
     <button class="ico" id="mcpApprovalsBtn" title="AI cross-conversation send requests awaiting your approval" hidden><svg class="ic"><use href="#i-sparkles"/></svg><span class="mcpBadge" id="mcpApprovalsBadge"></span></button>
+    <button class="ico" id="subagentsBtn" title="subagents this conversation spawned" hidden><svg class="ic"><use href="#i-sparkles"/></svg><span class="mcpBadge subBadge" id="subagentsBadge"></span></button>
     <button class="ico" id="autopilotBtn" title="autopilot — gateway keeps the work going across turns/restarts"><svg class="ic"><use href="#i-repeat"/></svg></button>
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
@@ -820,6 +837,11 @@
     </div>
   </div>
   <div class="plug-foot">Changes apply to the next turn. Invoke a plugin command by sending it as a message, e.g. <code>/claude-security scan my branch</code>.</div>
+</div>
+<div class="pop" id="subPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:420px; max-height:78vh; overflow:auto;">
+  <h2>Subagents</h2>
+  <div class="plug-note">each one keeps its own transcript · click to open it</div>
+  <div id="subList"></div>
 </div>
 <div class="pop" id="tplPop" hidden style="top:auto; bottom:96px; right:12px; left:auto; width:400px; max-height:70vh; overflow:auto;">
   <h2>Prompt templates</h2>
@@ -3271,6 +3293,7 @@
   var MORE_ITEMS = [
     { id: 'notifyBtn', label: 'Notifications', icon: 'bell' },
     { id: 'autopilotBtn', label: 'Autopilot', icon: 'repeat' },
+    { id: 'subagentsBtn', label: 'Subagents', icon: 'sparkles' },
     { id: 'resumeBtn', label: 'Resume a session', icon: 'history' },
     { id: 'defaultsBtn', label: 'Default effort per model', icon: 'gear' },
     { id: 'pluginsBtn', label: 'Plugins', icon: 'plug' },
@@ -3685,6 +3708,9 @@
       active = !!lv.active; lastLabel = lv.label || ''; runningSubs = lv.subCount || 0; subs = lv.subs || {}; renderBusy();
       down();
       updateOlderBar();
+      // The subagent list belongs to THIS conversation, so it is refetched with
+      // its history rather than carried over from whatever was on screen before.
+      refreshSubagents();
     }).catch(function () {});
   }
 
@@ -3854,6 +3880,163 @@
   // newline · drag-drop) that don't apply on a touch device — where they only
   // wrap to three lines of noise. Swap to a clean prompt on a coarse pointer.
   try { if (matchMedia('(pointer: coarse)').matches) promptEl.placeholder = 'Message x056…'; } catch (e) {}
+
+  // ---- subagents ------------------------------------------------------------
+  // Claude Code writes each Task/Agent call its own complete transcript at
+  // <session>/subagents/agent-<id>.jsonl, so a per-subagent view is a second
+  // file read with the same pager — nothing is reconstructed from the event
+  // stream, and a finished turn reads exactly like a running one.
+  var subMetas = [];          // for the conversation currently on screen
+  var subShells = {};         // agentId -> refresh() for an open shell
+
+  function fmtBytes(n) {
+    if (!n) return '0 B';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  /** Render history rows into any container, reusing the chat's own builders so
+   *  a subagent's tool calls and messages look identical to the main thread. */
+  function renderRowsInto(box, rows) {
+    box.textContent = '';
+    (rows || []).forEach(function (m) {
+      var n = m.role === 'action' ? nodeAct(m.text, m.sub)
+        : m.role === 'command' ? nodeCmd(m.text, m.args, m.ts)
+        : m.role === 'notice' ? nodeNotice(m.text)
+        : m.role === 'summary' ? nodeSummary(m.text, m.ts)
+        : m.role === 'model' ? nodeModelMark(m.text, m.ts)
+        : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, 'claude');
+      box.appendChild(n);
+    });
+  }
+
+  function renderSubBadge() {
+    var btn = $('subagentsBtn'), badge = $('subagentsBadge');
+    if (!btn) return;
+    btn.hidden = subMetas.length === 0;
+    badge.textContent = subMetas.length ? String(subMetas.length) : '';
+    // Chat rows that name a subagent become links once the list can resolve them.
+    markSubagentRows();
+  }
+
+  function refreshSubagents() {
+    var pid = currentProjectId, sid = lastSessionId;
+    if (!pid || !sid) { subMetas = []; renderSubBadge(); return Promise.resolve(); }
+    return api('/api/conversations/subagents?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (currentProjectId !== pid || lastSessionId !== sid) return; // switched while loading
+        subMetas = (d && d.subagents) || [];
+        renderSubBadge();
+        if (!$('subPop').hidden) renderSubList();
+      })
+      .catch(function () {});
+  }
+
+  /** Match "Subagent: <description>" activity rows to a known subagent. The
+   *  label is built from the Task call's own description, which is what the
+   *  meta file stores, so this is the same string on both sides. */
+  function subForLabel(label) {
+    var d = String(label || '').replace(/^Subagent:\s*/, '').replace(/…$/, '').trim();
+    if (!d) return null;
+    return subMetas.filter(function (m) { return m.description && m.description.indexOf(d) === 0; })[0] || null;
+  }
+  function markSubagentRows() {
+    var rows = chatEl.querySelectorAll('.act.sub');
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (row.dataset.subBound) continue;
+      var el = row.querySelector('.el');
+      var meta = subForLabel(el && el.textContent);
+      if (!meta) continue;
+      row.dataset.subBound = '1';
+      row.classList.add('open');
+      row.title = 'open this subagent\'s transcript';
+      (function (m) { row.addEventListener('click', function () { openSubShell(m); }); })(meta);
+    }
+  }
+
+  function renderSubList() {
+    var list = $('subList'); list.textContent = '';
+    if (!subMetas.length) {
+      var e = document.createElement('div'); e.className = 'plug-empty';
+      e.textContent = 'This conversation has not spawned any subagents.';
+      list.appendChild(e); return;
+    }
+    subMetas.forEach(function (m) {
+      var row = document.createElement('div'); row.className = 'subr';
+      var w = document.createElement('div'); w.className = 'sw';
+      var t = document.createElement('div'); t.className = 'st';
+      var k = document.createElement('span'); k.className = 'sk'; k.textContent = m.agentType; t.appendChild(k);
+      // Depth 1 is the conversation's own; deeper means a subagent spawned it,
+      // which is worth seeing since it is not something you asked for directly.
+      if (m.spawnDepth > 1) { var d2 = document.createElement('span'); d2.className = 'sm'; d2.textContent = 'depth ' + m.spawnDepth; t.appendChild(d2); }
+      w.appendChild(t);
+      var d = document.createElement('div'); d.className = 'sd'; d.textContent = m.description || '(no description)'; w.appendChild(d);
+      var meta = document.createElement('div'); meta.className = 'sm';
+      meta.textContent = fmtBytes(m.bytes) + (m.updatedAt ? ' · ' + relTime(new Date(m.updatedAt).toISOString()) : '');
+      w.appendChild(meta);
+      row.appendChild(w);
+      row.addEventListener('click', function () { openSubShell(m); });
+      list.appendChild(row);
+    });
+  }
+
+  /** One subagent's own shell. Several can be open at once — they stack. */
+  function openSubShell(m) {
+    var pid = currentProjectId, sid = lastSessionId;
+    return showModal('wide', null, function (card, done) {
+      var h = document.createElement('h3');
+      h.textContent = m.agentType + (m.description ? ' — ' + m.description : '');
+      card.appendChild(h);
+      var sub = document.createElement('div'); sub.className = 'subhead';
+      sub.textContent = 'agent ' + m.agentId + ' · depth ' + m.spawnDepth + ' · ' + fmtBytes(m.bytes);
+      card.appendChild(sub);
+      var box = document.createElement('div'); box.className = 'subshell';
+      var loading = document.createElement('div'); loading.className = 'plug-empty'; loading.textContent = 'loading its transcript…';
+      box.appendChild(loading);
+      card.appendChild(box);
+      var acts = document.createElement('div'); acts.className = 'modal-actions';
+      var close = document.createElement('button'); close.className = 'send'; close.textContent = 'Close';
+      close.addEventListener('click', function () { delete subShells[m.agentId]; done(true); });
+      acts.appendChild(close); card.appendChild(acts);
+
+      var atBottom = true;
+      box.addEventListener('scroll', function () {
+        atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+      });
+      function refresh() {
+        return api('/api/conversations/subagent-history?projectId=' + encodeURIComponent(pid)
+          + '&sessionId=' + encodeURIComponent(sid) + '&agentId=' + encodeURIComponent(m.agentId) + '&limit=300')
+          .then(function (r) { return r.json(); })
+          .then(function (page) {
+            renderRowsInto(box, page && page.rows);
+            if (!(page && page.rows && page.rows.length)) {
+              var e = document.createElement('div'); e.className = 'plug-empty';
+              e.textContent = 'Nothing recorded yet — it may have only just started.';
+              box.appendChild(e);
+            }
+            // Follow a running subagent, but never yank the view while it is
+            // being read back.
+            if (atBottom) box.scrollTop = box.scrollHeight;
+          }).catch(function () {});
+      }
+      subShells[m.agentId] = refresh;
+      refresh();
+    }).then(function (v) { delete subShells[m.agentId]; return v; });
+  }
+
+  $('subagentsBtn').addEventListener('click', function () { openPop($('subPop')); renderSubList(); refreshSubagents(); });
+
+  // A running turn spawns and feeds subagents; poll while one is live so the
+  // count, the list and any open shell all move on their own.
+  setInterval(function () {
+    var shellOpen = Object.keys(subShells).length > 0;
+    if (!active && !shellOpen && $('subPop').hidden) return;
+    if (active) refreshSubagents();
+    for (var id in subShells) subShells[id]();
+  }, 5000);
 
   // ---- prompt templates -----------------------------------------------------
   // Saved snippets, inserted into the composer AT THE CARET.

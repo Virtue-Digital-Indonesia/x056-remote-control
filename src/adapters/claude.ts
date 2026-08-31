@@ -213,6 +213,18 @@ export interface HistoryPage {
 export function readHistoryPage(configDirs: string[], sessionId: string, limit = 100, before?: number): HistoryPage {
   const file = findTranscript(configDirs, sessionId);
   if (!file) return { rows: [], cursor: 0, done: true };
+  return readFilePage(file, limit, before);
+}
+
+/**
+ * The paging itself, against an explicit transcript path.
+ *
+ * Split out from readHistoryPage because a SUBAGENT's transcript is a separate
+ * file that no session id resolves to — it lives at
+ * `<session>/subagents/agent-<id>.jsonl` — but its entries are the same shape,
+ * so it wants exactly this reader and not a second one.
+ */
+export function readFilePage(file: string, limit = 100, before?: number): HistoryPage {
   let size: number;
   try { size = statSync(file).size; } catch { return { rows: [], cursor: 0, done: true }; }
   const end = before === undefined ? size : Math.max(0, Math.min(before, size));

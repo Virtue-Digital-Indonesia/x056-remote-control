@@ -24,6 +24,7 @@ import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { TEMPLATES, TemplateStore } from './templates.js';
 import { getAdapter } from '../src/adapters/registry.js';
+import { listSubagents, readSubagentPage } from '../src/adapters/subagents.js';
 import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
@@ -524,6 +525,49 @@ export class ApiController {
       // Provider without pagination: serve the newest page and report no more.
       const rows = adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [];
       return { rows, cursor: 0, done: true };
+    } catch {
+      return { rows: [], cursor: 0, done: true };
+    }
+  }
+
+  // ---- subagents: each Task call keeps its own transcript beside the session --
+
+  /**
+   * The subagents a conversation has spawned.
+   *
+   * Claude Code writes each one a complete transcript of its own, so this is a
+   * directory listing rather than anything reconstructed from the event stream —
+   * and it works identically for a finished turn and one still running.
+   */
+  @Get('conversations/subagents')
+  conversationSubagents(@Query('projectId') projectId?: string, @Query('sessionId') sessionId?: string) {
+    if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    try {
+      const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
+      // Codex has no equivalent; an empty list is the honest answer, not an error.
+      if (adapter.id !== 'claude') return { subagents: [] };
+      return { subagents: listSubagents(configDirs, providerSessionId) };
+    } catch {
+      return { subagents: [] };
+    }
+  }
+
+  /** One subagent's own history — the same rows the main chat renders. */
+  @Get('conversations/subagent-history')
+  conversationSubagentHistory(
+    @Query('projectId') projectId?: string,
+    @Query('sessionId') sessionId?: string,
+    @Query('agentId') agentId?: string,
+    @Query('limit') limit?: string,
+    @Query('before') before?: string,
+  ) {
+    if (!projectId || !sessionId || !agentId) throw new BadRequestException('projectId, sessionId and agentId required');
+    const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.min(Number(limit), 500) : 200;
+    const cur = Number.isFinite(Number(before)) && Number(before) >= 0 ? Number(before) : undefined;
+    try {
+      const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
+      if (adapter.id !== 'claude') return { rows: [], cursor: 0, done: true };
+      return readSubagentPage(configDirs, providerSessionId, agentId, n, cur);
     } catch {
       return { rows: [], cursor: 0, done: true };
     }

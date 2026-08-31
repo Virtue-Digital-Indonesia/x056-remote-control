@@ -98,6 +98,27 @@ failover happens to land on the right one — which reads as "randomly broken":
   /api/accounts/baseline` shows that baseline and which accounts lag; `POST
   /api/accounts/provision` re-applies it.
 
+## Subagents have their own transcripts
+
+A Task/Agent call does **not** inline its work into the parent transcript. The
+CLI writes each subagent a complete transcript of its own:
+
+```
+<configDir>/projects/<projectDir>/<sessionId>/subagents/
+    agent-<agentId>.jsonl        full transcript, same entry shapes as a session
+    agent-<agentId>.meta.json    {agentType, description, toolUseId, spawnDepth}
+```
+
+- So a per-subagent view is a **second file read with the same pager**
+  (`readFilePage`) — nothing is reconstructed from the event stream, and a
+  finished turn reads exactly like a running one.
+- `toolUseId` ties a subagent back to the Task call in the parent; `spawnDepth`
+  is 1 for one the conversation spawned, 2+ for one another subagent spawned.
+- `src/adapters/subagents.ts` lists and reads them; the panel's ✨ topbar button
+  (hidden when there are none) opens the list, and each row opens its own shell.
+  `agentId` is matched against the directory listing before use — it arrives from
+  a query string, and pasting it into a path would let `../` escape the session.
+
 ## Conversations messaging each other is BOUNDED
 
 `send_message` lets one conversation drive another, which is also how two of them
