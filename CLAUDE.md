@@ -20,7 +20,7 @@ Sessions started through the panel run **inside the Docker container** this repo
   3. Verify afterwards via `.deploy/status.json` (`{status, commit, ts}`) and `.deploy/last.log`. If status says `build_failed`, read the log, fix, re-touch the flag.
 - **The panel needs NO deploy**: `server/public/panel.html` is bind-mount live-served (`X056_PANEL_PATH`) — edits appear on browser refresh. **Backend changes (`server/`, `src/`, `Dockerfile`, `compose.yaml`) need the actuator flow above.**
 - **A container swap restarts every session, including you.** Graceful swaps wait for idle so no turn is killed; your session resumes on the user's next message. Ungraceful restarts (crash/reboot) kill in-flight turns — they resume on next message too.
-- **Background work DIES when your turn ends.** Your process is the turn: backgrounded subagents, workflows, or `run_in_background` shells are killed at turn completion. Run long orchestration synchronously within the turn, or don't run it. Never promise "I'll be notified when it finishes."
+- **Background work now SURVIVES a turn** — the CLI process is kept alive between turns, so `run_in_background` shells, backgrounded agents and `Workflow` keep going and you collect their output on a later turn. Plain subagents were never affected (a Task call runs *inside* the turn). Nothing wakes you when one finishes, and a stop, a failover, a container swap or ~30 min idle still ends it. See "Background work SURVIVES a turn" below.
 - Mounts you can see: the failover config dirs (see "Accounts are a fleet" below — `~/.claude-x056-b` is account **b**; `~/.claude-x056-a` is an orphan, the live `a` is `/app/state/accounts/a`), the workspace (`/home/efran/remote-development`), `~/.claude/projects` **read-only** (interactive transcripts, for session adoption), and the `/app/state` volume. The host's `~/.claude` credentials are NOT visible.
 - Tests: `npm test` (vitest, serialized files — keep it green), `npm run typecheck`. Both must pass before requesting a deploy.
 - **You CAN screenshot** to eyeball UI work: a headless Chromium (Playwright) is baked into the image at `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`. Start the project's dev server, then `node /app/scripts/shot.cjs <url> <out.png> [width] [height]` and Read the PNG. Any project's own Playwright/Puppeteer also finds the browser via that env var. (Requires a container built after this note — if `shot.cjs` says playwright not found, the image predates it; commit + request a deploy.)
@@ -97,6 +97,39 @@ failover happens to land on the right one — which reads as "randomly broken":
   baseline (`server/provision.ts`), design consent included. `GET
   /api/accounts/baseline` shows that baseline and which accounts lag; `POST
   /api/accounts/provision` re-applies it.
+
+## Background work SURVIVES a turn (persistent sessions)
+
+Turns used to be one `claude -p` process each, so "the turn ended" and "the
+process died" were the same event — background shells, backgrounded agents and
+the `Workflow` tool were destroyed the moment the model stopped talking.
+(Ordinary subagents never were: a Task call runs *inside* the turn and blocks
+it.)
+
+`src/persistent.ts` keeps **one long-lived process per conversation**, fed a
+message per turn over `--input-format stream-json`. A turn now ends at the
+`result` event, not at process exit.
+
+- **It slots in without touching failover.** `runSession` drives turns through
+  `startTurnFn(opts) -> TurnHandle` and only asks three things of a handle:
+  stream events, say when the turn is over, stop it. `PersistentTurns` implements
+  that over a shared process, so `src/failover.ts` is unchanged.
+- **Failover works because `kill()` really ends the process.** On a usage limit
+  the loop kills the handle and re-enters with the next account's configDir,
+  finds no live process for that pair, and spawns one with `--resume`. Verified
+  against the real CLI: a second process resuming the same id recalls the first
+  one's context.
+- `interrupt()` sends the CLI's `control_request`/`interrupt` rather than a
+  signal — the turn stops, the process lives, and it is usable immediately after.
+- **Identity is the whole argv**: configDir, sessionId, model, effort, mcp config
+  and system prompt. Anything baked in at spawn cannot be changed for a running
+  process, so a different model keys to a different entry and respawns.
+- Bounded: `X056_PERSISTENT_TTL_MS` (30 min idle) and `X056_PERSISTENT_MAX` (4
+  live), LRU, never evicting a busy one. `X056_PERSISTENT=off` restores a process
+  per turn. Codex keeps the one-shot path — its CLI has no equivalent mode.
+- What still ends background work: an operator stop, a failover, a container
+  swap, or the idle TTL. **Nothing wakes the model when a background task
+  finishes** — it collects the output on its next turn.
 
 ## Subagents have their own transcripts
 

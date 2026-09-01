@@ -10,6 +10,7 @@ import { getAdapter } from '../src/adapters/registry.js';
 import { ProjectRegistry, type Project, type Conversation } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
+import { PersistentTurns } from '../src/persistent.js';
 import type { TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
@@ -155,13 +156,14 @@ const BUFFER_MAX = 1000;
 // env var — kept out of the shared code so a colleague's clone isn't told about
 // infra it doesn't have.
 const BASE_SYSTEM_NOTE =
-  'EXECUTION ENVIRONMENT (x056 remote-control gateway): You run headless inside a container and your process ENDS when this turn ends. ' +
-  'Consequences you must respect: (1) Background shell commands (run_in_background: true), backgrounded subagents, and the Workflow tool are ALL KILLED at turn end — their work is lost. Do NOT background work; run everything synchronously in the foreground even if it is long (a turn can run a long time and its activity is streamed to the user). ' +
-  '(2) Never say you will continue "in the background" or that you will "be notified when it finishes" — you will not be. ' +
-  '(3) For long autonomous or multi-turn work, tell the user to enable Autopilot (the gateway re-invokes you across turns with full context via resume) instead of backgrounding. ' +
+  'EXECUTION ENVIRONMENT (x056 remote-control gateway): You run headless inside a container, driven by a gateway. ' +
+  '(1) SUBAGENTS ARE FULLY SUPPORTED. A Task/Agent call runs inside your turn and blocks it until the subagent returns, so use them freely — including many in parallel. Each one gets its own transcript the operator can open. ' +
+  '(2) BACKGROUND WORK SURVIVES THE END OF A TURN. Your CLI process is kept alive between turns, so background shells (run_in_background: true), backgrounded agents, and the Workflow tool keep running after you stop talking, and you can collect their output on a LATER turn. Nothing wakes you up when one finishes: say what you started and check it next turn, rather than claiming you will be notified. ' +
+  'What still ends background work: the operator stopping the conversation, a failover to another account when one hits its usage limit, a container swap (deploys), and about 30 minutes fully idle. So prefer finishing genuinely short work in the foreground, and background what is actually long. ' +
+  '(3) For long autonomous or multi-turn work, Autopilot re-invokes you across turns with full context — suggest it for anything that needs many turns of its own accord. ' +
   '(4) Your in-container `docker`/`docker compose` drive an isolated Docker-in-Docker sidecar (DOCKER_HOST=tcp://dind:2375), NOT the host Docker — use them for your project\'s own builds/e2e. Two caveats for a project compose: bind mounts resolve on the dind daemon (which shares the workspace at the same absolute path, so mounts under the workspace root work), and published ports are reachable at hostname `dind:<port>`, not localhost. Deploying THIS gateway itself is a host-side actuator (commit, then `touch .deploy/requested`), never docker. ' +
   'Toolchains you DO have: Node/npm, Go (GOTOOLCHAIN=auto), Java 17 + Maven, Python 3 (create a venv — the system Python is externally-managed), PHP + Composer, gcc/make, git, ripgrep, and a headless Chromium — screenshot any local URL with `node /app/scripts/shot.cjs <url> <out.png>` then read the PNG. If a git push over an SSH remote fails on authentication, the credential for that remote is not configured — surface it to the user instead of retrying. ' +
-  '(5) You have an MCP server named "x056" (this gateway itself) wired in automatically — no setup needed. It exposes four tools: list_projects, list_conversations, read_conversation, and send_message, letting you read OTHER conversations (any project, any provider — Claude or ChatGPT/Codex) and message them, e.g. to hand off a subtask or check another project\'s progress. send_message pauses until the human operator explicitly approves it in the panel (denial or timeout means it was NOT sent) — this is a real gate they control, not a formality, so only use it when messaging another conversation is genuinely the right move, and expect it may be denied.';
+  '(5) You have an MCP server named "x056" (this gateway itself) wired in automatically — no setup needed. It exposes tools to read OTHER conversations (any project, any provider — Claude or ChatGPT/Codex), message them, stop them, schedule tasks, and search this gateway\'s code graph and cross-project memories. send_message pauses until the human operator explicitly approves it in the panel (denial or timeout means it was NOT sent) — this is a real gate they control, not a formality, so only use it when messaging another conversation is genuinely the right move, and expect it may be denied. AI-to-AI exchanges are also capped at a few hops: past that the gateway refuses the send and you must report to the human instead.';
 const CONTAINER_SYSTEM_NOTE = BASE_SYSTEM_NOTE + (process.env.X056_HOST_NOTE ? ' ' + process.env.X056_HOST_NOTE.trim() : '');
 
 /** EventLog that also forwards every supervisor row to the gateway stream. */
@@ -245,6 +247,15 @@ export class SessionManager {
   // key is the session, not the project. Helpers below answer the project-level
   // questions (is any conversation in this project running?).
   private runs = new Map<string, ActiveRun>();
+  /**
+   * One long-lived CLI process per Claude conversation, so background work —
+   * background shells, backgrounded agents, the Workflow tool — survives the
+   * end of a turn. Set X056_PERSISTENT=off to fall back to a process per turn.
+   */
+  private readonly persistent = process.env.X056_PERSISTENT === 'off' ? null : new PersistentTurns({
+    idleTtlMs: Number(process.env.X056_PERSISTENT_TTL_MS) || 30 * 60_000,
+    maxSessions: Number(process.env.X056_PERSISTENT_MAX) || 4,
+  });
   private sessionBusy(sessionId: string): boolean { return this.runs.has(sessionId); }
   private projectBusy(pid: string): boolean {
     for (const r of this.runs.values()) if (r.projectId === pid) return true;
@@ -294,6 +305,9 @@ export class SessionManager {
     if (opts.manageProcessSignals) {
       const onTerm = () => {
         for (const run of this.runs.values()) run.control?.abort();
+        // Idle persistent processes have no run to abort, so they would outlive
+        // the gateway as orphans across every container swap.
+        this.persistent?.shutdown();
         process.exit(130);
       };
       process.on('SIGTERM', onTerm);
@@ -1638,6 +1652,11 @@ export class SessionManager {
         effort,
         appendSystemPrompt: CONTAINER_SYSTEM_NOTE,
         mcp: this.mcpWiringFor(pid, sessionId),
+        // Claude only: codex's CLI has no equivalent streaming-input mode, so it
+        // keeps the process-per-turn path.
+        startTurnFn: this.persistent && adapter.id === 'claude'
+          ? (o) => this.persistent!.startTurn(o)
+          : undefined,
         forceSwitchSignal: false,
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {
