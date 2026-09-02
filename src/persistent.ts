@@ -142,21 +142,28 @@ export class PersistentTurns {
    * the queue rather than drop the message on the floor.
    */
   injectMessage(sessionId: string, text: string): boolean {
+    // One session can have SEVERAL live entries: the key includes model and
+    // effort, so switching model mid-conversation spawns a second process while
+    // the first stays alive finishing its work. Map order is insertion order,
+    // so taking the first match would steer the STALE process -- the one the
+    // operator is no longer talking to. Take the most recently used.
+    let target: Live | undefined;
     for (const e of this.live.values()) {
       if (e.sessionId !== sessionId || e.exited) continue;
-      try {
-        e.child.stdin?.write(JSON.stringify({
-          type: 'user',
-          message: { role: 'user', content: [{ type: 'text', text }] },
-        }) + '\n');
-        // Steering is output-producing work; without this the entry looks idle
-        // to the eviction pass and can be culled between the write and the
-        // model's first token.
-        e.lastOutput = this.now();
-        return true;
-      } catch { return false; }
+      if (!target || e.lastUsed > target.lastUsed) target = e;
     }
-    return false;
+    if (!target) return false;
+    try {
+      target.child.stdin?.write(JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text }] },
+      }) + '\n');
+      // Steering is output-producing work; without this the entry looks idle
+      // to the eviction pass and can be culled between the write and the
+      // model's first token.
+      target.lastOutput = this.now();
+      return true;
+    } catch { return false; }
   }
 
   /** Stop a conversation's background work without killing the process, so the

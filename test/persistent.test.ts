@@ -415,3 +415,28 @@ describe('steering a prompt into live work', () => {
     expect(spawned[0].cli.killed).toBe(false);
   });
 })
+
+describe('a session with more than one live process', () => {
+  // The pool key includes model, so switching model mid-conversation leaves the
+  // old process alive finishing its work while a new one serves the next turn.
+  it('steers the newest process, not the stale one', async () => {
+    let t = 1_000;
+    const { p, spawned } = pool({ maxSessions: 5, now: () => t });
+    const h1 = p.startTurn(turn({ sessionId: 's1', mode: 'new', model: 'sonnet' }));
+    spawned[0].cli.result('a');
+    await h1.done;
+
+    t += 1_000;
+    const h2 = p.startTurn(turn({ sessionId: 's1', mode: 'resume', model: 'opus' }));
+    spawned[1].cli.result('b');
+    await h2.done;
+
+    expect(spawned).toHaveLength(2); // two live entries, same sessionId
+    expect(p.injectMessage('s1', 'steer me')).toBe(true);
+
+    const steeredOld = spawned[0].cli.msgs().some((m) => m.message?.content?.[0]?.text === 'steer me');
+    const steeredNew = spawned[1].cli.msgs().some((m) => m.message?.content?.[0]?.text === 'steer me');
+    expect(steeredOld).toBe(false);
+    expect(steeredNew).toBe(true);
+  });
+})
