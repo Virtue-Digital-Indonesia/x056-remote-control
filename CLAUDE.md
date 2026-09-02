@@ -138,8 +138,13 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   transcript and the conversation simply looked dead.
 - Bounded: `X056_PERSISTENT_TTL_MS` (30 min without output) and
   `X056_PERSISTENT_MAX` (6 live; was 4, below the number of conversations
-  actually in play). `X056_PERSISTENT=off` restores a process per turn. Codex
-  keeps the one-shot path — its CLI has no equivalent mode.
+  actually in play). Eviction skips anything still **working** and never the
+  session whose turn is starting — with no output yet it is LRU's first pick,
+  and it killed itself between spawn and first write. A turn whose process dies
+  before `runOn` has nothing to resolve it, so it hangs forever and a stop
+  cannot clear it: the abort path waits on the same promise.
+  `X056_PERSISTENT=off` restores a process per turn. Codex keeps the one-shot
+  path — its CLI has no equivalent mode.
 - What still ends background work: an operator stop, a failover, a container
   swap, or the idle TTL. **Nothing wakes the model when a background task
   finishes** — it collects the output on its next turn.
