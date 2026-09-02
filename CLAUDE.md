@@ -196,6 +196,37 @@ CLI writes each subagent a complete transcript of its own:
   every subagent — the same scan already needed for per-subagent usage, so it
   costs no extra reads — which also yields `spawnedBy`.
 
+## Workflow runs have their own island (`src/adapters/workflows.ts`)
+
+A `Workflow` call writes its agents beside the session in a directory per RUN,
+using the **same file shapes as an ordinary subagent** — so nothing about
+reading them is new:
+
+```
+<configDir>/projects/<projectDir>/<sessionId>/subagents/workflows/wf_<runId>/
+    journal.jsonl              {type:'started'|'result', key, agentId, result}
+    agent-<agentId>.jsonl      full transcript, identical shape to a subagent's
+    agent-<agentId>.meta.json  {agentType, spawnDepth}
+<configDir>/projects/<projectDir>/<sessionId>/workflows/scripts/<name>-wf_<runId>.js
+```
+
+- Because the agent files are byte-identical to a plain subagent's,
+  `readFilePage` opens one unchanged and the cost scanner already prices them.
+- **`label` and `phase` are NOT persisted.** Checked against a run that used
+  both: neither the journal nor the meta file carries them. So a run shows the
+  phases it DECLARED — read out of the script's `meta` literal, which the tool
+  requires to be pure, so it is pattern-matched rather than evaluated — and each
+  agent is named by the head of its own prompt (`cachedBrief`).
+- **Progress is the journal**, not mtime: `started` minus `result` per agentId.
+- **Incomplete is not the same as running.** A swap, a stop or a crash leaves a
+  run short of its agents forever, and "0 / 4 agents · running" on a run that
+  died hours ago is the same phantom-busy lie the conversation strip was fixed
+  for. A run counts as live only if it is also moving (5 min).
+- The accounts share one `projects/` tree, so every run is reachable through
+  every configDir — dedupe by runId or one run lists three times.
+- `runId` and `agentId` both arrive from a query string and are matched against
+  the directory listing before reaching a path.
+
 ## Token cost (`server/transcript-stats.ts`)
 
 Every assistant entry carries `message.usage` and `message.model`, so what a

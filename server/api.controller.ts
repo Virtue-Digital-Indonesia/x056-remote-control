@@ -26,6 +26,7 @@ import { TEMPLATES, TemplateStore } from './templates.js';
 import { TRANSCRIPT_STATS, TranscriptStatsReader, estimateCost } from './transcript-stats.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles, transcriptIndex } from '../src/adapters/subagents.js';
+import { listWorkflowAgents, listWorkflowRuns, readWorkflowAgentPage } from '../src/adapters/workflows.js';
 import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
@@ -725,6 +726,58 @@ export class ApiController {
   }
 
   /** One subagent's own history — the same rows the main chat renders. */
+  /**
+   * Workflow runs for a conversation, with their declared phases and live
+   * agent counts. Cheap: a directory listing plus one journal scan per run.
+   */
+  @Get('conversations/workflows')
+  conversationWorkflows(
+    @Query('projectId') projectId?: string,
+    @Query('sessionId') sessionId?: string,
+    @Query('runId') runId?: string,
+  ) {
+    if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    try {
+      const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
+      if (adapter.id !== 'claude') return { runs: [] };
+      const runs = listWorkflowRuns(configDirs, providerSessionId);
+      // Agents are only listed for the run being looked at: a security scan
+      // produced 892 of them, and briefing every agent of every run would read
+      // hundreds of transcript heads to draw a list of runs.
+      if (!runId) return { runs: runs.map(({ dir, ...r }) => r) };
+      const one = runs.find((r) => r.runId === runId);
+      if (!one) return { runs: [], agents: [] };
+      const { dir, ...rest } = one;
+      return { runs: [rest], agents: listWorkflowAgents(dir) };
+    } catch {
+      return { runs: [] };
+    }
+  }
+
+  /** One workflow agent's transcript, same pager as a session or a subagent. */
+  @Get('conversations/workflow-history')
+  conversationWorkflowHistory(
+    @Query('projectId') projectId?: string,
+    @Query('sessionId') sessionId?: string,
+    @Query('runId') runId?: string,
+    @Query('agentId') agentId?: string,
+    @Query('limit') limit?: string,
+    @Query('before') before?: string,
+  ) {
+    if (!projectId || !sessionId || !runId || !agentId) {
+      throw new BadRequestException('projectId, sessionId, runId and agentId required');
+    }
+    const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.min(Number(limit), 500) : 200;
+    const cur = Number.isFinite(Number(before)) && Number(before) >= 0 ? Number(before) : undefined;
+    try {
+      const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
+      if (adapter.id !== 'claude') return { rows: [], cursor: 0, done: true };
+      return readWorkflowAgentPage(configDirs, providerSessionId, runId, agentId, n, cur);
+    } catch {
+      return { rows: [], cursor: 0, done: true };
+    }
+  }
+
   @Get('conversations/subagent-history')
   conversationSubagentHistory(
     @Query('projectId') projectId?: string,
