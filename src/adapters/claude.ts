@@ -332,6 +332,22 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
       }
       continue;
     }
+    // A prompt steered INTO a running turn is not recorded as a `user` entry --
+    // the CLI files it as `attachment.type === 'queued_command'`. Dropping it
+    // left the model answering a question that was nowhere on screen after a
+    // reload. Verified against CLI 2.1.258: the entry carries the full prompt
+    // text, a timestamp and a parentUuid, so it renders in the right place.
+    if (type === 'attachment') {
+      const att = entry.attachment as { type?: string; prompt?: unknown } | undefined;
+      if (att?.type !== 'queued_command') continue;
+      const qt = textFromContent(att.prompt).trim();
+      if (qt === '') continue;
+      const shownQ = stripAskInstructions(qt);
+      if (shownQ === '') continue;
+      out.push({ role: 'user', text: shownQ, ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined });
+      offsets.push(at);
+      continue;
+    }
     if (type !== 'user' && type !== 'assistant') continue;
     if (entry.isApiErrorMessage || entry.isMeta) continue;
     const message = entry.message as { role?: string; content?: unknown; model?: unknown } | undefined;

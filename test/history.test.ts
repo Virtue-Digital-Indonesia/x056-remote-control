@@ -248,3 +248,40 @@ describe('tool-call history survives a reload', () => {
     expect(rows.find((r) => r.text === 'Running: npm test')?.sub).toBe(false);
   });
 });
+
+describe('a prompt steered into a running turn', () => {
+  // The CLI does not record it as a `user` entry -- it files it under
+  // `attachment.type === 'queued_command'` (verified against CLI 2.1.258).
+  // Dropping it left the model answering a question that was nowhere on screen.
+  it('renders as a user message in the right place', () => {
+    const sid = 'sess-inject';
+    const dir = configDirWithTranscript(sid, [
+      { type: 'user', message: { role: 'user', content: 'run the long thing' } },
+      {
+        type: 'attachment',
+        timestamp: '2026-09-02T14:41:56.474Z',
+        attachment: {
+          type: 'queued_command',
+          commandMode: 'prompt',
+          prompt: [{ type: 'text', text: 'also, what is 17 times 23?' }],
+        },
+      },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '17x23 = 391' }] } },
+    ]);
+
+    const rows = readSessionHistory([dir], sid);
+    expect(rows.map((r) => r.role)).toEqual(['user', 'user', 'assistant']);
+    expect(rows[1].text).toBe('also, what is 17 times 23?');
+  });
+
+  it('ignores attachments that are not steered prompts', () => {
+    const sid = 'sess-att';
+    const dir = configDirWithTranscript(sid, [
+      { type: 'user', message: { role: 'user', content: 'hello' } },
+      { type: 'attachment', attachment: { type: 'selected_lines_in_ide', content: 'noise' } },
+      { type: 'attachment', attachment: { type: 'queued_command', prompt: [{ type: 'text', text: '   ' }] } },
+    ]);
+
+    expect(readSessionHistory([dir], sid).map((r) => r.role)).toEqual(['user']);
+  });
+})
