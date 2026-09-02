@@ -338,8 +338,14 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
     // reload. Verified against CLI 2.1.258: the entry carries the full prompt
     // text, a timestamp and a parentUuid, so it renders in the right place.
     if (type === 'attachment') {
-      const att = entry.attachment as { type?: string; prompt?: unknown } | undefined;
-      if (att?.type !== 'queued_command') continue;
+      const att = entry.attachment as { type?: string; prompt?: unknown; commandMode?: unknown } | undefined;
+      // `queued_command` is NOT only a steered prompt: the CLI files background
+      // task-completion notices under the same attachment type, and they
+      // outnumber real prompts 362 to 35 in the transcripts here. Only
+      // commandMode separates them. Filtering on the text instead would be
+      // wrong -- a real steered prompt arrives wrapped in a <system-reminder>
+      // and the system-injected regex below would swallow it.
+      if (att?.type !== 'queued_command' || att.commandMode !== 'prompt') continue;
       const qt = textFromContent(att.prompt).trim();
       if (qt === '') continue;
       const shownQ = stripAskInstructions(qt);

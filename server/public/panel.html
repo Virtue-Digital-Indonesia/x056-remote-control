@@ -351,6 +351,9 @@
   /* Steering is the same colour as the state it acts on, so the button reads as
      "act on the thing that is working" rather than as a second send. */
   .send.steer { background: var(--bgwork); color: var(--on-accent); margin-right: 6px; }
+  /* `display: inline-grid` above outranks the browser's [hidden] rule, so the
+     attribute alone left the button permanently on screen. */
+  .send[hidden] { display: none; }
   .send:hover { filter: brightness(1.05); }
   .send:disabled { opacity: .4; }
 
@@ -847,7 +850,7 @@
            autocorrect/spellcheck/autocapitalize stay ON — they drive the
            keyboard's word suggestions, which are wanted when typing prose and
            are a SEPARATE mechanism from AutoFill. -->
-      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" data-form-type="other" placeholder="Message x056…  (⏎ send · ⇧⏎ newline · paste or drop a file)"></textarea>
+      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" data-form-type="other" placeholder="Message x056…  (⏎ send · ⌘⏎ steer · ⇧⏎ newline · paste or drop a file)"></textarea>
       <div class="bar">
         <div class="selects">
           <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
@@ -2742,6 +2745,7 @@
       var bgSids = Array.isArray(p.backgroundSessionIds) ? p.backgroundSessionIds : [];
       if (bgSids.length) { var bset = {}; bgSids.forEach(function (s) { bset[s] = true; }); bgSessionIds[p.id] = bset; }
       else delete bgSessionIds[p.id];
+      syncSteerBtn(); // the poll is what CLEARS background state; the button must follow
       if (p.id === cur) {
         var curView = viewOf(p.id, lastSessionId);
         var shouldBeActive = isSessionRunning(p.id, lastSessionId);
@@ -3593,7 +3597,8 @@
     { keys: [K_ALT + 'E'], desc: 'Open the effort selector' },
     { keys: [K_ALT + 'U'], desc: 'Attach a file' },
     { keys: [K_ALT + 'T'], desc: 'Insert a saved prompt template' },
-    { keys: ['Enter'], desc: 'Send message' },
+    { keys: ['Enter'], desc: 'Send message (queues if the conversation is busy)' },
+    { keys: [K_CMD + 'Enter'], desc: 'Steer into the running turn — the model sees it now, not after' },
     { keys: [K_SH + 'Enter'], desc: 'New line in the message' },
     { keys: [K_CMD + '/'], desc: 'Show this shortcuts help' },
     { keys: ['Esc'], desc: 'Close a dialog, menu, or the quick switcher' },
@@ -4801,28 +4806,47 @@
   /** Push the prompt into whatever the conversation is doing RIGHT NOW. The
    *  server queues it instead if the process turns out to be gone, so the
    *  message is never lost -- the response says which happened. */
+  var steerInFlight = false;
   function steer() {
     var text = promptEl.value.trim();
-    if (!text) { addSys('type something to steer into the running turn', 'banner'); return; }
+    // No text but files attached is a plain send, not a steer -- refusing it
+    // with a steer-shaped banner strands the files with no explanation.
+    if (!text) { if (pendingFiles.length) { send(); return; } addSys('type something to steer into the running turn', 'banner'); return; }
     if (!canSteer()) { send(); return; }
-    if (pendingFiles.length) addSys('files can’t be steered — sent the text only', 'banner');
-    var body = { projectId: currentProjectId, sessionId: lastSessionId, prompt: text };
+    // Holding the shortcut fired one POST per keypress, injecting the same
+    // instruction into the turn several times.
+    if (steerInFlight) return;
+    steerInFlight = true;
+    // Capture the target NOW: the response resolves later, and by then the
+    // operator may be looking at a different conversation. Clearing the
+    // composer or appending the bubble against the live globals wrote into the
+    // wrong thread and destroyed that thread's unsent draft.
+    var pid = currentProjectId, sid = lastSessionId;
+    var body = { projectId: pid, sessionId: sid, prompt: text };
+    var m = effectiveModel(); if (m) body.model = m;
+    if (effortEl.value) body.effort = effortEl.value; // matters on the queue fallback
+    promptEl.value = ''; autogrow(); saveDraft();
+    var stillHere = function () { return currentProjectId === pid && lastSessionId === sid; };
+    var restore = function () {
+      if (!stillHere() || promptEl.value.trim()) return; // don't clobber newer typing
+      promptEl.value = text; autogrow(); saveDraft();
+    };
     api('/api/steer', { method: 'POST', body: JSON.stringify(body) })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
-        if (!res.ok) { addSys((res.j && res.j.message) || 'could not steer', 'banner'); return; }
-        promptEl.value = ''; autogrow(); saveDraft();
+        if (!res.ok) { restore(); if (stillHere()) addSys((res.j && res.j.message) || 'could not steer', 'banner'); return; }
         if (res.j.steered) {
+          if (pendingFiles.length && stillHere()) addSys('files can’t be steered — sent the text only, files still attached', 'banner');
           // The CLI records it as an attachment, which history renders on
           // reload; this is only so the live view is not silently missing it.
-          addMsg('user', text);
-          addSys('steered into the running turn', 'banner');
+          if (stillHere()) { addMsg('user', text); addSys('steered into the running turn', 'banner'); }
         } else {
-          addSys('no live process — queued instead', 'banner');
+          if (stillHere()) addSys('no live process — queued instead', 'banner');
           loadQueue();
         }
       })
-      .catch(function () { addSys('could not steer', 'banner'); });
+      .catch(function () { restore(); if (stillHere()) addSys('could not steer', 'banner'); })
+      .then(function () { steerInFlight = false; });
   }
 
   function send() {

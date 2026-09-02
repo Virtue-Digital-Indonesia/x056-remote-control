@@ -10,11 +10,12 @@ function fakeCli() {
   };
   child.stdout = new EventEmitter();
   const written: string[] = [];
-  child.stdin = { write: (s: string) => { written.push(s); } };
+  const stdin = { write: (s: string) => { written.push(s); }, destroyed: false, writableEnded: false };
+  child.stdin = stdin;
   let killed = false;
   child.kill = () => { killed = true; child.emit('close', null, 'SIGKILL'); };
   return {
-    child, written,
+    child, written, stdin,
     get killed() { return killed; },
     /** Messages the pool sent, parsed. */
     msgs: () => written.map((w) => JSON.parse(w)),
@@ -438,5 +439,73 @@ describe('a session with more than one live process', () => {
     const steeredNew = spawned[1].cli.msgs().some((m) => m.message?.content?.[0]?.text === 'steer me');
     expect(steeredOld).toBe(false);
     expect(steeredNew).toBe(true);
+  });
+})
+
+describe('a steer that starts its own turn', () => {
+  // Steering background work injects a message with no gateway turn behind it,
+  // so the CLI starts a turn the pool did not ask for. Its `result` must not be
+  // credited to whatever gateway turn happens to come next.
+  it('does not let the injected result settle the next gateway turn', async () => {
+    const { p, spawned } = pool();
+    const h1 = p.startTurn(turn({ sessionId: 's1', mode: 'new', prompt: 'first' }));
+    spawned[0].cli.result('first done');
+    await h1.done;
+
+    p.injectMessage('s1', 'steered work');          // no turn in flight
+    const h2 = p.startTurn(turn({ sessionId: 's1', mode: 'resume', prompt: 'second' }));
+
+    let settled: unknown = null;
+    void h2.done.then((x) => { settled = x; });
+
+    spawned[0].cli.result('answer to the STEER');   // belongs to the steer
+    await new Promise((r) => setImmediate(r));
+    expect(settled).toBeNull();                     // turn 2 is still running
+
+    spawned[0].cli.result('answer to prompt two');  // this one is turn 2's
+    expect(await h2.done).toMatchObject({ code: 0 });
+  });
+
+  it('a steer folded into a running turn owes no extra result', async () => {
+    const { p, spawned } = pool();
+    const h = p.startTurn(turn({ sessionId: 's1', mode: 'new', prompt: 'long task' }));
+
+    p.injectMessage('s1', 'also do this');          // turn IS in flight
+    spawned[0].cli.result('both done');             // one result covers both
+
+    expect(await h.done).toMatchObject({ code: 0 });
+  });
+})
+
+describe('steering picks the right process', () => {
+  it('prefers the one running a turn over one doing background work', async () => {
+    let t = 1_000;
+    const { p, spawned } = pool({ maxSessions: 5, now: () => t });
+    const h1 = p.startTurn(turn({ sessionId: 's1', mode: 'new', model: 'opus' }));
+    spawned[0].cli.result('a');
+    await h1.done;
+
+    t += 1_000;
+    p.startTurn(turn({ sessionId: 's1', mode: 'resume', model: 'sonnet' })); // busy
+
+    // The stale opus process emits a background result, bumping its lastUsed
+    // above the sonnet turn's start — the exact case lastUsed alone got wrong.
+    t += 1_000;
+    spawned[0].cli.result('stale background finished');
+
+    expect(p.injectMessage('s1', 'steer me')).toBe(true);
+    const got = (i: number) => spawned[i].cli.msgs().some((m) => m.message?.content?.[0]?.text === 'steer me');
+    expect(got(0)).toBe(false);
+    expect(got(1)).toBe(true);
+  });
+
+  it('refuses a process whose stdin is already gone, so the caller queues', async () => {
+    const { p, spawned } = pool();
+    const h = p.startTurn(turn({ sessionId: 's1', mode: 'new' }));
+    spawned[0].cli.result('done');
+    await h.done;
+
+    spawned[0].cli.stdin.destroyed = true; // died before 'close' was dispatched
+    expect(p.injectMessage('s1', 'steer me')).toBe(false);
   });
 })

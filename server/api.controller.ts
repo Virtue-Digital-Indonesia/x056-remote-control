@@ -1252,6 +1252,11 @@ export class ApiController {
       return { steered: true, queued: false };
     }
     try {
+      // The fallback is the SAME human message, so it must reset the same
+      // brakes the success path does -- otherwise a steer that happened to miss
+      // a live process gets refused by a relay bound meant for AI senders.
+      this.manager.clearSelfQueueStreak(body.sessionId);
+      this.manager.clearRelayChain(body.sessionId);
       const item = this.manager.enqueue(body.projectId, {
         text: body.prompt, model: body.model, effort: body.effort, sessionId: body.sessionId,
       });

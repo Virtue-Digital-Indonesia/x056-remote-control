@@ -1888,10 +1888,13 @@ export class SessionManager {
    * signal to queue instead. It must never both fail here AND drop the message:
    * a steer that cannot land is a queued message, not a lost one.
    *
-   * Deliberately NOT reachable from MCP or cron. Steering bypasses the queue,
-   * and the queue is where `deliverMcpMessage` enforces the relay-hop bound --
-   * an AI sender that could steer would have an unbounded side channel into
-   * another conversation. This is a human-operator action only.
+   * No MCP tool exposes this, so an AI drives another conversation through
+   * `deliverMcpMessage` and its relay-hop bound. That is a routing choice, NOT
+   * a security boundary: the gateway token authorizes every endpoint, and a
+   * conversation that reads it from state/mcp-x056.json can already POST
+   * /api/queue -- which clears the relay chain too. Steering opens no door that
+   * the token did not already open. Bounding AI-origin traffic properly would
+   * mean a separate credential, which is a bigger change than this.
    */
   steerSession(projectId: string, sessionId: string, text: string): boolean {
     if (!this.persistent) return false;

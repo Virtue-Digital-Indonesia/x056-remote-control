@@ -59,6 +59,14 @@ interface Live {
    * mid-task 0.6s after its last write.
    */
   lastOutput: number;
+  /** Results owed to steers that started their OWN turn (injected while no
+   *  gateway turn was in flight). The CLI answers stdin messages in order, so
+   *  the next N results belong to those steers, not to any gateway turn. */
+  pendingSteers: number;
+  /** When this entry last STARTED a gateway turn. Distinct from `lastUsed`,
+   *  which a stray out-of-turn `result` also bumps -- so lastUsed cannot pick
+   *  which of two live processes the operator is actually talking to. */
+  lastTurnStart: number;
   /** Where events go when no turn is in flight (UI only, never the classifier). */
   idleSink?: (e: RawEvent) => void;
   buf: string;
@@ -145,16 +153,26 @@ export class PersistentTurns {
     // One session can have SEVERAL live entries: the key includes model and
     // effort, so switching model mid-conversation spawns a second process while
     // the first stays alive finishing its work. Map order is insertion order,
-    // so taking the first match would steer the STALE process -- the one the
-    // operator is no longer talking to. Take the most recently used.
+    // so the first match is the STALE process.
+    // Rank instead: a process running a gateway turn is unambiguously the one
+    // the operator is talking to; otherwise the one that most recently STARTED
+    // a turn -- not `lastUsed`, which the stale process's own background
+    // `result` bumps, handing it the steer.
     let target: Live | undefined;
+    const better = (a: Live, b: Live) =>
+      a.busy !== b.busy ? a.busy : a.lastTurnStart > b.lastTurnStart;
     for (const e of this.live.values()) {
       if (e.sessionId !== sessionId || e.exited) continue;
-      if (!target || e.lastUsed > target.lastUsed) target = e;
+      if (!target || better(e, target)) target = e;
     }
     if (!target) return false;
+    // A pipe whose far end is gone accepts writes silently, so `write` alone
+    // cannot tell delivered from discarded -- and the caller would skip the
+    // queue fallback on the strength of it.
+    const sin = target.child.stdin;
+    if (!sin || sin.destroyed || sin.writableEnded) return false;
     try {
-      target.child.stdin?.write(JSON.stringify({
+      sin.write(JSON.stringify({
         type: 'user',
         message: { role: 'user', content: [{ type: 'text', text }] },
       }) + '\n');
@@ -162,6 +180,12 @@ export class PersistentTurns {
       // to the eviction pass and can be culled between the write and the
       // model's first token.
       target.lastOutput = this.now();
+      // With a turn in flight the model folds the steer into it -- one result
+      // for both. With no turn, the steer IS a turn and emits a result of its
+      // own, which would otherwise settle whatever gateway turn came next:
+      // `runSession` would return the steer's text as that turn's answer and
+      // drain the queue into a process that had not started on it.
+      if (!target.busy) target.pendingSteers++;
       return true;
     } catch { return false; }
   }
@@ -239,7 +263,7 @@ export class PersistentTurns {
       return { error: (err as Error).message };
     }
 
-    const entry: Live = { key, child, sessionId: o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), buf: '', exited: false };
+    const entry: Live = { key, child, sessionId: o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), buf: '', exited: false, pendingSteers: 0, lastTurnStart: 0 };
     child.stdout?.on('data', (d: Buffer) => this.onData(entry, d));
     child.on('error', (err) => this.settle(entry, { code: null, signal: null, spawnError: err.message }));
     child.on('close', (code, signal) => this.settle(entry, { code, signal }));
@@ -273,6 +297,9 @@ export class PersistentTurns {
       // The turn is over here, but the PROCESS is not — that is the point.
       if ((e as { type?: string }).type === 'result') {
         entry.lastUsed = this.now();
+        // stdin is FIFO, so results come back in the order the messages went
+        // in: the first ones belong to the steers that were injected first.
+        if (entry.pendingSteers > 0) { entry.pendingSteers--; continue; }
         this.settleTurn(entry, { code: 0, signal: null });
       }
     }
@@ -302,6 +329,7 @@ export class PersistentTurns {
     if (entry.exited) return deadHandle(`persistent session died before its turn started: ${o.sessionId}`);
     entry.busy = true;
     entry.lastUsed = this.now();
+    entry.lastTurnStart = this.now();
     entry.lastOutput = this.now();
     entry.sink = o.onEvent;
     // Refreshed each turn: the newest caller is the one whose UI is listening.

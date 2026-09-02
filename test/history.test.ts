@@ -274,6 +274,30 @@ describe('a prompt steered into a running turn', () => {
     expect(rows[1].text).toBe('also, what is 17 times 23?');
   });
 
+  // The CLI files background task-completion notices under the SAME attachment
+  // type; only commandMode separates them, and they outnumber real prompts 362
+  // to 35 on disk here. Rendering them made the operator's own record contain
+  // XML blobs they never typed.
+  it('does not render background task notifications as the user', () => {
+    const sid = 'sess-notif';
+    const dir = configDirWithTranscript(sid, [
+      { type: 'user', message: { role: 'user', content: 'go' } },
+      {
+        type: 'attachment',
+        attachment: {
+          type: 'queued_command',
+          commandMode: 'task-notification',
+          prompt: '<task-notification>\n<task-id>bg43720by</task-id>\n</task-notification>',
+        },
+      },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    ]);
+
+    const rows = readSessionHistory([dir], sid);
+    expect(rows.map((r) => r.role)).toEqual(['user', 'assistant']);
+    expect(rows.map((r) => r.text)).toEqual(['go', 'done']);
+  });
+
   it('ignores attachments that are not steered prompts', () => {
     const sid = 'sess-att';
     const dir = configDirWithTranscript(sid, [
