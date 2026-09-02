@@ -71,7 +71,12 @@
   .proj .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
   .proj .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
   .proj .rspin { width: 12px; height: 12px; flex: none; display: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; }
-  .proj.busy .rspin { display: block; }
+  /* Background work colours the project too, in amber. A running TURN outranks
+     it: these rules come first so `.proj.busy` below wins at equal specificity,
+     and markRunning() never sets both classes anyway. */
+  .proj.bgwork .rspin { display: block; border-top-color: var(--amber); }
+  .proj.bgwork .dot { background: var(--amber); }
+  .proj.busy .rspin { display: block; border-top-color: var(--accent); }
   .proj.busy .dot { background: var(--accent); }
   /* Notification bell on a sidebar chat (project or conversation) with an unseen
      event on a conversation you're not viewing: a question, a failed/finished
@@ -2016,6 +2021,8 @@
     if (!row || row.classList.contains('running')) return;
     row.classList.add('running', 'bgwork');
     row.title = 'working in the background (no turn)';
+    var prow = projListEl.querySelector('.proj[data-id="' + pid + '"]');
+    if (prow && !prow.classList.contains('busy')) prow.classList.add('bgwork');
   }
   function runningSidsOf(pid) { return Object.keys(runningSessionIds[pid] || {}); }
   function setSessionRunning(pid, sid, on) {
@@ -2670,7 +2677,15 @@
   // ---- projects ----
   function markRunning() {
     var rows = projListEl.querySelectorAll('.proj');
-    for (var i = 0; i < rows.length; i++) { var id = rows[i].getAttribute('data-id'); if (runningProjects[id]) rows[i].classList.add('busy'); else rows[i].classList.remove('busy'); }
+    for (var i = 0; i < rows.length; i++) {
+      var id = rows[i].getAttribute('data-id');
+      var run = !!runningProjects[id];
+      // A project with a live turn is never also marked background: the two
+      // states are mutually exclusive on the row, and the turn is the stronger
+      // signal — amber must not mask an actually-running project.
+      rows[i].classList.toggle('busy', run);
+      rows[i].classList.toggle('bgwork', !run && bgSidsOf(id).length > 0);
+    }
   }
   var projCache = {}; // pid -> project object (for the strip + quick switch)
   // Highlight/title follow the CLIENT's currentProjectId, adopting the server's
@@ -2714,7 +2729,8 @@
           renderBusy();
         }
       }
-      var row = document.createElement('div'); row.className = 'proj' + (p.id === cur ? ' active' : '') + (p.running ? ' busy' : '');
+      var pbg = !p.running && bgSidsOf(p.id).length > 0;
+      var row = document.createElement('div'); row.className = 'proj' + (p.id === cur ? ' active' : '') + (p.running ? ' busy' : '') + (pbg ? ' bgwork' : '');
       row.setAttribute('data-id', p.id);
       var d = document.createElement('span'); d.className = 'dot'; row.appendChild(d);
       var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = p.name; row.appendChild(nm);
