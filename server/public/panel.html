@@ -1063,6 +1063,21 @@
   // Captured from the markup, then the Auto row's label is filled in below once
   // AUTO_MODEL is known (it names the model Auto actually resolves to).
   var CLAUDE_MODEL_OPTS = [].slice.call(modelEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
+  /**
+   * Map a remembered model onto the option that represents it today.
+   *
+   * The picker used to store the PINNED id `claude-opus-5`; it now stores the
+   * `opus` ALIAS, so the CLI resolves the latest Opus the way `fable` picked up
+   * Fable 5.1. Every value saved before that — in localStorage and in each
+   * project's server-side `model` — still says `claude-opus-5`, which matches no
+   * option, and a <select> handed an unknown value silently selects its FIRST
+   * one: Auto. That is the whole "my default keeps reverting" bug.
+   *
+   * Only ids the picker itself ever wrote are mapped. Remapping anything else
+   * would rewrite a model someone pinned deliberately through the API.
+   */
+  var LEGACY_MODEL_IDS = { 'claude-opus-5': 'opus' };
+  function canonModel(m) { return LEGACY_MODEL_IDS[m] || m || ''; }
   // The model actually sent for a turn: an explicit pick, else this provider's
   // Auto default (AUTO_MODEL). Resolved at SEND time rather than by pre-selecting
   // the option, so "Auto" stays a real, visible choice in the dropdown — and so a
@@ -1191,7 +1206,7 @@
 
   // Boot: syncPicker() sets these per-project once projects load; this is just
   // the pre-load default, so read Claude's (the default provider's) memory.
-  modelEl.value = lsGet(MODEL_KEY); effortEl.value = lsGet(EFFORT_KEY);
+  modelEl.value = canonModel(lsGet(MODEL_KEY)); effortEl.value = lsGet(EFFORT_KEY);
   modelEl.addEventListener('change', function () {
     var prov = currentProvider();
     lsSet(modelKeyFor(prov), modelEl.value);
@@ -1224,7 +1239,11 @@
   }
   function loadSettings() {
     return api('/api/settings').then(function (r) { return r.json(); }).then(function (s) {
-      modelEffortDefaults = (s && s.modelEffort) || {};
+      // Keyed by the picker's model value, so a default saved under the old
+      // pinned id would silently stop applying to the same model.
+      modelEffortDefaults = {};
+      var raw = (s && s.modelEffort) || {};
+      Object.keys(raw).forEach(function (k) { modelEffortDefaults[canonModel(k)] = raw[k]; });
       mcpSendMode = (s && s.mcpSendMode) === 'auto' ? 'auto' : 'approval';
       renderMcpSendMode();
     }).catch(function () {});
@@ -1624,19 +1643,13 @@
       // never send those to `codex -m`, and vice versa — so both the options AND
       // the remembered "last pick" fallback are per-provider.
       if (prov === 'claude') {
-        // The "Opus" picker entry now means Opus 5 (value claude-opus-5). A
-        // project/localStorage still holding the legacy bare "opus" alias (which
-        // resolves to the older Opus) maps onto that same entry, so it shows
-        // "Opus" and upgrades to Opus 5 on the next send rather than resetting to Auto.
-        var claudeModel = p.model || lsGet(modelKeyFor(prov));
-        if (claudeModel === 'opus') claudeModel = 'claude-opus-5';
-        setModelOptions(CLAUDE_MODEL_OPTS, claudeModel);
+        setModelOptions(CLAUDE_MODEL_OPTS, canonModel(p.model || lsGet(modelKeyFor(prov))));
         setEffortOptions(CLAUDE_EFFORT_OPTS, p.effort || lsGet(effortKeyFor(prov)));
       } else {
         // This provider's real catalog for the configured account. Empty until
         // /api/models loads (or if the account has no catalog yet) — Auto still works.
         var list = (providerModels[prov] || []).map(function (m) { return { value: m.slug, label: m.label }; });
-        setModelOptions([{ value: '', label: autoModelLabel(prov) }].concat(list), p.model || lsGet(modelKeyFor(prov)));
+        setModelOptions([{ value: '', label: autoModelLabel(prov) }].concat(list), canonModel(p.model || lsGet(modelKeyFor(prov))));
         syncEffortOptionsForCodexModel(p.effort || lsGet(effortKeyFor(prov)));
       }
     } catch (e) {}
