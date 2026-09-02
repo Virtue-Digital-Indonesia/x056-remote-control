@@ -26,6 +26,12 @@
     --link: #2563eb;
     --user-bg: #f2f2ef;
     --ok: #15803d; --ok-bg: #dcf5e3; --amber: #b45309; --amber-bg: #fbecd0; --err: #b91c1c; --err-bg: #fbe0e0;
+    /* Work that outlived its turn. NOT --amber: at light-mode luminance every
+       yellow is either within 20deg of --accent or under 3:1 on the sidebar, so
+       the state that means "still working" would read as the state that means
+       "running". Violet is the one hue this panel assigns no other meaning --
+       green is ok, red is err, blue is link, teal reads as green at 6px. */
+    --bgwork: #6d28d9;
     --shadow: 0 12px 32px rgba(20,20,20,.14);
   }
   html[data-theme="dark"] {
@@ -37,6 +43,8 @@
     --link: #8fb8ff;
     --user-bg: #262624;
     --ok: #4ade80; --ok-bg: #123021; --amber: #fbbf24; --amber-bg: #2c2410; --err: #f87171; --err-bg: #2b1414;
+    /* Dark has room for gold: 54.1 dE from --accent at 9.97:1. */
+    --bgwork: #fbbf24;
     --shadow: 0 14px 40px rgba(0,0,0,.55);
   }
   * { box-sizing: border-box; }
@@ -74,8 +82,8 @@
   /* Background work colours the project too, in amber. A running TURN outranks
      it: these rules come first so `.proj.busy` below wins at equal specificity,
      and markRunning() never sets both classes anyway. */
-  .proj.bgwork .rspin { display: block; border-top-color: var(--amber); }
-  .proj.bgwork .dot { background: var(--amber); }
+  .proj.bgwork .rspin { display: block; border-top-color: var(--bgwork); }
+  .proj.bgwork .dot { background: var(--bgwork); }
   .proj.busy .rspin { display: block; border-top-color: var(--accent); }
   .proj.busy .dot { background: var(--accent); }
   /* Notification bell on a sidebar chat (project or conversation) with an unseen
@@ -100,7 +108,7 @@
   .conv.running .crspin { display: block; }
   /* Background work is real work, so it spins — but in amber, because it is not
      a turn: no queue behind it, and Stop interrupts rather than aborts. */
-  .conv.bgwork .crspin { border-top-color: var(--amber, #d68b1f); }
+  .conv.bgwork .crspin { border-top-color: var(--bgwork); }
   .conv .cbtn { flex: none; display: none; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: none; background: transparent; color: var(--faint); border-radius: 5px; cursor: pointer; }
   .conv:hover .cbtn { display: inline-flex; }
   .conv .cbtn:hover { background: var(--surface-3); color: var(--text); }
@@ -209,7 +217,7 @@
   .orun { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; cursor: pointer; max-width: 100%; }
   .orun:hover { border-color: var(--border-strong); color: var(--text); }
   .orun .rspin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; flex: none; }
-  .orun.bgwork .rspin { border-top-color: var(--amber, #d68b1f); }
+  .orun.bgwork .rspin { border-top-color: var(--bgwork); }
   .orun .pn { font-weight: 600; color: var(--text); }
   .orun .pl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
   .orphan { max-width: 780px; margin: 10px auto; display: flex; align-items: center; gap: 12px; background: var(--amber-bg); border: 1px solid var(--amber); border-radius: 12px; padding: 10px 14px; }
@@ -328,7 +336,7 @@
   #busy { max-width: 780px; margin: 0 auto 8px; padding: 0 4px; display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--muted); }
   #busy:empty { display: none; }
   #busy .spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; flex: none; }
-  #busy .spin.bgspin { border-top-color: var(--amber, #d68b1f); }
+  #busy .spin.bgspin { border-top-color: var(--bgwork); }
   #busy .lbl { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #busy .tasks { flex: none; white-space: nowrap; color: var(--accent); font-weight: 600; }
   #busy .bmeta { flex: none; white-space: nowrap; color: var(--faint); }
