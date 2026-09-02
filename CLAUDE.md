@@ -152,7 +152,13 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   streamed into the view. `PersistentTurns.workingSessions()` reports which
   processes are producing output and whether a turn is behind it; the manager
   turns the not-busy ones into `backgroundSessionIds` / `backgroundProjects`,
-  and the panel spins them in **amber** to say "working, but not a turn".
+  and the panel spins them **violet** (`--bgwork`, its own variable -- `--amber`
+  is the warning colour in a dozen other places) to say "working, but not a
+  turn"; a running turn outranks it, so a project row carrying both states
+  renders accent. Violet because it is the one hue with no other job here, and
+  because no yellow survives light mode: bright enough to separate from
+  `--accent` puts it under 3:1 on the sidebar, dark enough for contrast puts it
+  back beside the accent hue.
   Stop on one calls `interruptSession()` — interrupt, not abort, so the session
   survives and the next message still lands on the same process.
 - What still ends background work: an operator stop, a failover, a container
