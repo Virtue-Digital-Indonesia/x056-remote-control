@@ -132,6 +132,33 @@ export class PersistentTurns {
     return out;
   }
 
+  /**
+   * Write a user message into a conversation's live process WITHOUT waiting for
+   * its turn to end. Verified against CLI 2.1.258: a second user line on stdin
+   * mid-turn reaches the model inside that same turn, and the CLI records it as
+   * an `attachment.type === 'queued_command'` entry.
+   *
+   * Returns false when there is no live process -- the caller must fall back to
+   * the queue rather than drop the message on the floor.
+   */
+  injectMessage(sessionId: string, text: string): boolean {
+    for (const e of this.live.values()) {
+      if (e.sessionId !== sessionId || e.exited) continue;
+      try {
+        e.child.stdin?.write(JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'text', text }] },
+        }) + '\n');
+        // Steering is output-producing work; without this the entry looks idle
+        // to the eviction pass and can be culled between the write and the
+        // model's first token.
+        e.lastOutput = this.now();
+        return true;
+      } catch { return false; }
+    }
+    return false;
+  }
+
   /** Stop a conversation's background work without killing the process, so the
    *  session stays usable. Returns false if nothing was live to interrupt. */
   interruptSession(sessionId: string): boolean {

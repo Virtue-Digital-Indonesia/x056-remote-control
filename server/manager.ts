@@ -1879,6 +1879,32 @@ export class SessionManager {
     return this.backgroundSessions().filter((b) => b.projectId === pid).map((b) => b.sessionId);
   }
 
+  /**
+   * Steer a prompt INTO whatever a conversation is doing right now, instead of
+   * queueing it until the turn ends. Works during a turn and during background
+   * work -- both are the same live stdin.
+   *
+   * Returns false when there is no live process to steer, which is the caller's
+   * signal to queue instead. It must never both fail here AND drop the message:
+   * a steer that cannot land is a queued message, not a lost one.
+   *
+   * Deliberately NOT reachable from MCP or cron. Steering bypasses the queue,
+   * and the queue is where `deliverMcpMessage` enforces the relay-hop bound --
+   * an AI sender that could steer would have an unbounded side channel into
+   * another conversation. This is a human-operator action only.
+   */
+  steerSession(projectId: string, sessionId: string, text: string): boolean {
+    if (!this.persistent) return false;
+    const conv = this.projects().conversations(projectId).find((c) => c.sessionId === sessionId);
+    if (!conv) return false;
+    if (!this.persistent.injectMessage(sessionId, text)) return false;
+    // A steer is human-origin, so it resets the same counters a panel message
+    // does -- otherwise steering an exhausted pair would leave the brakes on.
+    this.clearSelfQueueStreak(sessionId);
+    this.clearRelayChain(sessionId);
+    return true;
+  }
+
   /** Is a specific conversation currently running a turn? */
   isSessionRunning(sessionId: string): boolean { return this.sessionBusy(sessionId); }
 

@@ -372,3 +372,46 @@ describe('work that outlives a turn is reportable', () => {
     expect(p.interruptSession('nobody')).toBe(false);
   });
 });
+
+describe('steering a prompt into live work', () => {
+  it('writes the message to a process that is mid-turn', async () => {
+    const { p, spawned } = pool();
+    const h = p.startTurn(turn({ sessionId: 's1', mode: 'new', prompt: 'long task' }));
+
+    expect(p.injectMessage('s1', 'also do this')).toBe(true);
+    expect(spawned[0].cli.msgs().map((m) => m.message.content[0].text))
+      .toEqual(['long task', 'also do this']);
+
+    spawned[0].cli.result('done');
+    expect(await h.done).toMatchObject({ code: 0 }); // the turn still ends normally
+  });
+
+  it('works between turns, when only background work is live', async () => {
+    const { p, spawned } = pool();
+    const h = p.startTurn(turn({ sessionId: 's1', mode: 'new' }));
+    spawned[0].cli.result('done');
+    await h.done;
+
+    expect(p.injectMessage('s1', 'steer the background work')).toBe(true);
+    expect(spawned[0].cli.msgs().pop().message.content[0].text).toBe('steer the background work');
+  });
+
+  it('refuses when there is no live process, so the caller can queue instead', () => {
+    const { p } = pool();
+    expect(p.injectMessage('never-started', 'hello')).toBe(false);
+  });
+
+  it('counts as output, so the steered session cannot be evicted mid-write', () => {
+    let t = 1_000;
+    const { p, spawned } = pool({ maxSessions: 1, workingGraceMs: 10_000, now: () => t });
+    const h = p.startTurn(turn({ sessionId: 'old', mode: 'new' }));
+    spawned[0].cli.result('x');
+    void h.done;
+
+    t += 60_000;                       // 'old' is now well past the working grace
+    p.injectMessage('old', 'wake up'); // ...but steering it is fresh output
+    p.startTurn(turn({ sessionId: 'new', mode: 'new' }));
+
+    expect(spawned[0].cli.killed).toBe(false);
+  });
+})

@@ -1237,6 +1237,30 @@ export class ApiController {
     }
   }
 
+  /**
+   * Steer a prompt into a conversation's live turn or background work. Falls
+   * back to the queue when there is no live process, so a message the operator
+   * typed is never lost -- the response says which happened.
+   */
+  @Post('steer')
+  @HttpCode(200)
+  steer(@Body() body: SendBody): { steered: boolean; queued: boolean; id?: string } {
+    if (!body?.projectId) throw new BadRequestException('projectId required');
+    if (!body?.sessionId) throw new BadRequestException('sessionId required');
+    if (!body?.prompt) throw new BadRequestException('prompt required');
+    if (this.manager.steerSession(body.projectId, body.sessionId, body.prompt)) {
+      return { steered: true, queued: false };
+    }
+    try {
+      const item = this.manager.enqueue(body.projectId, {
+        text: body.prompt, model: body.model, effort: body.effort, sessionId: body.sessionId,
+      });
+      return { steered: false, queued: true, id: item.id };
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+  }
+
   @Post('queue/edit')
   @HttpCode(200)
   editQueue(@Body() body: { projectId?: string; id?: string; prompt?: string; model?: string; effort?: string }): { ok: boolean } {
