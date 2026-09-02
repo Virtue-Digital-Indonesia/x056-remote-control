@@ -135,6 +135,15 @@ describe('cost estimation', () => {
     expect(c.unpriced).toEqual(['claude-fable-5']);
   });
 
+  it('handles a NEW model id without pricing it as free', () => {
+    // Fable 5.1 arrived as `claude-fable-5-1`. A family match on opus/sonnet/
+    // haiku must not accidentally price it, and it must be named rather than
+    // silently contributing $0 to a total.
+    const c = estimateCost(usage({ 'claude-opus-5': { output: 1e6 }, 'claude-fable-5-1': { output: 5e5 } }));
+    expect(c.usd).toBeCloseTo(75);
+    expect(c.unpriced).toEqual(['claude-fable-5-1']);
+  });
+
   it('ignores a pseudo-model carrying no tokens, like <synthetic>', () => {
     const c = estimateCost(usage({ 'claude-opus-5': { output: 1e6 }, '<synthetic>': {} }));
     expect(c.unpriced).toEqual([]);

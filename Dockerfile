@@ -8,7 +8,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 # claude-code is pinned so a rebuild actually re-runs this (otherwise Docker
 # reuses the cached layer and the CLI silently stays stale); bump it to pick up
 # new models (e.g. Claude Opus 5) and fixes.
-RUN npm install -g @anthropic-ai/claude-code@2.1.245 @openai/codex playwright \
+RUN npm install -g @anthropic-ai/claude-code@2.1.258 @openai/codex playwright \
  && apt-get update && apt-get install -y --no-install-recommends ripgrep curl openssh-client \
  && npx playwright install --with-deps chromium \
  && chmod -R a+rX /ms-playwright \
