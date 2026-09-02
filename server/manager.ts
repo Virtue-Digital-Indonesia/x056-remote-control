@@ -1655,7 +1655,17 @@ export class SessionManager {
         // Claude only: codex's CLI has no equivalent streaming-input mode, so it
         // keeps the process-per-turn path.
         startTurnFn: this.persistent && adapter.id === 'claude'
-          ? (o) => this.persistent!.startTurn(o)
+          ? (o) => this.persistent!.startTurn({
+            ...o,
+            // Work that happens AFTER a turn ends — a background task finishing
+            // wakes the model — still belongs to this conversation and must
+            // reach its view. Without this it was written only to the CLI's own
+            // transcript: the panel showed nothing and the conversation looked
+            // dead while it was still working.
+            onIdleEvent: (e: RawEvent) => {
+              try { this.tapToEvents(e, emit, adapter, pid, sessionId); } catch { /* never break the stream */ }
+            },
+          })
           : undefined,
         forceSwitchSignal: false,
         control: (c) => { run.control = c; },

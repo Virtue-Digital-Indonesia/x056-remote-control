@@ -33,6 +33,16 @@ export interface TurnOptions {
    *  -c mcp_servers.* overrides built from the command/args/env pieces. */
   mcp?: { configPath: string; command: string; args: string[]; env: Record<string, string> };
   onEvent: (e: RawEvent) => void;
+  /**
+   * Events produced OUTSIDE a turn — only possible with a persistent session,
+   * where a finishing background task can wake the model after `result`.
+   *
+   * Deliberately separate from onEvent: those events must reach the UI, but must
+   * NOT reach the failover classifier, which is scoped to a turn and would act on
+   * a limit verdict for a turn that has already ended. The one-shot path never
+   * calls this — its process is gone by then.
+   */
+  onIdleEvent?: (e: RawEvent) => void;
 }
 
 /**

@@ -124,9 +124,22 @@ message per turn over `--input-format stream-json`. A turn now ends at the
 - **Identity is the whole argv**: configDir, sessionId, model, effort, mcp config
   and system prompt. Anything baked in at spawn cannot be changed for a running
   process, so a different model keys to a different entry and respawns.
-- Bounded: `X056_PERSISTENT_TTL_MS` (30 min idle) and `X056_PERSISTENT_MAX` (4
-  live), LRU, never evicting a busy one. `X056_PERSISTENT=off` restores a process
-  per turn. Codex keeps the one-shot path — its CLI has no equivalent mode.
+- **A turn ending is NOT the process going idle**, and conflating the two killed
+  a real session. After `result` a finishing background task wakes the model and
+  it keeps working; the pool marked the entry idle, and the next conversation's
+  `startTurn` evicted it — SIGKILLing a process 0.6s after its last write.
+  Eviction and the TTL now key off `lastOutput` (any stdout, turn or not) with a
+  2-minute grace, never off turn recency. If everything is working the pool runs
+  over its cap rather than destroying live work.
+- **Out-of-turn events reach the panel** via `onIdleEvent`. The turn's `onEvent`
+  feeds the failover classifier and must stop at `result` — handing a finished
+  turn's classifier a limit verdict is meaningless — but the UI still needs the
+  work. Before this, 28 seconds of real work went only to the CLI's own
+  transcript and the conversation simply looked dead.
+- Bounded: `X056_PERSISTENT_TTL_MS` (30 min without output) and
+  `X056_PERSISTENT_MAX` (6 live; was 4, below the number of conversations
+  actually in play). `X056_PERSISTENT=off` restores a process per turn. Codex
+  keeps the one-shot path — its CLI has no equivalent mode.
 - What still ends background work: an operator stop, a failover, a container
   swap, or the idle TTL. **Nothing wakes the model when a background task
   finishes** — it collects the output on its next turn.

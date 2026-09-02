@@ -32,10 +32,12 @@ import type { TurnExit, TurnHandle, TurnOptions } from './turn.js';
  */
 
 export interface PersistentOptions {
-  /** Evicted after this long idle. Background work does not outlive it. */
+  /** Evicted after this long with no output. Background work does not outlive it. */
   idleTtlMs?: number;
-  /** Live processes to keep at once; the least recently used is evicted first. */
+  /** Live processes to keep at once; the least recently active is evicted first. */
   maxSessions?: number;
+  /** How long after its last output a session still counts as working. */
+  workingGraceMs?: number;
   now?: () => number;
   /** Injected in tests. */
   spawnFn?: (bin: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) => ChildProcess;
@@ -48,6 +50,17 @@ interface Live {
   /** A turn is in flight; the pool must not hand this process to another. */
   busy: boolean;
   lastUsed: number;
+  /**
+   * When this process last wrote ANYTHING — not when its last turn ended.
+   *
+   * These are different, and the difference killed a session: after `result` the
+   * entry is no longer busy, but a finishing background task can wake the model
+   * and it keeps working. Evicting on turn-recency alone SIGKILLed a process
+   * mid-task 0.6s after its last write.
+   */
+  lastOutput: number;
+  /** Where events go when no turn is in flight (UI only, never the classifier). */
+  idleSink?: (e: RawEvent) => void;
   buf: string;
   exited: boolean;
   /** Where this turn's events go, and how it is finished. */
@@ -66,12 +79,17 @@ export class PersistentTurns {
   private live = new Map<string, Live>();
   private readonly idleTtlMs: number;
   private readonly maxSessions: number;
+  private readonly workingGraceMs: number;
   private readonly now: () => number;
   private sweeper: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly opts: PersistentOptions = {}) {
     this.idleTtlMs = opts.idleTtlMs ?? 30 * 60_000;
-    this.maxSessions = opts.maxSessions ?? 4;
+    // Raised from 4 after five conversations were live at once and the sixth
+    // start evicted a working one. The cap is not the fix — `working()` is —
+    // but a cap below the number of conversations in play guarantees churn.
+    this.maxSessions = opts.maxSessions ?? 6;
+    this.workingGraceMs = opts.workingGraceMs ?? 2 * 60_000;
     this.now = opts.now ?? Date.now;
   }
 
@@ -86,11 +104,25 @@ export class PersistentTurns {
       hash(o.appendSystemPrompt ?? '')].join('\0');
   }
 
+  /**
+   * Is this process doing something?
+   *
+   * NOT the same as "a turn is in flight". After `result` the entry is not busy,
+   * but a background task can wake the model and it keeps working — and killing
+   * it then destroys exactly the work persistence exists to protect. Recent
+   * output is the evidence; the grace window covers the gaps between writes
+   * while a tool runs.
+   */
+  private working(e: Live): boolean {
+    return e.busy || (this.now() - e.lastOutput) < this.workingGraceMs;
+  }
+
   /** Live sessions, for the panel and for tests. */
-  stats(): { sessions: number; busy: number } {
+  stats(): { sessions: number; busy: number; working: number } {
     let busy = 0;
-    for (const l of this.live.values()) if (l.busy) busy++;
-    return { sessions: this.live.size, busy };
+    let working = 0;
+    for (const l of this.live.values()) { if (l.busy) busy++; if (this.working(l)) working++; }
+    return { sessions: this.live.size, busy, working };
   }
 
   startTurn(o: TurnOptions): TurnHandle {
@@ -141,7 +173,7 @@ export class PersistentTurns {
       return { error: (err as Error).message };
     }
 
-    const entry: Live = { key, child, sessionId: o.sessionId, busy: false, lastUsed: this.now(), buf: '', exited: false };
+    const entry: Live = { key, child, sessionId: o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), buf: '', exited: false };
     child.stdout?.on('data', (d: Buffer) => this.onData(entry, d));
     child.on('error', (err) => this.settle(entry, { code: null, signal: null, spawnError: err.message }));
     child.on('close', (code, signal) => this.settle(entry, { code, signal }));
@@ -151,6 +183,9 @@ export class PersistentTurns {
 
   /** Parse NDJSON, forward to the turn in flight, and end it at `result`. */
   private onData(entry: Live, d: Buffer): void {
+    // ANY output means this process is doing something, turn or no turn. This is
+    // what keeps eviction from killing a session that only looks idle.
+    entry.lastOutput = this.now();
     entry.buf += d.toString();
     const lines = entry.buf.split('\n');
     entry.buf = lines.pop() ?? '';
@@ -161,7 +196,14 @@ export class PersistentTurns {
       // A control_response answers our interrupt; it is protocol, not session
       // content, and must not reach the failover classifier.
       if ((e as { type?: string }).type === 'control_response') continue;
-      try { entry.sink?.(e); } catch { /* a sink must never break the stream */ }
+      // Between turns the turn sink is gone, but the process can still be
+      // working — a finishing background task wakes the model, and everything it
+      // then does used to vanish: no activity, no UI, the conversation simply
+      // stopped moving while the transcript kept growing. The idle sink carries
+      // it to the panel. It deliberately does NOT reach the failover classifier,
+      // which is scoped to a turn that has already ended.
+      const sink = entry.sink ?? entry.idleSink;
+      try { sink?.(e); } catch { /* a sink must never break the stream */ }
       // The turn is over here, but the PROCESS is not — that is the point.
       if ((e as { type?: string }).type === 'result') {
         entry.lastUsed = this.now();
@@ -174,8 +216,8 @@ export class PersistentTurns {
   private settleTurn(entry: Live, exit: TurnExit): void {
     const finish = entry.finish;
     entry.finish = undefined;
-    entry.sink = undefined;
-    entry.busy = false;
+    entry.sink = undefined;   // the turn's classifier stops here…
+    entry.busy = false;       // …but idleSink stays, and so does the process
     finish?.(exit);
   }
 
@@ -190,7 +232,10 @@ export class PersistentTurns {
   private runOn(entry: Live, o: TurnOptions): TurnHandle {
     entry.busy = true;
     entry.lastUsed = this.now();
+    entry.lastOutput = this.now();
     entry.sink = o.onEvent;
+    // Refreshed each turn: the newest caller is the one whose UI is listening.
+    if (o.onIdleEvent) entry.idleSink = o.onIdleEvent;
     const done = new Promise<TurnExit>((resolve) => { entry.finish = resolve; });
 
     try {
@@ -234,11 +279,13 @@ export class PersistentTurns {
     this.settle(entry, { code: null, signal: 'SIGKILL' });
   }
 
-  /** Drop idle sessions past the TTL. A busy one is never evicted. */
+  /** Drop sessions silent for longer than the TTL. A working one is never cut. */
   private sweep(): void {
     const cutoff = this.now() - this.idleTtlMs;
     for (const entry of [...this.live.values()]) {
-      if (!entry.busy && entry.lastUsed < cutoff) this.destroy(entry);
+      // Measured from the last OUTPUT, not the last turn: a session quietly
+      // running a long background job is not idle.
+      if (!this.working(entry) && entry.lastOutput < cutoff) this.destroy(entry);
     }
   }
 
@@ -246,10 +293,15 @@ export class PersistentTurns {
     while (this.live.size > this.maxSessions) {
       let oldest: Live | undefined;
       for (const e of this.live.values()) {
-        if (e.busy) continue;
-        if (!oldest || e.lastUsed < oldest.lastUsed) oldest = e;
+        // `busy` alone was not enough: the session this killed had finished its
+        // turn 29 seconds earlier and was still writing to its transcript.
+        if (this.working(e)) continue;
+        if (!oldest || e.lastOutput < oldest.lastOutput) oldest = e;
       }
-      if (!oldest) return; // everything is busy — over cap briefly rather than kill live work
+      // Everything is working: run over the cap rather than destroy live work.
+      // The cap bounds memory, and losing a running task costs more than a
+      // process does.
+      if (!oldest) return;
       this.destroy(oldest);
     }
   }

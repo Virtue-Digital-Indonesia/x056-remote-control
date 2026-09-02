@@ -23,7 +23,7 @@ function fakeCli() {
   };
 }
 
-function pool(opts: { idleTtlMs?: number; maxSessions?: number; now?: () => number } = {}) {
+function pool(opts: { idleTtlMs?: number; maxSessions?: number; workingGraceMs?: number; now?: () => number } = {}) {
   const spawned: { args: string[]; env: NodeJS.ProcessEnv; cli: ReturnType<typeof fakeCli> }[] = [];
   const p = new PersistentTurns({
     ...opts,
@@ -63,7 +63,7 @@ describe('one process across many turns', () => {
     await h.done;
     // The whole point: the turn is over, the process is not.
     expect(spawned[0].cli.killed).toBe(false);
-    expect(p.stats()).toEqual({ sessions: 1, busy: 0 });
+    expect(p.stats()).toEqual({ sessions: 1, busy: 0, working: 1 });
   });
 
   it('streams events to the turn in flight, and only that turn', async () => {
@@ -175,7 +175,9 @@ describe('failover handoff', () => {
 describe('bounding how long processes live', () => {
   it('evicts an idle session past the TTL', async () => {
     let t = 1_000_000;
-    const { p, spawned } = pool({ idleTtlMs: 1000, now: () => t });
+    // The grace window has to be shorter than the silence, or the session still
+    // counts as working — which is the point of it, and is asserted separately.
+    const { p, spawned } = pool({ idleTtlMs: 1000, workingGraceMs: 500, now: () => t });
     const h = p.startTurn(turn());
     spawned[0].cli.result('a'); await h.done;
     expect(p.stats().sessions).toBe(1);
@@ -186,16 +188,18 @@ describe('bounding how long processes live', () => {
 
   it('never evicts a session that is mid-turn', async () => {
     let t = 1_000_000;
-    const { p, spawned } = pool({ idleTtlMs: 1000, now: () => t });
+    const { p, spawned } = pool({ idleTtlMs: 1000, workingGraceMs: 500, now: () => t });
     p.startTurn(turn()); // left running
     t += 5000;
     p.startTurn(turn({ sessionId: 'other' }));
     expect(spawned[0].cli.killed).toBe(false);
   });
 
-  it('drops the least recently used once over the cap', async () => {
+  it('drops the least recently active once over the cap', async () => {
     let t = 1_000_000;
-    const { p, spawned } = pool({ maxSessions: 2, now: () => t });
+    // Small grace so each finished session is genuinely quiet by the time the
+    // next one starts; with the default 2min none may be touched.
+    const { p, spawned } = pool({ maxSessions: 2, workingGraceMs: 500, now: () => t });
     for (const sid of ['a', 'b', 'c']) {
       t += 1000;
       const h = p.startTurn(turn({ sessionId: sid, mode: 'new' }));
@@ -214,5 +218,86 @@ describe('bounding how long processes live', () => {
     p.shutdown();
     expect(spawned[0].cli.killed).toBe(true);
     expect(p.stats().sessions).toBe(0);
+  });
+});
+
+describe('work that continues after a turn ends', () => {
+  // Both failures below are the same real incident: a session finished its turn
+  // at 06:42:35, a finishing background task woke the model, it worked for 28
+  // more seconds writing to its transcript, and 0.6s after its last write a new
+  // conversation's startTurn evicted it as "idle" and SIGKILLed it. Nothing it
+  // did in those 28 seconds ever reached the panel either.
+  const taskNotification = { type: 'user', message: { content: [{ type: 'text', text: '<task-notification>done</task-notification>' }] } };
+
+  it('still delivers events after `result`, to the idle sink not the classifier', async () => {
+    const { p, spawned } = pool();
+    const toTurn: unknown[] = [];
+    const toIdle: unknown[] = [];
+    const h = p.startTurn({ ...turn(), onEvent: (e) => toTurn.push(e), onIdleEvent: (e) => toIdle.push(e) });
+    spawned[0].cli.result('turn over');
+    await h.done;
+
+    // The background task wakes the model; the turn is already finished.
+    spawned[0].cli.emit(taskNotification);
+    spawned[0].cli.emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'resuming work' }] } });
+
+    expect(toTurn).toHaveLength(1);                 // just its own result
+    expect(toIdle).toHaveLength(2);                 // the post-turn work
+    // Reaching the turn's sink would hand a finished turn's classifier a limit
+    // verdict it can no longer act on.
+    expect(toIdle.length).toBeGreaterThan(0);
+  });
+
+  it('does not evict a session that finished its turn but is still writing', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = pool({ maxSessions: 1, workingGraceMs: 120_000, now: () => t });
+    const h = p.startTurn(turn({ sessionId: 'worker' }));
+    spawned[0].cli.result('turn over');
+    await h.done;
+
+    t += 29_000;                       // the real gap between result and the kill
+    spawned[0].cli.emit(taskNotification); // still working, outside any turn
+    t += 600;                          // 0.6s later, another conversation starts
+
+    p.startTurn(turn({ sessionId: 'newcomer', mode: 'new' }));
+    expect(spawned[0].cli.killed).toBe(false);  // was SIGKILLed before this fix
+    expect(p.stats().working).toBe(2);
+  });
+
+  it('evicts once a session has genuinely gone quiet', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = pool({ maxSessions: 1, workingGraceMs: 60_000, now: () => t });
+    const h = p.startTurn(turn({ sessionId: 'quiet' }));
+    spawned[0].cli.result('done'); await h.done;
+    t += 120_000;                      // past the grace window, no output since
+    p.startTurn(turn({ sessionId: 'newcomer', mode: 'new' }));
+    expect(spawned[0].cli.killed).toBe(true);
+  });
+
+  it('runs over the cap rather than killing live work', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = pool({ maxSessions: 1, workingGraceMs: 120_000, now: () => t });
+    for (const sid of ['a', 'b', 'c']) {
+      t += 100;
+      const h = p.startTurn(turn({ sessionId: sid, mode: 'new' }));
+      spawned[spawned.length - 1].cli.result('ok');
+      await h.done;
+    }
+    // All three are inside the grace window, so none may be destroyed.
+    expect(spawned.every((s) => !s.cli.killed)).toBe(true);
+    expect(p.stats().sessions).toBe(3); // deliberately over the cap of 1
+  });
+
+  it('sweeps on silence, not on when the last turn happened', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = pool({ idleTtlMs: 60_000, workingGraceMs: 10_000, now: () => t });
+    const h = p.startTurn(turn({ sessionId: 'longjob' }));
+    spawned[0].cli.result('turn over'); await h.done;
+
+    // Turn ended long ago, but it keeps writing — a long background job.
+    for (let i = 0; i < 5; i++) { t += 30_000; spawned[0].cli.emit(taskNotification); }
+    t += 5_000;
+    p.startTurn(turn({ sessionId: 'other', mode: 'new' }));   // triggers sweep()
+    expect(spawned[0].cli.killed).toBe(false);
   });
 });
