@@ -301,3 +301,37 @@ describe('work that continues after a turn ends', () => {
     expect(spawned[0].cli.killed).toBe(false);
   });
 });
+
+describe('a turn that arrives over the cap', () => {
+  // Reproduces the session lost at 06:45:30: four turns were already running
+  // against a cap of four, so the fifth was the pool's only idle entry and it
+  // evicted ITSELF between spawn and first write. The turn was left with no
+  // process and nothing to resolve it, so the conversation hung indefinitely.
+  it('runs the newcomer instead of killing it', async () => {
+    const { p, spawned } = pool({ maxSessions: 4, workingGraceMs: 0 });
+    for (let i = 0; i < 4; i++) p.startTurn(turn({ sessionId: `busy${i}`, mode: 'new' }));
+
+    const h = p.startTurn(turn({ sessionId: 'newcomer', mode: 'new' }));
+
+    expect(spawned).toHaveLength(5);
+    expect(spawned[4].cli.killed).toBe(false);          // not evicted
+    expect(spawned[4].cli.msgs()).toHaveLength(1);      // its prompt was sent
+    spawned[4].cli.result('done');
+    expect(await h.done).toMatchObject({ code: 0 });    // and the turn can end
+  });
+
+  it('still evicts an idle session to make room', async () => {
+    let t = 1_000;
+    const { p, spawned } = pool({ maxSessions: 2, workingGraceMs: 0, now: () => t });
+    const h0 = p.startTurn(turn({ sessionId: 'old', mode: 'new' }));
+    spawned[0].cli.result('x');
+    await h0.done;
+
+    t += 60_000;
+    p.startTurn(turn({ sessionId: 'mid', mode: 'new' }));
+    p.startTurn(turn({ sessionId: 'new', mode: 'new' }));
+
+    expect(spawned[0].cli.killed).toBe(true);   // idle and oldest
+    expect(spawned[2].cli.killed).toBe(false);  // the newcomer survives
+  });
+});

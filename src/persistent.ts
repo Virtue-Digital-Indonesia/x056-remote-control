@@ -142,7 +142,7 @@ export class PersistentTurns {
       if ('error' in made) return deadHandle(made.error);
       entry = made.entry;
       this.live.set(key, entry);
-      this.evictOverCap();
+      this.evictOverCap(entry);
     }
     return this.runOn(entry, o);
   }
@@ -230,6 +230,10 @@ export class PersistentTurns {
   }
 
   private runOn(entry: Live, o: TurnOptions): TurnHandle {
+    // Nothing will resolve `done` for a process that has already gone: `settle`
+    // has run, and it fires `finish` — which is only attached below. A handle
+    // returned here would leave the caller waiting forever.
+    if (entry.exited) return deadHandle(`persistent session died before its turn started: ${o.sessionId}`);
     entry.busy = true;
     entry.lastUsed = this.now();
     entry.lastOutput = this.now();
@@ -289,10 +293,19 @@ export class PersistentTurns {
     }
   }
 
-  private evictOverCap(): void {
+  /**
+   * `exempt` is the entry whose turn is about to start. It has produced no
+   * output yet, so it looks like the least recently used thing in the pool —
+   * and when everything else is busy it is the ONLY eviction candidate. That
+   * killed a session at 06:45:30 before its first byte: destroyed between
+   * `spawn` and `runOn`, it had no `finish` to resolve, so the turn hung with
+   * no process behind it and never ended.
+   */
+  private evictOverCap(exempt?: Live): void {
     while (this.live.size > this.maxSessions) {
       let oldest: Live | undefined;
       for (const e of this.live.values()) {
+        if (e === exempt) continue;
         // `busy` alone was not enough: the session this killed had finished its
         // turn 29 seconds earlier and was still writing to its transcript.
         if (this.working(e)) continue;
