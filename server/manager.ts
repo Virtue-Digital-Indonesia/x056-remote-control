@@ -1057,7 +1057,7 @@ export class SessionManager {
   }
 
   // ---- projects ----
-  listProjects(): { current: string | null; projects: (Project & { running: boolean; runningSessionIds: string[] })[] } {
+  listProjects(): { current: string | null; projects: (Project & { running: boolean; runningSessionIds: string[]; backgroundSessionIds: string[] })[] } {
     const reg = this.projects();
     return {
       current: reg.currentId(),
@@ -1066,7 +1066,8 @@ export class SessionManager {
       // those and reconcile each conversation's busy state independently.
       projects: reg.list().map((p) => {
         const running = this.runningSessionsForProject(p.id);
-        return { ...p, running: running.length > 0, runningSessionIds: running };
+        const background = this.backgroundSessionsForProject(p.id);
+        return { ...p, running: running.length > 0, runningSessionIds: running, backgroundSessionIds: background };
       }),
     };
   }
@@ -1768,6 +1769,7 @@ export class SessionManager {
   snapshot(): {
     running: boolean;
     runningProjects: string[];
+    backgroundProjects: string[];
     currentSessionId: string | null;
     lastSessionId: string | null;
     lastResult: SessionResult | null;
@@ -1778,6 +1780,7 @@ export class SessionManager {
     return {
       running: this.runs.size > 0,
       runningProjects: [...new Set([...this.runs.values()].map((r) => r.projectId))],
+      backgroundProjects: [...new Set(this.backgroundSessions().map((b) => b.projectId))],
       // the current project's current conversation, if it's actually running
       currentSessionId: curSid && this.sessionBusy(curSid) ? curSid : null,
       lastSessionId: curSid,
@@ -1852,6 +1855,30 @@ export class SessionManager {
     return [...this.runs.values()].map((r) => ({ projectId: r.projectId, sessionId: r.sessionId }));
   }
 
+  /** Conversations whose CLI is working with NO gateway turn behind it: after a
+   *  turn's `result`, a finishing background task wakes the model and it keeps
+   *  going. The panel drives every busy indicator off `runs`, so without this a
+   *  conversation that is plainly working -- streaming tool calls into the view
+   *  -- renders as idle, with no spinner and no way to stop it. */
+  backgroundSessions(): { projectId: string; sessionId: string }[] {
+    const working = this.persistent?.workingSessions() ?? [];
+    if (!working.length) return [];
+    const bg = new Set(working.filter((w) => !w.busy).map((w) => w.sessionId));
+    if (!bg.size) return [];
+    const out: { projectId: string; sessionId: string }[] = [];
+    for (const p of this.projects().list()) {
+      for (const c of this.projects().conversations(p.id)) {
+        // Never report a conversation twice: a live turn already covers it.
+        if (bg.has(c.sessionId) && !this.sessionBusy(c.sessionId)) out.push({ projectId: p.id, sessionId: c.sessionId });
+      }
+    }
+    return out;
+  }
+
+  private backgroundSessionsForProject(pid: string): string[] {
+    return this.backgroundSessions().filter((b) => b.projectId === pid).map((b) => b.sessionId);
+  }
+
   /** Is a specific conversation currently running a turn? */
   isSessionRunning(sessionId: string): boolean { return this.sessionBusy(sessionId); }
 
@@ -1864,7 +1891,16 @@ export class SessionManager {
     const run = sessionId
       ? this.runs.get(sessionId)
       : (() => { const pid = projectId ?? this.projects().currentId(); return pid ? [...this.runs.values()].find((r) => r.projectId === pid) : undefined; })();
-    if (!run?.control) return false;
+    if (!run?.control) {
+      // No turn, but the process may still be working: a background task woke
+      // the model after `result`. Interrupt rather than kill, so the session
+      // stays usable for the next message.
+      if (sessionId && this.persistent?.interruptSession(sessionId)) {
+        this.stopAutopilot(sessionId);
+        return true;
+      }
+      return false;
+    }
     this.stopAutopilot(run.sessionId); // stop THIS conversation's autopilot, not the project's
     run.control.abort();
     return true;

@@ -145,6 +145,16 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   cannot clear it: the abort path waits on the same promise.
   `X056_PERSISTENT=off` restores a process per turn. Codex keeps the one-shot
   path — its CLI has no equivalent mode.
+- **The UI must show background work, or it reads as dead.** Every busy
+  indicator used to key off `SessionManager.runs` — gateway turns — so a
+  conversation whose turn had ended but whose process was still driving a
+  browser showed no spinner, no Stop, and no strip entry, while its tool calls
+  streamed into the view. `PersistentTurns.workingSessions()` reports which
+  processes are producing output and whether a turn is behind it; the manager
+  turns the not-busy ones into `backgroundSessionIds` / `backgroundProjects`,
+  and the panel spins them in **amber** to say "working, but not a turn".
+  Stop on one calls `interruptSession()` — interrupt, not abort, so the session
+  survives and the next message still lands on the same process.
 - What still ends background work: an operator stop, a failover, a container
   swap, or the idle TTL. **Nothing wakes the model when a background task
   finishes** — it collects the output on its next turn.

@@ -335,3 +335,40 @@ describe('a turn that arrives over the cap', () => {
     expect(spawned[2].cli.killed).toBe(false);  // the newcomer survives
   });
 });
+
+describe('work that outlives a turn is reportable', () => {
+  it('lists a session still working after its turn ended, marked not-busy', async () => {
+    let t = 1_000;
+    const { p, spawned } = pool({ workingGraceMs: 60_000, now: () => t });
+    const h = p.startTurn(turn({ sessionId: 's1', mode: 'new' }));
+
+    expect(p.workingSessions()).toEqual([{ sessionId: 's1', busy: true, lastOutput: t }]);
+
+    spawned[0].cli.result('done');
+    await h.done;
+
+    // The turn is over, but a background task keeps the process producing.
+    t += 5_000;
+    spawned[0].cli.emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'still going' }] } });
+    const w = p.workingSessions();
+    expect(w).toEqual([{ sessionId: 's1', busy: false, lastOutput: t }]);
+
+    // Once it goes quiet past the grace, it stops counting as working.
+    t += 120_000;
+    expect(p.workingSessions()).toEqual([]);
+  });
+
+  it('interrupts background work without killing the session', async () => {
+    const { p, spawned } = pool();
+    const h = p.startTurn(turn({ sessionId: 's1', mode: 'new' }));
+    spawned[0].cli.result('done');
+    await h.done;
+
+    expect(p.interruptSession('s1')).toBe(true);
+    const last = spawned[0].cli.msgs().pop();
+    expect(last).toMatchObject({ type: 'control_request', request: { subtype: 'interrupt' } });
+    expect(spawned[0].cli.killed).toBe(false); // still usable for the next turn
+
+    expect(p.interruptSession('nobody')).toBe(false);
+  });
+});

@@ -118,6 +118,38 @@ export class PersistentTurns {
   }
 
   /** Live sessions, for the panel and for tests. */
+  /**
+   * Conversations whose process is producing output. `busy` separates a gateway
+   * turn from work that outlived one: after `result` a finishing background task
+   * wakes the model and it keeps going, with no run behind it. Without this the
+   * panel calls a visibly working conversation idle -- no spinner, no stop.
+   */
+  workingSessions(): { sessionId: string; busy: boolean; lastOutput: number }[] {
+    const out: { sessionId: string; busy: boolean; lastOutput: number }[] = [];
+    for (const e of this.live.values()) {
+      if (this.working(e)) out.push({ sessionId: e.sessionId, busy: e.busy, lastOutput: e.lastOutput });
+    }
+    return out;
+  }
+
+  /** Stop a conversation's background work without killing the process, so the
+   *  session stays usable. Returns false if nothing was live to interrupt. */
+  interruptSession(sessionId: string): boolean {
+    let hit = false;
+    for (const e of this.live.values()) {
+      if (e.sessionId !== sessionId || e.exited) continue;
+      try {
+        e.child.stdin?.write(JSON.stringify({
+          type: 'control_request',
+          request_id: `x056-int-${this.now()}`,
+          request: { subtype: 'interrupt' },
+        }) + '\n');
+        hit = true;
+      } catch { /* already gone; close will clean up */ }
+    }
+    return hit;
+  }
+
   stats(): { sessions: number; busy: number; working: number } {
     let busy = 0;
     let working = 0;
