@@ -224,6 +224,11 @@ reading them is new:
   for. A run counts as live only if it is also moving (5 min).
 - The accounts share one `projects/` tree, so every run is reachable through
   every configDir — dedupe by runId or one run lists three times.
+- It **floats** over the chat rather than taking a column: a run is glanced at
+  and dismissed, and permanently narrowing the conversation costs more than it
+  gives. Because it covers content it opens on its own only while a run is
+  MOVING; a finished one stays behind the topbar button (its own `#i-fanout`
+  icon — `#i-repeat` is autopilot's).
 - `runId` and `agentId` both arrive from a query string and are matched against
   the directory listing before reaching a path.
 
