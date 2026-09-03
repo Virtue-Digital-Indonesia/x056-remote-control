@@ -255,4 +255,54 @@ export function readWorkflowAgentPage(
   return readFilePage(join(dir, `agent-${agentId}.jsonl`), limit, before);
 }
 
+/** A run is live only if it is BOTH incomplete and still moving. */
+export const WORKFLOW_STALE_MS = 5 * 60_000;
+
+export function isWorkflowLive(r: WorkflowRun, now = Date.now()): boolean {
+  if (r.started <= r.finished) return false;
+  if (!r.updatedAt) return false;
+  return now - r.updatedAt < WORKFLOW_STALE_MS;
+}
+
+/**
+ * Every session that has workflow runs, found by walking the account config
+ * dirs once. Used by the deploy actuator, which must not swap the container out
+ * from under a fan-out: a killed TURN resumes on the new container, but a killed
+ * workflow's agents are simply gone and someone has to resume it by run id.
+ */
+export function sessionsWithWorkflows(configDirs: string[]): string[] {
+  const out = new Set<string>();
+  for (const configDir of configDirs) {
+    const projects = join(configDir, 'projects');
+    if (!existsSync(projects)) continue;
+    let names: string[];
+    try { names = readdirSync(projects); } catch { continue; }
+    for (const name of names) {
+      let sids: string[];
+      try { sids = readdirSync(join(projects, name)); } catch { continue; }
+      for (const sid of sids) {
+        // Session dirs are uuids; everything else here is a transcript file.
+        if (!/^[0-9a-f-]{36}$/i.test(sid)) continue;
+        if (existsSync(join(projects, name, sid, 'subagents', 'workflows'))) out.add(sid);
+      }
+    }
+  }
+  return [...out];
+}
+
+/** Runs that are still moving, across every session. */
+export function liveWorkflowRuns(
+  configDirs: string[],
+  now = Date.now(),
+): { sessionId: string; runId: string; name?: string; started: number; finished: number; updatedAt?: number }[] {
+  const out: { sessionId: string; runId: string; name?: string; started: number; finished: number; updatedAt?: number }[] = [];
+  for (const sessionId of sessionsWithWorkflows(configDirs)) {
+    for (const r of listWorkflowRuns(configDirs, sessionId)) {
+      if (!isWorkflowLive(r, now)) continue;
+      out.push({ sessionId, runId: r.runId, name: r.name, started: r.started, finished: r.finished, updatedAt: r.updatedAt });
+    }
+  }
+  return out;
+}
+
 export type { SubagentMeta };

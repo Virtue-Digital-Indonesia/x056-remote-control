@@ -5,8 +5,11 @@ import { describe, expect, it } from 'vitest';
 import {
   listWorkflowAgents,
   listWorkflowRuns,
+  isWorkflowLive,
+  liveWorkflowRuns,
   parseWorkflowMeta,
   readWorkflowAgentPage,
+  sessionsWithWorkflows,
   workflowRunDir,
 } from '../src/adapters/workflows.js';
 
@@ -206,5 +209,63 @@ describe('liveness', () => {
 
     const run = listWorkflowRuns(dirs, 's1')[0];
     expect(Date.now() - run.updatedAt!).toBeLessThan(60_000);
+  });
+});
+
+
+describe('what the deploy actuator asks', () => {
+  // A killed turn resumes on the new container; a killed workflow's agents are
+  // gone. So the swap blocks on a live run -- but "live" has to mean moving,
+  // or one crashed run would wedge deploys forever.
+  const base = (over: Partial<Parameters<typeof isWorkflowLive>[0]> = {}) => ({
+    runId: 'wf_x', dir: '/tmp', phases: [], started: 5, finished: 2,
+    updatedAt: Date.now(), ...over,
+  });
+
+  it('counts an incomplete run that is still writing', () => {
+    expect(isWorkflowLive(base())).toBe(true);
+  });
+
+  it('does NOT count a complete run', () => {
+    expect(isWorkflowLive(base({ started: 5, finished: 5 }))).toBe(false);
+  });
+
+  it('does NOT count an incomplete run that stopped moving', () => {
+    expect(isWorkflowLive(base({ updatedAt: Date.now() - 60 * 60_000 }))).toBe(false);
+  });
+
+  it('does NOT count a run with no timestamp at all', () => {
+    expect(isWorkflowLive(base({ updatedAt: undefined }))).toBe(false);
+  });
+
+  it('finds live runs across every session, not just one', () => {
+    const a = runOnDisk({
+      sessionId: '11111111-1111-1111-1111-111111111111', runId: 'wf_live',
+      journal: [{ type: 'started', agentId: 'x' }, { type: 'started', agentId: 'y' }],
+      agents: [{ id: 'x' }, { id: 'y' }],
+    });
+    const b = runOnDisk({
+      sessionId: '22222222-2222-2222-2222-222222222222', runId: 'wf_done',
+      journal: [{ type: 'started', agentId: 'z' }, { type: 'result', agentId: 'z' }],
+      agents: [{ id: 'z' }],
+    });
+    const dirs = [...a, ...b];
+
+    expect(sessionsWithWorkflows(dirs).sort()).toEqual([
+      '11111111-1111-1111-1111-111111111111',
+      '22222222-2222-2222-2222-222222222222',
+    ]);
+    const live = liveWorkflowRuns(dirs);
+    expect(live.map((r) => r.runId)).toEqual(['wf_live']);
+    expect(live[0]).toMatchObject({ started: 2, finished: 0 });
+  });
+
+  it('reports nothing when every run has finished', () => {
+    const dirs = runOnDisk({
+      sessionId: '33333333-3333-3333-3333-333333333333', runId: 'wf_ok',
+      journal: [{ type: 'started', agentId: 'a' }, { type: 'result', agentId: 'a' }],
+      agents: [{ id: 'a' }],
+    });
+    expect(liveWorkflowRuns(dirs)).toEqual([]);
   });
 });

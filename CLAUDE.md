@@ -16,7 +16,16 @@ Sessions started through the panel run **inside the Docker container** this repo
   - That's the **entire** sudo grant (`/etc/sudoers.d/x056-nginx`) — no blanket root shell, no arbitrary file writes, no other host-OS sudo. Anything outside these three actions (installing a cert, editing `nginx.conf` itself, restarting non-nginx services) still needs the user, same as any other host change.
 - **Deployments happen via the host-side actuator** (`scripts/deployer.sh`, cron every minute):
   1. Commit your changes, then `touch .deploy/requested`.
-  2. The actuator **builds immediately** (safe while turns run) but **swaps the container only when NO project has a turn running** — including yours. The swap therefore lands *after your turn ends*.
+  2. The actuator **builds immediately** (safe while turns run), then swaps.
+     A running **turn** defers the swap for at most `MAX_DEFER` (180s) — after
+     that it swaps anyway, because a killed turn resumes on the new container.
+     **Do not read that as "the swap waits for you"**: past 180s it lands
+     mid-turn.
+     A live **workflow run** blocks it with **no timeout**, because a killed
+     workflow does not resume — its agents are gone and someone has to notice
+     and relaunch it by run id. `GET /api/workflows/live` is what the actuator
+     asks; "live" means incomplete AND written to within 5 minutes, so a crashed
+     run stops blocking on its own. `touch .deploy/force` to override.
   3. Verify afterwards via `.deploy/status.json` (`{status, commit, ts}`) and `.deploy/last.log`. If status says `build_failed`, read the log, fix, re-touch the flag.
 - **The panel needs NO deploy**: `server/public/panel.html` is bind-mount live-served (`X056_PANEL_PATH`) — edits appear on browser refresh. **Backend changes (`server/`, `src/`, `Dockerfile`, `compose.yaml`) need the actuator flow above.**
 - **A container swap restarts every session, including you.** Graceful swaps wait for idle so no turn is killed; your session resumes on the user's next message. Ungraceful restarts (crash/reboot) kill in-flight turns — they resume on next message too.

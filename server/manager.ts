@@ -1142,6 +1142,11 @@ export class SessionManager {
    *  own session/thread id to look it up by (NOT necessarily the gateway's
    *  internal conversation key — Codex assigns its own), and the config dirs of
    *  accounts on THAT provider (a transcript can only be under one of them). */
+  /** Claude account config dirs, for queries that span every conversation. */
+  claudeConfigDirs(): string[] {
+    return this.registry().list().filter((a) => a.provider === 'claude').map((a) => a.configDir);
+  }
+
   historyContext(projectId: string, sessionId: string): { adapter: ProviderAdapter; providerSessionId: string; configDirs: string[] } {
     const provider = this.projects().conversationProvider(projectId, sessionId);
     const providerSessionId = this.projects().providerSessionId(projectId, sessionId) ?? sessionId;

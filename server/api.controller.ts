@@ -26,7 +26,7 @@ import { TEMPLATES, TemplateStore } from './templates.js';
 import { TRANSCRIPT_STATS, TranscriptStatsReader, estimateCost } from './transcript-stats.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles, transcriptIndex } from '../src/adapters/subagents.js';
-import { listWorkflowAgents, listWorkflowRuns, readWorkflowAgentPage } from '../src/adapters/workflows.js';
+import { listWorkflowAgents, listWorkflowRuns, liveWorkflowRuns, readWorkflowAgentPage } from '../src/adapters/workflows.js';
 import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
@@ -751,6 +751,26 @@ export class ApiController {
       return { runs: [rest], agents: listWorkflowAgents(dir) };
     } catch {
       return { runs: [] };
+    }
+  }
+
+  /**
+   * Workflow runs still moving, across EVERY conversation.
+   *
+   * The deploy actuator polls this before swapping the container. A killed turn
+   * resumes on the new one; a killed workflow's agents are simply gone, and
+   * someone has to resume it by run id -- so a fan-out is worth waiting for in
+   * a way an ordinary turn is not.
+   */
+  @Get('workflows/live')
+  liveWorkflows(): { live: number; runs: unknown[] } {
+    try {
+      const runs = liveWorkflowRuns(this.manager.claudeConfigDirs());
+      return { live: runs.length, runs };
+    } catch {
+      // Never let a filesystem hiccup here read as "nothing is running" -- that
+      // would green-light a swap. The caller treats an error as "cannot tell".
+      throw new BadRequestException('could not read workflow state');
     }
   }
 
