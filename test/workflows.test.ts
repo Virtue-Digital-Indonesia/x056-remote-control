@@ -183,3 +183,28 @@ describe('readWorkflowAgentPage', () => {
     expect(readWorkflowAgentPage(dirs, 's1', 'wf_read', 'not-here').rows).toEqual([]);
   });
 });
+
+describe('liveness', () => {
+  // The journal only gains a line when an agent STARTS or RETURNS, and the
+  // directory mtime only moves when a file is added. Agents that think for ten
+  // minutes touch neither, so a working run read as long-stalled and the panel
+  // hid it. Their own transcripts are the heartbeat.
+  it('takes updatedAt from the agent transcripts, not just the journal', async () => {
+    const dirs = runOnDisk({
+      sessionId: 's1', runId: 'wf_beat',
+      journal: [{ type: 'started', agentId: 'a1' }, { type: 'started', agentId: 'a2' }],
+      agents: [{ id: 'a1' }, { id: 'a2' }],
+    });
+    const dir = workflowRunDir(dirs, 's1', 'wf_beat')!;
+
+    const { utimesSync, writeFileSync: wf } = await import('node:fs');
+    const old = new Date(Date.now() - 60 * 60_000);
+    utimesSync(join(dir, 'journal.jsonl'), old, old);
+    utimesSync(dir, old, old);
+    // ...but one agent is still writing right now.
+    wf(join(dir, 'agent-a1.jsonl'), '{"type":"assistant"}\n');
+
+    const run = listWorkflowRuns(dirs, 's1')[0];
+    expect(Date.now() - run.updatedAt!).toBeLessThan(60_000);
+  });
+});

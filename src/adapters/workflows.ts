@@ -159,11 +159,22 @@ export function listWorkflowRuns(configDirs: string[], sessionId: string): Workf
     try {
       const st = statSync(dir);
       startedAt = st.birthtimeMs || st.ctimeMs;
+      // The directory's mtime only moves when an entry is added or removed, and
+      // the journal only gains a line when an agent STARTS or RETURNS -- it is
+      // an event log, not a heartbeat. Three agents each thinking for ten
+      // minutes write nothing to either, so both read as long-stalled while the
+      // run is working hard. The agents' own transcripts are the heartbeat.
       updatedAt = st.mtimeMs;
       const j = join(dir, 'journal.jsonl');
-      // The directory's mtime only moves when an entry is added or removed, so
-      // an appended journal leaves it stale on a run that is still working.
       if (existsSync(j)) updatedAt = Math.max(updatedAt, statSync(j).mtimeMs);
+      // Only for a run that could still be alive: a finished run's liveness is
+      // not a question, and this is one stat per agent.
+      if (finished.size < started.size) {
+        for (const f of readdirSync(dir)) {
+          if (!f.startsWith('agent-') || !f.endsWith('.jsonl')) continue;
+          try { updatedAt = Math.max(updatedAt, statSync(join(dir, f)).mtimeMs); } catch { /* raced */ }
+        }
+      }
     } catch { /* raced */ }
     const run: WorkflowRun = {
       runId, dir, ...meta,

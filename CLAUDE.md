@@ -218,6 +218,11 @@ reading them is new:
   requires to be pure, so it is pattern-matched rather than evaluated — and each
   agent is named by the head of its own prompt (`cachedBrief`).
 - **Progress is the journal**, not mtime: `started` minus `result` per agentId.
+- **But liveness is NOT the journal.** It only gains a line when an agent STARTS
+  or RETURNS, and the run directory's mtime only moves when a file is added, so
+  three agents each thinking for ten minutes touch neither — a working run read
+  as long-stalled and the island hid it. The agents' own transcripts are the
+  heartbeat; they are stat'd only for a run that is still incomplete.
 - **Incomplete is not the same as running.** A swap, a stop or a crash leaves a
   run short of its agents forever, and "0 / 4 agents · running" on a run that
   died hours ago is the same phantom-busy lie the conversation strip was fixed

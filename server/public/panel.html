@@ -4687,9 +4687,13 @@
       nt.textContent = r.name || r.runId;
       nm.appendChild(nt); top.appendChild(nm);
 
-      if (r.description) {
+      // A run launched by NAME (a saved workflow) stores no script, so there is
+      // no meta to read. Say so, rather than leaving a bare id that reads like
+      // the panel failed to render something.
+      var desc = r.description || (r.name ? '' : 'ran from a saved workflow — no script stored');
+      if (desc) {
         var d = document.createElement('div'); d.className = 'wf-desc';
-        d.textContent = r.description; d.title = r.description; top.appendChild(d);
+        d.textContent = desc; d.title = desc; top.appendChild(d);
       }
       if (r.phases && r.phases.length) {
         var ph = document.createElement('div'); ph.className = 'wf-phases';
