@@ -4602,6 +4602,22 @@
   var wfHidden = false;       // the operator closed it; don't reopen on poll
   var wfShown = false;        // the operator opened it explicitly; keep it open
   var wfPoll = null;
+  /**
+   * Hide runs that are neither moving nor recent. On by default, matching the
+   * subagent list: a conversation accumulates runs forever, and the ones worth
+   * a floating card are the live ones plus whatever just finished.
+   *
+   * "Recent" rather than "not finished" so a run that returned a minute ago
+   * does not vanish while it is still being read.
+   */
+  var WF_HIDE_KEY = 'x056_wf_hide';
+  var WF_RECENT_MS = 30 * 60_000;
+  var wfHideOld = lsGet(WF_HIDE_KEY) !== 'off';
+  function wfIsCurrent(r) {
+    if (wfLive(r)) return true;
+    var at = r.updatedAt || r.startedAt || 0;
+    return at > 0 && Date.now() - at < WF_RECENT_MS;
+  }
 
   // An incomplete run is not necessarily a running one: a container swap, a
   // stop or a crash leaves it short of its agents forever, and "0 / 4 agents ·
@@ -4650,12 +4666,16 @@
     if (!show) return;
 
     var body = $('wfBody'); body.textContent = '';
-    if (!wfRuns.length) {
+    var shownRuns = wfHideOld ? wfRuns.filter(wfIsCurrent) : wfRuns;
+    var hiddenRuns = wfRuns.length - shownRuns.length;
+    if (!shownRuns.length) {
       var e = document.createElement('div'); e.className = 'wf-empty';
-      e.textContent = 'No workflow runs in this conversation yet.';
-      body.appendChild(e); return;
+      e.textContent = wfRuns.length
+        ? 'Nothing running. ' + wfRuns.length + ' older run' + (wfRuns.length === 1 ? '' : 's') + ' hidden.'
+        : 'No workflow runs in this conversation yet.';
+      body.appendChild(e);
     }
-    wfRuns.forEach(function (r) {
+    shownRuns.forEach(function (r) {
       var live1 = wfLive(r), stalled = wfStalled(r);
       var card = document.createElement('div');
       card.className = 'wf-run' + (live1 ? ' live' : stalled ? ' stalled' : ' done');
@@ -4718,6 +4738,23 @@
       }
       body.appendChild(card);
     });
+
+    // The control only earns its space when it is actually holding something
+    // back -- with two live runs there is nothing to hide.
+    if (hiddenRuns > 0 || !wfHideOld) {
+      var f = document.createElement('label'); f.className = 'subfilter';
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = wfHideOld;
+      cb.addEventListener('change', function () {
+        wfHideOld = cb.checked; lsSet(WF_HIDE_KEY, wfHideOld ? 'on' : 'off'); renderWorkflows();
+      });
+      var tx = document.createElement('span');
+      tx.textContent = wfHideOld
+        ? 'hiding ' + hiddenRuns + ' older · showing ' + shownRuns.length + ' of ' + wfRuns.length
+        : 'showing all ' + wfRuns.length;
+      f.appendChild(cb); f.appendChild(tx);
+      f.title = 'hides runs that stopped moving more than 30 minutes ago';
+      body.appendChild(f);
+    }
   }
 
   /** A workflow agent's transcript, in the same shell a plain subagent uses. */
@@ -4765,6 +4802,17 @@
   }
 
   $('wfCloseBtn').addEventListener('click', function () { wfHidden = true; wfShown = false; renderWorkflows(); });
+  // A floating card that only closes by its own X is a card you fight. Dismiss
+  // on any click outside it -- but not the topbar button (which toggles), and
+  // not while an agent shell is open on top of it, where an outside click
+  // belongs to the modal.
+  document.addEventListener('mousedown', function (e) {
+    var island = $('wfIsland');
+    if (island.hidden) return;
+    if (island.contains(e.target) || $('wfBtn').contains(e.target)) return;
+    if (modalStack.length) return; // an agent shell is on top; the click is its own
+    wfHidden = true; wfShown = false; renderWorkflows();
+  });
   $('wfBtn').addEventListener('click', function () {
     var open = !$('wfIsland').hidden;
     wfShown = !open; wfHidden = open;
