@@ -6,10 +6,12 @@ services:
     depends_on:
       - dind
     ports:
-      # Loopback-only: reachable at localhost:4056 (what nginx proxies to) but
-      # NOT on the host's public IP — the domain (behind nginx/TLS) is the only
-      # intended entry point, not http://<host-ip>:4056 directly.
-      - "127.0.0.1:4056:4056"
+      # Loopback-only: reachable at localhost:${X056_PORT} (what nginx proxies
+      # to) but NOT on the host's public IP — the domain (behind nginx/TLS) is
+      # the only intended entry point, not http://<host-ip>:4056 directly.
+      # Parameterised so a SECOND instance on the same host only needs its own
+      # .env; everything else already scopes itself by compose project name.
+      - "127.0.0.1:${X056_PORT:-4056}:4056"
     environment:
       # All settings come from .env (see .env.example). Defaults are the author's
       # deployment so nothing breaks if a var is unset; override in your .env.
