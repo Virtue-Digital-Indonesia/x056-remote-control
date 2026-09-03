@@ -43,6 +43,13 @@ services:
       # hands over every conversation and subagent transcript it has, writable.
       X056_ACCOUNT_A_DIR: ${X056_ACCOUNT_A_DIR:?set it in .env — never inherit another instance's account dir}
       X056_ACCOUNT_B_DIR: ${X056_ACCOUNT_B_DIR:?set it in .env — never inherit another instance's account dir}
+      # Persistent-session pool. Documented as knobs but never forwarded, so
+      # setting them in .env did nothing: .env only feeds interpolation, and a
+      # var absent from this block never reaches the process. Left unset here
+      # they fall back to the code's own defaults (6 live, 30 min idle).
+      X056_PERSISTENT: ${X056_PERSISTENT:-}
+      X056_PERSISTENT_MAX: ${X056_PERSISTENT_MAX:-}
+      X056_PERSISTENT_TTL_MS: ${X056_PERSISTENT_TTL_MS:-}
       # Project sessions' `docker`/`docker compose` point at the ISOLATED dind
       # sidecar below — NOT the host's Docker.
       DOCKER_HOST: tcp://dind:2375
