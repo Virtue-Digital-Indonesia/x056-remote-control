@@ -26,6 +26,37 @@ Sessions started through the panel run **inside the Docker container** this repo
 - **You CAN screenshot** to eyeball UI work: a headless Chromium (Playwright) is baked into the image at `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`. Start the project's dev server, then `node /app/scripts/shot.cjs <url> <out.png> [width] [height]` and Read the PNG. Any project's own Playwright/Puppeteer also finds the browser via that env var. (Requires a container built after this note — if `shot.cjs` says playwright not found, the image predates it; commit + request a deploy.)
 - **Toolchains baked into the image** (so any project builds, not just Node): Go (`GOTOOLCHAIN=auto`), Java 17 + Maven (Gradle via each project's `./gradlew`), Python 3 with pip/venv (system Python is PEP-668 externally-managed — always work in a venv), PHP + Composer, plus gcc/make/git/ripgrep/jq. `git push` over SSH works to GitHub, the VPN host `192.168.83.20` (`ssh ocr`), and the gateway host `ssh valbox` (dedicated keys in `state/ssh/`).
 
+## There is a SECOND instance on this host (`/home/efran/x056-devs`)
+
+A dev-facing gateway for employed developers runs beside production on the same
+host. You are almost certainly in **production**; do not confuse them.
+
+| | production (you) | dev |
+|---|---|---|
+| checkout | `/home/efran/remote-development/x056-remote-control` | `/home/efran/x056-devs` |
+| compose project | `x056-remote-control` | `x056-devs` |
+| host port | 4056 | 4057 |
+| domain | `x056.rc.val.id` | `x056.rc-dev.val.id` |
+| workspace | `/home/efran/remote-development` | `/home/efran/dev-workspace` |
+| accounts | `.claude-x056-b` + state volume | `.claude-devs-{a,b}` |
+| deploy lock | `/tmp/x056-deploy.lock` | `/tmp/x056-devs-deploy.lock` |
+
+- **Compose already isolates most of it**: the project name comes from the
+  directory, so containers, named volumes (`x056-devs_x056-state`) and the dind
+  sidecar are per-instance. `X056_PORT` was the one hardcoded thing and is now a
+  variable, defaulting to 4056 so production needs no `.env` change.
+- **Three defaults were real leaks** and are overridden in the dev `.env`: the
+  workspace root (would have exposed this repo, its `state/`, and every other
+  project's `.env`), `X056_INTERACTIVE_PROJECTS` (the owner's `~/.claude`
+  transcripts, read-only), and the deploy lock (a fixed name, so either instance
+  could block the other's deploys for a minute at a time).
+- The dev checkout lives **outside** the shared workspace on purpose — inside
+  it, every production session could read its `.env` and token.
+- It has **no SSH key** for `ssh valbox` (those live in the per-instance state
+  volume) and `X056_HOST_NOTE` is unset, so its sessions are not taught the host
+  escape hatch or the nginx sudo.
+- Tokens are separate and mutually rejected (verified 401 both directions).
+
 ## Code graph (`codegraph` MCP server)
 
 This repo is indexed as a call graph, exposed to every Claude account as the
