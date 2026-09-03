@@ -16,10 +16,15 @@ services:
       # All settings come from .env (see .env.example). Defaults are the author's
       # deployment so nothing breaks if a var is unset; override in your .env.
       X056_TOKEN: ${X056_TOKEN:?generate one into .env — openssl rand -hex 32}
-      X056_WORKSPACE_ROOT: ${X056_WORKSPACE_ROOT:-/home/efran/remote-development}
+      # REQUIRED, not defaulted. The old default was the author's whole repo
+      # tree, which contains this project's own .env and therefore X056_TOKEN --
+      # a second instance that forgot to set it could read the first's master
+      # token with one `cat` and drive its API. Both containers run as uid 1001,
+      # so file mode does not help.
+      X056_WORKSPACE_ROOT: ${X056_WORKSPACE_ROOT:?set it in .env — the default was one instance's whole repo tree, including its .env and X056_TOKEN}
       X056_STATE_DIR: /app/state
       # Panel HTML is bind-mount live-served (UI edits appear on refresh, no rebuild).
-      X056_PANEL_PATH: ${X056_PANEL_PATH:-/home/efran/remote-development/x056-remote-control/server/public/panel.html}
+      X056_PANEL_PATH: ${X056_PANEL_PATH:?set it in .env — point it at THIS checkout, or /app/server/public/panel.html to serve the baked copy}
       PORT: "4056"
       # WebAuthn/passkey relying-party id(s), comma-separated — the public host(s)
       # passkeys are bound to (localhost is always allowed for dev/e2e).
@@ -33,19 +38,23 @@ services:
       # named a, b, c …). Blank → the A/B pair below. More can be onboarded from
       # the panel at any time (stored in the state volume).
       X056_ACCOUNT_DIRS: ${X056_ACCOUNT_DIRS:-}
-      X056_ACCOUNT_A_DIR: ${X056_ACCOUNT_A_DIR:-/home/efran/.claude-x056-a}
-      X056_ACCOUNT_B_DIR: ${X056_ACCOUNT_B_DIR:-/home/efran/.claude-x056-b}
+      # REQUIRED. Every account dir's `projects/` is symlinked into ONE shared
+      # tree (see wireSharedProjects), so mounting another instance's account dir
+      # hands over every conversation and subagent transcript it has, writable.
+      X056_ACCOUNT_A_DIR: ${X056_ACCOUNT_A_DIR:?set it in .env — never inherit another instance's account dir}
+      X056_ACCOUNT_B_DIR: ${X056_ACCOUNT_B_DIR:?set it in .env — never inherit another instance's account dir}
       # Project sessions' `docker`/`docker compose` point at the ISOLATED dind
       # sidecar below — NOT the host's Docker.
       DOCKER_HOST: tcp://dind:2375
     volumes:
       # The two Claude account config dirs (each a separate `claude /login`).
-      - ${X056_ACCOUNT_A_DIR:-/home/efran/.claude-x056-a}:${X056_ACCOUNT_A_DIR:-/home/efran/.claude-x056-a}
-      - ${X056_ACCOUNT_B_DIR:-/home/efran/.claude-x056-b}:${X056_ACCOUNT_B_DIR:-/home/efran/.claude-x056-b}
+      - ${X056_ACCOUNT_A_DIR}:${X056_ACCOUNT_A_DIR}
+      - ${X056_ACCOUNT_B_DIR}:${X056_ACCOUNT_B_DIR}
       # The workspace of repos the panel can open as projects.
-      - ${X056_WORKSPACE_ROOT:-/home/efran/remote-development}:${X056_WORKSPACE_ROOT:-/home/efran/remote-development}
+      - ${X056_WORKSPACE_ROOT}:${X056_WORKSPACE_ROOT}
       # Read-only: import existing interactive `claude` sessions for resume.
-      - ${X056_INTERACTIVE_PROJECTS:-/home/efran/.claude/projects}:${X056_INTERACTIVE_PROJECTS:-/home/efran/.claude/projects}:ro
+      # REQUIRED too: the default is the author's own interactive transcripts.
+      - ${X056_INTERACTIVE_PROJECTS:?set it in .env — the default is one user's personal ~/.claude transcripts}:${X056_INTERACTIVE_PROJECTS}:ro
       - x056-state:/app/state
   # Isolated Docker-in-Docker daemon for PROJECTS' own docker needs (building
   # images, spinning up compose e2e stacks). It is privileged, but it is a NESTED
@@ -61,7 +70,7 @@ services:
       DOCKER_TLS_CERTDIR: ""
     volumes:
       - dind-storage:/var/lib/docker
-      - ${X056_WORKSPACE_ROOT:-/home/efran/remote-development}:${X056_WORKSPACE_ROOT:-/home/efran/remote-development}
+      - ${X056_WORKSPACE_ROOT}:${X056_WORKSPACE_ROOT}
     healthcheck:
       test: ["CMD", "docker", "info"]
       interval: 10s

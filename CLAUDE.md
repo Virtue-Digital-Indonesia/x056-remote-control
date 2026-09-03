@@ -56,6 +56,17 @@ host. You are almost certainly in **production**; do not confuse them.
   volume) and `X056_HOST_NOTE` is unset, so its sessions are not taught the host
   escape hatch or the nginx sudo.
 - Tokens are separate and mutually rejected (verified 401 both directions).
+- **The compose defaults were the trap, and are now fail-fast.** They pointed at
+  the author's own paths, so an instance that merely *forgot* a variable
+  silently mounted the other's: its workspace (which holds that instance's
+  `.env`, hence `X056_TOKEN` — and both containers run as uid 1001, so 0600 does
+  not help), its account dirs (every account's `projects/` is symlinked into ONE
+  shared tree, so that is every transcript, writable), and its
+  `~/.claude/projects`. `X056_WORKSPACE_ROOT`, `X056_ACCOUNT_{A,B}_DIR`,
+  `X056_INTERACTIVE_PROJECTS` and `X056_PANEL_PATH` now use `:?` and refuse to
+  start unset. Production pins them explicitly and renders byte-identical.
+- The dev instance's workspace is `poc-ahu-ai`, not the whole tree: its devs get
+  the OCR worktrees, the chatbot and that programme, and nothing else.
 
 ## Code graph (`codegraph` MCP server)
 
