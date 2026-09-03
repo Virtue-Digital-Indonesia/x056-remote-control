@@ -254,7 +254,10 @@ export class SessionManager {
    */
   private readonly persistent = process.env.X056_PERSISTENT === 'off' ? null : new PersistentTurns({
     idleTtlMs: Number(process.env.X056_PERSISTENT_TTL_MS) || 30 * 60_000,
-    maxSessions: Number(process.env.X056_PERSISTENT_MAX) || 4,
+    // Keep in step with PersistentTurns' own default: this argument always
+    // wins, so leaving 4 here made the pool's 6 dead code and silently held the
+    // cap below the number of conversations in play.
+    maxSessions: Number(process.env.X056_PERSISTENT_MAX) || 6,
   });
   private sessionBusy(sessionId: string): boolean { return this.runs.has(sessionId); }
   private projectBusy(pid: string): boolean {
