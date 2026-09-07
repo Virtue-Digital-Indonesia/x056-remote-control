@@ -51,7 +51,7 @@ window.createControlRoom = function (engine) {
   // Keep this at the viewport root: a transformed chat modal changes the
   // containing block of fixed descendants, making the dock jump or clip.
   document.body.append(stage);
-  let stagePins=[],stageRecent=[],recentDismissed=[],stageMode='pinned',showDismissedRecents=false,stageSignature='',stageCloseTimer,stageExpanded=false,stagePage=0;
+  let stagePins=[],stageRecent=[],recentDismissed=[],stageMode='pinned',showDismissedRecents=false,stageSignature='',stageCloseTimer,stageExpanded=false,stagePage=0,stageMotion=0,stageAnimations=[];
   try{const saved=JSON.parse(localStorage.getItem('x056_stage_pins')||'[]');if(Array.isArray(saved))stagePins=[...new Set(saved.filter(x=>typeof x==='string'))];}catch{}
   try{stageMode=localStorage.getItem('x056_stage_mode')==='recent'?'recent':'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
   document.body.dataset.stageMode=stageMode;
@@ -73,7 +73,27 @@ window.createControlRoom = function (engine) {
     const id=stageKey(project,session);stagePins=stagePins.filter(x=>x!==id);if(pinned)stagePins.push(id);
     if(pinned){stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);recentDismissed=recentDismissed.filter(x=>x!==id);saveRecents();}saveStage();renderStage();refresh();if(stagePicker.open)renderStagePicker();
   }
-  function stageOpen(value){clearTimeout(stageCloseTimer);$('stageShelf').hidden=!value;$('stageToggle').setAttribute('aria-expanded',String(value));if(value)renderStage();}
+  function stageOpen(value){
+    clearTimeout(stageCloseTimer);
+    if((stage.dataset.expanded==='true')===value){if(value)renderStage();return;}
+    const generation=++stageMotion,shelf=$('stageShelf');stageAnimations.forEach(a=>a.cancel());stageAnimations=[];
+    if(value){shelf.hidden=false;shelf.inert=false;renderStage();}else shelf.inert=true;
+    stage.dataset.expanded=String(value);$('stageToggle').setAttribute('aria-expanded',String(value));updateStageToggle();
+    const finish=()=>{if(generation===stageMotion&&!value)shelf.hidden=true;};
+    if(matchMedia('(prefers-reduced-motion: reduce)').matches){finish();return;}
+    const origin=$('stageToggle').getBoundingClientRect(),targets=[...shelf.querySelectorAll('.stage-item,.stage-add,.stage-page')].filter(el=>!el.hidden);
+    stageAnimations=targets.map((el,index)=>{
+      const rect=el.getBoundingClientRect(),fold={transform:`translate(${origin.x+origin.width/2-rect.x-rect.width/2}px,${origin.y+origin.height/2-rect.y-rect.height/2}px) scale(.85)`,opacity:0};
+      return el.animate(value?[fold,{transform:'none',opacity:1}]:[{transform:'none',opacity:1},fold],{duration:value?220:160,delay:value?(targets.length-index-1)*14:0,easing:'cubic-bezier(.2,.75,.25,1)',fill:value?'backwards':'forwards'});
+    });
+    Promise.all(stageAnimations.map(a=>a.finished.catch(()=>{}))).then(finish);
+  }
+  function updateStageToggle(){
+    const count=Number(stage.dataset.count||0),expanded=stage.dataset.expanded==='true';
+    $('stageToggle').classList.toggle('stacked',count>1);$('stageToggle').classList.toggle('stacked-many',count>2);
+    $('stageToggle').querySelector('use').setAttribute('href',expanded?'#i-down':count?'#i-chat':'#i-plus');
+    $('stageCount').hidden=!count||expanded;
+  }
   $('stageToggle').onclick=()=>{if(!stageCandidates().length){openStagePicker();return;}stageExpanded=!stageExpanded;stageOpen(stageExpanded);};
   stage.addEventListener('pointerenter',e=>{if(e.pointerType==='mouse'&&stageCandidates().length){clearTimeout(stageCloseTimer);stageOpen(true);}});
   stage.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'&&!stageExpanded&&!stage.contains(document.activeElement))stageCloseTimer=setTimeout(()=>stageOpen(false),250);});
@@ -96,10 +116,10 @@ window.createControlRoom = function (engine) {
     $('stageCount').textContent=pinned.length||'';$('stageCount').hidden=!pinned.length;
     $('stageToggle').setAttribute('aria-label',pinned.length?(stageMode==='pinned'?'Pinned conversations':'Recent conversations')+' ('+pinned.length+')':'Pin a conversation');
     stage.setAttribute('aria-label',stageMode==='pinned'?'Pinned conversations':'Recent conversations');
-    $('stageToggle').querySelector('use').setAttribute('href',pinned.length?'#i-chat':'#i-plus');
+    stage.dataset.count=String(pinned.length);updateStageToggle();
     $('stagePrevious').setAttribute('aria-label','Previous conversations');$('stageNext').setAttribute('aria-label','More conversations');
     $('stagePrevious').hidden=stagePage===0;$('stageNext').hidden=(stagePage+1)*pageSize>=pinned.length;
-    const html=rows.map(x=>{const title=x.c.title||'Conversation',current=x.c.sessionId===s.sessionId&&x.p.id===s.projectId,initials=title.trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase();return `<div class="stage-item ${current?'current':''}"><button class="stage-conversation ${x.status}" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}" aria-label="${esc(title+' · '+x.p.name+' · '+(statusLabels[x.status]||'Idle'))}" ${current?'aria-current="true"':''} style="--project-color:${projectColor(x.p.id)}"><span class="stage-caption"><strong>${esc(title)}</strong><small>${esc(x.p.name)} · ${statusLabels[x.status]||'Idle'}</small></span><span class="stage-initials" aria-hidden="true">${esc(initials)}</span><i class="stage-status" aria-hidden="true"></i></button><button class="stage-unpin" data-stage-unpin="${esc(stageKey(x.p.id,x.c.sessionId))}" aria-label="${stageMode==='pinned'?'Unpin':'Dismiss'} ${esc(title)}">${ic('x')}</button></div>`;}).join('');
+    const html=rows.map(x=>{const title=x.c.title||'Conversation',current=x.c.sessionId===s.sessionId&&x.p.id===s.projectId;return `<div class="stage-item ${current?'current':''}"><button class="stage-conversation ${x.status}" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}" aria-label="${esc(title+' · '+x.p.name+' · '+(statusLabels[x.status]||'Idle'))}" ${current?'aria-current="true"':''} style="--project-color:${projectColor(x.p.id)}"><span class="stage-caption"><strong>${esc(title)}</strong><small>${esc(x.p.name)} · ${statusLabels[x.status]||'Idle'}</small></span>${ic(['running','background'].includes(x.status)?'sparkles':'chat')}<i class="stage-status" aria-hidden="true"></i></button><button class="stage-unpin" data-stage-unpin="${esc(stageKey(x.p.id,x.c.sessionId))}" aria-label="${stageMode==='pinned'?'Unpin':'Dismiss'} ${esc(title)}">${ic('x')}</button></div>`;}).join('');
     if(html===stageSignature)return;stageSignature=html;const focused=document.activeElement,focus=focused?.dataset.session,unpinFocus=focused?.dataset.stageUnpin;$('stageItems').innerHTML=html;
     $('stageItems').querySelectorAll('[data-session]').forEach(b=>b.onclick=()=>openConversation(b));
     $('stageItems').querySelectorAll('[data-stage-unpin]').forEach(b=>b.onclick=()=>{const x=byId.get(b.dataset.stageUnpin);if(x){if(stageMode==='pinned')pinStage(x.p.id,x.c.sessionId,false);else dismissRecent(x.p.id,x.c.sessionId);}$('stageToggle').focus();});
