@@ -136,6 +136,16 @@ failover happens to land on the right one — which reads as "randomly broken":
   on both — but into Codex's own accounts, with `add`/`remove` instead of
   `install`/`uninstall`, and with no enable/disable. The plugins popover has a
   Claude / ChatGPT switch; every plugin route takes `provider`.
+- **MCP servers are on Codex too** — `codegraph`, `Obscura`, `midtrans-docs`
+  and Context7 (which registers its own server on install) on every Codex
+  account, 3/3 synced. Two things are NOT replicable and never will be through
+  the gateway: `claude-design` (Anthropic first-party, bound to a Claude
+  login), and the **claude.ai connectors** (Valid Recruitment, Canva, ClickUp,
+  Gmail, Calendar, Drive, …) — those live in the claude.ai account, not in any
+  config dir, and reach only Claude sessions. The gateway's own `x056` server
+  is per-turn config on both providers. Codex's `mcp add --url` has no header
+  flag, so an authenticated http server is written into `config.toml` directly
+  (`[mcp_servers.X.http_headers]`), which `mcp list` and `mcp remove` round-trip.
 - **Opt-in flag files** (e.g. `.i-have-adhd-always`, resolved by hooks through
   `$CLAUDE_CONFIG_DIR`) — `POST /api/accounts/flag {flag, on}`. Note `$HOME/.claude`
   is only the fallback when `CLAUDE_CONFIG_DIR` is unset, which it never is here,
