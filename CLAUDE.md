@@ -76,6 +76,12 @@ host. You are almost certainly in **production**; do not confuse them.
   start unset. Production pins them explicitly and renders byte-identical.
 - The dev instance's workspace is `poc-ahu-ai`, not the whole tree: its devs get
   the OCR worktrees, the chatbot and that programme, and nothing else.
+- **One isolation break is deliberate**: dev's container is attached to
+  `x056-remote-control_default` so its `codegraph` MCP server can reach THIS
+  instance's knowledge service at `x056-remote-control-dind-1:8421`. Its devs can
+  therefore `wiki_search` every project's memories and the code graph. Chosen
+  over standing up a second indexer; undo with
+  `docker network disconnect x056-remote-control_default x056-devs-x056-1`.
 
 ## Code graph (`codegraph` MCP server)
 
