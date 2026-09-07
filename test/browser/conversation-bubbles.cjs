@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict');const{chromium}=require('/usr/local/lib/node_modules/playwright');
 const base=process.argv[2]||'http://127.0.0.1:8767';
 (async()=>{const browser=await chromium.launch({headless:true,args:['--no-sandbox']});try{
- const context=await browser.newContext({viewport:{width:1440,height:1000}});await context.addInitScript(()=>localStorage.setItem('x056_token','browser-fixture-token-0123456789'));
+ const context=await browser.newContext({viewport:{width:1440,height:1000}});await context.addInitScript(()=>{localStorage.setItem('x056_token','browser-fixture-token-0123456789');if(!localStorage.getItem('x056_display_preferences'))localStorage.setItem('x056_display_preferences',JSON.stringify({open:'side',maximize:'page'}));});
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>{errors.push(e.message);console.log('PAGEERROR',e.message)});
  let runningId;await page.route('**/api/projects',async route=>{if(route.request().method()!=='GET')return route.continue();const response=await route.fetch(),data=await response.json();const p=data.projects.find(p=>p.name==='Research workspace');runningId=p.conversations[0].sessionId;p.running=true;p.runningSessionIds=[runningId];p.runningAccounts={[runningId]:'primary'};await route.fulfill({response,json:data});});
  await page.goto(base);await page.waitForSelector('.cr-task');assert.equal(await page.locator('#stageCount').textContent(),'');assert.equal(await page.locator('#stageItems .stage-conversation').count(),0,'running chats do not enter pinned mode');

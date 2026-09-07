@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { quotaLimit, type QuotaReading } from './account-availability.js';
 import type { ProviderId } from './provider.js';
 
 export type AccountState =
@@ -26,6 +27,8 @@ export interface Account {
   state: AccountState;
   /** Exclude from future attempts without changing authentication or live turns. */
   paused?: boolean;
+  /** Explicit human override applies only to quota readings at or before this time. */
+  quotaOverrideAt?: number;
 }
 
 export const ROUTING_STRATEGIES = ['sticky', 'priority', 'round-robin', 'least-busy', 'wait'] as const;
@@ -150,9 +153,27 @@ export class AccountRegistry {
     return structuredClone(removed);
   }
 
+  private quotaState(a: Account, now: number): AccountState | null {
+    try {
+      const cache = JSON.parse(readFileSync(join(dirname(this.file), 'quota-cache.json'), 'utf8')) as Record<string, QuotaReading>;
+      const reading = cache[a.name];
+      if (reading && a.quotaOverrideAt && reading.at <= a.quotaOverrideAt) return null;
+      return quotaLimit(a.provider, reading, now);
+    } catch { return null; }
+  }
+
+  effectiveState(name: string, now: number): AccountState {
+    const a = this.find(name);
+    if (a.state.kind === 'unauthenticated') return a.state;
+    const quota = this.quotaState(a, now);
+    if (quota?.kind === 'limited' && (a.state.kind !== 'limited' || quota.until > a.state.until)) return quota;
+    return a.state.kind === 'limited' && a.state.until <= now ? { kind: 'ok' } : a.state;
+  }
+
   private usable(a: Account, now: number): boolean {
-    if (a.paused || a.state.kind === 'unauthenticated') return false;
-    return a.state.kind !== 'limited' || a.state.until <= now;
+    const state = this.effectiveState(a.name, now);
+    if (a.paused || state.kind === 'unauthenticated') return false;
+    return state.kind !== 'limited' || state.until <= now;
   }
 
   /** Which account the next turn WOULD run on for a provider, without mutating
@@ -251,6 +272,14 @@ export class AccountRegistry {
     this.save();
   }
 
+  overrideLimit(name: string): void {
+    const account = this.find(name);
+    if (account.state.kind === 'unauthenticated') return;
+    account.quotaOverrideAt = Date.now();
+    account.state = { kind: 'ok' };
+    this.save();
+  }
+
   markUnauthenticated(name: string): void {
     this.find(name).state = { kind: 'unauthenticated' };
     this.save();
@@ -263,7 +292,7 @@ export class AccountRegistry {
   earliestReset(provider?: ProviderId): number {
     const pool = provider ? this.ofProvider(provider) : this.data.accounts;
     const untils = pool
-      .map((a) => a.state)
+      .map((a) => { const q = this.quotaState(a, Math.floor(Date.now() / 1000)); return q?.kind === 'limited' && (a.state.kind !== 'limited' || q.until > a.state.until) ? q : a.state; })
       .filter((s): s is { kind: 'limited'; until: number } => s.kind === 'limited')
       .map((s) => s.until);
     if (untils.length === 0) return Math.floor(Date.now() / 1000);

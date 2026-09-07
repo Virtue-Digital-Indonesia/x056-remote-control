@@ -1900,7 +1900,7 @@ export class SessionManager {
   setActiveAccount(name: string, force?: boolean): void {
     const acct = this.registry().get(name); // throws if unknown
     if (acct.paused) throw new Error('resume this account before selecting it');
-    if (force && acct.state.kind === 'limited') this.registry().markOk(name);
+    if (force) this.registry().overrideLimit(name);
     this.registry().setActive(name);
     this.emitAccounts();
   }
@@ -1927,7 +1927,7 @@ export class SessionManager {
       const conv = this.projects().get(run.projectId)?.conversations?.find(c => c.sessionId === run!.sessionId);
       if (target.provider !== (conv?.provider || 'claude')) return false;
       if (run.account && run.account === targetAccount) return false; // already on it — nothing to switch
-      if (force && target.state.kind === 'limited') this.registry().markOk(targetAccount);
+      if (force) this.registry().overrideLimit(targetAccount);
       this.registry().setActive(targetAccount); // the resumed turn will pick this one
       this.emitAccounts();
       run.control.forceSwitch({ bench: false });

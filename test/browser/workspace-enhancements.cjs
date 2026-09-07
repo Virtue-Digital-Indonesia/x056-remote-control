@@ -1,0 +1,43 @@
+const assert=require('node:assert/strict'),{chromium}=require('/usr/local/lib/node_modules/playwright');
+const base=process.argv[2]||'http://127.0.0.1:8767';
+(async()=>{const browser=await chromium.launch({headless:true,args:['--no-sandbox']});try{
+ const context=await browser.newContext({viewport:{width:1440,height:1000}});
+ await context.addInitScript(()=>localStorage.setItem('x056_token','browser-fixture-token-0123456789'));
+ const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const projects=await (await context.request.get(base+'/api/projects',{headers:{Authorization:'Bearer browser-fixture-token-0123456789'}})).json();
+ const project=projects.projects.find(p=>p.name==='Website refresh'),convos=project.conversations;
+ let aps={[convos[0].sessionId]:{remaining:12,projectId:project.id}},stopped=[];
+ await page.route('**/api/autopilot',route=>route.fulfill({json:aps}));
+ await page.route('**/api/autopilot/stop',async route=>{const body=route.request().postDataJSON();stopped.push(body.sessionId);delete aps[body.sessionId];await route.fulfill({json:{ok:true}});});
+ await page.route('**/api/accounts',async route=>{const response=await route.fetch(),rows=await response.json();for(const a of rows){if(a.provider==='codex'){a.state={kind:'ok'};a.displayName='Exhausted account';a.quotaAt=Date.now();a.quota={windows:[{label:'5-hour',utilization:1,resetsAt:new Date(Date.now()+3600000).toISOString()}]};a.nextUp=true;}}await route.fulfill({response,json:rows});});
+ await page.goto(base);await page.waitForSelector('.cr-task');
+ await page.waitForSelector('.cr-conversation-group:has(h2:text-is("Unread"))');
+ const unread=page.locator('.cr-conversation-group').filter({has:page.getByRole('heading',{name:'Unread',exact:true})});
+ assert(await unread.locator('.cr-unread-dot').count()>0);assert.equal(await page.locator('.cr-task').count(),4,'each conversation appears once');
+ await page.locator('.cr-task').filter({hasText:'Update the component library'}).click();await page.waitForSelector('#chatClose');
+ assert.equal(await page.locator('body').getAttribute('data-chat-mode'),'modal','new users default to maximized large modal');
+ await page.locator('#chatClose').click();await page.locator('#crSettings').click();assert(await page.locator('input[name=open][value=max]').isChecked());assert(await page.locator('input[name=maximize][value=modal]').isChecked());await page.keyboard.press('Escape');
+ // Pin all three without altering their recency. The first launcher click restores the last opened chat.
+ await page.locator('#stageToggle').click();await page.locator('#stagePinSearch').fill('Website');for(let i=0;i<3;i++)await page.locator('[data-pin-choice]').nth(i).check();await page.keyboard.press('Escape');
+ await page.locator('#stageToggle').click();await page.waitForFunction(()=>document.querySelector('.stage-conversation[aria-current=true]')?.getAttribute('aria-label').includes('Update the component library'));
+ await page.locator('#prompt').fill('Keep this draft through cycling.');
+ // Rapid clicks must retain one cycle order even though opening updates recency.
+ const current=await page.locator('.stage-conversation[aria-current=true]').getAttribute('data-session');
+ await page.locator('#stageToggle').click();await page.waitForFunction(s=>document.querySelector('.stage-conversation[aria-current=true]')?.dataset.session!==s,current);
+ const second=await page.locator('.stage-conversation[aria-current=true]').getAttribute('data-session');
+ await page.locator('#stageToggle').click();await page.waitForFunction(ids=>!ids.includes(document.querySelector('.stage-conversation[aria-current=true]')?.dataset.session),[current,second]);
+ await page.locator('#stageToggle').click();await page.waitForFunction(s=>document.querySelector('.stage-conversation[aria-current=true]')?.dataset.session===s,current);
+ assert.equal(await page.locator('#prompt').inputValue(),'Keep this draft through cycling.');
+ await page.locator('#chatClose').click();await page.locator('#crAutomationsTab').click();await page.waitForSelector('.automation-ap-row');
+ assert.match(await page.locator('.automation-ap-row').textContent(),/12 continuations left/);
+ await page.screenshot({path:'/tmp/x056-workspace-automations.png'});
+ await page.locator('.automation-ap-open').click();await page.waitForSelector('#chatClose');await page.locator('#chatClose').click();await page.locator('[data-stop-ap]').click();await page.waitForFunction(()=>document.querySelectorAll('.automation-ap-row').length===0);assert.deepEqual(stopped,[convos[0].sessionId]);
+ await page.locator('#crAccountsTab').click();await page.waitForSelector('.cr-account-row');
+ const exhausted=page.locator('.cr-account-row').filter({hasText:'Exhausted account'});assert.match(await exhausted.textContent(),/Limited/);assert.equal(await exhausted.locator('.next-badge').count(),0);
+ await page.waitForFunction(()=>document.getElementById('accountStats').textContent.includes('1 / 3'));
+ await page.waitForSelector('.cr-cost-idr');assert.match(await page.locator('.cr-cost-idr').textContent(),/Rp/);
+ await page.locator('#crCostDetails').click();assert.match(await page.locator('#projectCostDetails').textContent(),/17.653/);assert.match(await page.locator('#projectCostDetails').textContent(),/7 September 2026/);await page.keyboard.press('Escape');
+ await page.screenshot({path:'/tmp/x056-workspace-dashboard.png'});
+ await page.setViewportSize({width:390,height:844});assert(await page.locator('#conversationStage').isHidden());assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ assert.deepEqual(errors,[]);console.log('PASS unread section, default modal, stable click cycling with drafts, autopilot listing/open/stop, exhausted quota exclusion and IDR estimates');
+}finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1});

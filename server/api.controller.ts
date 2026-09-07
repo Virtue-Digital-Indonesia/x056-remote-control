@@ -15,7 +15,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { AccountRegistry, ROUTING_STRATEGIES, type RoutingStrategy } from '../src/accounts.js';
 import { UsageRateLimitedError } from '../src/quota.js';
@@ -166,7 +166,9 @@ export class ApiController {
   private saveQuotaCache(): void {
     try {
       mkdirSync(this.stateDir, { recursive: true });
-      writeFileSync(this.quotaCacheFile(), JSON.stringify(Object.fromEntries(this.quotaCache)));
+      const file = this.quotaCacheFile();
+      writeFileSync(file + '.tmp', JSON.stringify(Object.fromEntries(this.quotaCache)));
+      renameSync(file + '.tmp', file);
     } catch {
       // best-effort — losing the persisted cache only means a future restart
       // falls back to the old in-memory-only behavior, not a correctness issue
@@ -955,9 +957,8 @@ export class ApiController {
     // and match each account against its own provider's pointer.
     const nowSec = Math.floor(Date.now() / 1000);
     const providers = [...new Set(registry.list().map((a) => a.provider))];
-    const nextUpByProvider = new Map(providers.map((p) => [p, registry.peekActive(nowSec, p, this.manager.accountLoads())?.name ?? null]));
     const activeByProvider = new Map(providers.map((p) => [p, registry.activeName(p)]));
-    return Promise.all(
+    const rows = await Promise.all(
       registry.list().map(async (acct) => {
         const adapter = getAdapter(acct.provider);
         const id = adapter.readIdentity(acct.configDir);
@@ -975,7 +976,7 @@ export class ApiController {
           : acct.state.kind === 'limited' && acct.state.until <= nowSec
             ? ({ kind: 'ok' } as const)
             : acct.state;
-        const base = { ...acct, providerLabel: adapter.label, state, displayName: acct.label || id.displayName || id.email || (acct.provider === 'codex' ? 'ChatGPT account' : 'Claude account'), email: id.email, nextUp: acct.name === nextUpByProvider.get(acct.provider), active: acct.name === activeByProvider.get(acct.provider) };
+        const base = { ...acct, providerLabel: adapter.label, state, displayName: acct.label || id.displayName || id.email || (acct.provider === 'codex' ? 'ChatGPT account' : 'Claude account'), email: id.email, active: acct.name === activeByProvider.get(acct.provider) };
         // A provider with no pollable usage endpoint (e.g. Codex on a ChatGPT
         // plan) simply shows no usage bars — never an error.
         if (!adapter.fetchUsage) return { ...base, quota: null };
@@ -1008,6 +1009,13 @@ export class ApiController {
         }
       }),
     );
+    // Usage has now been refreshed and persisted. Derive badges and the next
+    // account from the same quota-aware routing decision, including cache hits.
+    const next = new Map(providers.map(p => [p, registry.peekActive(nowSec, p, this.manager.accountLoads())?.name]));
+    return rows.map(row => ({ ...row,
+      state: row.state.kind === 'unauthenticated' ? row.state : registry.effectiveState(row.name, nowSec),
+      nextUp: row.state.kind !== 'unauthenticated' && row.name === next.get(row.provider),
+    }));
   }
 
   @Get('accounts/analytics')

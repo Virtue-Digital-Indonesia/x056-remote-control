@@ -125,3 +125,18 @@ describe('GET /api/accounts — a signed-out account', () => {
     expect(result.map((r) => r.state.kind)).toEqual(['limited', 'limited']);
   });
 });
+
+describe('GET /api/accounts — quota availability', () => {
+  it('reports cached exhausted ChatGPT quota as limited and selects the next account', async () => {
+    const dir=mkdtempSync(join(tmpdir(),'x056-quota-badge-')),now=Math.floor(Date.now()/1000);
+    const reg=AccountRegistry.init(join(dir,'accounts.json'),['a','b'].map(name=>({name,configDir:join(dir,name),provider:'codex' as const})));
+    reg.markOk('a');reg.markOk('b');
+    writeFileSync(join(dir,'quota-cache.json'),JSON.stringify({
+      a:{at:Date.now(),quota:{windows:[{label:'5-hour',utilization:1,resetsAt:new Date((now+3600)*1000).toISOString()}]}},
+      b:{at:Date.now(),quota:{windows:[{label:'5-hour',utilization:.2,resetsAt:new Date((now+3600)*1000).toISOString()}]}},
+    }));
+    const rows=await controller(dir).accounts() as {name:string;nextUp:boolean;state:{kind:string;until?:number}}[];
+    expect(rows.find(a=>a.name==='a')).toMatchObject({state:{kind:'limited',until:now+3600},nextUp:false});
+    expect(rows.find(a=>a.name==='b')).toMatchObject({state:{kind:'ok'},nextUp:true});
+  });
+});

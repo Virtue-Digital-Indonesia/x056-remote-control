@@ -9,10 +9,10 @@
     },
     {
       "id": "quota-aware-account-availability",
-      "status": "deferred",
+      "status": "implemented",
       "requested": "2026-09-07",
       "description": "Investigate why the ChatGPT account admin@val.id shows 100% usage while still marked available and included in 7/7 available accounts. Align availability labels and fleet totals with applicable quota limits.",
-      "timing": "Later account-status pass; the user explicitly said to fix this later."
+      "timing": "Implemented 2026-09-07: quota-aware routing, availability badges and counts; cached windows expire at reset."
     }
   ]
 }

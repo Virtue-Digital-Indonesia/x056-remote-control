@@ -8,7 +8,7 @@ const shotDir = '/tmp/x056-refinement-check'; fs.mkdirSync(shotDir,{recursive:tr
 (async () => {
  const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
  const context=await browser.newContext({viewport:{width:1440,height:1000},acceptDownloads:true});
- await context.addInitScript(()=>localStorage.setItem('x056_token','browser-fixture-token-0123456789'));
+ await context.addInitScript(()=>{localStorage.setItem('x056_token','browser-fixture-token-0123456789');if(!localStorage.getItem('x056_display_preferences'))localStorage.setItem('x056_display_preferences',JSON.stringify({open:'side',maximize:'page'}));});
  const page=await context.newPage(), errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.route('**/api/accounts',async route=>{
   const response=await route.fetch();const rows=await response.json();

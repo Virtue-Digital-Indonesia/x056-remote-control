@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict'),{chromium}=require('/usr/local/lib/node_modules/playwright');
 const base=process.argv[2]||'http://127.0.0.1:8767';
 (async()=>{const browser=await chromium.launch({headless:true,args:['--no-sandbox']});try{
- const context=await browser.newContext({viewport:{width:1440,height:1000}});await context.addInitScript(()=>localStorage.setItem('x056_token','browser-fixture-token-0123456789'));
+ const context=await browser.newContext({viewport:{width:1440,height:1000}});await context.addInitScript(()=>{localStorage.setItem('x056_token','browser-fixture-token-0123456789');if(!localStorage.getItem('x056_display_preferences'))localStorage.setItem('x056_display_preferences',JSON.stringify({open:'side',maximize:'page'}));});
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base);await page.waitForSelector('.cr-task');
  await page.locator('#stageToggle').click();await page.waitForSelector('#stagePinPicker[open]');await page.locator('[data-pin-choice]').first().check();await page.keyboard.press('Escape');
  assert.equal(await page.locator('#stageToggle').evaluate(e=>getComputedStyle(e,'::before').opacity),'0','one chat has no extra circles');
