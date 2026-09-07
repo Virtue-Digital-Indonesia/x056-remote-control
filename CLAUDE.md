@@ -146,6 +146,13 @@ failover happens to land on the right one — which reads as "randomly broken":
   is per-turn config on both providers. Codex's `mcp add --url` has no header
   flag, so an authenticated http server is written into `config.toml` directly
   (`[mcp_servers.X.http_headers]`), which `mcp list` and `mcp remove` round-trip.
+  **To prove a Codex account's servers load without spending a credit:**
+  `codex app-server` → `initialize` → `thread/start` → `mcpServerStatus/list
+  {threadId}` returns every server with its tool count and auth status
+  (`bearerToken` = the header authenticated; `notLoggedIn` = the server wants
+  its own login, as Context7 does; `unsupported` + 0 tools = dead upstream, as
+  midtrans-docs is on both providers). It works even when the account's own
+  ChatGPT token is revoked, because MCP init does not touch OpenAI auth.
 - **Opt-in flag files** (e.g. `.i-have-adhd-always`, resolved by hooks through
   `$CLAUDE_CONFIG_DIR`) — `POST /api/accounts/flag {flag, on}`. Note `$HOME/.claude`
   is only the fallback when `CLAUDE_CONFIG_DIR` is unset, which it never is here,
