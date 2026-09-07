@@ -4,8 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>x056 remote control</title>
-<meta name="theme-color" content="#c96442" media="(prefers-color-scheme: light)" />
-<meta name="theme-color" content="#1a1a19" media="(prefers-color-scheme: dark)" />
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#212121" media="(prefers-color-scheme: dark)" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -19,12 +19,12 @@
     color-scheme: light;
     --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     --mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, monospace;
-    --bg: #ffffff; --sidebar: #f7f7f5; --surface-2: #f0f0ee; --surface-3: #e8e8e5;
-    --border: #e6e6e2; --border-strong: #d4d4ce;
-    --text: #1a1a17; --muted: #73736c; --faint: #9a9a92;
-    --accent: #c96442; --accent-weak: #f6ece7; --on-accent: #ffffff;
+    --bg: #fdfcfb; --sidebar: #f3f1ed; --surface-2: #f2f0ec; --surface-3: #e8e4de;
+    --border: #e6e1da; --border-strong: #cec7bd;
+    --text: #282521; --muted: #6e675f; --faint: #7c746b;
+    --accent: #ac4b30; --accent-weak: #f6e8e0; --on-accent: #ffffff;
     --link: #2563eb;
-    --user-bg: #f2f2ef;
+    --user-bg: #efede8;
     --ok: #15803d; --ok-bg: #dcf5e3; --amber: #b45309; --amber-bg: #fbecd0; --err: #b91c1c; --err-bg: #fbe0e0;
     /* Work that outlived its turn. NOT --amber: at light-mode luminance every
        yellow is either within 20deg of --accent or under 3:1 on the sidebar, so
@@ -32,37 +32,47 @@
        "running". Violet is the one hue this panel assigns no other meaning --
        green is ok, red is err, blue is link, teal reads as green at 6px. */
     --bgwork: #6d28d9;
-    --shadow: 0 12px 32px rgba(20,20,20,.14);
+    --shadow: 0 8px 32px rgba(45,35,25,.10), 0 2px 6px rgba(45,35,25,.04);
+    --composer-shadow: 0 4px 20px rgba(45,35,25,.06);
   }
   html[data-theme="dark"] {
     color-scheme: dark;
-    --bg: #1a1a19; --sidebar: #141413; --surface-2: #26262400; --surface-3: #2f2f2c;
-    --border: #2c2c2a; --border-strong: #3c3c39;
-    --text: #ecece7; --muted: #a0a099; --faint: #6f6f68;
-    --accent: #d97757; --accent-weak: #2a1f1a; --on-accent: #1a1a19;
+    --bg: #1c1b19; --sidebar: #161513; --surface-2: #262421; --surface-3: #34302b;
+    --border: #34302b; --border-strong: #4b443c;
+    --text: #eeeae3; --muted: #b6afa5; --faint: #a0988d;
+    --accent: #e39778; --accent-weak: #38271f; --on-accent: #211915;
     --link: #8fb8ff;
-    --user-bg: #262624;
+    --user-bg: #2c2925;
     --ok: #4ade80; --ok-bg: #123021; --amber: #fbbf24; --amber-bg: #2c2410; --err: #f87171; --err-bg: #2b1414;
-    /* Same hue as light, lifted for a dark ground: 86.4 dE from --accent at
-       6.12:1. Gold cleared the numbers here too, but a state that changes hue
-       family with the theme is a state you have to re-learn. */
+    /* Keep background work violet in both themes, distinct from a running turn. */
     --bgwork: #a78bfa;
-    --shadow: 0 14px 40px rgba(0,0,0,.55);
+    --shadow: 0 12px 36px rgba(0,0,0,.32);
+    --composer-shadow: 0 4px 20px rgba(0,0,0,.16);
   }
   * { box-sizing: border-box; }
   .ic { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; display: inline-block; vertical-align: middle; }
   .ic.sm { width: 15px; height: 15px; }
   html, body { height: 100%; margin: 0; }
-  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14.5px; line-height: 1.55; display: grid; grid-template-columns: 264px 1fr; height: 100vh; height: 100dvh; overflow: hidden; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14.5px; line-height: 1.55; display: grid; grid-template-columns: 280px minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
+
+  :where(button, a, select, input, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  button, select, .attach, .proj, .conv { transition: background-color .15s, border-color .15s, color .15s; }
+  :where(.side-scroll, .scroll, .wf-body, .pop) { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
   /* sidebar */
   aside { background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
-  .brand { display: flex; align-items: center; gap: 9px; padding: 15px 16px 12px; font-weight: 600; }
-  .brand .mark { width: 24px; height: 24px; border-radius: 7px; background: var(--accent); display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; }
-  .brand .sub { font-size: 11px; color: var(--faint); font-weight: 500; border: 1px solid var(--border-strong); border-radius: 20px; padding: 1px 7px; }
-  .newbtn { margin: 4px 12px 10px; display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; font: inherit; font-size: 13.5px; font-weight: 500; }
+  .brand { display: flex; align-items: center; gap: 11px; padding: 22px 20px 20px; font-weight: 600; }
+  .brand .mark { width: 34px; height: 34px; flex: none; border-radius: 11px; background: var(--accent); display: grid; place-items: center; color: var(--on-accent); font-size: 12px; font-weight: 700; }
+  .brand-copy { display: flex; flex-direction: column; line-height: 1.4; }
+  .brand-copy strong { font-size: 16px; letter-spacing: -.3px; }
+  .brand-copy small { font-size: 11.5px; color: var(--muted); font-weight: 400; }
+  .newbtn { margin: 0 14px 8px; display: flex; align-items: center; gap: 9px; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; font: inherit; font-size: 13.5px; font-weight: 500; }
   .newbtn:hover { background: var(--surface-2); }
-  .side-scroll { flex: 1; overflow-y: auto; padding: 0 8px; min-height: 0; }
+  .searchbtn { display: flex; align-items: center; gap: 9px; margin: 0 14px 10px; padding: 9px 12px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 13px; text-align: left; }
+  .searchbtn:hover { background: var(--surface-2); color: var(--text); }
+  .searchbtn span { flex: 1; }
+  .searchbtn kbd { font: 10.5px var(--font); border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 4px; }
+  .side-scroll { flex: 1; overflow-y: auto; padding: 0 12px; min-height: 0; }
   .side-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 6px; }
   .side-head span { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--faint); font-weight: 600; }
   .side-head button { background: none; border: none; color: var(--faint); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px; border-radius: 6px; }
@@ -73,7 +83,7 @@
   .proj.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
   .proj.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
   .proj:hover { background: var(--surface-2); }
-  .proj.active { background: var(--surface-3); font-weight: 600; }
+  .proj.active { background: var(--surface-2); font-weight: 600; }
   /* The dot is a plain IDLE/BUSY status light: faint when idle, accent only when
      a turn is actually running. It is NOT tied to selection — an accent dot on
      the merely-selected project read as "this chat is working" and confused
@@ -102,9 +112,9 @@
   .proj.busy .projrm { display: none !important; }
   .proj .projrm:hover { background: var(--surface-2); color: var(--text); }
   .conv-list { margin: 1px 0 6px 14px; padding-left: 8px; border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 1px; }
-  .conv { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 7px; cursor: pointer; color: var(--muted); font-size: 12.5px; }
+  .conv { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-radius: 7px; cursor: pointer; color: var(--muted); font-size: 13px; }
   .conv:hover { background: var(--surface-2); }
-  .conv.active { background: var(--surface-3); color: var(--text); font-weight: 600; }
+  .conv.active { background: var(--accent-weak); color: var(--text); font-weight: 600; box-shadow: inset 2px 0 var(--accent); }
   .conv .cnm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .conv .crspin { display: none; width: 9px; height: 9px; flex: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; }
   .conv.running .crspin { display: block; }
@@ -117,9 +127,9 @@
   .conv .cbtn.crm:hover { color: #e5484d; }
   .conv-new { color: var(--faint); }
   .conv-new .cnm { flex: 0 1 auto; }
-  .acct { margin: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); cursor: pointer; display: flex; align-items: center; gap: 10px; }
+  .acct { margin: 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); cursor: pointer; display: flex; align-items: center; gap: 10px; }
   .acct:hover { background: var(--surface-2); }
-  .acct .av { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
+  .acct .av { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
   .acct .who { flex: 1; overflow: hidden; }
   .acct .who .n { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .acct .who .p { font-size: 11px; color: var(--faint); }
@@ -129,7 +139,7 @@
   /* The workflow island floats OVER the chat rather than taking a column of its
      own: a run is something you glance at and dismiss, and permanently
      narrowing the conversation to carry it costs more than it gives. */
-  #wfIsland { position: fixed; right: 16px; top: 60px; width: 330px; max-height: calc(100dvh - 160px);
+  #wfIsland { position: fixed; right: 16px; top: 76px; width: 330px; max-height: calc(100dvh - 160px);
     background: var(--bg); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow);
     display: flex; flex-direction: column; min-height: 0; overflow: hidden; z-index: 30; }
   #wfIsland[hidden] { display: none; }
@@ -158,9 +168,10 @@
   .wf-ag.fin .st { background: var(--ok); }
   .wf-ag .lb { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .wf-empty { font-size: 12px; color: var(--faint); padding: 14px; text-align: center; }
-  .topbar { display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--border); flex: none; }
+  .topbar { display: flex; align-items: center; gap: 10px; height: 64px; padding: 0 24px; border-bottom: 1px solid var(--border); flex: none; }
+  .project-heading { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
   .topbar .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .topbar .cwd { font-size: 11.5px; color: var(--faint); background: var(--surface-2); border-radius: 6px; padding: 2px 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+  .topbar .cwd { font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
   .topbar .sp { flex: 1; }
   #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
   #dot.on { background: var(--ok); } #dot.off { background: var(--err); }
@@ -172,11 +183,12 @@
   .ico.on { color: var(--accent); }
 
   .scroll { flex: 1; overflow-y: auto; min-height: 0; }
-  .thread { max-width: 780px; margin: 0 auto; padding: 26px 24px 40px; }
-  .msg { margin-bottom: 22px; }
+  .thread { max-width: 780px; margin: 0 auto; padding: 32px 24px 40px; }
+  .msg { margin-bottom: 26px; }
+  .msg .content { font-size: 15px; line-height: 1.7; }
   .msg .role { font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
   .msg .mmeta { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 11px; color: var(--faint); opacity: 0; transition: opacity .12s; }
-  .msg:hover .mmeta { opacity: 1; }
+  .msg:hover .mmeta, .msg:focus-within .mmeta { opacity: 1; }
   .msg.user .mmeta { justify-content: flex-end; }
   .copybtn { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; color: var(--faint); cursor: pointer; font: inherit; font-size: 11px; padding: 0; }
   .copybtn:hover { color: var(--accent); }
@@ -185,7 +197,7 @@
   .modelmark .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
   .modelmark b { color: var(--muted); font-weight: 600; }
   .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
-  .msg.user .content { background: var(--user-bg); border-radius: 14px 14px 4px 14px; padding: 10px 15px; max-width: 82%; white-space: pre-wrap; word-break: break-word; }
+  .msg.user .content { background: var(--user-bg); border-radius: 16px 16px 5px 16px; padding: 12px 16px; max-width: 82%; white-space: pre-wrap; word-break: break-word; }
   .msg.assistant .content { word-break: break-word; }
   .content img.att { max-width: 280px; border-radius: 10px; border: 1px solid var(--border); margin-top: 8px; display: block; }
   .content .filechip { display: inline-flex; align-items: center; gap: 7px; margin-top: 8px; padding: 7px 11px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); text-decoration: none; font-size: 12.5px; max-width: 280px; }
@@ -195,7 +207,7 @@
   .content p { margin: 0 0 11px; white-space: pre-wrap; }
   .content > *:last-child { margin-bottom: 0; }
   .content pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; overflow-x: auto; margin: 0 0 11px; }
-  .content pre code { background: none; padding: 0; font: 12.5px/1.55 var(--mono); }
+  .content pre code { background: none; border: 0; border-radius: 0; padding: 0; font: 12.5px/1.55 var(--mono); }
   .content code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; font: 12.5px/1.4 var(--mono); }
   .content ul, .content ol { margin: 0 0 11px; padding-left: 24px; }
   .content li { margin: 3px 0; }
@@ -213,7 +225,7 @@
      no `display` here (a plain div defaults to block): setting one on an ID/class
      this specific would outrank `[hidden]`'s `display: none` by specificity and
      the pill would stop actually hiding, the same bug #quotaPop just had. */
-  .stream-status { position: absolute; top: 62px; left: 50%; transform: translateX(-50%); z-index: 20; pointer-events: none; opacity: 1; transition: opacity .4s; font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 4px 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+  .stream-status { position: absolute; top: 76px; left: 50%; transform: translateX(-50%); z-index: 20; pointer-events: none; opacity: 1; transition: opacity .4s; font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 4px 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
   .stream-status.fade-out { opacity: 0; }
   .stream-status.accent { color: var(--accent); background: var(--accent-weak); }
   #autopilotBar { max-width: 780px; margin: 0 auto 8px; }
@@ -330,8 +342,13 @@
   #jumpBtn { position: absolute; left: 50%; transform: translateX(-50%); bottom: 128px; z-index: 30; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; display: grid; place-items: center; box-shadow: 0 2px 10px rgba(0,0,0,.25); }
   #jumpBtn[hidden] { display: none; }
   #jumpBtn:hover { border-color: var(--accent); color: var(--accent); }
-  .composer { max-width: 780px; margin: 0 auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
+  .composer { max-width: 780px; margin: 0 auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 18px; box-shadow: var(--composer-shadow); overflow: hidden; }
   .composer:focus-within { border-color: var(--accent); }
+  .composer-hint { max-width: 780px; margin: 8px auto 0; color: var(--faint); font-size: 11px; text-align: center; }
+  .composer .send { width: 38px; height: 38px; border-radius: 12px; }
+  .composer .attach { min-width: 36px; height: 36px; border-color: transparent; }
+  .composer .attach:hover { background: var(--surface-2); }
+  .composer textarea::placeholder { color: var(--muted); opacity: 1; }
   #attachRow { display: none; gap: 8px; padding: 10px 12px 0; flex-wrap: wrap; }
   #attachRow.show { display: flex; }
   /* Drag-and-drop file overlay: a dashed accent frame while files hover the app. */
@@ -701,7 +718,7 @@
   #authGate[hidden] { display: none; }
   .gate-card { width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 12px; }
   .gate-brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 17px; justify-content: center; margin-bottom: 8px; }
-  .gate-brand .mark { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; color: #fff; font-size: 14px; font-weight: 700; }
+  .gate-brand .mark { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; color: var(--on-accent); font-size: 14px; font-weight: 700; }
   .gate-btn { width: 100%; height: 44px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-size: 14.5px; }
   .gate-btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--border-strong); }
   .gate-sep { text-align: center; font-size: 12px; color: var(--faint); }
@@ -720,7 +737,7 @@
   .topbar #defaultsBtn, .topbar #pluginsBtn, .topbar #mcpSrvBtn, .topbar #passkeyBtn,
   .topbar #shortcutsBtn, .topbar #themeBtn, .topbar #tokenBtn { display: none; }
   .nav-backdrop { display: none; }
-  #morePop { top: 52px; right: 8px; left: auto; bottom: auto; width: 232px; }
+  #morePop { top: 68px; right: 8px; left: auto; bottom: auto; width: 232px; }
   .more-list { display: flex; flex-direction: column; gap: 1px; }
   .more-item { display: flex; align-items: center; gap: 11px; padding: 10px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; color: var(--text); background: none; border: none; width: 100%; text-align: left; }
   .more-item:hover { background: var(--surface-2); }
@@ -736,19 +753,20 @@
        (the settings cluster is already hidden at the base level), keeping only
        the projects drawer, title, connection dot, and the more button. */
     .topbar #notifyBtn, .topbar #autopilotBtn, .topbar #resumeBtn { display: none; }
-    .topbar .title { flex: 1; min-width: 0; }
+    .project-heading { flex: 1; }
+    .topbar .title { min-width: 0; }
     .topbar .sp { display: none; }
     #morePop { top: calc(52px + env(safe-area-inset-top)); }
     /* Sidebar becomes an off-canvas drawer toggled by the hamburger. The shadow
        lives only on the .nav-open rule — on the base rule its blur radius peeked
        past the -100% translated edge as a permanent dark sliver down the left
        side of the screen even while the drawer was closed. */
-    aside {
+    body > aside:not(#wfIsland) {
       position: fixed; top: 0; left: 0; bottom: 0; width: 84%; max-width: 300px; z-index: 60;
       transform: translateX(-100%); transition: transform .22s ease;
       padding-top: env(safe-area-inset-top);
     }
-    body.nav-open aside { transform: translateX(0); box-shadow: 2px 0 24px rgba(0,0,0,.3); }
+    body.nav-open > aside:not(#wfIsland) { transform: translateX(0); box-shadow: 2px 0 24px rgba(0,0,0,.3); }
     /* iOS Safari auto-zooms the page on focus if the control's font-size is
        under 16px — bump these to 16px on mobile to stop the zoom-in-while-typing. */
     textarea, select, .pk-search { font-size: 16px; }
@@ -756,9 +774,18 @@
     body.nav-open .nav-backdrop { opacity: 1; pointer-events: auto; }
     .topbar { padding-top: env(safe-area-inset-top); height: calc(48px + env(safe-area-inset-top)); gap: 6px; }
     .topbar .cwd { display: none; }
+    .stream-status { top: calc(62px + env(safe-area-inset-top)); }
     .scroll { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
     .composer-wrap { padding: 8px 12px calc(12px + env(safe-area-inset-bottom)); }
-    .ico { min-width: 36px; height: 36px; }
+    .ico { min-width: 40px; height: 40px; }
+    .topbar { padding-left: 10px; padding-right: 10px; }
+    .thread { padding: 24px 18px 28px; }
+    .composer-hint { display: none; }
+    .composer .send, .composer .attach { min-width: 40px; height: 40px; }
+    .bar { gap: 5px; }
+    .conv { min-height: 40px; }
+    .searchbtn { min-height: 44px; }
+    .searchbtn kbd { display: none; }
     .proj { padding: 11px 10px; }
     .msg, .sysline, .act, .qcard, .orphan { max-width: 100%; }
     .msg .mmeta { opacity: .65; } /* no hover on touch — keep copy/time visible */
@@ -789,8 +816,9 @@
     .backdrop { z-index: 65; } /* the popover backdrop must also sit above the drawer */
     @keyframes sheetUp { from { transform: translateY(14px); opacity: .4; } to { transform: none; opacity: 1; } }
   }
+  @media (pointer: coarse) { .composer-hint { display: none; } }
   @media (prefers-reduced-motion: reduce) {
-    .pop { animation: none !important; }
+    *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   }
 </style>
 <script>
@@ -802,9 +830,12 @@
     if (dark) document.documentElement.setAttribute('data-theme', 'dark');
   })();
 </script>
+<link rel="stylesheet" href="/control-room.css" />
+<script src="/control-room.js"></script>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol><symbol id="i-left" viewBox="0 0 24 24"><path d="m12 5-7 7 7 7m-7-7h15"/></symbol><symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
   <symbol id="i-compose" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
   <symbol id="i-alarm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2"/><path d="M5 3 2.5 5.5"/><path d="m19 3 2.5 2.5"/></symbol>
@@ -838,8 +869,9 @@
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M19.44 7.85c-.05.32.06.65.29.88l1.56 1.56c.47.47.71 1.09.71 1.71s-.24 1.23-.71 1.7l-1.6 1.61a.98.98 0 0 1-.84.28c-.47-.07-.8-.48-.97-.93a2.5 2.5 0 1 0-3.21 3.22c.44.16.85.5.92.97a.98.98 0 0 1-.28.84l-1.6 1.6c-.48.48-1.1.71-1.71.71s-1.23-.23-1.7-.7l-1.57-1.57a1.03 1.03 0 0 0-.88-.29c-.49.07-.84.5-1.02.97a2.5 2.5 0 1 1-3.24-3.24c.46-.18.9-.53.97-1.02a1.03 1.03 0 0 0-.29-.88L2.7 13.7A2.4 2.4 0 0 1 2 12c0-.62.24-1.23.71-1.7l1.52-1.53c.24-.24.58-.35.92-.3.51.08.87.53 1.07 1.01a2.5 2.5 0 1 0 3.26-3.26c-.48-.2-.93-.56-1.01-1.07-.05-.34.06-.68.3-.92l1.53-1.52A2.4 2.4 0 0 1 12 2c.62 0 1.23.24 1.7.71l1.57 1.57c.23.23.56.33.88.29.49-.08.84-.5 1.02-.97a2.5 2.5 0 1 1 3.24 3.24c-.47.18-.9.53-.97 1.02Z"/></symbol>
 </defs></svg>
 <aside>
-  <div class="brand"><span class="mark">x0</span><span>remote control</span><span class="sub">self-hosted</span></div>
+  <div class="brand"><span class="mark" aria-hidden="true">x0</span><span class="brand-copy"><strong>x056</strong><small>remote control</small></span></div>
   <button class="newbtn" id="newSessionBtn"><svg class="ic sm"><use href="#i-compose"/></svg> New session</button>
+  <button class="searchbtn" id="searchChatsBtn" title="Search projects and conversations"><svg class="ic sm" aria-hidden="true"><use href="#i-search"/></svg><span>Search conversations</span><kbd id="searchShortcut">Ctrl K</kbd></button>
   <div class="side-scroll">
     <div class="side-head"><span>Projects</span><button id="addProjectBtn" title="add project"><svg class="ic sm"><use href="#i-plus"/></svg></button></div>
     <div id="projectList"></div>
@@ -851,8 +883,8 @@
 <main>
   <div class="topbar">
     <button class="ico hamburger" id="menuBtn" title="projects" aria-label="projects"><svg class="ic"><use href="#i-menu"/></svg></button>
-    <span class="title" id="projTitle">x056</span>
-    <span class="cwd" id="projCwd"></span>
+    <div class="project-heading"><span class="title" id="projTitle">x056</span>
+    <span class="cwd" id="projCwd"></span></div>
     <span class="sp"></span>
     <span id="dot" class="off" title="connection"></span>
     <button class="ico" id="notifyBtn" title="enable phone/desktop notifications"><svg class="ic"><use href="#i-bell"/></svg></button>
@@ -888,7 +920,7 @@
            autocorrect/spellcheck/autocapitalize stay ON — they drive the
            keyboard's word suggestions, which are wanted when typing prose and
            are a SEPARATE mechanism from AutoFill. -->
-      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" data-form-type="other" placeholder="Message x056…  (⏎ send · ⌘⏎ steer · ⇧⏎ newline · paste or drop a file)"></textarea>
+      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" data-form-type="other" aria-label="Message" aria-describedby="composerHint" placeholder="Message x056…"></textarea>
       <div class="bar">
         <div class="selects">
           <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
@@ -912,6 +944,7 @@
         <button class="send" id="sendBtn" title="send"><svg class="ic sm"><use href="#i-up"/></svg></button>
       </div>
     </div>
+    <div class="composer-hint" id="composerHint">Enter to send · Shift+Enter for a new line · Paste or drop files</div>
   </div>
 </main>
 <aside id="wfIsland" hidden>
@@ -924,7 +957,7 @@
 
 <div class="backdrop" id="backdrop" hidden></div>
 <div class="pop" id="quotaPop" hidden><h2>accounts</h2><div class="acct-tabs" id="acctTabs" hidden></div><div id="acctScopeNote" class="acct-scope" hidden></div><div id="accounts"></div><div class="pop-footer"><button class="send ghost" id="addAcctBtn" style="width:100%;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div></div>
-<div class="pop" id="addAcctPop" hidden style="top:56px; left:12px; bottom:auto; width:340px;">
+<div class="pop" id="addAcctPop" hidden style="top:72px; left:12px; bottom:auto; width:340px;">
   <h2 id="addAcctTitle">add a Claude account</h2>
   <div id="addAcctStep1">
     <div class="gate-note" id="addAcctIntro" style="margin-bottom:10px;">Sign in to another Claude account to add it to the failover pool. A new browser tab will open to authorize; you'll paste back a code.</div>
@@ -968,11 +1001,11 @@
   <input id="projSearch" class="pk-search" placeholder="filter repos…" autocomplete="off" autocorrect="off" spellcheck="false" />
   <div id="projPickList" class="pk-list"></div>
 </div>
-<div class="pop" id="sessPicker" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:360px;">
+<div class="pop" id="sessPicker" hidden style="top:72px; right:12px; left:auto; bottom:auto; width:360px;">
   <h2>resume an existing session</h2>
   <div id="sessList" class="pk-list"></div>
 </div>
-<div class="pop" id="defaultsPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:300px;">
+<div class="pop" id="defaultsPop" hidden style="top:72px; right:12px; left:auto; bottom:auto; width:300px;">
   <h2>default effort per model</h2>
   <div id="defaultsList" class="defaults-list"></div>
   <button class="send" id="defaultsSave" style="width:100%; margin-top:10px;">Save</button>
@@ -980,7 +1013,7 @@
 <div class="pop" id="morePop" hidden>
   <div id="moreList" class="more-list"></div>
 </div>
-<div class="pop" id="pluginsPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:380px; max-height:78vh; overflow:auto;">
+<div class="pop" id="pluginsPop" hidden style="top:72px; right:12px; left:auto; bottom:auto; width:380px; max-height:78vh; overflow:auto;">
   <h2>Plugins</h2>
   <div id="plugProvSeg" style="display:flex; gap:6px; margin:6px 0 8px;">
     <button type="button" class="provbtn on" data-provider="claude">Claude</button>
@@ -1003,7 +1036,7 @@
   </div>
   <div class="plug-foot">Changes apply to the next turn. Invoke a plugin command by sending it as a message, e.g. <code>/claude-security scan my branch</code>.</div>
 </div>
-<div class="pop" id="subPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:470px; max-height:78vh; overflow:auto;">
+<div class="pop" id="subPop" hidden style="top:72px; right:12px; left:auto; bottom:auto; width:470px; max-height:78vh; overflow:auto;">
   <h2>Cost &amp; subagents</h2>
   <div class="plug-note">tokens are exact · dollars are the API list price for the same work, not what Max billed</div>
   <div id="selfCost"></div>
@@ -1018,14 +1051,14 @@
   <div id="tplList"></div>
   <div class="pop-footer"><button class="send ghost" id="tplNewBtn" style="width:100%;">+ New template</button></div>
 </div>
-<div class="pop" id="cronPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:440px; max-height:80vh; overflow:auto;">
+<div class="pop" id="cronPop" hidden style="top:72px; right:12px; left:auto; bottom:auto; width:440px; max-height:80vh; overflow:auto;">
   <h2>Scheduled tasks</h2>
   <div class="plug-note">a prompt sent to a conversation on a schedule · times are in <span id="cronTz">—</span></div>
   <div id="cronStatus" class="plug-status" hidden></div>
   <div id="cronList"></div>
   <div class="plug-foot">Chats can create these themselves with the <code>schedule_task</code> tool.</div>
 </div>
-<div class="pop" id="mcpSrvPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:420px; max-height:80vh; overflow:auto;">
+<div class="pop" id="mcpSrvPop" hidden style="top:72px; right:12px; left:auto; bottom:auto; width:420px; max-height:80vh; overflow:auto;">
   <h2>MCP servers</h2>
   <div class="plug-note">configured on every account of the provider, so they survive failover</div>
   <div class="sc-row sc-toggle" style="margin-bottom:10px">
@@ -1065,11 +1098,11 @@
   </div>
   <div class="plug-foot">Applies to the next turn. The gateway's own <code>x056</code> bridge is wired in automatically and isn't listed here.</div>
 </div>
-<div class="pop" id="mcpApprovalsPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:360px; max-height:70vh; overflow:auto;">
+<div class="pop" id="mcpApprovalsPop" hidden style="top:72px; right:12px; left:auto; bottom:auto; width:360px; max-height:70vh; overflow:auto;">
   <h2>AI send requests</h2>
   <div id="mcpApprovalsList"></div>
 </div>
-<div class="pop" id="passkeyPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:320px;">
+<div class="pop" id="passkeyPop" hidden style="top:72px; right:12px; left:auto; bottom:auto; width:320px;">
   <h2>passkeys · Face ID / Touch ID login</h2>
   <div id="passkeyList" class="pk-list" style="margin-bottom:8px;"></div>
   <button class="send" id="passkeyAddBtn" style="width:100%;">Register this device</button>
@@ -1091,6 +1124,9 @@
 <script src="/webauthn.js"></script>
 <script>
 (function () {
+  var controlRoom = null;
+  var conversationPicks = {};
+  function saveConversationPick() { if (currentProjectId) conversationPicks[viewKey(currentProjectId, lastSessionId)] = {model: modelEl.value, effort: effortEl.value}; }
   var TOKEN_KEY = 'x056_token', THEME_KEY = 'x056_theme', MODEL_KEY = 'x056_model', EFFORT_KEY = 'x056_effort';
   // The "last model/effort you picked" memory must be PER PROVIDER — a single
   // shared key let a Codex pick (gpt-5.6-sol / ultra) come back as the fallback
@@ -1719,6 +1755,11 @@
   // Reflect the project's persisted model/effort in the picker (falling back to
   // the global default) so switching projects shows what that one actually runs.
   function syncPicker(pid) {
+    syncPickerBase(pid);
+    var pick = conversationPicks[viewKey(pid, lastSessionId)];
+    if (pick) { modelEl.value = pick.model; if (currentProvider() === 'codex') syncEffortOptionsForCodexModel(pick.effort); else effortEl.value = pick.effort; }
+  }
+  function syncPickerBase(pid) {
     var p = projCache[pid]; if (!p) return;
     var prov = currentProvider();
     providerEl.value = prov;
@@ -1810,7 +1851,7 @@
       var m = metas[0] || document.head.appendChild(document.createElement('meta'));
       m.setAttribute('name', 'theme-color');
       m.removeAttribute('media');
-      m.setAttribute('content', t === 'dark' ? '#1a1a19' : '#c96442');
+      m.setAttribute('content', t === 'dark' ? '#212121' : '#ffffff');
     } catch (e) {}
   }
   applyTheme();
@@ -2192,9 +2233,9 @@
     // hydration that ran before lastSessionId was known belled the very
     // conversation being viewed, and since you can't "open" what's already open,
     // nothing ever cleared it. Enforcing the invariant here can't race.
-    if (pid === currentProjectId && sid === lastSessionId) return;
+    if (pid === currentProjectId && sid === lastSessionId && (!controlRoom || controlRoom.isOpen())) return;
     var k = viewKey(pid, sid);
-    if ((seenSeq[k] || 0) >= lastSeq) return; // already viewed at/after this event — a replay of something already dismissed
+    if (typeof seenSeq[k] === 'number' && seenSeq[k] >= lastSeq && kind !== 'question') return; // already viewed at/after this event — a replay of something already dismissed
     if (notifRank(kind) > notifRank(convNotif[k])) { convNotif[k] = kind; applyNotifs(); }
   }
   function clearConvNotif(pid, sid) {
@@ -2225,6 +2266,7 @@
   }
   // Re-apply bell state onto the existing sidebar DOM (cheap; no server round-trip).
   function applyNotifs() {
+    if (controlRoom) controlRoom.refresh();
     var rows = projListEl.querySelectorAll('.proj');
     for (var i = 0; i < rows.length; i++) setRowBell(rows[i], projNotifKind(rows[i].getAttribute('data-id')));
     var convs = projListEl.querySelectorAll('.conv[data-sid]');
@@ -2312,6 +2354,7 @@
   // a different, idle one, and only the viewed conversation's busy bar/thread
   // may reflect it.
   function handleEvent(kind, data) {
+    if (controlRoom) controlRoom.event(kind, data);
     var pid = data.projectId || currentProjectId;
     var mine = !data.projectId || data.projectId === currentProjectId;
     var sid = data.sessionId;
@@ -2373,13 +2416,13 @@
         + (data.status !== 'completed' && data.reason ? ' · ' + data.reason : '');
       appendNode(pid, sid, nodeSys(doneLine, data.status === 'failed' ? 'banner err' : ''));
       if (mineConvo) { active = false; renderBusy(); }
-      else setConvNotif(pid, sid, data.status === 'completed' ? 'done' : 'failed'); // bell on a convo you're not watching
+      if (!mineConvo || (controlRoom && !controlRoom.isOpen())) setConvNotif(pid, sid, data.status === 'completed' ? 'done' : 'failed'); // bell on a convo you're not watching
       pollAccounts(); renderStrip();
     }
     else if (kind === 'session_error') {
       appendNode(pid, sid, nodeSys('error: ' + data.message, 'banner err'));
       if (mineConvo) { active = false; renderBusy(); }
-      else setConvNotif(pid, sid, 'failed');
+      if (!mineConvo || (controlRoom && !controlRoom.isOpen())) setConvNotif(pid, sid, 'failed');
       renderStrip();
     }
     else if (kind === 'question') {
@@ -2388,7 +2431,7 @@
       var qAt = data.at || data.ts;
       if (sid) pendingQ[sid] = { projectId: pid, sessionId: sid, question: data.question, options: data.options, at: qAt };
       showQuestion(pid, data);
-      if (mineConvo) markQuestionSeen(pid, sid, qAt); // you're looking at it
+      if (mineConvo && (!controlRoom || controlRoom.isOpen())) markQuestionSeen(pid, sid, qAt); // you're looking at it
       else { setConvNotif(pid, sid, 'question'); notify('Claude has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80)); }
     }
     else if (kind === 'autopilot') {
@@ -2504,7 +2547,7 @@
         // Render it if that conversation is the one on screen (and remember you
         // saw THIS question, so a later refresh doesn't ring for it again);
         // otherwise flag it in the sidebar — unless you already dismissed it.
-        if (q.sessionId === lastSessionId) {
+        if (q.sessionId === lastSessionId && (!controlRoom || controlRoom.isOpen())) {
           showQuestion(q.projectId, q);
           markQuestionSeen(q.projectId, q.sessionId, q.at);
         } else if (!questionAlreadySeen(q.projectId, q.sessionId, q.at)) {
@@ -2769,6 +2812,7 @@
 
   // ---- projects ----
   function markRunning() {
+    if (controlRoom) controlRoom.refresh();
     syncSteerBtn();
     var rows = projListEl.querySelectorAll('.proj');
     for (var i = 0; i < rows.length; i++) {
@@ -2792,6 +2836,7 @@
   function renderProjects(reg) {
     if (!currentProjectId) currentProjectId = reg.current;
     var cur = currentProjectId;
+    projCache = {};
     projListEl.textContent = '';
     reg.projects.forEach(function (p) {
       projCache[p.id] = p;
@@ -2834,7 +2879,7 @@
       var rm = document.createElement('button'); rm.className = 'projrm'; rm.title = 'remove project'; rm.appendChild(icon('x', 'sm'));
       rm.addEventListener('click', function (e) { e.stopPropagation(); removeProject(p); });
       row.appendChild(rm);
-      row.addEventListener('click', function () { if (p.id !== currentProjectId) switchProject(p); });
+      row.addEventListener('click', function () { if (p.id !== currentProjectId) switchProject(p); else if (controlRoom) { setNav(false); clearConvNotif(currentProjectId,lastSessionId); controlRoom.open(); } });
       attachCtxMenu(row, function () {
         var ids = orderedProjectIds();
         return projMenuItems(p, ids.indexOf(p.id), ids.length);
@@ -2873,6 +2918,8 @@
     return wrap;
   }
   function switchConversation(projectId, sessionId) {
+    if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(); }
+    saveConversationPick();
     if (projectId !== currentProjectId) return;
     setNav(false);
     // "Already viewing it" must check what THIS client is actually looking at
@@ -2880,9 +2927,9 @@
     // or device starting a new conversation updates projCache[pid].lastSessionId
     // via the 'conversation' broadcast without changing what's on OUR screen,
     // which used to make this click silently no-op.
-    if (sessionId === lastSessionId && !pendingNew) return;
+    if (sessionId === lastSessionId && !pendingNew) { clearConvNotif(projectId,sessionId); return; }
     pendingNew = false; blankSeq++; // moving to an existing conversation supersedes any in-flight new-conversation adopt
-    api('/api/conversations/select', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: sessionId }) }).then(function (r) {
+    return api('/api/conversations/select', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: sessionId }) }).then(function (r) {
       if (!r.ok) { addSys('could not switch conversation', 'banner'); return; }
       var oldView = viewOf(projectId, lastSessionId);
       while (chatEl.firstChild) oldView.frag.appendChild(chatEl.firstChild); // stash the outgoing conversation's own thread
@@ -2909,6 +2956,8 @@
     }).catch(function () {});
   }
   function newConversation(projectId) {
+    if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(); }
+    saveConversationPick();
     setNav(false);
     if (projectId !== currentProjectId && projCache[projectId]) { switchProject(projCache[projectId]); }
     else if (projectId === currentProjectId) {
@@ -3075,8 +3124,10 @@
     ((projCache[pid] || {}).conversations || []).forEach(function (c) { markConvSeen(pid, c.sessionId); });
     applyNotifs();
   }
-  function loadProjects() { return api('/api/projects').then(function (r) { return r.json(); }).then(renderProjects).catch(function () {}); }
+  function loadProjects() { return api('/api/projects').then(function (r) { if (!r.ok) throw new Error('Could not load projects. Reconnect or sign in again.'); return r.json(); }).then(function (reg) { renderProjects(reg); if (controlRoom) controlRoom.error(''); }).catch(function (e) { if (controlRoom) controlRoom.error(e.message || 'Could not load projects.'); }); }
   function switchProject(p) {
+    if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(); }
+    saveConversationPick();
     setNav(false); // close the mobile drawer on selection
     // pure view change — never blocked, even while p (or others) run
     if (currentProjectId && currentProjectId !== p.id) {
@@ -3261,6 +3312,7 @@
   }
 
   function renderAccounts(list) {
+    if (controlRoom) controlRoom.refresh();
     acctList = Array.isArray(list) ? list : [];
     accountsEl.textContent = '';
     // Capability probe: the panel is bind-mount live-served and may be running
@@ -3405,6 +3457,7 @@
       // An account from another provider's pool can't run THIS project's next
       // message (a project's provider is fixed at creation), so don't offer it —
       // just say which kind of project it serves.
+      else if (a.paused) { var pausedNote = document.createElement('div'); pausedNote.className = 'note'; pausedNote.textContent = 'Paused. Resume from the Accounts dashboard to use this account.'; card.appendChild(pausedNote); }
       else if (activeCapable && !inScope) {
         var off = document.createElement('button'); off.className = 'send ghost act'; off.disabled = true;
         off.textContent = (a.active ? 'sends next in ' : 'for ') + (a.providerLabel || a.provider) + ' projects';
@@ -3783,8 +3836,11 @@
   }
   function jumpToProject(idx) { var ps = orderedProjects(); if (idx >= 0 && idx < ps.length && ps[idx].id !== currentProjectId) switchProject(ps[idx]); }
   function openSelect(el) { if (!el) return; el.focus(); try { if (el.showPicker) el.showPicker(); } catch (e) {} }
+  $('searchChatsBtn').addEventListener('click', function () { setNav(false); openPalette(); });
+  $('searchShortcut').textContent = K_CMD + ' K';
+  $('composerHint').textContent = 'Enter to send · ' + K_CMD + '+Enter to steer · Shift+Enter for a new line · Paste or drop files';
   function openPalette() {
-    if (anyModalOpen()) return;
+    if (anyModalOpen() || document.querySelector('dialog[open]')) return;
     showModal('palette', null, function (card, done) {
       var inp = document.createElement('input'); inp.className = 'm-in'; inp.placeholder = 'Jump to a project or conversation…';
       var list = document.createElement('div'); list.className = 'palette-list';
@@ -3961,7 +4017,7 @@
       // set it before currentProjectId/lastSessionId were known (so the global
       // `active` never caught it).
       active = !!lv.active; lastLabel = lv.label || ''; runningSubs = lv.subCount || 0; subs = lv.subs || {}; renderBusy();
-      down();
+      if (controlRoom) controlRoom.afterHistory(); else down();
       updateOlderBar();
       // The subagent list belongs to THIS conversation, so it is refetched with
       // its history rather than carried over from whatever was on screen before.
@@ -4099,7 +4155,7 @@
       // 'question'/'session_done' events, a hydration that didn't yet know which
       // conversation was on screen — must not leave an unread marker on the
       // conversation you're actually looking at. Now that it's known, clear it.
-      clearConvNotif(currentProjectId, lastSessionId);
+      if (!controlRoom || controlRoom.isOpen()) clearConvNotif(currentProjectId, lastSessionId);
       return loadQuestions().then(loadHistory);
     });
     connect();
@@ -4136,10 +4192,6 @@
   function saveDraft() { var k = draftKey(); if (!k) return; try { if (promptEl.value) localStorage.setItem(k, promptEl.value); else localStorage.removeItem(k); } catch (e) {} }
   function restoreDraft() { var k = draftKey(), v = ''; try { v = (k && localStorage.getItem(k)) || ''; } catch (e) {} promptEl.value = v; autogrow(); }
   promptEl.addEventListener('input', function () { autogrow(); saveDraft(); });
-  // The default placeholder spells out desktop keyboard shortcuts (⏎ send · ⇧⏎
-  // newline · drag-drop) that don't apply on a touch device — where they only
-  // wrap to three lines of noise. Swap to a clean prompt on a coarse pointer.
-  try { if (matchMedia('(pointer: coarse)').matches) promptEl.placeholder = 'Message x056…'; } catch (e) {}
 
   // ---- subagents ------------------------------------------------------------
   // Claude Code writes each Task/Agent call its own complete transcript at
@@ -5446,6 +5498,26 @@
   }
   $('passkeyBtn').addEventListener('click', function () { loadPasskeys(); openPop(passkeyPop); });
   $('passkeyAddBtn').addEventListener('click', registerPasskey);
+
+  controlRoom = window.createControlRoom({
+    api: api, nav: setNav, closePops: closeAllPops, pollAccounts: pollAccounts,
+    markRead: function () { clearConvNotif(currentProjectId,lastSessionId); },
+    state: function () { return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, views: views }; },
+    select: function (pid, sid) {
+      if (pid === currentProjectId) return Promise.resolve(switchConversation(pid, sid));
+      // Select the target conversation before switching project, then the existing
+      // project switch fetches history for the correct target in one operation.
+      return api('/api/conversations/select', { method: 'POST', body: JSON.stringify({projectId:pid,sessionId:sid}) }).then(function (r) {
+        if (!r.ok) throw new Error('Could not open conversation');
+        var p = projCache[pid]; if (!p) throw new Error('Project no longer available');
+        switchProject(Object.assign({},p,{lastSessionId:sid}));
+      });
+    },
+    newConversation: function () { if (currentProjectId) newConversation(currentProjectId); else $('addProjectBtn').click(); },
+    manageAccount: function (a) { acctTab = a.provider; renderAccounts(acctList); openPop(quotaPop); }
+  });
+  modelEl.addEventListener('change', saveConversationPick);
+  effortEl.addEventListener('change', saveConversationPick);
 
   // Boot only once authenticated — by the fallback token OR a passkey session cookie.
   ensureAuth().then(function (ok) { if (ok) boot(); else showGate(); });

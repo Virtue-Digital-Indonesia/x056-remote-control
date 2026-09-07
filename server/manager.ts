@@ -1,3 +1,4 @@
+import { AccountAnalytics } from '../src/account-analytics.js';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -1680,6 +1681,7 @@ export class SessionManager {
       emit('turn_state', { active: true });
       void runFn({
         registry: this.registry(),
+        analytics: new AccountAnalytics(this.opts.stateDir),
         log,
         sessionId,
         cwd,
@@ -1725,6 +1727,7 @@ export class SessionManager {
       })
         .then((res) => {
           this.lastResults.set(pid, res);
+          this.projects().recordOutcome(pid, sessionId, {status:res.status, at:new Date().toISOString(), reason:res.reason});
           // Remember the CLI's own session id (Codex thread id) so the next
           // continuation of this conversation resumes the same underlying session.
           if (res.providerSessionId) this.projects().setProviderSessionId(pid, sessionId, res.providerSessionId);
@@ -1756,6 +1759,7 @@ export class SessionManager {
           if (!drained) this.maybeAutopilot(pid, sessionId, res);
         })
         .catch((err: unknown) => {
+          this.projects().recordOutcome(pid, sessionId, {status:'failed', at:new Date().toISOString(), reason:(err as Error).message});
           emit('session_error', { sessionId, message: (err as Error).message });
         })
         .finally(() => {
@@ -1842,6 +1846,19 @@ export class SessionManager {
     this.emit('session_adopted', { sessionId, cwd: dir, projectId: pid });
   }
 
+  accountRouting() {
+    const reg = this.registry();
+    return { autoSwitch: { claude: reg.automaticSwitching('claude'), codex: reg.automaticSwitching('codex') } };
+  }
+
+  setAccountPaused(name: string, paused: boolean): void {
+    this.registry().setPaused(name, paused); this.emitAccounts();
+  }
+
+  setAccountRouting(provider: ProviderId, enabled: boolean): void {
+    this.registry().setAutomaticSwitching(provider, enabled); this.emitAccounts();
+  }
+
   /** Choose the account the NEXT turn will run on (idle). Sets the registry's
    *  preferred account; the next pickActive() returns it when it's usable —
    *  which a still-'limited' account never is, no matter what `active` says
@@ -1853,6 +1870,7 @@ export class SessionManager {
    *  re-login, forcing it would just fail the same way again immediately. */
   setActiveAccount(name: string, force?: boolean): void {
     const acct = this.registry().get(name); // throws if unknown
+    if (acct.paused) throw new Error('resume this account before selecting it');
     if (force && acct.state.kind === 'limited') this.registry().markOk(name);
     this.registry().setActive(name);
     this.emitAccounts();
@@ -1876,7 +1894,9 @@ export class SessionManager {
     if (!run?.control) return false;
     if (targetAccount) {
       const target = this.registry().list().find((a) => a.name === targetAccount);
-      if (!target) return false;
+      if (!target || target.paused) return false;
+      const conv = this.projects().get(run.projectId)?.conversations?.find(c => c.sessionId === run!.sessionId);
+      if (target.provider !== (conv?.provider || 'claude')) return false;
       if (run.account && run.account === targetAccount) return false; // already on it — nothing to switch
       if (force && target.state.kind === 'limited') this.registry().markOk(targetAccount);
       this.registry().setActive(targetAccount); // the resumed turn will pick this one

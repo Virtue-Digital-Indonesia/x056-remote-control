@@ -8,6 +8,7 @@ export interface Conversation {
   sessionId: string;
   title: string;
   createdAt: number;
+  lastOutcome?: { status: 'completed' | 'failed' | 'parked'; at: string; reason?: string };
   /** Which agent CLI this conversation runs on. Stamped when it's created (from
    *  the project's provider) and then FIXED: its transcript is that provider's
    *  own format, so it can't be resumed by the other one. Absent on
@@ -148,6 +149,11 @@ export class ProjectRegistry {
     }
     p.lastSessionId = sessionId;
     this.save();
+  }
+
+  recordOutcome(projectId: string, sessionId: string, outcome: NonNullable<Conversation['lastOutcome']>): void {
+    const c = this.data.projects.find(p => p.id === projectId)?.conversations?.find(c => c.sessionId === sessionId);
+    if (c) { c.lastOutcome = outcome; this.save(); }
   }
 
   /** The provider a specific conversation runs on (what its transcript is in).

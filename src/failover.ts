@@ -1,3 +1,4 @@
+import type { AccountAnalytics } from './account-analytics.js';
 import type { AccountRegistry } from './accounts.js';
 import { claudeAdapter } from './adapters/claude.js';
 import type { EventLog } from './eventlog.js';
@@ -25,6 +26,7 @@ export interface SessionResult {
 
 export interface RunSessionOptions {
   registry: AccountRegistry;
+  analytics?: AccountAnalytics;
   log: EventLog;
   sessionId: string;
   cwd: string;
@@ -138,6 +140,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       // Announce which account this turn runs on so the UI can show it live.
       log.append({ type: 'turn_started', sessionId, account: account.name });
 
+      let metrics: ReturnType<AccountAnalytics['begin']> | undefined;
+      try { metrics = opts.analytics?.begin(account.name, adapter.id, opts.model); } catch { /* storage must not stop a turn */ }
       const state = {
         limited: null as Verdict | null,
         authRequired: false,
@@ -178,6 +182,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         }
       };
       const processEvent = (e: RawEvent) => {
+        try { metrics?.observe(e); } catch { /* metrics must not interrupt a turn */ }
         try { opts.tap?.(e); } catch { /* tap must never affect detection */ }
         // Capture a provider-assigned session id (Codex thread id) as soon as it
         // appears, so a mid-run failover — and later continuations — resume it.
@@ -230,6 +235,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         }
       };
 
+      try {
       handle = startTurnFn({
         claudePath: opts.claudePath,
         configDir: account.configDir,
@@ -248,6 +254,10 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         mcp: opts.mcp,
         onEvent: (e) => processEvent(e),
       });
+      } catch (err) {
+        try { metrics?.finish('failed'); } catch { /* best effort */ }
+        throw err;
+      }
       currentHandle = handle;
 
       // The first scripted/streamed event can fire synchronously inside startTurnFn(...),
@@ -276,6 +286,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       }, 100);
 
       const exit = await handle.done;
+      try { metrics?.finish(state.limited || state.forced || state.authRequired ? 'interrupted' : state.resultOk ? 'completed' : 'failed'); } catch { /* preserve turn outcome if storage fails */ }
       clearInterval(drainWatch);
       if (state.drainTimer) clearTimeout(state.drainTimer);
       if (state.graceTimer) clearTimeout(state.graceTimer);
@@ -342,6 +353,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // backed by an Anthropic-reported reset time). A user-directed switch to a
         // specific account (bench:false) leaves the old one available to return to.
         registry.markLimited(account.name, now() + FORCED_COOLDOWN, true);
+      }
+      if (!state.forced && !registry.automaticSwitching(adapter.id)) {
+        log.append({ type: 'parked', sessionId, account: account.name, reason: 'automatic switching disabled' });
+        return { status: 'parked', finalAccount: account.name, failovers: failoverTimes.length, reason: 'Automatic switching is disabled for this provider.', providerSessionId: cliSessionId };
+      }
+      if (state.forced && bench && !registry.automaticSwitching(adapter.id)) {
+        const next = registry.list().find(a => a.provider === adapter.id && a.name !== account.name && !a.paused && a.state.kind !== 'unauthenticated' && (a.state.kind !== 'limited' || a.state.until <= now()));
+        if (next) registry.setActive(next.name);
       }
       // Count toward the flap guard only for limit-driven or legacy forced rotates;
       // a user-directed targeted switch is intentional, not flapping.

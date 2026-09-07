@@ -57,6 +57,8 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   // header lets a worker served from /sw.js control the whole origin.
   serveStatic('/sw.js', 'sw.js', 'application/javascript', { 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' });
   serveStatic('/manifest.webmanifest', 'manifest.webmanifest', 'application/manifest+json');
+  serveStatic('/control-room.css', 'control-room.css', 'text/css', { 'Cache-Control': 'no-cache' });
+  serveStatic('/control-room.js', 'control-room.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
   serveStatic('/webauthn.js', 'webauthn.js', 'application/javascript'); // vendored @simplewebauthn/browser bundle
   serveStatic('/icon-16.png', 'icon-16.png', 'image/png');
   serveStatic('/icon-32.png', 'icon-32.png', 'image/png');

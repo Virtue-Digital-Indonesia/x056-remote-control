@@ -345,3 +345,30 @@ describe('gateway resume existing session', () => {
     }
   });
 });
+
+describe('account dashboard API', () => {
+  it('requires authentication for analytics and routing controls', async () => {
+    expect((await fetch(base + '/api/accounts/analytics')).status).toBe(401);
+    expect((await fetch(base + '/api/accounts/routing')).status).toBe(401);
+    expect((await fetch(base + '/api/accounts/paused', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'a',paused:true})})).status).toBe(401);
+  });
+  it('validates date/provider filters and persists routing preferences', async () => {
+    expect((await fetch(base+'/api/accounts/analytics?days=999',{headers:auth})).status).toBe(400);
+    expect((await fetch(base+'/api/accounts/analytics?provider=unknown',{headers:auth})).status).toBe(400);
+    const analytics=await (await fetch(base+'/api/accounts/analytics?days=30',{headers:auth})).json() as {dates:string[];since:string;rows:unknown[]};
+    expect(analytics.dates).toHaveLength(30);expect(analytics.since).toMatch(/^\d{4}-/);expect(Array.isArray(analytics.rows)).toBe(true);
+    const bad=await fetch(base+'/api/accounts/routing',{method:'POST',headers:auth,body:JSON.stringify({provider:'claude',enabled:'no'})});expect(bad.status).toBe(400);
+    const set=async(enabled:boolean)=>fetch(base+'/api/accounts/routing',{method:'POST',headers:auth,body:JSON.stringify({provider:'claude',enabled})});
+    expect((await set(false)).status).toBe(200);
+    expect(await (await fetch(base+'/api/accounts/routing',{headers:auth})).json()).toMatchObject({autoSwitch:{claude:false,codex:true}});
+    await set(true);
+  });
+  it('pauses future attempts without corrupting the provider state', async () => {
+    const pause=async(paused:boolean)=>fetch(base+'/api/accounts/paused',{method:'POST',headers:auth,body:JSON.stringify({name:'a',paused})});
+    expect((await pause(true)).status).toBe(200);
+    const rows=await (await fetch(base+'/api/accounts',{headers:auth})).json() as {name:string;paused?:boolean;nextUp:boolean}[];
+    expect(rows.find(r=>r.name==='a')).toMatchObject({paused:true,nextUp:false});
+    expect((await fetch(base+'/api/accounts/active',{method:'POST',headers:auth,body:JSON.stringify({name:'a',force:true})})).status).toBe(400);
+    expect((await pause(false)).status).toBe(200);
+  });
+});

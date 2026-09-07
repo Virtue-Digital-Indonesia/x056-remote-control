@@ -1,3 +1,4 @@
+import { AccountAnalytics } from '../src/account-analytics.js';
 import {
   BadRequestException,
   Body,
@@ -1066,6 +1067,32 @@ export class ApiController {
         }
       }),
     );
+  }
+
+  @Get('accounts/analytics')
+  accountAnalytics(@Query('days') days?: string, @Query('provider') provider?: string) {
+    if (days && !['7', '30'].includes(days)) throw new BadRequestException('days must be 7 or 30');
+    if (provider && !['claude', 'codex'].includes(provider)) throw new BadRequestException('unknown provider');
+    return new AccountAnalytics(this.stateDir).summary(Number(days || 7), provider as ProviderId | undefined);
+  }
+
+  @Get('accounts/routing')
+  accountRouting() { return this.manager.accountRouting(); }
+
+  @Post('accounts/routing')
+  @HttpCode(200)
+  setAccountRouting(@Body() body: { provider?: string; enabled?: boolean }) {
+    if (!body || !['claude', 'codex'].includes(body.provider || '') || typeof body.enabled !== 'boolean') throw new BadRequestException('provider and enabled required');
+    this.manager.setAccountRouting(body.provider as ProviderId, body.enabled);
+    return this.manager.accountRouting();
+  }
+
+  @Post('accounts/paused')
+  @HttpCode(200)
+  setAccountPaused(@Body() body: { name?: string; paused?: boolean }) {
+    if (!body?.name || typeof body.paused !== 'boolean') throw new BadRequestException('name and paused required');
+    try { this.manager.setAccountPaused(body.name, body.paused); return { ok: true }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
   /** Models each provider offers for the accounts actually configured here —

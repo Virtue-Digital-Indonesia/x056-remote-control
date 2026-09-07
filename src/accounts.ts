@@ -22,6 +22,8 @@ export interface Account {
    *  the account pool is effectively partitioned by this field. */
   provider: ProviderId;
   state: AccountState;
+  /** Exclude from future attempts without changing authentication or live turns. */
+  paused?: boolean;
 }
 
 interface RegistryFile {
@@ -30,6 +32,7 @@ interface RegistryFile {
   // string instead; load() migrates it into activeByProvider['claude'].)
   activeByProvider: Partial<Record<ProviderId, string>>;
   accounts: Account[];
+  autoSwitch?: Partial<Record<ProviderId, boolean>>;
   active?: string; // legacy single-provider pointer; read on load, never written
 }
 
@@ -139,7 +142,7 @@ export class AccountRegistry {
   }
 
   private usable(a: Account, now: number): boolean {
-    if (a.state.kind === 'unauthenticated') return false;
+    if (a.paused || a.state.kind === 'unauthenticated') return false;
     return a.state.kind !== 'limited' || a.state.until <= now;
   }
 
@@ -151,6 +154,7 @@ export class AccountRegistry {
     if (pool.length === 0) return null;
     const preferred = pool.find((a) => a.name === this.data.activeByProvider[provider]) ?? pool[0];
     if (this.usable(preferred, now)) return structuredClone(preferred);
+    if (!this.automaticSwitching(provider)) return null;
     const other = pool.find((a) => a.name !== preferred.name && this.usable(a, now));
     return other ? structuredClone(other) : null;
   }
@@ -160,6 +164,7 @@ export class AccountRegistry {
     if (pool.length === 0) return null;
     const preferred = pool.find((a) => a.name === this.data.activeByProvider[provider]) ?? pool[0];
     if (this.usable(preferred, now)) return structuredClone(preferred);
+    if (!this.automaticSwitching(provider)) return null;
     const other = pool.find((a) => a.name !== preferred.name && this.usable(a, now));
     if (other) {
       this.data.activeByProvider[provider] = other.name;
@@ -169,8 +174,26 @@ export class AccountRegistry {
     return null;
   }
 
+  automaticSwitching(provider: ProviderId): boolean { return this.data.autoSwitch?.[provider] !== false; }
+
+  setAutomaticSwitching(provider: ProviderId, enabled: boolean): void {
+    (this.data.autoSwitch ??= {})[provider] = enabled;
+    this.save();
+  }
+
+  setPaused(name: string, paused: boolean): void {
+    const acct = this.find(name);
+    acct.paused = paused;
+    if (paused && this.data.activeByProvider[acct.provider] === name) {
+      const next = this.ofProvider(acct.provider).find(a => this.usable(a, Math.floor(Date.now() / 1000)));
+      if (next) this.data.activeByProvider[acct.provider] = next.name;
+    }
+    this.save();
+  }
+
   setActive(name: string): void {
     const acct = this.find(name);
+    if (acct.paused) throw new Error('resume this account before selecting it');
     this.data.activeByProvider[acct.provider] = name;
     this.save();
   }
@@ -208,7 +231,7 @@ export class AccountRegistry {
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
     // Persist only the current-shape fields (drop any legacy `active`).
-    const out: RegistryFile = { activeByProvider: this.data.activeByProvider, accounts: this.data.accounts };
+    const out: RegistryFile = { activeByProvider: this.data.activeByProvider, accounts: this.data.accounts, autoSwitch: this.data.autoSwitch };
     writeFileSync(tmp, JSON.stringify(out, null, 2));
     renameSync(tmp, this.file);
   }
