@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AccountRegistry } from '../src/accounts.js';
+import { codexAdapter } from '../src/adapters/codex.js';
 import { EventLog } from '../src/eventlog.js';
 import { CONTINUE_PROMPT, runSession } from '../src/failover.js';
 import type { RunControl } from '../src/failover.js';
@@ -413,6 +414,29 @@ describe('transient API overload (529) is retried, not reported as a dead turn',
     expect(res.reason).toMatch(/overloaded/i);
     expect(res.reason).not.toMatch(/exit code/);
     expect(registry.get('a').state.kind).not.toBe('limited'); // still usable
+  });
+
+  // A persistent process does not exit when a turn fails, so the exit is a
+  // synthetic code 0. "done: failed · exit code 0" is what the user saw for a
+  // Codex thread that could not be resumed; the stream had said exactly why.
+  it('reports the failure message the stream carried, not a meaningless exit code', async () => {
+    const { log } = setup();
+    const registry = AccountRegistry.init(join(mkdtempSync(join(tmpdir(), 'x056-reason-')), 'accounts.json'), [
+      { name: 'a', configDir: '/cfg/a', provider: 'codex' },
+    ]);
+    const recorded: Recorded[] = [];
+    const res = await runSession({
+      registry, log, sessionId: 's-reason', cwd: '/w', prompt: 'do it', adapter: codexAdapter,
+      startTurnFn: scriptTurnsExit([{ events: [
+        { type: 'error', message: 'no rollout found for thread id abc' },
+        { type: 'thread.failed', error: { message: 'no rollout found for thread id abc' } },
+      ], code: 0 }], recorded),
+      forceSwitchSignal: false, overloadRetryDelayMs: 1,
+    });
+    expect(res.status).toBe('failed');
+    expect(res.reason).toBe('no rollout found for thread id abc');
+    expect(log.read().find((r) => r.type === 'turn_failed')).toMatchObject({ error: 'no rollout found for thread id abc' });
+    expect(registry.get('a').state.kind).not.toBe('limited');
   });
 
   it('a plain non-zero exit (not an overload) still fails immediately, unchanged', async () => {

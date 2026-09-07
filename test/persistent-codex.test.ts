@@ -11,7 +11,7 @@ import type { RawEvent } from '../src/types.js';
  * answers the handshake and turn/start the way the real one does (verified
  * live on 0.153.4), and emits notifications when the test says so.
  */
-function fakeAppServer(opts: { threadId?: string; failThread?: boolean } = {}) {
+function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean } = {}) {
   const child = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter; stdin: { write: (s: string) => void; destroyed: boolean; writableEnded: boolean };
     kill: (s?: string) => void; pid?: number;
@@ -28,9 +28,12 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean } = {}) {
       if (m.method === 'initialize') out({ id: m.id, result: { userAgent: 'fake' } });
       else if (m.method === 'thread/start' || m.method === 'thread/resume') {
         if (opts.failThread) out({ id: m.id, error: { code: -32000, message: 'no such thread' } });
+        // Verbatim from 0.153.4 when the id has no rollout under this CODEX_HOME.
+        else if (opts.noRollout && m.method === 'thread/resume') out({ id: m.id, error: { code: -32600, message: `no rollout found for thread id ${String(m.params.threadId)}` } });
         else out({ id: m.id, result: { thread: { id: opts.threadId ?? (m.params.threadId as string) ?? 'thr_new' }, model: m.params.model ?? 'gpt-5.6-sol' } });
       } else if (m.method === 'turn/start') {
-        out({ id: m.id, result: { turn: { id: `turn_${++turnSeq}`, status: 'inProgress' } } });
+        if (opts.refuseTurn) out({ id: m.id, error: { code: -32600, message: 'model gpt-6-astra is not available on this account' } });
+        else out({ id: m.id, result: { turn: { id: `turn_${++turnSeq}`, status: 'inProgress' } } });
       } else if (m.id !== undefined) out({ id: m.id, result: {} }); // steer / interrupt acks
     },
   };
@@ -48,7 +51,7 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean } = {}) {
   };
 }
 
-function pool(o: { threadId?: string; failThread?: boolean; workingGraceMs?: number; now?: () => number } = {}) {
+function pool(o: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; workingGraceMs?: number; now?: () => number } = {}) {
   const spawned: ReturnType<typeof fakeAppServer>[] = [];
   const p = new PersistentTurns({
     transport: new CodexTransport(),
@@ -235,5 +238,57 @@ describe('mapItem', () => {
     const m = mapItem({ type: 'fileChange', status: 'declined', changes: [{ path: 'a', kind: { type: 'delete' } }] });
     expect(m.status).toBe('failed');
     expect(m.changes).toEqual([{ path: 'a', kind: 'delete' }]);
+  });
+});
+
+describe('codex persistent: a resume with nothing to resume', () => {
+  // thread/start hands out an id at once but writes no rollout until a turn
+  // runs. A thread whose first turn died (401, limit, a container swap) is
+  // therefore an id with no history, and every later resume of it failed in
+  // 300 ms with a reason the panel never showed. Seen live: one conversation
+  // wedged across a re-login, a failover AND a deploy.
+  it('falls back to a fresh thread, reports the new id, and runs the turn on it', async () => {
+    const { p, spawned } = pool({ noRollout: true, threadId: 'thr_fresh' });
+    const c = collect();
+    const h = p.startTurn(turn({ mode: 'resume', sessionId: 'thr_gone', onEvent: c.onEvent }));
+    const f = spawned[0];
+    expect(f.sent('thread/resume')).toHaveLength(1);
+    const starts = f.sent('thread/start');
+    expect(starts).toHaveLength(1);
+    expect(starts[0].params).toMatchObject({ cwd: '/work', approvalPolicy: 'never' });
+    expect(starts[0].params.threadId).toBeUndefined();
+    // The manager stores whatever thread.started names -- so it must be the NEW id.
+    expect(c.ev.find((e) => e.type === 'thread.started')).toMatchObject({ thread_id: 'thr_fresh' });
+    expect(c.ev.find((e) => e.type === 'thread.reset')).toMatchObject({ from: 'thr_gone' });
+    expect(c.ev.some((e) => e.type === 'thread.failed')).toBe(false);
+    // The prompt went to the fresh thread.
+    expect(f.sent('turn/start')[0].params).toMatchObject({ threadId: 'thr_fresh' });
+    f.complete();
+    const exit = await h.done;
+    expect(exit.code).toBe(0);
+  });
+
+  it('does not loop: a second miss ends the turn with the reason attached', async () => {
+    const { p, spawned } = pool({ failThread: true });
+    const c = collect();
+    const h = p.startTurn(turn({ mode: 'resume', sessionId: 'thr_x', onEvent: c.onEvent }));
+    expect(spawned[0].sent('thread/start')).toHaveLength(0); // 'no such thread' is not the no-rollout answer
+    await h.done;
+    expect(c.ev.map((e) => e.type)).toEqual(expect.arrayContaining(['error', 'thread.failed']));
+    expect(c.ev.find((e) => e.type === 'error')).toMatchObject({ message: 'no such thread' });
+  });
+
+  it('a refused turn/start carries its message too', async () => {
+    const { p, spawned } = pool({ refuseTurn: true });
+    const c = collect();
+    const h = p.startTurn(turn({ onEvent: c.onEvent }));
+    await h.done;
+    expect(c.ev.find((e) => e.type === 'error')).toMatchObject({ message: expect.stringContaining('not available') });
+    expect(codexAdapter.failureText!(c.ev.find((e) => e.type === 'turn.failed')!)).toContain('not available');
+    expect(spawned[0].killed).toBe(false);
+  });
+
+  it('a thread.reset is not a limit, so it never triggers a failover', () => {
+    expect(classifyCodexEvent({ type: 'thread.reset', from: 'x', message: 'no rollout found for thread id x' }).kind).toBe('irrelevant');
   });
 });

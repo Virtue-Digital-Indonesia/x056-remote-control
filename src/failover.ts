@@ -160,6 +160,10 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // stop-phrase check and the question-card detector (both keyed on
         // resultText) silently never fire for Codex at all.
         lastAssistantText: undefined as string | undefined,
+        // The last failure message the stream carried, for the reason a failed
+        // turn reports. A persistent process does not exit when a turn fails,
+        // so its exit is a synthetic code 0 and says nothing.
+        lastError: undefined as string | undefined,
       };
 
       let handle: TurnHandle | undefined;
@@ -202,6 +206,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           log.append({ type: 'quota_warning', sessionId, account: account.name, resetsAt: v.resetsAt ?? null });
         }
         if (v.kind === 'transient' && v.source === 'api_overloaded') state.overloaded = true;
+        const failure = adapter.failureText?.(e);
+        if (failure) state.lastError = failure;
+        // The transport gave up resuming a thread that has no history anywhere
+        // and opened a fresh one (see persistent-codex.ts). Recorded so the
+        // panel can say so and the event log explains a changed thread id.
+        if (e.type === 'thread.reset') {
+          log.append({ type: 'thread_reset', sessionId, account: account.name, from: typeof e.from === 'string' ? e.from : null });
+        }
         const texts = adapter.assistantText?.(e);
         if (texts && texts.length) state.lastAssistantText = texts[texts.length - 1];
         if (adapter.isResult(e) && adapter.resultOk(e)) {
@@ -283,9 +295,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           prompt = adapter.continuePrompt;
           continue;
         }
+        const exitReason = exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`;
         const reason = state.overloaded
           ? `the API was overloaded (5xx) — still failing after ${overloadRetries} retr${overloadRetries === 1 ? 'y' : 'ies'}`
-          : exit.spawnError ?? (exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`);
+          : exit.spawnError
+            ?? (state.lastError
+              // The message is the reason; a real non-zero exit is still worth a note.
+              ? state.lastError.slice(0, 300) + (exit.code ? ` (${exitReason})` : '')
+              : exitReason);
         log.append({
           type: 'turn_failed',
           sessionId,
@@ -294,6 +311,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           signal: exit.signal,
           spawnError: exit.spawnError ?? null,
           overloaded: state.overloaded,
+          error: state.lastError ?? null,
         });
         return { status: 'failed', finalAccount: account.name, failovers: failoverTimes.length, reason, providerSessionId: cliSessionId };
       }

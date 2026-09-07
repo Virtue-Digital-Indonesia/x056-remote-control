@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { AccountRegistry } from '../src/accounts.js';
+import { shareCodexSessions } from './codex-sessions.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { getAdapter } from '../src/adapters/registry.js';
@@ -310,6 +311,7 @@ export class SessionManager {
     mkdirSync(opts.stateDir, { recursive: true });
     this.migrateProjects();
     this.projects().migrateConversations();
+    this.shareCodexSessionStores();
     this.loadPendingQuestions();
     this.detectOrphans();
     this.resumeAutopilots();
@@ -323,6 +325,24 @@ export class SessionManager {
       };
       process.on('SIGTERM', onTerm);
       process.on('SIGINT', onTerm);
+    }
+  }
+
+  /** Every Codex account resumes threads out of ONE rollout store, so a
+   *  failover onto another account finds the thread it is continuing. Applied
+   *  at boot for the accounts that exist and again when one is onboarded; it
+   *  is idempotent, and a failure only logs -- the account still works, it
+   *  just cannot pick up another account's threads. See codex-sessions.ts. */
+  private shareCodexSessionStores(): void {
+    // A throwaway load: the constructor runs before callers may have written
+    // accounts.json, and caching the registry this early would pin that state.
+    let accounts: { name: string; configDir: string; provider: string }[];
+    try { accounts = AccountRegistry.load(join(this.opts.stateDir, 'accounts.json')).list(); } catch { return; }
+    for (const a of accounts) {
+      if (a.provider !== 'codex') continue;
+      const r = shareCodexSessions(this.opts.stateDir, a);
+      if (r.error) console.warn(`[codex-sessions] ${a.name}: ${r.error}`);
+      else if (r.linked) console.log(`[codex-sessions] ${a.name}: sessions/ -> shared store (${r.moved} rollout(s) moved, ${r.skipped} already there)`);
     }
   }
 
@@ -824,6 +844,9 @@ export class SessionManager {
     const name = this.nextAccountName();
     let dir = p.configDir;
     try { const finalDir = join(this.accountsDir, name); renameSync(p.configDir, finalDir); dir = finalDir; } catch { /* keep the pending dir */ }
+    // Before the first turn, so even that one's thread lands in the shared store.
+    const shared = shareCodexSessions(this.opts.stateDir, { name, configDir: dir });
+    if (shared.error) console.warn(`[codex-sessions] ${name}: ${shared.error}`);
     reg.add(name, dir, 'codex');
     this.emitAccounts();
     return { done: true, account: { name, email: identity.email, displayName: identity.displayName } };

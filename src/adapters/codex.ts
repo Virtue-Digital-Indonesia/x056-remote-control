@@ -202,6 +202,18 @@ export function captureSessionId(e: RawEvent): string {
   return evType(e) === 'thread.started' ? firstStr(e.thread_id) : '';
 }
 
+/** The message on a failure event: `turn.failed`/`thread.failed {error:{message}}`
+ *  or a bare `error {message}` (the persistent transport emits the pair). */
+export function failureText(e: RawEvent): string | undefined {
+  const t = evType(e);
+  if (t === 'turn.failed' || t === 'thread.failed') {
+    const err = asObj(e.error);
+    return firstStr(err.message, e.message, typeof e.error === 'string' ? e.error : '') || undefined;
+  }
+  if (t === 'error') return firstStr(e.message) || undefined;
+  return undefined;
+}
+
 /** Read the ChatGPT identity from $CODEX_HOME/auth.json. For a ChatGPT login the
  *  email is in the id_token JWT payload; API-key logins have none. VERIFY exact
  *  fields. Best-effort — returns {} on any miss, never throws. */
@@ -768,6 +780,7 @@ export const codexAdapter: ProviderAdapter = {
   isDrainBoundary: (e) => evType(e) === 'item.completed' || evType(e) === 'turn.completed',
   toActivity,
   assistantText,
+  failureText,
   // Codex doesn't stamp a per-event model on the stream the way Claude does; the
   // UI shows the model the project requested. (activeModel intentionally omitted.)
 

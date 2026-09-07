@@ -138,6 +138,12 @@ export interface ProviderAdapter {
   /** Displayable assistant text carried by this event (one entry per chunk),
    *  for streaming into the chat. Empty when the event carries none. */
   assistantText?(e: RawEvent): string[];
+  /** The human-readable reason carried by a failure event (an API error, a
+   *  refused thread, an error result), when the event has one. runSession
+   *  reports the last of these as the failed turn's reason; without it a
+   *  persistent-process turn -- whose process does not exit -- failed as
+   *  "exit code 0", which told the user nothing. */
+  failureText?(e: RawEvent): string | undefined;
 
   // --- account plumbing ---
   /** Read the human identity a completed login wrote into the config dir. */

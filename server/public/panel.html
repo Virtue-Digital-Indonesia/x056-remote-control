@@ -2082,7 +2082,7 @@
     streamStatusEl.classList.remove('fade-out'); streamStatusEl.hidden = true;
   }
 
-  var BANNERS = { limit_detected: 'limit reached — switching accounts…', auth_required: 'not logged in — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts unavailable — parked', turn_failed: 'turn failed', flap_guard_tripped: 'too many switches — stopped' };
+  var BANNERS = { limit_detected: 'limit reached — switching accounts…', auth_required: 'not logged in — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts unavailable — parked', turn_failed: 'turn failed', thread_reset: 'no saved history for this thread — started a fresh one', flap_guard_tripped: 'too many switches — stopped' };
   var active = false, lastLabel = '', runningSubs = 0, subs = {};
   var runningProjects = {}; // projectId -> true while ANY conversation runs there
   // projectId -> { sessionId: true } for every conversation currently running in

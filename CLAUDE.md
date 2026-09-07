@@ -249,6 +249,34 @@ message per turn over `--input-format stream-json`. A turn now ends at the
     `irrelevant` — not a limit, so no failover), the process survives, and the
     next turn runs on it. An account that is out of credits fails the turn with
     `turn.failed`, classified as a limit.
+- **Codex rollouts live in ONE shared store, or failover cannot resume.**
+  Codex files each thread under `$CODEX_HOME/sessions/` and `thread/resume`
+  looks it up THERE: an empty home answers `no rollout found for thread id …`
+  (verified on 0.153.4, and the converse: a home whose `sessions/` merely
+  links to another's resumes that home's threads, preview and all). Claude
+  gets this for free from the symlinked `projects/` tree; Codex did not, so a
+  limit on `g` re-entered on `h` with a thread `h` had never seen and the turn
+  died 300 ms later. `server/codex-sessions.ts` links every Codex account's
+  `sessions/` to `state/codex-sessions/` -- at boot for the accounts that
+  exist (their rollouts are moved in first; a name already present is the
+  same thread and is never overwritten) and again at onboarding, before the
+  first turn.
+- **A thread whose first turn died has an id but no history, and used to wedge
+  the conversation.** `thread/start` assigns the id at once but writes no
+  rollout until a turn runs, so a 401, a limit or a swap on the first turn
+  leaves a `providerSessionId` that every later `thread/resume` refuses --
+  in 400 ms, with a reason the panel never showed. Seen live across a
+  re-login, a failover AND a deploy on one conversation. The transport now
+  answers that exact error with a fresh `thread/start`, once: `thread.started`
+  carries the NEW id (the manager stores it), a `thread.reset` event is logged
+  and the panel says "no saved history for this thread -- started a fresh
+  one". With the shared store above, "no rollout found" means no history
+  anywhere, so nothing is lost. A second miss is final.
+- **A failed turn reports the stream's own message, not `exit code 0`.**
+  Adapters expose `failureText(e)` (Codex: `error`/`turn.failed`/
+  `thread.failed` messages; Claude: an error `result`); `runSession` keeps the
+  last one as the reason and in the `turn_failed` log row. A persistent
+  process does not exit when a turn fails, so its exit code says nothing.
 - **The UI must show background work, or it reads as dead.** Every busy
   indicator used to key off `SessionManager.runs` — gateway turns — so a
   conversation whose turn had ended but whose process was still driving a

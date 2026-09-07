@@ -27,11 +27,24 @@ import type { Ingested, Transport, TransportState } from './persistent-transport
 
 const RPC_INIT = 1;
 const RPC_THREAD = 2;
+/** The `thread/start` sent after a `thread/resume` found nothing to resume. */
+const RPC_THREAD_FRESH = 3;
+
+/** app-server's answer when the thread id has no rollout under this CODEX_HOME. */
+const NO_ROLLOUT_RE = /no rollout found/i;
 
 interface Ext {
   ready?: boolean;
   threadId?: string;
   turnId?: string;
+  /** Writer handed to open(); kept so ingest() can send the fallback thread/start. */
+  write?: (line: string) => void;
+  /** thread/start params for the fallback -- the resume params minus the id. */
+  startParams?: Record<string, unknown>;
+  /** The thread id a resume was asked for, when this process was opened to resume. */
+  resumeTarget?: string;
+  /** The fallback was already tried once; a second failure is final. */
+  retried?: boolean;
   /** Next JSON-RPC id; turn/start and steer/interrupt requests are tracked. */
   seq?: number;
   /** Which of our request ids are turn/start calls awaiting a turn id. */
@@ -95,10 +108,13 @@ export class CodexTransport implements Transport {
     write(JSON.stringify({ jsonrpc: '2.0', id: RPC_INIT, method: 'initialize', params: { clientInfo: { name: 'x056', version: '1' } } }));
     const config: Record<string, unknown> = {};
     if (o.mcp) config.mcp_servers = { x056: { command: o.mcp.command, args: o.mcp.args, env: o.mcp.env } };
+    const startParams = { cwd: o.cwd, ...(o.model ? { model: o.model } : {}), approvalPolicy: 'never', sandbox: 'danger-full-access', config,
+      ...(o.appendSystemPrompt ? { developerInstructions: o.appendSystemPrompt } : {}) };
     const params = o.mode === 'resume'
       ? { threadId: o.sessionId, cwd: o.cwd, ...(o.model ? { model: o.model } : {}), approvalPolicy: 'never', sandbox: 'danger-full-access', config }
-      : { cwd: o.cwd, ...(o.model ? { model: o.model } : {}), approvalPolicy: 'never', sandbox: 'danger-full-access', config,
-          ...(o.appendSystemPrompt ? { developerInstructions: o.appendSystemPrompt } : {}) };
+      : startParams;
+    x.write = write; x.startParams = startParams; x.retried = false;
+    x.resumeTarget = o.mode === 'resume' ? o.sessionId : undefined;
     write(JSON.stringify({ jsonrpc: '2.0', id: RPC_THREAD, method: o.mode === 'resume' ? 'thread/resume' : 'thread/start', params }));
     return { ready: false };
   }
@@ -149,21 +165,39 @@ export class CodexTransport implements Transport {
 
     // ---- responses to our own requests -----------------------------------
     if (id === RPC_INIT) return { events: [], turnEnded: false };
-    if (id === RPC_THREAD) {
+    if (id === RPC_THREAD || id === RPC_THREAD_FRESH) {
       if (err || !res) {
-        return { events: [{ type: 'thread.failed', error: { message: String(err?.message ?? 'thread could not be opened') } }], turnEnded: true, readyNow: false };
+        const message = String(err?.message ?? 'thread could not be opened');
+        // A thread with NOTHING to resume. `thread/start` assigns an id at once
+        // but writes no rollout until a turn runs, so a thread whose first turn
+        // died (401, limit, a swap) exists only as an id -- and every later
+        // resume of it fails in 300 ms, forever. With the accounts sharing one
+        // rollout store, "no rollout found" means no history anywhere, so a
+        // fresh thread loses nothing; the alternative is a conversation that
+        // can never take another message. Tried once: a second miss is real.
+        if (id === RPC_THREAD && x.resumeTarget && !x.retried && NO_ROLLOUT_RE.test(message) && x.write && x.startParams) {
+          x.retried = true;
+          x.write(JSON.stringify({ jsonrpc: '2.0', id: RPC_THREAD_FRESH, method: 'thread/start', params: x.startParams }));
+          return { events: [{ type: 'thread.reset', from: x.resumeTarget, message }], turnEnded: false, readyNow: false };
+        }
+        // `error` carries the text the panel and the failure reason show;
+        // `thread.failed` is what classify() reads. Same pair as a failed turn.
+        return { events: [{ type: 'error', message }, { type: 'thread.failed', error: { message } }], turnEnded: true, readyNow: false };
       }
       const th = (res.thread ?? {}) as Record<string, unknown>;
       x.threadId = String(th.id ?? '');
       x.ready = true;
-      // The exec-shaped event captureSessionId() reads the provider id from.
+      // The exec-shaped event captureSessionId() reads the provider id from --
+      // after a fallback this is the NEW id, which the manager stores in place
+      // of the one that had no history.
       return { events: [{ type: 'thread.started', thread_id: x.threadId }], turnEnded: false, readyNow: true };
     }
     if (id !== undefined && x.turnStarts?.has(id)) {
       x.turnStarts.delete(id);
       if (err || !res) {
         // The turn never started; end it so the caller is not left hanging.
-        return { events: [{ type: 'turn.failed', error: { message: String(err?.message ?? 'turn/start refused') } }], turnEnded: true };
+        const message = String(err?.message ?? 'turn/start refused');
+        return { events: [{ type: 'error', message }, { type: 'turn.failed', error: { message } }], turnEnded: true };
       }
       x.turnId = String(((res.turn ?? {}) as Record<string, unknown>).id ?? '');
       return { events: [{ type: 'turn.started' }], turnEnded: false };

@@ -442,6 +442,8 @@ export const claudeAdapter: ProviderAdapter = {
   toActivity,
   activeModel,
   assistantText,
+  // An error result carries the CLI's own explanation in `result`.
+  failureText: (e) => (e.type === 'result' && e.is_error === true && typeof e.result === 'string' && e.result ? e.result : undefined),
 
   readIdentity,
   hasCredentials,
