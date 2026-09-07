@@ -129,7 +129,13 @@ Anything per-account must be applied to **all** of them, or it fires only when
 failover happens to land on the right one — which reads as "randomly broken":
 
 - **Plugins / MCP servers** — use the panel or the API, never the `claude` CLI
-  directly; `PluginManager` and `McpServerManager` fan out across every account.
+  directly; `PluginManager` and `McpServerManager` fan out across every account
+  **of a provider**. Codex speaks the same plugin/marketplace format as Claude
+  (verified: `codex plugin add code-review@claude-plugins-official` installs
+  from the real Claude marketplace), so the same plugin id means the same thing
+  on both — but into Codex's own accounts, with `add`/`remove` instead of
+  `install`/`uninstall`, and with no enable/disable. The plugins popover has a
+  Claude / ChatGPT switch; every plugin route takes `provider`.
 - **Opt-in flag files** (e.g. `.i-have-adhd-always`, resolved by hooks through
   `$CLAUDE_CONFIG_DIR`) — `POST /api/accounts/flag {flag, on}`. Note `$HOME/.claude`
   is only the fallback when `CLAUDE_CONFIG_DIR` is unset, which it never is here,

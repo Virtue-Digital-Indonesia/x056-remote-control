@@ -861,7 +861,7 @@
     <button class="ico" id="autopilotBtn" title="autopilot — gateway keeps the work going across turns/restarts"><svg class="ic"><use href="#i-repeat"/></svg></button>
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
-    <button class="ico" id="pluginsBtn" title="Claude Code plugins"><svg class="ic"><use href="#i-plug"/></svg></button>
+    <button class="ico" id="pluginsBtn" title="plugins (Claude and ChatGPT)"><svg class="ic"><use href="#i-plug"/></svg></button>
     <button class="ico" id="mcpSrvBtn" title="MCP servers"><svg class="ic"><use href="#i-terminal"/></svg></button>
     <button class="ico" id="cronBtn" title="Scheduled tasks"><svg class="ic"><use href="#i-alarm"/></svg></button>
     <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
@@ -981,7 +981,11 @@
   <div id="moreList" class="more-list"></div>
 </div>
 <div class="pop" id="pluginsPop" hidden style="top:56px; right:12px; left:auto; bottom:auto; width:380px; max-height:78vh; overflow:auto;">
-  <h2>Claude Code plugins</h2>
+  <h2>Plugins</h2>
+  <div id="plugProvSeg" style="display:flex; gap:6px; margin:6px 0 8px;">
+    <button type="button" class="provbtn on" data-provider="claude">Claude</button>
+    <button type="button" class="provbtn" data-provider="codex">ChatGPT</button>
+  </div>
   <div class="plug-note" id="plugScope">installed across all Claude accounts, so they survive failover</div>
   <div id="plugStatus" class="plug-status" hidden></div>
   <div id="pluginsList"></div>
@@ -1361,8 +1365,22 @@
     }
     return { ok: false, text: 'failed on ' + bad.map(function (p) { return p.account + ' (' + p.message + ')'; }).join('; ') };
   }
+  // Plugins are per PROVIDER: Codex installs the same plugin ids from the same
+  // marketplaces (verified live), but into its own accounts, with its own
+  // verbs, and with no enable/disable. Default to the viewed project's provider.
+  var plugProvider = 'claude';
+  function plugProviderLabel() { return plugProvider === 'codex' ? 'ChatGPT' : 'Claude'; }
+  function setPlugProvider(pv) {
+    plugProvider = pv === 'codex' ? 'codex' : 'claude';
+    Array.prototype.forEach.call(document.querySelectorAll('#plugProvSeg .provbtn'), function (b) { b.classList.toggle('on', b.getAttribute('data-provider') === plugProvider); });
+    $('plugScope').textContent = 'installed across all ' + plugProviderLabel() + ' accounts, so they survive failover';
+  }
+  $('plugProvSeg').addEventListener('click', function (e) {
+    var b = e.target.closest('.provbtn'); if (!b) return;
+    setPlugProvider(b.getAttribute('data-provider')); plugSetStatus(); loadPlugins();
+  });
   function loadPlugins() {
-    return api('/api/plugins').then(function (r) { return r.json(); }).then(function (d) {
+    return api('/api/plugins?provider=' + encodeURIComponent(plugProvider)).then(function (r) { return r.json(); }).then(function (d) {
       plugState = d && d.plugins ? d : { plugins: [], marketplaces: [], dirs: 0 };
       renderPlugins();
     }).catch(function () { plugSetStatus('err', 'could not load plugins'); });
@@ -1374,11 +1392,13 @@
     }
     plugState.plugins.forEach(function (p) {
       var row = document.createElement('div'); row.className = 'plug-item';
-      var tog = document.createElement('button'); tog.className = 'pi-toggle' + (p.enabled ? ' on' : ''); tog.title = p.enabled ? 'enabled — click to disable' : 'disabled — click to enable';
-      var knob = document.createElement('i'); tog.appendChild(knob);
-      tog.disabled = plugBusy;
-      tog.addEventListener('click', function () { plugToggle(p); });
-      row.appendChild(tog);
+      if (plugState.canToggle !== false) {
+        var tog = document.createElement('button'); tog.className = 'pi-toggle' + (p.enabled ? ' on' : ''); tog.title = p.enabled ? 'enabled — click to disable' : 'disabled — click to enable';
+        var knob = document.createElement('i'); tog.appendChild(knob);
+        tog.disabled = plugBusy;
+        tog.addEventListener('click', function () { plugToggle(p); });
+        row.appendChild(tog);
+      }
       var main = document.createElement('div'); main.className = 'pi-main';
       var nm = document.createElement('div'); nm.className = 'pi-name'; nm.textContent = p.name; main.appendChild(nm);
       var meta = document.createElement('div'); meta.className = 'pi-meta';
@@ -1414,7 +1434,8 @@
   // Run a mutation, show progress, then reload the aggregated state.
   function plugOp(path, body, busyMsg) {
     if (plugBusy) return;
-    plugBusy = true; renderPlugins(); plugSetStatus('busy', busyMsg + ' — running on every Claude account…');
+    plugBusy = true; renderPlugins(); plugSetStatus('busy', busyMsg + ' — running on every ' + plugProviderLabel() + ' account…');
+    body = Object.assign({ provider: plugProvider }, body || {});
     return api('/api/plugins/' + path, { method: 'POST', body: JSON.stringify(body) })
       .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
       .then(function (o) {
@@ -1427,7 +1448,7 @@
   }
   function plugToggle(p) { plugOp('enabled', { plugin: p.id, enabled: !p.enabled }, (p.enabled ? 'Disabling ' : 'Enabling ') + p.name); }
   function plugUninstall(p) {
-    uiConfirm({ title: 'Uninstall ' + p.name + '?', message: 'Removes it from every Claude account.', confirmText: 'Uninstall', danger: true }).then(function (ok) {
+    uiConfirm({ title: 'Uninstall ' + p.name + '?', message: 'Removes it from every ' + plugProviderLabel() + ' account.', confirmText: 'Uninstall', danger: true }).then(function (ok) {
       if (ok) plugOp('uninstall', { plugin: p.id }, 'Uninstalling ' + p.name);
     });
   }
@@ -1436,7 +1457,7 @@
       if (ok) plugOp('marketplace/remove', { name: m.name }, 'Removing ' + m.name);
     });
   }
-  $('pluginsBtn').addEventListener('click', function () { openPop($('pluginsPop')); plugSetStatus(); loadPlugins(); });
+  $('pluginsBtn').addEventListener('click', function () { openPop($('pluginsPop')); setPlugProvider(currentProvider()); plugSetStatus(); loadPlugins(); });
   $('plugInstallBtn').addEventListener('click', function () {
     var v = $('plugInstallInput').value.trim(); if (!v) return;
     plugOp('install', { plugin: v }, 'Installing ' + v).then(function () { $('plugInstallInput').value = ''; });
