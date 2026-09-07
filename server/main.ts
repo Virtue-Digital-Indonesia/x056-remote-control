@@ -65,6 +65,11 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   serveStatic('/icon-180.png', 'icon-180.png', 'image/png');
   serveStatic('/icon-192.png', 'icon-192.png', 'image/png');
   serveStatic('/icon-512.png', 'icon-512.png', 'image/png');
+  // Full-bleed variant for the manifest's maskable purpose: a launcher crops
+  // the icon to its OWN shape, so transparent corners would leave gaps inside
+  // the mask. The favicons stay transparent -- that is what keeps the rounded
+  // corners from rendering as white squares on a dark tab strip.
+  serveStatic('/icon-512-maskable.png', 'icon-512-maskable.png', 'image/png');
   return app;
 }
 
