@@ -218,10 +218,14 @@ message per turn over `--input-format stream-json`. A turn now ends at the
     once the turn is wired, and a handshake that fails there settles the turn.
     That hold is scoped to the pre-first-turn window only: widening it leaked a
     between-turn Claude event into the next turn's classifier.
-  - **Still owed a live check:** `turn/steer` and `turn/interrupt` on a real
-    turn, and any successful Codex turn through the pool at all — the account
-    was out of credits, so the one end-to-end run reached `thread.started` and
-    then exercised the failure path (`turn.failed`, classified as a limit).
+  - **Live-verified on 0.153.4, real process, real account:** a `gpt-6-astra`
+    turn completes through the pool (6.2s, "OK"); a second turn reuses the same
+    process and thread with no re-handshake; `turn/steer` sent 4s into a turn is
+    answered *inside* that turn (one `turn.completed`); `turn/interrupt` stops
+    a turn in 0.1s as `turn.failed {status:'interrupted'}` (classified
+    `irrelevant` — not a limit, so no failover), the process survives, and the
+    next turn runs on it. An account that is out of credits fails the turn with
+    `turn.failed`, classified as a limit.
 - **The UI must show background work, or it reads as dead.** Every busy
   indicator used to key off `SessionManager.runs` — gateway turns — so a
   conversation whose turn had ended but whose process was still driving a
