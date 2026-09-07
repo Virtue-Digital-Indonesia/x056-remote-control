@@ -3,6 +3,8 @@ import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rea
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import type { Usage } from '../quota.js';
+import type { SubagentMeta } from './subagents.js';
+import type { SubagentOutcome } from '../provider.js';
 import { DEFAULT_CONTINUE_PROMPT } from '../provider.js';
 import { stripAsk, stripAskInstructions } from '../question.js';
 import { spawnJsonlTurn } from '../turn.js';
@@ -545,6 +547,147 @@ function activeModel(e: RawEvent): string | undefined {
   return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Sub-agents. Codex's native ones (`spawn_agent` / `wait_agent`) each get a
+// rollout of their own, whose first line names the parent:
+//
+//   session_meta.payload.parent_thread_id   = <parent thread id>
+//   session_meta.payload.source.subagent.thread_spawn
+//        = { parent_thread_id, depth, agent_nickname, agent_role, agent_path }
+//   session_meta.payload.thread_source      = "subagent"
+//
+// and end with `event_msg/task_complete { last_agent_message, started_at,
+// completed_at, duration_ms }`. Verified by spawning one live on 0.153.4: the
+// parent's stream carried a `collab_agent_tool_call` with the child's id in
+// receiver_thread_ids, and the child ("Ampere") wrote exactly this on disk.
+// ---------------------------------------------------------------------------
+
+interface RolloutHead {
+  file: string;
+  id: string;
+  parent?: string;
+  depth: number;
+  nickname?: string;
+  role?: string;
+  startedAt?: number;
+}
+
+/** First line of every rollout under the config dirs -- one readdir, one line each. */
+function rolloutHeads(configDirs: string[]): RolloutHead[] {
+  const out: RolloutHead[] = [];
+  for (const configDir of configDirs) {
+    const sessions = join(configDir, 'sessions');
+    if (!existsSync(sessions)) continue;
+    let names: string[];
+    try { names = readdirSync(sessions, { recursive: true }) as string[]; } catch { continue; }
+    for (const name of names) {
+      if (!name.startsWith('rollout-') && !/[\\/]rollout-/.test(name)) continue;
+      if (!name.endsWith('.jsonl')) continue;
+      const file = join(sessions, name);
+      const line = firstLine(file);
+      if (!line) continue;
+      let meta: Record<string, unknown>;
+      try { meta = asObj((JSON.parse(line) as Record<string, unknown>).payload); } catch { continue; }
+      const id = firstStr(meta.id, meta.session_id);
+      if (!id) continue;
+      const spawn = asObj(asObj(asObj(meta.source).subagent).thread_spawn);
+      const parent = firstStr(meta.parent_thread_id, spawn.parent_thread_id) || undefined;
+      const ts = typeof meta.timestamp === 'string' ? Date.parse(meta.timestamp) : NaN;
+      out.push({
+        file, id, parent,
+        depth: typeof spawn.depth === 'number' ? spawn.depth : parent ? 1 : 0,
+        nickname: firstStr(spawn.agent_nickname, meta.agent_nickname) || undefined,
+        role: firstStr(spawn.agent_role) || undefined,
+        startedAt: Number.isFinite(ts) ? ts : undefined,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Only the first line, never the whole file -- but the WHOLE first line. A
+ * session_meta carries the full base_instructions, so on a real rollout it is
+ * tens of kilobytes; an 8KB read returned a truncated, unparseable JSON and the
+ * child was silently skipped. Read in chunks until the newline, capped.
+ */
+function firstLine(file: string, cap = 2 * 1024 * 1024): string {
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, 'r');
+    const chunk = Buffer.alloc(64 * 1024);
+    let acc = Buffer.alloc(0);
+    let pos = 0;
+    while (acc.length < cap) {
+      const n = readSync(fd, chunk, 0, chunk.length, pos);
+      if (n <= 0) break;
+      const nl = chunk.subarray(0, n).indexOf(0x0a);
+      if (nl >= 0) return Buffer.concat([acc, chunk.subarray(0, nl)]).toString('utf8');
+      acc = Buffer.concat([acc, chunk.subarray(0, n)]);
+      pos += n;
+    }
+    return acc.toString('utf8');
+  } catch { return ''; }
+  finally { if (fd !== null) { try { closeSync(fd); } catch { /* ignore */ } } }
+}
+
+/** Direct children of a thread, oldest first. */
+function listSubagents(configDirs: string[], providerSessionId: string): SubagentMeta[] {
+  const rows: SubagentMeta[] = [];
+  for (const h of rolloutHeads(configDirs)) {
+    if (h.parent !== providerSessionId) continue;
+    let bytes = 0; let updatedAt: number | undefined;
+    try { const st = statSync(h.file); bytes = st.size; updatedAt = st.mtimeMs; } catch { /* raced */ }
+    rows.push({
+      agentId: h.id,
+      agentType: 'codex-subagent',
+      description: [h.nickname, h.role].filter(Boolean).join(' · '),
+      spawnDepth: h.depth,
+      startedAt: h.startedAt,
+      updatedAt,
+      bytes,
+    });
+  }
+  rows.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
+  return rows;
+}
+
+/** Scan a child's rollout for its outcome. Reads the whole file: a child is small. */
+function subagentStatus(configDirs: string[], providerSessionId: string, agentId: string): SubagentOutcome | null {
+  const head = rolloutHeads(configDirs).find((h) => h.id === agentId && h.parent === providerSessionId);
+  if (!head) return null;
+  let raw: string;
+  try { raw = readFileSync(head.file, 'utf8'); } catch { return null; }
+  const out: SubagentOutcome = { done: false, startedAt: head.startedAt, usage: null };
+  for (const line of raw.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    let d: Record<string, unknown>;
+    try { d = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+    const p = asObj(d.payload);
+    if (d.type === 'event_msg' && p.type === 'task_complete') {
+      out.done = true;
+      out.result = firstStr(p.last_agent_message) || undefined;
+      const s = p.started_at, c = p.completed_at;
+      if (typeof s === 'number') out.startedAt = s * 1000;
+      if (typeof c === 'number') out.endedAt = c * 1000;
+    } else if (d.type === 'event_msg' && p.type === 'token_count') {
+      const t = asObj(asObj(p.info).total_token_usage);
+      if (typeof t.input_tokens === 'number') {
+        out.usage = { input: t.input_tokens, output: Number(t.output_tokens ?? 0), cached: Number(t.cached_input_tokens ?? 0) };
+      }
+    }
+  }
+  return out;
+}
+
+/** Page a child's transcript. The id is matched against the parent's children
+ *  before it reaches a path, so a query-string id cannot name another thread. */
+function readSubagentPage(configDirs: string[], providerSessionId: string, agentId: string, limit: number, before?: number) {
+  const known = listSubagents(configDirs, providerSessionId).some((s) => s.agentId === agentId);
+  if (!known) return { rows: [], cursor: 0, done: true };
+  return readHistoryPage(configDirs, agentId, limit, before);
+}
+
 function startCodexTurn(opts: TurnOptions): TurnHandle {
   const flags = [
     '--json',
@@ -616,6 +759,9 @@ export const codexAdapter: ProviderAdapter = {
   listModels,
   hasCredentials,
   activeModel,
+  listSubagents,
+  subagentStatus,
+  readSubagentPage,
   readHistory,
   readHistoryPage,
   fetchUsage,

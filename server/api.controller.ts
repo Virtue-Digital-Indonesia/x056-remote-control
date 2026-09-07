@@ -552,8 +552,30 @@ export class ApiController {
     if (!projectId || !sessionId) return empty;
     try {
       const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
-      // Codex has no equivalent; an empty list is the honest answer, not an error.
-      if (adapter.id !== 'claude') return empty;
+      // A provider that records its own sub-agents (Codex: child threads with a
+      // parent_thread_id) answers through its adapter; Claude's on-disk layout
+      // is the reference implementation below.
+      if (adapter.id !== 'claude') {
+        if (!adapter.listSubagents) return empty;
+        const running = this.manager.isSessionRunning(sessionId);
+        const rows = adapter.listSubagents(configDirs, providerSessionId).map((s) => {
+          const st = adapter.subagentStatus?.(configDirs, providerSessionId, s.agentId) ?? null;
+          const fresh = s.updatedAt != null && Date.now() - s.updatedAt < LIVE_SUBAGENT_MS;
+          const status = st?.done ? 'done' : running && fresh ? 'running' : 'stopped';
+          return {
+            ...s, status,
+            startedAt: st?.startedAt ?? s.startedAt,
+            endedAt: st?.endedAt,
+            brief: st?.result ? st.result.slice(0, 600) : '',
+            result: st?.result,
+            // Token counts are recorded; a price is not -- GPT models are not in
+            // the price table, and a blank beats a number that is wrong.
+            usage: st?.usage ? { input: st.usage.input, output: st.usage.output, cacheRead: st.usage.cached ?? 0, cacheWrite: 0 } : null,
+            cost: null,
+          };
+        });
+        return { subagents: rows, self: null };
+      }
 
       // The parent's own transcript answers two questions at once: what the
       // conversation itself has spent, and — through each Task's tool_result —
@@ -811,7 +833,9 @@ export class ApiController {
     const cur = Number.isFinite(Number(before)) && Number(before) >= 0 ? Number(before) : undefined;
     try {
       const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
-      if (adapter.id !== 'claude') return { rows: [], cursor: 0, done: true };
+      if (adapter.id !== 'claude') {
+        return adapter.readSubagentPage?.(configDirs, providerSessionId, agentId, n, cur) ?? { rows: [], cursor: 0, done: true };
+      }
       return readSubagentPage(configDirs, providerSessionId, agentId, n, cur);
     } catch {
       return { rows: [], cursor: 0, done: true };

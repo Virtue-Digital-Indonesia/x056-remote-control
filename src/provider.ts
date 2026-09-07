@@ -1,3 +1,4 @@
+import type { SubagentMeta } from './adapters/subagents.js';
 import type { TurnHandle, TurnOptions } from './turn.js';
 import type { Usage } from './quota.js';
 import type { RawEvent, Verdict } from './types.js';
@@ -84,6 +85,15 @@ export const DEFAULT_CONTINUE_PROMPT =
  * events and vice versa, because a session runs entirely on one provider (you
  * can't resume a Claude transcript on GPT). Failover pools are per-provider.
  */
+export interface SubagentOutcome {
+  done: boolean;
+  startedAt?: number;
+  endedAt?: number;
+  /** The sub-agent's last message, when it finished. */
+  result?: string;
+  usage?: { input: number; output: number; cached?: number } | null;
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
   /** Human name for the UI, e.g. "Claude" or "ChatGPT (Codex)". */
@@ -165,6 +175,20 @@ export interface ProviderAdapter {
    *  cursor for the page older than this one. Providers that don't implement it
    *  simply don't support scroll-back — the panel loads the newest page only. */
   readHistoryPage?(configDirs: string[], providerSessionId: string, limit: number, before?: number): {
+    rows: HistoryEntry[];
+    cursor: number;
+    done: boolean;
+  };
+  /**
+   * Sub-agents this provider records for a session, in the same shape Claude's
+   * are listed in, so the panel needs no second UI. Codex: child threads whose
+   * rollout names this one as parent_thread_id.
+   */
+  listSubagents?(configDirs: string[], providerSessionId: string): SubagentMeta[];
+  /** Outcome of one sub-agent: finished or not, its final text, token usage. */
+  subagentStatus?(configDirs: string[], providerSessionId: string, agentId: string): SubagentOutcome | null;
+  /** Page one sub-agent's transcript; agentId is validated against the listing first. */
+  readSubagentPage?(configDirs: string[], providerSessionId: string, agentId: string, limit: number, before?: number): {
     rows: HistoryEntry[];
     cursor: number;
     done: boolean;
