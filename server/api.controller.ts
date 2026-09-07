@@ -24,6 +24,7 @@ import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { TEMPLATES, TemplateStore } from './templates.js';
 import { TRANSCRIPT_STATS, TranscriptStatsReader, estimateCost } from './transcript-stats.js';
+import type { ProviderId } from '../src/provider.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles, transcriptIndex } from '../src/adapters/subagents.js';
 import { listWorkflowAgents, listWorkflowRuns, liveWorkflowRuns, readWorkflowAgentPage } from '../src/adapters/workflows.js';
@@ -1068,8 +1069,11 @@ export class ApiController {
   }
 
   /** Models each provider offers for the accounts actually configured here —
-   *  read from the provider's own catalog (Codex caches the account's list), so
+   *  read from the provider's own catalog (Codex caches one per account), so
    *  the composer's picker shows real, current ids rather than a hardcoded set.
+   *  ALL of a provider's accounts feed the list: a turn may fail over to any of
+   *  them, and taking the first account's cache alone hid gpt-6-astra behind an
+   *  account whose token was revoked before the model shipped.
    *  Shape: { codex: [{slug,label,…}] }. Providers with no catalog are omitted. */
   @Get('models')
   models(): Record<string, unknown[]> {
@@ -1079,13 +1083,18 @@ export class ApiController {
     } catch {
       return {};
     }
-    const out: Record<string, unknown[]> = {};
+    const dirsByProvider = new Map<ProviderId, string[]>();
     for (const acct of registry.list()) {
-      if (out[acct.provider]) continue; // first account of each provider wins
-      const adapter = getAdapter(acct.provider);
+      const dirs = dirsByProvider.get(acct.provider) ?? [];
+      dirs.push(acct.configDir);
+      dirsByProvider.set(acct.provider, dirs);
+    }
+    const out: Record<string, unknown[]> = {};
+    for (const [provider, dirs] of dirsByProvider) {
+      const adapter = getAdapter(provider);
       if (!adapter.listModels) continue;
-      const models = adapter.listModels(acct.configDir);
-      if (models.length) out[acct.provider] = models;
+      const models = adapter.listModels(dirs);
+      if (models.length) out[provider] = models;
     }
     return out;
   }

@@ -153,10 +153,14 @@ export interface ProviderAdapter {
    * re-login it needs.
    */
   hasCredentials?(configDir: string): boolean | null;
-  /** The models this account can actually use, when the provider publishes a
-   *  catalog (Codex caches one per account). Omit when the provider has no
-   *  discoverable list — the UI then falls back to its own preset options. */
-  listModels?(configDir: string): ProviderModel[];
+  /** The models the fleet can use, when the provider publishes a catalog
+   *  (Codex caches one per account). Takes EVERY account's config dir of the
+   *  provider and merges them: a model any account offers belongs in the picker,
+   *  and the freshest catalog decides the order. Reading one account's cache
+   *  hid gpt-6-astra behind a revoked account whose cache predated it. Omit
+   *  when the provider has no discoverable list — the UI then falls back to its
+   *  own preset options. */
+  listModels?(configDirs: string[]): ProviderModel[];
   /** Fetch usage/quota for the account. `undefined` means the provider exposes
    *  no machine-readable usage (the UI then shows no usage bars for it). */
   fetchUsage?(configDir: string): Promise<Usage>;

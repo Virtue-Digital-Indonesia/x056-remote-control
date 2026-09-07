@@ -424,33 +424,49 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
   return { rows: out, offsets };
 }
 
-/** The models this ChatGPT account can use. Codex caches the account's own
+/** The models these ChatGPT accounts can use. Codex caches each account's own
  *  catalog at $CODEX_HOME/models_cache.json (fetched from the API), so read that
- *  rather than hardcode ids — it stays correct per-account and as OpenAI ships
- *  new models. `visibility: "list"` is the catalog's own "show this to the user"
- *  flag (internal entries like codex-auto-review are marked "hide"). */
-function listModels(configDir: string): ProviderModel[] {
-  try {
-    const cache = JSON.parse(readFileSync(join(configDir, 'models_cache.json'), 'utf8')) as {
-      models?: {
-        slug?: string; display_name?: string; description?: string; visibility?: string;
-        default_reasoning_level?: string;
-        supported_reasoning_levels?: { effort?: string }[];
-      }[];
-    };
-    return (cache.models ?? [])
-      .filter((m) => m.slug && m.visibility === 'list')
-      .map((m) => ({
-        slug: m.slug as string,
-        label: m.display_name || (m.slug as string),
+ *  rather than hardcode ids — it stays correct as OpenAI ships new models.
+ *  `visibility: "list"` is the catalog's own "show this to the user" flag
+ *  (internal entries like codex-auto-review are marked "hide").
+ *
+ *  Every account's cache is merged, freshest first. A cache is only rewritten
+ *  when that account runs, so an account that cannot (revoked token, out of
+ *  credits) keeps an old catalog forever — and reading only the first account
+ *  hid gpt-6-astra from the picker while two healthy accounts had it. */
+function listModels(configDirs: string[]): ProviderModel[] {
+  type Cached = {
+    slug?: string; display_name?: string; description?: string; visibility?: string;
+    default_reasoning_level?: string;
+    supported_reasoning_levels?: { effort?: string }[];
+  };
+  const caches: { mtime: number; models: Cached[] }[] = [];
+  for (const dir of configDirs) {
+    const path = join(dir, 'models_cache.json');
+    try {
+      const cache = JSON.parse(readFileSync(path, 'utf8')) as { models?: Cached[] };
+      caches.push({ mtime: statSync(path).mtimeMs, models: cache.models ?? [] });
+    } catch {
+      // no cache yet (account never ran a turn) — contributes nothing
+    }
+  }
+  caches.sort((a, b) => b.mtime - a.mtime);
+  const seen = new Set<string>();
+  const out: ProviderModel[] = [];
+  for (const { models } of caches) {
+    for (const m of models) {
+      if (!m.slug || m.visibility !== 'list' || seen.has(m.slug)) continue;
+      seen.add(m.slug);
+      out.push({
+        slug: m.slug,
+        label: m.display_name || m.slug,
         description: m.description,
         efforts: (m.supported_reasoning_levels ?? []).map((e) => e.effort).filter((e): e is string => !!e),
         defaultEffort: m.default_reasoning_level,
-      }));
-  } catch {
-    // no cache yet (account never ran a turn) — the UI falls back to Auto only
-    return [];
+      });
+    }
   }
+  return out;
 }
 
 /**
