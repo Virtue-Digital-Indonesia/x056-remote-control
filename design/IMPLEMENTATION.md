@@ -1,6 +1,6 @@
 **Panel redesign: implementation status**
 
-The working panel now has the approved Control room and Focus layouts. Publication uses the gateway deployer after verification.
+The working panel at https://x056.rc.val.id/ now has the approved Control room and Focus layouts. Publication uses the gateway deployer after verification.
 
 **Implemented behavior**
 
@@ -40,4 +40,4 @@ Start `npx tsx test/browser/fixture.ts`, then run `node test/browser/control-roo
 
 The host serves the panel file on every request. Host nginx serves the live CSS and JavaScript. The gateway also exposes both assets. Backend changes require a commit followed by `touch .deploy/requested`. Verify `.deploy/status.json` and the public endpoints after the host swaps the gateway.
 
-The earlier sample-data studies remain under `/panel-drafts/`. Their controls and charts are previews; the working application is at `/`.
+The earlier sample-data studies remain at https://x056.think.val.id/panel-drafts/. That preview host runs a separate application. Its controls and charts are previews; the working gateway is at https://x056.rc.val.id/.
