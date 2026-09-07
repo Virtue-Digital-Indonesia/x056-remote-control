@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow"><meta name="theme-color" content="#fafafa">
+  <title>x056 · Interface refinement</title><link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="preview-bar"><span><b>Design preview</b><span class="preview-description"> · Sample data, no live actions</span></span><nav aria-label="Preview shortcuts"><button data-action="accounts">Accounts</button><button data-action="chat">Conversation</button><button data-action="settings">Settings</button><button data-action="guide" aria-label="What changed?">?</button></nav></div>
+  <div class="app">
+    <aside class="sidebar" id="sidebar" aria-label="Workspace navigation"></aside>
+    <div class="sidebar-veil" id="sidebarVeil" hidden></div>
+    <div class="main-shell"><header class="topbar" id="topbar"></header><main id="main" tabindex="-1"></main></div>
+  </div>
+  <dialog id="conversation" class="conversation-dialog" aria-labelledby="chatTitle"></dialog>
+  <dialog id="accountPicker" class="account-picker" aria-labelledby="pickerTitle"></dialog>
+  <dialog id="settings" class="settings-dialog" aria-labelledby="settingsTitle"></dialog>
+  <dialog id="detail" class="detail-dialog" aria-labelledby="detailTitle"></dialog>
+  <div id="menu" class="menu" role="menu" hidden></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body></html>
