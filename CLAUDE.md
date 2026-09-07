@@ -200,8 +200,28 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   and it killed itself between spawn and first write. A turn whose process dies
   before `runOn` has nothing to resolve it, so it hangs forever and a stop
   cannot clear it: the abort path waits on the same promise.
-  `X056_PERSISTENT=off` restores a process per turn. Codex keeps the one-shot
-  path — its CLI has no equivalent mode.
+  `X056_PERSISTENT=off` restores a process per turn, for BOTH providers.
+- **Codex has the same thing, over `codex app-server`.** `codex exec --json`
+  has no streaming input, so Codex used to be one process per turn. The app
+  server is JSON-RPC on stdio with the primitives the pool needs — `thread/start`,
+  `thread/resume {threadId}`, `turn/start`, `turn/steer {expectedTurnId}`,
+  `turn/interrupt {turnId}` — verified live on 0.153.4 (thread → turn →
+  completed in 3.1s; `thread/resume` picks up a thread `exec` created, with its
+  original model). So `PersistentTurns` is one pool over a **`Transport`**
+  (`src/persistent-transport.ts`): the Claude one is the old inline code
+  verbatim; the Codex one (`src/persistent-codex.ts`) **translates** every
+  app-server notification into the flat `exec --json` shape the codex adapter
+  was written against, so `classify`/`toActivity`/`captureSessionId` run
+  unchanged. The manager runs two pools, one per provider.
+  - The Codex handshake can complete **synchronously inside `spawn()`**, before
+    `runOn` has attached a sink — events from that window are held and replayed
+    once the turn is wired, and a handshake that fails there settles the turn.
+    That hold is scoped to the pre-first-turn window only: widening it leaked a
+    between-turn Claude event into the next turn's classifier.
+  - **Still owed a live check:** `turn/steer` and `turn/interrupt` on a real
+    turn, and any successful Codex turn through the pool at all — the account
+    was out of credits, so the one end-to-end run reached `thread.started` and
+    then exercised the failure path (`turn.failed`, classified as a limit).
 - **The UI must show background work, or it reads as dead.** Every busy
   indicator used to key off `SessionManager.runs` — gateway turns — so a
   conversation whose turn had ended but whose process was still driving a
