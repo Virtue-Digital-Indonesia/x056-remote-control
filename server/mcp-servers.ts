@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AccountRegistry } from '../src/accounts.js';
 import type { ProviderId } from '../src/provider.js';
@@ -122,7 +122,7 @@ export class McpServerManager {
     try {
       const arr = JSON.parse(r.stdout) as {
         name: string;
-        transport?: { type?: string; command?: string; args?: string[]; env?: Record<string, string> | null; url?: string };
+        transport?: { type?: string; command?: string; args?: string[]; env?: Record<string, string> | null; url?: string; http_headers?: Record<string, string> | null };
       }[];
       if (!Array.isArray(arr)) return [];
       return arr.map((s) => {
@@ -135,6 +135,9 @@ export class McpServerManager {
           args: t.args,
           env: t.env ?? undefined,
           url: t.url,
+          // Without this an Obscura written with a bearer read back as
+          // header-less: never `synced`, and update() would have dropped it.
+          headers: t.http_headers ?? undefined,
         };
       });
     } catch {
@@ -210,7 +213,50 @@ export class McpServerManager {
     return { ok: perDir.every((p) => p.ok), perDir };
   }
 
+  /**
+   * `codex mcp add --url` has no way to attach headers, but config.toml accepts
+   * them -- `[mcp_servers.X] url = … [mcp_servers.X.http_headers] …` -- and
+   * `codex mcp list --json` / `codex mcp remove` both round-trip a hand-written
+   * table (verified on 0.153.4). So an http server WITH headers is written
+   * straight into the file; everything else still goes through the CLI.
+   */
+  private static codexNeedsToml(provider: ProviderId, s: McpServerSpec): boolean {
+    return provider === 'codex' && s.transport === 'http' && !!s.headers && Object.keys(s.headers).length > 0;
+  }
+
+  private static tomlStr(v: string): string { return JSON.stringify(v); }
+
+  /** Drop every `[mcp_servers.<name>]` and `[mcp_servers.<name>.*]` table. */
+  static stripCodexTable(toml: string, name: string): string {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('^\\[mcp_servers\\.' + esc + '(?:\\.[^\\]]*)?\\][^\\n]*\\n(?:(?!^\\[)[^\\n]*\\n?)*', 'gm');
+    return toml.replace(re, '').replace(/\n{3,}/g, '\n\n');
+  }
+
+  private writeCodexHttpTable(configDir: string, s: McpServerSpec): { ok: boolean; stdout: string; stderr: string } {
+    const file = join(configDir, 'config.toml');
+    let body = '';
+    try { if (existsSync(file)) body = readFileSync(file, 'utf8'); } catch { /* start fresh */ }
+    body = McpServerManager.stripCodexTable(body, s.name).trimEnd();
+    const lines = [
+      `[mcp_servers.${s.name}]`,
+      `url = ${McpServerManager.tomlStr(s.url ?? '')}`,
+      '',
+      `[mcp_servers.${s.name}.http_headers]`,
+      ...Object.entries(s.headers ?? {}).map(([k, v]) => `${McpServerManager.tomlStr(k)} = ${McpServerManager.tomlStr(v)}`),
+    ];
+    try {
+      writeFileSync(file, (body ? body + '\n\n' : '') + lines.join('\n') + '\n');
+      return { ok: true, stdout: `Added global MCP server '${s.name}' (config.toml, with headers).`, stderr: '' };
+    } catch (err) {
+      return { ok: false, stdout: '', stderr: (err as Error).message };
+    }
+  }
+
   add(provider: ProviderId, spec: McpServerSpec): Promise<McpOpResult> {
+    if (McpServerManager.codexNeedsToml(provider, spec)) {
+      return this.eachAccount(provider, async (dir) => this.writeCodexHttpTable(dir, spec));
+    }
     return this.eachAccount(provider, (dir) => this.run(provider, dir, McpServerManager.addArgs(provider, spec)));
   }
 
@@ -220,6 +266,7 @@ export class McpServerManager {
   update(provider: ProviderId, spec: McpServerSpec): Promise<McpOpResult> {
     return this.eachAccount(provider, async (dir) => {
       await this.run(provider, dir, McpServerManager.removeArgs(provider, spec.name)); // may not exist — that's fine
+      if (McpServerManager.codexNeedsToml(provider, spec)) return this.writeCodexHttpTable(dir, spec);
       return this.run(provider, dir, McpServerManager.addArgs(provider, spec));
     });
   }

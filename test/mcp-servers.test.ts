@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -142,5 +142,61 @@ describe('McpServerManager', () => {
   it('returns ok:false with no accounts rather than silently succeeding', async () => {
     const m = new McpServerManager({ claudePath: STUB, accounts: () => [], timeoutMs: 5_000 });
     expect(await m.add('claude', STDIO)).toEqual({ ok: false, perDir: [] });
+  });
+});
+
+describe('codex: an http server WITH headers goes through config.toml', () => {
+  const OBSCURA = { name: 'Obscura', transport: 'http' as const, url: 'https://dms.val.id/api/v1/mcp', headers: { Authorization: 'Bearer obsk_secret' } };
+
+  it('writes the table (the CLI has no header flag) and lists it back with headers', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'x056-mcpcx-'));
+    const cx = accounts(root, ['d', 'g']);
+    const log = join(root, 'log.jsonl');
+    process.env.STUB_MCP_PROVIDER = 'codex'; process.env.STUB_LOG = log;
+    const m = new McpServerManager({ claudePath: STUB, codexPath: STUB, accounts: (p) => (p === 'codex' ? cx : []), timeoutMs: 10_000 });
+    const res = await m.add('codex', OBSCURA);
+    expect(res.ok).toBe(true);
+    expect(res.perDir.map((p) => p.account).sort()).toEqual(['d', 'g']);
+    // no CLI `add` was attempted for it -- the file is the mechanism
+    // The file is the mechanism: no CLI `add` ran, so the stub may never have been invoked at all.
+    const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+    expect(calls.filter((c) => c.argv[1] === 'add')).toHaveLength(0);
+    for (const a of cx) {
+      const toml = readFileSync(join(a.configDir, 'config.toml'), 'utf8');
+      expect(toml).toContain('[mcp_servers.Obscura]');
+      expect(toml).toContain('url = "https://dms.val.id/api/v1/mcp"');
+      expect(toml).toContain('[mcp_servers.Obscura.http_headers]');
+      expect(toml).toContain('"Authorization" = "Bearer obsk_secret"');
+    }
+    const { servers } = await m.list();
+    const ob = servers.find((s) => s.name === 'Obscura' && s.provider === 'codex')!;
+    expect(ob.headers).toEqual({ Authorization: 'Bearer obsk_secret' });
+    expect(ob.synced).toBe(true);
+  });
+
+  it('update replaces the table rather than appending a second one; remove strips it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'x056-mcpcx2-'));
+    const cx = accounts(root, ['d']);
+    process.env.STUB_MCP_PROVIDER = 'codex';
+    const m = new McpServerManager({ claudePath: STUB, codexPath: STUB, accounts: (p) => (p === 'codex' ? cx : []), timeoutMs: 10_000 });
+    await m.add('codex', OBSCURA);
+    await m.add('codex', { name: 'api', transport: 'http', url: 'https://x.example/mcp' }); // plain http -> CLI path
+    await m.update('codex', { ...OBSCURA, headers: { Authorization: 'Bearer rotated' } });
+    const toml = readFileSync(join(cx[0].configDir, 'config.toml'), 'utf8');
+    expect(toml.match(/\[mcp_servers\.Obscura\]/g)).toHaveLength(1);
+    expect(toml).toContain('"Bearer rotated"');
+    expect(toml).not.toContain('obsk_secret');
+    await m.remove('codex', 'Obscura');
+    expect(readFileSync(join(cx[0].configDir, 'config.toml'), 'utf8')).not.toContain('mcp_servers.Obscura');
+    const { servers } = await m.list();
+    expect(servers.map((s) => s.name)).toEqual(['api']);
+  });
+
+  it('stripCodexTable removes only the named tables', () => {
+    const toml = '[mcp_servers.a]\nurl = "u"\n\n[mcp_servers.a.http_headers]\nX = "1"\n\n[mcp_servers.ab]\nurl = "v"\n';
+    const out = McpServerManager.stripCodexTable(toml, 'a');
+    expect(out).not.toContain('[mcp_servers.a]');
+    expect(out).not.toContain('[mcp_servers.a.http_headers]');
+    expect(out).toContain('[mcp_servers.ab]');
   });
 });
