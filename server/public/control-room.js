@@ -13,10 +13,10 @@ window.createControlRoom = function (engine) {
   main.append(content);
   main.insertAdjacentHTML('afterbegin', `<nav id="focusNav" aria-label="Focus navigation"><button class="cr-logo" id="focusHome" title="Back to Control room">x0</button>${iconButton('focusBack','left','Back to Control room')}${iconButton('focusSearch','search','Search conversations')}${iconButton('focusNew','compose','New conversation')}<span class="sp"></span>${iconButton('focusAccounts','user','Accounts')}${iconButton('focusSettings','gear','Display settings')}</nav>`);
   // The existing toolbar actions remain wired; less-used actions live in More.
-  main.querySelector('.topbar').insertAdjacentHTML('beforeend', `<button class="cr-secondary" id="chatActivity">${ic('sparkles')}<span>Activity</span><small id="chatActivityCount"></small></button>${iconButton('chatMax','expand','Maximize conversation')}${iconButton('chatClose','x','Close conversation')}`);
+  main.querySelector('.topbar').insertAdjacentHTML('beforeend', `<button class="cr-secondary" id="chatActivity">${ic('sparkles')}<span>Activity</span><small id="chatActivityCount"></small></button>${iconButton('chatRefresh','refresh','Refresh conversation')}${iconButton('chatMax','expand','Maximize conversation')}${iconButton('chatClose','x','Close conversation')}`);
   const shell = document.createElement('section'); shell.id = 'controlRoom'; shell.setAttribute('aria-label', 'Control room');
   shell.innerHTML = `<header class="cr-top"><button class="cr-logo" id="crHome">x0<span>x056</span></button><nav aria-label="Main navigation"><button id="crBoardTab" aria-current="page">Control room</button><button id="crAccountsTab">Accounts</button></nav><span class="sp"></span><span id="crConnection" class="cr-connection">Connecting</span>${iconButton('crProjects','folder','Projects')}${iconButton('crTheme','moon','Change theme')}${iconButton('crSettings','gear','Display settings')}${iconButton('crNotifications','bell','Notifications')}</header>
-  <div id="crBoard" class="cr-page"><div class="cr-heading"><div><div class="cr-eyebrow">CONVERSATIONS</div><h1 id="crScopeTitle">All projects</h1><p id="crScopeSubtitle">Conversations across your workspace</p></div><button class="cr-primary" id="crNew">${ic('plus')} New conversation</button></div><div id="crStats" class="cr-stats"></div><section id="crProjectCosts" class="cr-project-costs" aria-label="Project cost estimates"></section><div class="cr-tools"><div class="cr-tabs" role="group" aria-label="Conversation filter"><button data-filter="all" class="selected">All conversations</button><button data-filter="question">Needs input</button><button data-filter="active">Running</button><button data-filter="unread">Unread</button></div><label class="cr-search">${ic('search')}<input id="crSearch" type="search" placeholder="Search conversations…" aria-label="Search conversations" /></label><select id="crProjectFilter" aria-label="Filter by project"><option value="">All projects</option></select></div><div id="crBoardError" role="status"></div><div class="cr-board" id="crLanes"></div></div>
+  <div id="crBoard" class="cr-page"><div class="cr-heading"><div><div class="cr-eyebrow">CONVERSATIONS</div><h1 id="crScopeTitle">All projects</h1><p id="crScopeSubtitle">Conversations across your workspace</p></div><button class="cr-primary" id="crNew">${ic('plus')} New conversation</button></div><div id="crStats" class="cr-stats"></div><div class="cr-tools"><div class="cr-tabs" role="group" aria-label="Conversation filter"><button data-filter="all" class="selected">All conversations</button><button data-filter="question">Needs input</button><button data-filter="active">Running</button><button data-filter="unread">Unread</button></div><label class="cr-search">${ic('search')}<input id="crSearch" type="search" placeholder="Search conversations…" aria-label="Search conversations" /></label><select id="crProjectFilter" aria-label="Filter by project"><option value="">All projects</option></select></div><div id="crBoardError" role="status"></div><div class="cr-board" id="crLanes"></div></div>
   <div id="crAccounts" class="cr-page" hidden></div><div id="crAutomations" class="cr-page" hidden><div class="cr-heading"><div><h1>Automations</h1><p>Scheduled messages across your workspace.</p></div><button id="refreshAutomations" class="cr-secondary">Refresh</button></div><div id="automationContent"></div></div><div id="crToast" role="status" hidden></div>`;
   document.body.prepend(shell);
   const workspace = document.createElement('div'); workspace.id = 'crWorkspace';
@@ -26,7 +26,7 @@ window.createControlRoom = function (engine) {
   const primaryNav = shell.querySelector('.cr-top nav'); primaryNav.className = 'cr-primary-nav';
   $('crProjectNav').prepend(primaryNav);
   $('crBoardTab').innerHTML = ic('menu') + '<span>Control room</span>';
-  $('crAccountsTab').innerHTML = ic('user') + '<span>Accounts</span>';
+  $('crAccountsTab').innerHTML = ic('chart') + '<span>Dashboard</span>';
   primaryNav.insertAdjacentHTML('beforeend', '<button id="crAutomationsTab">'+ic('alarm')+'<span>Automations</span></button>');
   $('crProjectNav').insertAdjacentHTML('beforeend','<button id="sidebarSettings" class="cr-project-manage">'+ic('gear')+'Settings</button>');
   $('crHome').insertAdjacentHTML('afterend','<span id="crBreadcrumb">Workspace <span>/ Control room</span></span>');
@@ -46,6 +46,45 @@ window.createControlRoom = function (engine) {
   try { selectedProject=localStorage.getItem('x056_project_scope') || ''; } catch {}
   let mode = 'closed', section = 'board', boardFilter = 'all', renderTimer, accountTimer, returnFocus;
   let boardSignature = '', accountSignature = '', analytics = null, routing = null, analyticsError = '', requestVersion = 0;
+  const stage=document.createElement('div');stage.id='conversationStage';stage.setAttribute('aria-label','Quick conversation switcher');
+  stage.innerHTML=`<div id="stageShelf" hidden><header><strong>Conversations</strong><small>Dismiss hides a shortcut</small></header><label class="stage-search">${ic('search')}<input id="stageSearch" type="search" placeholder="Find a conversation" aria-label="Find a quick conversation"></label><div id="stageItems"></div><button id="stageBrowse">Browse all conversations ${ic('right')}</button></div><button id="stageToggle" aria-label="Switch conversation" aria-expanded="false" aria-controls="stageShelf">${ic('chat')}<span id="stageCount"></span><i id="stageActive" hidden></i></button>`;
+  document.body.append(stage);
+  let stageRecent=[],stageDismissed=[],stageSignature='',stageCloseTimer,stagePinned=false;
+  try{stageRecent=JSON.parse(localStorage.getItem('x056_stage_recent')||'[]');stageDismissed=JSON.parse(localStorage.getItem('x056_stage_dismissed')||'[]');if(!Array.isArray(stageRecent)||!Array.isArray(stageDismissed))throw Error();}catch{stageRecent=[];stageDismissed=[];}
+  function saveStage(){try{localStorage.setItem('x056_stage_recent',JSON.stringify(stageRecent.slice(0,30)));localStorage.setItem('x056_stage_dismissed',JSON.stringify(stageDismissed.slice(-200)));}catch{}}
+  function rememberStage(){const s=engine.state();if(!s.sessionId)return;const id=s.projectId+'::'+s.sessionId;stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);stageDismissed=stageDismissed.filter(x=>x!==id);saveStage();renderStage();}
+  function stageOpen(value){clearTimeout(stageCloseTimer);$('stageShelf').hidden=!value;$('stageToggle').setAttribute('aria-expanded',String(value));if(value)renderStage();}
+  $('stageToggle').onclick=()=>{stagePinned=!stagePinned;stageOpen(stagePinned);};
+  stage.addEventListener('pointerenter',e=>{if(e.pointerType==='mouse'){clearTimeout(stageCloseTimer);stageOpen(true);}});
+  stage.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'&&!stagePinned&&!stage.contains(document.activeElement))stageCloseTimer=setTimeout(()=>stageOpen(false),250);});
+  stage.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('stageShelf').hidden){e.preventDefault();e.stopPropagation();stagePinned=false;stageOpen(false);$('stageToggle').focus();}});
+  document.addEventListener('pointerdown',e=>{if(!stage.contains(e.target)){stagePinned=false;stageOpen(false);}});
+  $('stageSearch').oninput=()=>renderStage();
+  $('stageBrowse').onclick=()=>{stagePinned=false;stageOpen(false);showSection('board');$('crSearch').focus();};
+  function renderStage(){
+    const all=cards(),s=engine.state(),query=$('stageSearch').value.trim().toLowerCase();
+    const id=x=>x.p.id+'::'+x.c.sessionId;
+    const eligible=all.filter(x=>!stageDismissed.includes(id(x))&&(stageRecent.includes(id(x))||['running','background','question'].includes(x.status)||x.c.sessionId===s.sessionId));
+    eligible.sort((a,b)=>{const ai=stageRecent.indexOf(id(a)),bi=stageRecent.indexOf(id(b));return (ai<0?100:ai)-(bi<0?100:bi)||b.time-a.time;});
+    const rows=(query?all.filter(x=>[x.p.name,x.c.title].join(' ').toLowerCase().includes(query)):eligible).slice(0,30);
+    $('stageCount').textContent=eligible.length||'';$('stageCount').hidden=!eligible.length;
+    $('stageActive').hidden=!all.some(x=>['running','background'].includes(x.status));
+    const html=rows.map(x=>`<div class="stage-item ${x.c.sessionId===s.sessionId&&x.p.id===s.projectId?'current':''}"><button class="stage-conversation" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><span class="stage-caption"><strong>${esc(x.c.title||'Conversation')}</strong><small>${esc(x.p.name)} · ${statusLabels[x.status]||'Recent'}</small></span><span class="stage-orb ${x.status}" style="--project-color:${projectColor(x.p.id)}">${ic(x.status==='running'?'sparkles':'chat')}</span></button><button class="stage-dismiss" data-stage-dismiss="${esc(id(x))}" aria-label="Dismiss ${esc(x.c.title||'conversation')} shortcut">${ic('x')}</button></div>`).join('')||'<p class="stage-empty">Open a conversation to keep it here.</p>';
+    if(html===stageSignature)return;stageSignature=html;const focus=document.activeElement?.dataset.session;$('stageItems').innerHTML=html;
+    $('stageItems').querySelectorAll('[data-session]').forEach(b=>b.onclick=()=>{stagePinned=false;stageOpen(false);openConversation(b);});
+    $('stageItems').querySelectorAll('[data-stage-dismiss]').forEach(b=>b.onclick=()=>{stageDismissed.push(b.dataset.stageDismiss);stageRecent=stageRecent.filter(x=>x!==b.dataset.stageDismiss);saveStage();renderStage();$('stageToggle').focus();});
+    if(focus)[...$('stageItems').querySelectorAll('[data-session]')].find(b=>b.dataset.session===focus)?.focus({preventScroll:true});
+  }
+  // Native cancel handlers also settle confirmation promises and clean up utilities.
+  let outsideDialog=null;
+  function outsideBounds(dialog,event){const r=dialog.getBoundingClientRect();return event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom;}
+  document.addEventListener('pointerdown',e=>{outsideDialog=e.target instanceof HTMLDialogElement&&e.target.open&&outsideBounds(e.target,e)?e.target:null;},true);
+  document.addEventListener('click',e=>{
+    const dialog=outsideDialog;outsideDialog=null;
+    if(dialog&&e.target===dialog&&dialog.open&&outsideBounds(dialog,e)){
+      const event=new Event('cancel',{cancelable:true});if(dialog.dispatchEvent(event))dialog.close();
+    }
+  },true);
   const outcomes = new Map();
   const positions = new Map();
   const compact = n => Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n || 0);
@@ -77,8 +116,9 @@ window.createControlRoom = function (engine) {
     if (mode === 'modal') main.setAttribute('aria-modal','true'); else main.removeAttribute('aria-modal');
     $('chatMax').title = $('chatMax').ariaLabel = mode === 'side' ? 'Maximize conversation' : 'Restore side panel';
     if (mode !== 'closed') restorePosition();
+    (mode==='closed'?document.body:main).append(stage);
   }
-  function open() { if (mode === 'closed') { returnFocus = document.activeElement; setMode(prefs.open === 'side' ? 'side' : prefs.maximize); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
+  function open() { rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode(prefs.open === 'side' ? 'side' : prefs.maximize); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
   function close() { engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
   function pageFor(name) { return $(name==='board'?'crBoard':name==='accounts'?'crAccounts':'crAutomations'); }
   function showSection(next) {
@@ -86,8 +126,8 @@ window.createControlRoom = function (engine) {
     close(); engine.nav(false); section = next; projectNav(false);
     ['board','accounts','automations'].forEach(name=>pageFor(name).hidden=name!==next);
     ['Board','Accounts','Automations'].forEach(name=>$('cr'+name+'Tab').setAttribute('aria-current',next===name.toLowerCase()?'page':'false'));
-    $('crBreadcrumb').innerHTML='Workspace <span>/ '+({board:'Control room',accounts:'Accounts',automations:'Automations'}[next])+'</span>';
-    if(next==='accounts') { renderAccountsPage(); loadAnalytics(); engine.pollAccounts(); }
+    $('crBreadcrumb').innerHTML='Workspace <span>/ '+({board:'Control room',accounts:'Dashboard',automations:'Automations'}[next])+'</span>';
+    if(next==='accounts') { renderAccountsPage(); renderProjectCosts(); loadProjectCosts(); loadAnalytics(); engine.pollAccounts(); }
     else if(next==='automations') $('cronBtn').click();
     else refresh();
     pageFor(next).scrollTop=sectionScroll[next];
@@ -107,6 +147,12 @@ window.createControlRoom = function (engine) {
   on('sendAccountChip',()=>{selectedSendAccount='';renderSendAccounts(true);sendAccounts.showModal();});
   on('crAutomationsTab',()=>showSection('automations')); on('refreshAutomations',()=> $('cronBtn').click()); on('crNotifications',e=>notificationMenu(e.currentTarget)); on('chatActivity',e=>activityMenu(e.currentTarget)); on('focusSearch', () => $('searchChatsBtn').click());
   ['crNew','focusNew'].forEach(id => on(id, () => { engine.newConversation(selectedProject); open(); }));
+  on('chatRefresh', async e => {
+    const button=e.currentTarget;button.disabled=true;button.setAttribute('aria-busy','true');rememberPosition();
+    try {await engine.refreshConversation();restorePosition();refresh();toast('Conversation refreshed.');}
+    catch(err){toast('Could not refresh. '+err.message);}
+    finally{button.disabled=false;button.removeAttribute('aria-busy');}
+  });
   on('chatClose', close); on('chatMax', () => setMode(mode === 'side' ? prefs.maximize : 'side'));
   veil.addEventListener('click', close);
   $('acctChip').addEventListener('click', e => { e.stopImmediatePropagation(); engine.closePops(); showSection('accounts'); }, true);
@@ -198,13 +244,14 @@ window.createControlRoom = function (engine) {
       $('crLanes').querySelectorAll('[data-dismiss]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await engine.dismissQuestion(b.dataset.project,b.dataset.dismiss);toast('Question dismissed. No reply sent.');refresh();}catch(e){toast(e.message);b.disabled=false;}});
       if($('crShowMore'))$('crShowMore').onclick=()=>{recentLimit+=20;renderBoard();};
     }
-    updateTitle();renderSendAccounts();renderProjectCosts();loadProjectCosts();renderRuns();
+    updateTitle();renderSendAccounts();if(section==='accounts'){renderProjectCosts();loadProjectCosts();}renderRuns();renderStage();
   }
   let costSnapshot=null,costError='',costBusy=false,costUpdated=0,costSignature='';
   const costDialog=document.createElement('dialog');costDialog.className='cr-dialog';costDialog.id='projectCostDetails';costDialog.setAttribute('aria-label','Project cost estimates');document.body.append(costDialog);
   const money=n=>new Intl.NumberFormat(undefined,{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n||0);
-  function costRows(){return (costSnapshot?.projects||[]).filter(p=>!selectedProject||p.projectId===selectedProject);}
+  function costRows(){return costSnapshot?.projects||[];}
   function renderProjectCosts(){
+    if(!$('crProjectCosts'))return;
     const rows=costRows(),usd=rows.reduce((n,p)=>n+p.cost.usd,0),tokens=rows.reduce((n,p)=>n+p.usage.input+p.usage.output+p.usage.cacheRead+p.usage.cacheWrite,0);
     const partial=rows.some(p=>p.partial),unknown=[...new Set(rows.flatMap(p=>p.cost.unpriced))],missing=rows.reduce((n,p)=>n+p.missing,0);
     const markup=`<div><span class="cr-eyebrow">PROJECT COST ESTIMATE</span><div class="cr-cost-value">${costSnapshot?'≈ '+money(usd):'—'}<small>${costSnapshot?compact(tokens)+' recorded tokens':'Loading recorded usage…'}</small></div><p>${costError?esc(costError):partial?'Scanning transcripts · totals are still updating':unknown.length?'Some models are unpriced':missing?'Some conversations have no recorded usage':'At standard API rates · includes subagents'}</p></div><button class="cr-secondary" id="crCostDetails">${costError?'Retry':'View breakdown'} ${ic('right')}</button>`;
@@ -214,7 +261,7 @@ window.createControlRoom = function (engine) {
   function renderCostDetails(){
     const rows=costRows(),max=Math.max(0.01,...rows.map(p=>p.cost.usd));
     const scrollTop=costDialog.querySelector('.cost-breakdown')?.scrollTop||0, expanded=new Set([...costDialog.querySelectorAll('details[open]')].map(d=>d.dataset.project));
-    costDialog.innerHTML=`<header><div><h2>Project cost estimates</h2><p>${selectedProject?esc(rows[0]?.projectName||'Project'):'All projects'} · Recorded usage</p></div><button class="cr-icon" data-cost-close aria-label="Close cost breakdown">${ic('x')}</button></header><div class="cost-breakdown">${rows.map(p=>`<details class="cost-project" data-project="${esc(p.projectId)}" ${selectedProject||expanded.has(p.projectId)?'open':''}><summary><span><strong>${esc(p.projectName)}</strong><small>${p.conversations} conversations · ${p.agentCount} agents${p.partial?' · Updating':''}${p.missing?' · Missing transcripts':''}</small></span><strong>≈ ${money(p.cost.usd)}</strong></summary><div class="cost-bar" role="img" aria-label="${esc(p.projectName)}: ${money(p.cost.usd)}"><i style="width:${p.cost.usd/max*100}%"></i></div><p class="cost-agent-note">Includes ${money(p.agentUsd)} from subagents${p.cost.unpriced.length?' · Unpriced: '+esc(p.cost.unpriced.join(', ')):''}</p><div class="cost-conversations">${(costSnapshot?.conversations||[]).filter(c=>c.projectId===p.projectId).sort((a,b)=>b.cost.usd-a.cost.usd).map(c=>`<div><span>${esc(c.title)}<small>${compact(c.usage.input+c.usage.output+c.usage.cacheRead+c.usage.cacheWrite)} tokens${c.partial?' · Scanning':''}${c.missing?' · No transcript':''}${c.cost.unpriced.length?' · Unpriced usage':''}</small></span><strong>${c.missing&&!c.size?'—':'≈ '+money(c.cost.usd)}</strong></div>`).join('')}</div></details>`).join('')||'<p class="cr-empty">No project usage recorded yet.</p>'}</div><footer class="cost-footer"><p>${esc(costSnapshot?.pricing?.basis||'Estimates use recorded tokens at standard API rates.')}<br>Rates checked ${esc(costSnapshot?.pricing?.date||'—')}. <a href="https://developers.openai.com/api/docs/models" target="_blank" rel="noopener">OpenAI rates</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener">Claude rates</a></p><button class="cr-secondary" data-cost-refresh ${costBusy?'disabled':''}>Refresh</button></footer>`;
+    costDialog.innerHTML=`<header><div><h2>Project cost estimates</h2><p>All projects · Recorded usage</p></div><button class="cr-icon" data-cost-close aria-label="Close cost breakdown">${ic('x')}</button></header><div class="cost-breakdown">${rows.map(p=>`<details class="cost-project" data-project="${esc(p.projectId)}" ${expanded.has(p.projectId)?'open':''}><summary><span><strong>${esc(p.projectName)}</strong><small>${p.conversations} conversations · ${p.agentCount} agents${p.partial?' · Updating':''}${p.missing?' · Missing transcripts':''}</small></span><strong>≈ ${money(p.cost.usd)}</strong></summary><div class="cost-bar" role="img" aria-label="${esc(p.projectName)}: ${money(p.cost.usd)}"><i style="width:${p.cost.usd/max*100}%"></i></div><p class="cost-agent-note">Includes ${money(p.agentUsd)} from subagents${p.cost.unpriced.length?' · Unpriced: '+esc(p.cost.unpriced.join(', ')):''}</p><div class="cost-conversations">${(costSnapshot?.conversations||[]).filter(c=>c.projectId===p.projectId).sort((a,b)=>b.cost.usd-a.cost.usd).map(c=>`<div><span>${esc(c.title)}<small>${compact(c.usage.input+c.usage.output+c.usage.cacheRead+c.usage.cacheWrite)} tokens${c.partial?' · Scanning':''}${c.missing?' · No transcript':''}${c.cost.unpriced.length?' · Unpriced usage':''}</small></span><strong>${c.missing&&!c.size?'—':'≈ '+money(c.cost.usd)}</strong></div>`).join('')}</div></details>`).join('')||'<p class="cr-empty">No project usage recorded yet.</p>'}</div><footer class="cost-footer"><p>${esc(costSnapshot?.pricing?.basis||'Estimates use recorded tokens at standard API rates.')}<br>Rates checked ${esc(costSnapshot?.pricing?.date||'—')}. <a href="https://developers.openai.com/api/docs/models" target="_blank" rel="noopener">OpenAI rates</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener">Claude rates</a></p><button class="cr-secondary" data-cost-refresh ${costBusy?'disabled':''}>Refresh</button></footer>`;
     costDialog.querySelector('.cost-breakdown').scrollTop=scrollTop;
     costDialog.querySelector('[data-cost-close]').onclick=()=>costDialog.close();
     costDialog.querySelector('[data-cost-refresh]').onclick=()=>loadProjectCosts(true);
@@ -224,7 +271,7 @@ window.createControlRoom = function (engine) {
     try{costSnapshot=await json('/api/usage/all?budgetMs=250');costError='';costUpdated=Date.now();}
     catch(e){costError='Could not load cost estimates. '+e.message;costUpdated=Date.now();}
     finally{costBusy=false;renderProjectCosts();if(costDialog.open)renderCostDetails();}
-    if(costSnapshot?.pendingBytes&&!costError)setTimeout(()=>{if(!document.hidden&&(section==='board'||costDialog.open))loadProjectCosts(true);},3000);
+    if(costSnapshot?.pendingBytes&&!costError)setTimeout(()=>{if(!document.hidden&&(section==='accounts'||costDialog.open))loadProjectCosts(true);},3000);
   }
   setInterval(()=>{if(!document.hidden&&section==='board')loadProjectCosts();},30000);
   const runningDialog=document.createElement('dialog');runningDialog.id='runningConversations';runningDialog.className='cr-dialog';runningDialog.setAttribute('aria-label','Running conversations');
@@ -238,6 +285,7 @@ window.createControlRoom = function (engine) {
     const html=rows.length?`<button id="runningSummaryButton" class="running-summary-button" aria-haspopup="dialog"><span class="running-indicator"></span><strong>${rows.length} other ${rows.length===1?'conversation':'conversations'} running</strong><span>${projects.size} ${projects.size===1?'project':'projects'}</span>${ic('up')}</button>`:'';
     if(html!==runningSignature){runningSignature=html;$('otherRuns').innerHTML=html;if($('runningSummaryButton'))$('runningSummaryButton').onclick=()=>{renderRunningList();runningDialog.showModal();};}
     if(runningDialog.open)renderRunningList();
+    renderStage();
   }
   function renderRunningList(){
     const all=runningRows(),q=$('runningSearch').value.trim().toLowerCase(),rows=all.filter(x=>[x.p.name,x.c.title].join(' ').toLowerCase().includes(q));
@@ -265,13 +313,13 @@ window.createControlRoom = function (engine) {
     const html=`<header><h2>Choose an account</h2><button class="cr-icon" data-close aria-label="Close account picker">${ic('x')}</button></header>
       <p>${providerName(s.provider)} · Choose the account for your next message.</p>
       ${isRunning?`<div class="picker-running">${ic('repeat')}<span>Running with <strong>${esc(accountName(running))}</strong></span></div>`:''}
-      <div class="send-account-list" role="radiogroup" aria-label="${providerName(s.provider)} accounts">${pool.map(a=>`<label class="send-account-option ${a.name===selectedSendAccount?'selected':''} ${available(a)?'':'unavailable'}">
+      <div class="send-account-list" role="radiogroup" aria-label="${providerName(s.provider)} accounts">${pool.map(a=>`<label class="account-pick-card ${a.name===selectedSendAccount?'selected':''} ${available(a)?'':'unavailable'}">
         <div class="picker-account-head"><span class="cr-identity">${identity(a)}</span><input type="radio" name="send-account" value="${esc(a.name)}" ${a.name===selectedSendAccount?'checked':''} ${available(a)?'':'disabled'} aria-label="${esc(accountName(a))}"></div>
         <div class="picker-status">${esc(accountStatus(a))}${a.nextUp?' · Next message':''}${isRunning&&a.name===s.runningAccount?' · Running this turn':''}</div>
         <div class="picker-quotas">${quotaCell(a,quotaWindows(a).five,'5-hour window')}${quotaCell(a,quotaWindows(a).seven,'7-day window')}</div>
         ${quotaWindows(a).other.length?`<details class="picker-extra"><summary>${quotaWindows(a).other.length} additional usage ${quotaWindows(a).other.length===1?'limit':'limits'}</summary><div class="picker-quotas">${quotaWindows(a).other.map(w=>quotaCell(a,w,w.label)).join('')}</div></details>`:''}
         ${quotaFreshness(a)}</label>`).join('')||'<div class="cr-empty">No accounts connected for this provider.</div>'}</div>
-      <p class="picker-note">The next-message choice applies to future ${providerName(s.provider)} attempts. ${isRunning?'Use “Switch this turn” to resume the current turn on another account.':''}</p>
+      <p class="picker-note">This choice overrides routing for the next ${providerName(s.provider)} attempt. ${isRunning?'Use “Switch this turn” to resume the current turn on another account.':''}</p>
       <div id="pickerError" class="cr-error" role="alert"></div><footer><button class="cr-text-button" data-manage-accounts>Manage accounts</button><span class="sp"></span>${isRunning?`<button class="cr-secondary" data-switch-turn ${!selectedSendAccount||selectedSendAccount===s.runningAccount?'disabled':''}>Switch this turn</button>`:''}<button class="cr-primary" data-send-next ${selectedSendAccount?'':'disabled'}>Use for next message</button></footer>`;
     if(html===sendAccountSignature&&!force)return;
     sendAccountSignature=html;
@@ -310,9 +358,9 @@ window.createControlRoom = function (engine) {
   function wireSegment(id, change) { $(id).querySelectorAll('button').forEach(b=>b.onclick=()=>{ $(id).querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));change(b.dataset.value); }); }
   function renderAccountsPage() {
     if ($('accountProvider')) return;
-    $('crAccounts').innerHTML=`<div class="cr-heading"><div><h1>Accounts & usage</h1><p>Your accounts, availability, and activity in one place.</p></div><div class="cr-actions"><button class="cr-secondary" id="accountExport">${ic('down')} Export CSV</button><button class="cr-primary" id="accountAdd">${ic('plus')} Add account</button></div></div>
+    $('crAccounts').innerHTML=`<div class="cr-heading"><div><h1>Dashboard</h1><p>Account usage, project costs, and routing.</p></div><div class="cr-actions"><button class="cr-secondary" id="accountExport">${ic('down')} Export CSV</button><button class="cr-primary" id="accountAdd">${ic('plus')} Add account</button></div></div>
       <div class="cr-tools">${segmented('accountProvider',[['','All providers'],['codex','ChatGPT'],['claude','Claude']],accountProvider,'Provider')}<span class="sp"></span>${segmented('accountDays',[['7','7 days'],['30','30 days']],accountDays,'Usage date range')}<button class="cr-icon" id="accountRefresh" title="Refresh usage" aria-label="Refresh usage">${ic('repeat')}</button></div>
-      <div id="accountStatus" role="status" class="cr-note"></div><div id="accountStats" class="cr-stats"></div>
+      <div id="accountStatus" role="status" class="cr-note"></div><div id="accountStats" class="cr-stats"></div><section id="crProjectCosts" class="cr-project-costs" aria-label="Project cost estimates"></section>
       <div class="cr-charts"><section class="cr-chart-card"><header><h2>Activity over time</h2>${segmented('accountMetric',[['attempts','Attempts'],['tokens','Tokens']],chartMetric,'Chart metric')}</header><div class="chart-legend"><span><i></i>ChatGPT</span><span><i class="claude"></i>Claude</span><small>UTC</small></div><div id="accountChart"></div><div id="accountChartCaption" class="cr-chart-caption" role="status"></div></section><section class="cr-chart-card"><header><h2>Tokens by model</h2><span>Reported usage</span></header><div id="accountModels"></div></section></div>
       <div class="cr-section-head"><h2>Connected accounts <small id="accountCount"></small></h2><span>Live availability · Provider limits</span></div><div id="accountRows"></div><div id="accountRouting"></div><p id="accountCoverage" class="cr-note"></p>`;
     on('accountAdd',()=>$('addAcctBtn').click()); on('accountExport',exportCsv);
@@ -421,7 +469,7 @@ window.createControlRoom = function (engine) {
   async function mutate(button,url,body,message) {button.disabled=true;try{await json(url,body);await engine.pollAccounts();if(section==='accounts')await loadAnalytics();toast(message);return true;}catch(e){toast(e.message);return false;}finally{if(button.isConnected)button.disabled=false;}}
   function renderRouting() {
     if(!$('accountRouting'))return;
-    $('accountRouting').innerHTML=`<div class="routing-summary">${ic('repeat')}<span>Automatic switching${routing?' · '+[...new Set(selectedAccounts().map(a=>a.provider))].map(p=>providerName(p)+' '+(routing.autoSwitch[p]?'on':'off')).join(' · '):''}</span><button class="cr-text-button" id="manageRouting">Manage routing</button></div>`;
+    $('accountRouting').innerHTML=`<div class="routing-summary">${ic('repeat')}<span>Account routing${routing?' · '+[...new Set(selectedAccounts().map(a=>a.provider))].map(p=>providerName(p)+': '+(strategyLabels[routing.policies?.[p]?.strategy]||'Stay on current')).join(' · '):''}</span><button class="cr-text-button" id="manageRouting">Manage routing</button></div>`;
     on('manageRouting',()=>settings('routing'));
   }
   function accountDetail(a) {
@@ -505,12 +553,35 @@ window.createControlRoom = function (engine) {
       body.innerHTML='<h3>Passkeys</h3><p>Use your device to sign in with Face ID, Touch ID, or a security key.</p><div id="securityControls"></div><div class="setting-row"><span><strong>Sign out</strong><small>End your panel session on this browser</small></span><button class="cr-secondary" id="settingsLogout">Sign out</button></div>';
       mountControl('passkeyPop',$('securityControls'),'passkeyBtn');on('settingsLogout',()=>$('tokenBtn').click());
     } else if(tab==='routing'){
-      body.innerHTML='<p>Continue on another available account when a limit or login failure stops a turn.</p><div id="routingSettings" role="status">Loading routing…</div>';
-      json('/api/accounts/routing').then(policy=>{routing=policy;if(settingSection!=='routing'||!$('routingSettings'))return;
-        $('routingSettings').innerHTML=['codex','claude'].map(p=>`<label class="setting-row"><span><strong>${providerName(p)}</strong><small>Automatic account switching</small></span><input type="checkbox" role="switch" data-routing="${p}" aria-label="Automatic switching for ${providerName(p)}" ${policy.autoSwitch[p]?'checked':''}></label>`).join('');
-        $('routingSettings').querySelectorAll('[data-routing]').forEach(input=>input.onchange=async()=>{const enabled=input.checked;input.disabled=true;try{routing=await json('/api/accounts/routing',{provider:input.dataset.routing,enabled});renderRouting();toast('Routing preference saved.');}catch(e){input.checked=!enabled;toast(e.message);}finally{input.disabled=false;}});
-      }).catch(e=>{if($('routingSettings'))$('routingSettings').textContent=e.message;});
+      body.innerHTML='<p>Choose how new turns use each provider’s accounts. Priority also breaks ties and orders fallback accounts.</p><div id="routingSettings" role="status">Loading routing…</div>';
+      json('/api/accounts/routing').then(policy=>{routing=policy;if(settingSection!=='routing'||!$('routingSettings'))return;renderRoutingSettings(policy);}).catch(e=>{if($('routingSettings'))$('routingSettings').textContent=e.message;});
     }
+  }
+  const strategyLabels={'sticky':'Stay on current','priority':'Priority order','round-robin':'Round robin','least-busy':'Least busy','wait':'Wait for reset'};
+  const strategyHelp={'sticky':'Keep the current account until it becomes unavailable, then use the next available account.','priority':'Start each turn on the highest-priority available account.','round-robin':'Rotate through available accounts on each new turn.','least-busy':'Use the account with the fewest active conversation turns. Priority breaks ties.','wait':'Keep the current account. If it hits a limit, wait and retry when the reset time arrives. Stop cancels the wait.'};
+  function renderRoutingSettings(policy) {
+    const host=$('routingSettings');if(!host)return;
+    host.innerHTML=['codex','claude'].map(provider=>{
+      const accounts=engine.state().accounts.filter(a=>a.provider===provider),saved=policy.policies?.[provider]||{strategy:policy.autoSwitch[provider]?'sticky':'wait',order:accounts.map(a=>a.name)};
+      const order=[...new Set([...saved.order,...accounts.map(a=>a.name)])].filter(n=>accounts.some(a=>a.name===n));
+      return `<form class="routing-policy" data-provider="${provider}"><header><h3>${providerName(provider)}</h3><span>${accounts.length} accounts</span></header><label class="routing-strategy-label">Load balancing<select data-strategy aria-label="${providerName(provider)} load balancing">${Object.entries(strategyLabels).map(([k,v])=>`<option value="${k}" ${k===saved.strategy?'selected':''}>${v}</option>`).join('')}</select></label><p data-strategy-help>${strategyHelp[saved.strategy]}</p><ol class="routing-order">${order.map((name,i)=>{const a=accounts.find(a=>a.name===name);return `<li data-account="${esc(name)}"><span class="routing-rank">${i+1}</span><span class="cr-identity">${identity(a)}</span><small>${policy.loads?.[name]||0} active</small><button type="button" class="cr-icon" data-move="-1" aria-label="Move ${esc(accountName(a))} up" ${i===0?'disabled':''}>${ic('up')}</button><button type="button" class="cr-icon" data-move="1" aria-label="Move ${esc(accountName(a))} down" ${i===order.length-1?'disabled':''}>${ic('down')}</button></li>`;}).join('')}</ol><footer><span data-save-status role="status"></span><button class="cr-primary" ${accounts.length?'':'disabled'}>Save routing</button></footer></form>`;
+    }).join('');
+    host.querySelectorAll('form').forEach(form=>{
+      const select=form.querySelector('[data-strategy]'),status=form.querySelector('[data-save-status]');
+      select.onchange=()=>{form.querySelector('[data-strategy-help]').textContent=strategyHelp[select.value];status.textContent='Unsaved changes';};
+      form.querySelectorAll('[data-move]').forEach(button=>button.onclick=()=>{
+        const row=button.closest('li'),list=row.parentElement;
+        if(button.dataset.move==='-1'&&row.previousElementSibling)list.insertBefore(row,row.previousElementSibling);
+        else if(button.dataset.move==='1'&&row.nextElementSibling)list.insertBefore(row.nextElementSibling,row);
+        [...list.children].forEach((li,i)=>{li.querySelector('.routing-rank').textContent=i+1;li.querySelector('[data-move="-1"]').disabled=i===0;li.querySelector('[data-move="1"]').disabled=i===list.children.length-1;});
+        status.textContent='Unsaved changes';button.focus();
+      });
+      form.onsubmit=async e=>{e.preventDefault();const controls=[...form.querySelectorAll('button,select')],disabled=controls.map(c=>c.disabled);controls.forEach(c=>c.disabled=true);status.textContent='Saving…';
+        try{routing=await json('/api/accounts/routing',{provider:form.dataset.provider,strategy:select.value,order:[...form.querySelectorAll('[data-account]')].map(li=>li.dataset.account)});await engine.pollAccounts();renderRouting();status.textContent='Routing saved';}
+        catch(err){status.textContent=err.message;}
+        finally{controls.forEach((c,i)=>c.disabled=disabled[i]);}
+      };
+    });
   }
   preferences.classList.add('settings-dialog');
   mountControl('cronPop',$('automationContent'));
