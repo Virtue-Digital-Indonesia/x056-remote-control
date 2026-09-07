@@ -309,3 +309,43 @@ describe('codexAdapter.startTurn argv (real spawn, via a stub codex binary)', ()
     expect(argv[argv.length - 1]).toBe('- continue the bullet list');
   });
 });
+
+describe('codex: gaps found while chasing GPT-6-Astra', () => {
+  // Seen live on 0.153.4 (self-serve business plan): no code, no rate_limits,
+  // just this message. Before, it classified as `irrelevant` and the turn
+  // simply failed instead of failing over.
+  it('treats "out of credits" as a limit, not a generic failure', () => {
+    const v = classifyCodexEvent({
+      type: 'turn.failed',
+      error: { message: 'Your workspace is out of credits. Add credits to continue.' },
+    } as never);
+    expect(v.kind).toBe('limited');
+  });
+
+  it('still leaves a real failure as irrelevant', () => {
+    const v = classifyCodexEvent({ type: 'turn.failed', error: { message: 'context_window_exceeded' } } as never);
+    expect(v.kind).toBe('irrelevant');
+  });
+
+  it('activeModel reads a model field wherever the stream puts one, else undefined', () => {
+    expect(codexAdapter.activeModel!({ type: 'turn.started' } as never)).toBeUndefined();
+    expect(codexAdapter.activeModel!({ type: 'turn.completed', model: 'gpt-6-astra' } as never)).toBe('gpt-6-astra');
+    expect(codexAdapter.activeModel!({ type: 'item.completed', item: { model: 'gpt-5.6-sol' } } as never)).toBe('gpt-5.6-sol');
+  });
+});
+
+describe('codex hasCredentials', () => {
+  const { mkdtempSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
+  const { tmpdir } = require('node:os') as typeof import('node:os');
+  const { join } = require('node:path') as typeof import('node:path');
+  const home = (auth?: unknown) => {
+    const d = mkdtempSync(join(tmpdir(), 'codex-home-'));
+    if (auth !== undefined) writeFileSync(join(d, 'auth.json'), typeof auth === 'string' ? auth : JSON.stringify(auth));
+    return d;
+  };
+  it('null when there is no auth.json at all', () => { expect(codexAdapter.hasCredentials!(home())).toBeNull(); });
+  it('null when auth.json is unparseable', () => { expect(codexAdapter.hasCredentials!(home('{nope'))).toBeNull(); });
+  it('true for a ChatGPT login (tokens)', () => { expect(codexAdapter.hasCredentials!(home({ tokens: { access_token: 'x' } }))).toBe(true); });
+  it('true for an API-key login', () => { expect(codexAdapter.hasCredentials!(home({ OPENAI_API_KEY: 'sk-x' }))).toBe(true); });
+  it('false when the file exists but holds nothing usable', () => { expect(codexAdapter.hasCredentials!(home({ tokens: {} }))).toBe(false); });
+});

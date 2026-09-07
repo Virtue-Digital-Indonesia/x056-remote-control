@@ -64,7 +64,12 @@ function base(path: unknown): string {
 }
 
 // `usage_limit_exceeded`/`rate_limit_exceeded` (codes) AND free-text limit phrasing.
-const LIMIT_RE = /rate.?limit|usage.?limit|quota|limit reached|limit_exceeded|too many requests|\b429\b/i;
+// "out of credits" was seen live (0.153.4, self-serve business plan): the turn
+// fails with `Your workspace is out of credits. Add credits to continue.` --
+// no code, no rate_limits object. It is a "this account cannot run" state
+// exactly like a usage limit, and must fail over rather than surface as a
+// generic error.
+const LIMIT_RE = /rate.?limit|usage.?limit|quota|limit reached|limit_exceeded|too many requests|\b429\b|out of credits|add credits|insufficient[_ ]?(credits|quota|funds)/i;
 const AUTH_RE = /not logged in|unauthor|unauthenticated|\b401\b|please (run )?.*login|sign in|invalid api key|no api key/i;
 
 /** Codex reports usage as a rolling-window meter (rate_limits.primary). The
@@ -506,6 +511,40 @@ function fetchUsage(configDir: string): Promise<Usage> {
   });
 }
 
+/**
+ * Whether this CODEX_HOME holds a usable login. Codex keeps it in `auth.json`:
+ * ChatGPT logins under `tokens` (access/refresh), API-key logins under
+ * `OPENAI_API_KEY`. Mirrors the Claude adapter's contract: `null` means "no
+ * file / unreadable", not "logged out", so the panel can tell the two apart.
+ */
+function hasCredentials(configDir: string): boolean | null {
+  let raw: string;
+  try { raw = readFileSync(join(configDir, 'auth.json'), 'utf8'); } catch { return null; }
+  try {
+    const a = JSON.parse(raw) as { tokens?: { access_token?: string; refresh_token?: string }; OPENAI_API_KEY?: string | null };
+    const t = a.tokens ?? {};
+    return Boolean(t.access_token || t.refresh_token || a.OPENAI_API_KEY);
+  } catch { return null; }
+}
+
+/**
+ * The model behind an event, when the stream says. `codex exec --json` events
+ * seen live (0.153.4) carry no model at all -- thread.started, turn.started,
+ * item.* and turn.completed are all silent on it -- so this returns undefined
+ * for today's stream and the manager falls back to the model it requested.
+ * Reads any `model` the CLI may start emitting so a future version lights the
+ * per-turn chip with no adapter change.
+ */
+function activeModel(e: RawEvent): string | undefined {
+  const direct = (e as { model?: unknown }).model;
+  if (typeof direct === 'string' && direct) return direct;
+  for (const k of ['turn', 'item', 'thread'] as const) {
+    const m = (asObj((e as Record<string, unknown>)[k]) as { model?: unknown }).model;
+    if (typeof m === 'string' && m) return m;
+  }
+  return undefined;
+}
+
 function startCodexTurn(opts: TurnOptions): TurnHandle {
   const flags = [
     '--json',
@@ -575,6 +614,8 @@ export const codexAdapter: ProviderAdapter = {
 
   readIdentity,
   listModels,
+  hasCredentials,
+  activeModel,
   readHistory,
   readHistoryPage,
   fetchUsage,
