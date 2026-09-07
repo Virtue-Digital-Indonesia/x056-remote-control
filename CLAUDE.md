@@ -173,8 +173,29 @@ failover happens to land on the right one — which reads as "randomly broken":
     are three different identities — so each sees its own Design projects, and a
     failover changes which projects `list_projects` returns. Sharing one
     workspace across them means adding the others as project members.
+- **Skills that get EDITED live in one shared copy: `/app/state/skills/<name>`,
+  symlinked from every account's `skills/` on BOTH providers** (Claude reads
+  `$CLAUDE_CONFIG_DIR/skills/`, Codex `$CODEX_HOME/skills/`, same SKILL.md
+  format -- `skills/list` over `codex app-server` shows them without a turn).
+  `writing-style` + `pushback` are installed this way because `/pushback`
+  rewrites `rules.json` in place: eight private copies would drift on the
+  first complaint. The shared copy is a git repo (the loop commits there).
+  Two things bit on install: (1) everything under `/app` inherits
+  `"type": "module"` from `/app/package.json`, so the kit's CommonJS scripts
+  need a `package.json` with `"type": "commonjs"` in the skill dir; (2) under
+  `claude -p` the transcript file does NOT yet hold the final assistant entry
+  when the Stop hook fires, so a hook that reads the transcript sees empty text
+  and lets everything through -- read `last_assistant_message` from the hook
+  input instead (patched in the shared copy, commit a5ed053). Verified live:
+  a stiff paragraph on haiku was blocked once, rewritten, and passed 100/100.
+- **Hooks are per account** (`<configDir>/settings.json`, NOT `~/.claude`),
+  so a kit's `install-hooks.js` cannot be run as-is; merge its snippet into
+  every Claude account with the shared absolute path. Codex has no hooks --
+  there the SKILL.md instruction is the enforcement. `WRITING_STYLE_HOOK=off`
+  disables both hooks for a process.
 - **A newly onboarded account** is provisioned automatically to the fleet's
-  baseline (`server/provision.ts`), design consent included. `GET
+  baseline (`server/provision.ts`), design consent included. A shared skill
+  is provisioned as the SAME symlink, never a copy. `GET
   /api/accounts/baseline` shows that baseline and which accounts lag; `POST
   /api/accounts/provision` re-applies it.
 

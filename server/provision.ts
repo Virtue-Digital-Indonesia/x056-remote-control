@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -49,8 +49,14 @@ function readJson(path: string): Record<string, unknown> | null {
   try { return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>; } catch { return null; }
 }
 
+/** Directory entries, following symlinks: a shared skill is a link into
+ *  state/skills, and Dirent.isDirectory() is false for a link. */
 function listDirs(path: string): string[] {
-  try { return readdirSync(path, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch { return []; }
+  try {
+    return readdirSync(path).filter((name) => {
+      try { return statSync(join(path, name)).isDirectory(); } catch { return false; }
+    });
+  } catch { return []; }
 }
 
 export class AccountProvisioner {
@@ -116,12 +122,19 @@ export class AccountProvisioner {
     }
 
     // Skills and flags are plain files; copy from the first account that has one.
+    // A skill the fleet SHARES (a symlink into state/skills, so that an edit --
+    // /pushback rewriting rules.json -- lands on every account at once) is
+    // linked the same way, not copied: a copy would drift from the first edit.
     for (const skill of p.skills) {
       const src = this.firstWith(join('skills', skill), target.configDir);
       const dest = join(target.configDir, 'skills', skill);
       if (!src || existsSync(dest)) continue;
-      try { mkdirSync(join(target.configDir, 'skills'), { recursive: true }); cpSync(src, dest, { recursive: true }); done.skills.push(skill); }
-      catch (err) { errors.push(`skill ${skill}: ${(err as Error).message}`); }
+      try {
+        mkdirSync(join(target.configDir, 'skills'), { recursive: true });
+        if (lstatSync(src).isSymbolicLink()) symlinkSync(readlinkSync(src), dest);
+        else cpSync(src, dest, { recursive: true });
+        done.skills.push(skill);
+      } catch (err) { errors.push(`skill ${skill}: ${(err as Error).message}`); }
     }
     for (const flag of p.flags) {
       const dest = join(target.configDir, flag);

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -137,5 +137,30 @@ describe('opt-in flags span every account', () => {
     const prov = new AccountProvisioner(() => accounts, fakePlugins());
     expect(() => prov.setFlag('../../etc/passwd', true)).toThrow(/unknown flag/);
     expect(() => prov.setFlag('.ssh/authorized_keys', true)).toThrow(/unknown flag/);
+  });
+});
+
+describe('a shared skill (symlink into state/skills) follows the fleet as a link', () => {
+  // writing-style is one copy under state/skills, linked from every account,
+  // because /pushback edits it in place. A new account must get the SAME link:
+  // Dirent.isDirectory() is false for a symlink, so the baseline used to skip
+  // it entirely, and copying it would have made a drifting private copy.
+  it('is in the plan, and provisioned as the same link', async () => {
+    const { root, accounts } = fleet();
+    const shared = join(root, 'state', 'skills', 'writing-style');
+    mkdirSync(shared, { recursive: true });
+    writeFileSync(join(shared, 'SKILL.md'), '# writing-style\n');
+    mkdirSync(join(accounts[0].configDir, 'skills'), { recursive: true });
+    symlinkSync(shared, join(accounts[0].configDir, 'skills', 'writing-style'));
+
+    const prov = new AccountProvisioner(() => accounts, fakePlugins());
+    expect(prov.plan(accounts[2].configDir).skills).toEqual(['writing-style']);
+
+    const r = await prov.provision(accounts[2]);
+    expect(r.skills).toEqual(['writing-style']);
+    const dest = join(accounts[2].configDir, 'skills', 'writing-style');
+    expect(lstatSync(dest).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(dest)).toBe(shared);
+    expect(existsSync(join(dest, 'SKILL.md'))).toBe(true);
   });
 });
