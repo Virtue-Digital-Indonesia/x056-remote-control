@@ -1036,12 +1036,13 @@
   </div>
   <div class="plug-foot">Changes apply to the next turn. Invoke a plugin command by sending it as a message, e.g. <code>/claude-security scan my branch</code>.</div>
 </div>
-<div class="pop" id="subPop" hidden style="top:72px; right:12px; left:auto; bottom:auto; width:470px; max-height:78vh; overflow:auto;">
-  <h2>Cost &amp; subagents</h2>
-  <div class="plug-note">tokens are exact · dollars are the API list price for the same work, not what Max billed</div>
+<div class="pop" id="subPop" hidden>
+  <h2>Conversation activity</h2>
+  <p class="agent-intro">Follow delegated work and open each agent’s conversation.</p>
   <div id="selfCost"></div>
-  <div id="subList"></div>
-  <div class="pop-footer"><button class="send ghost" id="allUsageBtn" style="width:100%;">Cost across all conversations →</button></div>
+  <div class="agent-tools"><div class="agent-filters" role="group" aria-label="Filter agents"><button data-agent-filter="all" class="selected">All agents</button><button data-agent-filter="running">Running</button><button data-agent-filter="done">Finished</button><button data-agent-filter="issues">Needs attention</button></div><label class="agent-search"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><input id="agentSearch" type="search" placeholder="Find an agent…" aria-label="Find an agent"></label></div>
+  <div id="agentListStatus" role="status"></div><div id="subList"></div>
+  <footer class="agent-footer"><span>Usage estimates use standard API rates.</span><button class="cr-text-button" id="allUsageBtn">Project cost breakdown →</button></footer>
 </div>
 <div class="pop" id="tplPop" hidden style="top:auto; bottom:96px; right:12px; left:auto; width:400px; max-height:70vh; overflow:auto;">
   <h2>Prompt templates</h2>
@@ -2096,7 +2097,7 @@
     var body = document.createElement('div'); body.className = 'body'; body.textContent = text; d.appendChild(body);
     return d;
   }
-  function nodeAct(label, isSub) { var d = document.createElement('div'); d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
+  function nodeAct(label, isSub, agentId) { var d = document.createElement('div'); if(agentId)d.dataset.agentId=agentId; d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
   function addMsg(role, text, imgUrl, ts) { appendNode(currentProjectId, lastSessionId, nodeMsg(role, text, imgUrl, ts, currentProvider())); }
   function addSys(text, cls) { var node = nodeSys(text, cls); appendNode(currentProjectId, lastSessionId, node); return node; }
   // "live" / "showing cached view" float over the thread instead of being
@@ -2320,31 +2321,7 @@
   // one tap away. The viewed conversation's own turn shows in the busy bar, not
   // here.
   function renderStrip() {
-    var el = $('otherRuns'); el.textContent = '';
-    var pids = {}; Object.keys(runningSessionIds).forEach(function (k) { pids[k] = 1; }); Object.keys(bgSessionIds).forEach(function (k) { pids[k] = 1; });
-    Object.keys(pids).forEach(function (pid) {
-      if (!projCache[pid]) return;
-      runningSidsOf(pid).concat(bgSidsOf(pid)).forEach(function (sid) {
-        if (pid === currentProjectId && sid === lastSessionId) return; // that's the busy bar's job
-        var v = viewOf(pid, sid);
-        var sameProject = pid === currentProjectId;
-        var label;
-        if (sameProject) {
-          var conv = (projCache[pid].conversations || []).find(function (c) { return c.sessionId === sid; });
-          label = (conv && conv.title) || 'another conversation';
-        } else label = projCache[pid].name;
-        var bgOnly = isSessionBackground(pid, sid);
-        var row = document.createElement('div'); row.className = 'orun' + (bgOnly ? ' bgwork' : '');
-        if (bgOnly) row.title = 'working in the background — its turn already ended';
-        else if (sameProject) row.title = 'running in a different conversation of this project';
-        var sp = document.createElement('span'); sp.className = 'rspin'; row.appendChild(sp);
-        var pn = document.createElement('span'); pn.className = 'pn'; pn.textContent = label; row.appendChild(pn);
-        var pl = document.createElement('span'); pl.className = 'pl'; pl.textContent = v.label || (bgOnly ? 'background work' : 'working…'); row.appendChild(pl);
-        if (v.subCount > 0) { var t = document.createElement('span'); t.className = 'tasks'; t.textContent = '· ' + v.subCount + ' running'; row.appendChild(t); }
-        row.addEventListener('click', function () { if (sameProject) switchConversation(pid, sid); else switchProject(projCache[pid]); });
-        el.appendChild(row);
-      });
-    });
+    if (controlRoom) controlRoom.renderRuns();
   }
   // Events are global, tagged with projectId AND (for anything tied to a run)
   // sessionId. `mine` is project-level (used for project-scoped bookkeeping:
@@ -2387,8 +2364,8 @@
       // replayed/duplicated 'start' can't inflate it (the "· N running" drift).
       var v = viewOf(pid, sid);
       if (data.status === 'start') {
-        v.label = data.label; appendNode(pid, sid, nodeAct(data.label, data.isSubagent));
-        v.activityLog.push({ label: data.label, isSubagent: !!data.isSubagent, ts: data.ts || new Date().toISOString() });
+        v.label = data.label; appendNode(pid, sid, nodeAct(data.label, data.isSubagent, data.isSubagent ? data.toolUseId : null));
+        v.activityLog.push({ label: data.label, isSubagent: !!data.isSubagent, agentId: data.isSubagent ? data.toolUseId : null, ts: data.ts || new Date().toISOString() });
         if (v.activityLog.length > ACTIVITY_LOG_CAP) v.activityLog.splice(0, v.activityLog.length - ACTIVITY_LOG_CAP);
         if (data.isSubagent && data.toolUseId) v.subs[data.toolUseId] = 1;
       } else if (data.toolUseId) { delete v.subs[data.toolUseId]; }
@@ -2485,7 +2462,7 @@
   }
   // Card shown when Claude ended its turn asking the user something.
   function nodeQuestion(pid, data) {
-    var d = document.createElement('div'); d.className = 'qcard';
+    var d = document.createElement('div'); d.className = 'qcard'; d.dataset.session = data.sessionId || ''; d.dataset.questionAt = data.at || '';
     var head = document.createElement('div'); head.className = 'qhead';
     head.appendChild(icon('sparkles', 'sm'));
     var h = document.createElement('span'); h.textContent = (PROV_LABEL[providerFor(pid,data.sessionId)] || 'Agent') + ' is asking'; head.appendChild(h);
@@ -2493,6 +2470,42 @@
     dismiss.addEventListener('click', function () { dismiss.disabled = true; dismissQuestion(pid,data.sessionId).catch(function (e) { dismiss.disabled = false; uiAlert({title:'Could not dismiss question',message:e.message}); }); });
     head.appendChild(dismiss);
     d.appendChild(head);
+    if (Array.isArray(data.questions) && data.questions.length > 1) {
+      var form = document.createElement('form'); form.className = 'qbatch';
+      var draftKey='x056_question_draft_'+data.sessionId+'_'+data.at, draft=[];
+      try { draft=JSON.parse(localStorage.getItem(draftKey)||'[]'); } catch {}
+      data.questions.forEach(function (item, index) {
+        var group = document.createElement('fieldset'), legend = document.createElement('legend');
+        legend.textContent = (index + 1) + '. ' + item.question; group.appendChild(legend);
+        (item.options || []).forEach(function (option) {
+          var label = document.createElement('label'), radio = document.createElement('input');
+          radio.type = 'radio'; radio.name = 'question-' + index; radio.value = option; radio.checked = draft[index] === option;
+          label.appendChild(radio); label.appendChild(document.createTextNode(option)); group.appendChild(label);
+        });
+        var custom = document.createElement('input'); custom.type = 'text'; custom.className = 'qcustom';
+        custom.value = draft[index] && !(item.options || []).includes(draft[index]) ? draft[index] : '';
+        custom.placeholder = item.options.length ? 'Or write your own answer' : 'Your answer';
+        custom.setAttribute('aria-label', 'Your answer: ' + item.question);
+        custom.addEventListener('input', function () { if (custom.value.trim()) group.querySelectorAll('[type=radio]').forEach(function (r) { r.checked = false; }); });
+        group.addEventListener('change', function (e) { custom.setCustomValidity(''); if (e.target.type === 'radio') custom.value = ''; });
+        group.appendChild(custom); form.appendChild(group);
+      });
+      function saveQuestionDraft() { var values=[];form.querySelectorAll('fieldset').forEach(function(group){var checked=group.querySelector(':checked');values.push(group.querySelector('.qcustom').value.trim()||(checked&&checked.value)||'');});try{localStorage.setItem(draftKey,JSON.stringify(values));}catch{} }
+      form.addEventListener('input', saveQuestionDraft); form.addEventListener('change', saveQuestionDraft);
+      var submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'cr-primary'; submit.textContent = 'Send answers'; form.appendChild(submit);
+      form.addEventListener('submit', function (e) {
+        e.preventDefault(); var answers = [], missing;
+        form.querySelectorAll('fieldset').forEach(function (group, index) {
+          var checked = group.querySelector(':checked'), custom = group.querySelector('.qcustom');
+          var value = custom.value.trim() || (checked && checked.value);
+          if (!value) { missing = missing || custom; return; }
+          answers.push((index + 1) + '. ' + data.questions[index].question + '\nAnswer: ' + value);
+        });
+        if (missing) { missing.focus(); missing.setCustomValidity('Answer this question before sending.'); missing.reportValidity(); missing.oninput = function () { missing.setCustomValidity(''); }; return; }
+        answerQuestion(pid, d, answers.join('\n\n'));
+      });
+      d.appendChild(form); return d;
+    }
     var q = document.createElement('div'); q.className = 'qtext'; q.appendChild(renderInline(String(data.question || ''))); d.appendChild(q);
     var opts = Array.isArray(data.options) ? data.options : [];
     if (opts.length) {
@@ -2525,6 +2538,7 @@
     // container (survives SSE replays / reload races regardless of key/timing);
     // answered cards lack .pending so they're left in place.
     var c = qContainer(pid, data.sessionId), old = c.querySelectorAll('.qcard.pending');
+    if (old.length === 1 && old[0].dataset.questionAt === String(data.at || '')) return;
     for (var i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
     var node = nodeQuestion(pid, data); node.classList.add('pending'); appendNode(pid, data.sessionId, node);
   }
@@ -2573,23 +2587,29 @@
     return api('/api/questions/dismiss', {method:'POST',body:JSON.stringify({projectId:pid,sessionId:sid,at:q.at})}).then(function (r) {
       return r.json().then(function (result) { if (!r.ok) throw new Error(result.message || 'Could not dismiss question');
         dismissedQuestions[sid] = q.at;
+        try { localStorage.removeItem('x056_question_draft_'+sid+'_'+q.at); } catch {}
         if (!pendingQ[sid] || pendingQ[sid].at === q.at) { clearQuestion(pid,sid); clearConvNotif(pid,sid); }
         if (controlRoom) controlRoom.refresh();
       });
     });
   }
   function answerQuestion(pid, card, answer) {
-    // this question is handled now — stop tracking it as pending (keep the card, locked)
-    if (lastSessionId) delete pendingQ[lastSessionId];
-    card.classList.remove('pending');
-    card.classList.add('answered');
-    var buttons = card.querySelectorAll('.qopt');
-    for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; if (buttons[i].textContent === answer) buttons[i].classList.add('chosen'); }
-    var inserts = card.querySelectorAll('.qopt-insert');
-    for (var j = 0; j < inserts.length; j++) inserts[j].disabled = true;
-    addMsg('user', answer, null, new Date().toISOString());
-    api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, prompt: answer }) })
-      .then(function (r) { if (r.status === 409) addSys('a turn is already running there', 'banner'); }).catch(function () {});
+    var sid = card.dataset.session || lastSessionId;
+    var controls = card.querySelectorAll('button,input');
+    controls.forEach(function (b) { b.disabled = true; });
+    var error = card.querySelector('.qerror'); if (error) error.remove();
+    api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, prompt: answer }) })
+      .then(function (r) { return r.json().then(function (result) {
+        if (!r.ok) throw new Error(result.message || 'Could not send answer');
+        // Only resolve the card after the server accepts the answer.
+        if (sid) delete pendingQ[sid];
+        try { localStorage.removeItem('x056_question_draft_'+sid+'_'+card.dataset.questionAt); } catch {}
+        card.classList.remove('pending'); card.classList.add('answered');
+        appendNode(pid, sid, nodeMsg('user', answer, null, new Date().toISOString(), providerFor(pid, sid)));
+      }); }).catch(function (e) {
+        controls.forEach(function (b) { b.disabled = false; });
+        var message = document.createElement('div'); message.className = 'qerror'; message.setAttribute('role', 'alert'); message.textContent = e.message; card.appendChild(message);
+      });
   }
   // Appends an option's text to whatever's already in the message box — a
   // starting point to edit/extend, not an immediate answer (that's the .qopt
@@ -3810,7 +3830,7 @@
         items.push({ ts: m.ts, idx: i, render: m.role === 'model'
           ? function () { appendNode(pid, sid, nodeModelMark(m.text, m.ts)); }        // model-switch marker from the transcript
           : m.role === 'action'
-            ? function () { appendNode(pid, sid, nodeAct(m.text, m.sub)); }           // tool call replayed from the transcript
+            ? function () { appendNode(pid, sid, nodeAct(m.text, m.sub, m.agentId)); }           // tool call replayed from the transcript
             : m.role === 'command'
               ? function () { appendNode(pid, sid, nodeCmd(m.text, m.args, m.ts)); }  // a slash command the user ran
               : m.role === 'notice'
@@ -3824,7 +3844,7 @@
       // Only fall back to it when the transcript gave us none (e.g. a provider
       // whose reader doesn't emit them).
       var base = items.length;
-      if (!transcriptActions) lv.activityLog.forEach(function (a, i) { items.push({ ts: a.ts, idx: base + i, render: function () { appendNode(pid, sid, nodeAct(a.label, a.isSubagent)); } }); });
+      if (!transcriptActions) lv.activityLog.forEach(function (a, i) { items.push({ ts: a.ts, idx: base + i, render: function () { appendNode(pid, sid, nodeAct(a.label, a.isSubagent, a.agentId)); } }); });
       items.sort(function (x, y) {
         var tx = x.ts ? Date.parse(x.ts) : NaN, ty = y.ts ? Date.parse(y.ts) : NaN;
         if (!isNaN(tx) && !isNaN(ty)) return tx - ty;
@@ -3911,7 +3931,7 @@
           frag.appendChild(m.role === 'model'
             ? nodeModelMark(m.text, m.ts)
             : m.role === 'action'
-              ? nodeAct(m.text, m.sub)
+              ? nodeAct(m.text, m.sub, m.agentId)
               : m.role === 'command'
                 ? nodeCmd(m.text, m.args, m.ts)
                 : m.role === 'notice'
@@ -4025,22 +4045,6 @@
   // file read with the same pager — nothing is reconstructed from the event
   // stream, and a finished turn reads exactly like a running one.
   var subMetas = [];          // for the conversation currently on screen
-  /**
-   * Hide subagents that are finished AND no longer recent. On by default: a
-   * fan-out leaves dozens of completed rows behind, and the ones worth looking
-   * at are the ones still working plus whatever just came back.
-   *
-   * "Recent" rather than "not finished" so a subagent that returned a minute ago
-   * does not vanish while you are still reading it.
-   */
-  var SUB_HIDE_KEY = 'x056_sub_hide';
-  var SUB_RECENT_MS = 30 * 60_000;
-  var subHide = lsGet(SUB_HIDE_KEY) !== 'off';
-  function subIsCurrent(m) {
-    if (m.status === 'running') return true;
-    var at = m.endedAt || m.updatedAt || m.startedAt || 0;
-    return at > 0 && Date.now() - at < SUB_RECENT_MS;
-  }
   var subSelf = null;         // the conversation's OWN usage/cost
   var subShells = {};         // agentId -> refresh() for an open shell
 
@@ -4100,217 +4104,20 @@
 
   /** Render history rows into any container, reusing the chat's own builders so
    *  a subagent's tool calls and messages look identical to the main thread. */
-  function renderRowsInto(box, rows) {
+  function renderRowsInto(box, rows, provider) {
     box.textContent = '';
     (rows || []).forEach(function (m) {
-      var n = m.role === 'action' ? nodeAct(m.text, m.sub)
+      var n = m.role === 'action' ? nodeAct(m.text, m.sub, m.agentId)
         : m.role === 'command' ? nodeCmd(m.text, m.args, m.ts)
         : m.role === 'notice' ? nodeNotice(m.text)
         : m.role === 'summary' ? nodeSummary(m.text, m.ts)
         : m.role === 'model' ? nodeModelMark(m.text, m.ts)
-        : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, 'claude');
+        : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, provider || 'claude');
       box.appendChild(n);
     });
   }
 
-  // ---- spend across EVERY conversation --------------------------------------
-  // Scanning all of them cold is ~10s of work, so the endpoint is budgeted and
-  // resumable: it returns what it has plus how many are still unread, and we
-  // keep polling until that reaches zero. The total climbs as it converges
-  // rather than the panel hanging on it.
-  var allUsage = null, allPolling = false, allRender = null;
-  var ALL_MODE_KEY = 'x056_all_mode';
-  var allMode = lsGet(ALL_MODE_KEY) === 'proj' ? 'proj' : 'conv';
-  var allOpen = {}; // which projects are expanded, by id
-
-  /** Roll conversations up into their project. */
-  function groupByProject(rows) {
-    var by = {};
-    rows.forEach(function (r) {
-      var g = by[r.projectId];
-      if (!g) {
-        g = by[r.projectId] = {
-          projectId: r.projectId, projectName: r.projectName, title: r.projectName,
-          running: false, partial: false, size: 0, scanned: 0, convs: [],
-          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, messages: 0, byModel: {} },
-          cost: { usd: 0, unpriced: [] },
-        };
-      }
-      var u = r.usage || {};
-      g.convs.push(r);
-      g.running = g.running || !!r.running;
-      // A project is "still reading" if ANY of its conversations is: its total
-      // is understating itself just as much as that one row.
-      g.partial = g.partial || !!r.partial;
-      g.size += r.size || 0;
-      g.scanned += r.scanned || 0;
-      ['input', 'output', 'cacheRead', 'cacheWrite', 'messages'].forEach(function (k) { g.usage[k] += u[k] || 0; });
-      Object.keys(u.byModel || {}).forEach(function (m) {
-        var a = g.usage.byModel[m] || (g.usage.byModel[m] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-        var b = u.byModel[m];
-        a.input += b.input || 0; a.output += b.output || 0; a.cacheRead += b.cacheRead || 0; a.cacheWrite += b.cacheWrite || 0;
-      });
-      g.cost.usd += (r.cost && r.cost.usd) || 0;
-      ((r.cost && r.cost.unpriced) || []).forEach(function (m) {
-        if (g.cost.unpriced.indexOf(m) < 0) g.cost.unpriced.push(m);
-      });
-    });
-    return Object.keys(by).map(function (k) { return by[k]; });
-  }
-
-  /**
-   * Cost across every conversation, in its own modal.
-   *
-   * Its own, rather than another block in the subagent popover: that popover is
-   * about ONE conversation and its subagents, and reading every transcript is
-   * minutes of background work that should not start just because someone
-   * wanted to see a subagent.
-   */
-  function openAllUsage() {
-    // The poll timer is held OUT here: showModal ignores whatever the build
-    // callback returns, so a timer cleared "on close" from inside it would have
-    // run forever, scanning transcripts behind a closed dialog.
-    var timer = null;
-    return showModal('xwide', null, function (card, done) {
-      var h = document.createElement('h3'); h.textContent = 'Cost across all conversations'; card.appendChild(h);
-      var head = document.createElement('div'); head.className = 'allhead'; card.appendChild(head);
-      var note = document.createElement('div'); note.className = 'plug-note';
-      note.textContent = 'tokens are exact · dollars are the API list price for the same work, not what Max billed';
-      card.appendChild(note);
-      var bar = document.createElement('div'); bar.className = 'allbar'; bar.hidden = true;
-      var barI = document.createElement('i'); bar.appendChild(barI); card.appendChild(bar);
-      // Same figures, two groupings. Which one is remembered, because whichever
-      // you think in is the one you will want next time too.
-      var seg = document.createElement('div'); seg.className = 'segbar';
-      var segBtns = {};
-      [['conv', 'By conversation'], ['proj', 'By project']].forEach(function (o) {
-        var b2 = document.createElement('button'); b2.textContent = o[1];
-        b2.addEventListener('click', function () { allMode = o[0]; lsSet(ALL_MODE_KEY, o[0]); paint(); });
-        segBtns[o[0]] = b2; seg.appendChild(b2);
-      });
-      card.appendChild(seg);
-      var wrap = document.createElement('div'); wrap.className = 'cw'; card.appendChild(wrap);
-      var acts = document.createElement('div'); acts.className = 'modal-actions';
-      var close = document.createElement('button'); close.className = 'send'; close.textContent = 'Close';
-      close.addEventListener('click', function () { done(true); });
-      acts.appendChild(close); card.appendChild(acts);
-
-      /** One data row; `kind` is 'conv', 'proj' or 'child'. */
-      function addRow(tbl, r, kind, max) {
-        var u = r.usage || {};
-        var tr = document.createElement('tr');
-        if (kind !== 'conv') tr.className = kind === 'proj' ? 'proj-row' : 'child';
-        var td = document.createElement('td'); td.className = 'l';
-        var who = document.createElement('div'); who.className = 'who';
-        if (kind === 'proj') {
-          var car = document.createElement('span'); car.className = 'caret';
-          car.textContent = allOpen[r.projectId] ? '▾' : '▸'; who.appendChild(car);
-        }
-        if (r.running) { var dot = document.createElement('span'); dot.className = 'live'; who.appendChild(dot); }
-        var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.title; nm.title = r.title;
-        who.appendChild(nm);
-        if (kind === 'proj') {
-          var ct = document.createElement('span'); ct.className = 'count';
-          ct.textContent = r.convs.length + (r.convs.length === 1 ? ' conversation' : ' conversations');
-          who.appendChild(ct);
-        }
-        td.appendChild(who);
-        // A conversation row names its project; a project row IS the project,
-        // and a child row sits under one, so neither repeats it.
-        if (kind === 'conv') { var pj = document.createElement('div'); pj.className = 'proj'; pj.textContent = r.projectName; td.appendChild(pj); }
-        var share = max > 0 ? ((r.cost ? r.cost.usd : 0) / max) * 100 : 0;
-        if (kind !== 'child' && share >= 3) {
-          var sh = document.createElement('div'); sh.className = 'share'; sh.style.width = Math.round(share) + '%'; td.appendChild(sh);
-        }
-        if (kind === 'proj') {
-          td.addEventListener('click', function () { allOpen[r.projectId] = !allOpen[r.projectId]; paint(); });
-        }
-        tr.appendChild(td);
-
-        var models = Object.keys(u.byModel || {}).filter(function (m) {
-          var x = u.byModel[m]; return (x.input + x.output + x.cacheRead + x.cacheWrite) > 0;
-        }).map(function (m) { return m.replace(/^claude-/, '').replace(/-\d+$/, ''); });
-        [models.join(', ') || '—', String(u.messages || 0), fmtTok(u.output), fmtTok(u.cacheRead), fmtBytes(r.size || 0)]
-          .forEach(function (v, i) {
-            var c = document.createElement('td'); c.textContent = v;
-            if (i === 0) { c.style.whiteSpace = 'normal'; c.style.fontSize = '11.5px'; }
-            tr.appendChild(c);
-          });
-        var money = document.createElement('td'); money.className = 'money' + (r.partial ? ' part' : '');
-        money.textContent = costLabel(r.cost);
-        if (r.partial) money.title = 'still reading ' + fmtBytes(r.scanned || 0) + ' of ' + fmtBytes(r.size || 0) + ' — this will rise';
-        tr.appendChild(money);
-        tbl.appendChild(tr);
-      }
-
-      function paint() {
-        head.textContent = ''; wrap.textContent = '';
-        Object.keys(segBtns).forEach(function (k) { segBtns[k].classList.toggle('on', k === allMode); });
-        if (!allUsage) { var l = document.createElement('div'); l.className = 'plug-empty'; l.textContent = 'reading transcripts…'; wrap.appendChild(l); return; }
-
-        var convs = allUsage.conversations.slice();
-        var byCost = function (a, b) { return (b.cost ? b.cost.usd : 0) - (a.cost ? a.cost.usd : 0); };
-        convs.sort(byCost);
-        var groups = groupByProject(convs);
-        groups.sort(byCost);
-        groups.forEach(function (g) { g.convs.sort(byCost); });
-        // Descending by cost in both groupings — the question is always "what is
-        // expensive", and it should not change shape when the grouping does.
-        var rows = allMode === 'proj' ? groups : convs;
-        var t = allUsage.totals || { usd: 0, unpriced: [] };
-
-        var big = document.createElement('span'); big.className = 'big'; big.textContent = costLabel(t); head.appendChild(big);
-        var n = document.createElement('span'); n.className = 'note';
-        var left = allUsage.pendingBytes || 0;
-        n.textContent = (allMode === 'proj' ? groups.length + (groups.length === 1 ? ' project' : ' projects') + ' · ' : '')
-          + convs.length + ' conversations'
-          + (allUsage.running ? ' · ' + allUsage.running + ' running' : '')
-          + (left ? ' · ' + fmtBytes(left) + ' still to read' : '');
-        head.appendChild(n);
-        var un = unpricedNote(t);
-        if (un) { var uw = document.createElement('span'); uw.className = 'note'; uw.style.color = 'var(--amber)'; uw.textContent = un; head.appendChild(uw); }
-
-        bar.hidden = !left;
-        if (left) {
-          var readSoFar = convs.reduce(function (a, c) { return a + (c.scanned || 0); }, 0);
-          barI.style.width = Math.max(2, Math.round((readSoFar / (readSoFar + left)) * 100)) + '%';
-        }
-
-        var tbl = document.createElement('table');
-        var thead = document.createElement('tr');
-        [[allMode === 'proj' ? 'project' : 'conversation', 'l'], ['models', ''], ['replies', ''], ['out', ''], ['cache read', ''], ['size', ''], ['cost', '']].forEach(function (c) {
-          var th = document.createElement('th'); th.textContent = c[0]; if (c[1]) th.className = c[1]; thead.appendChild(th);
-        });
-        tbl.appendChild(thead);
-        var max = rows.length ? (rows[0].cost ? rows[0].cost.usd : 0) : 0;
-        rows.forEach(function (r) {
-          addRow(tbl, r, allMode === 'proj' ? 'proj' : 'conv', max);
-          if (allMode === 'proj' && allOpen[r.projectId]) {
-            r.convs.forEach(function (c) { addRow(tbl, c, 'child', 0); });
-          }
-        });
-        wrap.appendChild(tbl);
-      }
-
-      allRender = paint;
-      paint();
-      refreshAllUsage();
-      // Keep reading until every transcript is accounted for.
-      timer = setInterval(function () {
-        if (!allUsage || allUsage.pendingBytes > 0 || allUsage.pending > 0 || active) refreshAllUsage();
-      }, 2500);
-    }).then(function (v) { clearInterval(timer); allRender = null; return v; });
-  }
-  $('allUsageBtn').addEventListener('click', function () { closeAllPops(); openAllUsage(); });
-
-  function refreshAllUsage() {
-    if (allPolling) return Promise.resolve();
-    allPolling = true;
-    return api('/api/usage/all?budgetMs=400').then(function (r) { return r.json(); })
-      .then(function (d) { allUsage = d; if (allRender) allRender(); })
-      .catch(function () {})
-      .then(function () { allPolling = false; });
-  }
+  $('allUsageBtn').addEventListener('click', function () { closeAllPops(); controlRoom.showCosts(); });
 
   function renderSubBadge() {
     var btn = $('subagentsBtn'), badge = $('subagentsBadge');
@@ -4329,45 +4136,27 @@
   /** The conversation's own token spend, above the subagents it paid for. */
   function renderSelfCost() {
     var box = $('selfCost'); box.textContent = '';
-    if (!subSelf) return;
-    var u = subSelf.usage || {};
-    var d = document.createElement('div'); d.className = 'selfcost';
-    var t = document.createElement('div'); t.className = 'sct';
-    var n = document.createElement('span'); n.textContent = 'This conversation'; t.appendChild(n);
-    if (subSelf.running) { var r = document.createElement('span'); r.className = 'sst running'; r.textContent = 'running'; t.appendChild(r); }
-    var amt = document.createElement('span'); amt.className = 'scn'; amt.textContent = costLabel(subSelf.cost); t.appendChild(amt);
-    d.appendChild(t);
-    var b = document.createElement('div'); b.className = 'scb';
-    b.textContent = fmtTok(u.output) + ' out · ' + fmtTok(u.input) + ' in · ' + fmtTok(u.cacheRead) + ' cache read · '
-      + fmtTok(u.cacheWrite) + ' cache write · ' + (u.messages || 0) + ' replies';
-    d.appendChild(b);
-    var un = unpricedNote(subSelf.cost);
-    if (un) { var uw = document.createElement('div'); uw.className = 'scw'; uw.textContent = un; d.appendChild(uw); }
-    // A capped first scan must say so — silently reporting a fraction of a
-    // 600MB transcript as the total would be worse than reporting nothing.
-    // Not a cap any more — the whole file is read, just not in one request.
-    if (subSelf.partial) {
-      var w = document.createElement('div'); w.className = 'scw';
-      w.textContent = 'still reading: ' + fmtBytes(subSelf.scanned) + ' of ' + fmtBytes(subSelf.size)
-        + ' — this figure is still climbing';
-      d.appendChild(w);
-    }
-    box.appendChild(d);
+    var running=subMetas.filter(function(m){return m.status==='running';}).length;
+    var agentTokens=subMetas.reduce(function(n,m){var u=m.usage||{};return n+(u.input||0)+(u.output||0)+(u.cacheRead||0)+(u.cacheWrite||0);},0);
+    var values=[['Agents',String(subMetas.length)],['Running',String(running)],['Agent tokens',agentTokens?fmtTok(agentTokens):'—'],['Conversation cost',subSelf?costLabel(subSelf.cost)||'—':'—']];
+    values.forEach(function(v){var d=document.createElement('div');d.className='agent-stat';var label=document.createElement('span');label.textContent=v[0];var value=document.createElement('strong');value.textContent=v[1];d.appendChild(label);d.appendChild(value);box.appendChild(d);});
+    if(subSelf && (subSelf.partial || unpricedNote(subSelf.cost))){var note=document.createElement('p');note.className='agent-usage-note';note.textContent=subSelf.partial?'Usage is still being scanned.':unpricedNote(subSelf.cost);box.appendChild(note);}
   }
 
   function refreshSubagents() {
     var pid = currentProjectId, sid = lastSessionId;
     if (!pid || !sid) { subMetas = []; subSelf = null; renderSubBadge(); return Promise.resolve(); }
     return api('/api/conversations/subagents?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid))
-      .then(function (r) { return r.json(); })
+      .then(function (r) { return r.json().then(function(data){if(!r.ok)throw new Error(data.message||'Could not load agents');return data;}); })
       .then(function (d) {
         if (currentProjectId !== pid || lastSessionId !== sid) return; // switched while loading
+        $('agentListStatus').textContent='';agentListSignature='';
         subMetas = (d && d.subagents) || [];
         subSelf = (d && d.self) || null;
         renderSubBadge();
         if (!$('subPop').hidden) { renderSelfCost(); renderSubList(); }
       })
-      .catch(function () {});
+      .catch(function (e) { if(currentProjectId===pid&&lastSessionId===sid)$('agentListStatus').textContent=e.message; });
   }
 
   /** Match "Subagent: <description>" activity rows to a known subagent. The
@@ -4384,7 +4173,7 @@
       var row = rows[i];
       if (row.dataset.subBound) continue;
       var el = row.querySelector('.el');
-      var meta = subForLabel(el && el.textContent);
+      var meta = subMetas.find(function(m){return m.agentId === row.dataset.agentId;}) || subForLabel(el && el.textContent);
       if (!meta) continue;
       row.dataset.subBound = '1';
       row.classList.add('open');
@@ -4393,100 +4182,30 @@
     }
   }
 
-  /** A collapsed block of text — used for a subagent's brief and its result. */
-  function disclosure(label, text) {
-    var det = document.createElement('details');
-    var sum = document.createElement('summary');
-    sum.textContent = label + ' (' + text.replace(/\s+/g, ' ').trim().slice(0, 46) + (text.length > 46 ? '…' : '') + ')';
-    det.appendChild(sum);
-    var p = document.createElement('p'); p.textContent = text; det.appendChild(p);
-    // The row opens a shell on click; expanding a disclosure must not do that.
-    det.addEventListener('click', function (ev) { ev.stopPropagation(); });
-    return det;
-  }
+  var agentFilter='all',agentLimit=30,agentListSignature='';
+  var agentStatusLabels={running:'Running',done:'Finished',failed:'Failed',stopped:'Stopped',unknown:'Status unknown'};
+  function agentName(m){return m.description || (m.agentType==='codex-subagent'?'Codex agent':m.agentType) || 'Agent';}
+  $('agentSearch').addEventListener('input',function(){agentLimit=30;renderSubList();});
+  document.querySelectorAll('[data-agent-filter]').forEach(function(b){b.addEventListener('click',function(){agentFilter=b.dataset.agentFilter;agentLimit=30;renderSubList();});});
   function renderSubList() {
-    var list = $('subList'); list.textContent = '';
-    if (!subMetas.length) {
-      var e = document.createElement('div'); e.className = 'plug-empty';
-      e.textContent = 'This conversation has not spawned any subagents.';
-      list.appendChild(e); return;
-    }
-    var shown = subHide ? subMetas.filter(subIsCurrent) : subMetas;
-    var hidden = subMetas.length - shown.length;
-    // The control only earns its space when it is actually holding something
-    // back — with three subagents there is nothing to hide.
-    if (hidden > 0 || !subHide) {
-      var f = document.createElement('label'); f.className = 'subfilter';
-      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = subHide;
-      cb.addEventListener('change', function () {
-        subHide = cb.checked; lsSet(SUB_HIDE_KEY, subHide ? 'on' : 'off'); renderSubList();
-      });
-      var tx = document.createElement('span');
-      tx.textContent = subHide
-        ? 'hiding ' + hidden + ' finished · showing ' + shown.length + ' of ' + subMetas.length
-        : 'showing all ' + subMetas.length;
-      f.appendChild(cb); f.appendChild(tx);
-      f.title = 'hides subagents that finished more than 30 minutes ago';
-      list.appendChild(f);
-    }
-    if (!shown.length) {
-      var e2 = document.createElement('div'); e2.className = 'plug-empty';
-      e2.textContent = 'Nothing running, and nothing finished recently.';
-      list.appendChild(e2); return;
-    }
-    // Running first, then newest. A long fan-out produces dozens of rows and the
-    // one still working is the only one worth scrolling to.
-    var rank = { running: 0, unknown: 1, failed: 2, stopped: 3, done: 4 };
-    shown.slice().sort(function (a, b) {
-      var r = (rank[a.status] == null ? 5 : rank[a.status]) - (rank[b.status] == null ? 5 : rank[b.status]);
-      return r || ((b.startedAt || 0) - (a.startedAt || 0));
-    }).forEach(function (m) {
-      var row = document.createElement('div'); row.className = 'subr col';
-      var t = document.createElement('div'); t.className = 'st';
-      var k = document.createElement('span'); k.className = 'sk'; k.textContent = m.agentType; t.appendChild(k);
-      // Status comes from the parent's tool_result for this Task — the only
-      // signal that distinguishes "thinking hard" from "came back".
-      var st = document.createElement('span'); st.className = 'sst ' + (m.status || 'done');
-      st.textContent = m.status || 'done';
-      if (m.status === 'unknown') st.title = 'its Task call is outside the scanned part of the transcript, so how it ended is not recorded';
-      if (m.status === 'stopped') st.title = 'no result was ever recorded for it — it did not come back';
-      t.appendChild(st);
-      // Depth 1 is the conversation's own; deeper means a subagent spawned it,
-      // which is worth seeing since it is not something you asked for directly.
-      var cost = document.createElement('span'); cost.className = 'scn';
-      cost.style.marginLeft = 'auto';
-      cost.textContent = costLabel(m.cost);
-      t.appendChild(cost);
-      row.appendChild(t);
-
-      var d = document.createElement('div'); d.className = 'sd'; d.textContent = m.description || '(no description)'; row.appendChild(d);
-
-      var meta = document.createElement('div'); meta.className = 'sm';
-      var bits = [];
-      // Who spawned it, for anything below the top level: "depth 2" alone does
-      // not say whose, and it is another subagent's doing, not something the
-      // conversation asked for directly.
-      if (m.spawnDepth > 1) bits.push(m.spawnedBy ? 'via ' + m.spawnedBy : 'depth ' + m.spawnDepth);
-      var dur = fmtDur(m.startedAt, m.endedAt);
-      // A running subagent's elapsed time counts up; a finished one is fixed.
-      if (dur) bits.push(m.status === 'running' ? dur + ' so far' : dur);
-      if (m.usage) bits.push(fmtTok(m.usage.output) + ' out · ' + fmtTok(m.usage.cacheRead) + ' cache read');
-      bits.push(fmtBytes(m.bytes));
-      meta.textContent = bits.join(' · ');
-      row.appendChild(meta);
-
-      // Brief and result inline: between them they are usually the whole
-      // question, and opening the shell to read two paragraphs is a poor trade.
-      if (m.brief) row.appendChild(disclosure('brief', m.brief));
-      if (m.result) row.appendChild(disclosure(m.status === 'failed' ? 'error it returned' : 'what it returned', m.result));
-
-      var open = document.createElement('button'); open.className = 'send ghost';
-      open.style.cssText = 'width:100%; margin-top:8px; height:28px; font-size:12px;';
-      open.textContent = 'Open full transcript';
-      open.addEventListener('click', function (ev) { ev.stopPropagation(); openSubShell(m); });
-      row.appendChild(open);
-      list.appendChild(row);
+    var list=$('subList'),query=$('agentSearch').value.trim().toLowerCase();
+    document.querySelectorAll('[data-agent-filter]').forEach(function(b){b.classList.toggle('selected',b.dataset.agentFilter===agentFilter);b.setAttribute('aria-pressed',String(b.dataset.agentFilter===agentFilter));});
+    var rank={running:0,unknown:1,failed:2,stopped:3,done:4};
+    var shown=subMetas.filter(function(m){return (agentFilter==='all'||agentFilter===m.status||agentFilter==='issues'&&['failed','stopped','unknown'].includes(m.status))&&(!query||[agentName(m),m.agentType,m.agentId,m.spawnedBy].join(' ').toLowerCase().includes(query));}).sort(function(a,b){return (rank[a.status]??5)-(rank[b.status]??5)||(b.startedAt||0)-(a.startedAt||0);});
+    var signature=JSON.stringify([shown.slice(0,agentLimit),agentLimit,query,agentFilter]);if(signature===agentListSignature)return;agentListSignature=signature;
+    var focused=document.activeElement&&document.activeElement.dataset.agent;list.textContent='';
+    $('agentListStatus').textContent=shown.length?Math.min(agentLimit,shown.length)+' of '+shown.length+' agents':'';
+    if(!shown.length){var empty=document.createElement('div');empty.className='agent-empty';empty.textContent=subMetas.length?'No agents match this view.':'No delegated work yet. Agents will appear here when this conversation uses them.';list.appendChild(empty);return;}
+    shown.slice(0,agentLimit).forEach(function(m){
+      var row=document.createElement('button');row.type='button';row.className='agent-row';row.dataset.agent=m.agentId;
+      var avatar=document.createElement('span');avatar.className='agent-avatar '+(m.status||'unknown');avatar.appendChild(icon('sparkles','sm'));row.appendChild(avatar);
+      var copy=document.createElement('span');copy.className='agent-copy';var title=document.createElement('strong');title.textContent=agentName(m);copy.appendChild(title);
+      var meta=document.createElement('small');var bits=[];if(m.agentType&&m.agentType!=='codex-subagent')bits.push(m.agentType);if(m.spawnDepth>1)bits.push(m.spawnedBy?'via '+m.spawnedBy:'Nested agent · level '+m.spawnDepth);var duration=fmtDur(m.startedAt,m.endedAt);if(duration&&m.status!=='unknown'&&m.status!=='stopped')bits.push(duration);if(m.usage)bits.push(fmtTok((m.usage.input||0)+(m.usage.output||0)+(m.usage.cacheRead||0)+(m.usage.cacheWrite||0))+' tokens');meta.textContent=bits.join(' · ');copy.appendChild(meta);row.appendChild(copy);
+      var side=document.createElement('span');side.className='agent-row-side';var status=document.createElement('span');status.className='agent-status '+(m.status||'unknown');status.textContent=agentStatusLabels[m.status]||'Status unknown';side.appendChild(status);var cost=document.createElement('small');cost.textContent=(costLabel(m.cost)||(m.usage?'Cost unavailable':'Usage unavailable'))+(m.partial?' · Updating':'');side.appendChild(cost);row.appendChild(side);row.appendChild(icon('right','sm'));
+      row.addEventListener('click',function(){openSubShell(m);});list.appendChild(row);
     });
+    if(shown.length>agentLimit){var more=document.createElement('button');more.className='cr-load-more';more.textContent='Show '+Math.min(30,shown.length-agentLimit)+' more agents';more.onclick=function(){agentLimit+=30;renderSubList();};list.appendChild(more);}
+    if(focused){var target=Array.from(list.querySelectorAll('[data-agent]')).find(function(n){return n.dataset.agent===focused;});if(target)target.focus({preventScroll:true});}
   }
 
   // ---- workflow island -------------------------------------------------
@@ -4662,46 +4381,7 @@
 
   /** A workflow agent's transcript, in the same shell a plain subagent uses. */
   function openWorkflowShell(run, a) {
-    var pid = currentProjectId, sid = lastSessionId;
-    var key = run.runId + '/' + a.agentId;
-    return showModal('wide', null, function (card, done) {
-      var h = document.createElement('h3');
-      h.textContent = (run.name || run.runId) + ' — ' + a.agentType;
-      card.appendChild(h);
-      var sub = document.createElement('div'); sub.className = 'subhead';
-      sub.textContent = 'agent ' + a.agentId + ' · depth ' + a.spawnDepth + ' · ' + fmtBytes(a.bytes)
-        + ' · ' + (a.done ? 'finished' : 'running');
-      card.appendChild(sub);
-      var box = document.createElement('div'); box.className = 'subshell';
-      var loading = document.createElement('div'); loading.className = 'plug-empty'; loading.textContent = 'loading its transcript…';
-      box.appendChild(loading); card.appendChild(box);
-      var acts = document.createElement('div'); acts.className = 'modal-actions';
-      var close = document.createElement('button'); close.className = 'send'; close.textContent = 'Close';
-      close.addEventListener('click', function () { delete subShells[key]; done(true); });
-      acts.appendChild(close); card.appendChild(acts);
-
-      var atBottom = true;
-      box.addEventListener('scroll', function () {
-        atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
-      });
-      function refresh() {
-        return api('/api/conversations/workflow-history?projectId=' + encodeURIComponent(pid)
-          + '&sessionId=' + encodeURIComponent(sid) + '&runId=' + encodeURIComponent(run.runId)
-          + '&agentId=' + encodeURIComponent(a.agentId) + '&limit=300')
-          .then(function (r) { return r.json(); })
-          .then(function (page) {
-            renderRowsInto(box, page && page.rows);
-            if (!(page && page.rows && page.rows.length)) {
-              var e = document.createElement('div'); e.className = 'plug-empty';
-              e.textContent = 'Nothing recorded yet — it may have only just started.';
-              box.appendChild(e);
-            }
-            if (atBottom) box.scrollTop = box.scrollHeight;
-          }).catch(function () {});
-      }
-      subShells[key] = refresh; // shares the existing poll that drives open shells
-      refresh();
-    }).then(function (v) { delete subShells[key]; return v; });
+    return openSubShell(Object.assign({},a,{status:a.done?'done':'unknown',description:a.description||a.agentType}),run);
   }
 
   $('wfCloseBtn').addEventListener('click', function () { wfHidden = true; wfShown = false; renderWorkflows(); });
@@ -4731,48 +4411,44 @@
   }
   wfPoll = setInterval(wfTick, 4000);
 
-  /** One subagent's own shell. Several can be open at once — they stack. */
-  function openSubShell(m) {
-    var pid = currentProjectId, sid = lastSessionId;
-    return showModal('wide', null, function (card, done) {
-      var h = document.createElement('h3');
-      h.textContent = m.agentType + (m.description ? ' — ' + m.description : '');
-      card.appendChild(h);
-      var sub = document.createElement('div'); sub.className = 'subhead';
-      sub.textContent = 'agent ' + m.agentId + ' · depth ' + m.spawnDepth + ' · ' + fmtBytes(m.bytes);
-      card.appendChild(sub);
-      var box = document.createElement('div'); box.className = 'subshell';
-      var loading = document.createElement('div'); loading.className = 'plug-empty'; loading.textContent = 'loading its transcript…';
-      box.appendChild(loading);
-      card.appendChild(box);
-      var acts = document.createElement('div'); acts.className = 'modal-actions';
-      var close = document.createElement('button'); close.className = 'send'; close.textContent = 'Close';
-      close.addEventListener('click', function () { delete subShells[m.agentId]; done(true); });
-      acts.appendChild(close); card.appendChild(acts);
-
-      var atBottom = true;
-      box.addEventListener('scroll', function () {
-        atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
-      });
-      function refresh() {
-        return api('/api/conversations/subagent-history?projectId=' + encodeURIComponent(pid)
-          + '&sessionId=' + encodeURIComponent(sid) + '&agentId=' + encodeURIComponent(m.agentId) + '&limit=300')
-          .then(function (r) { return r.json(); })
-          .then(function (page) {
-            renderRowsInto(box, page && page.rows);
-            if (!(page && page.rows && page.rows.length)) {
-              var e = document.createElement('div'); e.className = 'plug-empty';
-              e.textContent = 'Nothing recorded yet — it may have only just started.';
-              box.appendChild(e);
-            }
-            // Follow a running subagent, but never yank the view while it is
-            // being read back.
-            if (atBottom) box.scrollTop = box.scrollHeight;
-          }).catch(function () {});
+  /** Agent reader: summary tabs, incremental history, and explicit follow mode. */
+  function openSubShell(m, workflow) {
+    var pid=currentProjectId,sid=lastSessionId,provider=currentProvider(),alive=true,shellKey=workflow?'wf:'+workflow.runId+':'+m.agentId:m.agentId;
+    return showModal('agent-reader',null,function(card,done){
+      var header=document.createElement('header');header.className='agent-reader-header';
+      var back=document.createElement('button');back.className='cr-icon';back.setAttribute('aria-label','Back to agents');back.appendChild(icon('left','sm'));back.onclick=function(){done(true);};header.appendChild(back);
+      var title=document.createElement('div');var h=document.createElement('h3');h.textContent=agentName(m);title.appendChild(h);var meta=document.createElement('p');meta.textContent=(provider==='codex'?'ChatGPT':'Claude')+' · '+(m.spawnedBy?'Spawned by '+m.spawnedBy:m.spawnDepth>1?'Nested agent':'Conversation agent');title.appendChild(meta);header.appendChild(title);
+      var status=document.createElement('span');status.className='agent-status '+(m.status||'unknown');status.textContent=agentStatusLabels[m.status]||'Status unknown';header.appendChild(status);card.appendChild(header);
+      var tabs=document.createElement('div');tabs.className='agent-reader-tabs';tabs.setAttribute('role','group');tabs.setAttribute('aria-label','Agent details');card.appendChild(tabs);
+      var section='transcript',allRows=[],cursor,complete=true,busy=false,historySignature='',follow=true;
+      var tools=document.createElement('div');tools.className='agent-reader-tools';var older=document.createElement('button');older.className='cr-text-button';older.textContent='Load earlier messages';older.hidden=true;tools.appendChild(older);
+      var followButton=document.createElement('button');followButton.className='cr-text-button';followButton.textContent='Following latest';followButton.setAttribute('aria-pressed','true');tools.appendChild(followButton);card.appendChild(tools);
+      var box=document.createElement('div');box.className='agent-reader-scroll';box.textContent='Loading conversation…';card.appendChild(box);
+      var footer=document.createElement('footer');footer.className='agent-reader-footer';var usage=document.createElement('span');footer.appendChild(usage);var refreshButton=document.createElement('button');refreshButton.className='cr-secondary';refreshButton.textContent='Refresh';footer.appendChild(refreshButton);card.appendChild(footer);
+      function metadata(){var current=subMetas.find(function(a){return a.agentId===m.agentId;});if(current&&!workflow&&currentProjectId===pid&&lastSessionId===sid)m=current;status.className='agent-status '+(m.status||'unknown');status.textContent=agentStatusLabels[m.status]||'Status unknown';var u=m.usage;usage.textContent=(u?fmtTok(u.input||0)+' input · '+fmtTok(u.output||0)+' output · '+fmtTok((u.cacheRead||0)+(u.cacheWrite||0))+' cached':'Token usage unavailable')+(m.cost?' · '+costLabel(m.cost):'');}
+      function paint(){
+        metadata();tabs.querySelectorAll('button').forEach(function(b){b.classList.toggle('selected',b.dataset.section===section);b.setAttribute('aria-pressed',String(b.dataset.section===section));});tools.hidden=section!=='transcript';
+        if(section==='transcript'){renderRowsInto(box,allRows,provider);if(!allRows.length)box.textContent='No messages recorded yet.';older.hidden=complete;}
+        else {box.textContent='';var text=section==='brief'?m.brief:m.result;if(text){var content=document.createElement('div');content.className='agent-reader-summary';content.appendChild(renderMarkdown(String(text)));box.appendChild(content);}else box.textContent=section==='brief'?'No separate brief was recorded.':'No result has been recorded yet.';}
       }
-      subShells[m.agentId] = refresh;
-      refresh();
-    }).then(function (v) { delete subShells[m.agentId]; return v; });
+      [['transcript','Conversation'],['brief','Brief'],['result','Result']].forEach(function(pair){var b=document.createElement('button');b.dataset.section=pair[0];b.textContent=pair[1];b.onclick=function(){section=pair[0];paint();};tabs.appendChild(b);});
+      function setFollow(value){follow=value;followButton.textContent=value?'Following latest':'Follow latest';followButton.setAttribute('aria-pressed',String(value));}
+      box.addEventListener('scroll',function(){if(section==='transcript'&&follow&&box.scrollTop+box.clientHeight<box.scrollHeight-60)setFollow(false);});
+      followButton.onclick=function(){setFollow(true);box.scrollTop=box.scrollHeight;};
+      function refresh(previous){
+        if(busy||!alive||previous&&complete)return Promise.resolve();if(!previous&&section==='transcript'&&!follow&&allRows.length){metadata();return Promise.resolve();}
+        busy=true;older.disabled=true;refreshButton.disabled=true;
+        var url='/api/conversations/'+(workflow?'workflow-history':'subagent-history')+'?projectId='+encodeURIComponent(pid)+(workflow?'&runId='+encodeURIComponent(workflow.runId):'')+'&sessionId='+encodeURIComponent(sid)+'&agentId='+encodeURIComponent(m.agentId)+'&limit=100'+(previous?'&before='+cursor:'');
+        return api(url).then(function(r){return r.json().then(function(page){if(!r.ok)throw new Error(page.message||'Could not load agent conversation');return page;});}).then(function(page){
+          if(!alive)return;var top=box.scrollTop,height=box.scrollHeight;
+          var signature=JSON.stringify(page.rows||[]);if(!previous&&signature===historySignature){metadata();return;}
+          historySignature=signature;allRows=previous?(page.rows||[]).concat(allRows):(page.rows||[]);cursor=page.cursor;complete=page.done!==false;paint();
+          if(section==='transcript'){if(previous){box.scrollTop=top+box.scrollHeight-height;setFollow(false);}else if(follow)box.scrollTop=box.scrollHeight;}
+        }).catch(function(e){if(alive){usage.textContent=e.message;usage.setAttribute('role','alert');}}).finally(function(){busy=false;older.disabled=false;refreshButton.disabled=false;});
+      }
+      older.onclick=function(){refresh(true);};refreshButton.onclick=function(){if(section==='transcript')setFollow(true);refresh(false);};
+      subShells[shellKey]=function(){return refresh(false);};paint();refresh(false);
+    }).then(function(v){alive=false;delete subShells[shellKey];return v;});
   }
 
   $('subagentsBtn').addEventListener('click', function () { openPop($('subPop')); renderSelfCost(); renderSubList(); refreshSubagents(); });
@@ -4782,7 +4458,7 @@
   setInterval(function () {
     var shellOpen = Object.keys(subShells).length > 0;
     if (!active && !shellOpen && $('subPop').hidden) return;
-    if (active) refreshSubagents();
+    if (active || shellOpen || !$('subPop').hidden) refreshSubagents();
     // Scanning every conversation is driven by ITS OWN modal now — opening the
     // subagent popover should not start 400ms of reading behind it.
     for (var id in subShells) subShells[id]();
@@ -4999,6 +4675,7 @@
    *  message is never lost -- the response says which happened. */
   var steerInFlight = false;
   function steer() {
+    if (currentProvider() === 'codex' && /^\//.test(promptEl.value.trim())) { uiAlert({title:'Run command',message:'Use Send for slash commands. Commands wait until the current turn finishes.'}); return; }
     var text = promptEl.value.trim();
     // No text but files attached is a plain send, not a steer -- refusing it
     // with a steer-shaped banner strands the files with no explanation.
@@ -5040,8 +4717,45 @@
       .then(function () { steerInFlight = false; });
   }
 
+  var codexCommands = [
+    ['compact','Compact conversation context'],['review','Review changes, or add review instructions'],
+    ['new','Start a new conversation'],['resume','Find an existing conversation'],['model','Choose model and effort'],
+    ['status','View accounts and usage limits'],['cost','View project cost estimates'],['agent','View subagent activity'],
+    ['skills','List enabled project skills'],['help','List available commands']
+  ];
+  var slashMenu = document.createElement('div'); slashMenu.id = 'codexSlashMenu'; slashMenu.className = 'codex-slash-menu'; slashMenu.hidden = true; slashMenu.setAttribute('aria-label','Codex commands');
+  promptEl.parentNode.appendChild(slashMenu);
+  function updateSlashMenu() {
+    var match = /^\/([\w-]*)$/.exec(promptEl.value.trim()); slashMenu.textContent = '';
+    slashMenu.hidden = currentProvider() !== 'codex' || !match;
+    if (slashMenu.hidden) return;
+    codexCommands.filter(function(c){return c[0].indexOf(match[1])===0;}).forEach(function(c){
+      var b=document.createElement('button');b.type='button';var name=document.createElement('strong');name.textContent='/'+c[0];var detail=document.createElement('span');detail.textContent=c[1];b.appendChild(name);b.appendChild(detail);
+      b.addEventListener('click',function(){promptEl.value='/'+c[0]+' ';slashMenu.hidden=true;promptEl.focus();saveDraft();});slashMenu.appendChild(b);
+    });
+    if (!slashMenu.children.length) { var hint=document.createElement('p');hint.textContent='Send to look up this project skill. /skills lists available skills.';slashMenu.appendChild(hint); }
+  }
+  promptEl.addEventListener('input',updateSlashMenu);
+  promptEl.addEventListener('keydown',function(e){if(slashMenu.hidden)return;if(e.key==='Escape'){slashMenu.hidden=true;e.preventDefault();e.stopPropagation();}else if(e.key==='ArrowUp'||e.key==='ArrowDown'){var buttons=slashMenu.querySelectorAll('button');if(buttons.length){e.preventDefault();buttons[e.key==='ArrowUp'?buttons.length-1:0].focus();}}},true);
+  slashMenu.addEventListener('keydown',function(e){var buttons=Array.prototype.slice.call(slashMenu.querySelectorAll('button')),i=buttons.indexOf(document.activeElement);if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();buttons[(i+(e.key==='ArrowDown'?1:buttons.length-1))%buttons.length].focus();}if(e.key==='Escape'){e.stopPropagation();slashMenu.hidden=true;promptEl.focus();}});
+  function handleCodexPanelCommand(text) {
+    if (currentProvider() !== 'codex' || !/^\//.test(text)) return false;
+    if(pendingFiles.length){uiAlert({title:'Command has attachments',message:'Remove the attachments before running a slash command, or send a regular message with the files.'});return true;}
+    var m=/^\/([\w-]+)\s*$/.exec(text), command=m&&m[1];
+    if(text==='/'){updateSlashMenu();return true;}
+    var local=['new','resume','model','status','cost','agent'];if(!local.includes(command)) {slashMenu.hidden=true;return false;}
+    promptEl.value='';saveDraft();autogrow();slashMenu.hidden=true;
+    if(command==='new')newConversation(currentProjectId);
+    else if(command==='resume')openSessions();
+    else if(command==='model'){modelEl.focus();if(modelEl.showPicker)try{modelEl.showPicker();}catch{}}
+    else if(command==='status')controlRoom.showAccounts();
+    else if(command==='cost')controlRoom.showCosts();
+    else if(command==='agent')$('subagentsBtn').click();
+    return true;
+  }
   function send() {
     var text = promptEl.value.trim(); if (!text && !pendingFiles.length) return;
+    if (handleCodexPanelCommand(text)) return;
     // Busy is now per-CONVERSATION: only THIS conversation's own running turn
     // makes a message queue. A different conversation running in the same project
     // no longer blocks this one — send to an idle conversation and it starts

@@ -10,6 +10,8 @@
 export interface ParsedQuestion {
   question: string;
   options: string[];
+  /** Present when several decisions are bundled into one reply. */
+  questions?: { question: string; options: string[] }[];
 }
 
 // Leading sentinel so the appended block can be stripped back out for display.
@@ -21,9 +23,9 @@ export const ASK_INSTRUCTIONS =
   'as the very last thing you output:\n' +
   '<<<ASK\n' +
   'question: <your one-line question>\n' +
-  'options: <option A> | <option B> | <option C>\n' +
+  'options: <choices separated by |; use as many as needed>\n' +
   '>>>\n' +
-  'Omit the options line for a free-form answer. The user replies in the panel and you resume with full context.';
+  'There is no fixed number of choices or questions. Repeat question/options lines inside the block for multiple decisions. Omit the options line for a free-form answer. The user replies in the panel and you resume with full context.';
 
 /** Append the ASK convention to a user prompt (skip for non-interactive turns). */
 export function withAskInstructions(prompt: string): string {
@@ -33,15 +35,17 @@ export function withAskInstructions(prompt: string): string {
 /** Extract a question the model left at the end of its turn, if any. */
 export function parseQuestion(text: string): ParsedQuestion | null {
   if (typeof text !== 'string' || text.length === 0) return null;
-  const block = /<<<ASK\s*([\s\S]*?)>>>/.exec(text);
-  if (block) {
-    const q = /question:\s*(.+)/i.exec(block[1]);
-    if (q) {
-      const optLine = /options:\s*(.+)/i.exec(block[1]);
-      const options = optLine ? optLine[1].split('|').map((s) => s.trim()).filter(Boolean) : [];
-      return { question: q[1].trim(), options };
+  const questions: { question: string; options: string[] }[] = [];
+  for (const block of text.matchAll(/<<<ASK\s*([\s\S]*?)>>>/g)) {
+    let current: { question: string; options: string[] } | undefined;
+    for (const line of block[1].split('\n')) {
+      const q = /^\s*question:[ \t]*(.+)/i.exec(line);
+      const options = /^\s*options:[ \t]*(.*)/i.exec(line);
+      if (q) { current = { question: q[1].trim(), options: [] }; questions.push(current); }
+      else if (options && current) current.options = options[1].split('|').map(s => s.trim()).filter(Boolean);
     }
   }
+  if (questions.length) return { ...questions[0], ...(questions.length > 1 ? { questions } : {}) };
   // Fallback: a short trailing line ending in '?' is very likely a question.
   const lines = text.trim().split('\n').map((l) => l.trim()).filter(Boolean);
   const last = lines[lines.length - 1] ?? '';

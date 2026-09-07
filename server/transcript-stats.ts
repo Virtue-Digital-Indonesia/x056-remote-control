@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /**
@@ -53,7 +53,11 @@ export interface TranscriptStats {
   size: number;
 }
 
-interface CacheEntry extends TranscriptStats { offset: number }
+interface CacheEntry extends TranscriptStats {
+  offset: number;
+  codexModel?: string;
+  codexTotals?: { input: number; output: number; cached: number; written: number };
+}
 
 /**
  * List API prices per MILLION tokens, for orientation only.
@@ -63,16 +67,29 @@ interface CacheEntry extends TranscriptStats { offset: number }
  * unknown model is priced at null rather than guessed, so a new model shows its
  * tokens and no invented number.
  */
-const PRICES: Record<string, { in: number; out: number }> = {
-  opus: { in: 15, out: 75 },
-  sonnet: { in: 3, out: 15 },
-  haiku: { in: 0.8, out: 4 },
+// Standard text rates verified 2026-09-07. Exact model/version matching avoids
+// silently applying an old family's rate to a future model.
+// https://developers.openai.com/api/docs/models
+// https://platform.claude.com/docs/en/about-claude/pricing
+export const PRICE_DATE = '2026-09-07';
+const PRICES: Record<string, { in: number; out: number; cached?: number }> = {
+  'gpt-6-astra': { in: 10, out: 50 },
+  'gpt-5.6-sol': { in: 4, out: 20 },
+  'gpt-5.6-terra': { in: 2, out: 12 },
+  'gpt-5.6-luna': { in: 0.2, out: 1.2 },
+  'gpt-5.5': { in: 5, out: 30 },
+  'gpt-5.4': { in: 2.5, out: 15 },
+  ...Object.fromEntries(['fable-5-1','mythos-5-1','fable-5','mythos-5'].map(m => ['claude-'+m, { in: 10, out: 50, cached: m.endsWith('-1') ? 0.25 : 1 }])),
+  ...Object.fromEntries(['opus-5','opus-4-8','opus-4-7','opus-4-6','opus-4-5'].map(m => ['claude-'+m, { in: 5, out: 25 }])),
+  ...Object.fromEntries(['opus-4-1','opus-4'].map(m => ['claude-'+m, { in: 15, out: 75 }])),
+  'claude-sonnet-5': { in: 2, out: 10 },
+  ...Object.fromEntries(['sonnet-4-6','sonnet-4-5','sonnet-4'].map(m => ['claude-'+m, { in: 3, out: 15 }])),
+  'claude-haiku-4-5': { in: 1, out: 5 },
+  'claude-haiku-3-5': { in: 0.8, out: 4 },
 };
-
-function priceFor(model: string): { in: number; out: number } | null {
-  const m = model.toLowerCase();
-  for (const key of Object.keys(PRICES)) if (m.includes(key)) return PRICES[key];
-  return null;
+function priceFor(model: string): { in: number; out: number; cached?: number } | null {
+  const m = model.toLowerCase().replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, '');
+  return PRICES[m] ?? null;
 }
 
 /**
@@ -91,7 +108,7 @@ export function estimateCost(u: TokenUsage): { usd: number; unpriced: string[] }
     const p = priceFor(model);
     if (!p) { unpriced.push(model); continue; }
     // Cache reads bill at a tenth of input; 5-minute cache writes at 1.25x.
-    usd += (t.input * p.in + t.cacheRead * p.in * 0.1 + t.cacheWrite * p.in * 1.25 + t.output * p.out) / 1e6;
+    usd += (t.input * p.in + t.cacheRead * (p.cached ?? p.in * 0.1) + t.cacheWrite * p.in * 1.25 + t.output * p.out) / 1e6;
   }
   return { usd, unpriced };
 }
@@ -113,7 +130,7 @@ const SCAN_BUDGET = 24 * 1024 * 1024;
  * (the old 32MB tail cap), so their totals are not comparable with these and
  * are discarded rather than shown as if they were whole-file numbers.
  */
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 const CHUNK = 4 * 1024 * 1024;
 const MAX_RESULT_CHARS = 4000;
 const MAX_TASKS = 400;
@@ -152,7 +169,7 @@ export class TranscriptStatsReader {
    */
   statsFor(path: string, budget = SCAN_BUDGET): TranscriptStats {
     let size: number;
-    try { size = fstatSyncSize(path); } catch { return { usage: emptyUsage(), tasks: {}, partial: false, scanned: 0, size: 0 }; }
+    try { path = realpathSync(path); size = fstatSyncSize(path); } catch { return { usage: emptyUsage(), tasks: {}, partial: false, scanned: 0, size: 0 }; }
 
     let entry = this.cache.get(path);
     // A smaller file than we last saw is a different file (rotated, or the
@@ -181,11 +198,15 @@ export class TranscriptStatsReader {
    * rest.
    */
   cached(path: string): TranscriptStats | null {
+    try { path = realpathSync(path); } catch { return null; }
     const e = this.cache.get(path);
     if (!e) return null;
     // Cached totals describe bytes that may since have been replaced.
-    try { if (fstatSyncSize(path) < e.size) return null; } catch { return null; }
-    return strip(e);
+    try {
+      const size = fstatSyncSize(path);
+      if (size < e.size) return null;
+      return { ...strip(e), size, partial: e.scanned < size };
+    } catch { return null; }
   }
 
   /** Read [entry.offset, size) in chunks, folding each complete line in. */
@@ -224,7 +245,8 @@ export class TranscriptStatsReader {
     // Most of a transcript by BYTE is tool_result bodies — whole files that were
     // read. JSON.parsing all of them is what made a full scan slow, and none of
     // them carry usage. Decide from the raw text whether the line can matter.
-    const hasUsage = line.includes('"usage"');
+    const hasCodex = line.includes('"token_count"') || line.includes('"turn_context"');
+    const hasUsage = hasCodex || line.includes('"usage"');
     const hasTask = line.includes('"tool_use"') && (line.includes('"Task"') || line.includes('"Agent"'));
     let hasResult = false;
     if (!hasUsage && !hasTask && line.includes('"tool_result"')) {
@@ -236,6 +258,31 @@ export class TranscriptStatsReader {
     if (!hasUsage && !hasTask && !hasResult) return;
     let d: Record<string, unknown>;
     try { d = JSON.parse(line) as Record<string, unknown>; } catch { return; }
+    if (hasCodex) {
+      const p = (d.payload ?? {}) as Record<string, unknown>;
+      if (d.type === 'turn_context' && typeof p.model === 'string') entry.codexModel = p.model;
+      if (d.type === 'event_msg' && p.type === 'token_count') {
+        const info = (p.info ?? {}) as Record<string, unknown>;
+        const t = info.total_token_usage as Record<string, unknown> | undefined;
+        if (t && typeof t.input_tokens === 'number') {
+          const total = { input: num(t.input_tokens), output: num(t.output_tokens), cached: num(t.cached_input_tokens), written: num(t.cache_write_input_tokens) };
+          const previous = entry.codexTotals ?? { input: 0, output: 0, cached: 0, written: 0 };
+          // Counters can reset after compaction. The new counter is a fresh
+          // segment; repeated cumulative notifications otherwise add nothing.
+          const reset = total.input < previous.input || total.output < previous.output;
+          const delta = { input: 0, output: 0, cached: 0, written: 0 };
+          for (const k of ['input','output','cached','written'] as const) delta[k] = Math.max(0, total[k] - (reset ? 0 : previous[k]));
+          entry.codexTotals = total;
+          const values = { input: Math.max(0, delta.input - delta.cached - delta.written), output: delta.output, cacheRead: delta.cached, cacheWrite: delta.written };
+          if (Object.values(values).some(v => v > 0)) {
+            const m = (entry.usage.byModel[entry.codexModel ?? 'unknown'] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+            for (const k of ['input','output','cacheRead','cacheWrite'] as const) { entry.usage[k] += values[k]; m[k] += values[k]; }
+            entry.usage.messages++;
+          }
+        }
+      }
+      if (d.type !== 'assistant') return;
+    }
     const msg = d.message as { usage?: Record<string, unknown>; model?: string; content?: unknown } | undefined;
     const ts = typeof d.timestamp === 'string' ? d.timestamp : undefined;
 

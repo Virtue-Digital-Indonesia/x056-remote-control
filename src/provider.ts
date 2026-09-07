@@ -46,6 +46,8 @@ export interface HistoryEntry {
   text: string;
   /** For 'action': the call was a subagent/task spawn (rendered differently). */
   sub?: boolean;
+  /** Native child thread id, for opening an activity row directly. */
+  agentId?: string;
   /** For 'command': everything typed after the command name. */
   args?: string;
   /** ISO timestamp from the transcript, when present — lets the panel
@@ -87,6 +89,7 @@ export const DEFAULT_CONTINUE_PROMPT =
  */
 export interface SubagentOutcome {
   done: boolean;
+  status?: 'running' | 'done' | 'stopped' | 'failed';
   startedAt?: number;
   endedAt?: number;
   /** The sub-agent's last message, when it finished. */

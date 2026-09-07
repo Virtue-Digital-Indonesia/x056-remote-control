@@ -1,0 +1,42 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const {chromium}=require('/usr/local/lib/node_modules/playwright');
+const base=process.argv[2]||'http://127.0.0.1:8767';
+(async()=>{
+ const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+ const context=await browser.newContext({viewport:{width:1440,height:1000}});
+ await context.addInitScript(()=>localStorage.setItem('x056_token','browser-fixture-token-0123456789'));
+ const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const headers={Authorization:'Bearer browser-fixture-token-0123456789','Content-Type':'application/json'};
+ const projects=await (await context.request.get(base+'/api/projects',{headers})).json();const p=projects.projects.find(p=>p.name==='Website refresh'),sid=p.conversations.find(c=>c.title==='Build the new homepage').sessionId;
+ const q={projectId:p.id,sessionId:sid,at:'2026-09-07T13:00:00Z',question:'Choose the navigation',options:['Projects','Recent','Inbox','Pinned','Search'],questions:[{question:'Choose the navigation',options:['Projects','Recent','Inbox','Pinned','Search']},{question:'Choose the density',options:['Comfortable','Compact']},{question:'Name this workspace',options:[]},{question:'Choose the default view',options:['Control room','Focus']}]};
+ await page.route('**/api/questions',route=>route.fulfill({json:[q]}));
+ await page.goto(base);await page.locator('#crCostDetails').waitFor();await page.waitForFunction(()=>document.getElementById('crProjectCosts').textContent.includes('recorded tokens'));
+ await page.locator('#crCostDetails').click();await page.locator('#projectCostDetails').waitFor({state:'visible'});
+ assert.match(await page.locator('#projectCostDetails').innerText(),/subscription charges/);
+ await page.locator('.cost-project summary').first().click();assert.ok(await page.locator('.cost-conversations').first().isVisible());
+ fs.mkdirSync('/tmp/x056-workspace-tools',{recursive:true});await page.screenshot({path:'/tmp/x056-workspace-tools/project-costs.png'});
+ await page.locator('[data-cost-close]').click();
+ await page.locator('.cr-task').filter({hasText:'Build the new homepage'}).click();await page.locator('.qbatch').waitFor();
+ assert.equal(await page.locator('.qbatch fieldset').count(),4);assert.equal(await page.locator('.qbatch fieldset').first().locator('[type=radio]').count(),5);
+ await page.getByLabel('Pinned',{exact:true}).check();await page.getByLabel('Compact',{exact:true}).check();await page.getByLabel('Your answer: Name this workspace').fill('Client workspace');await page.getByLabel('Focus',{exact:true}).check();
+ await page.reload();await page.locator('.cr-task').filter({hasText:'Build the new homepage'}).click();await page.locator('.qbatch').waitFor();
+ assert.equal(await page.getByLabel('Your answer: Name this workspace').inputValue(),'Client workspace');assert.ok(await page.getByLabel('Pinned',{exact:true}).isChecked());
+ let request;await page.route('**/api/sessions/current/messages',route=>{request=route.request().postDataJSON();return route.fulfill({status:409,json:{message:'Test turn is busy'}});});
+ await page.getByRole('button',{name:'Send answers',exact:true}).click();await page.locator('.qerror').waitFor();assert.ok(await page.getByRole('button',{name:'Send answers',exact:true}).isEnabled());assert.equal(request.sessionId,sid);assert.match(request.prompt,/4\. Choose the default view\nAnswer: Focus/);
+ await page.locator('#chatMax').click();await page.screenshot({path:'/tmp/x056-workspace-tools/question-batch.png'});
+ await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/x056-workspace-tools/questions-mobile.png'});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await page.setViewportSize({width:1440,height:1000});await page.locator('#chatClose').click();
+ // Create a Codex project through the isolated gateway, then open its composer.
+ const created=await (await context.request.post(base+'/api/projects',{headers,data:{name:'Command check',provider:'codex'}})).json();
+ await page.reload();await page.locator('.cr-project-link').filter({hasText:'Command check'}).last().click();await page.locator('#crNew').click();
+ await page.locator('#prompt').fill('/');await page.locator('#codexSlashMenu button').first().waitFor();assert.equal(await page.locator('#codexSlashMenu button').count(),10);
+ await page.screenshot({path:'/tmp/x056-workspace-tools/codex-commands.png'});
+ await page.locator('#prompt').fill('/cost');await page.locator('#sendBtn').click();assert.ok(await page.locator('#projectCostDetails').isVisible());await page.locator('[data-cost-close]').click();
+ assert.equal(await page.locator('#prompt').inputValue(),'');
+ await page.locator('#prompt').fill('/review Check concurrency');
+ // Prevent model execution in the fixture while proving the exact send payload.
+ let native;await page.route('**/api/sessions',route=>{if(route.request().method()==='POST'){native=route.request().postDataJSON();return route.fulfill({status:400,json:{message:'Test captured command'}});}return route.continue();});
+ await page.locator('#sendBtn').click();await page.waitForTimeout(500);assert.equal(native.prompt,'/review Check concurrency');
+ assert.deepEqual(errors,[]);await browser.close();console.log('PASS: project costs, four-question forms, five choices, saved drafts, failed reply recovery, Codex command menu, local command and native send payload, mobile fit.');
+})().catch(e=>{console.error(e);process.exit(1)});

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -88,4 +88,24 @@ describe('codex sub-agents on disk', () => {
     expect(codexAdapter.listSubagents!([home2], P).map((s) => s.agentId)).toEqual([C1]);
     expect(codexAdapter.listSubagents!([home2], C1).map((s) => [s.agentId, s.spawnDepth])).toEqual([[C2, 2]]);
   });
+});
+
+
+it('resets inherited completion and later resumed child status', () => {
+  const home=codexHome([{id:P},{id:C1,parent:P,lines:[
+    {type:'event_msg',payload:{type:'task_complete',last_agent_message:'Old result',completed_at:100}},
+    {type:'event_msg',timestamp:'2026-09-07T12:00:00Z',payload:{type:'task_started'}}
+  ]}]);
+  expect(codexAdapter.subagentStatus!([home],P,C1)).toMatchObject({done:false,status:'running',result:undefined,endedAt:undefined});
+});
+it('deduplicates accounts sharing a sessions directory', () => {
+  const home=codexHome([{id:P},{id:C1,parent:P}]),alias=mkdtempSync(join(tmpdir(),'codex-alias-'));
+  symlinkSync(join(home,'sessions'),join(alias,'sessions'));
+  expect(codexAdapter.listSubagents!([home,alias,home],P)).toHaveLength(1);
+});
+it('renders native agent activity live and after reload', () => {
+  const item={type:'SubAgentActivity',kind:'started',agent_thread_id:C1,agent_path:'/root/review'};
+  expect(codexAdapter.toActivity({type:'item.completed',item})[0]).toMatchObject({toolUseId:C1,status:'start',isSubagent:true});
+  const home=codexHome([{id:P,lines:[{type:'event_msg',payload:{type:'item_completed',item}}]}]);
+  expect(codexAdapter.readHistoryPage!([home],P,20).rows).toContainEqual(expect.objectContaining({role:'action',sub:true,text:'Agent /root/review: started'}));
 });

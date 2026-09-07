@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import type { Usage } from '../quota.js';
@@ -176,6 +176,17 @@ function toActivity(e: RawEvent): ActivityEvent[] {
       const name = firstStr(it.tool, it.server, 'tool');
       return started ? row(name, 'Tool: ' + truncate(name), 'start') : row('', '', failed ? 'error' : 'done');
     }
+    case 'sub_agent_activity':
+    case 'SubAgentActivity': {
+      const child = firstStr(it.agent_thread_id, it.agentThreadId, id);
+      const kind = firstStr(it.kind, 'started');
+      return [{ toolUseId: child, parentToolUseId: null, tool: 'Agent',
+        label: 'Agent: ' + firstStr(it.agent_path, it.agentPath, child), isSubagent: true,
+        status: /failed|error/.test(kind) ? 'error' : /completed|finished|closed/.test(kind) ? 'done' : 'start' }];
+    }
+    case 'collab_agent_tool_call':
+      // This row describes the delegation call, not the lifetime of its children.
+      return row('Agent', 'Agent: ' + firstStr(it.tool, 'delegation'), started ? 'start' : failed ? 'error' : 'done');
     case 'web_search':
       return started ? row('WebSearch', 'Searching the web: ' + truncate(firstStr(it.query)), 'start') : row('', '', 'done');
     default:
@@ -246,11 +257,16 @@ function readIdentity(configDir: string): AccountIdentity {
  *  rollout-<timestamp>-<thread_id>.jsonl (confirmed via a real authed run: see
  *  the adapter header). The thread id is the FILENAME's suffix, not embedded
  *  content to grep for, so match on that. */
-function findRollout(configDirs: string[], providerSessionId: string): string | null {
+export function findRollout(configDirs: string[], providerSessionId: string): string | null {
   const suffix = `-${providerSessionId}.jsonl`;
+  const directories = new Set<string>();
   for (const configDir of configDirs) {
     const sessions = join(configDir, 'sessions');
     if (!existsSync(sessions)) continue;
+    let canonical: string;
+    try { canonical = realpathSync(sessions); } catch { continue; }
+    if (directories.has(canonical)) continue;
+    directories.add(canonical);
     let names: string[];
     try {
       names = readdirSync(sessions, { recursive: true }) as string[];
@@ -435,6 +451,8 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
       } else if (kind === 'AgentMessage' || kind === 'agentMessage') {
         const shown = stripAsk(itemText(item).trim());
         if (shown && shown !== lastAssistant) { push({ role: 'assistant', text: shown, ts }, at); lastAssistant = shown; }
+      } else if (kind === 'SubAgentActivity' || kind === 'subAgentActivity') {
+        push({ role: 'action', text: 'Agent ' + firstStr(item.agent_path, item.agent_thread_id) + ': ' + firstStr(item.kind, 'started'), sub: true, agentId: firstStr(item.agent_thread_id), ts }, at);
       }
       // Command/patch items are already rendered from response_item above.
     } else if (payload.type === 'user_message' && typeof payload.message === 'string') {
@@ -624,11 +642,16 @@ interface RolloutHead {
 }
 
 /** First line of every rollout under the config dirs -- one readdir, one line each. */
-function rolloutHeads(configDirs: string[]): RolloutHead[] {
+export function rolloutHeads(configDirs: string[]): RolloutHead[] {
   const out: RolloutHead[] = [];
+  const directories = new Set<string>(), ids = new Set<string>();
   for (const configDir of configDirs) {
     const sessions = join(configDir, 'sessions');
     if (!existsSync(sessions)) continue;
+    let canonical: string;
+    try { canonical = realpathSync(sessions); } catch { continue; }
+    if (directories.has(canonical)) continue;
+    directories.add(canonical);
     let names: string[];
     try { names = readdirSync(sessions, { recursive: true }) as string[]; } catch { continue; }
     for (const name of names) {
@@ -640,7 +663,8 @@ function rolloutHeads(configDirs: string[]): RolloutHead[] {
       let meta: Record<string, unknown>;
       try { meta = asObj((JSON.parse(line) as Record<string, unknown>).payload); } catch { continue; }
       const id = firstStr(meta.id, meta.session_id);
-      if (!id) continue;
+      if (!id || ids.has(id)) continue;
+      ids.add(id);
       const spawn = asObj(asObj(asObj(meta.source).subagent).thread_spawn);
       const parent = firstStr(meta.parent_thread_id, spawn.parent_thread_id) || undefined;
       const ts = typeof meta.timestamp === 'string' ? Date.parse(meta.timestamp) : NaN;
@@ -715,8 +739,14 @@ function subagentStatus(configDirs: string[], providerSessionId: string, agentId
     let d: Record<string, unknown>;
     try { d = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
     const p = asObj(d.payload);
-    if (d.type === 'event_msg' && p.type === 'task_complete') {
-      out.done = true;
+    if (d.type === 'event_msg' && p.type === 'task_started') {
+      out.done = false; out.status = 'running'; out.result = undefined; out.endedAt = undefined;
+      const ts = Date.parse(String(d.timestamp ?? ''));
+      if (Number.isFinite(ts)) out.startedAt = ts;
+    } else if (d.type === 'event_msg' && (p.type === 'turn_aborted' || p.type === 'task_failed')) {
+      out.done = false; out.status = p.type === 'task_failed' ? 'failed' : 'stopped';
+    } else if (d.type === 'event_msg' && p.type === 'task_complete') {
+      out.done = true; out.status = 'done';
       out.result = firstStr(p.last_agent_message) || undefined;
       const s = p.started_at, c = p.completed_at;
       if (typeof s === 'number') out.startedAt = s * 1000;

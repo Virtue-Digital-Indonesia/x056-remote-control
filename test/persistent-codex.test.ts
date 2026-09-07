@@ -11,7 +11,7 @@ import type { RawEvent } from '../src/types.js';
  * answers the handshake and turn/start the way the real one does (verified
  * live on 0.153.4), and emits notifications when the test says so.
  */
-function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; deferThread?: boolean } = {}) {
+function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; skills?: {name:string;path:string;enabled:boolean}[]; deferThread?: boolean } = {}) {
   const child = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter; stdin: { write: (s: string) => void; destroyed: boolean; writableEnded: boolean };
     kill: (s?: string) => void; pid?: number;
@@ -35,6 +35,8 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
         // Verbatim from 0.153.4 when the id has no rollout under this CODEX_HOME.
         else if (opts.noRollout && m.method === 'thread/resume') out({ id: m.id, error: { code: -32600, message: `no rollout found for thread id ${String(m.params.threadId)}` } });
         else out({ id: m.id, result: { thread: { id: opts.threadId ?? (m.params.threadId as string) ?? 'thr_new' }, model: m.params.model ?? 'gpt-5.6-sol' } });
+      } else if (m.method === 'skills/list') {
+        out({id:m.id,result:{data:[{cwd:'/work',skills:opts.skills??[]}]}});
       } else if (m.method === 'turn/start') {
         if (opts.refuseTurn) out({ id: m.id, error: { code: -32600, message: 'model gpt-6-astra is not available on this account' } });
         else out({ id: m.id, result: { turn: { id: `turn_${++turnSeq}`, status: 'inProgress' } } });
@@ -62,7 +64,7 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
   };
 }
 
-function pool(o: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; deferThread?: boolean; workingGraceMs?: number; now?: () => number } = {}) {
+function pool(o: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; skills?: {name:string;path:string;enabled:boolean}[]; deferThread?: boolean; workingGraceMs?: number; now?: () => number } = {}) {
   const spawned: ReturnType<typeof fakeAppServer>[] = [];
   const p = new PersistentTurns({
     transport: new CodexTransport(),
@@ -92,7 +94,7 @@ describe('codex persistent: handshake', () => {
     const ts = f.sent('turn/start');
     expect(ts).toHaveLength(1);
     expect(ts[0].params).toMatchObject({ threadId: 'thr_abc', input: [{ type: 'text', text: 'hello' }] });
-    expect(f.requests.map((r) => r.method)).toEqual(['initialize', 'thread/start', 'turn/start']);
+    expect(f.requests.map((r) => r.method)).toEqual(['initialize', 'initialized', 'thread/start', 'turn/start']);
     f.complete();
     expect(await h.done).toMatchObject({ code: 0 });
   });
@@ -391,4 +393,35 @@ describe('codex persistent: the conversation id is the identity, not the CLI id'
     expect(p.interruptSession('x056-conv')).toBe(true);
     expect(spawned[0].sent('turn/interrupt')).toHaveLength(1);
   });
+});
+
+
+describe('native Codex slash commands', () => {
+  it('compacts with a native RPC and waits for completion, not its empty ack', async () => {
+    const {p,spawned}=pool();const h=p.startTurn(turn({prompt:'/compact'}));
+    const f=spawned[0];expect(f.sent('thread/compact/start')).toHaveLength(1);expect(f.sent('turn/start')).toHaveLength(0);
+    let ended=false;h.done.then(()=>ended=true);await Promise.resolve();expect(ended).toBe(false);
+    f.item('completed',{type:'contextCompaction',id:'compact'});f.complete();await h.done;h.kill();
+  });
+  it('reviews with a native target instead of a literal slash prompt', async () => {
+    const {p,spawned}=pool();const h=p.startTurn(turn({prompt:'/review Check race conditions'}));
+    expect(spawned[0].sent('review/start')[0].params).toMatchObject({delivery:'inline',target:{type:'custom',instructions:'Check race conditions'}});
+    spawned[0].complete();await h.done;h.kill();
+  });
+  it('rejects unknown commands without sending text to the model', async () => {
+    const {p,spawned}=pool();const c=collect();const h=p.startTurn(turn({prompt:'/made-up',onEvent:c.onEvent}));
+    await h.done;expect(spawned[0].sent('turn/start')).toHaveLength(0);expect(c.ev.some(e=>String(e.message).includes('Unknown or unavailable'))).toBe(true);h.kill();
+  });
+});
+
+
+it('resolves an enabled skill to native skill input with its actual path', async () => {
+  const {p,spawned}=pool({skills:[{name:'audit',path:'/work/.agents/skills/audit/SKILL.md',enabled:true}]});
+  const h=p.startTurn(turn({prompt:'/audit check concurrency'}));
+  expect(spawned[0].sent('turn/start')[0].params.input).toEqual([{type:'skill',name:'audit',path:'/work/.agents/skills/audit/SKILL.md'},{type:'text',text:'$audit check concurrency'}]);
+  spawned[0].complete();await h.done;h.kill();
+});
+it('refreshes gateway instructions when resuming existing Codex threads', () => {
+  const {p,spawned}=pool();const h=p.startTurn(turn({mode:'resume',appendSystemPrompt:'Use native subagent tools.'}));
+  expect(spawned[0].sent('thread/resume')[0].params.developerInstructions).toBe('Use native subagent tools.');h.kill();
 });

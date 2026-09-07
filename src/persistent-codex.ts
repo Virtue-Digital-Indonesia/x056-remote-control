@@ -49,6 +49,8 @@ interface Ext {
   seq?: number;
   /** Which of our request ids are turn/start calls awaiting a turn id. */
   turnStarts?: Set<number>;
+  lastOptions?: TurnOptions;
+  commands?: Map<number, { kind: string; name: string; args: string; opts: TurnOptions }>;
 }
 
 function ext(st: TransportState): Ext { return st.ext as Ext; }
@@ -65,6 +67,7 @@ const ITEM_TYPES: Record<string, string> = {
   plan: 'plan',
   collabAgentToolCall: 'collab_agent_tool_call',
   subAgentActivity: 'sub_agent_activity',
+  SubAgentActivity: 'sub_agent_activity',
   imageView: 'view_image',
 };
 
@@ -111,14 +114,14 @@ export class CodexTransport implements Transport {
   /** initialize, then open or resume the thread. Not ready until the thread id is back. */
   open(st: TransportState, o: TurnOptions, write: (line: string) => void): { ready: boolean } {
     const x = ext(st);
-    x.ready = false; x.turnStarts = new Set();
+    x.lastOptions = o; x.write = write; x.ready = false; x.turnStarts = new Set(); x.commands = new Map();
     write(JSON.stringify({ jsonrpc: '2.0', id: RPC_INIT, method: 'initialize', params: { clientInfo: { name: 'x056', version: '1' } } }));
     const config: Record<string, unknown> = {};
     if (o.mcp) config.mcp_servers = { x056: { command: o.mcp.command, args: o.mcp.args, env: o.mcp.env } };
     const startParams = { cwd: o.cwd, ...(o.model ? { model: o.model } : {}), approvalPolicy: 'never', sandbox: 'danger-full-access', config,
       ...(o.appendSystemPrompt ? { developerInstructions: o.appendSystemPrompt } : {}) };
     const params = o.mode === 'resume'
-      ? { threadId: o.sessionId, cwd: o.cwd, ...(o.model ? { model: o.model } : {}), approvalPolicy: 'never', sandbox: 'danger-full-access', config }
+      ? { ...startParams, threadId: o.sessionId }
       : startParams;
     x.write = write; x.startParams = startParams; x.retried = false;
     x.resumeTarget = o.mode === 'resume' ? o.sessionId : undefined;
@@ -128,7 +131,24 @@ export class CodexTransport implements Transport {
 
   userMessage(st: TransportState, o: TurnOptions, text: string): string {
     const x = ext(st);
+    x.lastOptions = o;
     const id = nextId(x);
+    const command = /^\/([\w:-]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+    if (command) {
+      const name = command[1].toLowerCase(), args = (command[2] ?? '').trim();
+      if (name === 'compact' && !args) {
+        x.commands!.set(id, { kind:'compact', name, args, opts:o });
+        return JSON.stringify({ jsonrpc:'2.0', id, method:'thread/compact/start', params:{ threadId:x.threadId } });
+      }
+      if (name === 'review') {
+        x.turnStarts!.add(id);
+        return JSON.stringify({ jsonrpc:'2.0', id, method:'review/start', params:{ threadId:x.threadId, delivery:'inline', target:args ? {type:'custom',instructions:args} : {type:'uncommittedChanges'} } });
+      }
+      // Skills are resolved by Codex itself for this account and working dir.
+      // An unknown TUI command must never silently become a model instruction.
+      x.commands!.set(id, { kind:'skills', name, args, opts:o });
+      return JSON.stringify({ jsonrpc:'2.0', id, method:'skills/list', params:{cwds:[o.cwd],forceReload:true} });
+    }
     x.turnStarts!.add(id);
     return JSON.stringify({
       jsonrpc: '2.0', id, method: 'turn/start',
@@ -149,6 +169,7 @@ export class CodexTransport implements Transport {
   steerMessage(st: TransportState, text: string, turnInFlight: boolean): string | null {
     const x = ext(st);
     if (!x.threadId) return null;
+    if (/^\//.test(text.trim()) && x.lastOptions) return turnInFlight ? null : this.userMessage(st, x.lastOptions, text);
     if (turnInFlight && x.turnId) {
       return JSON.stringify({ jsonrpc: '2.0', id: nextId(x), method: 'turn/steer',
         params: { threadId: x.threadId, expectedTurnId: x.turnId, input: [{ type: 'text', text }] } });
@@ -171,7 +192,7 @@ export class CodexTransport implements Transport {
     const err = m.error as Record<string, unknown> | undefined;
 
     // ---- responses to our own requests -----------------------------------
-    if (id === RPC_INIT) return { events: [], turnEnded: false };
+    if (id === RPC_INIT) { if (!err) x.write?.(JSON.stringify({jsonrpc:'2.0',method:'initialized'})); return { events: [], turnEnded: false }; }
     if (id === RPC_THREAD || id === RPC_THREAD_FRESH) {
       if (err || !res) {
         const message = String(err?.message ?? 'thread could not be opened');
@@ -199,6 +220,29 @@ export class CodexTransport implements Transport {
       // of the one that had no history.
       return { events: [{ type: 'thread.started', thread_id: x.threadId }], turnEnded: false, readyNow: true };
     }
+    if (id !== undefined && x.commands?.has(id)) {
+      const command = x.commands.get(id)!; x.commands.delete(id);
+      const finish = (text: string, failed = false): Ingested => ({
+        events: failed ? [{type:'error',message:text},{type:'turn.failed',error:{message:text}}]
+          : [{type:'item.completed',item:{type:'agent_message',text}},{type:'turn.completed'}], turnEnded:true,
+      });
+      if (err || !res) return finish(String(err?.message ?? 'Command failed'), true);
+      if (command.kind === 'compact') return { events:[{type:'item.started',item:{type:'mcp_tool_call',id:'compact-'+id,tool:'Compacting context'}}],turnEnded:false };
+      if (command.name === 'compact') return finish('Use /compact without arguments. Send any summary instructions as a regular message first.', true);
+      const data = Array.isArray(res.data) ? res.data as Record<string, unknown>[] : [];
+      const skills = data.flatMap(d => Array.isArray(d.skills) ? d.skills as Record<string, unknown>[] : []).filter(s => s.enabled !== false);
+      if (command.name === 'skills' || command.name === 'help') return finish(
+        'Panel commands: /compact, /review [instructions], /new, /resume, /model, /status, /cost, /agent, /skills.\n\n' +
+        (skills.length ? 'Available skills: ' + skills.map(s => '/' + String(s.name)).join(', ') : 'No enabled skills found for this project.')
+      );
+      const skill = skills.find(s => s.name === command.name);
+      if (!skill || typeof skill.path !== 'string') return finish('Unknown or unavailable command /' + command.name + '. Use /help to see commands and enabled skills.', true);
+      const next = nextId(x); x.turnStarts!.add(next);
+      x.write?.(JSON.stringify({jsonrpc:'2.0',id:next,method:'turn/start',params:{threadId:x.threadId,
+        input:[{type:'skill',name:skill.name,path:skill.path},{type:'text',text:'$'+command.name+(command.args?' '+command.args:'')}],
+        ...(command.opts.model?{model:command.opts.model}:{}),...(command.opts.effort?{effort:command.opts.effort}:{})}}));
+      return {events:[],turnEnded:false};
+    }
     if (id !== undefined && x.turnStarts?.has(id)) {
       x.turnStarts.delete(id);
       if (err || !res) {
@@ -218,6 +262,7 @@ export class CodexTransport implements Transport {
       case 'item/started':
         return { events: [{ type: 'item.started', item: mapItem(p.item) }], turnEnded: false };
       case 'item/completed':
+        if ((p.item as Record<string, unknown> | undefined)?.type === 'contextCompaction') return {events:[{type:'item.completed',item:{type:'agent_message',text:'Context compacted.'}}],turnEnded:false};
         return { events: [{ type: 'item.completed', item: mapItem(p.item) }], turnEnded: false };
       case 'turn/started': {
         const t = (p.turn ?? {}) as Record<string, unknown>;

@@ -1,3 +1,5 @@
+import { rolloutHeads } from '../src/adapters/codex.js';
+import { projectCosts } from './project-costs.js';
 import { AccountAnalytics } from '../src/account-analytics.js';
 import {
   BadRequestException,
@@ -27,7 +29,7 @@ import { TEMPLATES, TemplateStore } from './templates.js';
 import { TRANSCRIPT_STATS, TranscriptStatsReader, estimateCost } from './transcript-stats.js';
 import type { ProviderId } from '../src/provider.js';
 import { getAdapter } from '../src/adapters/registry.js';
-import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles, transcriptIndex } from '../src/adapters/subagents.js';
+import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles } from '../src/adapters/subagents.js';
 import { listWorkflowAgents, listWorkflowRuns, liveWorkflowRuns, readWorkflowAgentPage } from '../src/adapters/workflows.js';
 import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
@@ -247,6 +249,8 @@ export class ApiController {
         this.manager.clearSelfQueueStreak(body.sessionId);
         this.manager.clearRelayChain(body.sessionId);
       }
+      if (body.sessionId && body.projectId && !this.manager.listConversations(body.projectId).some(c => c.sessionId === body.sessionId)) throw new BadRequestException('unknown conversation for that project');
+      if (body.sessionId && body.projectId) return { sessionId: this.manager.continueSession(body.projectId, body.sessionId, prompt, opts) };
       return { sessionId: this.manager.continueLast(prompt, opts, body.projectId) };
     } catch (err) {
       if (err instanceof BusyError) throw new ConflictException('busy');
@@ -560,23 +564,27 @@ export class ApiController {
       if (adapter.id !== 'claude') {
         if (!adapter.listSubagents) return empty;
         const running = this.manager.isSessionRunning(sessionId);
+        const files = adapter.id === 'codex' ? new Map(rolloutHeads(configDirs).map(h => [h.id,h.file])) : new Map<string,string>();
+        const parentFile = files.get(providerSessionId);
+        const parentStats = parentFile ? this.stats.statsFor(parentFile, 512 * 1024) : null;
         const rows = adapter.listSubagents(configDirs, providerSessionId).map((s) => {
           const st = adapter.subagentStatus?.(configDirs, providerSessionId, s.agentId) ?? null;
+          const file = files.get(s.agentId);
+          const usageStats = file ? this.stats.statsFor(file, 256 * 1024) : null;
           const fresh = s.updatedAt != null && Date.now() - s.updatedAt < LIVE_SUBAGENT_MS;
-          const status = st?.done ? 'done' : running && fresh ? 'running' : 'stopped';
+          const status = st?.done ? 'done' : st?.status === 'stopped' || st?.status === 'failed' ? st.status : running && (st?.status === 'running' || fresh) ? 'running' : 'unknown';
           return {
             ...s, status,
             startedAt: st?.startedAt ?? s.startedAt,
             endedAt: st?.endedAt,
             brief: st?.result ? st.result.slice(0, 600) : '',
             result: st?.result,
-            // Token counts are recorded; a price is not -- GPT models are not in
-            // the price table, and a blank beats a number that is wrong.
-            usage: st?.usage ? { input: st.usage.input, output: st.usage.output, cacheRead: st.usage.cached ?? 0, cacheWrite: 0 } : null,
-            cost: null,
+            usage: usageStats?.usage ?? (st?.usage ? { input: Math.max(0, st.usage.input - (st.usage.cached ?? 0)), output: st.usage.output, cacheRead: st.usage.cached ?? 0, cacheWrite: 0 } : null),
+            cost: usageStats ? estimateCost(usageStats.usage) : null,
+            partial: usageStats?.partial ?? false,
           };
         });
-        return { subagents: rows, self: null };
+        return { subagents: rows, self: parentStats ? { ...parentStats, cost: estimateCost(parentStats.usage), running } : null };
       }
 
       // The parent's own transcript answers two questions at once: what the
@@ -669,84 +677,9 @@ export class ApiController {
   @Get('usage/all')
   usageAll(@Query('budgetMs') budgetMs?: string) {
     const budget = Math.min(Math.max(Number(budgetMs) || 400, 0), 5000);
-    const started = Date.now();
-    const running = new Set(this.manager.runningSessions().map((r) => `${r.projectId}/${r.sessionId}`));
-
-    interface Row { projectId: string; projectName: string; sessionId: string; title: string; running: boolean; usage: unknown; cost: unknown; partial: boolean; scanned: number; size: number }
-    const rows: Row[] = [];
-    const cold: { key: string; projectId: string; projectName: string; sessionId: string; title: string; file: string; size: number; started: number; running: boolean }[] = [];
-
-    const reg = this.manager.listProjects() as { projects: { id: string; name: string; conversations?: { sessionId: string; title?: string }[] }[] };
-    // One index for the whole request; see transcriptIndex.
-    const index = new Map<string, Map<string, string>>();
-    for (const proj of reg.projects ?? []) {
-      for (const conv of proj.conversations ?? []) {
-        let file: string | null = null;
-        try {
-          const { adapter, providerSessionId, configDirs } = this.manager.historyContext(proj.id, conv.sessionId);
-          if (adapter.id !== 'claude') continue; // only Claude records per-message usage
-          const key = configDirs.join('\0');
-          let idx = index.get(key);
-          if (!idx) { idx = transcriptIndex(configDirs); index.set(key, idx); }
-          file = idx.get(providerSessionId) ?? null;
-        } catch { continue; }
-        if (!file) continue;
-
-        const key = `${proj.id}/${conv.sessionId}`;
-        const live = running.has(key);
-        const known = this.stats.cached(file);
-        const base = { projectId: proj.id, projectName: proj.name, sessionId: conv.sessionId, title: conv.title ?? conv.sessionId.slice(0, 8), running: live };
-        // A cached entry that is still PARTIAL has more to read, so it belongs in
-        // the work list — taking it as-is would freeze a big transcript at
-        // whatever fraction the first visit happened to reach.
-        if ((live || known) && !known?.partial) {
-          const st = live ? this.stats.statsFor(file) : known!;
-          rows.push({ ...base, usage: st.usage, cost: estimateCost(st.usage), partial: st.partial, scanned: st.scanned, size: st.size });
-        } else {
-          let size = 0;
-          try { size = statSync(file).size; } catch { continue; }
-          // Already-started files first: finishing one beats starting another.
-          cold.push({ key, projectId: proj.id, projectName: proj.name, sessionId: conv.sessionId, title: base.title, file, size, started: known ? known.scanned : 0, running: live });
-        }
-      }
-    }
-
-    // Anything already begun first, then smallest: the count converges fastest,
-    // and the 627MB outlier does not monopolise the first budget.
-    cold.sort((a, b) => Number(b.started > 0) - Number(a.started > 0) || a.size - b.size);
-    let scanned = 0;
-    for (const c of cold) {
-      const left = budget - (Date.now() - started);
-      if (left <= 0) break;
-      // Size the read to the time remaining rather than always taking a full
-      // chunk: the budget is only checked BETWEEN files, so a 24MB chunk begun
-      // with 30ms left overshot it. ~60MB/s measured on these transcripts.
-      const st = this.stats.statsFor(c.file, Math.max(1, Math.round(left * 60_000)));
-      rows.push({ projectId: c.projectId, projectName: c.projectName, sessionId: c.sessionId, title: c.title, running: c.running, usage: st.usage, cost: estimateCost(st.usage), partial: st.partial, scanned: st.scanned, size: st.size });
-      scanned += 1;
-    }
-
-    const totals = rows.reduce((acc, r) => {
-      const c = r.cost as { usd: number; unpriced: string[] };
-      const u = r.usage as { input: number; output: number; cacheRead: number; cacheWrite: number };
-      acc.usd += c.usd;
-      for (const m of c.unpriced) acc.unpriced.add(m);
-      acc.input += u.input; acc.output += u.output; acc.cacheRead += u.cacheRead; acc.cacheWrite += u.cacheWrite;
-      return acc;
-    }, { usd: 0, unpriced: new Set<string>(), input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-
-    rows.sort((a, b) => Number(b.running) - Number(a.running) || (b.cost as { usd: number }).usd - (a.cost as { usd: number }).usd);
-    return {
-      conversations: rows,
-      totals: { ...totals, unpriced: [...totals.unpriced] },
-      // Honest about what is not in the figure yet.
-      pending: cold.length - scanned,
-      // Bytes still unread across everything — the honest measure of how far
-      // off the total is, since one 627MB file dwarfs forty small ones.
-      pendingBytes: cold.slice(scanned).reduce((a, c) => a + (c.size - c.started), 0)
-        + rows.reduce((a, r) => a + (r.partial ? Math.max(0, r.size - r.scanned) : 0), 0),
-      running: rows.filter((r) => r.running).length,
-    };
+    const running = new Set(this.manager.runningSessions().map(r => `${r.projectId}/${r.sessionId}`));
+    const reg = this.manager.listProjects() as { projects: {id:string;name:string;conversations?:{sessionId:string;title?:string}[]}[] };
+    return projectCosts(reg.projects ?? [], (pid,sid) => this.manager.historyContext(pid,sid), running, this.stats, budget);
   }
 
   /** One subagent's own history — the same rows the main chat renders. */

@@ -26,3 +26,15 @@ describe('question parsing', () => {
     expect(stripAskInstructions('no protocol here')).toBe('no protocol here');
   });
 });
+
+
+it('accepts fewer or more than three options without padding or truncation', () => {
+  for(const count of [0,1,2,4,8]) {
+    const options=Array.from({length:count},(_,i)=>'Choice '+i);
+    expect(parseQuestion('<<<ASK\nquestion: Pick?\noptions: '+options.join(' | ')+'\n>>>')).toEqual({question:'Pick?',options});
+  }
+});
+it('keeps every question in one block or successive blocks, including free text', () => {
+  const text='<<<ASK\nquestion: First?\noptions: A | B\nquestion: Second?\nquestion: Third?\noptions: C | D | E | F\n>>>\n<<<ASK\nquestion: Fourth?\n>>>';
+  expect(parseQuestion(text)?.questions).toEqual([{question:'First?',options:['A','B']},{question:'Second?',options:[]},{question:'Third?',options:['C','D','E','F']},{question:'Fourth?',options:[]}]);
+});

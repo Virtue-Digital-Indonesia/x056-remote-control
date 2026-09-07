@@ -120,34 +120,34 @@ describe('cost estimation', () => {
   });
 
   it('prices output at the model rate', () => {
-    expect(estimateCost(usage({ 'claude-opus-5': { output: 1e6 } })).usd).toBeCloseTo(75);
-    expect(estimateCost(usage({ 'claude-sonnet-5': { output: 1e6 } })).usd).toBeCloseTo(15);
+    expect(estimateCost(usage({ 'claude-opus-5': { output: 1e6 } })).usd).toBeCloseTo(25);
+    expect(estimateCost(usage({ 'claude-sonnet-5': { output: 1e6 } })).usd).toBeCloseTo(10);
   });
 
   it('charges cache reads at a tenth of input', () => {
-    expect(estimateCost(usage({ 'claude-opus-5': { cacheRead: 1e6 } })).usd).toBeCloseTo(1.5);
+    expect(estimateCost(usage({ 'claude-opus-5': { cacheRead: 1e6 } })).usd).toBeCloseTo(0.5);
   });
 
   it('names an unpriced model instead of blanking the whole figure', () => {
     // One unknown model used to return null, hiding the cost of everything else.
-    const c = estimateCost(usage({ 'claude-opus-5': { output: 1e6 }, 'claude-fable-5': { output: 1e6 } }));
-    expect(c.usd).toBeCloseTo(75);
-    expect(c.unpriced).toEqual(['claude-fable-5']);
+    const c = estimateCost(usage({ 'claude-opus-5': { output: 1e6 }, 'claude-unknown-9': { output: 1e6 } }));
+    expect(c.usd).toBeCloseTo(25);
+    expect(c.unpriced).toEqual(['claude-unknown-9']);
   });
 
   it('handles a NEW model id without pricing it as free', () => {
-    // Fable 5.1 arrived as `claude-fable-5-1`. A family match on opus/sonnet/
+    // A future Opus release must remain unpriced. A family match on opus/sonnet/
     // haiku must not accidentally price it, and it must be named rather than
     // silently contributing $0 to a total.
-    const c = estimateCost(usage({ 'claude-opus-5': { output: 1e6 }, 'claude-fable-5-1': { output: 5e5 } }));
-    expect(c.usd).toBeCloseTo(75);
-    expect(c.unpriced).toEqual(['claude-fable-5-1']);
+    const c = estimateCost(usage({ 'claude-opus-5': { output: 1e6 }, 'claude-opus-99': { output: 5e5 } }));
+    expect(c.usd).toBeCloseTo(25);
+    expect(c.unpriced).toEqual(['claude-opus-99']);
   });
 
   it('ignores a pseudo-model carrying no tokens, like <synthetic>', () => {
     const c = estimateCost(usage({ 'claude-opus-5': { output: 1e6 }, '<synthetic>': {} }));
     expect(c.unpriced).toEqual([]);
-    expect(c.usd).toBeCloseTo(75);
+    expect(c.usd).toBeCloseTo(25);
   });
 });
 
@@ -267,5 +267,31 @@ describe('reading a whole transcript, across calls', () => {
     // v1 shape: a bare map, and totals that began mid-file.
     writeFileSync(join(d, 'transcript-stats.json'), JSON.stringify({ [f]: { usage: { output: 999999 }, tasks: {}, partial: true, scanned: 1, size: 1, offset: 1 } }));
     expect(new TranscriptStatsReader(d).statsFor(f).usage.output).toBe(100);
+  });
+});
+
+
+describe('Codex cumulative token accounting', () => {
+  const event = (type:string,payload:unknown) => JSON.stringify({type,payload})+'\n';
+  const tokens = (input:number,cached:number,output:number) => event('event_msg',{type:'token_count',info:{total_token_usage:{input_tokens:input,cached_input_tokens:cached,output_tokens:output,reasoning_output_tokens:output/2}}});
+  it('deduplicates cumulative snapshots, separates cache, and persists model across scans', () => {
+    const d=dir(),f=join(d,'codex.jsonl');
+    writeFileSync(f,event('turn_context',{model:'gpt-6-astra'})+tokens(1000,600,100)+tokens(1000,600,100));
+    let r=new TranscriptStatsReader(d);
+    expect(r.statsFor(f).usage).toMatchObject({input:400,cacheRead:600,output:100,messages:1});
+    appendFileSync(f,tokens(1500,800,150));
+    expect(r.cached(f)?.partial).toBe(true);
+    r=new TranscriptStatsReader(d);
+    expect(r.statsFor(f).usage.byModel['gpt-6-astra']).toEqual({input:700,cacheRead:800,output:150,cacheWrite:0});
+    appendFileSync(f,event('turn_context',{model:'gpt-5.6-terra'})+tokens(1800,900,200));
+    expect(r.statsFor(f).usage.byModel['gpt-5.6-terra']).toEqual({input:200,cacheRead:100,output:50,cacheWrite:0});
+  });
+  it('starts a new accounting segment when cumulative counters reset', () => {
+    const d=dir(),f=join(d,'codex.jsonl');writeFileSync(f,tokens(100,40,10)+tokens(20,5,2));
+    expect(new TranscriptStatsReader(d).statsFor(f).usage).toMatchObject({input:75,cacheRead:45,output:12});
+  });
+  it('uses current exact model rates including Fable 5.1 cache discounts', () => {
+    const u={input:0,output:0,cacheRead:0,cacheWrite:0,messages:0,byModel:{'claude-fable-5-1':{input:0,output:0,cacheRead:1e6,cacheWrite:0},'gpt-6-astra':{input:1e6,output:1e6,cacheRead:1e6,cacheWrite:0}}};
+    expect(estimateCost(u)).toEqual({usd:61.25,unpriced:[]});
   });
 });

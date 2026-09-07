@@ -135,6 +135,7 @@ export interface PendingQuestion {
   sessionId: string;
   question: string;
   options: string[];
+  questions?: { question: string; options: string[] }[];
   at: string;
 }
 
@@ -160,7 +161,7 @@ const BUFFER_MAX = 1000;
 // infra it doesn't have.
 const BASE_SYSTEM_NOTE =
   'EXECUTION ENVIRONMENT (x056 remote-control gateway): You run headless inside a container, driven by a gateway. ' +
-  '(1) SUBAGENTS ARE FULLY SUPPORTED. A Task/Agent call runs inside your turn and blocks it until the subagent returns, so use them freely — including many in parallel. Each one gets its own transcript the operator can open. ' +
+  '(1) SUBAGENTS ARE FULLY SUPPORTED. Use the native delegation tools your provider exposes: Task/Agent for Claude, spawn_agent and its follow-up/wait tools for Codex. Delegate concrete independent subtasks when the user and your instructions permit it, and collect their results before reporting completion. Each one gets its own transcript the operator can open. ' +
   '(2) BACKGROUND WORK SURVIVES THE END OF A TURN. Your CLI process is kept alive between turns, so background shells (run_in_background: true), backgrounded agents, and the Workflow tool keep running after you stop talking, and you can collect their output on a LATER turn. Nothing wakes you up when one finishes: say what you started and check it next turn, rather than claiming you will be notified. ' +
   'What still ends background work: the operator stopping the conversation, a failover to another account when one hits its usage limit, a container swap (deploys), and about 30 minutes fully idle. So prefer finishing genuinely short work in the foreground, and background what is actually long. ' +
   '(3) For long autonomous or multi-turn work, Autopilot re-invokes you across turns with full context — suggest it for anything that needs many turns of its own accord. ' +
@@ -1488,7 +1489,7 @@ export class SessionManager {
       throw new RelayLimitError(hop.depth, SessionManager.RELAY_HOP_LIMIT);
     }
     if (sessionId) this.clearSelfQueueStreak(sessionId);
-    const prompt = opts.interactive !== false ? withAskInstructions(message) : message;
+    const prompt = opts.interactive !== false && !message.trimStart().startsWith('/') ? withAskInstructions(message) : message;
     const run = { model: opts.model, effort: opts.effort };
     // Record the chain against the TARGET before the turn can start, so a send
     // it makes in that turn is counted as the next hop rather than a new chain.
@@ -1759,7 +1760,7 @@ export class SessionManager {
           if (q) {
             // Persist alongside the event so the card can be rehydrated after a
             // refresh/reconnect/swap — the turn is over and waiting on a human.
-            const pending = { projectId: pid, sessionId, question: q.question, options: q.options, at: new Date().toISOString() };
+            const pending = { projectId: pid, sessionId, ...q, at: new Date().toISOString() };
             this.pendingQuestions.set(sessionId, pending);
             this.savePendingQuestions();
             emit('question', pending);
