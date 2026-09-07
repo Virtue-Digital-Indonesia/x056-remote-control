@@ -1,0 +1,11 @@
+{
+  "items": [
+    {
+      "id": "question-prompt-redesign",
+      "status": "deferred",
+      "requested": "2026-09-07",
+      "description": "Redesign the question/ASK UI using the ChatGPT desktop app as the visual reference. Keep flexible question counts, choices, custom answers, saved drafts, and failure recovery.",
+      "timing": "Next UI pass; the user explicitly said to do this later."
+    }
+  ]
+}

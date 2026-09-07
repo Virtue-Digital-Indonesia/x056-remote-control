@@ -46,34 +46,80 @@ window.createControlRoom = function (engine) {
   try { selectedProject=localStorage.getItem('x056_project_scope') || ''; } catch {}
   let mode = 'closed', section = 'board', boardFilter = 'all', renderTimer, accountTimer, returnFocus;
   let boardSignature = '', accountSignature = '', analytics = null, routing = null, analyticsError = '', requestVersion = 0;
-  const stage=document.createElement('div');stage.id='conversationStage';stage.setAttribute('aria-label','Quick conversation switcher');
-  stage.innerHTML=`<div id="stageShelf" hidden><header><strong>Conversations</strong><small>Dismiss hides a shortcut</small></header><label class="stage-search">${ic('search')}<input id="stageSearch" type="search" placeholder="Find a conversation" aria-label="Find a quick conversation"></label><div id="stageItems"></div><button id="stageBrowse">Browse all conversations ${ic('right')}</button></div><button id="stageToggle" aria-label="Switch conversation" aria-expanded="false" aria-controls="stageShelf">${ic('chat')}<span id="stageCount"></span><i id="stageActive" hidden></i></button>`;
+  const stage=document.createElement('div');stage.id='conversationStage';stage.setAttribute('aria-label','Pinned conversations');
+  stage.innerHTML=`<div id="stageShelf" hidden><button id="stagePrevious" class="stage-page" aria-label="Previous pinned conversations">${ic('up')}</button><div id="stageItems"></div><button id="stageNext" class="stage-page" aria-label="More pinned conversations">${ic('down')}</button><button id="stageAdd" class="stage-add" aria-label="Pin a conversation" title="Pin a conversation">${ic('plus')}</button></div><button id="stageToggle" aria-label="Pinned conversations" aria-expanded="false" aria-controls="stageShelf">${ic('chat')}<span id="stageCount" hidden></span></button>`;
+  // Keep this at the viewport root: a transformed chat modal changes the
+  // containing block of fixed descendants, making the dock jump or clip.
   document.body.append(stage);
-  let stageRecent=[],stageDismissed=[],stageSignature='',stageCloseTimer,stagePinned=false;
-  try{stageRecent=JSON.parse(localStorage.getItem('x056_stage_recent')||'[]');stageDismissed=JSON.parse(localStorage.getItem('x056_stage_dismissed')||'[]');if(!Array.isArray(stageRecent)||!Array.isArray(stageDismissed))throw Error();}catch{stageRecent=[];stageDismissed=[];}
-  function saveStage(){try{localStorage.setItem('x056_stage_recent',JSON.stringify(stageRecent.slice(0,30)));localStorage.setItem('x056_stage_dismissed',JSON.stringify(stageDismissed.slice(-200)));}catch{}}
-  function rememberStage(){const s=engine.state();if(!s.sessionId)return;const id=s.projectId+'::'+s.sessionId;stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);stageDismissed=stageDismissed.filter(x=>x!==id);saveStage();renderStage();}
+  let stagePins=[],stageRecent=[],recentDismissed=[],stageMode='pinned',showDismissedRecents=false,stageSignature='',stageCloseTimer,stageExpanded=false,stagePage=0;
+  try{const saved=JSON.parse(localStorage.getItem('x056_stage_pins')||'[]');if(Array.isArray(saved))stagePins=[...new Set(saved.filter(x=>typeof x==='string'))];}catch{}
+  try{stageMode=localStorage.getItem('x056_stage_mode')==='recent'?'recent':'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
+  document.body.dataset.stageMode=stageMode;
+  function saveRecents(){try{localStorage.setItem('x056_stage_recent',JSON.stringify(stageRecent.slice(0,30)));localStorage.setItem('x056_recent_dismissed',JSON.stringify(recentDismissed));}catch{toast('This browser could not save recent conversations.');}}
+  function rememberStage(){const state=engine.state();if(!state.sessionId)return;const id=stageKey(state.projectId,state.sessionId);stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);recentDismissed=recentDismissed.filter(x=>x!==id);saveRecents();renderStage();}
+  function dismissRecent(project,session){const id=stageKey(project,session);recentDismissed=[...new Set([...recentDismissed,id])];saveRecents();renderStage();refresh();toast('Conversation dismissed from recents.',()=>restoreRecent(project,session));}
+  function restoreRecent(project,session){recentDismissed=recentDismissed.filter(x=>x!==stageKey(project,session));saveRecents();renderStage();refresh();}
+  function setStageMode(value){stageMode=value==='recent'?'recent':'pinned';stagePage=0;document.body.dataset.stageMode=stageMode;try{localStorage.setItem('x056_stage_mode',stageMode);}catch{toast('This browser could not save the switcher mode.');}renderStage();}
+  function stageCandidates(all=cards()){
+    const byId=new Map(all.map(x=>[stageKey(x.p.id,x.c.sessionId),x]));
+    if(stageMode==='pinned')return stagePins.map(id=>byId.get(id)).filter(Boolean);
+    const opened=stageRecent.map(id=>byId.get(id)).filter(Boolean),running=all.filter(x=>['running','background'].includes(x.status)),latest=all.filter(x=>!recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))).slice(0,20);
+    const seen=new Set();return [...running,...opened,...latest].filter(x=>{const id=stageKey(x.p.id,x.c.sessionId);if(seen.has(id)||recentDismissed.includes(id))return false;seen.add(id);return true;});
+  }
+  function stageKey(project,session){return project+'::'+session;}
+  function isStagePinned(project,session){return stagePins.includes(stageKey(project,session));}
+  function saveStage(){try{localStorage.setItem('x056_stage_pins',JSON.stringify(stagePins));}catch{toast('This browser could not save pinned conversations.');}}
+  function pinStage(project,session,pinned){
+    const id=stageKey(project,session);stagePins=stagePins.filter(x=>x!==id);if(pinned)stagePins.push(id);
+    if(pinned){stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);recentDismissed=recentDismissed.filter(x=>x!==id);saveRecents();}saveStage();renderStage();refresh();if(stagePicker.open)renderStagePicker();
+  }
   function stageOpen(value){clearTimeout(stageCloseTimer);$('stageShelf').hidden=!value;$('stageToggle').setAttribute('aria-expanded',String(value));if(value)renderStage();}
-  $('stageToggle').onclick=()=>{stagePinned=!stagePinned;stageOpen(stagePinned);};
-  stage.addEventListener('pointerenter',e=>{if(e.pointerType==='mouse'){clearTimeout(stageCloseTimer);stageOpen(true);}});
-  stage.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'&&!stagePinned&&!stage.contains(document.activeElement))stageCloseTimer=setTimeout(()=>stageOpen(false),250);});
-  stage.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('stageShelf').hidden){e.preventDefault();e.stopPropagation();stagePinned=false;stageOpen(false);$('stageToggle').focus();}});
-  document.addEventListener('pointerdown',e=>{if(!stage.contains(e.target)){stagePinned=false;stageOpen(false);}});
-  $('stageSearch').oninput=()=>renderStage();
-  $('stageBrowse').onclick=()=>{stagePinned=false;stageOpen(false);showSection('board');$('crSearch').focus();};
+  $('stageToggle').onclick=()=>{if(!stageCandidates().length){openStagePicker();return;}stageExpanded=!stageExpanded;stageOpen(stageExpanded);};
+  stage.addEventListener('pointerenter',e=>{if(e.pointerType==='mouse'&&stageCandidates().length){clearTimeout(stageCloseTimer);stageOpen(true);}});
+  stage.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'&&!stageExpanded&&!stage.contains(document.activeElement))stageCloseTimer=setTimeout(()=>stageOpen(false),250);});
+  stage.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('stageShelf').hidden){e.preventDefault();e.stopPropagation();stageExpanded=false;stageOpen(false);$('stageToggle').focus();}});
+  document.addEventListener('pointerdown',e=>{if(!stage.contains(e.target)){stageExpanded=false;stageOpen(false);}});
+  $('stageAdd').onclick=openStagePicker;
+  $('stagePrevious').onclick=()=>{stagePage=Math.max(0,stagePage-1);renderStage();};
+  $('stageNext').onclick=()=>{stagePage++;renderStage();};
+  window.addEventListener('resize',()=>{renderStage();if(innerWidth<=850){stageExpanded=false;stageOpen(false);}});
+  window.addEventListener('storage',e=>{
+    if(e.key==='x056_stage_mode'){stageMode=e.newValue==='recent'?'recent':'pinned';document.body.dataset.stageMode=stageMode;stagePage=0;renderStage();return;}
+    const assign={'x056_stage_pins':v=>stagePins=v,'x056_stage_recent':v=>stageRecent=v,'x056_recent_dismissed':v=>recentDismissed=v};if(!assign[e.key])return;
+    try{const value=JSON.parse(e.newValue||'[]');if(Array.isArray(value)){assign[e.key]([...new Set(value.filter(x=>typeof x==='string'))]);renderStage();refresh();}}catch{}
+  });
   function renderStage(){
-    const all=cards(),s=engine.state(),query=$('stageSearch').value.trim().toLowerCase();
-    const id=x=>x.p.id+'::'+x.c.sessionId;
-    const eligible=all.filter(x=>!stageDismissed.includes(id(x))&&(stageRecent.includes(id(x))||['running','background','question'].includes(x.status)||x.c.sessionId===s.sessionId));
-    eligible.sort((a,b)=>{const ai=stageRecent.indexOf(id(a)),bi=stageRecent.indexOf(id(b));return (ai<0?100:ai)-(bi<0?100:bi)||b.time-a.time;});
-    const rows=(query?all.filter(x=>[x.p.name,x.c.title].join(' ').toLowerCase().includes(query)):eligible).slice(0,30);
-    $('stageCount').textContent=eligible.length||'';$('stageCount').hidden=!eligible.length;
-    $('stageActive').hidden=!all.some(x=>['running','background'].includes(x.status));
-    const html=rows.map(x=>`<div class="stage-item ${x.c.sessionId===s.sessionId&&x.p.id===s.projectId?'current':''}"><button class="stage-conversation" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><span class="stage-caption"><strong>${esc(x.c.title||'Conversation')}</strong><small>${esc(x.p.name)} · ${statusLabels[x.status]||'Recent'}</small></span><span class="stage-orb ${x.status}" style="--project-color:${projectColor(x.p.id)}">${ic(x.status==='running'?'sparkles':'chat')}</span></button><button class="stage-dismiss" data-stage-dismiss="${esc(id(x))}" aria-label="Dismiss ${esc(x.c.title||'conversation')} shortcut">${ic('x')}</button></div>`).join('')||'<p class="stage-empty">Open a conversation to keep it here.</p>';
-    if(html===stageSignature)return;stageSignature=html;const focus=document.activeElement?.dataset.session;$('stageItems').innerHTML=html;
-    $('stageItems').querySelectorAll('[data-session]').forEach(b=>b.onclick=()=>{stagePinned=false;stageOpen(false);openConversation(b);});
-    $('stageItems').querySelectorAll('[data-stage-dismiss]').forEach(b=>b.onclick=()=>{stageDismissed.push(b.dataset.stageDismiss);stageRecent=stageRecent.filter(x=>x!==b.dataset.stageDismiss);saveStage();renderStage();$('stageToggle').focus();});
+    const all=cards(),s=engine.state(),byId=new Map(all.map(x=>[stageKey(x.p.id,x.c.sessionId),x]));
+    const pinned=stageCandidates(all),pageSize=Math.max(1,Math.min(7,Math.floor((innerHeight-230)/58)));
+    stagePage=Math.min(stagePage,Math.max(0,Math.ceil(pinned.length/pageSize)-1));
+    const rows=pinned.slice(stagePage*pageSize,(stagePage+1)*pageSize);
+    $('stageCount').textContent=pinned.length||'';$('stageCount').hidden=!pinned.length;
+    $('stageToggle').setAttribute('aria-label',pinned.length?(stageMode==='pinned'?'Pinned conversations':'Recent conversations')+' ('+pinned.length+')':'Pin a conversation');
+    stage.setAttribute('aria-label',stageMode==='pinned'?'Pinned conversations':'Recent conversations');
+    $('stageToggle').querySelector('use').setAttribute('href',pinned.length?'#i-chat':'#i-plus');
+    $('stagePrevious').setAttribute('aria-label','Previous conversations');$('stageNext').setAttribute('aria-label','More conversations');
+    $('stagePrevious').hidden=stagePage===0;$('stageNext').hidden=(stagePage+1)*pageSize>=pinned.length;
+    const html=rows.map(x=>{const title=x.c.title||'Conversation',current=x.c.sessionId===s.sessionId&&x.p.id===s.projectId,initials=title.trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase();return `<div class="stage-item ${current?'current':''}"><button class="stage-conversation ${x.status}" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}" aria-label="${esc(title+' · '+x.p.name+' · '+(statusLabels[x.status]||'Idle'))}" ${current?'aria-current="true"':''} style="--project-color:${projectColor(x.p.id)}"><span class="stage-caption"><strong>${esc(title)}</strong><small>${esc(x.p.name)} · ${statusLabels[x.status]||'Idle'}</small></span><span class="stage-initials" aria-hidden="true">${esc(initials)}</span><i class="stage-status" aria-hidden="true"></i></button><button class="stage-unpin" data-stage-unpin="${esc(stageKey(x.p.id,x.c.sessionId))}" aria-label="${stageMode==='pinned'?'Unpin':'Dismiss'} ${esc(title)}">${ic('x')}</button></div>`;}).join('');
+    if(html===stageSignature)return;stageSignature=html;const focused=document.activeElement,focus=focused?.dataset.session,unpinFocus=focused?.dataset.stageUnpin;$('stageItems').innerHTML=html;
+    $('stageItems').querySelectorAll('[data-session]').forEach(b=>b.onclick=()=>openConversation(b));
+    $('stageItems').querySelectorAll('[data-stage-unpin]').forEach(b=>b.onclick=()=>{const x=byId.get(b.dataset.stageUnpin);if(x){if(stageMode==='pinned')pinStage(x.p.id,x.c.sessionId,false);else dismissRecent(x.p.id,x.c.sessionId);}$('stageToggle').focus();});
     if(focus)[...$('stageItems').querySelectorAll('[data-session]')].find(b=>b.dataset.session===focus)?.focus({preventScroll:true});
+    if(unpinFocus)[...$('stageItems').querySelectorAll('[data-stage-unpin]')].find(b=>b.dataset.stageUnpin===unpinFocus)?.focus({preventScroll:true});
+  }
+  const stagePicker=document.createElement('dialog');stagePicker.id='stagePinPicker';stagePicker.className='cr-dialog';stagePicker.setAttribute('aria-label','Pin conversations');
+  stagePicker.innerHTML=`<header><div><h2>Pin conversations</h2><p>Keep your shortcuts here. Saved on this browser.</p></div><button class="cr-icon" data-pin-close aria-label="Close pin picker">${ic('x')}</button></header><label class="cr-search">${ic('search')}<input id="stagePinSearch" type="search" placeholder="Find a conversation or project" aria-label="Find conversation to pin"></label><div id="stagePinChoices"></div><footer><span id="stagePinTotal"></span><button class="cr-primary" data-pin-done>Done</button></footer>`;
+  document.body.append(stagePicker);stagePicker.querySelector('[data-pin-close]').onclick=()=>stagePicker.close();stagePicker.querySelector('[data-pin-done]').onclick=()=>stagePicker.close();$('stagePinSearch').oninput=()=>{stagePickerLimit=30;renderStagePicker();};
+  let stagePickerLimit=30;
+  function openStagePicker(){stageExpanded=false;stageOpen(false);stagePickerLimit=30;$('stagePinSearch').value='';renderStagePicker();if(!stagePicker.open)stagePicker.showModal();$('stagePinSearch').focus();}
+  function renderStagePicker(){
+    const query=$('stagePinSearch').value.trim().toLowerCase(),all=cards().filter(x=>[x.p.name,x.c.title].join(' ').toLowerCase().includes(query));
+    const focus=document.activeElement?.dataset.pinChoice;
+    $('stagePinTotal').textContent=stagePins.length+' pinned';
+    $('stagePinChoices').innerHTML=all.slice(0,stagePickerLimit).map(x=>`<label class="stage-pin-choice"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span><strong>${esc(x.c.title||'Conversation')}</strong><small>${esc(x.p.name)}</small></span><input type="checkbox" data-pin-choice="${esc(stageKey(x.p.id,x.c.sessionId))}" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}" aria-label="Pin ${esc(x.c.title||'conversation')}" ${isStagePinned(x.p.id,x.c.sessionId)?'checked':''}></label>`).join('')||'<p class="cr-empty">No matching conversations.</p>';
+    if(all.length>stagePickerLimit)$('stagePinChoices').insertAdjacentHTML('beforeend','<button class="cr-text-button" id="stageMoreChoices">Show more conversations</button>');
+    $('stagePinChoices').querySelectorAll('[data-pin-choice]').forEach(input=>input.onchange=()=>pinStage(input.dataset.project,input.dataset.session,input.checked));
+    if(focus)[...$('stagePinChoices').querySelectorAll('[data-pin-choice]')].find(b=>b.dataset.pinChoice===focus)?.focus({preventScroll:true});
+    if($('stageMoreChoices'))$('stageMoreChoices').onclick=()=>{stagePickerLimit+=30;renderStagePicker();};
   }
   // Native cancel handlers also settle confirmation promises and clean up utilities.
   let outsideDialog=null;
@@ -90,7 +136,7 @@ window.createControlRoom = function (engine) {
   const compact = n => Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n || 0);
   const totalTokens = r => r.input + r.output + r.cached + r.cacheWrite;
   const toastElement=$('crToast');
-  function toast(message) { const dialogs=[...document.querySelectorAll('dialog[open]')];(dialogs[dialogs.length-1]||shell).append(toastElement);toastElement.textContent=message;toastElement.hidden=false;clearTimeout(accountTimer);accountTimer=setTimeout(()=>toastElement.hidden=true,6000); }
+  function toast(message,undo) { const dialogs=[...document.querySelectorAll('dialog[open]')];(dialogs[dialogs.length-1]||(mode==='closed'?shell:main)).append(toastElement);toastElement.textContent=message;if(undo){const button=document.createElement('button');button.className='toast-undo';button.textContent='Undo';button.onclick=()=>{undo();toastElement.hidden=true;};toastElement.append(button);}toastElement.hidden=false;clearTimeout(accountTimer);accountTimer=setTimeout(()=>toastElement.hidden=true,6000); }
   function key() { const s = engine.state(); return s.projectId + '::' + (s.sessionId || ''); }
   function rememberPosition() {
     if (mode === 'closed') return;
@@ -116,7 +162,7 @@ window.createControlRoom = function (engine) {
     if (mode === 'modal') main.setAttribute('aria-modal','true'); else main.removeAttribute('aria-modal');
     $('chatMax').title = $('chatMax').ariaLabel = mode === 'side' ? 'Maximize conversation' : 'Restore side panel';
     if (mode !== 'closed') restorePosition();
-    (mode==='closed'?document.body:main).append(stage);
+    if(mode==='modal')main.setAttribute('aria-owns','conversationStage');else main.removeAttribute('aria-owns');
   }
   function open() { rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode(prefs.open === 'side' ? 'side' : prefs.maximize); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
   function close() { engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
@@ -168,7 +214,7 @@ window.createControlRoom = function (engine) {
       else if(!e.shiftKey&&(document.activeElement===last||!nodes.includes(document.activeElement))){e.preventDefault();first.focus();}
     }
     if (e.key === 'Escape' && mode !== 'closed') { e.preventDefault(); close(); }
-    if (e.key === 'Tab' && mode === 'modal') { const nodes = [...main.querySelectorAll('button,input,textarea,select,[tabindex="0"],a[href]')].filter(n => n.offsetParent && !n.disabled && !n.hidden); const first = nodes[0], last = nodes[nodes.length-1]; if (e.shiftKey && (document.activeElement === first || !main.contains(document.activeElement))) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
+    if (e.key === 'Tab' && mode === 'modal') { const nodes = [...main.querySelectorAll('button,input,textarea,select,[tabindex="0"],a[href]'),...stage.querySelectorAll('button')].filter(n => n.offsetParent && !n.disabled && !n.hidden); const first = nodes[0], last = nodes[nodes.length-1]; if (e.shiftKey && (document.activeElement === first || (!main.contains(document.activeElement)&&!stage.contains(document.activeElement)))) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
   });
   function updateTitle() { const s = engine.state(), p = s.projects.find(p => p.id === s.projectId), c = p?.conversations?.find(c => c.sessionId === s.sessionId); main.setAttribute('aria-label', c?.title || 'New conversation'); if (c) $('projTitle').textContent = c.title; }
   function cards() {
@@ -216,7 +262,7 @@ window.createControlRoom = function (engine) {
     catch(e){toast(e.message);}finally{if(button.isConnected)button.disabled=false;}
   }
   function conversationRow(x) {
-    return `<article class="cr-conversation-row ${x.status}" data-row="${esc(x.c.sessionId)}"><button class="cr-task" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span class="cr-row-copy"><span class="cr-row-title">${esc(x.c.title||'Conversation')}${x.unread?'<i class="cr-unread-dot" title="Unread"></i>':''}</span><span class="cr-row-subtitle">${esc(selectedProject ? (x.label || (x.c.provider==='codex'?'ChatGPT':'Claude')) : x.p.name+(x.label?' · '+x.label:''))}</span></span><span class="cr-status ${x.status}"><i></i>${statusLabels[x.status]}</span><time>${esc(relativeDate(x.time))}</time></button>${x.status==='question'?`<button class="cr-dismiss" data-dismiss="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" title="Dismiss question without sending a reply">Dismiss question</button>`:''}</article>`;
+    return `<article class="cr-conversation-row ${x.status}" data-row="${esc(x.c.sessionId)}"><button class="cr-task" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span class="cr-row-copy"><span class="cr-row-title">${esc(x.c.title||'Conversation')}${x.unread?'<i class="cr-unread-dot" title="Unread"></i>':''}</span><span class="cr-row-subtitle">${esc(selectedProject ? (x.label || (x.c.provider==='codex'?'ChatGPT':'Claude')) : x.p.name+(x.label?' · '+x.label:''))}</span></span><span class="cr-status ${x.status}"><i></i>${statusLabels[x.status]}</span><time>${esc(relativeDate(x.time))}</time></button><button class="cr-row-pin ${isStagePinned(x.p.id,x.c.sessionId)?'pinned':''}" data-pin-project="${esc(x.p.id)}" data-pin-session="${esc(x.c.sessionId)}" aria-label="${isStagePinned(x.p.id,x.c.sessionId)?'Unpin':'Pin'} ${esc(x.c.title||'conversation')}" aria-pressed="${isStagePinned(x.p.id,x.c.sessionId)}">${ic('pin')}</button>${['finished','idle'].includes(x.status)?`<button class="cr-recent-dismiss" data-recent-project="${esc(x.p.id)}" data-recent-session="${esc(x.c.sessionId)}" aria-label="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore':'Dismiss'} ${esc(x.c.title||'conversation')} ${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'to':'from'} recents" title="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore to recents':'Dismiss from recents'}">${ic(recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'history':'x')}</button>`:''}${x.status==='question'?`<button class="cr-dismiss" data-dismiss="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" title="Dismiss question without sending a reply">Dismiss question</button>`:''}</article>`;
   }
   function renderBoard() {
     const all=cards(),state=engine.state();
@@ -229,11 +275,13 @@ window.createControlRoom = function (engine) {
     const selector=$('crProjectFilter');selector.innerHTML='<option value="">All projects</option>'+state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');selector.value=selectedProject;
     const query=$('crSearch').value.toLowerCase();
     const filtered=scope.filter(x=>(!query||(x.c.title+' '+x.p.name+' '+x.label).toLowerCase().includes(query))&&(boardFilter==='all'||boardFilter==='question'&&x.status==='question'||boardFilter==='unread'&&x.unread||boardFilter==='active'&&['running','background'].includes(x.status)));
-    const attention=filtered.filter(x=>['question','failed','parked'].includes(x.status)),active=filtered.filter(x=>['running','background'].includes(x.status)),recent=filtered.filter(x=>['finished','idle'].includes(x.status));
+    const attention=filtered.filter(x=>['question','failed','parked'].includes(x.status)),active=filtered.filter(x=>['running','background'].includes(x.status)),recent=filtered.filter(x=>['finished','idle'].includes(x.status)&&(!recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))||query||showDismissedRecents||boardFilter!=='all'));
+    const dismissedCount=scope.filter(x=>['finished','idle'].includes(x.status)&&recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))).length;
     const groups=[['Needs attention',attention],['In progress',active],['Recent conversations',recent.slice(0,recentLimit)]];
     let html=groups.filter(([,rows])=>rows.length).map(([title,rows])=>`<section class="cr-conversation-group"><header><h2>${title}</h2><span>${title==='Recent conversations'?recent.length:rows.length}</span></header>${rows.map(conversationRow).join('')}</section>`).join('');
     if(!html)html=`<div class="cr-empty">${query?'No conversations match your search.':boardFilter==='question'?'No questions need your input.':'No conversations in this view.'}</div>`;
     if(recent.length>recentLimit)html+=`<button class="cr-load-more" id="crShowMore">Show ${Math.min(20,recent.length-recentLimit)} more conversations <span>${recent.length-recentLimit} remaining</span></button>`;
+    if(dismissedCount&&boardFilter==='all'&&!query)html+=`<button id="crDismissedRecents" class="cr-text-button cr-dismissed-toggle">${showDismissedRecents?'Hide dismissed':'Show dismissed'} (${dismissedCount})</button>`;
     if(html!==boardSignature){
       boardSignature=html;
       const focused=document.activeElement?.closest('.cr-conversation-row')?.dataset.row,moreFocused=document.activeElement?.id==='crShowMore';
@@ -241,6 +289,9 @@ window.createControlRoom = function (engine) {
       if(focused)([...$('crLanes').querySelectorAll('.cr-task')].find(n=>n.dataset.session===focused)||shell.querySelector('[data-filter="question"]')).focus({preventScroll:true});
       if(moreFocused)($('crShowMore')||$('crLanes').querySelector('.cr-task:last-child'))?.focus({preventScroll:true});
       $('crLanes').querySelectorAll('.cr-task').forEach(b=>b.onclick=()=>openConversation(b));
+      $('crLanes').querySelectorAll('[data-recent-session]').forEach(b=>b.onclick=()=>{const pid=b.dataset.recentProject,sid=b.dataset.recentSession;if(recentDismissed.includes(stageKey(pid,sid)))restoreRecent(pid,sid);else dismissRecent(pid,sid);});
+      if($('crDismissedRecents'))$('crDismissedRecents').onclick=()=>{showDismissedRecents=!showDismissedRecents;renderBoard();};
+      $('crLanes').querySelectorAll('[data-pin-session]').forEach(b=>b.onclick=()=>pinStage(b.dataset.pinProject,b.dataset.pinSession,!isStagePinned(b.dataset.pinProject,b.dataset.pinSession)));
       $('crLanes').querySelectorAll('[data-dismiss]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await engine.dismissQuestion(b.dataset.project,b.dataset.dismiss);toast('Question dismissed. No reply sent.');refresh();}catch(e){toast(e.message);b.disabled=false;}});
       if($('crShowMore'))$('crShowMore').onclick=()=>{recentLimit+=20;renderBoard();};
     }
@@ -359,8 +410,8 @@ window.createControlRoom = function (engine) {
   function renderAccountsPage() {
     if ($('accountProvider')) return;
     $('crAccounts').innerHTML=`<div class="cr-heading"><div><h1>Dashboard</h1><p>Account usage, project costs, and routing.</p></div><div class="cr-actions"><button class="cr-secondary" id="accountExport">${ic('down')} Export CSV</button><button class="cr-primary" id="accountAdd">${ic('plus')} Add account</button></div></div>
-      <div class="cr-tools">${segmented('accountProvider',[['','All providers'],['codex','ChatGPT'],['claude','Claude']],accountProvider,'Provider')}<span class="sp"></span>${segmented('accountDays',[['7','7 days'],['30','30 days']],accountDays,'Usage date range')}<button class="cr-icon" id="accountRefresh" title="Refresh usage" aria-label="Refresh usage">${ic('repeat')}</button></div>
-      <div id="accountStatus" role="status" class="cr-note"></div><div id="accountStats" class="cr-stats"></div><section id="crProjectCosts" class="cr-project-costs" aria-label="Project cost estimates"></section>
+      <section id="crProjectCosts" class="cr-project-costs" aria-label="Project cost estimates"></section><div class="cr-tools">${segmented('accountProvider',[['','All providers'],['codex','ChatGPT'],['claude','Claude']],accountProvider,'Provider')}<span class="sp"></span>${segmented('accountDays',[['7','7 days'],['30','30 days']],accountDays,'Usage date range')}<button class="cr-icon" id="accountRefresh" title="Refresh usage" aria-label="Refresh usage">${ic('repeat')}</button></div>
+      <div id="accountStatus" role="status" class="cr-note"></div><div id="accountStats" class="cr-stats"></div>
       <div class="cr-charts"><section class="cr-chart-card"><header><h2>Activity over time</h2>${segmented('accountMetric',[['attempts','Attempts'],['tokens','Tokens']],chartMetric,'Chart metric')}</header><div class="chart-legend"><span><i></i>ChatGPT</span><span><i class="claude"></i>Claude</span><small>UTC</small></div><div id="accountChart"></div><div id="accountChartCaption" class="cr-chart-caption" role="status"></div></section><section class="cr-chart-card"><header><h2>Tokens by model</h2><span>Reported usage</span></header><div id="accountModels"></div></section></div>
       <div class="cr-section-head"><h2>Connected accounts <small id="accountCount"></small></h2><span>Live availability · Provider limits</span></div><div id="accountRows"></div><div id="accountRouting"></div><p id="accountCoverage" class="cr-note"></p>`;
     on('accountAdd',()=>$('addAcctBtn').click()); on('accountExport',exportCsv);
@@ -529,7 +580,8 @@ window.createControlRoom = function (engine) {
     preferences.querySelectorAll('[data-settings]').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settings));
     const body=$('settingsBody');
     if(tab==='general'){
-      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><div id="displayFields"></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
+      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><div id="displayFields"></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
+      const stageHelp=()=>{$('stageModeHelp').textContent=stageMode==='pinned'?'Only chats you pin appear in the bubbles. The separate running indicator stays visible.':'Recent and running chats appear in the bubbles. The separate running indicator is hidden on desktop.';};stageHelp();wireSegment('stageMode',value=>{setStageMode(value);stageHelp();});
       for(const field of generalFields)$('displayFields').append(field);
       for(const name of ['open','maximize'])preferences.querySelector(`input[name="${name}"][value="${prefs[name]}"]`).checked=true;
       body.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{engine.setTheme(b.dataset.themeChoice);syncTheme();body.querySelectorAll('[data-theme-choice]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));});
@@ -601,7 +653,7 @@ window.createControlRoom = function (engine) {
   function themeMenu(anchor){openMenu(anchor,[['system','auto','Follow device theme'],['light','sun','Light'],['dark','moon','Dark']].map(([value,icon,label])=>({label,icon,checked:engine.theme()===value,run:()=>{engine.setTheme(value);syncTheme();}})));}
   function notificationMenu(anchor){const s=engine.state(),count=Object.keys(s.notifications).length;openMenu(anchor,[{label:'Unread conversations'+(count?' · '+count:''),icon:'bell',run:()=>{if(preferences.open)preferences.close();boardFilter='unread';shell.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('selected',b.dataset.filter==='unread'));showSection('board');}},{label:'Message approvals'+($('mcpApprovalsBadge').textContent?' · '+$('mcpApprovalsBadge').textContent:''),icon:'sparkles',run:()=>$('mcpApprovalsBtn').click()},{label:'Browser notifications',icon:'bell',run:()=>$('notifyBtn').click()}]);}
   function activityMenu(anchor){openMenu(anchor,[{label:'Usage & subagents',icon:'sparkles',run:()=>$('subagentsBtn').click()},{label:'Workflow runs',icon:'fanout',disabled:$('wfBtn').hidden,run:()=>$('wfBtn').click()},{label:'Message approvals',icon:'bell',run:()=>$('mcpApprovalsBtn').click()}]);}
-  function conversationMenu(anchor){const s=engine.state();openMenu(anchor,[{label:'Rename conversation',icon:'compose',disabled:!s.sessionId,run:engine.renameConversation},{label:'Resume a session',icon:'history',run:()=>$('resumeBtn').click()},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'x',disabled:!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
+  function conversationMenu(anchor){const s=engine.state();openMenu(anchor,[{label:isStagePinned(s.projectId,s.sessionId)?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{const pinned=!isStagePinned(s.projectId,s.sessionId);pinStage(s.projectId,s.sessionId,pinned);toast(pinned?'Conversation pinned.':'Conversation unpinned.');}},{label:'Rename conversation',icon:'compose',disabled:!s.sessionId,run:engine.renameConversation},{label:'Resume a session',icon:'history',run:()=>$('resumeBtn').click()},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'x',disabled:!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
   const runningLabel=document.createElement('div');runningLabel.id='runningAccountLabel';runningLabel.hidden=true;content.querySelector('.composer').before(runningLabel);
   $('autopilotBtn').insertAdjacentHTML('beforeend','<span>Autopilot</span>');
   const syncActivity=()=>{$('chatActivityCount').textContent=$('subagentsBadge').textContent||'';};

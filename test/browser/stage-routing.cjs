@@ -5,7 +5,7 @@ const base=process.argv[2]||'http://127.0.0.1:8767';
  const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
  try {
  const context=await browser.newContext({viewport:{width:1440,height:1000}});
- await context.addInitScript(()=>localStorage.setItem('x056_token','browser-fixture-token-0123456789'));
+ await context.addInitScript(()=>{localStorage.setItem('x056_token','browser-fixture-token-0123456789');localStorage.setItem('x056_stage_mode','recent');});
  await context.request.post(base+'/api/accounts/routing',{headers:{Authorization:'Bearer browser-fixture-token-0123456789'},data:{provider:'claude',strategy:'sticky',order:['primary','backup']}});
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>{errors.push(e.message);console.log('PAGEERROR',e.message)});
  await page.route('**/api/accounts',async route=>{const response=await route.fetch(),rows=await response.json();for(const a of rows){a.quota={fiveHour:{utilization:23,resetsAt:'2026-09-08T00:00:00Z'},sevenDay:{utilization:56,resetsAt:'2026-09-14T00:00:00Z'}};delete a.quotaError;}await route.fulfill({response,json:rows});});
@@ -27,10 +27,10 @@ const base=process.argv[2]||'http://127.0.0.1:8767';
  await page.locator('#chatClose').click();await page.locator('.cr-task').nth(1).click();await page.locator('#stageToggle').hover();await page.waitForSelector('#stageShelf:not([hidden])');assert(await page.locator('.stage-conversation').count()>=2);
  await page.screenshot({path:'/tmp/x056-stage.png'});
  const first=cards[0];await page.locator(`.stage-conversation[data-session="${first.session}"]`).click();await page.waitForFunction(s=>document.getElementById('prompt').value===s,'Keep this draft while refreshing.');
- await page.locator('#stageToggle').click();await page.locator('.stage-dismiss').last().click();await page.keyboard.press('Escape');
+ await page.locator('#stageToggle').click();await page.locator('.stage-item').last().hover();await page.locator('.stage-unpin').last().click();await page.keyboard.press('Escape');
  await page.setViewportSize({width:390,height:844});await page.locator('#sendAccountChip').click();await page.waitForSelector('#sendAccountPicker[open]');
  assert(await page.locator('.account-pick-card').first().evaluate(e=>e.getBoundingClientRect().height<240));assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'/tmp/x056-picker-mobile.png'});
- await page.keyboard.press('Escape');await page.locator('#stageToggle').click();await page.screenshot({path:'/tmp/x056-stage-mobile.png'});
+ await page.keyboard.press('Escape');assert.equal(await page.locator('#conversationStage').isVisible(),false);await page.screenshot({path:'/tmp/x056-stage-mobile.png'});
  assert.deepEqual(errors,[]);console.log('PASS dashboard location, routing persistence, picker geometry, dialog dismissal, refresh recovery, conversation switching and mobile layout');
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1});

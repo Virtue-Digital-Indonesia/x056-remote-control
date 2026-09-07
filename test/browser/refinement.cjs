@@ -38,7 +38,7 @@ const shotDir = '/tmp/x056-refinement-check'; fs.mkdirSync(shotDir,{recursive:tr
  assert.equal(await mode(),'modal');assert.equal(await page.locator('#focusNav').isVisible(),false);
  assert.equal(await page.locator('#chatActivity').isVisible(),true);
  await page.screenshot({path:shotDir+'/modal-desktop.png'});
- await page.locator('#moreBtn').click();assert.equal(await page.locator('#controlMenu button').count(),4);await page.keyboard.press('Escape');assert.equal(await mode(),'modal');
+ await page.locator('#moreBtn').click();assert.equal(await page.locator('#controlMenu button').count(),5);assert.equal(await page.getByRole('menuitem',{name:'Pin conversation',exact:true}).isVisible(),true);await page.keyboard.press('Escape');assert.equal(await mode(),'modal');
  await page.locator('#chatMax').click();await page.locator('.scroll').evaluate(e=>e.scrollTop=750);await wait();await close();
  await openCard('Review accessibility findings');await page.locator('#prompt').fill('Separate draft.');await close();
  await openCard('Update the component library');await page.waitForTimeout(900);
