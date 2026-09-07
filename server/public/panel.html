@@ -883,7 +883,7 @@
 <main>
   <div class="topbar">
     <button class="ico hamburger" id="menuBtn" title="projects" aria-label="projects"><svg class="ic"><use href="#i-menu"/></svg></button>
-    <div class="project-heading"><span class="title" id="projTitle">x056</span>
+    <div class="project-heading"><button type="button" class="title" id="projTitle" title="Rename conversation">x056</button>
     <span class="cwd" id="projCwd"></span></div>
     <span class="sp"></span>
     <span id="dot" class="off" title="connection"></span>
@@ -1978,7 +1978,7 @@
 
   function clockTime(iso) {
     var t = iso ? Date.parse(iso) : Date.now(); if (isNaN(t)) t = Date.now();
-    try { return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; }
+    try { var date=new Date(t),time=date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });return Date.now()-t>=86400000?date.toLocaleDateString([], {month:'short',day:'numeric',...(date.getFullYear()!==new Date().getFullYear()?{year:'numeric'}:{})})+' · '+time:time; } catch (e) { return ''; }
   }
   // "resets in 2d 3hr 15min" — a countdown reads better here than a wall-clock
   // time, which forces the reader to do their own subtraction.
@@ -3023,7 +3023,7 @@
   function renameConv(projectId, c) {
     uiPrompt({ title: 'Rename conversation', value: c.title || '', okText: 'Rename' }).then(function (next) {
       if (next === null || !next.trim()) return;
-      api('/api/conversations/rename', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: c.sessionId, title: next.trim() }) }).then(function () { loadProjects(); }).catch(function () {});
+      api('/api/conversations/rename', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: c.sessionId, title: next.trim() }) }).then(function (r) {if(!r.ok)throw new Error('Could not rename conversation');return loadProjects();}).catch(function (e) {if(controlRoom)controlRoom.notify(e.message);else addSys(e.message,'banner');});
     });
   }
   function removeConv(projectId, c) {
@@ -3168,7 +3168,8 @@
     ((projCache[pid] || {}).conversations || []).forEach(function (c) { markConvSeen(pid, c.sessionId); });
     applyNotifs();
   }
-  function loadProjects() { return api('/api/projects').then(function (r) { if (!r.ok) throw new Error('Could not load projects. Reconnect or sign in again.'); return r.json(); }).then(function (reg) { renderProjects(reg); if (controlRoom) controlRoom.error(''); }).catch(function (e) { if (controlRoom) controlRoom.error(e.message || 'Could not load projects.'); }); }
+  var projectActivityTimer;
+  function loadProjects() { return api('/api/projects').then(function (r) { if (!r.ok) throw new Error('Could not load projects. Reconnect or sign in again.'); return r.json(); }).then(function (reg) { renderProjects(reg); clearTimeout(projectActivityTimer); if(reg.activityPending)projectActivityTimer=setTimeout(loadProjects,1000); if (controlRoom) controlRoom.error(''); }).catch(function (e) { if (controlRoom) controlRoom.error(e.message || 'Could not load projects.'); }); }
   function switchProject(p) {
     if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(false); }
     saveConversationPick();
@@ -5058,8 +5059,10 @@
         return loadHistory(true);
       });
     },
-    renameConversation: function () { var p = projCache[currentProjectId], c = p && (p.conversations || []).find(function(c) { return c.sessionId === lastSessionId; }); if (c) renameConv(p.id, c); },
-    removeConversation: function () { var p = projCache[currentProjectId], c = p && (p.conversations || []).find(function(c) { return c.sessionId === lastSessionId; }); if (c) removeConv(p.id, c); },
+    renameProject: function(pid) {if(projCache[pid])renameProject(projCache[pid]);},
+    setConversationUnread: function(pid,sid,unread) {if(unread)markConvUnread(pid,sid);else clearConvNotif(pid,sid);},
+    renameConversation: function (pid,sid) { var p = projCache[pid||currentProjectId], c = p && (p.conversations || []).find(function(c) { return c.sessionId === (sid||lastSessionId); }); if (c) renameConv(p.id, c); },
+    removeConversation: function (pid,sid) { var p = projCache[pid||currentProjectId], c = p && (p.conversations || []).find(function(c) { return c.sessionId === (sid||lastSessionId); }); if (c) removeConv(p.id, c); },
     accountAction: function (action, a, button) {
       if (action === 'login') { resetAddAcct(a); openPop($('addAcctPop')); }
       if (action === 'remove') removeAccount(a);

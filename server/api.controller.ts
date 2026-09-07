@@ -1,3 +1,4 @@
+import { ConversationActivity } from './conversation-activity.js';
 import { rolloutHeads } from '../src/adapters/codex.js';
 import { projectCosts } from './project-costs.js';
 import { AccountAnalytics } from '../src/account-analytics.js';
@@ -300,9 +301,15 @@ export class ApiController {
     return this.manager.snapshot();
   }
 
+  private readonly conversationActivity = new ConversationActivity();
+
   @Get('projects')
   projects(): unknown {
-    return this.manager.listProjects();
+    const data = this.manager.listProjects();
+    let accounts;
+    try { accounts = AccountRegistry.load(join(this.stateDir, 'accounts.json')).list(); } catch { return data; }
+    const projects = this.conversationActivity.enrich(data.projects, accounts);
+    return { ...data, projects, activityPending: this.conversationActivity.pending };
   }
 
   @Get('workspace')

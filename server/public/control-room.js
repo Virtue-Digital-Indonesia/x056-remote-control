@@ -16,7 +16,7 @@ window.createControlRoom = function (engine) {
   main.querySelector('.topbar').insertAdjacentHTML('beforeend', `<button class="cr-secondary" id="chatActivity">${ic('sparkles')}<span>Activity</span><small id="chatActivityCount"></small></button>${iconButton('chatRefresh','refresh','Refresh conversation')}${iconButton('chatMax','expand','Maximize conversation')}${iconButton('chatClose','x','Close conversation')}`);
   const shell = document.createElement('section'); shell.id = 'controlRoom'; shell.setAttribute('aria-label', 'Control room');
   shell.innerHTML = `<header class="cr-top"><button class="cr-logo" id="crHome">x0<span>x056</span></button><nav aria-label="Main navigation"><button id="crBoardTab" aria-current="page">Control room</button><button id="crAccountsTab">Accounts</button></nav><span class="sp"></span><span id="crConnection" class="cr-connection">Connecting</span>${iconButton('crProjects','folder','Projects')}${iconButton('crTheme','moon','Change theme')}${iconButton('crSettings','gear','Display settings')}${iconButton('crNotifications','bell','Notifications')}</header>
-  <div id="crBoard" class="cr-page"><div class="cr-heading"><div><div class="cr-eyebrow">CONVERSATIONS</div><h1 id="crScopeTitle">All projects</h1><p id="crScopeSubtitle">Conversations across your workspace</p></div><button class="cr-primary" id="crNew">${ic('plus')} New conversation</button></div><div id="crStats" class="cr-stats"></div><div class="cr-tools"><div class="cr-tabs" role="group" aria-label="Conversation filter"><button data-filter="all" class="selected">All conversations</button><button data-filter="question">Needs input</button><button data-filter="active">Running</button><button data-filter="unread">Unread</button></div><label class="cr-search">${ic('search')}<input id="crSearch" type="search" placeholder="Search conversations…" aria-label="Search conversations" /></label><select id="crProjectFilter" aria-label="Filter by project"><option value="">All projects</option></select></div><div id="crBoardError" role="status"></div><div class="cr-board" id="crLanes"></div></div>
+  <div id="crBoard" class="cr-page"><div class="cr-heading"><div><div class="cr-eyebrow">CONVERSATIONS</div><h1 id="crScopeTitle">All projects</h1><p id="crScopeSubtitle">Conversations across your workspace</p></div><div class="cr-actions">${iconButton('crScopeActions','more','Project actions')}<button class="cr-primary" id="crNew">${ic('plus')} New conversation</button></div></div><div id="crStats" class="cr-stats"></div><div class="cr-tools"><div class="cr-tabs" role="group" aria-label="Conversation filter"><button data-filter="all" class="selected">All conversations</button><button data-filter="question">Needs input</button><button data-filter="active">Running</button><button data-filter="unread">Unread</button></div><label class="cr-search">${ic('search')}<input id="crSearch" type="search" placeholder="Search conversations…" aria-label="Search conversations" /></label><select id="crProjectFilter" aria-label="Filter by project"><option value="">All projects</option></select></div><div id="crBoardError" role="status"></div><div class="cr-board" id="crLanes"></div></div>
   <div id="crAccounts" class="cr-page" hidden></div><div id="crAutomations" class="cr-page" hidden><div class="cr-heading"><div><h1>Automations</h1><p>Scheduled messages and conversation autopilots.</p></div><button id="refreshAutomations" class="cr-secondary">Refresh</button></div><section id="automationAutopilots" aria-label="Conversation autopilots"></section><header class="automation-section-heading"><h2>Scheduled messages</h2></header><div id="automationContent"></div></div><div id="crToast" role="status" hidden></div>`;
   document.body.prepend(shell);
   const workspace = document.createElement('div'); workspace.id = 'crWorkspace';
@@ -43,6 +43,9 @@ window.createControlRoom = function (engine) {
   const sectionScroll = {board:0,accounts:0,automations:0};
   let accountProvider = '', accountDays = '7', chartMetric = 'attempts', selectedSendAccount = '', pickerBusy = false;
   let recentLimit=10, selectedProject='', projectNavSignature='', sendAccountSignature='';
+  let dismissedProjects=[],showDismissedProjects=false;
+  const messageActivity=new Map(),messageMetadata=new Map();
+  try{const saved=JSON.parse(localStorage.getItem('x056_dismissed_projects')||'[]');if(Array.isArray(saved))dismissedProjects=saved.filter(x=>typeof x==='string');}catch{}
   try { selectedProject=localStorage.getItem('x056_project_scope') || ''; } catch {}
   let mode = 'closed', section = 'board', boardFilter = 'all', renderTimer, accountTimer, returnFocus;
   let boardSignature = '', accountSignature = '', analytics = null, routing = null, analyticsError = '', requestVersion = 0;
@@ -251,15 +254,16 @@ window.createControlRoom = function (engine) {
     if (e.key === 'Escape' && mode !== 'closed') { e.preventDefault(); close(); }
     if (e.key === 'Tab' && mode === 'modal') { const nodes = [...main.querySelectorAll('button,input,textarea,select,[tabindex="0"],a[href]'),...stage.querySelectorAll('button')].filter(n => n.offsetParent && !n.disabled && !n.hidden); const first = nodes[0], last = nodes[nodes.length-1]; if (e.shiftKey && (document.activeElement === first || (!main.contains(document.activeElement)&&!stage.contains(document.activeElement)))) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
   });
-  function updateTitle() { const s = engine.state(), p = s.projects.find(p => p.id === s.projectId), c = p?.conversations?.find(c => c.sessionId === s.sessionId); main.setAttribute('aria-label', c?.title || 'New conversation'); if (c) $('projTitle').textContent = c.title; }
+  function updateTitle() { const s = engine.state(), p = s.projects.find(p => p.id === s.projectId), c = p?.conversations?.find(c => c.sessionId === s.sessionId); main.setAttribute('aria-label', c?.title || 'New conversation'); if (c) $('projTitle').textContent = c.title; $('projTitle').disabled=!c; $('projTitle').title=c?'Rename conversation':'New conversation'; }
   function cards() {
     const s = engine.state(), out = [];
     for (const p of s.projects) for (const c of p.conversations || []) {
       const k = p.id + '::' + c.sessionId, q = s.questions[c.sessionId], result = outcomes.get(k) || (c.lastOutcome && { ...c.lastOutcome, ts:c.lastOutcome.at });
       const running = !!s.running[p.id]?.[c.sessionId], bg = !running && !!s.background[p.id]?.[c.sessionId];
+      if(c.lastMessageAt!==undefined)messageMetadata.set(k,Number(c.lastMessageAt)||0);
       const notification = s.notifications[k];
       const status = q ? 'question' : running ? 'running' : bg ? 'background' : result?.status === 'failed' || !result && notification === 'failed' ? 'failed' : result?.status === 'parked' ? 'parked' : result?.status === 'completed' || notification === 'done' ? 'finished' : 'idle';
-      out.push({ p, c, k, status, unread: !!notification, label: q?.question || (running || bg ? s.views[k]?.label : result?.reason) || '', time: result?.ts || c.createdAt });
+      out.push({ p, c, k, status, unread: !!notification, label: q?.question || (running || bg ? s.views[k]?.label : result?.reason) || '', time: Math.max(messageMetadata.get(k)||0,messageActivity.get(k)||0) });
     }
     return out.sort((a,b) => (Number(new Date(b.time)) || 0) - (Number(new Date(a.time)) || 0));
   }
@@ -284,27 +288,30 @@ window.createControlRoom = function (engine) {
   function renderProjectNav(all,state) {
     document.querySelectorAll('#projectList .proj[data-id]').forEach(row=>row.style.setProperty('--project-color',projectColor(row.dataset.id)));
     const query=$('crProjectSearch').value.toLowerCase();
-    const html=`<button class="cr-project-link ${!selectedProject?'selected':''}" data-scope="" aria-current="${!selectedProject?'page':'false'}">${ic('menu')}<span>All projects</span><small>${all.length}</small></button><div class="cr-project-separator"></div>`+state.projects.filter(p=>p.name.toLowerCase().includes(query)).map(p=>{
+    const html=`<button class="cr-project-link ${!selectedProject?'selected':''}" data-scope="" aria-current="${!selectedProject?'page':'false'}">${ic('menu')}<span>All projects</span><small>${all.filter(x=>showDismissedProjects||!dismissedProjects.includes(x.p.id)).length}</small></button><div class="cr-project-separator"></div>`+state.projects.filter(p=>(showDismissedProjects||!dismissedProjects.includes(p.id))&&p.name.toLowerCase().includes(query)).map(p=>{
       const rows=all.filter(x=>x.p.id===p.id), attention=rows.filter(x=>['question','failed','parked'].includes(x.status)).length, running=rows.filter(x=>['running','background'].includes(x.status)).length;
-      return `<button class="cr-project-link ${p.id===selectedProject?'selected':''}" data-scope="${esc(p.id)}" aria-current="${p.id===selectedProject?'page':'false'}" title="${esc(p.name)}"><i class="cr-project-color" style="--project-color:${projectColor(p.id)}"></i><span>${esc(p.name)}</span>${attention?`<small class="attention" title="${attention} need attention">${attention}</small>`:running?`<small class="working" title="${running} running">${running}</small>`:`<small>${rows.length}</small>`}</button>`;
+      return `<button class="cr-project-link ${p.id===selectedProject?'selected':''} ${dismissedProjects.includes(p.id)?'dismissed':''}" data-scope="${esc(p.id)}" aria-current="${p.id===selectedProject?'page':'false'}" title="${esc(p.name)}${dismissedProjects.includes(p.id)?' · Dismissed':''}"><i class="cr-project-color" style="--project-color:${projectColor(p.id)}"></i><span>${esc(p.name)}</span>${attention?`<small class="attention" title="${attention} need attention">${attention}</small>`:running?`<small class="working" title="${running} running">${running}</small>`:`<small>${rows.length}</small>`}</button>`;
     }).join('');
-    if(html!==projectNavSignature){projectNavSignature=html;$('crProjectLinks').innerHTML=html;$('crProjectLinks').querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>selectProjectScope(b.dataset.scope));}
+    const hiddenCount=state.projects.filter(p=>dismissedProjects.includes(p.id)).length;
+    const markup=html+(hiddenCount?`<button id="crDismissedProjects" class="cr-text-button">${showDismissedProjects?'Hide dismissed projects':'Show dismissed projects'} (${hiddenCount})</button>`:'');
+    if(markup!==projectNavSignature){projectNavSignature=markup;$('crProjectLinks').innerHTML=markup;$('crProjectLinks').querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>selectProjectScope(b.dataset.scope));if($('crDismissedProjects'))$('crDismissedProjects').onclick=()=>{showDismissedProjects=!showDismissedProjects;refresh();};}
   }
-  function relativeDate(value) { const d=new Date(value), elapsed=Date.now()-d.getTime();if(isNaN(d))return '';if(elapsed<60000)return 'Just now';if(elapsed<3600000)return Math.floor(elapsed/60000)+'m ago';if(elapsed<86400000)return Math.floor(elapsed/3600000)+'h ago';return d.toLocaleDateString(undefined,{month:'short',day:'numeric'}); }
+  function relativeDate(value) { if(!value)return '—';const d=new Date(value), elapsed=Date.now()-d.getTime();if(isNaN(d))return '';if(elapsed<60000)return 'Just now';if(elapsed<3600000)return Math.floor(elapsed/60000)+'m ago';if(elapsed<86400000)return Math.floor(elapsed/3600000)+'h ago';return d.toLocaleDateString(undefined,{month:'short',day:'numeric'}); }
   async function openConversation(button) {
     button.disabled=true;
     try {rememberPosition();await engine.select(button.dataset.project,button.dataset.session);engine.markRead();open();restorePosition();renderSendAccounts();}
     catch(e){toast(e.message);}finally{if(button.isConnected)button.disabled=false;}
   }
   function conversationRow(x) {
-    return `<article class="cr-conversation-row ${x.status}" data-row="${esc(x.c.sessionId)}"><button class="cr-task" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span class="cr-row-copy"><span class="cr-row-title">${esc(x.c.title||'Conversation')}${x.unread?'<i class="cr-unread-dot" title="Unread"></i>':''}</span><span class="cr-row-subtitle">${esc(selectedProject ? (x.label || (x.c.provider==='codex'?'ChatGPT':'Claude')) : x.p.name+(x.label?' · '+x.label:''))}</span></span><span class="cr-status ${x.status}"><i></i>${statusLabels[x.status]}</span><time>${esc(relativeDate(x.time))}</time></button><button class="cr-row-pin ${isStagePinned(x.p.id,x.c.sessionId)?'pinned':''}" data-pin-project="${esc(x.p.id)}" data-pin-session="${esc(x.c.sessionId)}" aria-label="${isStagePinned(x.p.id,x.c.sessionId)?'Unpin':'Pin'} ${esc(x.c.title||'conversation')}" aria-pressed="${isStagePinned(x.p.id,x.c.sessionId)}">${ic('pin')}</button>${['finished','idle'].includes(x.status)?`<button class="cr-recent-dismiss" data-recent-project="${esc(x.p.id)}" data-recent-session="${esc(x.c.sessionId)}" aria-label="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore':'Dismiss'} ${esc(x.c.title||'conversation')} ${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'to':'from'} recents" title="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore to recents':'Dismiss from recents'}">${ic(recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'history':'x')}</button>`:''}${x.status==='question'?`<button class="cr-dismiss" data-dismiss="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" title="Dismiss question without sending a reply">Dismiss question</button>`:''}</article>`;
+    return `<article class="cr-conversation-row ${x.status}" data-row="${esc(x.c.sessionId)}"><button class="cr-task" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span class="cr-row-copy"><span class="cr-row-title">${esc(x.c.title||'Conversation')}${x.unread?'<i class="cr-unread-dot" title="Unread"></i>':''}</span><span class="cr-row-subtitle">${esc(selectedProject ? (x.label || (x.c.provider==='codex'?'ChatGPT':'Claude')) : x.p.name+(x.label?' · '+x.label:''))}</span></span><span class="cr-status ${x.status}"><i></i>${statusLabels[x.status]}</span><time ${x.time?'datetime="'+new Date(x.time).toISOString()+'" title="Last message: '+esc(new Date(x.time).toLocaleString())+'"':'title="No message timestamp available"'}>${esc(relativeDate(x.time))}</time></button><button class="cr-row-menu cr-icon" data-conversation-menu="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" aria-label="Actions for ${esc(x.c.title||'conversation')}">${ic('more')}</button><button class="cr-row-pin ${isStagePinned(x.p.id,x.c.sessionId)?'pinned':''}" data-pin-project="${esc(x.p.id)}" data-pin-session="${esc(x.c.sessionId)}" aria-label="${isStagePinned(x.p.id,x.c.sessionId)?'Unpin':'Pin'} ${esc(x.c.title||'conversation')}" aria-pressed="${isStagePinned(x.p.id,x.c.sessionId)}">${ic('pin')}</button>${['finished','idle'].includes(x.status)?`<button class="cr-recent-dismiss" data-recent-project="${esc(x.p.id)}" data-recent-session="${esc(x.c.sessionId)}" aria-label="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore':'Dismiss'} ${esc(x.c.title||'conversation')} ${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'to':'from'} recents" title="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore to recents':'Dismiss from recents'}">${ic(recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'history':'x')}</button>`:''}${x.status==='question'?`<button class="cr-dismiss" data-dismiss="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" title="Dismiss question without sending a reply">Dismiss question</button>`:''}</article>`;
   }
   function renderBoard() {
     const all=cards(),state=engine.state();
     if(selectedProject&&!state.projects.some(p=>p.id===selectedProject)&&state.projects.length)selectedProject='';
-    const scope=all.filter(x=>!selectedProject||x.p.id===selectedProject),project=state.projects.find(p=>p.id===selectedProject);
+    const scope=all.filter(x=>(showDismissedProjects||!dismissedProjects.includes(x.p.id))&&(!selectedProject||x.p.id===selectedProject)),project=state.projects.find(p=>p.id===selectedProject);
+    $('crScopeActions').hidden=!project;
     $('crScopeTitle').textContent=project?.name||'All projects';
-    $('crScopeSubtitle').textContent=scope.length+' conversations'+(project?'':' across '+state.projects.length+' projects');
+    $('crScopeSubtitle').textContent=scope.length+' conversations'+(project?'':' across '+state.projects.filter(p=>showDismissedProjects||!dismissedProjects.includes(p.id)).length+' projects');
     $('crStats').innerHTML=[[scope.filter(x=>['running','background'].includes(x.status)).length,'Running'],[scope.filter(x=>x.status==='question').length,'Needs input'],[scope.filter(x=>x.unread).length,'Unread']].map(([n,t])=>`<div><strong>${n}</strong><span>${t}</span></div>`).join('');
     renderProjectNav(all,state);
     const selector=$('crProjectFilter');selector.innerHTML='<option value="">All projects</option>'+state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');selector.value=selectedProject;
@@ -435,6 +442,7 @@ window.createControlRoom = function (engine) {
   function refresh() { clearTimeout(renderTimer); renderTimer = setTimeout(() => { renderBoard(); if (section === 'accounts') renderAccountRows(); }, 60); }
   async function json(url, body) { const res = await engine.api(url, body === undefined ? undefined : { method:'POST', body:JSON.stringify(body) }); const data = await res.json(); if (!res.ok) throw new Error(data.message || 'Request failed'); return data; }
   function event(kind, data) {
+    if(kind==='assistant_text'&&data.projectId&&data.sessionId)messageActivity.set(data.projectId+'::'+data.sessionId,Date.parse(data.ts)||Date.now());
     if (['session_done','session_error','turn_orphaned'].includes(kind)) outcomes.set(data.projectId + '::' + data.sessionId, { status:kind === 'session_done' ? data.status : 'failed', reason:data.reason || data.message, ts:data.ts || Date.now() });
     if (kind === 'session_started') outcomes.delete(data.projectId + '::' + data.sessionId);
     refresh();
@@ -703,17 +711,53 @@ window.createControlRoom = function (engine) {
   mountControl('cronPop',$('automationContent'));
   const menu=document.createElement('div');menu.id='controlMenu';menu.className='control-menu';menu.setAttribute('popover','auto');menu.setAttribute('role','menu');document.body.append(menu);
   let menuAnchor=null;
-  function openMenu(anchor,items) {
+  document.addEventListener('pointerdown',e=>{if(menu.getAttribute('popover')==='manual'&&menu.matches(':popover-open')&&!menu.contains(e.target))menu.hidePopover();});
+  function openMenu(anchor,items,point) {
     if(menu.matches(':popover-open'))menu.hidePopover();
+    menu.setAttribute('popover',point?'manual':'auto');
     menuAnchor=anchor; (anchor.closest('dialog')||document.body).append(menu);
     menu.innerHTML=items.map((it,i)=>`<button role="menuitem" data-menu-item="${i}" ${it.disabled?'disabled':''}>${ic(it.icon)}<span>${esc(it.label)}</span>${it.checked?ic('check'):''}</button>`).join('');
     menu.querySelectorAll('button').forEach(b=>b.onclick=()=>{menu.hidePopover();items[Number(b.dataset.menuItem)].run();});
     menu.showPopover();
-    const rect=anchor.getBoundingClientRect();menu.style.left=Math.max(8,Math.min(innerWidth-menu.offsetWidth-8,rect.right-menu.offsetWidth))+'px';menu.style.top=Math.max(8,Math.min(innerHeight-menu.offsetHeight-8,rect.bottom+7))+'px';
+    const rect=anchor.getBoundingClientRect();menu.style.left=Math.max(8,Math.min(innerWidth-menu.offsetWidth-8,point?point.x:rect.right-menu.offsetWidth))+'px';menu.style.top=Math.max(8,Math.min(innerHeight-menu.offsetHeight-8,point?point.y:rect.bottom+7))+'px';
     menu.querySelector('button:not(:disabled)')?.focus();
   }
   menu.addEventListener('keydown',e=>{const items=[...menu.querySelectorAll('button:not(:disabled)')],index=items.indexOf(document.activeElement);if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();items[e.key==='Home'?0:e.key==='End'?items.length-1:(index+(e.key==='ArrowDown'?1:-1)+items.length)%items.length]?.focus();}if(e.key==='Escape'){e.preventDefault();e.stopPropagation();menu.hidePopover();menuAnchor?.focus();}if(e.key==='Tab')menu.hidePopover();});
   function syncTheme(){const name=engine.theme();$('crTheme').innerHTML=ic({system:'auto',light:'sun',dark:'moon'}[name]);$('crTheme').ariaLabel='Appearance: '+(name==='system'?'Follow device theme':name);}
+  function setProjectDismissed(id,value){
+    dismissedProjects=dismissedProjects.filter(x=>x!==id);if(value)dismissedProjects.push(id);
+    try{localStorage.setItem('x056_dismissed_projects',JSON.stringify(dismissedProjects));}catch{toast('This browser could not save dismissed projects.');}
+    if(value&&selectedProject===id)selectedProject='';
+    try{localStorage.setItem('x056_project_scope',selectedProject);}catch{}
+    refresh();toast(value?'Project dismissed.':'Project restored.',()=>setProjectDismissed(id,!value));
+  }
+  window.addEventListener('storage',e=>{if(e.key!=='x056_dismissed_projects')return;try{const value=JSON.parse(e.newValue||'[]');if(Array.isArray(value)){dismissedProjects=value.filter(x=>typeof x==='string');if(dismissedProjects.includes(selectedProject))selectedProject='';refresh();}}catch{}});
+  function projectMenu(anchor,id,point){
+    const project=engine.state().projects.find(p=>p.id===id);if(!project)return;
+    openMenu(anchor,[{label:'New conversation',icon:'plus',run:()=>engine.newConversation(id)},{label:'Rename project',icon:'compose',run:()=>engine.renameProject(id)},{label:dismissedProjects.includes(id)?'Restore project':'Dismiss project',icon:'x',run:()=>setProjectDismissed(id,!dismissedProjects.includes(id))}],point);
+  }
+  function rowConversationMenu(anchor,pid,sid,point){
+    const s=engine.state(),p=s.projects.find(p=>p.id===pid),c=p?.conversations?.find(c=>c.sessionId===sid);if(!c)return;
+    const running=!!s.running[pid]?.[sid],unread=!!s.notifications[stageKey(pid,sid)];
+    openMenu(anchor,[
+      {label:'Open conversation',icon:'chat',run:()=>openConversation({dataset:{project:pid,session:sid}})},
+      {label:'Rename conversation',icon:'compose',run:()=>engine.renameConversation(pid,sid)},
+      {label:isStagePinned(pid,sid)?'Unpin conversation':'Pin conversation',icon:'pin',run:()=>pinStage(pid,sid,!isStagePinned(pid,sid))},
+      {label:unread?'Mark as read':'Mark as unread',icon:'bell',run:()=>{engine.setConversationUnread(pid,sid,!unread);refresh();}},
+      {label:recentDismissed.includes(stageKey(pid,sid))?'Restore to recents':'Dismiss from recents',icon:'history',run:()=>recentDismissed.includes(stageKey(pid,sid))?restoreRecent(pid,sid):dismissRecent(pid,sid)},
+      {label:'Copy conversation ID',icon:'copy',run:()=>navigator.clipboard.writeText(sid).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},
+      ...(running?[{label:'Stop turn',icon:'x',run:async()=>{try{await json('/api/sessions/current/stop',{projectId:pid,sessionId:sid});toast('Stopping turn.');}catch(e){toast(e.message);}}}]:[]),
+      {label:'Remove from panel',icon:'x',disabled:running,run:()=>engine.removeConversation(pid,sid)},
+    ],point);
+  }
+  document.addEventListener('contextmenu',e=>{
+    const row=e.target.closest('.cr-task,.stage-conversation,.automation-ap-open,[data-conversation-menu]'),project=e.target.closest('.cr-project-link[data-scope]');
+    if(row){e.preventDefault();e.stopPropagation();rowConversationMenu(row,row.dataset.project,row.dataset.session||row.dataset.conversationMenu,{x:e.clientX,y:e.clientY});}
+    else if(project?.dataset.scope){e.preventDefault();e.stopPropagation();projectMenu(project,project.dataset.scope,{x:e.clientX,y:e.clientY});}
+  });
+  document.addEventListener('click',e=>{const button=e.target.closest('[data-conversation-menu]');if(button)rowConversationMenu(button,button.dataset.project,button.dataset.conversationMenu);});
+  $('crScopeActions').onclick=e=>projectMenu(e.currentTarget,selectedProject);
+  $('projTitle').onclick=()=>engine.renameConversation();
   function themeMenu(anchor){openMenu(anchor,[['system','auto','Follow device theme'],['light','sun','Light'],['dark','moon','Dark']].map(([value,icon,label])=>({label,icon,checked:engine.theme()===value,run:()=>{engine.setTheme(value);syncTheme();}})));}
   function notificationMenu(anchor){const s=engine.state(),count=Object.keys(s.notifications).length;openMenu(anchor,[{label:'Unread conversations'+(count?' · '+count:''),icon:'bell',run:()=>{if(preferences.open)preferences.close();boardFilter='unread';shell.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('selected',b.dataset.filter==='unread'));showSection('board');}},{label:'Message approvals'+($('mcpApprovalsBadge').textContent?' · '+$('mcpApprovalsBadge').textContent:''),icon:'sparkles',run:()=>$('mcpApprovalsBtn').click()},{label:'Browser notifications',icon:'bell',run:()=>$('notifyBtn').click()}]);}
   function activityMenu(anchor){openMenu(anchor,[{label:'Usage & subagents',icon:'sparkles',run:()=>$('subagentsBtn').click()},{label:'Workflow runs',icon:'fanout',disabled:$('wfBtn').hidden,run:()=>$('wfBtn').click()},{label:'Message approvals',icon:'bell',run:()=>$('mcpApprovalsBtn').click()}]);}
@@ -725,5 +769,5 @@ window.createControlRoom = function (engine) {
   new MutationObserver(syncTheme).observe($('themeBtn'),{childList:true,subtree:true});syncTheme();
 
   setMode('closed'); projectNav(false); refresh();
-  return { renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
+  return { notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
 };

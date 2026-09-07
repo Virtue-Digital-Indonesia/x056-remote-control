@@ -8,6 +8,8 @@ export interface Conversation {
   sessionId: string;
   title: string;
   createdAt: number;
+  /** Derived from the latest user/assistant transcript message in API responses. */
+  lastMessageAt?: number | null;
   lastOutcome?: { status: 'completed' | 'failed' | 'parked'; at: string; reason?: string };
   /** Which agent CLI this conversation runs on. Stamped when it's created (from
    *  the project's provider) and then FIXED: its transcript is that provider's
