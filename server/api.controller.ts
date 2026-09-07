@@ -881,6 +881,14 @@ export class ApiController {
     return this.manager.listPendingQuestions();
   }
 
+  @Post('questions/dismiss')
+  @HttpCode(200)
+  dismissQuestion(@Body() body: { projectId?: string; sessionId?: string; at?: string }) {
+    if (!body?.projectId || !body.sessionId || !body.at) throw new BadRequestException('projectId, sessionId and question timestamp required');
+    try { return { dismissed: this.manager.dismissPendingQuestion(body.projectId, body.sessionId, body.at) }; }
+    catch (err) { throw new ConflictException((err as Error).message); }
+  }
+
   // ---- MCP servers. Replicated across every account of the chosen provider:
   //      a turn can run on any of them, so a server configured on only one
   //      silently vanishes on failover. ----

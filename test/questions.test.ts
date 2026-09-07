@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
 import { AccountRegistry } from '../src/accounts.js';
 import { createApp } from '../server/main.js';
+import { SessionManager } from '../server/manager.js';
 
 const FAKE = new URL('./bin/fake-claude', import.meta.url).pathname;
 const TOKEN = 'test-token-0123456789abcdefghij';
@@ -54,7 +55,7 @@ afterAll(async () => {
   await app?.close();
 });
 
-type Q = { projectId: string; sessionId: string; question: string; options: string[] };
+type Q = { projectId: string; sessionId: string; question: string; options: string[]; at: string };
 async function questions(): Promise<Q[]> {
   return (await fetch(`${base}/api/questions`, { headers: auth })).json() as Promise<Q[]>;
 }
@@ -116,4 +117,77 @@ describe('pending questions survive a reload (server-side, not just in the brows
     await turnIdle(sid);
     expect((await questions()).some((q) => q.sessionId === sid)).toBe(false);
   }, 30000);
+});
+
+describe('dismiss a question without sending a reply', () => {
+  let question: Q;
+  const dismiss = (body: unknown, headers = auth) => fetch(`${base}/api/questions/dismiss`, {
+    method: 'POST', headers, body: JSON.stringify(body),
+  });
+
+  beforeAll(async () => {
+    const started = await (await fetch(`${base}/api/sessions`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ prompt: 'Ask one more question' }),
+    })).json() as { sessionId: string };
+    question = (await waitForQuestion(started.sessionId))!;
+    expect(question).toBeTruthy();
+    await turnIdle(started.sessionId);
+  }, 30000);
+
+  it('requires authentication and the version of the question being dismissed', async () => {
+    expect((await dismiss(question, { 'Content-Type': 'application/json' })).status).toBe(401);
+    expect((await dismiss({ projectId: question.projectId, sessionId: question.sessionId })).status).toBe(400);
+    expect(await questions()).toContainEqual(question);
+  });
+
+  it('rejects stale questions and the wrong project without clearing the current question', async () => {
+    expect((await dismiss({ ...question, at: new Date(0).toISOString() })).status).toBe(409);
+    expect((await dismiss({ ...question, projectId: 'another-project' })).status).toBe(409);
+    expect(await questions()).toContainEqual(question);
+  });
+
+  it('emits the same timestamp in the question event and persisted question', () => {
+    const matching: unknown[] = [];
+    const unsubscribe = app.get(SessionManager).subscribe(e => {
+      if (e.kind === 'question' && e.data.sessionId === question.sessionId) matching.push(e.data.at);
+    });
+    unsubscribe();
+    expect(matching).toEqual([question.at]);
+  });
+
+  it('only removes the pending question and notifies other tabs', async () => {
+    const manager = app.get(SessionManager);
+    const emitted: { kind: string; data: Record<string, unknown> }[] = [];
+    const unsubscribe = manager.subscribe(e => emitted.push(e));
+    emitted.length = 0; // Ignore replayed events from the completed turn.
+    const projectsBefore = manager.listProjects();
+    try {
+      const res = await dismiss(question);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ dismissed: true });
+      expect(await questions()).not.toContainEqual(question);
+      expect(manager.listProjects()).toEqual(projectsBefore);
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]).toMatchObject({ kind: 'question_dismissed', data: {
+        projectId: question.projectId, sessionId: question.sessionId, at: question.at,
+      } });
+      const persisted = JSON.parse(readFileSync(join(dir, 'state/questions.json'), 'utf8'));
+      expect(persisted[question.sessionId]).toBeUndefined();
+    } finally { unsubscribe(); }
+  });
+
+  it('is idempotent when another tab already dismissed it', async () => {
+    const res = await dismiss(question);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ dismissed: false });
+  });
+
+  it('keeps the question dismissed after a gateway restart', async () => {
+    const app2 = await createApp({ token: TOKEN, stateDir: join(dir, 'state'), workspaceRoot: dir, claudePath: FAKE });
+    await app2.listen(0);
+    try {
+      const after = await (await fetch(`${await app2.getUrl()}/api/questions`, { headers: auth })).json() as Q[];
+      expect(after.some(q => q.sessionId === question.sessionId)).toBe(false);
+    } finally { await app2.close(); }
+  });
 });

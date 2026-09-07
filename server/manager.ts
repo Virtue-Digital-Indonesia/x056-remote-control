@@ -1092,7 +1092,7 @@ export class SessionManager {
   }
 
   // ---- projects ----
-  listProjects(): { current: string | null; projects: (Project & { running: boolean; runningSessionIds: string[]; backgroundSessionIds: string[] })[] } {
+  listProjects(): { current: string | null; projects: (Project & { running: boolean; runningSessionIds: string[]; runningAccounts: Record<string, string>; backgroundSessionIds: string[] })[] } {
     const reg = this.projects();
     return {
       current: reg.currentId(),
@@ -1102,7 +1102,8 @@ export class SessionManager {
       projects: reg.list().map((p) => {
         const running = this.runningSessionsForProject(p.id);
         const background = this.backgroundSessionsForProject(p.id);
-        return { ...p, running: running.length > 0, runningSessionIds: running, backgroundSessionIds: background };
+        const runningAccounts = Object.fromEntries([...this.runs.values()].filter(r => r.projectId === p.id && r.account).map(r => [r.sessionId, r.account!]));
+        return { ...p, running: running.length > 0, runningSessionIds: running, runningAccounts, backgroundSessionIds: background };
       }),
     };
   }
@@ -1576,6 +1577,17 @@ export class SessionManager {
    *  this so a refresh/reconnect/restart restores the cards. */
   listPendingQuestions(): PendingQuestion[] { return [...this.pendingQuestions.values()]; }
 
+  /** Dismissing is a UI decision, never a reply or a new turn. The timestamp
+   * protects a newer question from a click on an older card in another tab. */
+  dismissPendingQuestion(projectId: string, sessionId: string, at: string): boolean {
+    const question = this.pendingQuestions.get(sessionId);
+    if (!question) return false;
+    if (question.projectId !== projectId || question.at !== at) throw new Error('This question changed. Refresh before dismissing it.');
+    this.pendingQuestions.delete(sessionId);
+    this.savePendingQuestions();
+    this.emit('question_dismissed', { projectId, sessionId, at });
+    return true;
+  }
 
   /**
    * A per-turn MCP config so the bridge knows WHICH conversation it is running
@@ -1747,11 +1759,10 @@ export class SessionManager {
           if (q) {
             // Persist alongside the event so the card can be rehydrated after a
             // refresh/reconnect/swap — the turn is over and waiting on a human.
-            this.pendingQuestions.set(sessionId, {
-              projectId: pid, sessionId, question: q.question, options: q.options, at: new Date().toISOString(),
-            });
+            const pending = { projectId: pid, sessionId, question: q.question, options: q.options, at: new Date().toISOString() };
+            this.pendingQuestions.set(sessionId, pending);
             this.savePendingQuestions();
-            emit('question', { sessionId, question: q.question, options: q.options });
+            emit('question', pending);
           }
           emit('session_done', { sessionId, ...res });
           // Only when the queue had nothing — autopilot must never jump ahead of
