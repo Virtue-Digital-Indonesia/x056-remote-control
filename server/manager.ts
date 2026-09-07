@@ -1866,6 +1866,10 @@ export class SessionManager {
     this.registry().setPaused(name, paused); this.emitAccounts();
   }
 
+  setAccountLabel(name: string, label: string): void {
+    this.registry().setLabel(name, label); this.emitAccounts();
+  }
+
   setAccountRouting(provider: ProviderId, enabled: boolean): void {
     this.registry().setAutomaticSwitching(provider, enabled); this.emitAccounts();
   }

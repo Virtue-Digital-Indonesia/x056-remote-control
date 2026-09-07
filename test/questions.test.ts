@@ -160,13 +160,19 @@ describe('dismiss a question without sending a reply', () => {
     const emitted: { kind: string; data: Record<string, unknown> }[] = [];
     const unsubscribe = manager.subscribe(e => emitted.push(e));
     emitted.length = 0; // Ignore replayed events from the completed turn.
-    const projectsBefore = manager.listProjects();
+    // Background activity is a live heartbeat and can expire while the HTTP
+    // request is in flight. It is unrelated to dismissing the pending question.
+    const stableProjects = () => {
+      const snapshot = manager.listProjects();
+      return { ...snapshot, projects: snapshot.projects.map(p => ({ ...p, backgroundSessionIds: undefined })) };
+    };
+    const projectsBefore = stableProjects();
     try {
       const res = await dismiss(question);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ dismissed: true });
       expect(await questions()).not.toContainEqual(question);
-      expect(manager.listProjects()).toEqual(projectsBefore);
+      expect(stableProjects()).toEqual(projectsBefore);
       expect(emitted).toHaveLength(1);
       expect(emitted[0]).toMatchObject({ kind: 'question_dismissed', data: {
         projectId: question.projectId, sessionId: question.sessionId, at: question.at,

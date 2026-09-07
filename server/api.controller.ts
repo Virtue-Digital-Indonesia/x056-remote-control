@@ -1042,7 +1042,7 @@ export class ApiController {
           : acct.state.kind === 'limited' && acct.state.until <= nowSec
             ? ({ kind: 'ok' } as const)
             : acct.state;
-        const base = { ...acct, providerLabel: adapter.label, state, displayName: id.displayName ?? acct.name, email: id.email, nextUp: acct.name === nextUpByProvider.get(acct.provider), active: acct.name === activeByProvider.get(acct.provider) };
+        const base = { ...acct, providerLabel: adapter.label, state, displayName: acct.label || id.displayName || id.email || (acct.provider === 'codex' ? 'ChatGPT account' : 'Claude account'), email: id.email, nextUp: acct.name === nextUpByProvider.get(acct.provider), active: acct.name === activeByProvider.get(acct.provider) };
         // A provider with no pollable usage endpoint (e.g. Codex on a ChatGPT
         // plan) simply shows no usage bars — never an error.
         if (!adapter.fetchUsage) return { ...base, quota: null };
@@ -1100,6 +1100,14 @@ export class ApiController {
   setAccountPaused(@Body() body: { name?: string; paused?: boolean }) {
     if (!body?.name || typeof body.paused !== 'boolean') throw new BadRequestException('name and paused required');
     try { this.manager.setAccountPaused(body.name, body.paused); return { ok: true }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  @Post('accounts/label')
+  @HttpCode(200)
+  setAccountLabel(@Body() body: { name?: string; label?: string }) {
+    if (typeof body?.name !== 'string' || !body.name || typeof body.label !== 'string') throw new BadRequestException('name and label required');
+    try { this.manager.setAccountLabel(body.name, body.label); return { ok: true }; }
     catch (err) { throw new BadRequestException((err as Error).message); }
   }
 

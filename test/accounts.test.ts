@@ -22,6 +22,27 @@ describe('AccountRegistry', () => {
     expect(reg.pickActive(1000)?.name).toBe('a');
   });
 
+  it('saves a nickname without changing routing, state, or the stable account key', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    reg.markOk('a');
+    reg.setLabel('a', '  Personal workspace  ');
+    const reloaded = AccountRegistry.load(file);
+    expect(reloaded.get('a')).toMatchObject({ name: 'a', label: 'Personal workspace', state: { kind: 'ok' } });
+    expect(reloaded.peekActive(1000)?.name).toBe('a');
+    reloaded.setLabel('a', '');
+    expect(AccountRegistry.load(file).get('a').label).toBeUndefined();
+  });
+
+  it('rejects invalid nicknames without changing persisted account data', () => {
+    const file = freshFile();
+    const reg = AccountRegistry.init(file, specs);
+    reg.setLabel('a', 'Work');
+    for (const bad of ['x'.repeat(81), 'Work\u0000account', 'Work\naccount']) expect(() => reg.setLabel('a', bad)).toThrow();
+    expect(() => reg.setLabel('missing', 'Work')).toThrow('unknown account');
+    expect(AccountRegistry.load(file).get('a').label).toBe('Work');
+  });
+
   it('markLimited fails over pickActive to the other account and persists', () => {
     const file = freshFile();
     const reg = AccountRegistry.init(file, specs);

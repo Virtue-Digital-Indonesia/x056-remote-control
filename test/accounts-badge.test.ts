@@ -30,6 +30,20 @@ function controller(stateDir: string): ApiController {
 }
 
 describe('GET /api/accounts — badge staleness', () => {
+  it('prefers saved nicknames and never falls back to an internal connection id', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-label-'));
+    const cfg = join(dir, 'cfg-a'); mkdirSync(cfg);
+    writeFileSync(join(cfg, '.claude.json'), JSON.stringify({ oauthAccount: { displayName: 'Provider name', emailAddress: 'person@example.test' } }));
+    const registry = AccountRegistry.init(join(dir, 'accounts.json'), [{ name: 'a', configDir: cfg }, { name: 'b', configDir: join(dir, 'missing') }]);
+    registry.setLabel('a', 'Personal');
+    const rows = await controller(dir).accounts() as { name: string; displayName: string; email?: string }[];
+    expect(rows.find(a => a.name === 'a')).toMatchObject({ displayName: 'Personal', email: 'person@example.test' });
+    expect(rows.find(a => a.name === 'b')?.displayName).toBe('Claude account');
+    registry.setLabel('a', '');
+    const reset = await controller(dir).accounts() as { name: string; displayName: string }[];
+    expect(reset.find(a => a.name === 'a')?.displayName).toBe('Provider name');
+  });
+
   it('reports an expired "limited" mark as ok (matches what pickActive would actually do)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'x056-badge-'));
     const reg = AccountRegistry.init(join(dir, 'accounts.json'), [

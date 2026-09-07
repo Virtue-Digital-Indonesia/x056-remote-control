@@ -16,6 +16,8 @@ export type AccountState =
 
 export interface Account {
   name: string;
+  /** Human-readable nickname. The routing key and transcript attribution stay stable. */
+  label?: string;
   configDir: string;
   /** Which agent CLI this account authenticates against. Failover only ever
    *  happens WITHIN a provider — a Claude transcript can't resume on GPT — so
@@ -188,6 +190,15 @@ export class AccountRegistry {
       const next = this.ofProvider(acct.provider).find(a => this.usable(a, Math.floor(Date.now() / 1000)));
       if (next) this.data.activeByProvider[acct.provider] = next.name;
     }
+    this.save();
+  }
+
+  setLabel(name: string, label: string): void {
+    const clean = label.trim();
+    if (clean.length > 80 || /[\u0000-\u001f\u007f]/.test(clean)) throw new Error('Account name must be at most 80 characters without control characters');
+    const account = this.find(name);
+    if (clean) account.label = clean;
+    else delete account.label;
     this.save();
   }
 
