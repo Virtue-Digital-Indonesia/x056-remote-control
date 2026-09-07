@@ -277,6 +277,17 @@ CLI writes each subagent a complete transcript of its own:
   every subagent — the same scan already needed for per-subagent usage, so it
   costs no extra reads — which also yields `spawnedBy`.
 
+- **Codex has native sub-agents too, and they are visible the same way.**
+  `spawn_agent` gives the child its own rollout whose `session_meta` names the
+  parent (`parent_thread_id`, plus `source.subagent.thread_spawn` with depth,
+  nickname, role) and ends with `event_msg/task_complete {last_agent_message}`.
+  The provider interface has optional `listSubagents` / `subagentStatus` /
+  `readSubagentPage`, and the two endpoints dispatch on the adapter, not on
+  `adapter.id`. Only the first line of each rollout is read to find children —
+  and the WHOLE first line: a real `session_meta` is ~14KB of base_instructions,
+  and an 8KB read silently skipped every child until a live check caught it.
+  Cost is null on purpose: tokens are recorded, GPT prices are not in the table.
+
 ## Workflow runs have their own island (`src/adapters/workflows.ts`)
 
 A `Workflow` call writes its agents beside the session in a directory per RUN,

@@ -14,6 +14,10 @@ function codexHome(threads: { id: string; parent?: string; nickname?: string; de
       type: 'session_meta', timestamp: '2026-09-07T03:42:55.468Z',
       payload: {
         session_id: t.parent ?? t.id, id: t.id, timestamp: '2026-09-07T03:42:55.468Z', cwd: '/tmp', originator: 'x056',
+        // A real session_meta carries the full system prompt: ~14KB on 0.153.4.
+        // An 8KB first-line read truncated it, the JSON failed to parse, and the
+        // child was silently skipped -- caught only by the live check.
+        base_instructions: 'x'.repeat(16 * 1024),
         ...(t.parent ? {
           parent_thread_id: t.parent, thread_source: 'subagent', agent_nickname: t.nickname ?? 'Ampere',
           source: { subagent: { thread_spawn: { parent_thread_id: t.parent, depth: t.depth ?? 1, agent_path: null, agent_nickname: t.nickname ?? 'Ampere', agent_role: null } } },
