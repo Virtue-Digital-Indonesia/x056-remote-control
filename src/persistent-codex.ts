@@ -1,6 +1,6 @@
 import type { RawEvent } from './types.js';
 import type { TurnOptions } from './turn.js';
-import type { Ingested, Transport, TransportState } from './persistent-transport.js';
+import { hashText, type Ingested, type Transport, type TransportState } from './persistent-transport.js';
 
 /**
  * Codex over `codex app-server`: JSON-RPC on stdio, one long-lived process per
@@ -92,6 +92,13 @@ export function mapItem(raw: unknown): Record<string, unknown> {
 
 export class CodexTransport implements Transport {
   readonly id = 'codex' as const;
+
+  /** Model and effort ride on every turn/start (see userMessage), so a change
+   *  in either is served by the process the thread already has. The MCP wiring
+   *  and the developer instructions go into thread/start and are fixed. */
+  identity(o: TurnOptions): string {
+    return [o.configDir, o.sessionId, o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? '')].join('\0');
+  }
 
   spawnSpec(o: TurnOptions) {
     return {

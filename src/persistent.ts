@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import type { RawEvent } from './types.js';
 import type { TurnExit, TurnHandle, TurnOptions } from './turn.js';
 import { ClaudeTransport, type Transport, type TransportState } from './persistent-transport.js';
@@ -97,7 +96,6 @@ function deadHandle(spawnError: string): TurnHandle {
   return { kill: () => {}, interrupt: () => {}, done: Promise.resolve({ code: null, signal: null, spawnError }) };
 }
 
-const hash = (s: string): string => createHash('sha1').update(s).digest('hex').slice(0, 12);
 
 export class PersistentTurns {
   private live = new Map<string, Live>();
@@ -127,14 +125,12 @@ export class PersistentTurns {
   }
 
   /**
-   * Anything baked into argv at spawn time is part of the identity: a turn that
-   * wants a different model or system prompt cannot be served by a process
-   * already running with the old one, so it keys to a different entry and gets
-   * a fresh process.
+   * Anything fixed at spawn time is part of the identity -- and only that. The
+   * transport knows what its CLI bakes in (Claude: model and effort are argv;
+   * Codex: they are per-turn), so it decides. See Transport.identity.
    */
   private keyFor(o: TurnOptions): string {
-    return [o.configDir, o.sessionId, o.model ?? '', o.effort ?? '', o.mcp?.configPath ?? '',
-      hash(o.appendSystemPrompt ?? '')].join('\0');
+    return this.transport.identity(o);
   }
 
   /**
@@ -323,6 +319,12 @@ export class PersistentTurns {
         // in: the first ones belong to the steers that were injected first.
         if (entry.pendingSteers > 0) { entry.pendingSteers--; continue; }
         this.settleTurn(entry, { code: 0, signal: null });
+        // A turn that ended before the process was ever ready is a failed
+        // handshake (Codex could not open its thread). The process is alive
+        // but can never take a prompt, and left in the pool it swallowed the
+        // NEXT turn: keyed to it, parked as pendingPrompt, waiting for a
+        // ready that would never come. Seen live, five minutes of "working".
+        if (!entry.st.ext.ready) this.destroy(entry);
       }
     }
   }
@@ -364,9 +366,11 @@ export class PersistentTurns {
       for (const e of held) { try { o.onEvent(e); } catch { /* never break */ } }
     }
     if (entry.endedEarly) {
-      // The handshake failed before the turn existed; there is nothing to send.
+      // The handshake failed before the turn existed; there is nothing to send,
+      // and the process is of no use to the next turn either.
       entry.endedEarly = false;
       this.settleTurn(entry, { code: 0, signal: null });
+      this.destroy(entry);
       return { kill: () => this.destroy(entry), interrupt: () => {}, done };
     }
 

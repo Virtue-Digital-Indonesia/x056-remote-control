@@ -201,9 +201,19 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   one's context.
 - `interrupt()` sends the CLI's `control_request`/`interrupt` rather than a
   signal — the turn stops, the process lives, and it is usable immediately after.
-- **Identity is the whole argv**: configDir, sessionId, model, effort, mcp config
-  and system prompt. Anything baked in at spawn cannot be changed for a running
-  process, so a different model keys to a different entry and respawns.
+- **Identity is what the CLI fixes at spawn, and the transport decides**
+  (`Transport.identity`). Claude bakes model and effort into argv, so a
+  different model keys to a different entry and respawns. Codex sends model
+  and effort on every `turn/start`, so they are NOT identity there -- keying
+  on them opened a second app-server on the same thread when the effort was
+  changed mid-conversation, and the first still held the rollout: `thread
+  already has an active writer`. Both key on configDir, sessionId, the MCP
+  config and the system prompt.
+- **A failed handshake frees its slot.** A Codex process whose thread could
+  not be opened is alive but can never take a prompt; left in the pool it
+  swallowed the NEXT turn (parked as `pendingPrompt`, five minutes of
+  "working…" with no output). A turn that ends before the process was ever
+  ready now destroys the process, so the next turn respawns.
 - **A turn ending is NOT the process going idle**, and conflating the two killed
   a real session. After `result` a finishing background task wakes the model and
   it keeps working; the pool marked the entry idle, and the next conversation's
@@ -272,6 +282,12 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   and the panel says "no saved history for this thread -- started a fresh
   one". With the shared store above, "no rollout found" means no history
   anywhere, so nothing is lost. A second miss is final.
+- **codex-cli 0.153.4 rollouts carry the text as ITEMS, not message events.**
+  There is no `event_msg/user_message` or `agent_message` any more; the user
+  and assistant text are `item_completed` items of type `UserMessage` /
+  `AgentMessage` (content parts `text`, or `Text` for the agent). The reader
+  handles both shapes, deduped per role, or a reload showed the actions and
+  the `task_complete` echo and nothing the user had typed.
 - **A failed turn reports the stream's own message, not `exit code 0`.**
   Adapters expose `failureText(e)` (Codex: `error`/`turn.failed`/
   `thread.failed` messages; Claude: an error `result`); `runSession` keeps the

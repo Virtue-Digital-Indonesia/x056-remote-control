@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import type { RawEvent } from './types.js';
 import type { TurnOptions } from './turn.js';
 
@@ -35,8 +36,23 @@ export interface Ingested {
   readyNow?: boolean;
 }
 
+/** Short stable digest, for keying on a long system prompt. */
+export const hashText = (s: string): string => createHash('sha1').update(s).digest('hex').slice(0, 12);
+
 export interface Transport {
   readonly id: 'claude' | 'codex';
+  /**
+   * What makes a running process reusable for a turn. Everything fixed at
+   * spawn belongs here and nothing else: a turn that differs in a spawn-time
+   * setting keys to a different entry and gets a fresh process, while one that
+   * differs only in a per-turn setting reuses the process it has.
+   *
+   * Claude bakes model and effort into argv, so they are identity. Codex sends
+   * them on every `turn/start`, so they are NOT -- and keying on them anyway
+   * opened a second app-server on the same thread when the effort changed,
+   * which the first still held: "thread already has an active writer".
+   */
+  identity(o: TurnOptions): string;
   /** Process to spawn for this conversation. */
   spawnSpec(o: TurnOptions): { bin: string; args: string[]; env: NodeJS.ProcessEnv };
   /**
@@ -60,6 +76,10 @@ export interface Transport {
 /** Claude: `claude -p --input-format stream-json --output-format stream-json`. */
 export class ClaudeTransport implements Transport {
   readonly id = 'claude' as const;
+
+  identity(o: TurnOptions): string {
+    return [o.configDir, o.sessionId, o.model ?? '', o.effort ?? '', o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? '')].join('\0');
+  }
 
   spawnSpec(o: TurnOptions) {
     const args = [

@@ -273,3 +273,42 @@ describe('codex tool-call history', () => {
     ]);
   });
 });
+
+describe('codexAdapter.readHistory on a 0.153.4 rollout (items, not message events)', () => {
+  // Captured from a live app-server rollout: no user_message / agent_message
+  // events at all -- the text is in item_completed items. The panel showed the
+  // actions and the task_complete echo, and nothing the user had typed.
+  const lines = [
+    { timestamp: 't0', type: 'session_meta', payload: { id: 't-items' } },
+    { timestamp: 't1', type: 'response_item', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'EXECUTION ENVIRONMENT…' }] } },
+    { timestamp: 't1', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<recommended_plugins>…' }] } },
+    { timestamp: 't2', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', id: 'u1', content: [{ type: 'text', text: 'Are you GPT-6 Astra?\n\n〈x056 question protocol〉\nKeep working autonomously by default.' }] } } },
+    { timestamp: 't3', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'Reasoning', id: 'r1', summary_text: [] } } },
+    { timestamp: 't4', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', id: 'a1', content: [{ type: 'Text', text: 'I’m checking the session details.' }] } } },
+    { timestamp: 't5', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec_command', input: '{"cmd":"cat /app/state/x"}' } },
+    { timestamp: 't6', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'CommandExecution', id: 'c1', command: ['/bin/sh', '-lc', 'cat /app/state/x'] } } },
+    { timestamp: 't7', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', id: 'a2', content: [{ type: 'Text', text: 'I’m Codex, based on GPT-6.' }] } } },
+    { timestamp: 't8', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'I’m Codex, based on GPT-6.' } },
+  ];
+
+  it('renders the user message, every agent message, and the actions once each', () => {
+    const dir = rolloutDir('t-items', lines);
+    expect(codexAdapter.readHistory!([dir], 't-items', 100).map((r) => [r.role, r.text])).toEqual([
+      ['user', 'Are you GPT-6 Astra?'],
+      ['assistant', 'I’m checking the session details.'],
+      ['action', 'Running: cat /app/state/x'],
+      ['assistant', 'I’m Codex, based on GPT-6.'],
+    ]);
+  });
+
+  it('does not double a message a build writes as BOTH an event and an item', () => {
+    const dir = rolloutDir('t-both', [
+      { timestamp: 't1', type: 'event_msg', payload: { type: 'user_message', message: 'hi' } },
+      { timestamp: 't1', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text: 'hi' }] } } },
+      { timestamp: 't2', type: 'event_msg', payload: { type: 'agent_message', message: 'hello' } },
+      { timestamp: 't2', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', content: [{ type: 'Text', text: 'hello' }] } } },
+      { timestamp: 't3', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'hello' } },
+    ]);
+    expect(codexAdapter.readHistory!([dir], 't-both', 100).map((r) => r.text)).toEqual(['hi', 'hello']);
+  });
+});

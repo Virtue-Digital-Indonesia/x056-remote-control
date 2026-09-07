@@ -11,7 +11,7 @@ import type { RawEvent } from '../src/types.js';
  * answers the handshake and turn/start the way the real one does (verified
  * live on 0.153.4), and emits notifications when the test says so.
  */
-function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean } = {}) {
+function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; deferThread?: boolean } = {}) {
   const child = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter; stdin: { write: (s: string) => void; destroyed: boolean; writableEnded: boolean };
     kill: (s?: string) => void; pid?: number;
@@ -20,6 +20,7 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
   const requests: { id?: number; method: string; params: Record<string, unknown> }[] = [];
   const out = (o: unknown) => child.stdout.emit('data', Buffer.from(JSON.stringify(o) + '\n'));
   let turnSeq = 0;
+  let pendingThread: { id?: number } | undefined;
   child.stdin = {
     destroyed: false, writableEnded: false,
     write: (s: string) => {
@@ -27,6 +28,9 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
       requests.push(m);
       if (m.method === 'initialize') out({ id: m.id, result: { userAgent: 'fake' } });
       else if (m.method === 'thread/start' || m.method === 'thread/resume') {
+        // The real server answers after a disk lookup, i.e. AFTER the pool has
+        // wired the turn; a synchronous answer lands in the pre-turn window.
+        if (opts.deferThread) { pendingThread = m; return; }
         if (opts.failThread) out({ id: m.id, error: { code: -32000, message: 'no such thread' } });
         // Verbatim from 0.153.4 when the id has no rollout under this CODEX_HOME.
         else if (opts.noRollout && m.method === 'thread/resume') out({ id: m.id, error: { code: -32600, message: `no rollout found for thread id ${String(m.params.threadId)}` } });
@@ -43,6 +47,13 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
   return {
     child, requests, sent,
     get killed() { return killed; },
+    /** Answer a deferred thread/start|resume now: with a thread, or with an error. */
+    answerThread: (error?: string) => {
+      const m = pendingThread; pendingThread = undefined;
+      if (!m) throw new Error('no thread request pending');
+      if (error) out({ id: m.id, error: { code: -32600, message: error } });
+      else out({ id: m.id, result: { thread: { id: opts.threadId ?? 'thr_new' } } });
+    },
     notify: (method: string, params: unknown) => out({ method, params }),
     item: (phase: 'started' | 'completed', item: Record<string, unknown>) =>
       out({ method: `item/${phase}`, params: { threadId: 't', turnId: `turn_${turnSeq}`, item } }),
@@ -51,7 +62,7 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
   };
 }
 
-function pool(o: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; workingGraceMs?: number; now?: () => number } = {}) {
+function pool(o: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; deferThread?: boolean; workingGraceMs?: number; now?: () => number } = {}) {
   const spawned: ReturnType<typeof fakeAppServer>[] = [];
   const p = new PersistentTurns({
     transport: new CodexTransport(),
@@ -290,5 +301,64 @@ describe('codex persistent: a resume with nothing to resume', () => {
 
   it('a thread.reset is not a limit, so it never triggers a failover', () => {
     expect(classifyCodexEvent({ type: 'thread.reset', from: 'x', message: 'no rollout found for thread id x' }).kind).toBe('irrelevant');
+  });
+});
+
+describe('codex persistent: identity and a failed handshake', () => {
+  // Model and effort go on every turn/start; keying the process on them opened
+  // a second app-server on the SAME thread when the effort changed, and the
+  // first still held the rollout: "thread already has an active writer".
+  it('a changed model or effort reuses the process; the new values ride on turn/start', async () => {
+    const { p, spawned } = pool({ threadId: 'thr_same' });
+    const h1 = p.startTurn(turn({ model: 'gpt-6-astra', effort: 'medium' }));
+    spawned[0].complete(); await h1.done;
+    const h2 = p.startTurn(turn({ model: 'gpt-6-astra', effort: 'xhigh', mode: 'resume', sessionId: 'x056-conv' }));
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].sent('turn/start')[1].params).toMatchObject({ threadId: 'thr_same', effort: 'xhigh' });
+    spawned[0].complete(); await h2.done;
+  });
+
+  it('still keys on the account: another configDir is another process', async () => {
+    const { p, spawned } = pool();
+    const h1 = p.startTurn(turn({ configDir: '/cfg/g' }));
+    spawned[0].complete(); await h1.done;
+    p.startTurn(turn({ configDir: '/cfg/h', mode: 'resume' }));
+    expect(spawned).toHaveLength(2);
+    expect(spawned[1].child).not.toBe(spawned[0].child);
+  });
+
+  // The process whose handshake failed stayed in the pool, never ready; the
+  // next turn keyed to it and parked its prompt forever -- "working…" with no
+  // output, until someone killed the process by hand.
+  // What actually happened live: the refusal ("already has an active writer")
+  // arrived after the turn was wired, so it went through the turn's sink and
+  // settled the turn -- and the process stayed. This is that path.
+  it('drops the process when the refusal arrives AFTER the turn is wired', async () => {
+    const { p, spawned } = pool({ deferThread: true });
+    const h1 = p.startTurn(turn({ mode: 'resume', sessionId: 'thr_busy' }));
+    const f = spawned[0];
+    expect(f.sent('turn/start')).toHaveLength(0); // prompt parked behind the handshake
+    f.answerThread('thread-store conflict: thread thr_busy already has an active writer');
+    const exit1 = await Promise.race([h1.done, new Promise<'hung'>((r) => setTimeout(() => r('hung'), 500))]);
+    expect(exit1).not.toBe('hung');
+    expect(f.killed).toBe(true);
+    // The next turn gets a fresh process, not the parked one.
+    const h2 = p.startTurn(turn({ mode: 'resume', sessionId: 'thr_busy' }));
+    expect(spawned).toHaveLength(2);
+    spawned[1].answerThread();
+    expect(spawned[1].sent('turn/start')).toHaveLength(1);
+    spawned[1].complete();
+    await h2.done;
+  });
+
+  it('drops a process whose thread could not be opened, so the next turn respawns instead of hanging', async () => {
+    const { p, spawned } = pool({ failThread: true });
+    const h1 = p.startTurn(turn());
+    await h1.done;
+    expect(spawned[0].killed).toBe(true);
+    const h2 = p.startTurn(turn({ mode: 'resume' }));
+    expect(spawned).toHaveLength(2);
+    const exit = await Promise.race([h2.done, new Promise<'hung'>((r) => setTimeout(() => r('hung'), 500))]);
+    expect(exit).not.toBe('hung');
   });
 });

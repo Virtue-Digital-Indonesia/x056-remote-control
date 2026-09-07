@@ -389,8 +389,20 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
   const out: HistoryEntry[] = [];
   const offsets: number[] = [];
   let lastAssistant = '';
+  let lastUser = '';
   const push = (row: HistoryEntry, at: number): void => {
     if (at >= keepFrom) { out.push(row); offsets.push(at); }
+  };
+  // codex-cli 0.153.4 no longer writes `user_message` / `agent_message`
+  // events; the text is carried by `item_completed` with an item of type
+  // `UserMessage` / `AgentMessage` (content parts `text`, or `Text` for the
+  // agent). A rollout in that shape rendered with the user's own messages
+  // missing and every assistant message but the task_complete echo dropped.
+  // Both shapes are read, deduped against the last row of the same role, so a
+  // build that writes both does not double up.
+  const itemText = (item: Record<string, unknown>): string => {
+    const parts = Array.isArray(item.content) ? item.content : [];
+    return parts.map((c) => { const o = asObj(c); return typeof o.text === 'string' ? o.text : ''; }).join('');
   };
   for (const rawLine of input) {
     const line = rawLine.text;
@@ -414,9 +426,20 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
     if (entry.type !== 'event_msg') continue;
     const payload = asObj(entry.payload);
     const ts = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
-    if (payload.type === 'user_message' && typeof payload.message === 'string') {
+    if (payload.type === 'item_completed') {
+      const item = asObj(payload.item);
+      const kind = firstStr(item.type);
+      if (kind === 'UserMessage' || kind === 'userMessage') {
+        const shown = stripAskInstructions(itemText(item).trim());
+        if (shown && shown !== lastUser) { push({ role: 'user', text: shown, ts }, at); lastUser = shown; }
+      } else if (kind === 'AgentMessage' || kind === 'agentMessage') {
+        const shown = stripAsk(itemText(item).trim());
+        if (shown && shown !== lastAssistant) { push({ role: 'assistant', text: shown, ts }, at); lastAssistant = shown; }
+      }
+      // Command/patch items are already rendered from response_item above.
+    } else if (payload.type === 'user_message' && typeof payload.message === 'string') {
       const shown = stripAskInstructions(payload.message.trim());
-      if (shown) push({ role: 'user', text: shown, ts }, at);
+      if (shown && shown !== lastUser) { push({ role: 'user', text: shown, ts }, at); lastUser = shown; }
     } else if (payload.type === 'agent_message' && typeof payload.message === 'string') {
       // EVERY assistant message the turn streamed — confirmed live: a real
       // rollout held 154 phase:"commentary" + 20 phase:"final_answer" messages,
