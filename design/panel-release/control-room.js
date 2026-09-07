@@ -63,15 +63,15 @@ window.createControlRoom = function (engine) {
   function stageCandidates(all=cards()){
     const byId=new Map(all.map(x=>[stageKey(x.p.id,x.c.sessionId),x]));
     if(stageMode==='pinned')return stagePins.map(id=>byId.get(id)).filter(Boolean);
-    const opened=stageRecent.map(id=>byId.get(id)).filter(Boolean),running=all.filter(x=>['running','background'].includes(x.status)),latest=all.filter(x=>!recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))).slice(0,20);
-    const seen=new Set();return [...running,...opened,...latest].filter(x=>{const id=stageKey(x.p.id,x.c.sessionId);if(seen.has(id)||recentDismissed.includes(id))return false;seen.add(id);return true;});
+    const opened=stageRecent.map(id=>byId.get(id)).filter(Boolean),running=all.filter(x=>['running','background'].includes(x.status));
+    const seen=new Set();return [...running,...opened].filter(x=>{const id=stageKey(x.p.id,x.c.sessionId);if(seen.has(id)||recentDismissed.includes(id))return false;seen.add(id);return true;});
   }
   function stageKey(project,session){return project+'::'+session;}
   function isStagePinned(project,session){return stagePins.includes(stageKey(project,session));}
   function saveStage(){try{localStorage.setItem('x056_stage_pins',JSON.stringify(stagePins));}catch{toast('This browser could not save pinned conversations.');}}
   function pinStage(project,session,pinned){
     const id=stageKey(project,session);stagePins=stagePins.filter(x=>x!==id);if(pinned)stagePins.push(id);
-    if(pinned){stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);recentDismissed=recentDismissed.filter(x=>x!==id);saveRecents();}saveStage();renderStage();refresh();if(stagePicker.open)renderStagePicker();
+    if(pinned){recentDismissed=recentDismissed.filter(x=>x!==id);saveRecents();}saveStage();renderStage();refresh();if(stagePicker.open)renderStagePicker();
   }
   function stageOpen(value){
     clearTimeout(stageCloseTimer);
@@ -184,7 +184,7 @@ window.createControlRoom = function (engine) {
     if (mode !== 'closed') restorePosition();
     if(mode==='modal')main.setAttribute('aria-owns','conversationStage');else main.removeAttribute('aria-owns');
   }
-  function open() { rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode(prefs.open === 'side' ? 'side' : prefs.maximize); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
+  function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode(prefs.open === 'side' ? 'side' : prefs.maximize); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
   function close() { engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
   function pageFor(name) { return $(name==='board'?'crBoard':name==='accounts'?'crAccounts':'crAutomations'); }
   function showSection(next) {

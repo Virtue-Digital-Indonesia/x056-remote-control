@@ -2961,7 +2961,7 @@
     return wrap;
   }
   function switchConversation(projectId, sessionId) {
-    if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(); }
+    if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(false); }
     saveConversationPick();
     if (projectId !== currentProjectId) return;
     setNav(false);
@@ -2970,7 +2970,7 @@
     // or device starting a new conversation updates projCache[pid].lastSessionId
     // via the 'conversation' broadcast without changing what's on OUR screen,
     // which used to make this click silently no-op.
-    if (sessionId === lastSessionId && !pendingNew) { clearConvNotif(projectId,sessionId); return; }
+    if (sessionId === lastSessionId && !pendingNew) { clearConvNotif(projectId,sessionId); if (controlRoom) controlRoom.open(); return; }
     pendingNew = false; blankSeq++; // moving to an existing conversation supersedes any in-flight new-conversation adopt
     return api('/api/conversations/select', { method: 'POST', body: JSON.stringify({ projectId: projectId, sessionId: sessionId }) }).then(function (r) {
       if (!r.ok) { addSys('could not switch conversation', 'banner'); return; }
@@ -2978,6 +2978,7 @@
       while (chatEl.firstChild) oldView.frag.appendChild(chatEl.firstChild); // stash the outgoing conversation's own thread
       if (projCache[projectId]) projCache[projectId].lastSessionId = sessionId;
       lastSessionId = sessionId; chatEl.textContent = '';
+      if (controlRoom) controlRoom.open();
       // Each conversation is bound to its own provider (see currentProvider()) —
       // re-sync the model/effort/provider picker AND the account chip to THIS
       // one, not whatever the previously-viewed conversation left showing (the
@@ -2999,7 +3000,7 @@
     }).catch(function () {});
   }
   function newConversation(projectId) {
-    if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(); }
+    if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(false); }
     saveConversationPick();
     setNav(false);
     if (projectId !== currentProjectId && projCache[projectId]) { switchProject(projCache[projectId]); }
@@ -3169,7 +3170,7 @@
   }
   function loadProjects() { return api('/api/projects').then(function (r) { if (!r.ok) throw new Error('Could not load projects. Reconnect or sign in again.'); return r.json(); }).then(function (reg) { renderProjects(reg); if (controlRoom) controlRoom.error(''); }).catch(function (e) { if (controlRoom) controlRoom.error(e.message || 'Could not load projects.'); }); }
   function switchProject(p) {
-    if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(); }
+    if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(false); }
     saveConversationPick();
     setNav(false); // close the mobile drawer on selection
     // pure view change — never blocked, even while p (or others) run
@@ -3179,6 +3180,7 @@
     }
     currentProjectId = p.id; projCache[p.id] = p;
     lastSessionId = p.lastSessionId || null; // sync synchronously (no round-trip) so view lookups below key on the right conversation
+    if (controlRoom) controlRoom.open();
     blankSeq++; // switching projects retargets the composer; supersede any in-flight new-conversation adopt
     restoreDraft(); // this project/conversation's own unsent text
     restoreAttachments(); // and its own pending (unsent) attachments
