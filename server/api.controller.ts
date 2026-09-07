@@ -942,43 +942,43 @@ export class ApiController {
   //      failover accounts (see PluginManager) so a plugin stays usable after a
   //      failover, and reads aggregate the pool so drift is visible. ----
   @Get('plugins')
-  listPlugins() {
-    return this.plugins.list();
+  listPlugins(@Query('provider') provider?: string) {
+    return this.plugins.list(provider === 'codex' ? 'codex' : 'claude');
   }
 
   @Post('plugins/install')
   @HttpCode(200)
-  async installPlugin(@Body() body: { plugin?: string }) {
+  async installPlugin(@Body() body: { plugin?: string; provider?: string }) {
     if (!body?.plugin) throw new BadRequestException('plugin required (name@marketplace)');
-    return this.plugins.install(body.plugin.trim());
+    return this.plugins.install(body.plugin.trim(), body.provider === 'codex' ? 'codex' : 'claude');
   }
 
   @Post('plugins/uninstall')
   @HttpCode(200)
-  async uninstallPlugin(@Body() body: { plugin?: string }) {
+  async uninstallPlugin(@Body() body: { plugin?: string; provider?: string }) {
     if (!body?.plugin) throw new BadRequestException('plugin required');
-    return this.plugins.uninstall(body.plugin.trim());
+    return this.plugins.uninstall(body.plugin.trim(), body.provider === 'codex' ? 'codex' : 'claude');
   }
 
   @Post('plugins/enabled')
   @HttpCode(200)
-  async setPluginEnabled(@Body() body: { plugin?: string; enabled?: boolean }) {
+  async setPluginEnabled(@Body() body: { plugin?: string; enabled?: boolean; provider?: string }) {
     if (!body?.plugin) throw new BadRequestException('plugin required');
-    return this.plugins.setEnabled(body.plugin.trim(), !!body.enabled);
+    return this.plugins.setEnabled(body.plugin.trim(), !!body.enabled, body.provider === 'codex' ? 'codex' : 'claude');
   }
 
   @Post('plugins/marketplace/add')
   @HttpCode(200)
-  async addMarketplace(@Body() body: { source?: string }) {
+  async addMarketplace(@Body() body: { source?: string; provider?: string }) {
     if (!body?.source) throw new BadRequestException('source required (URL, path, or owner/repo)');
-    return this.plugins.addMarketplace(body.source.trim());
+    return this.plugins.addMarketplace(body.source.trim(), body.provider === 'codex' ? 'codex' : 'claude');
   }
 
   @Post('plugins/marketplace/remove')
   @HttpCode(200)
-  async removeMarketplace(@Body() body: { name?: string }) {
+  async removeMarketplace(@Body() body: { name?: string; provider?: string }) {
     if (!body?.name) throw new BadRequestException('name required');
-    return this.plugins.removeMarketplace(body.name.trim());
+    return this.plugins.removeMarketplace(body.name.trim(), body.provider === 'codex' ? 'codex' : 'claude');
   }
 
   @Get('sessions/current/history')

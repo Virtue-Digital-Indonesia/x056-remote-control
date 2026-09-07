@@ -94,7 +94,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // account so an installed plugin is usable no matter which account is active.
   const plugins = new PluginManager({
     claudePath: cfg.claudePath,
-    claudeDirs: PluginManager.claudeDirsFromRegistry(join(cfg.stateDir, 'accounts.json')),
+    dirs: PluginManager.dirsFromRegistry(join(cfg.stateDir, 'accounts.json')),
   });
 
   // MCP servers, likewise replicated across every account of a provider so one

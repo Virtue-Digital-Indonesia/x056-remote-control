@@ -133,3 +133,72 @@ describe('PluginManager', () => {
     expect(dirs).toEqual([{ name: 'a', configDir: '/x/a' }]);
   });
 });
+
+describe('PluginManager: Codex provider', () => {
+  const CODEX_STUB = new URL('./bin/stub-plugin-codex', import.meta.url).pathname;
+  function both(): { claude: { name: string; configDir: string }[]; codex: { name: string; configDir: string }[]; logFile: string } {
+    const root = mkdtempSync(join(tmpdir(), 'x056-plug2-'));
+    const mk = (n: string) => { const d = join(root, n); mkdirSync(d, { recursive: true }); return d; };
+    return {
+      claude: [{ name: 'a', configDir: mk('claude-a') }],
+      codex: [{ name: 'd', configDir: mk('codex-d') }, { name: 'e', configDir: mk('codex-e') }],
+      logFile: join(root, 'log.jsonl'),
+    };
+  }
+  function mgr2(s: ReturnType<typeof both>): PluginManager {
+    process.env.STUB_LOG = s.logFile;
+    return new PluginManager({ claudePath: STUB, codexPath: CODEX_STUB, timeoutMs: 10_000,
+      dirs: (p) => (p === 'codex' ? s.codex : s.claude) });
+  }
+  const calls = (f: string) => readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { argv: string[]; cfg: string });
+
+  it('installs with codex\'s verb (add), under CODEX_HOME, on every codex dir and NO claude dir', async () => {
+    const s = both();
+    const res = await mgr2(s).install('code-review@claude-plugins-official', 'codex');
+    expect(res.ok).toBe(true);
+    expect(res.perDir.map((p) => p.account).sort()).toEqual(['d', 'e']);
+    const c = calls(s.logFile);
+    expect(c.map((x) => x.argv.slice(0, 3))).toEqual([
+      ['plugin', 'add', 'code-review@claude-plugins-official'],
+      ['plugin', 'add', 'code-review@claude-plugins-official'],
+    ]);
+    expect(c.map((x) => x.cfg).sort()).toEqual(s.codex.map((d) => d.configDir).sort());
+  });
+
+  it('uninstall is `remove`; enable/disable is refused, not silently ignored', async () => {
+    const s = both();
+    const m = mgr2(s);
+    await m.uninstall('p@m', 'codex');
+    expect(calls(s.logFile).at(-1)!.argv.slice(0, 2)).toEqual(['plugin', 'remove']);
+    const en = await m.setEnabled('p@m', true, 'codex');
+    expect(en.ok).toBe(false);
+    expect(en.perDir.every((p) => /no enable/.test(p.message))).toBe(true);
+    expect(calls(s.logFile).filter((x) => x.argv[1] === 'enable')).toHaveLength(0);
+  });
+
+  it('normalises codex list --json ({installed:[{pluginId..}]}) into the same PluginInfo shape', async () => {
+    const s = both();
+    const real = { pluginId: 'code-review@claude-plugins-official', name: 'code-review', marketplaceName: 'claude-plugins-official', version: 'local', installed: true, enabled: true };
+    writeFileSync(join(s.codex[0].configDir, 'plugins.json'), JSON.stringify([real]));
+    writeFileSync(join(s.codex[1].configDir, 'plugins.json'), JSON.stringify([]));
+    writeFileSync(join(s.codex[0].configDir, 'marketplaces.json'), JSON.stringify([
+      { name: 'claude-plugins-official', root: '/x/.tmp/marketplaces/claude-plugins-official', marketplaceSource: { sourceType: 'git', source: 'https://github.com/anthropics/claude-plugins-official.git' } },
+    ]));
+    const out = await mgr2(s).list('codex');
+    expect(out.provider).toBe('codex');
+    expect(out.canToggle).toBe(false);
+    expect(out.dirs).toBe(2);
+    expect(out.plugins).toHaveLength(1);
+    expect(out.plugins[0]).toMatchObject({ id: 'code-review@claude-plugins-official', name: 'code-review', marketplace: 'claude-plugins-official', installedCount: 1, totalDirs: 2, synced: false });
+    expect(out.marketplaces).toEqual([{ name: 'claude-plugins-official', source: 'git', repo: 'anthropics/claude-plugins-official', installLocation: '/x/.tmp/marketplaces/claude-plugins-official' }]);
+  });
+
+  it('a claude op still uses `install` and CLAUDE_CONFIG_DIR, and never touches codex dirs', async () => {
+    const s = both();
+    await mgr2(s).install('x@m', 'claude');
+    const c = calls(s.logFile);
+    expect(c).toHaveLength(1);
+    expect(c[0].argv.slice(0, 2)).toEqual(['plugin', 'install']);
+    expect(c[0].cfg).toBe(s.claude[0].configDir);
+  });
+});
