@@ -21,7 +21,15 @@ export interface TurnOptions {
   binPath?: string;
   configDir: string;
   cwd: string;
+  /** The id the CLI is given: `--session-id`/`--resume` for Claude; for Codex
+   *  the THREAD id on a resume, and the gateway's id on a new turn (ignored --
+   *  Codex assigns its own). So for Codex this changes after the first turn. */
   sessionId: string;
+  /** The gateway's own conversation id, the same on every turn. What a
+   *  persistent process is keyed and looked up by -- keying on `sessionId`
+   *  gave every Codex conversation a second process on its second turn, which
+   *  the first still held: "thread already has an active writer". */
+  conversationId?: string;
   mode: 'new' | 'resume';
   prompt: string;
   model?: string;

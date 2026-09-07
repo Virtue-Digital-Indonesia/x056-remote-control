@@ -239,6 +239,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // provider either takes this id (Claude) or ignores it and assigns its
         // own (Codex).
         sessionId: mode === 'resume' ? (cliSessionId ?? sessionId) : sessionId,
+        conversationId: sessionId,
         mode,
         prompt,
         model: opts.model,

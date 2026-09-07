@@ -32,6 +32,8 @@ interface Recorded {
   configDir: string;
   mode: string;
   prompt: string;
+  sessionId?: string;
+  conversationId?: string;
 }
 
 /** A marker interpreted by scriptTurns as "wait this long before dispatching the next event". */
@@ -419,6 +421,27 @@ describe('transient API overload (529) is retried, not reported as a dead turn',
   // A persistent process does not exit when a turn fails, so the exit is a
   // synthetic code 0. "done: failed · exit code 0" is what the user saw for a
   // Codex thread that could not be resumed; the stream had said exactly why.
+  // The persistent pool keys a process on this; the CLI id it is handed
+  // changes after a Codex conversation's first turn (thread id), this must not.
+  it('hands every turn the gateway conversation id, unchanged across a resume that uses the thread id', async () => {
+    const { log } = setup();
+    const registry = AccountRegistry.init(join(mkdtempSync(join(tmpdir(), 'x056-conv-')), 'accounts.json'), [
+      { name: 'a', configDir: '/cfg/a', provider: 'codex' },
+    ]);
+    const recorded: Recorded[] = [];
+    const res = await runSession({
+      registry, log, sessionId: 'conv-1', cwd: '/w', prompt: 'go', adapter: codexAdapter,
+      resume: true, providerSessionId: 'thr-9',
+      startTurnFn: (opts) => {
+        recorded.push({ configDir: opts.configDir, mode: opts.mode, prompt: opts.prompt, sessionId: opts.sessionId, conversationId: opts.conversationId });
+        return { kill: () => {}, interrupt: () => {}, done: (async () => { opts.onEvent({ type: 'turn.completed' }); return { code: 0, signal: null }; })() };
+      },
+      forceSwitchSignal: false,
+    });
+    expect(res.status).toBe('completed');
+    expect(recorded[0]).toMatchObject({ mode: 'resume', sessionId: 'thr-9', conversationId: 'conv-1' });
+  });
+
   it('reports the failure message the stream carried, not a meaningless exit code', async () => {
     const { log } = setup();
     const registry = AccountRegistry.init(join(mkdtempSync(join(tmpdir(), 'x056-reason-')), 'accounts.json'), [

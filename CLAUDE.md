@@ -228,8 +228,14 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   and effort on every `turn/start`, so they are NOT identity there -- keying
   on them opened a second app-server on the same thread when the effort was
   changed mid-conversation, and the first still held the rollout: `thread
-  already has an active writer`. Both key on configDir, sessionId, the MCP
-  config and the system prompt.
+  already has an active writer`. Both key on configDir, the **conversation
+  id** (`TurnOptions.conversationId`, the gateway's own, constant), the MCP
+  config and the system prompt. NOT `sessionId`: for Codex that is the
+  gateway's id on the first turn and the thread id on every resume, so a key
+  built on it never matched the first turn's process again -- every Codex
+  conversation collided with itself on its second turn, four times in a row,
+  live, while the idle first process sat in the pool holding the thread.
+  Steer, interrupt and the working indicator look entries up by the same id.
 - **A failed handshake frees its slot.** A Codex process whose thread could
   not be opened is alive but can never take a prompt; left in the pool it
   swallowed the NEXT turn (parked as `pendingPrompt`, five minutes of

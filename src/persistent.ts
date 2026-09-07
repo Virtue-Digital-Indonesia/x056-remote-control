@@ -260,7 +260,9 @@ export class PersistentTurns {
       return { error: (err as Error).message };
     }
 
-    const entry: Live = { key, child, sessionId: o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false };
+    // Looked up by the gateway's conversation id (steer, interrupt, "working"),
+    // which for Codex is not what the CLI was handed after the first turn.
+    const entry: Live = { key, child, sessionId: o.conversationId ?? o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false };
     child.stdout?.on('data', (d: Buffer) => this.onData(entry, d));
     child.on('error', (err) => this.settle(entry, { code: null, signal: null, spawnError: err.message }));
     child.on('close', (code, signal) => this.settle(entry, { code, signal }));

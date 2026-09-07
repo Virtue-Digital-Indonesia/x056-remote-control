@@ -51,6 +51,10 @@ export interface Transport {
    * them on every `turn/start`, so they are NOT -- and keying on them anyway
    * opened a second app-server on the same thread when the effort changed,
    * which the first still held: "thread already has an active writer".
+   *
+   * The conversation is `conversationId`, never `sessionId`: for Codex the
+   * latter is the gateway's id on the first turn and the thread id after, so
+   * a key built on it never matched the first turn's process again.
    */
   identity(o: TurnOptions): string;
   /** Process to spawn for this conversation. */
@@ -78,7 +82,7 @@ export class ClaudeTransport implements Transport {
   readonly id = 'claude' as const;
 
   identity(o: TurnOptions): string {
-    return [o.configDir, o.sessionId, o.model ?? '', o.effort ?? '', o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? '')].join('\0');
+    return [o.configDir, o.conversationId ?? o.sessionId, o.model ?? '', o.effort ?? '', o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? '')].join('\0');
   }
 
   spawnSpec(o: TurnOptions) {

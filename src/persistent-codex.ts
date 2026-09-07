@@ -97,7 +97,7 @@ export class CodexTransport implements Transport {
    *  in either is served by the process the thread already has. The MCP wiring
    *  and the developer instructions go into thread/start and are fixed. */
   identity(o: TurnOptions): string {
-    return [o.configDir, o.sessionId, o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? '')].join('\0');
+    return [o.configDir, o.conversationId ?? o.sessionId, o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? '')].join('\0');
   }
 
   spawnSpec(o: TurnOptions) {

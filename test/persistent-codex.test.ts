@@ -362,3 +362,33 @@ describe('codex persistent: identity and a failed handshake', () => {
     expect(exit).not.toBe('hung');
   });
 });
+
+describe('codex persistent: the conversation id is the identity, not the CLI id', () => {
+  // The first turn is `new` and hands Codex the gateway's id (ignored -- Codex
+  // assigns a thread). Every later turn is `resume` with the THREAD id. Keyed
+  // on sessionId, the second turn never matched the first turn's process, so
+  // every Codex conversation got a second app-server on its second turn --
+  // "thread already has an active writer", four times in a row, live.
+  it('a resume with the thread id reuses the process the new turn spawned', async () => {
+    const { p, spawned } = pool({ threadId: 'thr_real' });
+    const h1 = p.startTurn(turn({ mode: 'new', sessionId: 'x056-conv', conversationId: 'x056-conv' }));
+    spawned[0].complete(); await h1.done;
+    const h2 = p.startTurn(turn({ mode: 'resume', sessionId: 'thr_real', conversationId: 'x056-conv', prompt: 'again' }));
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].sent('thread/resume')).toHaveLength(0); // same process, same thread, no re-handshake
+    expect(spawned[0].sent('turn/start')[1].params).toMatchObject({ threadId: 'thr_real', input: [{ type: 'text', text: 'again' }] });
+    spawned[0].complete(); await h2.done;
+  });
+
+  it('steer, interrupt and "working" find the process by the conversation id after a thread-id resume', async () => {
+    const { p, spawned } = pool({ threadId: 'thr_real' });
+    const h1 = p.startTurn(turn({ mode: 'new', sessionId: 'x056-conv', conversationId: 'x056-conv' }));
+    spawned[0].complete(); await h1.done;
+    p.startTurn(turn({ mode: 'resume', sessionId: 'thr_real', conversationId: 'x056-conv' }));
+    expect(p.workingSessions().map((w) => w.sessionId)).toEqual(['x056-conv']);
+    expect(p.injectMessage('x056-conv', 'steer me')).toBe(true);
+    expect(spawned[0].sent('turn/steer')).toHaveLength(1);
+    expect(p.interruptSession('x056-conv')).toBe(true);
+    expect(spawned[0].sent('turn/interrupt')).toHaveLength(1);
+  });
+});
