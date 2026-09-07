@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { RawEvent } from './types.js';
 import type { TurnExit, TurnHandle, TurnOptions } from './turn.js';
+import { ClaudeTransport, type Transport, type TransportState } from './persistent-transport.js';
 
 /**
  * Persistent CLI sessions: one long-lived process per conversation, fed a
@@ -41,6 +42,8 @@ export interface PersistentOptions {
   now?: () => number;
   /** Injected in tests. */
   spawnFn?: (bin: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) => ChildProcess;
+  /** Which CLI wire format this pool speaks. Default: Claude stream-json. */
+  transport?: Transport;
 }
 
 interface Live {
@@ -69,7 +72,20 @@ interface Live {
   lastTurnStart: number;
   /** Where events go when no turn is in flight (UI only, never the classifier). */
   idleSink?: (e: RawEvent) => void;
-  buf: string;
+  /** Transport-private: partial line buffer plus whatever it tracks per process. */
+  st: TransportState;
+  /** A first prompt held back until the transport's handshake finishes. */
+  pendingPrompt?: string;
+  /** The options of the turn in flight (the deferred prompt needs model/effort). */
+  opts?: TurnOptions;
+  /**
+   * The handshake can complete SYNCHRONOUSLY inside spawn (a fast CLI, or the
+   * test fake), before runOn has attached a sink or a finish. Events that
+   * arrive in that window are held here and replayed once the turn is wired;
+   * a turn-ending line in that window is remembered so runOn settles at once.
+   */
+  early: RawEvent[];
+  endedEarly: boolean;
   exited: boolean;
   /** Where this turn's events go, and how it is finished. */
   sink?: (e: RawEvent) => void;
@@ -89,6 +105,7 @@ export class PersistentTurns {
   private readonly maxSessions: number;
   private readonly workingGraceMs: number;
   private readonly now: () => number;
+  private readonly transport: Transport;
   private sweeper: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly opts: PersistentOptions = {}) {
@@ -99,6 +116,14 @@ export class PersistentTurns {
     this.maxSessions = opts.maxSessions ?? 6;
     this.workingGraceMs = opts.workingGraceMs ?? 2 * 60_000;
     this.now = opts.now ?? Date.now;
+    this.transport = opts.transport ?? new ClaudeTransport();
+  }
+
+  /** Write one line to the process; false if its stdin is already gone. */
+  private writeLine(entry: Live, line: string): boolean {
+    const sin = entry.child.stdin;
+    if (!sin || sin.destroyed || sin.writableEnded) return false;
+    try { sin.write(line + '\n'); return true; } catch { return false; }
   }
 
   /**
@@ -166,28 +191,24 @@ export class PersistentTurns {
       if (!target || better(e, target)) target = e;
     }
     if (!target) return false;
+    // A transport still in its handshake has nothing to steer into yet.
+    const line = this.transport.steerMessage(target.st, text, target.busy);
+    if (line === null) return false;
     // A pipe whose far end is gone accepts writes silently, so `write` alone
     // cannot tell delivered from discarded -- and the caller would skip the
     // queue fallback on the strength of it.
-    const sin = target.child.stdin;
-    if (!sin || sin.destroyed || sin.writableEnded) return false;
-    try {
-      sin.write(JSON.stringify({
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'text', text }] },
-      }) + '\n');
-      // Steering is output-producing work; without this the entry looks idle
-      // to the eviction pass and can be culled between the write and the
-      // model's first token.
-      target.lastOutput = this.now();
-      // With a turn in flight the model folds the steer into it -- one result
-      // for both. With no turn, the steer IS a turn and emits a result of its
-      // own, which would otherwise settle whatever gateway turn came next:
-      // `runSession` would return the steer's text as that turn's answer and
-      // drain the queue into a process that had not started on it.
-      if (!target.busy) target.pendingSteers++;
-      return true;
-    } catch { return false; }
+    if (!this.writeLine(target, line)) return false;
+    // Steering is output-producing work; without this the entry looks idle
+    // to the eviction pass and can be culled between the write and the
+    // model's first token.
+    target.lastOutput = this.now();
+    // With a turn in flight the model folds the steer into it -- one result
+    // for both. With no turn, the steer IS a turn and emits a result of its
+    // own, which would otherwise settle whatever gateway turn came next:
+    // `runSession` would return the steer's text as that turn's answer and
+    // drain the queue into a process that had not started on it.
+    if (!target.busy) target.pendingSteers++;
+    return true;
   }
 
   /** Stop a conversation's background work without killing the process, so the
@@ -196,14 +217,7 @@ export class PersistentTurns {
     let hit = false;
     for (const e of this.live.values()) {
       if (e.sessionId !== sessionId || e.exited) continue;
-      try {
-        e.child.stdin?.write(JSON.stringify({
-          type: 'control_request',
-          request_id: `x056-int-${this.now()}`,
-          request: { subtype: 'interrupt' },
-        }) + '\n');
-        hit = true;
-      } catch { /* already gone; close will clean up */ }
+      if (this.writeLine(e, this.transport.interruptMessage(e.st))) hit = true;
     }
     return hit;
   }
@@ -238,20 +252,7 @@ export class PersistentTurns {
   }
 
   private spawn(o: TurnOptions, key: string): { entry: Live } | { error: string } {
-    const args = [
-      '-p',
-      '--input-format', 'stream-json',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--dangerously-skip-permissions',
-      ...(o.appendSystemPrompt ? ['--append-system-prompt', o.appendSystemPrompt] : []),
-      ...(o.mcp ? ['--mcp-config', o.mcp.configPath] : []),
-      ...(o.model ? ['--model', o.model] : []),
-      ...(o.effort ? ['--effort', o.effort] : []),
-      ...(o.mode === 'new' ? ['--session-id', o.sessionId] : ['--resume', o.sessionId]),
-    ];
-    const bin = o.claudePath ?? o.binPath ?? 'claude';
-    const env = { ...process.env, CLAUDE_CONFIG_DIR: o.configDir };
+    const { bin, args, env } = this.transport.spawnSpec(o);
     let child: ChildProcess;
     try {
       child = this.opts.spawnFn
@@ -263,10 +264,18 @@ export class PersistentTurns {
       return { error: (err as Error).message };
     }
 
-    const entry: Live = { key, child, sessionId: o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), buf: '', exited: false, pendingSteers: 0, lastTurnStart: 0 };
+    const entry: Live = { key, child, sessionId: o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false };
     child.stdout?.on('data', (d: Buffer) => this.onData(entry, d));
     child.on('error', (err) => this.settle(entry, { code: null, signal: null, spawnError: err.message }));
     child.on('close', (code, signal) => this.settle(entry, { code, signal }));
+    // Codex needs a handshake before it can take a prompt; Claude is ready at
+    // once. Either way the first prompt goes through runOn, which defers it
+    // while `ready` is false.
+    // The transport sets ext.ready itself (Claude: true now; Codex: true when
+    // the thread id arrives). The reply can land synchronously, inside this
+    // call, so the return value must not overwrite a `true` ingest already set.
+    const { ready } = this.transport.open(entry.st, o, (line) => { this.writeLine(entry, line); });
+    if (ready) entry.st.ext.ready = true;
     this.startSweeper();
     return { entry };
   }
@@ -276,16 +285,20 @@ export class PersistentTurns {
     // ANY output means this process is doing something, turn or no turn. This is
     // what keeps eviction from killing a session that only looks idle.
     entry.lastOutput = this.now();
-    entry.buf += d.toString();
-    const lines = entry.buf.split('\n');
-    entry.buf = lines.pop() ?? '';
+    entry.st.buf += d.toString();
+    const lines = entry.st.buf.split('\n');
+    entry.st.buf = lines.pop() ?? '';
     for (const line of lines) {
       if (!line.trim().startsWith('{')) continue;
-      let e: RawEvent;
-      try { e = JSON.parse(line) as RawEvent; } catch { continue; }
-      // A control_response answers our interrupt; it is protocol, not session
-      // content, and must not reach the failover classifier.
-      if ((e as { type?: string }).type === 'control_response') continue;
+      const { events, turnEnded, readyNow } = this.transport.ingest(entry.st, line);
+      // The handshake finished: send the prompt runOn had to hold back.
+      if (readyNow && entry.pendingPrompt !== undefined) {
+        const prompt = entry.pendingPrompt; entry.pendingPrompt = undefined;
+        entry.st.ext.ready = true;
+        if (!this.writeLine(entry, this.transport.userMessage(entry.st, entry.opts!, prompt))) {
+          this.destroy(entry); return;
+        }
+      }
       // Between turns the turn sink is gone, but the process can still be
       // working — a finishing background task wakes the model, and everything it
       // then does used to vanish: no activity, no UI, the conversation simply
@@ -293,9 +306,18 @@ export class PersistentTurns {
       // it to the panel. It deliberately does NOT reach the failover classifier,
       // which is scoped to a turn that has already ended.
       const sink = entry.sink ?? entry.idleSink;
-      try { sink?.(e); } catch { /* a sink must never break the stream */ }
+      // ONLY the pre-first-turn window is held. Once any turn has been wired,
+      // a between-turn event with no idle sink is dropped exactly as before --
+      // replaying it into the NEXT turn would hand that turn's classifier an
+      // event from a different one.
+      if (!entry.opts && !sink) {
+        entry.early.push(...events);
+        if (turnEnded) entry.endedEarly = true;
+        continue;
+      }
+      for (const e of events) { try { sink?.(e); } catch { /* a sink must never break the stream */ } }
       // The turn is over here, but the PROCESS is not — that is the point.
-      if ((e as { type?: string }).type === 'result') {
+      if (turnEnded) {
         entry.lastUsed = this.now();
         // stdin is FIFO, so results come back in the order the messages went
         // in: the first ones belong to the steers that were injected first.
@@ -335,15 +357,27 @@ export class PersistentTurns {
     // Refreshed each turn: the newest caller is the one whose UI is listening.
     if (o.onIdleEvent) entry.idleSink = o.onIdleEvent;
     const done = new Promise<TurnExit>((resolve) => { entry.finish = resolve; });
+    entry.opts = o;
 
-    try {
-      entry.child.stdin?.write(JSON.stringify({
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'text', text: o.prompt }] },
-      }) + '\n');
-    } catch (err) {
-      this.destroy(entry);
-      return deadHandle((err as Error).message);
+    if (entry.early.length) {
+      const held = entry.early; entry.early = [];
+      for (const e of held) { try { o.onEvent(e); } catch { /* never break */ } }
+    }
+    if (entry.endedEarly) {
+      // The handshake failed before the turn existed; there is nothing to send.
+      entry.endedEarly = false;
+      this.settleTurn(entry, { code: 0, signal: null });
+      return { kill: () => this.destroy(entry), interrupt: () => {}, done };
+    }
+
+    if (entry.st.ext.ready) {
+      if (!this.writeLine(entry, this.transport.userMessage(entry.st, o, o.prompt))) {
+        this.destroy(entry);
+        return deadHandle('persistent session stdin is closed');
+      }
+    } else {
+      // Handshake still running (Codex opening its thread); onData sends it.
+      entry.pendingPrompt = o.prompt;
     }
 
     return {
@@ -351,15 +385,7 @@ export class PersistentTurns {
       // usage limit and then resumes this session on ANOTHER account, which
       // cannot happen while the old process still holds the session.
       kill: () => this.destroy(entry),
-      interrupt: () => {
-        try {
-          entry.child.stdin?.write(JSON.stringify({
-            type: 'control_request',
-            request_id: `x056-int-${this.now()}`,
-            request: { subtype: 'interrupt' },
-          }) + '\n');
-        } catch { /* process already gone; close will settle the turn */ }
-      },
+      interrupt: () => { this.writeLine(entry, this.transport.interruptMessage(entry.st)); },
       done,
     };
   }

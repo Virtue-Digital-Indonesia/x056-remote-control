@@ -11,6 +11,7 @@ import { ProjectRegistry, type Project, type Conversation } from './projects.js'
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import { PersistentTurns } from '../src/persistent.js';
+import { CodexTransport } from '../src/persistent-codex.js';
 import type { TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
@@ -259,6 +260,13 @@ export class SessionManager {
     // cap below the number of conversations in play.
     maxSessions: Number(process.env.X056_PERSISTENT_MAX) || 6,
   });
+  /** Same pool mechanics over `codex app-server` (JSON-RPC) instead of stream-json. */
+  private readonly persistentCodex = process.env.X056_PERSISTENT === 'off' ? null : new PersistentTurns({
+    idleTtlMs: Number(process.env.X056_PERSISTENT_TTL_MS) || 30 * 60_000,
+    maxSessions: Number(process.env.X056_PERSISTENT_MAX) || 6,
+    transport: new CodexTransport(),
+  });
+  private pools(): PersistentTurns[] { return [this.persistent, this.persistentCodex].filter((p): p is PersistentTurns => !!p); }
   private sessionBusy(sessionId: string): boolean { return this.runs.has(sessionId); }
   private projectBusy(pid: string): boolean {
     for (const r of this.runs.values()) if (r.projectId === pid) return true;
@@ -310,7 +318,7 @@ export class SessionManager {
         for (const run of this.runs.values()) run.control?.abort();
         // Idle persistent processes have no run to abort, so they would outlive
         // the gateway as orphans across every container swap.
-        this.persistent?.shutdown();
+        for (const p of this.pools()) p.shutdown();
         process.exit(130);
       };
       process.on('SIGTERM', onTerm);
@@ -1661,10 +1669,9 @@ export class SessionManager {
         effort,
         appendSystemPrompt: CONTAINER_SYSTEM_NOTE,
         mcp: this.mcpWiringFor(pid, sessionId),
-        // Claude only: codex's CLI has no equivalent streaming-input mode, so it
-        // keeps the process-per-turn path.
-        startTurnFn: this.persistent && adapter.id === 'claude'
-          ? (o) => this.persistent!.startTurn({
+        // Each provider has a pool; the transport inside it speaks that CLI.
+        startTurnFn: (adapter.id === 'claude' ? this.persistent : adapter.id === 'codex' ? this.persistentCodex : null)
+          ? (o) => (adapter.id === 'claude' ? this.persistent! : this.persistentCodex!).startTurn({
             ...o,
             // Work that happens AFTER a turn ends — a background task finishing
             // wakes the model — still belongs to this conversation and must
@@ -1869,7 +1876,7 @@ export class SessionManager {
    *  conversation that is plainly working -- streaming tool calls into the view
    *  -- renders as idle, with no spinner and no way to stop it. */
   backgroundSessions(): { projectId: string; sessionId: string }[] {
-    const working = this.persistent?.workingSessions() ?? [];
+    const working = this.pools().flatMap((p) => p.workingSessions());
     if (!working.length) return [];
     const bg = new Set(working.filter((w) => !w.busy).map((w) => w.sessionId));
     if (!bg.size) return [];
@@ -1905,10 +1912,10 @@ export class SessionManager {
    * mean a separate credential, which is a bigger change than this.
    */
   steerSession(projectId: string, sessionId: string, text: string): boolean {
-    if (!this.persistent) return false;
+    if (!this.pools().length) return false;
     const conv = this.projects().conversations(projectId).find((c) => c.sessionId === sessionId);
     if (!conv) return false;
-    if (!this.persistent.injectMessage(sessionId, text)) return false;
+    if (!this.pools().some((p) => p.injectMessage(sessionId, text))) return false;
     // A steer is human-origin, so it resets the same counters a panel message
     // does -- otherwise steering an exhausted pair would leave the brakes on.
     this.clearSelfQueueStreak(sessionId);
@@ -1932,7 +1939,7 @@ export class SessionManager {
       // No turn, but the process may still be working: a background task woke
       // the model after `result`. Interrupt rather than kill, so the session
       // stays usable for the next message.
-      if (sessionId && this.persistent?.interruptSession(sessionId)) {
+      if (sessionId && this.pools().some((p) => p.interruptSession(sessionId))) {
         this.stopAutopilot(sessionId);
         return true;
       }
