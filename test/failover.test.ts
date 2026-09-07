@@ -475,3 +475,40 @@ describe('transient API overload (529) is retried, not reported as a dead turn',
     expect(recorded.length).toBe(1); // no retries
   });
 });
+
+describe('load balancing during retries and waiting', () => {
+  it('keeps overload retries on the same account under round robin', async () => {
+    const {registry,log}=fixtures();registry.setRouting('claude','round-robin',['a','b']);
+    const recorded:Recorded[]=[];
+    await runSession({...base,registry,log,overloadRetryDelayMs:1,startTurnFn:scriptTurnsExit([{events:[OVERLOADED],code:1},{events:[SUCCESS],code:0}],recorded)});
+    expect(recorded.map(r=>r.configDir)).toEqual(['/cfg/a','/cfg/a']);
+    expect(registry.peekActive(1)?.name).toBe('b');
+  });
+  it('automatically resumes the same account at reset without consuming failovers', async () => {
+    const {registry,log}=fixtures();registry.setRouting('claude','wait',['a','b']);
+    let now=1000;const recorded:Recorded[]=[];
+    const start=scriptTurns([[{...REJECTED,rate_limit_info:{status:'rejected',resetsAt:1000.03}}],[SUCCESS]],recorded);
+    const timer=setTimeout(()=>now=1001,15);
+    try {
+      const result=await runSession({...base,registry,log,now:()=>now,startTurnFn:start});
+      expect(result).toMatchObject({status:'completed',failovers:0});expect(recorded.map(r=>r.configDir)).toEqual(['/cfg/a','/cfg/a']);expect(recorded[1].mode).toBe('resume');
+    } finally {clearTimeout(timer);}
+  });
+  it('lets a manual account switch leave a reset wait and start the selected account', async () => {
+    const {registry,log}=fixtures();registry.setRouting('claude','wait',['a','b']);registry.markLimited('a',5000);
+    let control:RunControl|undefined;const recorded:Recorded[]=[];
+    const promise=runSession({...base,registry,log,now:()=>1000,control:c=>{control=c;},startTurnFn:scriptTurns([[SUCCESS]],recorded)});
+    registry.setActive('b');control!.forceSwitch({bench:false});
+    expect(await promise).toMatchObject({status:'completed',finalAccount:'b',failovers:0});expect(recorded.map(r=>r.configDir)).toEqual(['/cfg/b']);
+  });
+  it('parks when the requested provider has no accounts', async () => {
+    const {registry,log}=fixtures();
+    expect(await runSession({...base,registry,log,adapter:codexAdapter})).toMatchObject({status:'parked'});
+  });
+  it('allows Stop to cancel a wait immediately without starting an attempt', async () => {
+    const {registry,log}=fixtures();registry.setRouting('claude','wait',['a','b']);registry.markLimited('a',5000);
+    let control:RunControl|undefined,calls=0;
+    const promise=runSession({...base,registry,log,now:()=>1000,control:c=>{control=c;},startTurnFn:()=>{calls++;throw Error('Must not start');}});
+    control!.abort();expect(await promise).toMatchObject({status:'failed',reason:'Stopped by user.'});expect(calls).toBe(0);
+  });
+});

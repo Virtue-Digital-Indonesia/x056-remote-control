@@ -195,7 +195,9 @@ describe('panel wiring', () => {
   it('gives scheduled tasks its own icon, not the one "Resume a session" uses', () => {
     expect(html).toContain('id="i-alarm"');
     expect(html).toContain('id="cronBtn" title="Scheduled tasks"><svg class="ic"><use href="#i-alarm"/>');
-    expect(html).toContain("{ id: 'cronBtn', label: 'Scheduled tasks', icon: 'alarm' }");
+    const controls = readFileSync('design/panel-release/control-room.js', 'utf8');
+    expect(controls).toContain('id="crAutomationsTab"');
+    expect(controls).toMatch(/crAutomationsTab[^;\n]+ic\('alarm'\)/);
   });
 
   it('confirms a delete through the in-app modal, since native confirm() was replaced', () => {

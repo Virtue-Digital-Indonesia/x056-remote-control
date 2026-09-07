@@ -28,6 +28,10 @@ export interface Account {
   paused?: boolean;
 }
 
+export const ROUTING_STRATEGIES = ['sticky', 'priority', 'round-robin', 'least-busy', 'wait'] as const;
+export type RoutingStrategy = typeof ROUTING_STRATEGIES[number];
+export interface RoutingPolicy { strategy: RoutingStrategy; order: string[] }
+
 interface RegistryFile {
   // One "next up" pointer PER provider — a Claude session and a Codex session
   // each have their own active account. (Legacy files carry a single `active`
@@ -35,6 +39,9 @@ interface RegistryFile {
   activeByProvider: Partial<Record<ProviderId, string>>;
   accounts: Account[];
   autoSwitch?: Partial<Record<ProviderId, boolean>>;
+  routing?: Partial<Record<ProviderId, RoutingPolicy>>;
+  lastRouted?: Partial<Record<ProviderId, string>>;
+  manualNext?: Partial<Record<ProviderId, string>>;
   active?: string; // legacy single-provider pointer; read on load, never written
 }
 
@@ -151,32 +158,56 @@ export class AccountRegistry {
   /** Which account the next turn WOULD run on for a provider, without mutating
    *  the pointer — for showing "this prompt will use X" in the UI. Returns null
    *  when every account of that provider is currently limited/unauthenticated. */
-  peekActive(now: number, provider: ProviderId = 'claude'): Account | null {
-    const pool = this.ofProvider(provider);
-    if (pool.length === 0) return null;
-    const preferred = pool.find((a) => a.name === this.data.activeByProvider[provider]) ?? pool[0];
-    if (this.usable(preferred, now)) return structuredClone(preferred);
-    if (!this.automaticSwitching(provider)) return null;
-    const other = pool.find((a) => a.name !== preferred.name && this.usable(a, now));
-    return other ? structuredClone(other) : null;
+  routingPolicy(provider: ProviderId): RoutingPolicy {
+    const saved = this.data.routing?.[provider];
+    const names = this.ofProvider(provider).map(a => a.name);
+    const order = [...new Set([...(saved?.order || []), ...names])].filter(n => names.includes(n));
+    return { strategy: saved?.strategy || 'sticky', order };
   }
 
-  pickActive(now: number, provider: ProviderId = 'claude'): Account | null {
-    const pool = this.ofProvider(provider);
-    if (pool.length === 0) return null;
-    const preferred = pool.find((a) => a.name === this.data.activeByProvider[provider]) ?? pool[0];
-    if (this.usable(preferred, now)) return structuredClone(preferred);
-    if (!this.automaticSwitching(provider)) return null;
-    const other = pool.find((a) => a.name !== preferred.name && this.usable(a, now));
-    if (other) {
-      this.data.activeByProvider[provider] = other.name;
-      this.save();
-      return structuredClone(other);
+  setRouting(provider: ProviderId, strategy: RoutingStrategy, order: string[]): void {
+    const names = this.ofProvider(provider).map(a => a.name);
+    if (!ROUTING_STRATEGIES.includes(strategy)) throw new Error('Unknown routing strategy');
+    if (order.length !== names.length || new Set(order).size !== names.length || order.some(n => !names.includes(n))) {
+      throw new Error('Priority order must include every account for this provider exactly once');
     }
-    return null;
+    (this.data.routing ??= {})[provider] = { strategy, order: [...order] };
+    (this.data.autoSwitch ??= {})[provider] = strategy !== 'wait';
+    this.save();
   }
 
-  automaticSwitching(provider: ProviderId): boolean { return this.data.autoSwitch?.[provider] !== false; }
+  peekActive(now: number, provider: ProviderId = 'claude', busy: Record<string, number> = {}): Account | null {
+    const policy = this.routingPolicy(provider);
+    const pool = policy.order.map(n => this.find(n));
+    if (!pool.length) return null;
+    const manual = pool.find(a => a.name === this.data.manualNext?.[provider]);
+    if (manual && this.usable(manual, now)) return structuredClone(manual);
+    const preferred = pool.find(a => a.name === this.data.activeByProvider[provider]) || pool[0];
+    if (!this.automaticSwitching(provider)) return this.usable(preferred, now) ? structuredClone(preferred) : null;
+    let usable = pool.filter(a => this.usable(a, now));
+    if (policy.strategy === 'least-busy') usable.sort((a,b) => (busy[a.name] || 0) - (busy[b.name] || 0));
+    else if (policy.strategy === 'round-robin') {
+      const index = pool.findIndex(a => a.name === this.data.lastRouted?.[provider]);
+      const rotated = [...pool.slice(index + 1), ...pool.slice(0, index + 1)];
+      usable = rotated.filter(a => this.usable(a, now));
+    } else if (policy.strategy === 'sticky' && this.usable(preferred, now)) return structuredClone(preferred);
+    return usable[0] ? structuredClone(usable[0]) : null;
+  }
+
+  pickActive(now: number, provider: ProviderId = 'claude', busy: Record<string, number> = {}): Account | null {
+    const selected = this.peekActive(now, provider, busy);
+    if (selected) {
+      this.data.activeByProvider[provider] = selected.name;
+      (this.data.lastRouted ??= {})[provider] = selected.name;
+      if (this.data.manualNext) delete this.data.manualNext[provider];
+      this.save();
+    }
+    return selected;
+  }
+
+  automaticSwitching(provider: ProviderId): boolean {
+    return this.routingPolicy(provider).strategy !== 'wait' && this.data.autoSwitch?.[provider] !== false;
+  }
 
   setAutomaticSwitching(provider: ProviderId, enabled: boolean): void {
     (this.data.autoSwitch ??= {})[provider] = enabled;
@@ -206,6 +237,7 @@ export class AccountRegistry {
     const acct = this.find(name);
     if (acct.paused) throw new Error('resume this account before selecting it');
     this.data.activeByProvider[acct.provider] = name;
+    (this.data.manualNext ??= {})[acct.provider] = name;
     this.save();
   }
 
@@ -242,7 +274,7 @@ export class AccountRegistry {
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
     // Persist only the current-shape fields (drop any legacy `active`).
-    const out: RegistryFile = { activeByProvider: this.data.activeByProvider, accounts: this.data.accounts, autoSwitch: this.data.autoSwitch };
+    const out: RegistryFile = { activeByProvider: this.data.activeByProvider, accounts: this.data.accounts, autoSwitch: this.data.autoSwitch, routing: this.data.routing, lastRouted: this.data.lastRouted, manualNext: this.data.manualNext };
     writeFileSync(tmp, JSON.stringify(out, null, 2));
     renameSync(tmp, this.file);
   }

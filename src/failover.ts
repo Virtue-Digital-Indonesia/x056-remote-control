@@ -27,6 +27,7 @@ export interface SessionResult {
 export interface RunSessionOptions {
   registry: AccountRegistry;
   analytics?: AccountAnalytics;
+  accountLoads?: () => Record<string, number>;
   log: EventLog;
   sessionId: string;
   cwd: string;
@@ -104,6 +105,9 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   let cliSessionId: string | undefined = adapter.captureSessionId
     ? (opts.resume ? (opts.providerSessionId ?? opts.sessionId) : undefined)
     : opts.sessionId;
+  let aborted = false, wakeWait: (() => void) | undefined;
+  let retryAccount: string | undefined;
+  let waitingUntil = 0;
   let forceSwitchRequested = false;
   let forceBench = true; // whether the account being left is benched on the pending forced switch
   let currentHandle: TurnHandle | undefined;
@@ -121,18 +125,34 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   }
   opts.control?.({
     forceSwitch: (o) => {
-      forceSwitchRequested = true;
+      forceSwitchRequested = !wakeWait;
+      wakeWait?.();
       if (o && o.bench === false) forceBench = false;
     },
     abort: () => {
+      aborted = true; wakeWait?.();
       currentHandle?.kill();
     },
   });
 
   try {
     for (;;) {
-      const account = registry.pickActive(now(), adapter.id);
+      if (aborted) return { status: 'failed', failovers: failoverTimes.length, reason: 'Stopped by user.', providerSessionId: cliSessionId };
+      const account = retryAccount ? registry.get(retryAccount) : registry.pickActive(now(), adapter.id, opts.accountLoads?.());
+      retryAccount = undefined;
       if (!account) {
+        const preferred = registry.list().find(a => a.provider === adapter.id && a.name === registry.activeName(adapter.id));
+        if (registry.routingPolicy(adapter.id).strategy === 'wait' && preferred && !preferred.paused && preferred.state.kind === 'limited' && preferred.state.until > now()) {
+          if (waitingUntil !== preferred.state.until) {
+            waitingUntil = preferred.state.until;
+            log.append({ type: 'waiting_for_reset', sessionId, account: preferred.name, until: waitingUntil });
+          }
+          await new Promise<void>(resolve => {
+            const timer = setTimeout(() => { wakeWait = undefined; resolve(); }, Math.min(30000, Math.max(1, (waitingUntil - now()) * 1000)));
+            wakeWait = () => { clearTimeout(timer); wakeWait = undefined; resolve(); };
+          });
+          continue;
+        }
         const until = registry.earliestReset(adapter.id);
         log.append({ type: 'parked', sessionId, until });
         return { status: 'parked', parkedUntil: until, failovers: failoverTimes.length };
@@ -301,6 +321,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // reporting a failure the user has to notice and resend by hand.
         if (state.overloaded && overloadRetries < maxOverloadRetries) {
           overloadRetries++;
+          retryAccount = account.name;
           log.append({ type: 'api_overloaded_retry', sessionId, account: account.name, attempt: overloadRetries });
           await sleep(overloadRetryDelayMs * overloadRetries); // linear backoff
           mode = 'resume';
@@ -353,6 +374,10 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // backed by an Anthropic-reported reset time). A user-directed switch to a
         // specific account (bench:false) leaves the old one available to return to.
         registry.markLimited(account.name, now() + FORCED_COOLDOWN, true);
+      }
+      if (!state.forced && state.limited && registry.routingPolicy(adapter.id).strategy === 'wait') {
+        mode = 'resume'; prompt = adapter.continuePrompt;
+        continue;
       }
       if (!state.forced && !registry.automaticSwitching(adapter.id)) {
         log.append({ type: 'parked', sessionId, account: account.name, reason: 'automatic switching disabled' });

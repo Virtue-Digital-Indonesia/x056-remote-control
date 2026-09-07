@@ -11,7 +11,7 @@ import { ApiController } from '../server/api.controller.js';
 // three dependencies this endpoint never touches.
 function controller(stateDir: string): ApiController {
   return new ApiController(
-    {} as never, // SessionManager — unused by accounts()
+    { accountLoads: () => ({}) } as never, // No active turns in this fixture
     stateDir,
     {} as never, // PushService
     {} as never, // WebAuthnService

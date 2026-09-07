@@ -363,6 +363,17 @@ describe('account dashboard API', () => {
     expect(await (await fetch(base+'/api/accounts/routing',{headers:auth})).json()).toMatchObject({autoSwitch:{claude:false,codex:true}});
     await set(true);
   });
+  it('validates routing policies atomically and reports the selected policy', async () => {
+    const get=async()=> (await fetch(base+'/api/accounts/routing',{headers:auth})).json();
+    const post=(body:unknown)=>fetch(base+'/api/accounts/routing',{method:'POST',headers:auth,body:JSON.stringify(body)});
+    const before=await get();
+    for(const body of [{provider:'claude',strategy:'random'},{provider:'claude',order:['missing']},{provider:'claude',order:'a'},{provider:'claude',strategy:'wait',enabled:true}]) expect((await post(body)).status).toBe(400);
+    expect(await get()).toEqual(before);
+    const order=before.policies.claude.order;
+    expect((await post({provider:'claude',strategy:'least-busy',order:[...order].reverse()})).status).toBe(200);
+    expect(await get()).toMatchObject({policies:{claude:{strategy:'least-busy',order:[...order].reverse()}}});
+    await post({provider:'claude',...before.policies.claude});
+  });
   it('pauses future attempts without corrupting the provider state', async () => {
     const pause=async(paused:boolean)=>fetch(base+'/api/accounts/paused',{method:'POST',headers:auth,body:JSON.stringify({name:'a',paused})});
     expect((await pause(true)).status).toBe(200);

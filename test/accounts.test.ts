@@ -252,3 +252,35 @@ describe('EventLog', () => {
     expect(log.read()).toEqual([]);
   });
 });
+
+describe('provider routing policies', () => {
+  function fleet() {
+    return AccountRegistry.init(freshFile(),[{name:'a',configDir:'a'},{name:'b',configDir:'b'},{name:'c',configDir:'c'},{name:'g',configDir:'g',provider:'codex'}]);
+  }
+  it('follows priority and skips paused, limited, and unauthenticated accounts', () => {
+    const reg=fleet();reg.setRouting('claude','priority',['c','b','a']);
+    expect(reg.pickActive(1)?.name).toBe('c');reg.markLimited('c',100);
+    expect(reg.pickActive(1)?.name).toBe('b');reg.setPaused('b',true);
+    expect(reg.pickActive(1)?.name).toBe('a');reg.markUnauthenticated('a');
+    expect(reg.pickActive(1)).toBeNull();expect(reg.pickActive(101)?.name).toBe('c');expect(reg.pickActive(1,'codex')?.name).toBe('g');
+  });
+  it('rotates once per selection, keeps previews read-only, and consumes manual override once', () => {
+    const reg=fleet();reg.setRouting('claude','round-robin',['a','b','c']);
+    expect(reg.peekActive(1)?.name).toBe('a');expect(reg.peekActive(1)?.name).toBe('a');
+    expect(reg.pickActive(1)?.name).toBe('a');expect(reg.pickActive(1)?.name).toBe('b');
+    reg.setActive('a');expect(reg.peekActive(1)?.name).toBe('a');expect(reg.pickActive(1)?.name).toBe('a');
+    expect(reg.pickActive(1)?.name).toBe('b');reg.markLimited('c',100);expect(reg.pickActive(1)?.name).toBe('a');
+  });
+  it('chooses fewest active turns and breaks ties by priority', () => {
+    const reg=fleet();reg.setRouting('claude','least-busy',['c','b','a']);
+    expect(reg.pickActive(1,'claude',{a:2,b:1,c:3})?.name).toBe('b');
+    expect(reg.pickActive(1,'claude',{a:1,b:1,c:1})?.name).toBe('c');
+    reg.setPaused('c',true);expect(reg.pickActive(1,'claude',{a:0,b:0})?.name).toBe('b');
+  });
+  it('waits for the selected account even when another is free; validates complete provider order', () => {
+    const reg=fleet();reg.setRouting('claude','wait',['a','b','c']);reg.markLimited('a',100);
+    expect(reg.pickActive(1)).toBeNull();expect(reg.pickActive(101)?.name).toBe('a');
+    for(const order of [['a','a','c'],['a','b'],['a','b','g']]) expect(()=>reg.setRouting('claude','priority',order)).toThrow();
+    expect(reg.routingPolicy('claude')).toEqual({strategy:'wait',order:['a','b','c']});
+  });
+});

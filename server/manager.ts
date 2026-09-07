@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
-import { AccountRegistry } from '../src/accounts.js';
+import { AccountRegistry, type RoutingStrategy } from '../src/accounts.js';
 import { shareCodexSessions } from './codex-sessions.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
@@ -1670,7 +1670,7 @@ export class SessionManager {
       const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => {
         // Track which account this turn is on (updated on start + each failover),
         // so a targeted force-switch can tell "same account" from "different".
-        if (k === 'supervisor' && d && d.type === 'turn_started' && typeof d.account === 'string') run.account = d.account;
+        if (k === 'supervisor' && d && d.type === 'turn_started' && typeof d.account === 'string') { run.account = d.account; this.emitAccounts(); }
         emit(k, d);
       });
       let stateSaved = resume;
@@ -1694,6 +1694,7 @@ export class SessionManager {
       emit('turn_state', { active: true });
       void runFn({
         registry: this.registry(),
+        accountLoads: () => this.accountLoads(sessionId),
         analytics: new AccountAnalytics(this.opts.stateDir),
         log,
         sessionId,
@@ -1776,6 +1777,7 @@ export class SessionManager {
         })
         .finally(() => {
           this.runs.delete(sessionId);
+          this.emitAccounts();
           this.clearMarker(sessionId);
           emit('turn_state', { active: false });
         });
@@ -1860,7 +1862,7 @@ export class SessionManager {
 
   accountRouting() {
     const reg = this.registry();
-    return { autoSwitch: { claude: reg.automaticSwitching('claude'), codex: reg.automaticSwitching('codex') } };
+    return { autoSwitch: { claude: reg.automaticSwitching('claude'), codex: reg.automaticSwitching('codex') }, policies: { claude: reg.routingPolicy('claude'), codex: reg.routingPolicy('codex') }, loads: this.accountLoads() };
   }
 
   setAccountPaused(name: string, paused: boolean): void {
@@ -1871,8 +1873,19 @@ export class SessionManager {
     this.registry().setLabel(name, label); this.emitAccounts();
   }
 
-  setAccountRouting(provider: ProviderId, enabled: boolean): void {
-    this.registry().setAutomaticSwitching(provider, enabled); this.emitAccounts();
+  accountLoads(excludeSession?: string): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const run of this.runs.values()) if (run.account && run.sessionId !== excludeSession) counts[run.account] = (counts[run.account] || 0) + 1;
+    return counts;
+  }
+
+  setAccountRouting(provider: ProviderId, enabled?: boolean, strategy?: RoutingStrategy, order?: string[]): void {
+    const reg = this.registry();
+    if (strategy !== undefined || order !== undefined) {
+      const current = reg.routingPolicy(provider);
+      reg.setRouting(provider, strategy ?? current.strategy, order ?? current.order);
+    } else if (enabled !== undefined) reg.setAutomaticSwitching(provider, enabled);
+    this.emitAccounts();
   }
 
   /** Choose the account the NEXT turn will run on (idle). Sets the registry's

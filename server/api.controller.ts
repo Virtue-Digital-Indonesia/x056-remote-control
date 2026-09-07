@@ -17,7 +17,7 @@ import {
 import type { Request, Response } from 'express';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { AccountRegistry } from '../src/accounts.js';
+import { AccountRegistry, ROUTING_STRATEGIES, type RoutingStrategy } from '../src/accounts.js';
 import { UsageRateLimitedError } from '../src/quota.js';
 import { CODEGRAPH, CodegraphClient } from './codegraph.js';
 import { MEMORY_WRITER, MemoryWriter } from './memories.js';
@@ -955,7 +955,7 @@ export class ApiController {
     // and match each account against its own provider's pointer.
     const nowSec = Math.floor(Date.now() / 1000);
     const providers = [...new Set(registry.list().map((a) => a.provider))];
-    const nextUpByProvider = new Map(providers.map((p) => [p, registry.peekActive(nowSec, p)?.name ?? null]));
+    const nextUpByProvider = new Map(providers.map((p) => [p, registry.peekActive(nowSec, p, this.manager.accountLoads())?.name ?? null]));
     const activeByProvider = new Map(providers.map((p) => [p, registry.activeName(p)]));
     return Promise.all(
       registry.list().map(async (acct) => {
@@ -1022,9 +1022,15 @@ export class ApiController {
 
   @Post('accounts/routing')
   @HttpCode(200)
-  setAccountRouting(@Body() body: { provider?: string; enabled?: boolean }) {
-    if (!body || !['claude', 'codex'].includes(body.provider || '') || typeof body.enabled !== 'boolean') throw new BadRequestException('provider and enabled required');
-    this.manager.setAccountRouting(body.provider as ProviderId, body.enabled);
+  setAccountRouting(@Body() body: { provider?: string; enabled?: boolean; strategy?: RoutingStrategy; order?: string[] }) {
+    if (!body || !['claude', 'codex'].includes(body.provider || '')) throw new BadRequestException('Unknown provider');
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new BadRequestException('enabled must be boolean');
+    if (body.strategy !== undefined && !ROUTING_STRATEGIES.includes(body.strategy)) throw new BadRequestException('Unknown routing strategy');
+    if (body.order !== undefined && (!Array.isArray(body.order) || body.order.some(n => typeof n !== 'string'))) throw new BadRequestException('order must be an account list');
+    if (body.enabled === undefined && body.strategy === undefined && body.order === undefined) throw new BadRequestException('Routing preference required');
+    if (body.enabled !== undefined && (body.strategy !== undefined || body.order !== undefined)) throw new BadRequestException('Send a policy or an automatic-switch setting, not both');
+    try { this.manager.setAccountRouting(body.provider as ProviderId, body.enabled, body.strategy, body.order); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
     return this.manager.accountRouting();
   }
 
