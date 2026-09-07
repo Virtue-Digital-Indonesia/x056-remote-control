@@ -1,7 +1,7 @@
-# Staged panel improvements
+# Panel navigation and account controls
 
-These files are ready for review in an isolated gateway. They are not published.
-The user requires explicit authorization before deployment because a gateway restart interrupts running tasks.
+The user authorized publication on September 7, 2026.
+This release promotes these reviewed files to `server/public/` and deploys the matching backend.
 
 The project sidebar now has stable colors, search, conversation counts, and activity indicators.
 Selecting a project filters the conversation list and sets the destination for new conversations.
@@ -44,10 +44,10 @@ Verification passed: 613 tests across 47 files, typechecking, and both browser s
 Browser coverage includes display modes, conversation state, dismissal across tabs, account switching, and widths from 320 to 1440 pixels.
 The `screenshots/` directory contains fixture captures of the sidebar, composer, and account picker.
 
-## Publication after authorization
+## Publication
 
-The three staged UI files replace their namesakes under `server/public/`.
-Check `sha256sum -c design/panel-next/BASE.sha256` first and merge any intervening live edits.
-Those public files are served directly; copying them publishes the UI.
-The dismissal endpoint and running-account snapshot also need the backend deployment.
-No deployment request has been created for this change.
+The three UI files match their namesakes under `server/public/` for this release.
+`BASE.sha256` records the previous version; verification found no intervening live edits before promotion.
+Future development should start from `server/public/` to retain later changes.
+The dismissal endpoint and running-account snapshot ship in the backend deployment.
+Deployment still requires explicit user authorization because a restart interrupts running tasks.

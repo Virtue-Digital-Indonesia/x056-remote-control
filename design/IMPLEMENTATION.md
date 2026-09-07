@@ -4,10 +4,12 @@ The working panel at https://x056.rc.val.id/ now has the approved Control room a
 
 **Implemented behavior**
 
-- The Control room groups conversations into In progress, Needs attention, and Finished & idle. Cards use real project, conversation, question, and activity data. Search, project filters, and unread filters narrow the board.
+- The Control room has a searchable project sidebar with stable colors. Compact rows group conversations into Needs attention, In progress, and Recent conversations. Search and status filters narrow the list. Recent conversations expand on demand.
+- Dismiss clears a pending question without sending a reply or starting a turn. The gateway saves dismissals and updates other tabs. Question timestamps protect newer questions from stale clicks.
 - Display settings save the first-open preference and maximized presentation on this device. Defaults are a side panel and full-page Focus. The large modal has no navigation rail.
 - The same conversation engine handles each layout. Messages, streaming, drafts, attachments, model, effort, and reading position survive view changes.
-- Accounts shows real identities, provider usage windows, reset times, and stale readings. Controls select the next account, pause future attempts, and configure automatic switching per provider. Existing login, removal, and running-turn controls remain available under Manage.
+- The composer shows the running and next accounts. Use next sets the provider's preference for future attempts. Switch this turn resumes the current turn on the selected account.
+- Accounts shows real identities, provider usage windows, reset times, and stale readings. Controls select the next account, pause future attempts, and configure automatic switching per provider. Existing login and removal controls remain available under Manage.
 - Analytics provides daily activity, model token totals, provider/date filters, and CSV export. Collection begins with this release. The dashboard states its coverage.
 
 **Usage coverage**

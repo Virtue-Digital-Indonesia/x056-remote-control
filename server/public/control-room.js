@@ -16,9 +16,17 @@ window.createControlRoom = function (engine) {
   main.querySelector('.topbar').insertAdjacentHTML('beforeend', `${iconButton('chatDisplay','gear','Display settings')}${iconButton('chatTheme','moon','Change theme')}${iconButton('chatMax','expand','Maximize conversation')}${iconButton('chatClose','x','Close conversation')}`);
   const shell = document.createElement('section'); shell.id = 'controlRoom'; shell.setAttribute('aria-label', 'Control room');
   shell.innerHTML = `<header class="cr-top"><button class="cr-logo" id="crHome">x0<span>x056</span></button><nav aria-label="Main navigation"><button id="crBoardTab" aria-current="page">Control room</button><button id="crAccountsTab">Accounts</button></nav><span class="sp"></span><span id="crConnection" class="cr-connection">Connecting</span>${iconButton('crProjects','folder','Projects')}${iconButton('crTheme','moon','Change theme')}${iconButton('crSettings','gear','Display settings')}${iconButton('crMore','more','More controls')}</header>
-  <div id="crBoard" class="cr-page"><div class="cr-heading"><div><div class="cr-eyebrow">YOUR WORKSPACE</div><h1>Control room</h1><p>Keep an eye on the work. Step in where you’re needed.</p></div><button class="cr-primary" id="crNew">${ic('plus')} New conversation</button></div><div id="crStats" class="cr-stats"></div><div class="cr-tools"><div class="cr-tabs" role="group" aria-label="Conversation filter"><button data-filter="all" class="selected">All conversations</button><button data-filter="unread">Unread</button><button data-filter="active">Active</button></div><label class="cr-search">${ic('search')}<input id="crSearch" type="search" placeholder="Search conversations…" aria-label="Search conversations" /></label><select id="crProjectFilter" aria-label="Filter by project"><option value="">All projects</option></select></div><div id="crBoardError" role="status"></div><div class="cr-board" id="crLanes"></div></div>
+  <div id="crBoard" class="cr-page"><div class="cr-heading"><div><div class="cr-eyebrow">CONVERSATIONS</div><h1 id="crScopeTitle">All projects</h1><p id="crScopeSubtitle">Conversations across your workspace</p></div><button class="cr-primary" id="crNew">${ic('plus')} New conversation</button></div><div id="crStats" class="cr-stats"></div><div class="cr-tools"><div class="cr-tabs" role="group" aria-label="Conversation filter"><button data-filter="all" class="selected">All conversations</button><button data-filter="question">Needs input</button><button data-filter="active">Running</button><button data-filter="unread">Unread</button></div><label class="cr-search">${ic('search')}<input id="crSearch" type="search" placeholder="Search conversations…" aria-label="Search conversations" /></label><select id="crProjectFilter" aria-label="Filter by project"><option value="">All projects</option></select></div><div id="crBoardError" role="status"></div><div class="cr-board" id="crLanes"></div></div>
   <div id="crAccounts" class="cr-page" hidden></div><div id="crToast" role="status" hidden></div>`;
   document.body.prepend(shell);
+  const workspace = document.createElement('div'); workspace.id = 'crWorkspace';
+  $('crBoard').before(workspace);
+  workspace.innerHTML = `<nav id="crProjectNav" aria-label="Projects"><header><span>Projects</span>${iconButton('crAddProject','plus','Add project')}</header><label class="cr-project-search">${ic('search')}<input id="crProjectSearch" type="search" aria-label="Find a project" placeholder="Find a project" /></label><div id="crProjectLinks"></div><button id="crManageProjects" class="cr-project-manage">${ic('folder')} Manage projects</button></nav>`;
+  workspace.append($('crBoard'));
+  const projectVeil = document.createElement('div'); projectVeil.id='crProjectVeil'; projectVeil.hidden=true; shell.append(projectVeil);
+  // Account selection stays next to the composer, in every presentation mode.
+  content.querySelector('.composer').insertAdjacentHTML('beforeend', '<button id="sendAccountChip" class="send-account-chip" aria-haspopup="dialog"></button>');
+  const sendAccounts = document.createElement('dialog'); sendAccounts.id='sendAccountPicker'; sendAccounts.className='cr-dialog'; document.body.append(sendAccounts);
   const veil = document.createElement('div'); veil.id = 'chatVeil'; veil.hidden = true; document.body.append(veil);
   const preferences = document.createElement('dialog'); preferences.id = 'displayPreferences'; preferences.className = 'cr-dialog';
   preferences.innerHTML = `<form method="dialog"><header><h2>Make yourself at home</h2><button class="cr-icon" aria-label="Close settings" value="close">${ic('x')}</button></header><p>Choose how conversations open on this device.</p><fieldset><legend>Open conversations in</legend><div class="cr-options"><label><input type="radio" name="open" value="side"><span>${ic('menu')}<strong>Side panel</strong><small>Keep the Control room in view</small></span></label><label><input type="radio" name="open" value="max"><span>${ic('expand')}<strong>Maximized</strong><small>Give the conversation more space</small></span></label></div></fieldset><fieldset><legend>When maximized</legend><div class="cr-options"><label><input type="radio" name="maximize" value="page"><span>${ic('expand')}<strong>Full page</strong><small>Fill the app with Focus mode</small></span></label><label><input type="radio" name="maximize" value="modal"><span>${ic('snippet')}<strong>Large modal</strong><small>A centered chat without a sidebar</small></span></label></div></fieldset><footer><small>Saved automatically on this device.</small><button class="cr-primary">Done</button></footer></form>`;
@@ -26,6 +34,8 @@ window.createControlRoom = function (engine) {
   let prefs = { open: 'side', maximize: 'page' };
   try { const saved = JSON.parse(localStorage.getItem('x056_display_preferences') || localStorage.getItem('x056_draft_chat_preferences_v1') || '{}'); if (['side','max','maximized'].includes(saved.open)) prefs.open = saved.open === 'maximized' ? 'max' : saved.open; if (['page','modal'].includes(saved.maximize)) prefs.maximize = saved.maximize; } catch {}
   const sectionScroll = {board:0,accounts:0};
+  let recentLimit=10, selectedProject='', projectNavSignature='', sendAccountSignature='';
+  try { selectedProject=localStorage.getItem('x056_project_scope') || ''; } catch {}
   let mode = 'closed', section = 'board', boardFilter = 'all', renderTimer, accountTimer, returnFocus;
   let boardSignature = '', accountSignature = '', analytics = null, routing = null, analyticsError = '', requestVersion = 0;
   const outcomes = new Map();
@@ -61,7 +71,7 @@ window.createControlRoom = function (engine) {
   }
   function open() { if (mode === 'closed') { returnFocus = document.activeElement; setMode(prefs.open === 'side' ? 'side' : prefs.maximize); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
   function close() { engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
-  function showSection(next) { sectionScroll[section] = shell.scrollTop; close(); engine.nav(false); section = next; $('crBoard').hidden = next !== 'board'; $('crAccounts').hidden = next !== 'accounts'; ['Board','Accounts'].forEach(x => $('cr' + x + 'Tab').setAttribute('aria-current', next === x.toLowerCase() ? 'page' : 'false')); if (next === 'accounts') { renderAccountsPage(); loadAnalytics(); engine.pollAccounts(); } else refresh(); shell.scrollTop = sectionScroll[next]; }
+  function showSection(next) { sectionScroll[section] = (section==='board' ? $('crBoard') : $('crAccounts')).scrollTop; close(); engine.nav(false); section = next; workspace.hidden=next!=='board'; projectNav(false); $('crBoard').hidden = next !== 'board'; $('crAccounts').hidden = next !== 'accounts'; ['Board','Accounts'].forEach(x => $('cr' + x + 'Tab').setAttribute('aria-current', next === x.toLowerCase() ? 'page' : 'false')); if (next === 'accounts') { renderAccountsPage(); loadAnalytics(); engine.pollAccounts(); } else refresh(); (next==='board' ? $('crBoard') : $('crAccounts')).scrollTop = sectionScroll[next]; }
   function settings() { engine.closePops(); for (const name of ['open','maximize']) preferences.querySelector(`input[name="${name}"][value="${prefs[name]}"]`).checked = true; preferences.showModal(); }
   preferences.addEventListener('change', e => { if (!['open','maximize'].includes(e.target.name)) return; prefs[e.target.name] = e.target.value; try { localStorage.setItem('x056_display_preferences', JSON.stringify(prefs)); } catch { toast('This browser could not save display settings.'); } if (['page','modal'].includes(mode)) setMode(prefs.maximize); });
   const on = (id, fn) => $(id).addEventListener('click', fn);
@@ -69,17 +79,28 @@ window.createControlRoom = function (engine) {
   ['crTheme','chatTheme'].forEach(id => on(id, () => $('themeBtn').click()));
   ['crAccountsTab','focusAccounts'].forEach(id => on(id, () => showSection('accounts')));
   ['crHome','crBoardTab','focusHome','focusBack'].forEach(id => on(id, () => showSection('board')));
-  on('crProjects', () => engine.nav(!document.body.classList.contains('nav-open')));
+  on('crProjects', () => { if (section!=='board') showSection('board'); projectNav(!shell.classList.contains('projects-open')); });
+  on('crAddProject',()=>{projectNav(false);$('addProjectBtn').click();});
+  on('crManageProjects',()=>{projectNav(false);engine.nav(true);});
+  $('crProjectSearch').addEventListener('input',()=>renderProjectNav(cards(),engine.state()));
+  projectVeil.addEventListener('click',()=>projectNav(false));
+  on('sendAccountChip',()=>{renderSendAccounts(true);sendAccounts.showModal();});
   on('crMore', () => $('moreBtn').click()); on('focusSearch', () => $('searchChatsBtn').click());
-  ['crNew','focusNew'].forEach(id => on(id, () => { engine.newConversation(); open(); }));
+  ['crNew','focusNew'].forEach(id => on(id, () => { engine.newConversation(selectedProject); open(); }));
   on('chatClose', close); on('chatMax', () => setMode(mode === 'side' ? prefs.maximize : 'side'));
   veil.addEventListener('click', close);
   $('acctChip').addEventListener('click', e => { e.stopImmediatePropagation(); engine.closePops(); showSection('accounts'); }, true);
-  $('crSearch').addEventListener('input', () => renderBoard());
-  $('crProjectFilter').addEventListener('change', () => renderBoard());
-  shell.querySelectorAll('[data-filter]').forEach(b => b.addEventListener('click', () => { boardFilter = b.dataset.filter; shell.querySelectorAll('[data-filter]').forEach(x => x.classList.toggle('selected', x === b)); renderBoard(); }));
+  $('crSearch').addEventListener('input', () => {recentLimit=10;renderBoard();});
+  $('crProjectFilter').addEventListener('change', () => selectProjectScope($('crProjectFilter').value));
+  shell.querySelectorAll('[data-filter]').forEach(b => b.addEventListener('click', () => { recentLimit=10;boardFilter = b.dataset.filter; shell.querySelectorAll('[data-filter]').forEach(x => x.classList.toggle('selected', x === b)); renderBoard(); }));
   document.addEventListener('keydown', e => {
     if (e.defaultPrevented || document.querySelector('dialog[open],.ui-veil,.palette-veil') || !document.querySelector('#backdrop').hidden || document.body.classList.contains('nav-open')) return;
+    if (e.key === 'Escape' && shell.classList.contains('projects-open')) { e.preventDefault();projectNav(false);$('crProjects').focus();return; }
+    if (e.key === 'Tab' && shell.classList.contains('projects-open') && innerWidth<=850) {
+      const nodes=[$('crProjects'),...$('crProjectNav').querySelectorAll('button,input')].filter(n=>!n.disabled),first=nodes[0],last=nodes[nodes.length-1];
+      if(e.shiftKey&&(document.activeElement===first||!nodes.includes(document.activeElement))){e.preventDefault();last.focus();}
+      else if(!e.shiftKey&&(document.activeElement===last||!nodes.includes(document.activeElement))){e.preventDefault();first.focus();}
+    }
     if (e.key === 'Escape' && mode !== 'closed') { e.preventDefault(); close(); }
     if (e.key === 'Tab' && mode === 'modal') { const nodes = [...main.querySelectorAll('button,input,textarea,select,[tabindex="0"],a[href]')].filter(n => n.offsetParent && !n.disabled && !n.hidden); const first = nodes[0], last = nodes[nodes.length-1]; if (e.shiftKey && (document.activeElement === first || !main.contains(document.activeElement))) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
   });
@@ -96,18 +117,81 @@ window.createControlRoom = function (engine) {
     return out.sort((a,b) => (Number(new Date(b.time)) || 0) - (Number(new Date(a.time)) || 0));
   }
   const statusLabels = { question:'Needs input', running:'Running', background:'Background work', failed:'Failed', parked:'Parked', finished:'Finished', idle:'Idle' };
+  const projectColors = ['#6d77d5','#3a9a82','#bd8260','#9d70bf','#ba6583','#648cae','#a29249','#6195a0'];
+  function projectColor(id) { let h=0;for(const c of id) h=(h*31+c.charCodeAt(0))>>>0;return projectColors[h%projectColors.length]; }
+  function projectNav(open) {
+    const narrow=innerWidth<=850;
+    $('crBoard').inert=open&&narrow;
+    $('crProjectNav').inert=!open&&narrow;
+    $('crProjects').setAttribute('aria-expanded',String(open||!narrow));
+    shell.classList.toggle('projects-open',open);projectVeil.hidden=!open||!narrow;
+    if(open) $('crProjectSearch').focus();
+  }
+  window.addEventListener('resize',()=>projectNav(false));
+  function selectProjectScope(id) {
+    selectedProject=id;recentLimit=10;try{localStorage.setItem('x056_project_scope',id);}catch{}
+    projectNav(false);$('crBoard').scrollTop=0;renderBoard();
+    $('crScopeTitle').tabIndex=-1;$('crScopeTitle').focus({preventScroll:true});
+  }
+  function renderProjectNav(all,state) {
+    document.querySelectorAll('#projectList .proj[data-id]').forEach(row=>row.style.setProperty('--project-color',projectColor(row.dataset.id)));
+    const query=$('crProjectSearch').value.toLowerCase();
+    const html=`<button class="cr-project-link ${!selectedProject?'selected':''}" data-scope="" aria-current="${!selectedProject?'page':'false'}">${ic('menu')}<span>All projects</span><small>${all.length}</small></button><div class="cr-project-separator"></div>`+state.projects.filter(p=>p.name.toLowerCase().includes(query)).map(p=>{
+      const rows=all.filter(x=>x.p.id===p.id), attention=rows.filter(x=>['question','failed','parked'].includes(x.status)).length, running=rows.filter(x=>['running','background'].includes(x.status)).length;
+      return `<button class="cr-project-link ${p.id===selectedProject?'selected':''}" data-scope="${esc(p.id)}" aria-current="${p.id===selectedProject?'page':'false'}" title="${esc(p.name)}"><i class="cr-project-color" style="--project-color:${projectColor(p.id)}"></i><span>${esc(p.name)}</span>${attention?`<small class="attention" title="${attention} need attention">${attention}</small>`:running?`<small class="working" title="${running} running">${running}</small>`:`<small>${rows.length}</small>`}</button>`;
+    }).join('');
+    if(html!==projectNavSignature){projectNavSignature=html;$('crProjectLinks').innerHTML=html;$('crProjectLinks').querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>selectProjectScope(b.dataset.scope));}
+  }
+  function relativeDate(value) { const d=new Date(value), elapsed=Date.now()-d.getTime();if(isNaN(d))return '';if(elapsed<60000)return 'Just now';if(elapsed<3600000)return Math.floor(elapsed/60000)+'m ago';if(elapsed<86400000)return Math.floor(elapsed/3600000)+'h ago';return d.toLocaleDateString(undefined,{month:'short',day:'numeric'}); }
+  async function openConversation(button) {
+    button.disabled=true;
+    try {rememberPosition();await engine.select(button.dataset.project,button.dataset.session);engine.markRead();open();restorePosition();renderSendAccounts();}
+    catch(e){toast(e.message);}finally{if(button.isConnected)button.disabled=false;}
+  }
+  function conversationRow(x) {
+    return `<article class="cr-conversation-row ${x.status}" data-row="${esc(x.c.sessionId)}"><button class="cr-task" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span class="cr-row-copy"><span class="cr-row-title">${esc(x.c.title||'Conversation')}${x.unread?'<i class="cr-unread-dot" title="Unread"></i>':''}</span><span class="cr-row-subtitle">${esc(selectedProject ? (x.label || (x.c.provider==='codex'?'ChatGPT':'Claude')) : x.p.name+(x.label?' · '+x.label:''))}</span></span><span class="cr-status ${x.status}"><i></i>${statusLabels[x.status]}</span><time>${esc(relativeDate(x.time))}</time></button>${x.status==='question'?`<button class="cr-dismiss" data-dismiss="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" title="Dismiss question without sending a reply">Dismiss question</button>`:''}</article>`;
+  }
   function renderBoard() {
-    const all = cards(), state = engine.state();
-    const groups = [all.filter(x => ['running','background'].includes(x.status)), all.filter(x => ['question','failed','parked'].includes(x.status)), all.filter(x => ['finished','idle'].includes(x.status))];
-    $('crStats').innerHTML = [[groups[0].length,'In progress','Active turns and background work'],[groups[1].length,'Needs attention','Questions, failures, and parked turns'],[all.filter(x=>x.unread).length,'Unread','Conversations with unseen updates'],[state.projects.length,'Projects','Connected workspaces']].map(([n,t,sub]) => `<div><span>${t}</span><strong>${n}</strong><small>${sub}</small></div>`).join('');
-    const selector = $('crProjectFilter'), current = selector.value;
-    const options = '<option value="">All projects</option>' + state.projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
-    if (selector.innerHTML !== options) { selector.innerHTML = options; selector.value = current; }
-    const query = $('crSearch').value.toLowerCase();
-    const displayed = groups.map(group => group.filter(x => (!selector.value || x.p.id === selector.value) && (!query || (x.c.title + ' ' + x.p.name + ' ' + x.label).toLowerCase().includes(query)) && (boardFilter === 'all' || boardFilter === 'unread' && x.unread || boardFilter === 'active' && ['running','background'].includes(x.status))));
-    const html = displayed.map((group,i) => `<section class="cr-lane"><header><span class="cr-lane-dot dot-${i}"></span><h2>${['In progress','Needs attention','Finished & idle'][i]}</h2><span>${group.length}</span></header><div class="cr-lane-cards">${group.length ? group.map(x => `<button class="cr-task" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><div class="cr-task-top"><span>${esc(x.p.name)}</span>${x.unread ? '<span class="cr-unread" title="Unread update">Unread</span>' : ic('more')}</div><h3>${esc(x.c.title || 'Conversation')}</h3><p>${esc(x.label || (x.status === 'finished' ? 'Latest turn completed. Open the conversation to continue.' : x.status === 'idle' ? 'Ready when you are.' : 'Working on your request…'))}</p><footer><span class="cr-status ${x.status}"><i></i>${statusLabels[x.status]}</span><span>${x.c.provider === 'codex' ? 'ChatGPT' : 'Claude'}</span></footer></button>`).join('') : `<div class="cr-empty">${['No active work','Nothing needs attention','No conversations here'][i]}</div>`}</div></section>`).join('');
-    if (html !== boardSignature) { boardSignature = html; const focused = document.activeElement?.closest('.cr-task')?.dataset.session; $('crLanes').innerHTML = html; if (focused) [...$('crLanes').querySelectorAll('.cr-task')].find(n=>n.dataset.session===focused)?.focus({preventScroll:true}); $('crLanes').querySelectorAll('[data-session]').forEach(b => b.addEventListener('click', async () => { b.disabled = true; try { rememberPosition(); await engine.select(b.dataset.project, b.dataset.session); engine.markRead(); open(); restorePosition(); } catch (e) { toast(e.message); } finally { b.disabled = false; } })); }
-    updateTitle();
+    const all=cards(),state=engine.state();
+    if(selectedProject&&!state.projects.some(p=>p.id===selectedProject)&&state.projects.length)selectedProject='';
+    const scope=all.filter(x=>!selectedProject||x.p.id===selectedProject),project=state.projects.find(p=>p.id===selectedProject);
+    $('crScopeTitle').textContent=project?.name||'All projects';
+    $('crScopeSubtitle').textContent=scope.length+' conversations'+(project?'':' across '+state.projects.length+' projects');
+    $('crStats').innerHTML=[[scope.filter(x=>['running','background'].includes(x.status)).length,'Running'],[scope.filter(x=>x.status==='question').length,'Needs input'],[scope.filter(x=>x.unread).length,'Unread']].map(([n,t])=>`<div><strong>${n}</strong><span>${t}</span></div>`).join('');
+    renderProjectNav(all,state);
+    const selector=$('crProjectFilter');selector.innerHTML='<option value="">All projects</option>'+state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');selector.value=selectedProject;
+    const query=$('crSearch').value.toLowerCase();
+    const filtered=scope.filter(x=>(!query||(x.c.title+' '+x.p.name+' '+x.label).toLowerCase().includes(query))&&(boardFilter==='all'||boardFilter==='question'&&x.status==='question'||boardFilter==='unread'&&x.unread||boardFilter==='active'&&['running','background'].includes(x.status)));
+    const attention=filtered.filter(x=>['question','failed','parked'].includes(x.status)),active=filtered.filter(x=>['running','background'].includes(x.status)),recent=filtered.filter(x=>['finished','idle'].includes(x.status));
+    const groups=[['Needs attention',attention],['In progress',active],['Recent conversations',recent.slice(0,recentLimit)]];
+    let html=groups.filter(([,rows])=>rows.length).map(([title,rows])=>`<section class="cr-conversation-group"><header><h2>${title}</h2><span>${title==='Recent conversations'?recent.length:rows.length}</span></header>${rows.map(conversationRow).join('')}</section>`).join('');
+    if(!html)html=`<div class="cr-empty">${query?'No conversations match your search.':boardFilter==='question'?'No questions need your input.':'No conversations in this view.'}</div>`;
+    if(recent.length>recentLimit)html+=`<button class="cr-load-more" id="crShowMore">Show ${Math.min(20,recent.length-recentLimit)} more conversations <span>${recent.length-recentLimit} remaining</span></button>`;
+    if(html!==boardSignature){
+      boardSignature=html;
+      const focused=document.activeElement?.closest('.cr-conversation-row')?.dataset.row,moreFocused=document.activeElement?.id==='crShowMore';
+      $('crLanes').innerHTML=html;
+      if(focused)([...$('crLanes').querySelectorAll('.cr-task')].find(n=>n.dataset.session===focused)||shell.querySelector('[data-filter="question"]')).focus({preventScroll:true});
+      if(moreFocused)($('crShowMore')||$('crLanes').querySelector('.cr-task:last-child'))?.focus({preventScroll:true});
+      $('crLanes').querySelectorAll('.cr-task').forEach(b=>b.onclick=()=>openConversation(b));
+      $('crLanes').querySelectorAll('[data-dismiss]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await engine.dismissQuestion(b.dataset.project,b.dataset.dismiss);toast('Question dismissed. No reply sent.');refresh();}catch(e){toast(e.message);b.disabled=false;}});
+      if($('crShowMore'))$('crShowMore').onclick=()=>{recentLimit+=20;renderBoard();};
+    }
+    updateTitle();renderSendAccounts();
+  }
+  function renderSendAccounts(force=false) {
+    const s=engine.state(),pool=s.accounts.filter(a=>a.provider===s.provider),next=pool.find(a=>a.nextUp),isRunning=!!s.running[s.projectId]?.[s.sessionId],running=pool.find(a=>a.name===s.runningAccount);
+    const name=a=>a ? (a.displayName&&a.displayName!==a.name?a.displayName+' · ':'')+a.name : 'Not available';
+    const nextLabel=next ? name(next) : 'No available account';
+    $('sendAccountChip').innerHTML=ic('user')+`<span>${isRunning?`Running: ${esc(running?name(running):'Checking…')}<small>Next: ${esc(nextLabel)}</small>`:`Send with <strong>${esc(nextLabel)}</strong>`}</span>`+ic('down');
+    $('sendAccountChip').title='Choose the account for the next message'+(isRunning?' or switch the running turn':'');
+    if(!sendAccounts.open&&!force)return;
+    const html=`<header><h2>Choose an account</h2><button class="cr-icon" data-close aria-label="Close account picker">${ic('x')}</button></header><p>Next account for ${s.provider==='codex'?'ChatGPT':'Claude'} conversations.</p><div class="send-account-list">${pool.map(a=>`<div class="send-account-option"><div><strong>${esc(a.displayName||a.name)} <small>${esc(a.name)}</small></strong><span>${esc(a.email||'')}</span><small>${a.paused?'Paused':a.state?.kind==='limited'?'Limited':a.state?.kind==='unauthenticated'?'Needs login':a.nextUp?'Next up':'Available'}${isRunning&&a.name===s.runningAccount?' · Running this turn':''}</small></div><div><button class="cr-secondary" data-send-next="${esc(a.name)}" ${!available(a)||a.nextUp?'disabled':''}>${a.nextUp?'Next up':'Use next'}</button>${isRunning&&a.name!==s.runningAccount?`<button class="cr-secondary" data-switch-turn="${esc(a.name)}" ${!available(a)?'disabled':''}>Switch this turn</button>`:''}</div></div>`).join('')||'<p class="cr-note">No accounts are connected for this provider.</p>'}</div><footer><small>Account choices apply to future attempts. Switching a running turn resumes it on the chosen account.</small><button class="cr-secondary" data-manage-accounts>Manage</button></footer>`;
+    if(html===sendAccountSignature&&!force)return;sendAccountSignature=html;sendAccounts.innerHTML=html;
+    sendAccounts.querySelector('[data-close]').onclick=()=>sendAccounts.close();
+    sendAccounts.querySelector('[data-manage-accounts]').onclick=()=>{sendAccounts.close();showSection('accounts');};
+    const choose=async(b,switching)=>{b.disabled=true;try{await json(switching?'/api/switch':'/api/accounts/active',switching?{projectId:s.projectId,sessionId:s.sessionId,account:b.dataset.switchTurn}:{name:b.dataset.sendNext});await engine.pollAccounts();renderSendAccounts(true);toast(switching?'Switching the running turn…':'Next account updated.');}catch(e){toast(e.message);b.disabled=false;}};
+    sendAccounts.querySelectorAll('[data-send-next]').forEach(b=>b.onclick=()=>choose(b,false));sendAccounts.querySelectorAll('[data-switch-turn]').forEach(b=>b.onclick=()=>choose(b,true));
   }
   function refresh() { clearTimeout(renderTimer); renderTimer = setTimeout(() => { renderBoard(); if (section === 'accounts') renderAccountRows(); }, 60); }
   async function json(url, body) { const res = await engine.api(url, body === undefined ? undefined : { method:'POST', body:JSON.stringify(body) }); const data = await res.json(); if (!res.ok) throw new Error(data.message || 'Request failed'); return data; }
@@ -195,6 +279,6 @@ window.createControlRoom = function (engine) {
     const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'})); const a=document.createElement('a');a.href=url;a.download='x056-usage-'+new Date().toISOString().slice(0,10)+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   new MutationObserver(() => { const connected = !$('dot').classList.contains('off'); $('crConnection').textContent = connected ? 'Connected' : 'Reconnecting'; $('crConnection').classList.toggle('connected',connected); }).observe($('dot'),{attributes:true});
-  setMode('closed'); refresh();
+  setMode('closed'); projectNav(false); refresh();
   return { error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
 };

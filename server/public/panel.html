@@ -1125,6 +1125,8 @@
 <script>
 (function () {
   var controlRoom = null;
+  var dismissedQuestions = {};
+  var questionsVersion = 0;
   var conversationPicks = {};
   function saveConversationPick() { if (currentProjectId) conversationPicks[viewKey(currentProjectId, lastSessionId)] = {model: modelEl.value, effort: effortEl.value}; }
   var TOKEN_KEY = 'x056_token', THEME_KEY = 'x056_theme', MODEL_KEY = 'x056_model', EFFORT_KEY = 'x056_effort';
@@ -2354,6 +2356,7 @@
   // a different, idle one, and only the viewed conversation's busy bar/thread
   // may reflect it.
   function handleEvent(kind, data) {
+    if (['question','question_dismissed','session_started'].indexOf(kind) >= 0) questionsVersion++;
     if (controlRoom) controlRoom.event(kind, data);
     var pid = data.projectId || currentProjectId;
     var mine = !data.projectId || data.projectId === currentProjectId;
@@ -2425,10 +2428,13 @@
       if (!mineConvo || (controlRoom && !controlRoom.isOpen())) setConvNotif(pid, sid, 'failed');
       renderStrip();
     }
+    else if (kind === 'question_dismissed') {
+      dismissedQuestions[sid] = data.at; if (!pendingQ[sid] || pendingQ[sid].at === data.at) { clearQuestion(pid,sid); clearConvNotif(pid,sid); }
+    }
     else if (kind === 'question') {
-      // `at` identifies THIS question for the dismissal record; the live event
-      // has no field of its own, so fall back to the envelope's timestamp.
+      // `at` identifies THIS question; older servers only have the envelope's timestamp.
       var qAt = data.at || data.ts;
+      if (dismissedQuestions[sid] === qAt) return;
       if (sid) pendingQ[sid] = { projectId: pid, sessionId: sid, question: data.question, options: data.options, at: qAt };
       showQuestion(pid, data);
       if (mineConvo && (!controlRoom || controlRoom.isOpen())) markQuestionSeen(pid, sid, qAt); // you're looking at it
@@ -2484,7 +2490,10 @@
     var d = document.createElement('div'); d.className = 'qcard';
     var head = document.createElement('div'); head.className = 'qhead';
     head.appendChild(icon('sparkles', 'sm'));
-    var h = document.createElement('span'); h.textContent = 'Claude is asking'; head.appendChild(h);
+    var h = document.createElement('span'); h.textContent = (PROV_LABEL[providerFor(pid,data.sessionId)] || 'Agent') + ' is asking'; head.appendChild(h);
+    var dismiss = document.createElement('button'); dismiss.className = 'qdismiss'; dismiss.textContent = 'Dismiss'; dismiss.title = 'Dismiss this question without sending a reply';
+    dismiss.addEventListener('click', function () { dismiss.disabled = true; dismissQuestion(pid,data.sessionId).catch(function (e) { dismiss.disabled = false; uiAlert({title:'Could not dismiss question',message:e.message}); }); });
+    head.appendChild(dismiss);
     d.appendChild(head);
     var q = document.createElement('div'); q.className = 'qtext'; q.appendChild(renderInline(String(data.question || ''))); d.appendChild(q);
     var opts = Array.isArray(data.options) ? data.options : [];
@@ -2535,13 +2544,17 @@
   // transcript, so without this a refresh (or the container swap every deploy
   // does) leaves a conversation silently waiting with no visible question.
   function loadQuestions() {
+    var loadingVersion = questionsVersion;
     return api('/api/questions').then(function (r) { return r.json(); }).then(function (list) {
       // Until the snapshot lands we don't know WHICH conversation is on screen,
       // so only record the questions; boot re-runs this once lastSessionId is
       // authoritative. Belling on a guess flagged the conversation being viewed.
+      if (!Array.isArray(list)) return;
+      var present = {}; list.forEach(function (q) { present[q.sessionId] = true; });
+      Object.keys(pendingQ).forEach(function (sid) { if (loadingVersion === questionsVersion && !present[sid]) { var old = pendingQ[sid]; clearQuestion(old.projectId,sid); if (convNotif[viewKey(old.projectId,sid)] === 'question') clearConvNotif(old.projectId,sid); } });
       var known = !!lastSessionId;
       (list || []).forEach(function (q) {
-        if (!q.sessionId) return;
+        if (!q.sessionId || dismissedQuestions[q.sessionId] === q.at || (pendingQ[q.sessionId] && pendingQ[q.sessionId].at > q.at)) return;
         pendingQ[q.sessionId] = q;
         if (!known) return;
         // Render it if that conversation is the one on screen (and remember you
@@ -2554,7 +2567,18 @@
           setConvNotif(q.projectId, q.sessionId, 'question');
         }
       });
+      if (controlRoom) controlRoom.refresh();
     }).catch(function () {});
+  }
+  function dismissQuestion(pid, sid) {
+    var q = pendingQ[sid]; if (!q) return Promise.resolve();
+    return api('/api/questions/dismiss', {method:'POST',body:JSON.stringify({projectId:pid,sessionId:sid,at:q.at})}).then(function (r) {
+      return r.json().then(function (result) { if (!r.ok) throw new Error(result.message || 'Could not dismiss question');
+        dismissedQuestions[sid] = q.at;
+        if (!pendingQ[sid] || pendingQ[sid].at === q.at) { clearQuestion(pid,sid); clearConvNotif(pid,sid); }
+        if (controlRoom) controlRoom.refresh();
+      });
+    });
   }
   function answerQuestion(pid, card, answer) {
     // this question is handled now — stop tracking it as pending (keep the card, locked)
@@ -2840,6 +2864,7 @@
     projListEl.textContent = '';
     reg.projects.forEach(function (p) {
       projCache[p.id] = p;
+      Object.keys(p.runningAccounts || {}).forEach(function (sid) { activeAccount[viewKey(p.id,sid)] = p.runningAccounts[sid]; });
       // Reconcile the running-conversation set against the server's authoritative
       // list — SSE turn_state events can be missed (mobile backgrounding,
       // reconnect gaps), leaving the Stop button/spinner stuck showing a turn
@@ -3956,7 +3981,17 @@
   }
   $('resumeBtn').addEventListener('click', openSessions);
 
-  function pollSnapshot() { return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) { lastSessionId = s.lastSessionId; if (!currentProjectId) currentProjectId = s.currentProjectId; return s; }); }
+  function pollSnapshot() {
+    var selectionVersion = blankSeq;
+    return api('/api/sessions').then(function (r) { return r.json(); }).then(function (s) {
+      // A delayed project snapshot must not replace a fresh, unsent conversation.
+      if (selectionVersion === blankSeq && !pendingNew && (!currentProjectId || currentProjectId === s.currentProjectId)) {
+        lastSessionId = s.lastSessionId;
+        if (!currentProjectId) currentProjectId = s.currentProjectId;
+      }
+      return s;
+    });
+  }
   function loadHistory() {
     var pid = currentProjectId, sid = lastSessionId;
     if (!pid || !sid) return Promise.resolve();
@@ -4170,7 +4205,7 @@
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'active_model', 'settings', 'accounts', 'mcp_approval'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -5502,7 +5537,7 @@
   controlRoom = window.createControlRoom({
     api: api, nav: setNav, closePops: closeAllPops, pollAccounts: pollAccounts,
     markRead: function () { clearConvNotif(currentProjectId,lastSessionId); },
-    state: function () { return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, views: views }; },
+    state: function () { return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, views: views, provider:currentProvider(), runningAccount:activeAccount[viewKey(currentProjectId,lastSessionId)] || null }; },
     select: function (pid, sid) {
       if (pid === currentProjectId) return Promise.resolve(switchConversation(pid, sid));
       // Select the target conversation before switching project, then the existing
@@ -5513,7 +5548,8 @@
         switchProject(Object.assign({},p,{lastSessionId:sid}));
       });
     },
-    newConversation: function () { if (currentProjectId) newConversation(currentProjectId); else $('addProjectBtn').click(); },
+    dismissQuestion: dismissQuestion,
+    newConversation: function (pid) { if (pid && projCache[pid]) newConversation(pid); else if (currentProjectId) newConversation(currentProjectId); else $('addProjectBtn').click(); },
     manageAccount: function (a) { acctTab = a.provider; renderAccounts(acctList); openPop(quotaPop); }
   });
   modelEl.addEventListener('change', saveConversationPick);
