@@ -10,8 +10,8 @@ self.addEventListener('push', function (event) {
   var title = data.title || 'x056';
   event.waitUntil(self.registration.showNotification(title, {
     body: data.body || '',
-    icon: '/icon-192.png',
-    badge: '/icon-192.png',
+    icon: '/icon-192.png?v=31f56a235316',
+    badge: '/icon-192.png?v=31f56a235316',
     tag: 'x056-' + (data.projectId || 'general'),
     renotify: true,
     data: { projectId: data.projectId || '' },
