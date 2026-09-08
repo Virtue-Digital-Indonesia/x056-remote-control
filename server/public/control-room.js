@@ -109,6 +109,23 @@ window.createControlRoom = function (engine) {
     });
   }
   const compareProjects = (a,b) => a.p.name.localeCompare(b.p.name, undefined, {numeric:true,sensitivity:'base'}) || a.p.id.localeCompare(b.p.id);
+  let conversationLabelOrder = 'conversation';
+  try { if (localStorage.getItem('x056_conversation_label_order') === 'project') conversationLabelOrder = 'project'; } catch {}
+  document.body.dataset.conversationLabelOrder = conversationLabelOrder;
+  document.body.dataset.conversationLabelTemplate = 'static';
+  function conversationLabels(project, conversation) {
+    const projectName = project?.name || 'Project', conversationName = conversation?.title || 'Conversation';
+    return conversationLabelOrder === 'project' ? [projectName, conversationName] : [conversationName, projectName];
+  }
+  function conversationLabelText(project, conversation) { return conversationLabels(project, conversation).join(' · '); }
+  function setConversationLabelOrder(value) {
+    conversationLabelOrder = value === 'project' ? 'project' : 'conversation';
+    document.body.dataset.conversationLabelOrder = conversationLabelOrder;
+    try { localStorage.setItem('x056_conversation_label_order', conversationLabelOrder); } catch { toast('This browser could not save the label order.'); }
+    updateTitle(); renderStage(); if (stagePicker.open) renderStagePicker(); if (runningDialog.open) renderRunningList();
+    if (section === 'planner') renderPlanner(); if (section === 'automations') loadAutomationAutopilots(); if (section === 'artifacts') renderArtifacts();
+    document.dispatchEvent(new CustomEvent('x056:conversation-label-order', { detail: { value: conversationLabelOrder } })); renderBoard();
+  }
   function stageKey(project,session){return project+'::'+session;}
   function isStagePinned(project,session){return stagePins.includes(stageKey(project,session));}
   function saveStage(){try{localStorage.setItem('x056_stage_pins',JSON.stringify(stagePins));}catch{toast('This browser could not save pinned conversations.');}}
@@ -309,8 +326,12 @@ window.createControlRoom = function (engine) {
     label.textContent=project?.name||'Choose a project';label.title=project?.cwd||'';
     $('projTitle').textContent=conversation?.title||'New conversation';$('projTitle').disabled=!conversation;
     $('projTitle').title=conversation?'Rename conversation: '+conversation.title:'New conversation';
-    main.setAttribute('aria-label',label.textContent+' · '+$('projTitle').textContent);
+    main.setAttribute('aria-label',conversationLabelText(project,conversation));
   }
+  new MutationObserver(() => {
+    const state=engine.state(),project=state.projects.find(p=>p.id===state.projectId),conversation=project?.conversations?.find(c=>c.sessionId===state.sessionId);
+    if(conversation&&$('projTitle').textContent!==conversation.title) updateTitle();
+  }).observe($('projTitle'),{childList:true,characterData:true,subtree:true});
   function cards() {
     const s = engine.state(), out = [];
     for (const p of s.projects) for (const c of p.conversations || []) {
@@ -716,8 +737,8 @@ window.createControlRoom = function (engine) {
     preferences.querySelectorAll('[data-settings]').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settings));
     const body=$('settingsBody');
     if(tab==='general'){
-      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats'],['smart','Smart']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><div id="displayFields"></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
-      const stageHelp=()=>{$('stageModeHelp').textContent=stageMode==='pinned'?'Only chats you pin appear in the bubbles. The separate running indicator stays visible.':stageMode==='smart'?'Pinned chats, then requests for input, unread replies, running work, and your last few chats. Up to 8 chats, plus any extra pins. Dismiss any chat to remove it.':'Recent and running chats appear in the bubbles. The separate running indicator is hidden on desktop.';};stageHelp();wireSegment('stageMode',value=>{setStageMode(value);stageHelp();});
+      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Conversation labels</h3>${segmented('conversationLabelOrder',[['conversation','Conversation first'],['project','Project first']],conversationLabelOrder,'Conversation label order')}<p>Choose which name leads in conversation lists and details. Saved on this device.</p></section><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats'],['smart','Smart']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><div id="displayFields"></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
+      const stageHelp=()=>{$('stageModeHelp').textContent=stageMode==='pinned'?'Only chats you pin appear in the bubbles. The separate running indicator stays visible.':stageMode==='smart'?'Pinned chats, then requests for input, unread replies, running work, and your last few chats. Up to 8 chats, plus any extra pins. Dismiss any chat to remove it.':'Recent and running chats appear in the bubbles. The separate running indicator is hidden on desktop.';};stageHelp();wireSegment('conversationLabelOrder',setConversationLabelOrder);wireSegment('stageMode',value=>{setStageMode(value);stageHelp();});
       for(const field of generalFields)$('displayFields').append(field);
       for(const name of ['open','maximize'])preferences.querySelector(`input[name="${name}"][value="${prefs[name]}"]`).checked=true;
       body.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{engine.setTheme(b.dataset.themeChoice);syncTheme();body.querySelectorAll('[data-theme-choice]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));});
