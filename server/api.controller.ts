@@ -1,3 +1,4 @@
+import { DeliveryStore, type DeliveryReceipt } from './workspace-store.js';
 import { ConversationActivity } from './conversation-activity.js';
 import { rolloutHeads } from '../src/adapters/codex.js';
 import { projectCosts } from './project-costs.js';
@@ -82,6 +83,10 @@ function saveAttachment(stateDir: string, dataUrl: string, name?: string): { pat
 interface Attachment { name?: string; data: string } // data = base64 data URL
 
 interface SendBody {
+  requestId?: string;
+  notBefore?: number;
+  afterSessionId?: string;
+  paused?: boolean;
   prompt?: string;
   cwd?: string;
   model?: string;
@@ -127,6 +132,7 @@ export class ApiController {
   // at all — repeated polling during a rate-limit window would only extend it.
   private readonly quotaBackoffUntil = new Map<string, number>();
 
+  private deliveries: DeliveryStore;
   constructor(
     @Inject(SessionManager) private readonly manager: SessionManager,
     @Inject(STATE_DIR) private readonly stateDir: string,
@@ -145,8 +151,11 @@ export class ApiController {
     @Inject(TRANSCRIPT_STATS) private readonly stats: TranscriptStatsReader,
   ) {
     this.loadQuotaCache();
+    this.deliveries=new DeliveryStore(stateDir);
+    manager.subscribe(e=>{if(e.kind==='message_delivery')this.deliveries.accept(String(e.data.requestId),String(e.data.sessionId),e.data.status==='cancelled'?'cancelled':e.data.status==='uncertain'?'uncertain':'accepted');});
   }
 
+  private deliveryOnce(body:SendBody,action:()=>{sessionId?:string;id?:string;queued?:boolean;steered?:boolean}){try{return this.deliveries.run(body,action);}catch(e){if(e instanceof BadRequestException||e instanceof ConflictException)throw e;throw new BadRequestException((e as Error).message);}}
   private quotaCacheFile(): string {
     return join(this.stateDir, 'quota-cache.json');
   }
@@ -230,7 +239,8 @@ export class ApiController {
   }
 
   @Post('sessions')
-  startSession(@Body() body: SendBody): { sessionId: string } {
+  startSession(@Body() body: SendBody): {sessionId:string}|DeliveryReceipt {
+    if(body.requestId)return this.deliveryOnce(body,()=>this.startSession({...body,requestId:undefined}));
     if (!body?.prompt && !hasAttachments(body)) throw new BadRequestException('prompt or attachment required');
     try {
       const { prompt, opts } = this.composePrompt(body);
@@ -242,7 +252,8 @@ export class ApiController {
   }
 
   @Post('sessions/current/messages')
-  continueSession(@Body() body: SendBody): { sessionId: string } {
+  continueSession(@Body() body: SendBody): {sessionId:string}|DeliveryReceipt {
+    if(body.requestId)return this.deliveryOnce(body,()=>{try{return this.continueSession({...body,requestId:undefined});}catch(e){if(e instanceof ConflictException)return {...this.enqueueInternal(hasAttachments(body)?{...body,prompt:this.composePrompt(body).prompt}:body),sessionId:body.sessionId};throw e;}});
     if (!body?.prompt && !hasAttachments(body)) throw new BadRequestException('prompt or attachment required');
     try {
       const { prompt, opts } = this.composePrompt(body);
@@ -1318,6 +1329,10 @@ export class ApiController {
     return { ok: true };
   }
 
+  @Get('messages/status')
+  messageStatus(@Query('requestId') id:string){return this.deliveries.get(id)||{status:'not_received'};}
+  @Post('queue/reorder')
+  reorderQueue(@Body() body:{projectId:string;ids:string[]}){try{if(!Array.isArray(body.ids))throw new Error('Queue order required');this.manager.reorderQueue(body.projectId,body.ids);return {ok:true};}catch(e){throw new BadRequestException((e as Error).message);}}
   @Get('queue')
   queue(): unknown {
     return this.manager.queues();
@@ -1325,7 +1340,11 @@ export class ApiController {
 
   @Post('queue')
   @HttpCode(200)
-  enqueue(@Body() body: SendBody): { queued: boolean; id?: string } {
+  enqueue(@Body() body: SendBody): {queued:boolean;id:string;sessionId?:string}|DeliveryReceipt {
+    if(body.requestId)return this.deliveryOnce(body,()=>this.enqueueInternal(body));
+    return this.enqueueInternal(body);
+  }
+  private enqueueInternal(body:SendBody):{queued:boolean;id:string;sessionId?:string} {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
     try {
@@ -1333,8 +1352,9 @@ export class ApiController {
         this.manager.clearSelfQueueStreak(body.sessionId);
         this.manager.clearRelayChain(body.sessionId);
       }
-      const item = this.manager.enqueue(body.projectId, { text: body.prompt, model: body.model, effort: body.effort, sessionId: body.sessionId });
-      return { queued: true, id: item.id };
+      if(body.sessionId&&!this.manager.listConversations(body.projectId).some(c=>c.sessionId===body.sessionId))throw new BadRequestException('Conversation not found');
+      const item = this.manager.enqueue(body.projectId, { text: body.prompt, model: body.model, effort: body.effort, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId });
+      return { queued: true, id: item.id, sessionId:item.sessionId };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
     }
@@ -1347,7 +1367,8 @@ export class ApiController {
    */
   @Post('steer')
   @HttpCode(200)
-  steer(@Body() body: SendBody): { steered: boolean; queued: boolean; id?: string } {
+  steer(@Body() body: SendBody): {steered:boolean;queued:boolean;id?:string}|DeliveryReceipt {
+    if(body.requestId)return this.deliveryOnce(body,()=>{if(body.projectId&&body.sessionId&&body.prompt&&this.manager.steerSession(body.projectId,body.sessionId,body.prompt))return {steered:true,queued:false,sessionId:body.sessionId};return {...this.enqueueInternal(body),steered:false};});
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.sessionId) throw new BadRequestException('sessionId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
@@ -1371,9 +1392,9 @@ export class ApiController {
 
   @Post('queue/edit')
   @HttpCode(200)
-  editQueue(@Body() body: { projectId?: string; id?: string; prompt?: string; model?: string; effort?: string }): { ok: boolean } {
+  editQueue(@Body() body: { projectId?: string; id?: string; prompt?: string; model?: string; effort?: string; notBefore?:number; afterSessionId?:string; paused?:boolean }): { ok: boolean } {
     if (!body?.projectId || !body?.id) throw new BadRequestException('projectId and id required');
-    this.manager.editQueueItem(body.projectId, body.id, { text: body.prompt, model: body.model, effort: body.effort });
+    try{this.manager.editQueueItem(body.projectId, body.id, { text: body.prompt, model: body.model, effort: body.effort, notBefore:body.notBefore, afterSessionId:body.afterSessionId, paused:body.paused });}catch(e){throw new BadRequestException((e as Error).message);}
     return { ok: true };
   }
 

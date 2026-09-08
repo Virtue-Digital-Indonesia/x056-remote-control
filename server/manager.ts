@@ -90,6 +90,12 @@ export interface TurnRunOptions {
 
 /** A follow-up message queued to send when the current turn completes. */
 export interface QueueItem {
+  dispatching?: boolean;
+  error?: string;
+  notBefore?: number;
+  afterSessionId?: string;
+  paused?: boolean;
+  requestId?: string;
   id: string;
   text: string;
   model?: string;
@@ -597,7 +603,7 @@ export class SessionManager {
   clearSelfQueueStreak(sessionId: string): void { this.selfQueueStreak.delete(sessionId); }
 
 
-  enqueue(pid: string, item: { text: string; model?: string; effort?: string; sessionId?: string }): QueueItem {
+  enqueue(pid: string, item: { text: string; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
     const text = (item.text ?? '').trim();
@@ -606,8 +612,11 @@ export class SessionManager {
     // project's current one. Draining resumes THIS session, so a follow-up
     // queued in "Handoff" can never be misrouted into "Main".
     const sessionId = item.sessionId ?? proj.lastSessionId ?? this.loadState().lastSessionId;
+    if (item.notBefore !== undefined && (!Number.isFinite(item.notBefore) || item.notBefore<0)) throw new Error('Invalid scheduled time');
+    if (item.afterSessionId && !this.listProjects().projects.some(p=>p.conversations?.some(c=>c.sessionId===item.afterSessionId))) throw new Error('Dependency conversation not found');
+    if (item.afterSessionId && item.afterSessionId === sessionId) throw new Error('A queue item cannot wait for its own conversation');
     const map = this.loadQueues();
-    const q: QueueItem = { id: randomUUID(), text, model: item.model, effort: item.effort, at: Date.now(), sessionId };
+    const q: QueueItem = { id: randomUUID(), text, model: item.model, effort: item.effort, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
     (map[pid] ??= []).push(q);
     this.saveQueues(map);
     this.emitQueue(pid, map);
@@ -620,10 +629,16 @@ export class SessionManager {
     return q;
   }
 
-  editQueueItem(pid: string, id: string, patch: { text?: string; model?: string; effort?: string }): void {
+  editQueueItem(pid: string, id: string, patch: { text?: string; model?: string; effort?: string; notBefore?: number; afterSessionId?: string; paused?: boolean }): void {
     const map = this.loadQueues();
     const it = (map[pid] ?? []).find((x) => x.id === id);
-    if (!it) return;
+    if (!it) throw new Error('Queued message no longer exists');
+    if (patch.notBefore !== undefined && (!Number.isFinite(patch.notBefore)||patch.notBefore<0)) throw new Error('Invalid scheduled time');
+    if (patch.afterSessionId && !this.listProjects().projects.some(p=>p.conversations?.some(c=>c.sessionId===patch.afterSessionId))) throw new Error('Dependency conversation not found');
+    if (patch.afterSessionId && patch.afterSessionId===it.sessionId) throw new Error('A queue item cannot wait for itself');
+    if (patch.notBefore !== undefined) it.notBefore=patch.notBefore||undefined;
+    if (patch.afterSessionId !== undefined) it.afterSessionId=patch.afterSessionId||undefined;
+    if (patch.paused !== undefined) {it.paused=!!patch.paused;if(!patch.paused){it.dispatching=false;it.error=undefined;}}
     if (typeof patch.text === 'string' && patch.text.trim()) it.text = patch.text.trim();
     if (patch.model !== undefined) it.model = patch.model || undefined;
     if (patch.effort !== undefined) it.effort = patch.effort || undefined;
@@ -633,9 +648,10 @@ export class SessionManager {
 
   removeQueueItem(pid: string, id: string): void {
     const map = this.loadQueues();
+    const removed=(map[pid]??[]).find(x=>x.id===id);
     const before = (map[pid] ?? []).length;
     map[pid] = (map[pid] ?? []).filter((x) => x.id !== id);
-    if (map[pid].length !== before) { this.saveQueues(map); this.emitQueue(pid, map); }
+    if (map[pid].length !== before) { this.saveQueues(map); this.emitQueue(pid, map);if(removed?.requestId)this.emit('message_delivery',{requestId:removed.requestId,sessionId:removed.sessionId,projectId:pid,status:'cancelled'}); }
   }
 
   /** If a conversation has queued messages, pop ITS head and resume THAT session
@@ -646,29 +662,34 @@ export class SessionManager {
     const q = map[pid] ?? [];
     const headIdx = q.findIndex((x) => (x.sessionId ?? pid) === sessionId);
     if (headIdx < 0) return false;
-    const head = q.splice(headIdx, 1)[0];
-    this.saveQueues(map);
-    this.emitQueue(pid, map);
-    const existing = this.queueTimers.get(sessionId);
-    if (existing) clearTimeout(existing);
-    const reEnqueueHead = () => {
-      const m2 = this.loadQueues();
-      (m2[pid] ??= []).unshift(head);
-      this.saveQueues(m2);
-      this.emitQueue(pid, m2);
-    };
+    const head = q[headIdx];
+    // An unavailable head keeps its place; later messages cannot overtake it.
+    if (!this.queueReady(head) || this.queueTimers.has(sessionId)) return true;
     const t = setTimeout(() => {
       this.queueTimers.delete(sessionId);
-      if (this.sessionBusy(sessionId)) { reEnqueueHead(); return; } // its turn snuck back in — don't lose the item
+      const current=this.loadQueues(), rows=current[pid]||[];
+      const index=rows.findIndex(x=>(x.sessionId??pid)===sessionId), item=rows[index];
+      if (!item || item.id!==head.id || !this.queueReady(item) || this.sessionBusy(sessionId)) return;
+      item.dispatching=true;
+      try {this.saveQueues(current);} catch {return;} // Never send before the recovery marker is durable.
+      if(item.requestId)this.emit('message_delivery',{requestId:item.requestId,sessionId,projectId:pid,status:'uncertain'});
       try {
-        this.continueSession(pid, sessionId, head.text, { model: head.model, effort: head.effort });
-      } catch {
-        reEnqueueHead(); // still busy / gone — put it back
+        this.continueSession(pid, sessionId, item.text, { model: item.model, effort: item.effort });
+      } catch(e) {
+        item.dispatching=false;item.paused=true;item.error=(e as Error).message;
+        try {this.saveQueues(current);this.emitQueue(pid,current);} catch {/* Keep the durable recovery marker. */}
+        return;
       }
+      rows.splice(index,1);
+      try {this.saveQueues(current);this.emitQueue(pid,current);} catch {/* Accepted: never reset the durable dispatch marker or retry automatically. */}
+      if(item.requestId)this.emit('message_delivery',{requestId:item.requestId,sessionId,projectId:pid,status:'accepted'});
     }, 400);
     this.queueTimers.set(sessionId, t);
     return true;
   }
+  private queueReady(item:QueueItem):boolean { return !item.dispatching && !item.paused && (!item.notBefore || item.notBefore<=Date.now()) && (!item.afterSessionId || !this.sessionBusy(item.afterSessionId)&&!this.queueTimers.has(item.afterSessionId)); }
+  tickQueuePlanner():void {for(const [pid,items] of Object.entries(this.loadQueues()))for(const sid of new Set(items.map(x=>x.sessionId).filter((x):x is string=>!!x)))if(!this.sessionBusy(sid))this.maybeDrainQueue(pid,sid);}
+  reorderQueue(pid:string, ids:string[]):void {const all=this.loadQueues(),items=all[pid]||[];if(new Set(ids).size!==ids.length||ids.length!==items.length||ids.some(id=>!items.some(x=>x.id===id)))throw new Error('Queue changed; refresh and try again');all[pid]=ids.map(id=>items.find(x=>x.id===id)!);this.saveQueues(all);this.emitQueue(pid,all);}
   private readonly queueTimers = new Map<string, ReturnType<typeof setTimeout>>(); // keyed by sessionId
 
   // ---- settings: global user preferences (not per-project), e.g. which effort

@@ -1,3 +1,4 @@
+import { WorkspaceController } from './workspace.controller.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -129,7 +130,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   );
 
   @Module({
-    controllers: [ApiController, McpHttpController, OAuthController],
+    controllers: [ApiController, WorkspaceController, McpHttpController, OAuthController],
     providers: [
       { provide: SessionManager, useValue: manager },
       { provide: PUSH_SERVICE, useValue: push },

@@ -45,14 +45,15 @@ describe('self-message brake', () => {
     expect(() => m.queueSelfMessage('p1', 's2', 'x')).not.toThrow();
   });
 
-  it('returns an id and, when the conversation is IDLE, delivers at once rather than sitting in the queue', () => {
+  it('keeps an idle message durable until its dispatch is accepted', async () => {
     const m = manager();
+    const send=vi.spyOn(m,'continueSession').mockReturnValue('s1');
     const { id, remaining } = m.queueSelfMessage('p1', 's1', 'check the build');
     expect(id).toBeTruthy();
     expect(remaining).toBe(SessionManager.SELF_QUEUE_LIMIT - 1);
-    // enqueue() kicks an immediate drain for an idle conversation, so nothing is
-    // left waiting. From a RUNNING turn — the real caller — it queues instead
-    // and drains when that turn ends.
+    expect(m.queues()['p1'].map(x=>x.id)).toEqual([id]);
+    await new Promise(resolve=>setTimeout(resolve,450));
+    expect(send).toHaveBeenCalledOnce();
     expect(m.queues()['p1']).toEqual([]);
   });
 });

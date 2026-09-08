@@ -1933,7 +1933,7 @@
           splitRow(lines[i]).forEach(function (c) { var td = document.createElement('td'); td.appendChild(renderInline(c)); tr.appendChild(td); });
           tbody.appendChild(tr); i++;
         }
-        table.appendChild(tbody); root.appendChild(table); continue;
+        table.appendChild(tbody); var tableScroll=document.createElement('div'); tableScroll.className='table-scroll'; tableScroll.tabIndex=0; tableScroll.setAttribute('role','region'); tableScroll.setAttribute('aria-label','Table'); tableScroll.appendChild(table); root.appendChild(tableScroll); continue;
       }
       var item = listItem(line); if (item) { flush(); root.appendChild(readList(item)); continue; }
       if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) { flush(); root.appendChild(document.createElement('hr')); i++; continue; }
@@ -2356,6 +2356,7 @@
   // a different, idle one, and only the viewed conversation's busy bar/thread
   // may reflect it.
   function handleEvent(kind, data) {
+    if(kind==='message_delivery'){var receipt=deliveryRecords&&deliveryRecords.get(data.requestId);if(receipt){receipt.status=data.status;receipt.sessionId=data.sessionId||receipt.sessionId;saveDelivery(receipt).catch(function(){});}return;}
     if (['question','question_dismissed','session_started'].indexOf(kind) >= 0) questionsVersion++;
     if (controlRoom) controlRoom.event(kind, data);
     var pid = data.projectId || currentProjectId;
@@ -4056,7 +4057,7 @@
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -4083,7 +4084,7 @@
   // carries typed-but-unsent text into another conversation.
   function draftKey() { return currentProjectId ? ('x056_draft_' + viewKey(currentProjectId, lastSessionId)) : null; }
   function saveDraft() { var k = draftKey(); if (!k) return; try { if (promptEl.value) localStorage.setItem(k, composerMarkdown(promptEl.value)); else localStorage.removeItem(k); } catch (e) {} }
-  function restoreDraft() { var k = draftKey(), v = ''; try { v = (k && localStorage.getItem(k)) || ''; } catch (e) {} promptEl.value = displayComposerLists(v); autogrow(); }
+  function restoreDraft() { var k = draftKey(), v = ''; try { v = (k && localStorage.getItem(k)) || ''; } catch (e) {} promptEl.value = displayComposerLists(v); autogrow(); if(deliveryRecords)renderDelivery(); }
   promptEl.addEventListener('input', function () { autogrow(); saveDraft(); });
 
   function composerListMatch(line) { return /^([ \t]*)([-+*•]|(\d{1,9})([.)]))(?:[ \t]+|$)/.exec(line); }
@@ -4835,7 +4836,7 @@
    *  server queues it instead if the process turns out to be gone, so the
    *  message is never lost -- the response says which happened. */
   var steerInFlight = false;
-  function steer() {
+  async function steer() {
     if (currentProvider() === 'codex' && /^\//.test(promptEl.value.trim())) { uiAlert({title:'Run command',message:'Use Send for slash commands. Commands wait until the current turn finishes.'}); return; }
     var text = composerMarkdown(promptEl.value).trim();
     // No text but files attached is a plain send, not a steer -- refusing it
@@ -4844,26 +4845,24 @@
     if (!canSteer()) { send(); return; }
     // Holding the shortcut fired one POST per keypress, injecting the same
     // instruction into the turn several times.
-    if (steerInFlight) return;
+    if (steerInFlight||deliveryPreparing) return;
     steerInFlight = true;
     // Capture the target NOW: the response resolves later, and by then the
     // operator may be looking at a different conversation. Clearing the
     // composer or appending the bubble against the live globals wrote into the
     // wrong thread and destroyed that thread's unsent draft.
-    var pid = currentProjectId, sid = lastSessionId;
+    var pid = currentProjectId, sid = lastSessionId, steerDraft=promptEl.value;
     var body = { projectId: pid, sessionId: sid, prompt: text };
     var m = effectiveModel(); if (m) body.model = m;
     if (effortEl.value) body.effort = effortEl.value; // matters on the queue fallback
-    promptEl.value = ''; autogrow(); saveDraft();
+    var steerTicket;
+    try {steerTicket=await prepareDelivery('/api/steer',body);}catch(e){steerInFlight=false;addSys(e.message,'banner');return;}
     var stillHere = function () { return currentProjectId === pid && lastSessionId === sid; };
-    var restore = function () {
-      if (!stillHere() || promptEl.value.trim()) return; // don't clobber newer typing
-      promptEl.value = displayComposerLists(text); autogrow(); saveDraft();
-    };
-    api('/api/steer', { method: 'POST', body: JSON.stringify(body) })
+    if(stillHere()&&promptEl.value===steerDraft){promptEl.value='';autogrow();saveDraft();}
+    sendDelivery(steerTicket)
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
-        if (!res.ok) { restore(); if (stillHere()) addSys((res.j && res.j.message) || 'could not steer', 'banner'); return; }
+        if (!res.ok) { if (stillHere()) addSys('Message was not sent. Open Message delivery to retry or edit it.', 'banner'); return; }
         if (res.j.steered) {
           if (pendingFiles.length && stillHere()) addSys('files can’t be steered — sent the text only, files still attached', 'banner');
           // The CLI records it as an attachment, which history renders on
@@ -4874,7 +4873,7 @@
           loadQueue();
         }
       })
-      .catch(function () { restore(); if (stillHere()) addSys('could not steer', 'banner'); })
+      .catch(function () { if (stillHere()) addSys('Delivery is not confirmed. The message is saved in Message delivery.', 'banner'); })
       .then(function () { steerInFlight = false; });
   }
 
@@ -4914,7 +4913,36 @@
     else if(command==='agent')$('subagentsBtn').click();
     return true;
   }
-  function send() {
+  var deliveryRecords=new Map(), deliveryDb=null, deliveryPreparing=false, deliveryPanel=null;
+  var deliveryStrip=document.createElement('div');deliveryStrip.id='deliveryStrip';deliveryStrip.hidden=true;$('composerHint').before(deliveryStrip);
+  function deliveryDatabase(){if(deliveryDb)return deliveryDb;deliveryDb=new Promise(function(resolve,reject){var request=indexedDB.open('x056-delivery',1);request.onupgradeneeded=function(){request.result.createObjectStore('messages',{keyPath:'id'});};request.onsuccess=function(){resolve(request.result);};request.onerror=function(){reject(new Error('Could not save this message locally. Your draft is still in the editor.'));};});return deliveryDb;}
+  function saveDelivery(row){return deliveryDatabase().then(function(db){return new Promise(function(resolve,reject){var tx=db.transaction('messages','readwrite');tx.objectStore('messages').put(row);tx.oncomplete=function(){deliveryRecords.set(row.id,row);renderDelivery();resolve(row);};tx.onerror=function(){reject(new Error('Could not save this message locally. Free some browser storage and try again.'));};});});}
+  function removeDelivery(id){deliveryRecords.delete(id);deliveryDatabase().then(function(db){db.transaction('messages','readwrite').objectStore('messages').delete(id);});renderDelivery();}
+  var deliveryLabels={sending:'Sending…',accepted:'Accepted',queued:'Queued',failed:'Not sent',unknown:'Delivery not confirmed',uncertain:'Delivery needs review',not_received:'Not sent',processing:'Confirming delivery…',cancelled:'Removed from queue'};
+  function renderDelivery(){
+    var rows=Array.from(deliveryRecords.values()).sort(function(a,b){return b.at-a.at;}),current=rows.filter(function(r){return r.body.projectId===currentProjectId&&(r.sessionId||null)===(lastSessionId||null);});
+    deliveryStrip.hidden=!current.length;if(current.length){var latest=current[0];deliveryStrip.textContent='';var text=document.createElement('span');text.textContent=deliveryLabels[latest.status]||latest.status;deliveryStrip.appendChild(text);var b=document.createElement('button');b.type='button';b.textContent='Message delivery';b.onclick=openDeliveryPanel;deliveryStrip.appendChild(b);}
+    document.querySelectorAll('[data-delivery-id]').forEach(function(el){var row=deliveryRecords.get(el.dataset.deliveryId);if(row)el.textContent=deliveryLabels[row.status]||row.status;});
+    if(deliveryPanel&&deliveryPanel.open){var container=deliveryPanel.querySelector('.delivery-items');container.textContent='';rows.forEach(function(row){var item=document.createElement('article');item.className='delivery-item';var label=document.createElement('strong');label.textContent=deliveryLabels[row.status]||row.status;var preview=document.createElement('p');preview.textContent=row.body.prompt||'Attached files';var detail=document.createElement('small');detail.textContent=(row.error?row.error+' · ':'')+new Date(row.at).toLocaleString();item.append(label,preview,detail);var actions=document.createElement('div');actions.className='workspace-actions';if(['failed','unknown','not_received','sending','uncertain','processing'].includes(row.status)){var retry=document.createElement('button');retry.className='cr-secondary';retry.textContent=['failed','not_received'].includes(row.status)?'Retry':'Check delivery';retry.onclick=function(){retry.disabled=true;retryDelivery(row).catch(function(e){row.error=e.message;saveDelivery(row);});};if(['failed','uncertain'].includes(row.status)){var edit=document.createElement('button');edit.className='cr-secondary';edit.textContent=row.status==='uncertain'?'Prepare new copy':'Edit';edit.onclick=function(){uiPrompt({title:row.status==='uncertain'?'Prepare a new copy':'Edit unsent message',message:row.status==='uncertain'?'Check the conversation first. The original message may already have arrived. This saves a new copy for you to send.':'',value:row.body.prompt||'',multiline:true,okText:'Save'}).then(function(value){if(value===null)return;var id=crypto.randomUUID();saveDelivery(Object.assign({},row,{id:id,body:Object.assign({},row.body,{requestId:id,prompt:value}),status:'not_received',error:''})).then(function(){removeDelivery(row.id);});});};actions.appendChild(edit);}actions.prepend(retry);}if(!['sending','processing'].includes(row.status)){var dismiss=document.createElement('button');dismiss.className='cr-text-button';dismiss.textContent=['accepted','queued','cancelled'].includes(row.status)?'Hide':'Discard saved copy';dismiss.onclick=function(){removeDelivery(row.id);};actions.appendChild(dismiss);}if(row.sessionId){var open=document.createElement('button');open.className='cr-text-button';open.textContent='Open conversation';open.onclick=async function(){await loadProjects();deliveryPanel.close();switchConversation(row.body.projectId,row.sessionId);controlRoom.open();};actions.appendChild(open);}item.appendChild(actions);container.appendChild(item);});if(!rows.length)container.textContent='No saved messages.';}
+  }
+  function openDeliveryPanel(){if(deliveryPanel?.open)return;deliveryPanel=document.createElement('dialog');deliveryPanel.className='cr-dialog workspace-dialog';deliveryPanel.innerHTML='<header><h2>Message delivery</h2><button class="cr-icon" aria-label="Close">×</button></header><div class="delivery-items"></div>';document.body.appendChild(deliveryPanel);deliveryPanel.querySelector('button').onclick=function(){deliveryPanel.close();};deliveryPanel.addEventListener('click',function(e){var r=deliveryPanel.getBoundingClientRect();if(e.target===deliveryPanel&&(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom))deliveryPanel.close();});deliveryPanel.addEventListener('close',function(){deliveryPanel.remove();deliveryPanel=null;});deliveryPanel.showModal();renderDelivery();}
+  async function prepareDelivery(path,body){
+    var probe=await api('/api/messages/status?requestId=capability-check');if(!probe.ok)throw new Error('Message delivery is updating. Refresh the panel shortly; your draft has been kept.');
+    body.requestId=crypto.randomUUID();return saveDelivery({id:body.requestId,path:path,body:body,at:Date.now(),status:'sending',sessionId:body.sessionId||null});
+  }
+  async function sendDelivery(row){
+    row.status='sending';row.error='';await saveDelivery(row);
+    try{var r=await api(row.path,{method:'POST',body:JSON.stringify(row.body)}),j=await r.clone().json().catch(function(){return {};});row.status=r.ok?(j.status||(j.queued?'queued':'accepted')):'failed';row.error=r.ok?'':j.message||'Could not send message';row.sessionId=j.sessionId||row.sessionId;row.queueId=j.id;await saveDelivery(row);return r;}
+    catch(e){row.status='unknown';row.error='Connection lost. Check delivery before retrying.';await saveDelivery(row);throw e;}
+  }
+  async function checkDelivery(row){var r=await api('/api/messages/status?requestId='+encodeURIComponent(row.id));if(!r.ok)throw new Error('Could not check delivery. Try again when connected.');var j=await r.json();row.status=j.status;row.error=j.error||'';row.sessionId=j.sessionId||row.sessionId;await saveDelivery(row);return j;}
+  async function retryDelivery(row){var status=await checkDelivery(row);if(['not_received','failed'].includes(status.status))await sendDelivery(row);if(row.sessionId)loadProjects();}
+  function refreshDeliveries(){if(document.hidden||!navigator.onLine)return;deliveryRecords.forEach(function(row){if(['unknown','queued','sending','processing'].includes(row.status))checkDelivery(row).catch(function(){});});renderDelivery();}
+  function loadDeliveries(){deliveryDatabase().then(function(db){var request=db.transaction('messages').objectStore('messages').getAll();request.onsuccess=function(){request.result.forEach(function(row){deliveryRecords.set(row.id,row);});renderDelivery();refreshDeliveries();};}).catch(function(){});}
+  window.addEventListener('online',refreshDeliveries);setInterval(refreshDeliveries,10000);
+
+  async function send() {
+    if(deliveryPreparing||steerInFlight)return;
     var text = composerMarkdown(promptEl.value).trim(); if (!text && !pendingFiles.length) return;
     if (handleCodexPanelCommand(text)) return;
     // Busy is now per-CONVERSATION: only THIS conversation's own running turn
@@ -4927,9 +4955,10 @@
     if (busy) {
       if (!text) { addSys('type a message to queue — files can’t be queued', 'banner'); return; }
       if (pendingFiles.length) addSys('files left attached — queued the text only', 'banner');
-      api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).then(function (r) {
-        if (r.ok) { promptEl.value = ''; autogrow(); saveDraft(); }
-      }).catch(function () {});
+      var queuedPid=currentProjectId,queuedSid=lastSessionId,queuedDraft=promptEl.value;
+      deliveryPreparing=true;
+      try {var queued=await prepareDelivery('/api/queue',queueBody(text));if(currentProjectId===queuedPid&&lastSessionId===queuedSid&&promptEl.value===queuedDraft){promptEl.value='';autogrow();saveDraft();}var response=await sendDelivery(queued);if(!response.ok)addSys('Message was not queued. Open Message delivery to retry or edit it.','banner');}
+      catch(e){addSys(e.message,'banner');}finally{deliveryPreparing=false;}
       return;
     }
     var files = pendingFiles.slice();
@@ -4937,18 +4966,22 @@
     if (files.length) body.attachments = files.map(function (f) { return { name: f.name, data: f.url }; });
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
+    if (!useNew) body.sessionId=lastSessionId;
+    var myProject=currentProjectId,myBlank=blankSeq,myConvoSession=useNew?null:lastSessionId,draftSnapshot=promptEl.value,ticket;
+    deliveryPreparing=true;
+    try {ticket=await prepareDelivery(path,body);}catch(e){addSys(e.message,'banner');return;}finally{deliveryPreparing=false;}
     var label = text || (files.length > 1 ? '(' + files.length + ' files)' : '(' + (files[0] && files[0].name || 'file') + ')');
     // Echo a slash command as the same chip the transcript will show on reload,
     // so the live view and the reloaded view do not disagree about what it was.
     var slash = !files.length && /^\/[\w:-]+/.exec(text || '');
     if (slash) {
-      appendNode(currentProjectId, lastSessionId, nodeCmd(slash[0], (text || '').slice(slash[0].length).trim(), new Date().toISOString()));
+      appendNode(myProject, myConvoSession, nodeCmd(slash[0], (text || '').slice(slash[0].length).trim(), new Date().toISOString()));
     } else {
-      addMsg('user', label, files, new Date().toISOString());
+      var echo=nodeMsg('user',label,files,new Date().toISOString(),providerFor(myProject,myConvoSession));var deliveryLabel=document.createElement('small');deliveryLabel.className='message-delivery';deliveryLabel.dataset.deliveryId=ticket.id;deliveryLabel.textContent='Sending…';echo.appendChild(deliveryLabel);appendNode(myProject,myConvoSession,echo);
     }
     // Capture the compose context so a slow response can't misapply to a blank
     // composer the user has since moved on to.
-    var myProject = currentProjectId, myBlank = blankSeq, myConvoSession = useNew ? null : lastSessionId;
+
     // Same "is the user still looking at what they were" check the success path
     // below already uses, reused for the failure path so a restored draft never
     // lands in the wrong (since switched-to) conversation's composer.
@@ -4957,25 +4990,9 @@
       return useNew ? (blankSeq === myBlank && !lastSessionId) : (lastSessionId === myConvoSession);
     }
     // Optimistically clear the composer (the text/files are now sent).
-    promptEl.value = ''; autogrow(); saveDraft(); clearAttachments();
-    api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-      if (r.status === 409) { // raced a turn start — queue it so it isn't lost
-        if (text) api('/api/queue', { method: 'POST', body: JSON.stringify(queueBody(text)) }).catch(function () {});
-        addSys('a turn was already running — queued this message instead', 'banner'); return;
-      }
-      if (!r.ok) {
-        // Any other failure (oversized attachments, a bad request, a server
-        // error) — say why instead of silently doing nothing: the optimistic
-        // bubble above LOOKED sent but never actually started a turn. Restore
-        // what was cleared so the user isn't stuck retyping/re-attaching.
-        return r.json().catch(function () { return null; }).then(function (j) {
-          addSys((j && j.message) || 'could not send — try again', 'banner');
-          if (stillSameComposer()) {
-            promptEl.value = displayComposerLists(text); autogrow(); saveDraft();
-            files.forEach(function (f) { pendingFiles.push(f); }); renderAttachments();
-          }
-        });
-      }
+    if(stillSameComposer()&&promptEl.value===draftSnapshot){promptEl.value = ''; autogrow(); saveDraft(); clearAttachments();}
+    sendDelivery(ticket).then(function (r) {
+      if (!r.ok) { addSys('Message was not sent. Open Message delivery to retry or edit it.', 'banner'); return; }
       return r.json().then(function (j) {
         if (!j.sessionId) return;
         if (!useNew) return; // continued an existing conversation — lastSessionId already correct
@@ -4998,11 +5015,7 @@
         restoreDraft(); restoreAttachments();
       }).catch(function () {});
     }).catch(function () {
-      addSys('network error — the message may not have been sent', 'banner');
-      if (stillSameComposer()) {
-        promptEl.value = displayComposerLists(text); autogrow(); saveDraft();
-        files.forEach(function (f) { pendingFiles.push(f); }); renderAttachments();
-      }
+      addSys('Delivery is not confirmed. The message is saved in Message delivery.', 'banner');
     });
   }
   sendBtn.addEventListener('click', send);
@@ -5229,6 +5242,7 @@
       if (action === 'consent') grantDesignConsent(a, button);
       if (action === 'design') startDesignLogin(a);
     },
+    showDelivery: openDeliveryPanel,
     markRead: function () { clearConvNotif(currentProjectId,lastSessionId); },
     state: function () { return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, views: views, provider:currentProvider(), runningAccount:activeAccount[viewKey(currentProjectId,lastSessionId)] || null }; },
     select: function (pid, sid) {
@@ -5249,7 +5263,7 @@
   effortEl.addEventListener('change', saveConversationPick);
 
   // Boot only once authenticated — by the fallback token OR a passkey session cookie.
-  ensureAuth().then(function (ok) { if (ok) boot(); else showGate(); });
+  ensureAuth().then(function (ok) { if (ok) {boot();loadDeliveries();} else showGate(); });
 })();
 </script>
 </body>

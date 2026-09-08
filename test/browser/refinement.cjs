@@ -29,7 +29,7 @@ const shotDir = '/tmp/x056-refinement-check'; fs.mkdirSync(shotDir,{recursive:tr
  await page.locator('#prompt').fill('Keep this unsent draft.');await page.locator('#model').selectOption('opus');await page.locator('#effort').selectOption('high');
  await page.locator('#file').setInputFiles({name:'notes.txt',mimeType:'text/plain',buffer:Buffer.from('test attachment')});
  await page.locator('.scroll').evaluate(e=>e.scrollTop=650);await wait();
- await page.locator('#chatMax').click();await wait();assert.equal(await mode(),'page');
+ await page.locator('#chatMax').click();await wait();assert.equal(await mode(),'modal');await page.locator('#chatMax').click();await wait();assert.equal(await mode(),'page');
  assert.equal(await page.locator('#focusNav').isVisible(),true);
  assert.equal(await page.locator('#prompt').inputValue(),'Keep this unsent draft.');
  assert.equal(await page.locator('#model').inputValue(),'opus');
@@ -38,8 +38,8 @@ const shotDir = '/tmp/x056-refinement-check'; fs.mkdirSync(shotDir,{recursive:tr
  assert.equal(await mode(),'modal');assert.equal(await page.locator('#focusNav').isVisible(),false);
  assert.equal(await page.locator('#chatActivity').isVisible(),true);
  await page.screenshot({path:shotDir+'/modal-desktop.png'});
- await page.locator('#moreBtn').click();assert.equal(await page.locator('#controlMenu button').count(),5);assert.equal(await page.getByRole('menuitem',{name:'Pin conversation',exact:true}).isVisible(),true);await page.keyboard.press('Escape');assert.equal(await mode(),'modal');
- await page.locator('#chatMax').click();await page.locator('.scroll').evaluate(e=>e.scrollTop=750);await wait();await close();
+ await page.locator('#moreBtn').click();assert.equal(await page.getByRole('menuitem',{name:'Conversation results',exact:true}).isVisible(),true);assert.equal(await page.getByRole('menuitem',{name:'Message delivery',exact:true}).isVisible(),true);assert.equal(await page.getByRole('menuitem',{name:'Pin conversation',exact:true}).isVisible(),true);await page.keyboard.press('Escape');assert.equal(await mode(),'modal');
+ await close();await openCard('Update the component library');await page.locator('.scroll').evaluate(e=>e.scrollTop=750);await wait();await close();
  await openCard('Review accessibility findings');await page.locator('#prompt').fill('Separate draft.');await close();
  await openCard('Update the component library');await page.waitForTimeout(900);
  assert.equal(await page.locator('#prompt').inputValue(),'Keep this unsent draft.');assert.equal(await page.locator('#model').inputValue(),'opus');assert.equal(await page.locator('#effort').inputValue(),'high');
