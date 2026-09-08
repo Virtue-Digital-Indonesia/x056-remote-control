@@ -4053,6 +4053,45 @@
   function restoreDraft() { var k = draftKey(), v = ''; try { v = (k && localStorage.getItem(k)) || ''; } catch (e) {} promptEl.value = v; autogrow(); }
   promptEl.addEventListener('input', function () { autogrow(); saveDraft(); });
 
+  // Enhance actual newline edits, including mobile Return, without changing
+  // Enter-to-send or Ctrl/Cmd+Enter-to-steer on desktop.
+  promptEl.addEventListener('beforeinput', function (e) {
+    if (!e.cancelable || e.isComposing || !['insertLineBreak', 'insertParagraph'].includes(e.inputType)) return;
+    var value = promptEl.value, start = promptEl.selectionStart, end = promptEl.selectionEnd;
+    if (value.slice(start, end).includes('\n')) return;
+    var lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    if (start === 0) lineStart = 0;
+    var lineEnd = value.indexOf('\n', end); if (lineEnd === -1) lineEnd = value.length;
+    var before = value.slice(lineStart, start);
+    var match = /^([ \t]*)([-+*]|(\d{1,9})([.)]))(?:[ \t]+|$)/.exec(before);
+    if (!match) return;
+    // Markdown-looking code inside a fenced block remains literal text.
+    var fence = null;
+    value.slice(0, lineStart).split('\n').forEach(function (line) {
+      var m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line); if (!m) return;
+      if (!fence) fence = { marker: m[1][0], length: m[1].length };
+      else if (m[1][0] === fence.marker && m[1].length >= fence.length && !m[2].trim()) fence = null;
+    });
+    if (fence) return;
+    var remainder = before.slice(match[0].length) + value.slice(end, lineEnd);
+    var insertion;
+    var hasSeparator = match[0].length > match[1].length + match[2].length;
+    if (!remainder.trim() && hasSeparator) {
+      // A second newline on the empty item ends the list on this blank line.
+      start = lineStart; end = lineEnd; insertion = '';
+    } else {
+      var marker = match[3] ? String(Number(match[3]) + 1).padStart(match[3].length, '0') + match[4] : match[2];
+      insertion = '\n' + match[1] + marker + ' ';
+    }
+    e.preventDefault();
+    promptEl.setSelectionRange(start, end);
+    // Native editing keeps list continuation in the textarea's undo history.
+    var edited = false;
+    try { edited = document.execCommand('insertText', false, insertion); } catch (_) {}
+    if (!edited) promptEl.setRangeText(insertion, start, end, 'end');
+    promptEl.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
   // ---- subagents ------------------------------------------------------------
   // Claude Code writes each Task/Agent call its own complete transcript at
   // <session>/subagents/agent-<id>.jsonl, so a per-subagent view is a second
@@ -4867,6 +4906,7 @@
   // stays current if the primary pointer ever changes mid-session.
   var coarsePointer = null; try { coarsePointer = matchMedia('(pointer: coarse)'); } catch (e) {}
   promptEl.addEventListener('keydown', function (e) {
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
     // Ctrl/Cmd+Enter steers into the live turn; plain Enter keeps queueing, so
     // existing muscle memory cannot accidentally interrupt a running turn.
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); steer(); return; }
