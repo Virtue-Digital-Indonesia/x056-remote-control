@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 // The SAME tool implementations the stdio bridge uses (see x056-mcp-tools.mjs) —
 // one definition, two transports, so an external client and a spawned session
 // always see an identical tool surface.
-import { SERVER_INFO, TOOLS, callTool } from '../scripts/x056-mcp-tools.mjs';
+import { SERVER_INFO, TOOLS, callToolResult } from '../scripts/x056-mcp-tools.mjs';
 
 export const MCP_HTTP_CONFIG = Symbol('x056-mcp-http-config');
 export interface McpHttpConfig {
@@ -109,12 +109,11 @@ export class McpHttpController {
       const name = typeof params?.name === 'string' ? params.name : '';
       const args = (params?.arguments as Record<string, unknown>) ?? {};
       try {
-        const text = await callTool(api, name, args);
-        return ok(id, { content: [{ type: 'text', text }] });
+        return ok(id, await callToolResult(api, name, args));
       } catch (e) {
         // A failing tool is a RESULT with isError, not a protocol error — that's
         // what lets the model see what went wrong and adjust.
-        return ok(id, { content: [{ type: 'text', text: `error: ${(e as Error).message}` }], isError: true });
+        return ok(id, { content: [{ type: 'text', text: `error: ${(e as Error).message}` }], structuredContent: { error: (e as Error).message }, isError: true });
       }
     }
     // resources/prompts aren't offered; say so with the standard code.

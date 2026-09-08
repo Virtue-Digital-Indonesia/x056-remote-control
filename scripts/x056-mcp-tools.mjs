@@ -6,7 +6,9 @@
 //
 // `api` is injected so each transport supplies its own authenticated fetch.
 
-export const SERVER_INFO = { name: 'x056', version: '2.0.0' };
+import { OUTPUT_SCHEMAS } from './x056-mcp-output.mjs';
+
+export const SERVER_INFO = { name: 'x056', version: '2.1.0' };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -341,9 +343,9 @@ async function waitForReply(api, projectId, sid, before, waitSeconds) {
     const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(projectId)}&sessionId=${encodeURIComponent(sid)}&limit=500`).catch(() => null);
     if (!rows) continue;
     const reply = rows.slice(before).filter((r) => r.role === 'assistant');
-    if (reply.length) return `reply from ${sid}:\n\n${reply.map((r) => r.text).join('\n\n')}`;
+    if (reply.length) return { text: `reply from ${sid}:\n\n${reply.map((r) => r.text).join('\n\n')}`, status: 'reply', messages: messages(reply) };
   }
-  return `sent (sessionId: ${sid}), but no reply within ${Math.round(waitMs / 1000)}s — the turn may still be running. Poll read_conversation for the result.`;
+  return { text: `sent (sessionId: ${sid}), but no reply within ${Math.round(waitMs / 1000)}s — the turn may still be running. Poll read_conversation for the result.`, status: 'reply_timeout', waitSeconds: Math.round(waitMs / 1000) };
 }
 
 const MEMORY_TOOLS = [
@@ -415,7 +417,23 @@ for (const [name, description, properties, required] of MEMORY_TOOLS)
     description,
     inputSchema: { type: 'object', properties, required, additionalProperties: false },
   });
+for (const tool of TOOLS) {
+  if (!OUTPUT_SCHEMAS[tool.name]) throw new Error(`missing output schema: ${tool.name}`);
+  tool.outputSchema = OUTPUT_SCHEMAS[tool.name];
+}
+
+const result = (text, structuredContent) => ({ content: [{ type: 'text', text }], structuredContent });
+const messages = (rows) => (Array.isArray(rows) ? rows : [])
+  .filter((r) => r.role === 'user' || r.role === 'assistant')
+  .map(({ role, text, ts }) => ({ role, text, ...(ts !== undefined ? { ts } : {}) }));
+
+/** Compatibility entry point for callers that only need the legacy text. */
 export async function callTool(api, name, args) {
+  return (await callToolResult(api, name, args)).content[0].text;
+}
+
+/** One execution produces both representations; neither transport replays calls. */
+export async function callToolResult(api, name, args) {
   if(MEMORY_TOOLS.some(t=>t[0]===name)){
     const pid=args.projectId||SELF.projectId,sid=args.sessionId||(pid===SELF.projectId?SELF.sessionId:'');
     let path,body;
@@ -424,18 +442,24 @@ export async function callTool(api, name, args) {
     else if(name==='memory_context')path='/api/memory/context?'+new URLSearchParams({projectId:pid,sessionId:sid||'',query:args.query||''});
     else if(name==='memory_link'){path='/api/memory/link';body={from:args.from,to:args.to,kind:args.kind};}
     else {path='/api/memory/propose';const {id,revision,...entry}=args;body={id,revision,entry:name==='memory_update'?entry:{...entry,projectId:pid,sessionId:sid,sources:[{label:'Agent proposal',projectId:pid,sessionId:sid}]}};}
-    return JSON.stringify(await api(path,body?{method:'POST',body:JSON.stringify(body)}:undefined),null,2);
+    const data = await api(path,body?{method:'POST',body:JSON.stringify(body)}:undefined);
+    const structured = name === 'memory_link' ? { relationships: data }
+      : name === 'memory_propose' || name === 'memory_update' ? { entry: data } : data;
+    return result(JSON.stringify(data,null,2), structured);
   }
 
   if (CRON_TOOL_NAMES.has(name)) {
-    if (name === 'list_scheduled') return fmtJobs(await api('/api/cron'));
+    if (name === 'list_scheduled') {
+      const data = await api('/api/cron');
+      return result(fmtJobs(data), data);
+    }
     if (name === 'cancel_scheduled') {
       const res = await api('/api/cron/remove', { method: 'POST', body: JSON.stringify({ id: args.id }) });
-      return res?.ok ? `cancelled scheduled job ${args.id}.` : `no scheduled job with id ${args.id}.`;
+      return result(res?.ok ? `cancelled scheduled job ${args.id}.` : `no scheduled job with id ${args.id}.`, { id: args.id, ok: res.ok });
     }
     if (name === 'pause_scheduled') {
       const job = await api('/api/cron/enabled', { method: 'POST', body: JSON.stringify({ id: args.id, enabled: !args.paused }) });
-      return `job ${job.id} is now ${job.enabled ? 'active' : 'paused'} (${job.schedule}, ${job.tz}).`;
+      return result(`job ${job.id} is now ${job.enabled ? 'active' : 'paused'} (${job.schedule}, ${job.tz}).`, { job });
     }
     if (name === 'schedule_task') {
       const projectId = args.projectId ?? SELF.projectId;
@@ -445,23 +469,28 @@ export async function callTool(api, name, args) {
         method: 'POST',
         body: JSON.stringify({ schedule: args.schedule, prompt: args.prompt, projectId, sessionId, tz: args.tz, label: args.label, once: args.once, createdBy: SELF.sessionId || 'mcp' }),
       });
-      return `scheduled job ${job.id}: "${job.schedule}" in ${job.tz}${job.once ? ' — ONCE, then deleted' : ' (repeats)'}`
+      return result(`scheduled job ${job.id}: "${job.schedule}" in ${job.tz}${job.once ? ' — ONCE, then deleted' : ' (repeats)'}`
         + `${job.sessionId ? ` → conversation ${job.sessionId}` : ' → a new conversation each run'}.`
-        + `\nUse list_scheduled to see it, cancel_scheduled to remove it.`;
+        + `\nUse list_scheduled to see it, cancel_scheduled to remove it.`, { job });
     }
   }
   if (QUEUE_TOOL_NAMES.has(name)) {
     if (name === 'list_queued') {
       const map = await api('/api/queue');
-      return fmtQueue(map, { projectId: args.projectId, sessionId: args.sessionId });
+      const rows = Object.entries(map ?? {}).flatMap(([projectId, items]) =>
+        (!args.projectId || projectId === args.projectId) ? (items ?? [])
+          .filter((item) => !args.sessionId || item.sessionId === args.sessionId)
+          .map((item) => ({ projectId, ...item })) : []);
+      rows.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+      return result(fmtQueue(map, { projectId: args.projectId, sessionId: args.sessionId }), { messages: rows });
     }
     if (name === 'cancel_queued') {
-      await api('/api/queue/remove', { method: 'POST', body: JSON.stringify({ projectId: args.projectId, id: args.id }) });
-      return `cancelled queued message ${args.id} — it will not be delivered.`;
+      const res = await api('/api/queue/remove', { method: 'POST', body: JSON.stringify({ projectId: args.projectId, id: args.id }) });
+      return result(`cancelled queued message ${args.id} — it will not be delivered.`, { projectId: args.projectId, id: args.id, ok: res.ok });
     }
     if (name === 'edit_queued') {
-      await api('/api/queue/edit', { method: 'POST', body: JSON.stringify({ projectId: args.projectId, id: args.id, prompt: args.message }) });
-      return `rewrote queued message ${args.id}; it keeps its place in the queue.`;
+      const res = await api('/api/queue/edit', { method: 'POST', body: JSON.stringify({ projectId: args.projectId, id: args.id, prompt: args.message }) });
+      return result(`rewrote queued message ${args.id}; it keeps its place in the queue.`, { projectId: args.projectId, id: args.id, ok: res.ok });
     }
     if (name === 'stop_conversation') {
       const res = await api('/api/conversations/halt', {
@@ -471,7 +500,7 @@ export async function callTool(api, name, args) {
       const parts = [];
       parts.push(res?.stopped ? 'stopped its running turn' : 'it had no turn running');
       parts.push(res?.dropped ? `dropped ${res.dropped} queued message(s)` : 'nothing was queued for it');
-      return `${args.sessionId}: ${parts.join('; ')}.`;
+      return result(`${args.sessionId}: ${parts.join('; ')}.`, { projectId: args.projectId, sessionId: args.sessionId, stopped: res.stopped, dropped: res.dropped });
     }
     if (name === 'message_self') {
       if (!SELF.projectId || !SELF.sessionId) {
@@ -481,8 +510,8 @@ export async function callTool(api, name, args) {
         method: 'POST',
         body: JSON.stringify({ projectId: SELF.projectId, sessionId: SELF.sessionId, prompt: args.message }),
       });
-      return `queued for yourself (id ${res?.id ?? '?'}). It starts a new turn as soon as this one ends.\n`
-        + `${res?.remaining != null ? `${res.remaining} consecutive self-message(s) left before a human message is required.` : ''}`;
+      return result(`queued for yourself (id ${res?.id ?? '?'}). It starts a new turn as soon as this one ends.\n`
+        + `${res?.remaining != null ? `${res.remaining} consecutive self-message(s) left before a human message is required.` : ''}`, { id: res.id, remaining: res.remaining });
     }
   }
   if (CODEGRAPH_TOOL_NAMES.has(name)) {
@@ -490,7 +519,9 @@ export async function callTool(api, name, args) {
       method: 'POST',
       body: JSON.stringify({ tool: name, args }),
     });
-    return fmtCodegraph(name, res?.data ?? res);
+    const data = res?.data ?? res;
+    // Query routes return text/isError; wiki routes return typed results/items.
+    return result(fmtCodegraph(name, data), data);
   }
   if (name === 'save_memory') {
     const res = await api('/api/memories/save', {
@@ -503,26 +534,26 @@ export async function callTool(api, name, args) {
         source: 'claude-desktop',
       }),
     });
-    if(res?.shared)return `Saved shared memory ${res.id} (${res.status}). Review it in Memory before automatic context inclusion. Search confirmed notes with memory_search.`;
+    if(res?.shared)return result(`Saved shared memory ${res.id} (${res.status}). Review it in Memory before automatic context inclusion. Search confirmed notes with memory_search.`, res);
     const where = res?.accounts?.length ? ` on ${res.accounts.length} account(s)` : '';
-    return `Saved memory ${res?.file}${where}.`;
+    return result(`Saved memory ${res?.file}${where}.`, res);
   }
   if (name === 'list_projects') {
     const reg = await api('/api/projects');
     const list = (reg.projects || reg || []).map((p) => ({ id: p.id, name: p.name, cwd: p.cwd, provider: p.provider || 'claude', current: p.id === reg.current }));
-    return JSON.stringify(list, null, 2);
+    return result(JSON.stringify(list, null, 2), { projects: list });
   }
   if (name === 'list_conversations') {
     const reg = await api('/api/projects');
     const p = (reg.projects || reg || []).find((x) => x.id === args.projectId);
     if (!p) throw new Error('unknown projectId — use list_projects');
     const convs = (p.conversations || []).map((c) => ({ sessionId: c.sessionId, title: c.title, provider: c.provider || 'claude', model: c.model, effort: c.effort, createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : undefined, current: c.sessionId === p.lastSessionId }));
-    return JSON.stringify(convs, null, 2);
+    return result(JSON.stringify(convs, null, 2), { conversations: convs });
   }
   if (name === 'read_conversation') {
     const limit = args.limit && args.limit > 0 ? Math.floor(args.limit) : 30;
     const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}&limit=${limit}`);
-    return fmtHistory(rows);
+    return result(fmtHistory(rows), { messages: messages(rows) });
   }
   if (name === 'send_message') {
     const before = args.sessionId
@@ -539,6 +570,8 @@ export async function callTool(api, name, args) {
     // conversation is mid-turn the message goes on its queue rather than failing.
     if (requested.mode === 'auto') {
       const sid = requested.sessionId;
+      const delivery = { mode: 'auto', projectId: args.projectId, sessionId: sid,
+        ...(typeof requested.hopsLeft === 'number' ? { hopsLeft: requested.hopsLeft } : {}) };
       const where = requested.queued
         ? `queued — that conversation is mid-turn, so it will be delivered the moment its current turn ends.`
         : `delivered — its turn is running now.`;
@@ -549,44 +582,37 @@ export async function callTool(api, name, args) {
           + (requested.hopsLeft <= 1 ? ' Plan to finish here.' : '')
         : '';
       if (!args.waitSeconds || requested.queued) {
-        return `sent (automatic mode). ${where}\nsessionId: ${sid}\nUse read_conversation to fetch the reply later.${left}`;
+        return result(`sent (automatic mode). ${where}\nsessionId: ${sid}\nUse read_conversation to fetch the reply later.${left}`, { delivery: { ...delivery, status: requested.queued ? 'queued' : 'sent' } });
       }
-      return (await waitForReply(api, args.projectId, sid, before, args.waitSeconds)) + left;
+      const { text, ...reply } = await waitForReply(api, args.projectId, sid, before, args.waitSeconds);
+      return result(text + left, { delivery: { ...delivery, ...reply } });
     }
     // Approval mode: the send does NOT happen yet — wait for the human operator's
     // decision in the panel (or the request to expire) before anything is sent.
     const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000 + 15000; // give the server's own 10min timeout time to land first
     const approvalDeadline = Date.now() + APPROVAL_TIMEOUT_MS;
     const statusUrl = `/api/conversations/send-status?id=${encodeURIComponent(requested.approvalId)}`;
+    const delivery = { mode: 'approval', projectId: args.projectId, approvalId: requested.approvalId };
     let approval = await api(statusUrl);
     while (approval.status === 'pending' && Date.now() < approvalDeadline) {
       await sleep(2000);
       approval = await api(statusUrl).catch(() => approval);
     }
-    if (approval.status === 'pending') return 'still awaiting the operator\'s approval — not sent. It will expire soon; try again later if this is still needed.';
-    if (approval.status === 'expired') return 'the approval request expired before the operator responded — not sent.';
-    if (approval.status === 'denied') return 'the operator DENIED this message — it was not sent.';
-    if (approval.error) return `approved, but the send itself failed: ${approval.error}`;
+    if (approval.status === 'pending') return result('still awaiting the operator\'s approval — not sent. It will expire soon; try again later if this is still needed.', { delivery: { ...delivery, status: 'pending' } });
+    if (approval.status === 'expired') return result('the approval request expired before the operator responded — not sent.', { delivery: { ...delivery, status: 'expired' } });
+    if (approval.status === 'denied') return result('the operator DENIED this message — it was not sent.', { delivery: { ...delivery, status: 'denied' } });
+    if (approval.error) return result(`approved, but the send itself failed: ${approval.error}`, { delivery: { ...delivery, status: 'failed', error: approval.error } });
     const sid = approval.resultSessionId;
+    delivery.sessionId = sid;
     if (approval.queued) {
-      return `approved and queued — that conversation is mid-turn, so it will be delivered when its current turn ends.\nsessionId: ${sid}\nUse read_conversation to fetch the reply later.`;
+      return result(`approved and queued — that conversation is mid-turn, so it will be delivered when its current turn ends.\nsessionId: ${sid}\nUse read_conversation to fetch the reply later.`, { delivery: { ...delivery, status: 'queued' } });
     }
     const waitMs = Math.min(Math.max((args.waitSeconds || 0) * 1000, 0), 10 * 60 * 1000);
     if (waitMs <= 0) {
-      return `sent — the turn is running.\nsessionId: ${sid}\nUse read_conversation (projectId=${args.projectId}, sessionId=${sid}) to fetch the reply once it finishes.`;
+      return result(`sent — the turn is running.\nsessionId: ${sid}\nUse read_conversation (projectId=${args.projectId}, sessionId=${sid}) to fetch the reply once it finishes.`, { delivery: { ...delivery, status: 'sent' } });
     }
-    // Wait for the reply: history grows past what was there before the send
-    // (the sent user message itself counts, so require an ASSISTANT entry after it).
-    const deadline = Date.now() + waitMs;
-    while (Date.now() < deadline) {
-      await sleep(3000);
-      const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(sid)}&limit=500`).catch(() => null);
-      if (!rows) continue;
-      const fresh = rows.slice(before);
-      const reply = fresh.filter((r) => r.role === 'assistant');
-      if (reply.length) return `reply from ${sid}:\n\n${reply.map((r) => r.text).join('\n\n')}`;
-    }
-    return `sent (sessionId: ${sid}), but no reply within ${Math.round(waitMs / 1000)}s — the turn may still be running. Poll read_conversation for the result.`;
+    const { text, ...reply } = await waitForReply(api, args.projectId, sid, before, args.waitSeconds);
+    return result(text, { delivery: { ...delivery, ...reply } });
   }
   throw new Error(`unknown tool: ${name}`);
 }

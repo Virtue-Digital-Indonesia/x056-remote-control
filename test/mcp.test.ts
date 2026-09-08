@@ -1,3 +1,4 @@
+import { validateResult } from './helpers/mcp-contract.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,7 +27,10 @@ function rpc(method: string, params?: unknown): Promise<{ result?: unknown; erro
     setTimeout(() => { if (pending.delete(id)) reject(new Error(`rpc timeout: ${method}`)); }, 10_000);
   });
   mcp.stdin!.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-  return p;
+  return p.then(response => {
+    if (method === 'tools/call') validateResult((params as { name: string }).name, response.result);
+    return response;
+  });
 }
 function toolText(res: { result?: unknown }): string {
   const r = res.result as { content?: { type: string; text: string }[]; isError?: boolean };

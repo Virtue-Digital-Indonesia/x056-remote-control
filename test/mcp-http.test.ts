@@ -1,3 +1,4 @@
+import { validateResult } from './helpers/mcp-contract.js';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +20,8 @@ async function rpc(body: unknown, opts: { token?: string | null; query?: string 
   const text = await res.text();
   let json: any = null;
   try { json = JSON.parse(text); } catch { /* 202 has no body */ }
+  if ((body as any)?.method === 'tools/call' && json?.result)
+    validateResult((body as any).params.name, json.result);
   return { status: res.status, json, text };
 }
 

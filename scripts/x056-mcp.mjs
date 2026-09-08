@@ -12,7 +12,7 @@
 //   X056_URL   gateway base URL (default http://localhost:4056)
 //   X056_TOKEN bearer token (required)
 import { createInterface } from 'node:readline';
-import { SERVER_INFO, TOOLS, callTool } from './x056-mcp-tools.mjs';
+import { SERVER_INFO, TOOLS, callToolResult } from './x056-mcp-tools.mjs';
 
 const BASE = process.env.X056_URL || 'http://localhost:4056';
 const TOKEN = process.env.X056_TOKEN || '';
@@ -48,10 +48,10 @@ rl.on('line', async (line) => {
   if (method === 'tools/list') { out({ jsonrpc: '2.0', id, result: { tools: TOOLS } }); return; }
   if (method === 'tools/call') {
     try {
-      const text = await callTool(api, params?.name, params?.arguments || {});
-      out({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
+      const result = await callToolResult(api, params?.name, params?.arguments || {});
+      out({ jsonrpc: '2.0', id, result });
     } catch (err) {
-      out({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `error: ${err.message}` }], isError: true } });
+      out({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `error: ${err.message}` }], structuredContent: { error: err.message }, isError: true } });
     }
     return;
   }

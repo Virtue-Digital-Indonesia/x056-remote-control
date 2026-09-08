@@ -6,6 +6,7 @@ export declare const TOOLS: {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
 }[];
 
 /** Run one tool. `api` is the caller's authenticated fetch into the gateway.
@@ -15,3 +16,13 @@ export declare function callTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<string>;
+
+export interface ToolResult {
+  content: { type: 'text'; text: string }[];
+  structuredContent: Record<string, unknown>;
+}
+export declare function callToolResult(
+  api: (path: string, opts?: RequestInit) => Promise<unknown>,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<ToolResult>;
