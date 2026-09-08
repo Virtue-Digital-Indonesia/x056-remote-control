@@ -2630,14 +2630,25 @@
     msg.appendChild(icon('history', 'sm'));
     var t = document.createElement('span'); t.textContent = 'This turn was interrupted (crash or restart)' + (data.prompt ? ' — “' + String(data.prompt).slice(0, 80) + '”' : '') + '. Resume it?'; msg.appendChild(t);
     d.appendChild(msg);
-    var btn = document.createElement('button'); btn.className = 'send'; btn.textContent = 'Resume';
-    btn.addEventListener('click', function () { d.remove(); resumeProject(pid); });
+    var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'cr-primary orphan-resume'; btn.textContent = 'Resume';
+    btn.addEventListener('click', function () {
+      btn.disabled = true; btn.textContent = 'Resuming…'; d.setAttribute('aria-busy', 'true');
+      var oldError = d.querySelector('.orphan-error'); if (oldError) oldError.remove();
+      resumeProject(pid, data.sessionId).then(function () { d.remove(); }).catch(function (e) {
+        btn.disabled = false; btn.textContent = 'Resume'; d.removeAttribute('aria-busy');
+        var error = document.createElement('div'); error.className = 'orphan-error'; error.setAttribute('role', 'alert'); error.textContent = e.message; d.appendChild(error);
+      });
+    });
     d.appendChild(btn);
     return d;
   }
-  function resumeProject(pid) {
-    api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, prompt: 'Continue from where you left off. If your last action was a command or edit that may have partially applied, verify its actual effect before re-running anything with side effects.' }) })
-      .then(function (r) { if (r.status === 409) addSys('a turn is already running there', 'banner'); }).catch(function () {});
+  function resumeProject(pid, sid) {
+    return api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, prompt: 'Continue from where you left off. If your last action was a command or edit that may have partially applied, verify its actual effect before re-running anything with side effects.' }) })
+      .then(function (r) {
+        if (r.ok) return;
+        if (r.status === 409) throw new Error('A turn is already running in this conversation.');
+        return r.json().catch(function () { return {}; }).then(function (result) { throw new Error(result.message || 'Could not resume. Please try again.'); });
+      });
   }
   // ---- autopilot (gateway-driven continuation, per conversation) ----
   var apState = {}; // sessionId -> remaining

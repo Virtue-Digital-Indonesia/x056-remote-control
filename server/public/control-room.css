@@ -129,3 +129,10 @@ dialog.modern-prompt:has(.agent-reader){width:min(1040px,calc(100vw - 40px));max
 #stagePinPicker>.cr-search:focus-within{border-color:var(--border-strong);box-shadow:0 0 0 3px var(--surface-2)}#stagePinPicker>.cr-search>.ic{width:18px;height:18px;flex:none;color:var(--muted)}
 #stagePinPicker #stagePinSearch{flex:1;width:100%;min-width:0;min-height:22px;margin:0;padding:0;border:0;border-radius:0;outline:none;box-shadow:none;background:transparent;font-size:14px;line-height:1.5;color:var(--text)}#stagePinPicker #stagePinSearch::placeholder{color:var(--muted);opacity:1}
 @media(max-width:650px){#stagePinPicker #stagePinSearch{font-size:16px}}
+
+/* Resume is a text action, independent of the circular composer controls. */
+.orphan{box-sizing:border-box;flex-wrap:wrap;padding:14px 16px;gap:12px 16px}
+.orphan .omsg{min-width:0;flex:1 1 220px;line-height:1.55}.orphan .omsg>.ic{flex:none}.orphan .omsg>span{min-width:0;overflow-wrap:anywhere}
+.orphan-resume{flex:none;white-space:nowrap;min-width:84px;min-height:38px}.orphan-resume:disabled{opacity:.65;cursor:wait}
+.orphan-error{flex-basis:100%;font-size:12px;line-height:1.5;color:var(--err)}
+@media(max-width:550px){.orphan-resume{margin-left:auto;min-height:40px}}
