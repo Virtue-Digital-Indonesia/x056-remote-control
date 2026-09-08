@@ -47,6 +47,13 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
     assert.equal(await page.locator('.cr-project-link[data-scope]:not([data-scope=""]) use[href="#i-folder"]').count(), projects.length);
     assert.equal(await page.locator('.stage-conversation[aria-current=true]').count(), 0, 'closed chats have no selected marker');
 
+    const mark = async (sid, unread) => {
+      await page.locator('.cr-task[data-session="' + sid + '"]').click({ button: 'right' });
+      const action = page.getByRole('menuitem', { name: unread ? 'Mark as unread' : 'Mark as read', exact: true });
+      if (await action.count()) await action.click(); else await page.keyboard.press('Escape');
+    };
+    await mark(question.sessionId, false);
+    await page.locator('#stageToggle').hover();
     // State colors agree across the overview and switcher in both themes.
     for (const theme of ['dark', 'light']) {
       await page.emulateMedia({ colorScheme: theme });
@@ -68,29 +75,37 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
       assert.ok(rgb(colors.background)[2] > rgb(colors.background)[1], 'background work is purple');
     }
 
-    // Unread is independent of execution state.
-    await page.locator('.cr-task[data-session="' + running.sessionId + '"]').click({ button: 'right' });
-    await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
-    await page.locator('#stageToggle').hover();
+    // Every underlying state yields its main color to unread, including completion.
     const runBubble = page.locator('.stage-conversation[data-session="' + running.sessionId + '"]');
-    await page.waitForFunction(sid => document.querySelector('.stage-conversation[data-session="' + sid + '"]').classList.contains('unread'), running.sessionId);
-    const unread = await runBubble.evaluate(el => ({
-      color: getComputedStyle(el).borderTopColor,
-      label: getComputedStyle(el.querySelector('strong')).color,
-      dot: getComputedStyle(el.querySelector('.stage-status')).backgroundColor,
-      state: el.dataset.chatState,
-    }));
-    assert.equal(unread.state, 'running');
-    assert.equal(unread.label, unread.dot);
-    assert.notEqual(unread.color, unread.dot);
+    for (const theme of ['dark', 'light']) {
+      await page.emulateMedia({ colorScheme: theme });
+      for (const [sid, status] of [[running.sessionId, 'running'], [question.sessionId, 'question'], ...extra.map(c => [c.sessionId, c.sessionId.slice(6)])]) {
+        await mark(sid, true);
+        await page.locator('#stageToggle').hover();
+        await page.waitForTimeout(300);
+        const unread = await page.locator('.stage-conversation[data-session="' + sid + '"]').evaluate(el => ({
+          color: getComputedStyle(el).borderTopColor,
+          fill: getComputedStyle(el).backgroundColor,
+          label: getComputedStyle(el.querySelector('strong')).color,
+          dot: getComputedStyle(el.querySelector('.stage-status')).backgroundColor,
+          state: el.dataset.chatState,
+        }));
+        assert.equal(unread.state, status);
+        assert.equal(unread.color, unread.label);
+        assert.equal(unread.fill, unread.color, 'unread has a filled bubble');
+        assert.notEqual(unread.color, unread.dot, 'small dot preserves underlying state');
+        if (!['running', 'finished'].includes(status)) await mark(sid, false);
+      }
+    }
 
     const idleBubble = page.locator('.stage-conversation[data-session="' + idle.sessionId + '"]');
+    await page.locator('#stageToggle').hover();
     await idleBubble.click();
     const selected = page.locator('.stage-conversation[aria-current=true]');
     await page.waitForFunction(sid => document.querySelector('.stage-conversation[aria-current=true]')?.dataset.session === sid, idle.sessionId);
-    assert.equal(await page.locator('.stage-viewing').count(), 1);
+    assert.equal(await page.locator('.stage-viewing').count(), 0);
     const currentStyle = await selected.evaluate(el => ({ fill: getComputedStyle(el).backgroundColor, border: getComputedStyle(el).borderTopColor, outline: getComputedStyle(el).outlineStyle }));
-    assert.equal(currentStyle.fill, currentStyle.border);
+    assert.notEqual(currentStyle.fill, currentStyle.border, 'read selected chats use only an outline');
     assert.equal(currentStyle.outline, 'solid');
     const anchor = await page.locator('#stageToggle').boundingBox();
     for (const mode of ['side', 'modal', 'page']) {
@@ -107,7 +122,8 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
     }
     await runBubble.click();
     await page.waitForFunction(sid => document.querySelector('.stage-conversation[aria-current=true]')?.dataset.session === sid, running.sessionId);
-    assert.equal(await page.locator('.stage-viewing').count(), 1);
+    assert.equal(await page.locator('.stage-viewing').count(), 0);
+    assert.equal(await runBubble.evaluate(el => el.classList.contains('unread')), false, 'opening clears unread priority');
     assert.equal(await idleBubble.getAttribute('aria-current'), null);
     assert.equal(await idleBubble.evaluate(el => getComputedStyle(el).outlineStyle), 'none');
     await page.locator('#chatClose').click();
@@ -115,7 +131,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.locator('#conversationStage').isVisible(), false);
     assert.deepEqual(errors, []);
-    console.log('PASS: state colors in both themes, neutral project icons, independent unread, selected-chat transitions and stable desktop positioning.');
+    console.log('PASS: state colors in both themes, neutral project icons, unread color priority, selected-chat transitions and stable desktop positioning.');
   } finally {
     await browser.close();
   }

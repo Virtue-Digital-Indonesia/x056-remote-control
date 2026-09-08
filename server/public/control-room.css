@@ -126,7 +126,7 @@ dialog.modern-prompt:has(.agent-reader){width:min(1040px,calc(100vw - 40px));max
 #conversationStage{position:fixed;right:22px;bottom:22px;z-index:115;display:flex;flex-direction:column;align-items:center;gap:12px;width:52px;background:none;border:0;padding:0;overflow:visible;box-shadow:none}
 #stageToggle{position:relative;display:grid;place-items:center;width:52px;height:52px;border-radius:50%;border:1px solid var(--border-strong);background:var(--bg);color:var(--text);box-shadow:none;padding:14px;flex:none}#stageToggle>.ic{width:23px;height:23px}#stageToggle:hover{background:var(--surface-2)}#stageCount{position:absolute;top:-7px;right:-5px;min-width:20px;height:20px;padding:0 4px;display:grid;place-items:center;border-radius:7px;background:var(--text);color:var(--bg);font-size:10px;font-weight:600;border:2px solid var(--bg)}
 #stageShelf,#stageItems{display:flex;flex-direction:column;align-items:center;gap:10px;background:none;border:0;box-shadow:none;padding:0;width:52px;overflow:visible}
-/* Color communicates conversation state; selection and unread stay independent. */
+/* State colors stay visible until unread replies take visual priority. */
 :root{--chat-idle:#77777d;--chat-question:#bd6411}
 html[data-theme=dark]{--chat-idle:#a0a0a6;--chat-question:#ffa44d}
 [data-chat-state]{--chat-state:var(--chat-idle)}
@@ -143,10 +143,9 @@ html[data-theme=dark]{--chat-idle:#a0a0a6;--chat-question:#ffa44d}
 .stage-conversation:hover{background:var(--surface-2)}
 .stage-conversation>.ic{width:21px;height:21px;stroke-width:1.7}
 .stage-item.current{z-index:1}
-.stage-item.current .stage-conversation{background:var(--chat-state);color:var(--bg);outline:2px solid var(--text);outline-offset:3px}
-.stage-item.current .stage-caption{border-color:var(--text);background:var(--surface-2);padding-right:66px}
+.stage-item.current .stage-conversation{outline:2px solid var(--text);outline-offset:3px}
+.stage-item.current .stage-caption{border-color:var(--text);background:var(--surface-2)}
 .stage-item.current .stage-caption strong{font-weight:700}
-.stage-viewing{position:absolute;right:9px;bottom:9px;font-size:9px;font-weight:600;line-height:1.4;border-radius:4px;padding:2px 5px;background:var(--text);color:var(--bg)}
 .stage-status{display:none;position:absolute;bottom:-1px;right:-1px;width:11px;height:11px;border-radius:50%;border:2px solid var(--bg);background:var(--chat-state)}
 .stage-conversation.running .stage-status,.stage-conversation.background .stage-status,.stage-conversation.question .stage-status,.stage-conversation.failed .stage-status,.stage-conversation.parked .stage-status{display:block}
 
@@ -223,8 +222,9 @@ html[data-theme=dark]{--chat-idle:#a0a0a6;--chat-question:#ffa44d}
 @media(max-width:900px){#crMemory{padding:28px 24px}.memory-enabled{margin-left:0}.memory-stats{gap:16px}.memory-row-end time{display:none}.composer-footer .send-account-chip small{display:none}.memory-row-top{flex-wrap:wrap;gap:6px}.memory-row-top strong{white-space:normal}}
 @media(max-width:650px){#crMemory{padding:24px 16px;height:calc(100dvh - 58px)}#crMemory .cr-heading{gap:16px;flex-wrap:wrap}.memory-tabs{overflow-x:auto;flex-wrap:nowrap;white-space:nowrap}.memory-tabs button{flex:none;font-size:11px;padding:8px}.memory-filters .cr-search{flex-basis:100%}.memory-filters select{flex:1;max-width:100%;font-size:12px}.memory-stats{font-size:11px}.memory-row{gap:10px;padding:18px 0}.memory-row-top strong{font-size:13px}.memory-row-end{display:none}.memory-form-grid{grid-template-columns:1fr}.memory-detail-dialog,.memory-editor-dialog{width:calc(100vw - 20px);padding:20px}.memory-properties{grid-template-columns:80px 1fr;font-size:11px}.memory-context-summary{flex-wrap:wrap}.memory-activity>summary{flex-wrap:wrap;gap:8px}.memory-activity>summary>span:last-child{text-align:left}#currentVersion{font-size:9px;max-width:100px;overflow:hidden;text-overflow:ellipsis;padding:8px 5px}.composer-footer{gap:10px}.composer-footer #deliveryStrip{max-width:40%}.composer-footer #deliveryStrip button{font-size:9px;overflow:hidden;text-overflow:ellipsis}.results-dialog .artifact-card:only-child:has(.artifact-image){display:block}.results-toolbar .cr-tabs{width:100%;flex:auto}.delivery-toolbar .cr-tabs button{font-size:11px}.memory-context-controls{flex-wrap:wrap}.memory-content{font-size:13px}}
 
-/* Unread is independent of the conversation's run state and project identity. */
-:root{--stage-unread:#3976cf}html[data-theme=dark]{--stage-unread:#80b2ff}.stage-conversation.unread:not([aria-current=true]) .stage-caption strong{color:var(--stage-unread)}.stage-conversation.unread .stage-status{display:block;background:var(--stage-unread)}#conversationStage[data-unread=true] #stageCount{background:var(--stage-unread);color:#fff}.stage-settings .cr-segments{flex-wrap:wrap}
+/* Unread replies, including newly finished tasks, outrank every run color.
+   Opening the conversation restores its state color; selection uses the outer outline. */
+:root{--stage-unread:#3976cf}html[data-theme=dark]{--stage-unread:#80b2ff}.stage-conversation.unread{border-color:var(--stage-unread);background:var(--stage-unread);color:var(--bg)}.stage-conversation.unread .stage-caption{border-color:var(--stage-unread)}.stage-conversation.unread .stage-caption strong{color:var(--stage-unread);font-weight:700}.stage-conversation.unread .stage-status{display:block;background:var(--chat-state)}#conversationStage[data-unread=true] #stageCount{background:var(--stage-unread);color:#fff}.stage-settings .cr-segments{flex-wrap:wrap}
 #crMemory{width:100%;max-width:none;margin:0}
 @media(max-width:650px){.memory-filters{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.memory-filters>.cr-search{grid-column:1/-1;width:100%;min-width:0;box-sizing:border-box}.memory-filters>select,.memory-filters>input{width:100%;max-width:none;box-sizing:border-box}.memory-filters>.workspace-check{grid-column:1/-1}.memory-context-row{flex-wrap:wrap}.memory-row-top .memory-kind{font-size:9px}}
 

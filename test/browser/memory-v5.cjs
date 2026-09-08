@@ -185,8 +185,8 @@ const base = process.argv[2] || 'http://127.0.0.1:8767';
       dot: getComputedStyle(el.querySelector('.stage-status')).backgroundColor,
       label: getComputedStyle(el.querySelector('.stage-caption strong')).color,
     }));
-  assert.equal(unreadColor.dot, unreadColor.label);
-  assert.notEqual(unreadColor.border, unreadColor.dot, 'unread remains separate from conversation state');
+  assert.equal(unreadColor.border, unreadColor.label);
+  assert.notEqual(unreadColor.border, unreadColor.dot, 'unread dominates the bubble while the small dot retains state');
   await page.waitForTimeout(400);
   await page.screenshot({ path: '/tmp/memory-smart-switcher.png' });
   await page.locator('.stage-conversation[data-session="' + unreadSid + '"]').hover();
