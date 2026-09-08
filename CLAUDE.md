@@ -75,7 +75,15 @@ host. You are almost certainly in **production**; do not confuse them.
   `X056_INTERACTIVE_PROJECTS` and `X056_PANEL_PATH` now use `:?` and refuse to
   start unset. Production pins them explicitly and renders byte-identical.
 - The dev instance's workspace is `poc-ahu-ai`, not the whole tree: its devs get
-  the OCR worktrees, the chatbot and that programme, and nothing else.
+  the OCR worktrees, the chatbot and that programme -- plus **`ahu-codebase`**,
+  bind-mounted INSIDE that root at `poc-ahu-ai/ahu-codebase` (on the dev `x056`
+  container and its dind, same path) by `/home/efran/x056-devs/compose.override.yaml`.
+  Inside the root because `resolveCwd` refuses any project outside
+  `X056_WORKSPACE_ROOT`, and widening the root to the whole tree would hand
+  devs this repo's `.env`. Compose merges the override on every `up`, so dev
+  deploys keep it. On the host that path is an empty directory (the mount only
+  exists in the containers); prod's discovery ignores it. The mount includes
+  `epasti/pasti-api/.env` (real DB passwords) -- the owner chose to include it.
 - **One isolation break is deliberate**: dev's container is attached to
   `x056-remote-control_default` so its `codegraph` MCP server can reach THIS
   instance's knowledge service at `x056-remote-control-dind-1:8421`. Its devs can
