@@ -27,6 +27,9 @@ FORCE="$DIR/.deploy/force"
 LOG="$DIR/.deploy/last.log"
 STATUS="$DIR/.deploy/status.json"
 MAX_DEFER=180   # seconds; brief idle-catch window, then swap even if a TURN runs
+# Opt-in for releases that must preserve all live provider processes. A host
+# release runner passes this for its isolated checkout; normal cron is unchanged.
+IDLE_ONLY="${X056_DEPLOY_IDLE_ONLY:-0}"
 
 [ -f "$FLAG" ] || exit 0
 mkdir -p "$DIR/.deploy"
@@ -40,6 +43,22 @@ token() { grep -oP 'X056_TOKEN=\K.*' "$DIR/.env" 2>/dev/null || true; }
 
 busy() {
   local t; t=$(token)
+  if [ "$IDLE_ONLY" = 1 ]; then
+    [ -n "$t" ] || return 0 # Unable to check is busy, never permission to swap.
+    local snapshot
+    snapshot=$(curl -fsS -m 5 -H "Authorization: Bearer $t" "localhost:$PORT/api/sessions" 2>/dev/null) || return 0
+    # Persistent providers may outlive their turn. Let them expire naturally.
+    if ACTIVITY_JSON="$snapshot" python3 -c '
+import json, os, sys
+try:
+    value = json.loads(os.environ["ACTIVITY_JSON"])
+    idle = (value["running"] is False and value["runningProjects"] == []
+            and value["backgroundProjects"] == [])
+except Exception:
+    idle = False
+sys.exit(0 if idle else 1)
+' 2>/dev/null; then return 1; else return 0; fi
+  fi
   [ -n "$t" ] || return 1
   curl -fsS -m 5 -H "Authorization: Bearer $t" "localhost:$PORT/api/sessions" 2>/dev/null | grep -q '"running":true'
 }
@@ -95,7 +114,7 @@ if runs:
   age=$(( $(date +%s) - $(stat -c %Y "$FLAG" 2>/dev/null || echo 0) ))
 
   # 2. A live fan-out blocks the swap outright — no MAX_DEFER escape hatch.
-  if [ -f "$FORCE" ]; then
+  if [ -f "$FORCE" ] && [ "$IDLE_ONLY" != 1 ]; then
     echo "note: .deploy/force present — swapping even if workflows are live"
   else
     wf=$(live_workflows)
@@ -108,6 +127,10 @@ if runs:
 
   # 3. A running TURN only defers briefly: it resumes on the new container.
   if busy; then
+    if [ "$IDLE_ONLY" = 1 ]; then
+      echo "built OK; provider activity remains or cannot be checked — idle-only release stays pending"
+      exit 0
+    fi
     if [ "$age" -lt "$MAX_DEFER" ]; then
       echo "built OK; a turn is running — deferring swap (${age}s/${MAX_DEFER}s)"
       exit 0
