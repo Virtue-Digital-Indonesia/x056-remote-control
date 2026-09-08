@@ -28,11 +28,11 @@ const shots='/tmp/x056-panel-next-check';fs.mkdirSync(shots,{recursive:true});
  await page.locator(`[data-scope="${scope}"]`).click();
  assert.match(await page.locator('#crScopeTitle').textContent(),/Project 27/);
  assert.equal(await page.locator('.cr-task').count(),10);
- const color=await page.locator(`[data-scope="${scope}"] .cr-project-color`).evaluate(e=>getComputedStyle(e).backgroundColor);
- assert.equal(await page.locator('.cr-task .cr-project-color').first().evaluate(e=>getComputedStyle(e).backgroundColor),color);
+ assert.equal(await page.locator(`[data-scope="${scope}"] use[href="#i-folder"]`).count(),1);
+ assert.equal(await page.locator('.cr-task .cr-state-dot').count(),10);
  await search('Conversation 03');assert.equal(await page.locator('.cr-task').count(),1);
  await page.reload();await page.waitForSelector('.cr-task');assert.match(await page.locator('#crScopeTitle').textContent(),/Project 27/);
- assert.equal(await page.locator(`[data-scope="${scope}"] .cr-project-color`).evaluate(e=>getComputedStyle(e).backgroundColor),color);
+ assert.equal(await page.locator(`[data-scope="${scope}"] use[href="#i-folder"]`).count(),1);
 
  // Starting from another project must keep a blank conversation after async snapshots settle.
  await page.locator('#crNew').click();await page.waitForTimeout(1000);

@@ -42,6 +42,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8791';
     assert.deepEqual(await orderedText('.stage-conversation[data-session="' + conversation.sessionId + '"] .stage-caption'), expected('conversation'));
 
     await row.click();
+    await page.waitForFunction(title => document.getElementById('projTitle').textContent === title, conversation.title);
     const headerOrder = async () => page.evaluate(() => ['chatProjectName', 'projTitle']
       .map((id) => ({ text: document.getElementById(id).textContent.trim(), y: document.getElementById(id).getBoundingClientRect().y }))
       .sort((a, b) => a.y - b.y)
@@ -61,6 +62,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8791';
     await page.screenshot({ path: '/tmp/conversation-label-project.png' });
 
     await row.click();
+    await page.waitForFunction(title => document.getElementById('projTitle').textContent === title, conversation.title);
     assert.deepEqual(await headerOrder(), expected('project'));
     await page.locator('#chatClose').click();
     await page.locator('#crSettings').click();

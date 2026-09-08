@@ -182,10 +182,11 @@ const base = process.argv[2] || 'http://127.0.0.1:8767';
     .locator('.stage-conversation.unread[data-session="' + unreadSid + '"]')
     .evaluate((el) => ({
       border: getComputedStyle(el).borderColor,
-      project: getComputedStyle(el).getPropertyValue('--project-color').trim(),
+      dot: getComputedStyle(el.querySelector('.stage-status')).backgroundColor,
       label: getComputedStyle(el.querySelector('.stage-caption strong')).color,
     }));
-  assert.equal(unreadColor.border, unreadColor.label);
+  assert.equal(unreadColor.dot, unreadColor.label);
+  assert.notEqual(unreadColor.border, unreadColor.dot, 'unread remains separate from conversation state');
   await page.waitForTimeout(400);
   await page.screenshot({ path: '/tmp/memory-smart-switcher.png' });
   await page.locator('.stage-conversation[data-session="' + unreadSid + '"]').hover();
