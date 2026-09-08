@@ -448,7 +448,7 @@ export class ApiController {
   @Post('conversations/rename')
   @HttpCode(200)
   renameConversation(@Body() body: { projectId?: string; sessionId?: string; title?: string }): { ok: boolean } {
-    if (!body?.projectId || !body?.sessionId || !body?.title) throw new BadRequestException('projectId, sessionId and title required');
+    if (!body?.projectId || !body?.sessionId || typeof body.title !== 'string' || !body.title.trim() || body.title.length > 300) throw new BadRequestException('projectId, sessionId and a title of 1–300 characters required');
     this.manager.renameConversation(body.projectId, body.sessionId, body.title);
     return { ok: true };
   }

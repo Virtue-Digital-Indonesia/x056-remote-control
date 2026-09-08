@@ -1,4 +1,6 @@
 import { MemoryController } from './memory.controller.js';
+import { TitlesController } from './titles.controller.js';
+import type { TitleGenerator } from './title-generator.js';
 import { WorkspaceController } from './workspace.controller.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -40,6 +42,7 @@ function buildMcpWiring(cfg: GatewayConfig): TurnOptions['mcp'] {
 }
 
 export interface GatewayConfig {
+  titleGenerator?: TitleGenerator;
   token: string;
   stateDir: string;
   workspaceRoot: string;
@@ -56,6 +59,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // Declared before the manager so the onAccountAdded hook can reach it.
   let provisioner: AccountProvisioner;
   const manager = new SessionManager({
+    titleGenerator: cfg.titleGenerator,
     stateDir: cfg.stateDir,
     workspaceRoot: cfg.workspaceRoot,
     claudePath: cfg.claudePath,
@@ -131,7 +135,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   );
 
   @Module({
-    controllers: [MemoryController, ApiController, WorkspaceController, McpHttpController, OAuthController],
+    controllers: [MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController],
     providers: [
       { provide: SessionManager, useValue: manager },
       { provide: PUSH_SERVICE, useValue: push },

@@ -1,4 +1,6 @@
 import { toolImagePaths } from '../src/artifact-references.js';
+import { ConversationTitles, temporaryTitle } from './conversation-titles.js';
+import type { TitleGenerator } from './title-generator.js';
 import { withMemoryContext } from '../src/memory-context.js';
 import { MemoryStore } from './memory-store.js';
 import { cleanMemorySource } from './memory-sources.js';
@@ -50,6 +52,7 @@ export class RelayLimitError extends Error {
 }
 
 export interface SessionManagerOptions {
+  titleGenerator?: TitleGenerator;
   stateDir: string;
   workspaceRoot: string;
   claudePath?: string;
@@ -215,14 +218,7 @@ interface ActiveRun {
 
 /** A short conversation title from the opening prompt (first non-empty line,
  *  minus the appended ASK convention and any image-attachment marker). */
-function titleFromPrompt(prompt: string): string {
-  const line = stripAskInstructions(prompt ?? '')
-    .split('\n')
-    .map((l) => l.trim())
-    .find((l) => l.length > 0 && !l.startsWith('[The user attached'));
-  const t = (line ?? '').replace(/\s+/g, ' ').slice(0, 60);
-  return t || 'New conversation';
-}
+function titleFromPrompt(prompt: string): string { return temporaryTitle(prompt); }
 
 /** The human-facing identity a `claude` login stores in <configDir>/.claude.json. */
 function readAccountIdentity(configDir: string): { displayName?: string; email?: string } {
@@ -255,6 +251,29 @@ function defaultLoginSpawn(configDir: string, claudePath?: string): ChildProcess
 }
 
 export class SessionManager {
+  private titleWorker?: ConversationTitles;
+  titles(): ConversationTitles {
+    return this.titleWorker ??= new ConversationTitles(this.opts.stateDir, {
+      projects: () => this.projects(), accounts: () => this.registry(), loads: () => this.accountLoads(),
+      routing: (pid, sid) => new RoutingState(this.opts.stateDir).context(pid, sid),
+      priorityWork: provider => Object.entries(this.queues()).some(([pid, rows]) => rows.some(row =>
+        !row.paused && !row.dispatching && (!row.notBefore || row.notBefore <= Date.now()) && this.adapterFor(pid, row.sessionId).id === provider)),
+      history: (pid, sid) => {
+        const ctx = this.historyContext(pid, sid), rows: import('../src/provider.js').HistoryEntry[] = [];
+        let before: number | undefined;
+        for (let i = 0; i < 5; i++) {
+          if (!ctx.adapter.readHistoryPage) return ctx.adapter.readHistory?.(ctx.configDirs, ctx.providerSessionId, 150) || [];
+          const page = ctx.adapter.readHistoryPage(ctx.configDirs, ctx.providerSessionId, 150, before);
+          rows.unshift(...page.rows);
+          if (page.done || page.cursor === before || page.cursor <= 0) break;
+          before = page.cursor;
+        }
+        return rows;
+      },
+      changed: pid => { this.emitConversations(pid); this.emitAccounts(); this.emit('conversation_titles', { projectId: pid }); },
+      generate: this.opts.titleGenerator, claudePath: this.opts.claudePath,
+    });
+  }
   private buffer: GatewayEvent[] = [];
   // Seed from wall-clock ms so seq is monotonic ACROSS container restarts, not
   // just within one process. A swap used to reset this to 0, so a browser that
@@ -338,6 +357,7 @@ export class SessionManager {
     this.resumeAutopilots();
     if (opts.manageProcessSignals) {
       const onTerm = () => {
+        this.titleWorker?.close();
         for (const run of this.runs.values()) run.control?.abort();
         // Idle persistent processes have no run to abort, so they would outlive
         // the gateway as orphans across every container swap.
@@ -1380,7 +1400,7 @@ export class SessionManager {
     const sessionId = randomUUID();
     // Register the new session as its own conversation (prompt-derived title),
     // grouped under the project, and make it current.
-    this.projects().addConversation(pid, sessionId, titleFromPrompt(prompt));
+    this.projects().addConversation(pid, sessionId, titleFromPrompt(prompt), undefined, 'temporary');
     this.emitConversations(pid);
     this.launch(pid, sessionId, prompt, dir, false, opts);
     return sessionId;
@@ -1654,6 +1674,7 @@ export class SessionManager {
   }
 
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
+    this.titleWorker?.preempt();
     // Any new turn for this conversation supersedes its unanswered question
     // (answering one IS a new turn), so the card never outlives its moment.
     if (this.pendingQuestions.delete(sessionId)) this.savePendingQuestions();
@@ -1857,6 +1878,10 @@ export class SessionManager {
             emit('question', pending);
           }
           emit('session_done', { sessionId, ...res });
+          if (res.status === 'completed') {
+            try { this.titles().observe(pid, sessionId, sourcePrompt, res.resultText || ''); }
+            catch (error) { console.warn('[titles] Could not queue title:', (error as Error).message); }
+          }
           // Only when the queue had nothing — autopilot must never jump ahead of
           // a real message, and it resumes by itself once the queue empties.
           if (!drained) this.maybeAutopilot(pid, sessionId, res);
@@ -1970,6 +1995,8 @@ export class SessionManager {
   accountLoads(excludeSession?: string): Record<string, number> {
     const counts: Record<string, number> = {},
       seen = new Set<string>();
+    const titleAccount = this.titleWorker?.activeAccount;
+    if (titleAccount) counts[titleAccount] = 1;
     for (const run of this.runs.values())
       if (run.account && run.sessionId !== excludeSession) {
         counts[run.account] = (counts[run.account] || 0) + 1;

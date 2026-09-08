@@ -33,6 +33,6 @@ if(many){const sid=projects.get(p.id)!.conversations!.find(c=>c.title==='Review 
 writeFileSync(join(state,'questions.json'),JSON.stringify(pending));
 const metrics=new AccountAnalytics(state);const a=metrics.begin('primary','claude','test-model');a.observe({type:'assistant',message:{id:'1',model:'test-model',usage:{input_tokens:3000,output_tokens:700,cache_read_input_tokens:5000}}});a.finish('completed');
 const fake=resolve('test/bin/fake-claude');const scenario=join(dir,'scenario.jsonl');writeFileSync(scenario,[{event:{type:'system',subtype:'init'}},{delayMs:many?10000:1200},{event:{type:'assistant',message:{content:[{type:'text',text:'Fixture response received.'}],usage:{input_tokens:10,output_tokens:8}}}},{event:{type:'result',subtype:'success',is_error:false,result:'Fixture response received.'}},{exit:0}].map(x=>JSON.stringify(x)).join('\n'));process.env.X056_FAKE_SCENARIO=scenario;process.env.X056_FAKE_SCENARIO_RESUME=scenario;
-const app=await createApp({token:'browser-fixture-token-0123456789',stateDir:state,workspaceRoot:dir,claudePath:fake,panelPath:join(pub,'panel.html')});
+const app=await createApp({token:'browser-fixture-token-0123456789',stateDir:state,workspaceRoot:dir,claudePath:fake,panelPath:join(pub,'panel.html'),titleGenerator:async input=>{await new Promise(r=>setTimeout(r,300));return /keyboard/i.test(input.prompt)?'Keyboard navigation improvements':'Website layout improvements';}});
 await app.listen(Number(process.env.X056_TEST_PORT||8768),'127.0.0.1');
 console.log('Browser fixture ready at '+await app.getUrl());

@@ -7,6 +7,10 @@ import type { ProviderId } from '../src/provider.js';
 export interface Conversation {
   sessionId: string;
   title: string;
+  /** Missing on legacy titles: never assume an older title was automatic. */
+  titleOrigin?: 'temporary' | 'generated' | 'manual';
+  titleRevision?: number;
+  titleUpdatedAt?: number;
   createdAt: number;
   /** Derived from the latest user/assistant transcript message in API responses. */
   lastMessageAt?: number | null;
@@ -141,13 +145,13 @@ export class ProjectRegistry {
 
   /** Add a brand-new conversation and make it current (used when starting a fresh
    *  session so it can carry a prompt-derived title). */
-  addConversation(id: string, sessionId: string, title: string, provider?: ProviderId): void {
+  addConversation(id: string, sessionId: string, title: string, provider?: ProviderId, titleOrigin?: Conversation['titleOrigin']): void {
     const p = this.data.projects.find((x) => x.id === id);
     if (!p) return;
     p.conversations = p.conversations ?? [];
     if (!p.conversations.some((c) => c.sessionId === sessionId)) {
       // Stamp the provider now — this conversation is bound to it for life.
-      p.conversations.push({ sessionId, title: title.trim() || 'New conversation', createdAt: Date.now(), provider: provider ?? p.provider ?? 'claude' });
+      p.conversations.push({ sessionId, title: title.trim() || 'New conversation', createdAt: Date.now(), provider: provider ?? p.provider ?? 'claude', ...(titleOrigin ? { titleOrigin, titleRevision: 1, titleUpdatedAt: Date.now() } : {}) });
     }
     p.lastSessionId = sessionId;
     this.save();
@@ -217,8 +221,24 @@ export class ProjectRegistry {
     const p = this.data.projects.find((x) => x.id === projectId);
     const c = p?.conversations?.find((x) => x.sessionId === sessionId);
     if (!c) return;
-    c.title = title.trim() || c.title;
+    if (typeof title !== 'string' || !title.trim() || title.length > 300) throw new Error('Use a title between 1 and 300 characters');
+    c.title = title.trim();
+    c.titleOrigin = 'manual';
+    c.titleRevision = (c.titleRevision || 0) + 1;
+    c.titleUpdatedAt = Date.now();
     this.save();
+  }
+
+  applyTitle(projectId: string, sessionId: string, title: string, expected: { title: string; revision: number }, origin?: Conversation['titleOrigin']): Conversation {
+    const c = this.data.projects.find(p => p.id === projectId)?.conversations?.find(c => c.sessionId === sessionId);
+    if (!c) throw new Error('Conversation no longer exists');
+    if (c.title !== expected.title || (c.titleRevision || 0) !== expected.revision)
+      throw new Error('The title changed after this suggestion was requested');
+    if (!title.trim() || title.length > 300) throw new Error('Invalid conversation title');
+    c.title = title.trim(); c.titleOrigin = origin;
+    c.titleRevision = (c.titleRevision || 0) + 1; c.titleUpdatedAt = Date.now();
+    this.save();
+    return { ...c };
   }
 
   /** Forget a conversation (its transcript on disk is left intact). Repoints the
