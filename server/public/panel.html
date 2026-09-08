@@ -830,9 +830,8 @@
     if (dark) document.documentElement.setAttribute('data-theme', 'dark');
   })();
 </script>
-<link rel="stylesheet" href="/control-room.css?v=fe-e40ef0f3fb" />
-<script src="/control-room.js?v=fe-e40ef0f3fb"></script>
-<meta name="x056-ui-version" content="fe-e40ef0f3fb">
+<link rel="stylesheet" href="/control-room.css" />
+<script src="/control-room.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 4v16h17M8 16v-5m5 5V7m5 9v-3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="i-pin" viewBox="0 0 24 24"><path d="m16 3 5 5-4 1-4 5v4l-3-3-6 6 6-6-3-3h4l5-4Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol><symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2V11.5a9.5 9.5 0 0 1 19 0Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol><symbol id="i-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol><symbol id="i-left" viewBox="0 0 24 24"><path d="m12 5-7 7 7 7m-7-7h15"/></symbol><symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></symbol>
@@ -1524,7 +1523,9 @@
     if (mins < 1440) return Math.round(mins / 60) + 'h ago';
     return d.toISOString().slice(0, 16).replace('T', ' ');
   }
+  var latestCronData = null;
   function renderCron(data) {
+    latestCronData = data;
     var list = $('cronList'); list.textContent = '';
     $('cronTz').textContent = (data && data.defaultTz) || '—';
     var jobs = (data && data.jobs) || [];
@@ -1534,7 +1535,16 @@
       list.appendChild(e); return;
     }
     jobs.forEach(function (j) {
-      var d = document.createElement('div'); d.className = 'cronj' + (j.enabled ? '' : ' off');
+      var d = document.createElement('div'); d.className = 'cronj' + (j.enabled ? '' : ' off'); d.dataset.cronId = j.id;
+      if (j.projectName) {
+        var identity = document.createElement('div'); identity.className = 'automation-cron-identity';
+        var names = document.body.dataset.conversationLabelOrder === 'project' ? [j.projectName, j.conversationTitle] : [j.conversationTitle, j.projectName];
+        var primary = document.createElement('strong'); primary.textContent = names[0];
+        var secondary = document.createElement('small'); secondary.textContent = names[1];
+        var provider = document.createElement('span'); provider.className = 'automation-provider';
+        provider.textContent = j.provider === 'codex' ? 'ChatGPT / Codex' : j.provider === 'claude' ? 'Claude' : 'Provider unavailable';
+        identity.append(primary, secondary, provider); d.appendChild(identity);
+      }
       var top = document.createElement('div'); top.className = 'top';
       var sc = document.createElement('span'); sc.className = 'sched'; sc.textContent = j.schedule; top.appendChild(sc);
       // A one-shot and a nightly job read identically from the schedule alone —
@@ -1577,6 +1587,7 @@
       .catch(function () { cronSetStatus('err', 'could not load scheduled tasks'); });
   }
   $('cronBtn').addEventListener('click', function () { openPop($('cronPop')); loadCron(); });
+  document.addEventListener('x056:conversation-label-order', function () { if (latestCronData) renderCron(latestCronData); });
 
   // ---- MCP servers. Each server is configured on EVERY account of its provider
   //      (the server replicates), so the list shows drift when one drops out. ----
@@ -4063,7 +4074,7 @@
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery'].forEach(function (kind) {
+    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
