@@ -1890,6 +1890,31 @@
     var root = document.createDocumentFragment(), lines = text.split('\n'), i = 0, m, para = [];
     function flush() { if (!para.length) return; var p = document.createElement('p'); p.appendChild(renderInline(para.join('\n'))); root.appendChild(p); para.length = 0; }
     function splitRow(l) { l = l.trim(); if (l.charAt(0) === '|') l = l.slice(1); if (l.charAt(l.length - 1) === '|') l = l.slice(0, -1); return l.split('|').map(function (s) { return s.trim(); }); }
+    function listItem(line) {
+      var m = /^([ \t]*)([-+*]|(\d{1,9})[.)])[ \t]+(.*)$/.exec(line);
+      return m && { indent: m[1].replace(/\t/g, '    ').length, ordered: !!m[3], number: Number(m[3]), text: m[4] };
+    }
+    function readList(first) {
+      var list = document.createElement(first.ordered ? 'ol' : 'ul');
+      if (first.ordered && first.number !== 1) list.start = first.number;
+      while (i < lines.length) {
+        var item = listItem(lines[i]);
+        if (!item || item.indent !== first.indent || item.ordered !== first.ordered) break;
+        var li = document.createElement('li'); li.appendChild(renderInline(item.text)); list.appendChild(li); i++;
+        while (i < lines.length) {
+          var next = i; while (next < lines.length && !lines[next].trim()) next++;
+          var child = next < lines.length ? listItem(lines[next]) : null;
+          if (child && child.indent === first.indent && child.ordered === first.ordered) { i = next; break; }
+          if (child && child.indent > first.indent) { i = next; li.appendChild(readList(child)); continue; }
+          // Indented continuation paragraphs belong to their list item.
+          if (!child && next < lines.length && lines[next].trim() && /^\s*/.exec(lines[next])[0].replace(/\t/g, '    ').length > first.indent) {
+            var p = document.createElement('p'); p.appendChild(renderInline(lines[next].trim())); li.appendChild(p); i = next + 1; continue;
+          }
+          break;
+        }
+      }
+      return list;
+    }
     while (i < lines.length) {
       var line = lines[i];
       if (/^```/.test(line)) { flush(); var buf = []; i++; while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; } i++; var pre = document.createElement('pre'); var code = document.createElement('code'); code.textContent = buf.join('\n'); pre.appendChild(code); root.appendChild(pre); continue; }
@@ -1910,7 +1935,7 @@
         }
         table.appendChild(tbody); root.appendChild(table); continue;
       }
-      if (/^\s*[-*]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) { flush(); var ord = /^\s*\d+[.)]\s+/.test(line); var list = document.createElement(ord ? 'ol' : 'ul'); var ir = ord ? /^\s*\d+[.)]\s+(.*)$/ : /^\s*[-*]\s+(.*)$/; while (i < lines.length && (m = ir.exec(lines[i]))) { var li = document.createElement('li'); li.appendChild(renderInline(m[1])); list.appendChild(li); i++; } root.appendChild(list); continue; }
+      var item = listItem(line); if (item) { flush(); root.appendChild(readList(item)); continue; }
       if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) { flush(); root.appendChild(document.createElement('hr')); i++; continue; }
       if ((m = /^>\s?(.*)$/.exec(line))) { flush(); var bq = document.createElement('blockquote'); var qb = []; while (i < lines.length && (m = /^>\s?(.*)$/.exec(lines[i]))) { qb.push(m[1]); i++; } bq.appendChild(renderInline(qb.join('\n'))); root.appendChild(bq); continue; }
       if (line.trim() === '') { flush(); i++; continue; }
@@ -2617,7 +2642,8 @@
   // concatenating mid-word.
   function insertIntoPrompt(text) {
     var cur = promptEl.value;
-    promptEl.value = cur && !/\s$/.test(cur) ? cur + '\n' + text : cur + text;
+    var display = displayComposerLists(text);
+    promptEl.value = cur && !/\s$/.test(cur) ? cur + '\n' + display : cur + display;
     autogrow(); saveDraft();
     promptEl.focus();
     var len = promptEl.value.length;
@@ -4045,51 +4071,125 @@
 
   // ---- composer ----
   function autogrow() { promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + 'px'; }
+  if (window.ResizeObserver) {
+    var promptWidth = 0;
+    new ResizeObserver(function (entries) {
+      var width = entries[0].contentRect.width;
+      if (width !== promptWidth) { promptWidth = width; if (width) autogrow(); }
+    }).observe(promptEl);
+  }
   // Composer text is per-conversation: each chat keeps its own unsent draft in
   // localStorage (keyed by project+conversation), so switching chats never
   // carries typed-but-unsent text into another conversation.
   function draftKey() { return currentProjectId ? ('x056_draft_' + viewKey(currentProjectId, lastSessionId)) : null; }
-  function saveDraft() { var k = draftKey(); if (!k) return; try { if (promptEl.value) localStorage.setItem(k, promptEl.value); else localStorage.removeItem(k); } catch (e) {} }
-  function restoreDraft() { var k = draftKey(), v = ''; try { v = (k && localStorage.getItem(k)) || ''; } catch (e) {} promptEl.value = v; autogrow(); }
+  function saveDraft() { var k = draftKey(); if (!k) return; try { if (promptEl.value) localStorage.setItem(k, composerMarkdown(promptEl.value)); else localStorage.removeItem(k); } catch (e) {} }
+  function restoreDraft() { var k = draftKey(), v = ''; try { v = (k && localStorage.getItem(k)) || ''; } catch (e) {} promptEl.value = displayComposerLists(v); autogrow(); }
   promptEl.addEventListener('input', function () { autogrow(); saveDraft(); });
 
-  // Enhance actual newline edits, including mobile Return, without changing
-  // Enter-to-send or Ctrl/Cmd+Enter-to-steer on desktop.
-  promptEl.addEventListener('beforeinput', function (e) {
-    if (!e.cancelable || e.isComposing || !['insertLineBreak', 'insertParagraph'].includes(e.inputType)) return;
-    var value = promptEl.value, start = promptEl.selectionStart, end = promptEl.selectionEnd;
-    if (value.slice(start, end).includes('\n')) return;
-    var lineStart = value.lastIndexOf('\n', start - 1) + 1;
-    if (start === 0) lineStart = 0;
-    var lineEnd = value.indexOf('\n', end); if (lineEnd === -1) lineEnd = value.length;
-    var before = value.slice(lineStart, start);
-    var match = /^([ \t]*)([-+*]|(\d{1,9})([.)]))(?:[ \t]+|$)/.exec(before);
-    if (!match) return;
-    // Markdown-looking code inside a fenced block remains literal text.
+  function composerListMatch(line) { return /^([ \t]*)([-+*•]|(\d{1,9})([.)]))(?:[ \t]+|$)/.exec(line); }
+  function composerFenceAt(value, at) {
     var fence = null;
-    value.slice(0, lineStart).split('\n').forEach(function (line) {
+    value.slice(0, at).split('\n').forEach(function (line) {
       var m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line); if (!m) return;
       if (!fence) fence = { marker: m[1][0], length: m[1].length };
       else if (m[1][0] === fence.marker && m[1].length >= fence.length && !m[2].trim()) fence = null;
     });
-    if (fence) return;
-    var remainder = before.slice(match[0].length) + value.slice(end, lineEnd);
-    var insertion;
-    var hasSeparator = match[0].length > match[1].length + match[2].length;
-    if (!remainder.trim() && hasSeparator) {
-      // A second newline on the empty item ends the list on this blank line.
-      start = lineStart; end = lineEnd; insertion = '';
-    } else {
-      var marker = match[3] ? String(Number(match[3]) + 1).padStart(match[3].length, '0') + match[4] : match[2];
-      insertion = '\n' + match[1] + marker + ' ';
-    }
+    return !!fence;
+  }
+  function mapComposerLists(value, transform) {
+    var fence = null;
+    return value.split('\n').map(function (line) {
+      var delimiter = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (delimiter) {
+        if (!fence) fence = { marker: delimiter[1][0], length: delimiter[1].length };
+        else if (delimiter[1][0] === fence.marker && delimiter[1].length >= fence.length && !delimiter[2].trim()) fence = null;
+        return line;
+      }
+      var m = composerListMatch(line); return m && !fence ? transform(line, m) : line;
+    }).join('\n');
+  }
+  // Drafts and requests use Markdown; the textarea shows padded dot bullets.
+  function composerMarkdown(value) {
+    return mapComposerLists(value, function (line, m) {
+      if (m[2] !== '•' && !(m[3] && m[1].startsWith('  '))) return line;
+      return m[1].replace(/^ {2}/, '') + (m[3] ? m[2] : '-') + ' ' + line.slice(m[0].length);
+    });
+  }
+  function displayComposerLists(value) {
+    return mapComposerLists(value, function (line, m) {
+      return '  ' + m[1] + (m[3] ? m[2] : '•') + ' ' + line.slice(m[0].length);
+    });
+  }
+  function visualListPrefix(m) {
+    var indent = m[1];
+    if ((m[2] !== '•' && !m[3]) || indent.length < 2) indent = '  ' + indent;
+    return indent + (m[3] ? m[2] : '•') + ' ';
+  }
+  var editingComposer = false;
+  function editComposerRange(start, end, insertion, selectionStart, selectionEnd) {
+    var expected = promptEl.value.slice(0, start) + insertion + promptEl.value.slice(end);
+    editingComposer = true;
+    try {
+      promptEl.setSelectionRange(start, end);
+      var edited = false;
+      try { edited = document.execCommand('insertText', false, insertion); } catch (_) {}
+      if (!edited) promptEl.setRangeText(insertion, start, end, 'end');
+      // WebKit can merge away the final empty line during a native deletion.
+      // Verify the text and explicitly place the caret on the retained line.
+      if (promptEl.value !== expected) promptEl.value = expected;
+      var caret = selectionStart === undefined ? start + insertion.length : selectionStart;
+      promptEl.setSelectionRange(caret, selectionEnd === undefined ? caret : selectionEnd);
+      promptEl.dispatchEvent(new Event('input', { bubbles: true }));
+    } finally { editingComposer = false; }
+  }
+  promptEl.addEventListener('input', function (e) {
+    if (editingComposer || e.isComposing || e.inputType !== 'insertText' || e.data !== ' ') return;
+    var at = promptEl.selectionStart, start = at ? promptEl.value.lastIndexOf('\n', at - 1) + 1 : 0;
+    var before = promptEl.value.slice(start, at), m = composerListMatch(before);
+    if (!m || m[0].length !== before.length || composerFenceAt(promptEl.value, start)) return;
+    var prefix = visualListPrefix(m); if (prefix !== before) editComposerRange(start, at, prefix);
+  });
+  promptEl.addEventListener('beforeinput', function (e) {
+    if (!e.cancelable || e.isComposing || !['insertLineBreak', 'insertParagraph'].includes(e.inputType)) return;
+    var value = promptEl.value, start = promptEl.selectionStart, end = promptEl.selectionEnd;
+    if (value.slice(start, end).includes('\n')) return;
+    var lineStart = start ? value.lastIndexOf('\n', start - 1) + 1 : 0;
+    var lineEnd = value.indexOf('\n', end); if (lineEnd === -1) lineEnd = value.length;
+    var before = value.slice(lineStart, start), m = composerListMatch(before);
+    if (!m || composerFenceAt(value, lineStart)) return;
+    var remainder = before.slice(m[0].length) + value.slice(end, lineEnd);
+    var hasSeparator = m[0].length > m[1].length + m[2].length;
     e.preventDefault();
-    promptEl.setSelectionRange(start, end);
-    // Native editing keeps list continuation in the textarea's undo history.
-    var edited = false;
-    try { edited = document.execCommand('insertText', false, insertion); } catch (_) {}
-    if (!edited) promptEl.setRangeText(insertion, start, end, 'end');
-    promptEl.dispatchEvent(new Event('input', { bubbles: true }));
+    if (!remainder.trim() && hasSeparator) {
+      // Replace the preceding newline too: inserting a newline is reliable on
+      // Safari where deleting the marker alone can collapse the empty line.
+      editComposerRange(lineStart ? lineStart - 1 : 0, lineEnd, lineStart ? '\n' : '');
+    } else {
+      var prefix = visualListPrefix(m), indent = /^\s*/.exec(prefix)[0];
+      var marker = m[3] ? String(Number(m[3]) + 1).padStart(m[3].length, '0') + m[4] : '•';
+      editComposerRange(lineStart, end, prefix + before.slice(m[0].length) + '\n' + indent + marker + ' ');
+    }
+  });
+  promptEl.addEventListener('keydown', function (e) {
+    if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+    var value = promptEl.value, start = promptEl.selectionStart, end = promptEl.selectionEnd;
+    var from = start ? value.lastIndexOf('\n', start - 1) + 1 : 0;
+    var last = end > start && value[end - 1] === '\n' ? end - 1 : end;
+    var to = value.indexOf('\n', last); if (to === -1) to = value.length;
+    if (composerFenceAt(value, from)) return;
+    var original = value.slice(from, to), changed = original.split('\n').map(function (line) {
+      var m = composerListMatch(line);
+      if (!m) return e.shiftKey ? line.replace(/^( {1,2}|\t)/, '') : '  • ' + line;
+      var prefix = visualListPrefix(m), content = line.slice(m[0].length), indent = /^\s*/.exec(prefix)[0];
+      if (e.shiftKey) return indent.length > 2 ? prefix.replace(/^( {1,2}|\t)/, '') + content : content;
+      return '  ' + prefix + content;
+    }).join('\n');
+    if (changed === original) return;
+    e.preventDefault();
+    if (start === end) {
+      var caret = Math.max(from, start + changed.length - original.length);
+      editComposerRange(from, to, changed, caret);
+    } else editComposerRange(from, to, changed, from, from + changed.length);
   });
 
   // ---- subagents ------------------------------------------------------------
@@ -4540,8 +4640,8 @@
     var start = Math.min(Math.max(tplCaret.start | 0, 0), v.length);
     var end = Math.min(Math.max(tplCaret.end | 0, start), v.length);
     // A selection is REPLACED, matching what typing would do at that moment.
-    promptEl.value = v.slice(0, start) + t.body + v.slice(end);
-    var caret = start + t.body.length;
+    promptEl.value = v.slice(0, start) + displayComposerLists(t.body) + v.slice(end);
+    var caret = start + displayComposerLists(t.body).length;
     closeAllPops();
     promptEl.focus();
     try { promptEl.setSelectionRange(caret, caret); } catch (e) {}
@@ -4712,6 +4812,14 @@
       addFile(new File([text], name, { type: 'text/plain' }));
     }
   });
+  promptEl.addEventListener('paste', function (e) {
+    if (e.defaultPrevented || !e.clipboardData || (e.clipboardData.files && e.clipboardData.files.length)) return;
+    var text = e.clipboardData.getData('text/plain');
+    if (!text || composerFenceAt(promptEl.value, promptEl.selectionStart)) return;
+    var display = displayComposerLists(text); if (display === text) return;
+    e.preventDefault(); editComposerRange(promptEl.selectionStart, promptEl.selectionEnd, display);
+  });
+
   // Drag-and-drop files anywhere over the chat/composer to attach them.
   var dropZone = document.querySelector('main') || document.body;
   ['dragenter', 'dragover'].forEach(function (ev) { dropZone.addEventListener(ev, function (e) { if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) { e.preventDefault(); document.body.classList.add('dragging'); } }); });
@@ -4729,7 +4837,7 @@
   var steerInFlight = false;
   function steer() {
     if (currentProvider() === 'codex' && /^\//.test(promptEl.value.trim())) { uiAlert({title:'Run command',message:'Use Send for slash commands. Commands wait until the current turn finishes.'}); return; }
-    var text = promptEl.value.trim();
+    var text = composerMarkdown(promptEl.value).trim();
     // No text but files attached is a plain send, not a steer -- refusing it
     // with a steer-shaped banner strands the files with no explanation.
     if (!text) { if (pendingFiles.length) { send(); return; } addSys('type something to steer into the running turn', 'banner'); return; }
@@ -4750,7 +4858,7 @@
     var stillHere = function () { return currentProjectId === pid && lastSessionId === sid; };
     var restore = function () {
       if (!stillHere() || promptEl.value.trim()) return; // don't clobber newer typing
-      promptEl.value = text; autogrow(); saveDraft();
+      promptEl.value = displayComposerLists(text); autogrow(); saveDraft();
     };
     api('/api/steer', { method: 'POST', body: JSON.stringify(body) })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
@@ -4807,7 +4915,7 @@
     return true;
   }
   function send() {
-    var text = promptEl.value.trim(); if (!text && !pendingFiles.length) return;
+    var text = composerMarkdown(promptEl.value).trim(); if (!text && !pendingFiles.length) return;
     if (handleCodexPanelCommand(text)) return;
     // Busy is now per-CONVERSATION: only THIS conversation's own running turn
     // makes a message queue. A different conversation running in the same project
@@ -4863,7 +4971,7 @@
         return r.json().catch(function () { return null; }).then(function (j) {
           addSys((j && j.message) || 'could not send — try again', 'banner');
           if (stillSameComposer()) {
-            promptEl.value = text; autogrow(); saveDraft();
+            promptEl.value = displayComposerLists(text); autogrow(); saveDraft();
             files.forEach(function (f) { pendingFiles.push(f); }); renderAttachments();
           }
         });
@@ -4892,7 +5000,7 @@
     }).catch(function () {
       addSys('network error — the message may not have been sent', 'banner');
       if (stillSameComposer()) {
-        promptEl.value = text; autogrow(); saveDraft();
+        promptEl.value = displayComposerLists(text); autogrow(); saveDraft();
         files.forEach(function (f) { pendingFiles.push(f); }); renderAttachments();
       }
     });

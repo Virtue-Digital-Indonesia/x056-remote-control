@@ -136,3 +136,5 @@ dialog.modern-prompt:has(.agent-reader){width:min(1040px,calc(100vw - 40px));max
 .orphan-resume{flex:none;white-space:nowrap;min-width:84px;min-height:38px}.orphan-resume:disabled{opacity:.65;cursor:wait}
 .orphan-error{flex-basis:100%;font-size:12px;line-height:1.5;color:var(--err)}
 @media(max-width:550px){.orphan-resume{margin-left:auto;min-height:40px}}
+
+#prompt{tab-size:2}

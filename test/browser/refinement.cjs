@@ -12,7 +12,7 @@ const shotDir = '/tmp/x056-refinement-check'; fs.mkdirSync(shotDir,{recursive:tr
  const page=await context.newPage(), errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.route('**/api/accounts',async route=>{
   const response=await route.fetch();const rows=await response.json();
-  for(const a of rows) { a.quota=a.provider==='codex'?{windows:[{label:'Weekly',utilization:.5,resetsAt:'2026-09-14T00:00:00Z'}]}:{fiveHour:{utilization:1,resetsAt:'2026-09-08T00:00:00Z'},sevenDay:{utilization:54,resetsAt:'2026-09-14T00:00:00Z'}};delete a.quotaError; }
+  for(const a of rows) { a.quota=a.provider==='codex'?{windows:[{label:'Weekly',utilization:.5,resetsAt:new Date(Date.now()+7*86400000).toISOString()}]}:{fiveHour:{utilization:1,resetsAt:new Date(Date.now()+3600000).toISOString()},sevenDay:{utilization:54,resetsAt:new Date(Date.now()+7*86400000).toISOString()}};delete a.quotaError; }
   await route.fulfill({response,json:rows});
  });
  const wait=()=>page.waitForTimeout(350);
