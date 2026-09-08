@@ -1,5 +1,5 @@
 // Isolated gateway for browser checks. All identities and transcripts are fixtures.
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -20,6 +20,15 @@ const titles=['Build the new homepage','Review accessibility findings','Update t
 let first='';
 for(const title of titles){const sid=randomUUID();if(!first)first=sid;projects.addConversation(p.id,sid,title,'claude'); const transcriptDir=join(specs[0].configDir,'projects','fixture');mkdirSync(transcriptDir,{recursive:true});writeFileSync(join(transcriptDir,sid+'.jsonl'),Array.from({length:24},(_,i)=>JSON.stringify({type:i%2?'assistant':'user',uuid:randomUUID(),timestamp:new Date(Date.now()-(24-i)*60000).toISOString(),message:{role:i%2?'assistant':'user',...(i%2?{model:'claude-sonnet-5',usage:{input_tokens:1000,output_tokens:300,cache_read_input_tokens:4000}}:{}),content:[{type:'text',text:i%2?'The layout is ready to review.\n\nWe have simplified the navigation and improved the reading area. The next step is checking this conversation on desktop and mobile.':'Please improve the layout and keep the existing chat controls working.'}]}})).join('\n')+'\n');}
 projects.addConversation(p2.id,randomUUID(),'Compare deployment options','claude');
+if (process.env.X056_TEST_SESSION_TIMER === '1') {
+  // Legacy Claude conversation under a project whose default is now Codex.
+  projects.setProvider(p.id, 'codex');
+  const timer = [
+    { type: 'assistant', timestamp: '2026-09-08T09:33:35.586Z', message: { content: [{ type: 'tool_use', id: 'timer-call', name: 'CronCreate', input: { cron: '0 12 8 9 *', prompt: 'Fixture cutover at 19:00 WIB', recurring: false } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'timer-call', content: 'Scheduled one-shot task 578ed466 (0 12 8 9 *). Session-only (not written to disk, dies when Claude exits).' }] } },
+  ];
+  appendFileSync(join(specs[0].configDir, 'projects', 'fixture', first + '.jsonl'), timer.map(row => JSON.stringify(row)).join('\n') + '\n');
+}
 if (many) {
   registry.markOk('backup');
   projects.addConversation(p2.id,randomUUID(),'ChatGPT research notes','codex');

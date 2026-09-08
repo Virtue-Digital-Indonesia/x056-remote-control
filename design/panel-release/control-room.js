@@ -20,6 +20,7 @@ window.createControlRoom = function (engine) {
   <div id="crBoard" class="cr-page"><div class="cr-heading"><div><div class="cr-eyebrow">CONVERSATIONS</div><h1 id="crScopeTitle">All projects</h1><p id="crScopeSubtitle">Conversations across your workspace</p></div><div class="cr-actions">${iconButton('crScopeActions','more','Project actions')}<button id="crSelectToggle" class="cr-secondary">Select</button><button class="cr-primary" id="crNew">${ic('plus')} New conversation</button></div></div><div id="crStats" class="cr-stats"></div><div class="cr-tools"><div class="cr-tabs" role="group" aria-label="Conversation filter"><button data-filter="all" class="selected">All conversations</button><button data-filter="question">Needs input</button><button data-filter="active">Running</button><button data-filter="unread">Unread</button><button data-filter="archived">Archived</button></div><label class="cr-search">${ic('search')}<input id="crSearch" type="search" placeholder="Search conversations…" aria-label="Search conversations" /></label><select id="crProjectFilter" aria-label="Filter by project"><option value="">All projects</option></select></div><div id="crBulkBar" class="workspace-bulk" hidden><strong>0 selected</strong><button id="crBulkAll">Select all matches</button><button id="crBulkClear">Clear</button><button data-bulk="archive">Archive</button><button data-bulk="restore">Restore</button><button data-bulk="tag">Tags</button><button data-bulk="titles">Suggest titles</button><button data-bulk="pin">Pin</button><button data-bulk="unpin">Unpin</button><button data-bulk="read">Mark read</button><button data-bulk="unread">Mark unread</button></div><div id="crBoardError" role="status"></div><div class="cr-board" id="crLanes"></div></div>
   <div id="crAccounts" class="cr-page" hidden></div><div id="crAutomations" class="cr-page" hidden><div class="cr-heading"><div><h1>Automations</h1><p>Scheduled messages and conversation autopilots.</p></div><button id="refreshAutomations" class="cr-secondary">Refresh</button></div><section id="automationAutopilots" aria-label="Conversation autopilots"></section><header class="automation-section-heading"><h2>Scheduled messages</h2></header><div id="automationContent"></div></div><div id="crToast" role="status" hidden></div>`;
   document.body.prepend(shell);
+  $('automationAutopilots').insertAdjacentHTML('afterend', '<section id="automationQueue" class="automation-work" aria-label="Planned and queued messages"></section><section id="automationSessionTimers" class="automation-work" aria-label="Session timers"></section>');
   const workspace = document.createElement('div'); workspace.id = 'crWorkspace';
   $('crBoard').before(workspace);
   workspace.innerHTML = `<nav id="crProjectNav" aria-label="Projects"><header><span>Projects</span>${iconButton('crAddProject','plus','Add project')}</header><label class="cr-project-search">${ic('search')}<input id="crProjectSearch" type="search" aria-label="Find a project" placeholder="Find a project" /></label><div id="crProjectLinks"></div><button id="crManageProjects" class="cr-project-manage">${ic('folder')} Manage projects</button></nav>`;
@@ -537,12 +538,13 @@ window.createControlRoom = function (engine) {
     if (['session_done','session_error','turn_orphaned'].includes(kind)) outcomes.set(data.projectId + '::' + data.sessionId, { status:kind === 'session_done' ? data.status : 'failed', reason:data.reason || data.message, ts:data.ts || Date.now() });
     if (kind === 'session_started') outcomes.delete(data.projectId + '::' + data.sessionId);
     refresh();
-    if(section==='automations'&&['autopilot','session_started','session_done','session_error','project_removed'].includes(kind))loadAutomationAutopilots();
+    if(section==='automations'&&['autopilot','queue','session_started','session_done','session_error','project_removed'].includes(kind))loadAutomationAutopilots();
     if (section === 'accounts' && ['session_done','accounts'].includes(kind)) loadAnalytics();
     if (section==='planner'&&kind==='queue')loadPlanner();
   }
   let automationBusy=false,automationAgain=false;
   async function loadAutomationAutopilots(){
+    loadAutomationWork();
     if(automationBusy){automationAgain=true;return;}automationBusy=true;
     const host=$('automationAutopilots');
     try{
@@ -558,6 +560,39 @@ window.createControlRoom = function (engine) {
     finally{automationBusy=false;if(automationAgain){automationAgain=false;loadAutomationAutopilots();}}
   }
   setInterval(()=>{if(section==='automations'&&!document.hidden)loadAutomationAutopilots();},15000);
+  let automationWorkBusy=false,automationWorkAgain=false;
+  function automationWorkIdentity(projectId,sessionId){
+    const project=engine.state().projects.find(p=>p.id===projectId),conversation=project?.conversations?.find(c=>c.sessionId===sessionId),[primary,secondary]=conversationLabels(project,conversation);
+    return `<button class="automation-work-open" data-project="${esc(projectId)}" data-session="${esc(sessionId)}" ${conversation?'':'disabled'}><i class="cr-project-color" style="--project-color:${projectColor(projectId)}"></i><span><strong>${esc(primary)}</strong><small>${esc(secondary)}</small></span></button>`;
+  }
+  async function loadAutomationWork(){
+    if(automationWorkBusy){automationWorkAgain=true;return;}automationWorkBusy=true;
+    const queueHost=$('automationQueue'),timerHost=$('automationSessionTimers');
+    const heading=(text,count)=>`<header class="automation-section-heading"><h2>${text}</h2>${count===undefined?'':`<span>${count}</span>`}</header>`;
+    if(!queueHost.childElementCount)queueHost.innerHTML=heading('Planned and queued messages')+'<p class="cr-note" role="status">Loading queue…</p>';
+    if(!timerHost.childElementCount)timerHost.innerHTML=heading('Session timers')+'<p class="cr-note" role="status">Checking conversation timer history…</p>';
+    try{
+      await Promise.allSettled([
+        (async()=>{
+          try{
+            const queues=await json('/api/queue'),rows=Object.entries(queues).flatMap(([projectId,items])=>items.map(item=>({projectId,item})));
+            queueHost.innerHTML=heading('Planned and queued messages',rows.length)+rows.map(({projectId,item})=>`<article class="automation-work-row" data-planned="${esc(item.id)}"><div>${automationWorkIdentity(projectId,item.sessionId)}<p class="automation-work-preview">${esc(item.text)}</p><small class="automation-work-status">${esc(queueReason(item,queues))}</small></div><button class="cr-secondary" data-manage-queue="${esc(projectId)}">Manage queue</button></article>`).join('')+(rows.length?'':'<p class="cr-empty">No planned or queued messages.</p>');
+            queueHost.querySelectorAll('[data-manage-queue]').forEach(b=>b.onclick=()=>{showSection('planner');$('plannerProject').value=b.dataset.manageQueue;renderPlanner();});
+          }catch(e){queueHost.innerHTML=heading('Planned and queued messages')+`<p class="cr-note" role="status">${esc(e.message)} · Use Refresh to retry.</p>`;}
+        })(),
+        (async()=>{
+          try{
+            const response=await engine.api('/api/automations/session-timers');
+            if(response.status===404){timerHost.innerHTML=heading('Session timers')+'<p class="cr-note" role="status">Session timer discovery needs the next backend release. Only gateway schedules are verified here.</p>';return;}
+            if(!response.ok)throw new Error('Could not check session timers');
+            const {jobs,warnings=[]}=await response.json();
+            timerHost.innerHTML=heading('Session timers',jobs.length)+(jobs.length?'<p class="cr-note">These timers were recorded by Claude. They disappear when its process exits; their current status and timezone cannot be verified. They are not gateway schedules.</p>':'<p class="cr-empty">No session timers found in the checked history.</p>')+jobs.map(job=>`<article class="automation-work-row" data-session-timer="${esc(job.id)}"><div>${automationWorkIdentity(job.projectId,job.sessionId)}<p class="automation-work-status">Unverified · ${job.recurring?'Repeating':'One-off'} · <code>${esc(job.schedule)}</code> · CLI timezone unverified</p><details><summary>Timer ${esc(job.id)} · View planned prompt</summary><p class="automation-timer-prompt">${esc(job.prompt)}</p>${job.createdAt?`<small>Created ${esc(new Date(job.createdAt).toLocaleString())}</small>`:''}</details></div></article>`).join('')+(warnings.length?'<p class="cr-note" role="status">Some conversation history could not be fully checked. This list may be incomplete.</p>':'');
+          }catch(e){timerHost.innerHTML=heading('Session timers')+`<p class="cr-note" role="status">${esc(e.message)} · Use Refresh to retry.</p>`;}
+        })()
+      ]);
+      for(const host of [queueHost,timerHost])host.querySelectorAll('[data-session]').forEach(b=>b.onclick=()=>openConversation(b));
+    }finally{automationWorkBusy=false;if(automationWorkAgain){automationWorkAgain=false;loadAutomationWork();}}
+  }
   function segmented(id, items, value, label) {
     return `<div id="${id}" class="cr-segments" role="group" aria-label="${label}">${items.map(([v,t])=>`<button data-value="${v}" aria-pressed="${v===value}">${t}</button>`).join('')}</div>`;
   }
@@ -2334,14 +2369,14 @@ window.createControlRoom = function (engine) {
   }
 
   async function loadPlanner(){try{plannerRows=await workspaceRequest('queue');renderPlanner();}catch(e){$('plannerItems').textContent=e.message;}}
-  function queueReason(item){
+  function queueReason(item,queues=plannerRows){
     if(item.dispatching)return 'Interrupted delivery · review conversation before resuming';
     const reasons=[];
     if(item.paused)reasons.push(item.error?'Paused: '+item.error:'Paused');
     if(item.notBefore>Date.now())reasons.push('Scheduled '+new Date(item.notBefore).toLocaleString());
     const dep=cards().find(x=>x.c.sessionId===item.afterSessionId);
     if(dep&&['running','background'].includes(dep.status))reasons.push('Waiting for '+dep.c.title);
-    if(!reasons.length){const target=cards().find(x=>x.c.sessionId===item.sessionId),queue=Object.values(plannerRows).find(rows=>rows.some(x=>x.id===item.id))||[],head=queue.find(x=>x.sessionId===item.sessionId);reasons.push(head&&head.id!==item.id?'Waiting for earlier message':target&&['running','background'].includes(target.status)?'Waiting for current turn':'Ready to send');}
+    if(!reasons.length){const target=cards().find(x=>x.c.sessionId===item.sessionId),queue=Object.values(queues).find(rows=>rows.some(x=>x.id===item.id))||[],head=queue.find(x=>x.sessionId===item.sessionId);reasons.push(head&&head.id!==item.id?'Waiting for earlier message':target&&['running','background'].includes(target.status)?'Waiting for current turn':'Ready to send');}
     return reasons.join(' · ');
   }
   function renderPlanner(){const pid=$('plannerProject').value;const rows=Object.entries(plannerRows).filter(([p])=>!pid||pid===p).flatMap(([projectId,items])=>items.map((item,index)=>({projectId,item,index})));$('plannerItems').innerHTML=rows.map(({projectId,item,index})=>{const project=engine.state().projects.find(p=>p.id===projectId),conversation=cards().find(x=>x.c.sessionId===item.sessionId)?.c,[primary,secondary]=conversationLabels(project,conversation);return `<article class="planner-item" draggable="true" data-queue="${esc(item.id)}" data-project="${esc(projectId)}"><span class="planner-order" title="Drag to reorder">${index+1}</span><div class="planner-copy"><strong>${esc(primary)}</strong><small class="planner-conversation">${esc(secondary)}</small><p>${esc(item.text)}</p><small>${esc(queueReason(item))}</small></div><div class="planner-actions"><button class="cr-icon" data-move="-1" aria-label="Move up">${ic('up')}</button><button class="cr-icon" data-move="1" aria-label="Move down">${ic('down')}</button><button class="cr-secondary" data-edit>Edit</button><button class="cr-secondary" data-pause>${item.paused||item.dispatching?'Resume':'Pause'}</button><button class="cr-icon" data-remove aria-label="Remove queued message">${ic('x')}</button></div></article>`;}).join('')||'<div class="cr-empty">No messages waiting. Plan a message to get started.</div>';

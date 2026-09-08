@@ -1,4 +1,6 @@
 import { RoutingState, type ConversationRoute } from './routing-state.js';
+import { SessionTimerReader } from './session-timers.js';
+import { transcriptIndex } from '../src/adapters/subagents.js';
 import { ArtifactStore } from './workspace-store.js';
 import { accountHealth } from './routing-health.js';
 import { DeliveryStore, type DeliveryReceipt } from './workspace-store.js';
@@ -139,6 +141,9 @@ export class ApiController {
   private readonly quotaBackoffUntil = new Map<string, number>();
 
   private deliveries: DeliveryStore;
+  private readonly sessionTimerReader = new SessionTimerReader();
+  private sessionTimerSnapshot?: { at: number; value: unknown };
+  private sessionTimerPending?: Promise<unknown>;
   constructor(
     @Inject(SessionManager) private readonly manager: SessionManager,
     @Inject(STATE_DIR) private readonly stateDir: string,
@@ -1786,6 +1791,34 @@ export class ApiController {
   usedTemplate(@Body() body: { id?: string }): { ok: boolean } {
     if (!body?.id) throw new BadRequestException('id required');
     return { ok: !!this.templates.used(body.id) };
+  }
+
+  @Get('automations/session-timers')
+  sessionTimers(): Promise<unknown> {
+    if (this.sessionTimerPending) return this.sessionTimerPending;
+    if (this.sessionTimerSnapshot && Date.now() - this.sessionTimerSnapshot.at < 10_000) return Promise.resolve(this.sessionTimerSnapshot.value);
+    this.sessionTimerPending = (async () => {
+      const projects = this.manager.listProjects().projects;
+      const accounts = AccountRegistry.load(join(this.stateDir, 'accounts.json')).list();
+      const files = transcriptIndex(accounts.filter(a => a.provider === 'claude').map(a => a.configDir));
+      const jobs = [], warnings = [];
+      for (const project of projects) for (const conversation of project.conversations || []) {
+        // Include old Claude transcripts even if the project's default provider changed.
+        const file = files.get(conversation.providerSessionId || conversation.sessionId);
+        if (!file) continue;
+        try {
+          const found = await this.sessionTimerReader.read(file);
+          jobs.push(...found.jobs.map(job => ({ ...job, projectId: project.id, sessionId: conversation.sessionId })));
+          if (found.incomplete) warnings.push({ projectId: project.id, sessionId: conversation.sessionId, message: 'Some oversized transcript records could not be checked.' });
+        } catch {
+          warnings.push({ projectId: project.id, sessionId: conversation.sessionId, message: 'Conversation timer history could not be read.' });
+        }
+      }
+      const value = { jobs, warnings };
+      this.sessionTimerSnapshot = { at: Date.now(), value };
+      return value;
+    })().finally(() => { this.sessionTimerPending = undefined; });
+    return this.sessionTimerPending;
   }
 
   @Get('cron')
