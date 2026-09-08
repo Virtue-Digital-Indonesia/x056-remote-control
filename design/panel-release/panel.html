@@ -3732,7 +3732,7 @@
           if (!q || pn.indexOf(q) >= 0) items.push({ type: 'project', pid: p.id, title: p.name, sub: 'project', running: !!runningProjects[p.id] });
           (p.conversations || []).forEach(function (c) {
             var ct = (c.title || '').toLowerCase();
-            if (!q || ct.indexOf(q) >= 0 || pn.indexOf(q) >= 0) items.push({ type: 'conv', pid: p.id, sid: c.sessionId, title: c.title || 'Conversation', sub: p.name, running: isSessionRunning(p.id, c.sessionId) });
+            if (!q || ct.indexOf(q) >= 0 || pn.indexOf(q) >= 0) items.push({ type: 'conv', pid: p.id, sid: c.sessionId, title: p.name, sub: c.title || 'Conversation', running: isSessionRunning(p.id, c.sessionId) });
           });
         });
         return items;
@@ -4985,7 +4985,13 @@
       head.append(label, time);
       var preview = document.createElement('p');
       preview.textContent = row.body.prompt || 'Attached files';
-      item.append(head, preview);
+      item.append(head);
+      var identityProject = projCache[row.body.projectId],
+        identityConversation = identityProject?.conversations?.find(function (c) { return c.sessionId === row.sessionId; });
+      var identity = document.createElement('div'); identity.className = 'delivery-identity';
+      var projectLabel = document.createElement('strong'); projectLabel.textContent = identityProject?.name || 'Project unavailable';
+      var conversationLabel = document.createElement('small'); conversationLabel.textContent = identityConversation?.title || 'New conversation';
+      identity.append(projectLabel, conversationLabel); item.append(identity, preview);
       if (row.error) {
         var detail = document.createElement('small');
         detail.textContent = row.error;

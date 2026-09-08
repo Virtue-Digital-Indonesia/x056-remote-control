@@ -40,7 +40,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8781';
   await page.locator('.title-suggestion[data-status=applied]').waitFor();
   await page.keyboard.press('Escape');
   await page
-    .locator('.cr-task[data-session="' + first.sessionId + '"] .cr-row-title')
+    .locator('.cr-task[data-session="' + first.sessionId + '"] .cr-row-subtitle')
     .filter({ hasText: 'Website layout improvements' })
     .waitFor();
   await page.locator('[data-pin-session="' + first.sessionId + '"]').click();
@@ -64,7 +64,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8781';
   await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
   await page
-    .locator('.cr-task[data-session="' + first.sessionId + '"] .cr-row-title')
+    .locator('.cr-task[data-session="' + first.sessionId + '"] .cr-row-subtitle')
     .filter({ hasText: first.title })
     .waitFor();
   await page.locator('#crSelectToggle').click();

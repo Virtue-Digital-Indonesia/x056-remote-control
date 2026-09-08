@@ -35,7 +35,8 @@ window.createControlRoom = function (engine) {
   $('crHome').insertAdjacentHTML('afterend','<span id="crBreadcrumb">Workspace <span>/ Control room</span></span>');
   const projectVeil = document.createElement('div'); projectVeil.id='crProjectVeil'; projectVeil.hidden=true; shell.append(projectVeil);
   // Account selection stays next to the composer, in every presentation mode.
-  content.querySelector('.composer').insertAdjacentHTML('beforeend', '<button id="sendAccountChip" class="send-account-chip" aria-haspopup="dialog"></button>');
+  content.querySelector('.composer').insertAdjacentHTML('beforeend', '<div class="composer-footer"><button id="sendAccountChip" class="send-account-chip" aria-haspopup="dialog"></button></div>');
+  if($('deliveryStrip'))content.querySelector('.composer-footer').append($('deliveryStrip'));
   const sendAccounts = document.createElement('dialog'); sendAccounts.id='sendAccountPicker'; sendAccounts.className='cr-dialog';sendAccounts.setAttribute('aria-label','Choose an account'); document.body.append(sendAccounts);
   const veil = document.createElement('div'); veil.id = 'chatVeil'; veil.hidden = true; document.body.append(veil);
   const preferences = document.createElement('dialog'); preferences.id = 'displayPreferences'; preferences.className = 'cr-dialog'; preferences.setAttribute('aria-label','Settings');
@@ -44,7 +45,7 @@ window.createControlRoom = function (engine) {
   let prefs = { open: 'max', maximize: 'modal' };
   try { const saved = JSON.parse(localStorage.getItem('x056_display_preferences') || localStorage.getItem('x056_draft_chat_preferences_v1') || '{}'); if (['side','max','maximized'].includes(saved.open)) prefs.open = saved.open === 'maximized' ? 'max' : saved.open; if (['page','modal'].includes(saved.maximize)) prefs.maximize = saved.maximize; } catch {}
   const sectionScroll = {board:0,accounts:0,automations:0,artifacts:0,planner:0};
-  let accountProvider = '', accountDays = '7', chartMetric = 'attempts', selectedSendAccount = '', pickerBusy = false;
+  let accountProvider = '', accountDays = '7', chartMetric = 'tokens', selectedSendAccount = '', pickerBusy = false;
   let conversationMeta={},bulkMode=false,bulkSelection=new Set(),bulkCandidates=[],artifactRows=[],plannerRows={};
   let recentLimit=10, selectedProject='', projectNavSignature='', sendAccountSignature='';
   let dismissedProjects=[],showDismissedProjects=false;
@@ -60,19 +61,54 @@ window.createControlRoom = function (engine) {
   document.body.append(stage);
   let stagePins=[],stageRecent=[],recentDismissed=[],stageMode='pinned',showDismissedRecents=false,stageSignature='',stageCloseTimer,stageExpanded=false,stagePage=0,stageMotion=0,stageAnimations=[];
   try{const saved=JSON.parse(localStorage.getItem('x056_stage_pins')||'[]');if(Array.isArray(saved))stagePins=[...new Set(saved.filter(x=>typeof x==='string'))];}catch{}
-  try{stageMode=localStorage.getItem('x056_stage_mode')==='recent'?'recent':'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
+  try{stageMode=['recent','smart'].includes(localStorage.getItem('x056_stage_mode'))?localStorage.getItem('x056_stage_mode'):'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
   document.body.dataset.stageMode=stageMode;
   function saveRecents(){try{localStorage.setItem('x056_stage_recent',JSON.stringify(stageRecent.slice(0,30)));localStorage.setItem('x056_recent_dismissed',JSON.stringify(recentDismissed));}catch{toast('This browser could not save recent conversations.');}}
   function rememberStage(){const state=engine.state();if(!state.sessionId)return;const id=stageKey(state.projectId,state.sessionId);stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);recentDismissed=recentDismissed.filter(x=>x!==id);saveRecents();renderStage();}
   function dismissRecent(project,session){const id=stageKey(project,session);recentDismissed=[...new Set([...recentDismissed,id])];saveRecents();renderStage();refresh();toast('Conversation dismissed from recents.',()=>restoreRecent(project,session));}
   function restoreRecent(project,session){recentDismissed=recentDismissed.filter(x=>x!==stageKey(project,session));saveRecents();renderStage();refresh();}
-  function setStageMode(value){stageMode=value==='recent'?'recent':'pinned';stagePage=0;document.body.dataset.stageMode=stageMode;try{localStorage.setItem('x056_stage_mode',stageMode);}catch{toast('This browser could not save the switcher mode.');}renderStage();}
-  function stageCandidates(all=cards()){
-    const byId=new Map(all.map(x=>[stageKey(x.p.id,x.c.sessionId),x]));
-    if(stageMode==='pinned')return stagePins.map(id=>byId.get(id)).filter(Boolean);
-    const opened=stageRecent.map(id=>byId.get(id)).filter(Boolean),running=all.filter(x=>['running','background'].includes(x.status));
-    const seen=new Set();return [...running,...opened].filter(x=>{const id=stageKey(x.p.id,x.c.sessionId);if(seen.has(id)||recentDismissed.includes(id))return false;seen.add(id);return true;});
+  function setStageMode(value){stageMode=['recent','smart'].includes(value)?value:'pinned';stagePage=0;document.body.dataset.stageMode=stageMode;try{localStorage.setItem('x056_stage_mode',stageMode);}catch{toast('This browser could not save the switcher mode.');}renderStage();}
+  function stageCandidates(all = cards()) {
+    const byId = new Map(all.map((x) => [stageKey(x.p.id, x.c.sessionId), x]));
+    if (stageMode === 'pinned') return stagePins.map((id) => byId.get(id)).filter(Boolean);
+    if (stageMode === 'smart') {
+      const pins = stagePins.map((id) => byId.get(id)).filter(Boolean),
+        pinIds = new Set(pins.map((x) => x.k)),
+        recentIds = new Set(stageRecent.slice(0, 3));
+      const eligible = all.filter(
+        (x) =>
+          !pinIds.has(x.k) &&
+          !recentDismissed.includes(x.k) &&
+          !dismissedProjects.includes(x.p.id) &&
+          !conversationMeta[x.k]?.archived &&
+          (x.status === 'question' ||
+            x.unread ||
+            ['running', 'background'].includes(x.status) ||
+            recentIds.has(x.k)),
+      );
+      const priority = (x) =>
+        x.status === 'question' ? 4 : x.unread ? 3 : ['running', 'background'].includes(x.status) ? 2 : 1;
+      eligible.sort((a, b) => priority(b) - priority(a) || b.time - a.time || a.k.localeCompare(b.k));
+      const room = Math.max(0, 8 - pins.length),
+        suggested = eligible.slice(0, room),
+        lastOpened = eligible.find((x) => x.k === stageRecent[0]);
+      if (room && lastOpened && !suggested.some((x) => x.k === lastOpened.k)) {
+        if (suggested.length === room) suggested.pop();
+        suggested.push(lastOpened);
+      }
+      return [...pins, ...suggested];
+    }
+    const opened = stageRecent.map((id) => byId.get(id)).filter(Boolean),
+      running = all.filter((x) => ['running', 'background'].includes(x.status));
+    const seen = new Set();
+    return [...running, ...opened].filter((x) => {
+      const id = stageKey(x.p.id, x.c.sessionId);
+      if (seen.has(id) || recentDismissed.includes(id)) return false;
+      seen.add(id);
+      return true;
+    });
   }
+  const compareProjects = (a,b) => a.p.name.localeCompare(b.p.name, undefined, {numeric:true,sensitivity:'base'}) || a.p.id.localeCompare(b.p.id);
   function stageKey(project,session){return project+'::'+session;}
   function isStagePinned(project,session){return stagePins.includes(stageKey(project,session));}
   function saveStage(){try{localStorage.setItem('x056_stage_pins',JSON.stringify(stagePins));}catch{toast('This browser could not save pinned conversations.');}}
@@ -126,25 +162,30 @@ window.createControlRoom = function (engine) {
   $('stageNext').onclick=()=>{stagePage++;renderStage();};
   window.addEventListener('resize',()=>{renderStage();if(innerWidth<=850){stageExpanded=false;stageOpen(false);}});
   window.addEventListener('storage',e=>{
-    if(e.key==='x056_stage_mode'){stageMode=e.newValue==='recent'?'recent':'pinned';document.body.dataset.stageMode=stageMode;stagePage=0;renderStage();return;}
+    if(e.key==='x056_stage_mode'){stageMode=['recent','smart'].includes(e.newValue)?e.newValue:'pinned';document.body.dataset.stageMode=stageMode;stagePage=0;renderStage();return;}
     const assign={'x056_stage_pins':v=>stagePins=v,'x056_stage_recent':v=>stageRecent=v,'x056_recent_dismissed':v=>recentDismissed=v};if(!assign[e.key])return;
     try{const value=JSON.parse(e.newValue||'[]');if(Array.isArray(value)){assign[e.key]([...new Set(value.filter(x=>typeof x==='string'))]);renderStage();refresh();}}catch{}
   });
   function renderStage(){
     const all=cards(),s=engine.state(),byId=new Map(all.map(x=>[stageKey(x.p.id,x.c.sessionId),x]));
-    const pinned=stageCandidates(all),pageSize=Math.max(1,Math.min(7,Math.floor((innerHeight-230)/58)));
+    const pinned=stageCandidates(all).sort((a,b)=>compareProjects(a,b)||b.time-a.time||a.k.localeCompare(b.k)),pageSize=Math.max(1,Math.min(7,Math.floor((innerHeight-230)/58)));
     stagePage=Math.min(stagePage,Math.max(0,Math.ceil(pinned.length/pageSize)-1));
     const rows=pinned.slice(stagePage*pageSize,(stagePage+1)*pageSize);
     $('stageCount').textContent=pinned.length||'';$('stageCount').hidden=!pinned.length;
-    $('stageToggle').setAttribute('aria-label',pinned.length?(stageMode==='pinned'?'Pinned conversations':'Recent conversations')+' ('+pinned.length+') · Click to switch, hover to browse':'Pin a conversation');
-    stage.setAttribute('aria-label',stageMode==='pinned'?'Pinned conversations':'Recent conversations');
-    stage.dataset.count=String(pinned.length);updateStageToggle();
+    let caption=$('stageToggleCaption');
+    if(!caption){caption=document.createElement('span');caption.id='stageToggleCaption';caption.className='stage-caption';caption.setAttribute('aria-hidden','true');$('stageToggle').append(caption);}
+    const lead=pinned.find(x=>x.k===stageRecent[0])||pinned[0];
+    caption.hidden=!lead;
+    if(lead)caption.innerHTML=`<strong>${esc(lead.p.name)}</strong><small>${esc(lead.c.title||'Conversation')}</small>`;
+    $('stageToggle').setAttribute('aria-label',pinned.length?(stageMode==='pinned'?'Pinned conversations':stageMode==='smart'?'Smart conversations':'Recent conversations')+' ('+pinned.length+') · Click to switch, hover to browse':'Pin a conversation');
+    stage.setAttribute('aria-label',stageMode==='pinned'?'Pinned conversations':stageMode==='smart'?'Smart conversations':'Recent conversations');
+    stage.dataset.count=String(pinned.length);stage.dataset.unread=String(pinned.some(x=>x.unread));const visibleIds=new Set(pinned.map(x=>x.k));document.body.dataset.stageCoversRuns=String(stageMode==='recent'||stageMode==='smart'&&all.filter(x=>['running','background'].includes(x.status)).every(x=>visibleIds.has(x.k)));updateStageToggle();
     $('stagePrevious').setAttribute('aria-label','Previous conversations');$('stageNext').setAttribute('aria-label','More conversations');
     $('stagePrevious').hidden=stagePage===0;$('stageNext').hidden=(stagePage+1)*pageSize>=pinned.length;
-    const html=rows.map(x=>{const title=x.c.title||'Conversation',current=x.c.sessionId===s.sessionId&&x.p.id===s.projectId;return `<div class="stage-item ${current?'current':''}"><button class="stage-conversation ${x.status}" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}" aria-label="${esc(title+' · '+x.p.name+' · '+(statusLabels[x.status]||'Idle'))}" ${current?'aria-current="true"':''} style="--project-color:${projectColor(x.p.id)}"><span class="stage-caption"><strong>${esc(title)}</strong><small>${esc(x.p.name)} · ${statusLabels[x.status]||'Idle'}</small></span>${ic(['running','background'].includes(x.status)?'sparkles':'chat')}<i class="stage-status" aria-hidden="true"></i></button><button class="stage-unpin" data-stage-unpin="${esc(stageKey(x.p.id,x.c.sessionId))}" aria-label="${stageMode==='pinned'?'Unpin':'Dismiss'} ${esc(title)}">${ic('x')}</button></div>`;}).join('');
+    const html=rows.map(x=>{const title=x.c.title||'Conversation',current=x.c.sessionId===s.sessionId&&x.p.id===s.projectId;return `<div class="stage-item ${current?'current':''}"><button class="stage-conversation ${x.status} ${x.unread?'unread':''}" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}" aria-label="${esc(x.p.name+' · '+title+' · '+(x.unread?'Unread · ':'')+(statusLabels[x.status]||'Idle'))}" ${current?'aria-current="true"':''} style="--project-color:${projectColor(x.p.id)}"><span class="stage-caption"><strong>${esc(x.p.name)}</strong><small>${esc(title)}</small><span class="stage-caption-status">${x.unread?'Unread · ':''}${stageMode==='smart'&&isStagePinned(x.p.id,x.c.sessionId)?'Pinned · ':''}${statusLabels[x.status]||'Idle'}</span></span>${ic(['running','background'].includes(x.status)?'sparkles':'chat')}<i class="stage-status" aria-hidden="true"></i></button><button class="stage-unpin" data-stage-unpin="${esc(stageKey(x.p.id,x.c.sessionId))}" aria-label="${stageMode==='pinned'?'Unpin':'Dismiss'} ${esc(title)}">${ic('x')}</button></div>`;}).join('');
     if(html===stageSignature)return;stageSignature=html;const focused=document.activeElement,focus=focused?.dataset.session,unpinFocus=focused?.dataset.stageUnpin;$('stageItems').innerHTML=html;
     $('stageItems').querySelectorAll('[data-session]').forEach(b=>b.onclick=()=>openConversation(b));
-    $('stageItems').querySelectorAll('[data-stage-unpin]').forEach(b=>b.onclick=()=>{const x=byId.get(b.dataset.stageUnpin);if(x){if(stageMode==='pinned')pinStage(x.p.id,x.c.sessionId,false);else dismissRecent(x.p.id,x.c.sessionId);}$('stageToggle').focus();});
+    $('stageItems').querySelectorAll('[data-stage-unpin]').forEach(b=>b.onclick=()=>{const x=byId.get(b.dataset.stageUnpin);if(x){if(stageMode==='pinned')pinStage(x.p.id,x.c.sessionId,false);else {const wasPinned=stageMode==='smart'&&isStagePinned(x.p.id,x.c.sessionId);if(wasPinned)pinStage(x.p.id,x.c.sessionId,false);dismissRecent(x.p.id,x.c.sessionId);if(wasPinned)toast('Conversation unpinned and dismissed.',()=>{restoreRecent(x.p.id,x.c.sessionId);pinStage(x.p.id,x.c.sessionId,true);});}}$('stageToggle').focus();});
     if(focus)[...$('stageItems').querySelectorAll('[data-session]')].find(b=>b.dataset.session===focus)?.focus({preventScroll:true});
     if(unpinFocus)[...$('stageItems').querySelectorAll('[data-stage-unpin]')].find(b=>b.dataset.stageUnpin===unpinFocus)?.focus({preventScroll:true});
   }
@@ -155,9 +196,10 @@ window.createControlRoom = function (engine) {
   function openStagePicker(){stageExpanded=false;stageOpen(false);stagePickerLimit=30;$('stagePinSearch').value='';renderStagePicker();if(!stagePicker.open)stagePicker.showModal();$('stagePinSearch').focus();}
   function renderStagePicker(){
     const query=$('stagePinSearch').value.trim().toLowerCase(),all=cards().filter(x=>[x.p.name,x.c.title].join(' ').toLowerCase().includes(query));
+    all.sort((a,b)=>compareProjects(a,b)||b.time-a.time||a.k.localeCompare(b.k));
     const focus=document.activeElement?.dataset.pinChoice;
     $('stagePinTotal').textContent=stagePins.length+' pinned';
-    $('stagePinChoices').innerHTML=all.slice(0,stagePickerLimit).map(x=>`<label class="stage-pin-choice"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span><strong>${esc(x.c.title||'Conversation')}</strong><small>${esc(x.p.name)}</small></span><input type="checkbox" data-pin-choice="${esc(stageKey(x.p.id,x.c.sessionId))}" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}" aria-label="Pin ${esc(x.c.title||'conversation')}" ${isStagePinned(x.p.id,x.c.sessionId)?'checked':''}></label>`).join('')||'<p class="cr-empty">No matching conversations.</p>';
+    $('stagePinChoices').innerHTML=all.slice(0,stagePickerLimit).map(x=>`<label class="stage-pin-choice"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span><strong>${esc(x.p.name)}</strong><small>${esc(x.c.title||'Conversation')}</small></span><input type="checkbox" data-pin-choice="${esc(stageKey(x.p.id,x.c.sessionId))}" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}" aria-label="Pin ${esc(x.c.title||'conversation')}" ${isStagePinned(x.p.id,x.c.sessionId)?'checked':''}></label>`).join('')||'<p class="cr-empty">No matching conversations.</p>';
     if(all.length>stagePickerLimit)$('stagePinChoices').insertAdjacentHTML('beforeend','<button class="cr-text-button" id="stageMoreChoices">Show more conversations</button>');
     $('stagePinChoices').querySelectorAll('[data-pin-choice]').forEach(input=>input.onchange=()=>pinStage(input.dataset.project,input.dataset.session,input.checked));
     if(focus)[...$('stagePinChoices').querySelectorAll('[data-pin-choice]')].find(b=>b.dataset.pinChoice===focus)?.focus({preventScroll:true});
@@ -260,7 +302,15 @@ window.createControlRoom = function (engine) {
     if (e.key === 'Escape' && mode !== 'closed') { e.preventDefault(); close(); }
     if (e.key === 'Tab' && mode === 'modal') { const nodes = [...main.querySelectorAll('button,input,textarea,select,[tabindex="0"],a[href]'),...stage.querySelectorAll('button')].filter(n => n.offsetParent && !n.disabled && !n.hidden); const first = nodes[0], last = nodes[nodes.length-1]; if (e.shiftKey && (document.activeElement === first || (!main.contains(document.activeElement)&&!stage.contains(document.activeElement)))) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
   });
-  function updateTitle() { const s = engine.state(), p = s.projects.find(p => p.id === s.projectId), c = p?.conversations?.find(c => c.sessionId === s.sessionId); main.setAttribute('aria-label', c?.title || 'New conversation'); if (c) $('projTitle').textContent = c.title; $('projTitle').disabled=!c; $('projTitle').title=c?'Rename conversation':'New conversation'; }
+  function updateTitle() {
+    const state=engine.state(),project=state.projects.find(p=>p.id===state.projectId),conversation=project?.conversations?.find(c=>c.sessionId===state.sessionId);
+    let label=$('chatProjectName');
+    if(!label){label=document.createElement('strong');label.id='chatProjectName';$('projTitle').before(label);}
+    label.textContent=project?.name||'Choose a project';label.title=project?.cwd||'';
+    $('projTitle').textContent=conversation?.title||'New conversation';$('projTitle').disabled=!conversation;
+    $('projTitle').title=conversation?'Rename conversation: '+conversation.title:'New conversation';
+    main.setAttribute('aria-label',label.textContent+' · '+$('projTitle').textContent);
+  }
   function cards() {
     const s = engine.state(), out = [];
     for (const p of s.projects) for (const c of p.conversations || []) {
@@ -309,7 +359,7 @@ window.createControlRoom = function (engine) {
     catch(e){toast(e.message);}finally{if(button.isConnected)button.disabled=false;}
   }
   function conversationRow(x) {
-    return `<article class="cr-conversation-row ${x.status}" data-row="${esc(x.c.sessionId)}">${bulkMode?`<input class="bulk-checkbox" type="checkbox" data-bulk-key="${esc(x.k)}" aria-label="Select ${esc(x.c.title||'conversation')}" ${bulkSelection.has(x.k)?'checked':''}>`:''}<button class="cr-task" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span class="cr-row-copy"><span class="cr-row-title">${esc(x.c.title||'Conversation')}<small class="cr-row-tags">${esc((conversationMeta[x.k]?.tags||[]).join(' · '))}</small>${x.unread?'<i class="cr-unread-dot" title="Unread"></i>':''}</span><span class="cr-row-subtitle">${esc(selectedProject ? (x.label || (x.c.provider==='codex'?'ChatGPT':'Claude')) : x.p.name+(x.label?' · '+x.label:''))}</span></span><span class="cr-status ${x.status}"><i></i>${statusLabels[x.status]}</span><time ${x.time?'datetime="'+new Date(x.time).toISOString()+'" title="Last message: '+esc(new Date(x.time).toLocaleString())+'"':'title="No message timestamp available"'}>${esc(relativeDate(x.time))}</time></button><button class="cr-row-menu cr-icon" data-conversation-menu="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" aria-label="Actions for ${esc(x.c.title||'conversation')}">${ic('more')}</button><button class="cr-row-pin ${isStagePinned(x.p.id,x.c.sessionId)?'pinned':''}" data-pin-project="${esc(x.p.id)}" data-pin-session="${esc(x.c.sessionId)}" aria-label="${isStagePinned(x.p.id,x.c.sessionId)?'Unpin':'Pin'} ${esc(x.c.title||'conversation')}" aria-pressed="${isStagePinned(x.p.id,x.c.sessionId)}">${ic('pin')}</button>${['finished','idle'].includes(x.status)?`<button class="cr-recent-dismiss" data-recent-project="${esc(x.p.id)}" data-recent-session="${esc(x.c.sessionId)}" aria-label="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore':'Dismiss'} ${esc(x.c.title||'conversation')} ${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'to':'from'} recents" title="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore to recents':'Dismiss from recents'}">${ic(recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'history':'x')}</button>`:''}${x.status==='question'?`<button class="cr-dismiss" data-dismiss="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" title="Dismiss question without sending a reply">Dismiss question</button>`:''}</article>`;
+    return `<article class="cr-conversation-row ${x.status}" data-row="${esc(x.c.sessionId)}">${bulkMode?`<input class="bulk-checkbox" type="checkbox" data-bulk-key="${esc(x.k)}" aria-label="Select ${esc(x.c.title||'conversation')}" ${bulkSelection.has(x.k)?'checked':''}>`:''}<button class="cr-task" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span class="cr-row-copy"><span class="cr-row-title" title="${esc(x.p.name)}">${esc(x.p.name)}<small class="cr-row-tags">${esc((conversationMeta[x.k]?.tags||[]).join(' · '))}</small>${x.unread?'<i class="cr-unread-dot" title="Unread"></i>':''}</span><span class="cr-row-subtitle" title="${esc(x.c.title||'Conversation')}">${esc(x.c.title||'Conversation')}</span></span><span class="cr-status ${x.status}"><i></i>${statusLabels[x.status]}</span><time ${x.time?'datetime="'+new Date(x.time).toISOString()+'" title="Last message: '+esc(new Date(x.time).toLocaleString())+'"':'title="No message timestamp available"'}>${esc(relativeDate(x.time))}</time></button><button class="cr-row-menu cr-icon" data-conversation-menu="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" aria-label="Actions for ${esc(x.c.title||'conversation')}">${ic('more')}</button><button class="cr-row-pin ${isStagePinned(x.p.id,x.c.sessionId)?'pinned':''}" data-pin-project="${esc(x.p.id)}" data-pin-session="${esc(x.c.sessionId)}" aria-label="${isStagePinned(x.p.id,x.c.sessionId)?'Unpin':'Pin'} ${esc(x.c.title||'conversation')}" aria-pressed="${isStagePinned(x.p.id,x.c.sessionId)}">${ic('pin')}</button>${['finished','idle'].includes(x.status)?`<button class="cr-recent-dismiss" data-recent-project="${esc(x.p.id)}" data-recent-session="${esc(x.c.sessionId)}" aria-label="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore':'Dismiss'} ${esc(x.c.title||'conversation')} ${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'to':'from'} recents" title="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore to recents':'Dismiss from recents'}">${ic(recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'history':'x')}</button>`:''}${x.status==='question'?`<button class="cr-dismiss" data-dismiss="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" title="Dismiss question without sending a reply">Dismiss question</button>`:''}</article>`;
   }
   function renderBoard() {
     const all=cards(),state=engine.state();
@@ -471,7 +521,7 @@ window.createControlRoom = function (engine) {
       const data=await json('/api/autopilot'),projects=engine.state().projects,all=cards();
       host.innerHTML='<header class="automation-section-heading"><h2>Conversation autopilots</h2><span>'+Object.keys(data).length+' enabled</span></header>'+Object.entries(data).map(([sid,ap])=>{
         const project=projects.find(p=>p.id===ap.projectId),conversation=project?.conversations?.find(c=>c.sessionId===sid),card=all.find(x=>x.c.sessionId===sid&&x.p.id===ap.projectId),status=card&&['running','background'].includes(card.status)?'Running':'Waiting for next turn';
-        return `<article class="automation-ap-row"><button class="automation-ap-open" data-project="${esc(ap.projectId)}" data-session="${esc(sid)}" ${!conversation?'disabled':''}><i class="cr-project-color" style="--project-color:${projectColor(ap.projectId)}"></i><span><strong>${esc(conversation?.title||'Conversation unavailable')}</strong><small>${esc(project?.name||'Project unavailable')} · ${status}</small></span></button><span class="automation-ap-remaining">${ap.remaining} continuations left</span><button class="cr-secondary" data-stop-ap="${esc(sid)}">Stop autopilot</button></article>`;
+        return `<article class="automation-ap-row"><button class="automation-ap-open" data-project="${esc(ap.projectId)}" data-session="${esc(sid)}" ${!conversation?'disabled':''}><i class="cr-project-color" style="--project-color:${projectColor(ap.projectId)}"></i><span><strong>${esc(project?.name||'Project unavailable')}</strong><small>${esc(conversation?.title||'Conversation unavailable')} · ${status}</small></span></button><span class="automation-ap-remaining">${ap.remaining} continuations left</span><button class="cr-secondary" data-stop-ap="${esc(sid)}">Stop autopilot</button></article>`;
       }).join('')+(Object.keys(data).length?'':'<p class="cr-empty">No conversation autopilots enabled. Open a conversation to enable autopilot from its menu.</p>');
       host.querySelectorAll('[data-session]').forEach(b=>b.onclick=()=>openConversation(b));
       host.querySelectorAll('[data-stop-ap]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await json('/api/autopilot/stop',{sessionId:b.dataset.stopAp});toast('Autopilot stopped. The current turn can finish.');await loadAutomationAutopilots();}catch(e){toast(e.message);b.disabled=false;}});
@@ -488,7 +538,7 @@ window.createControlRoom = function (engine) {
     $('crAccounts').innerHTML=`<div class="cr-heading"><div><h1>Dashboard</h1><p>Account usage, project costs, and routing.</p></div><div class="cr-actions"><button class="cr-secondary" id="accountHealth">${ic('user')} Health & capacity</button><button class="cr-secondary" id="accountExport">${ic('down')} Export CSV</button><button class="cr-primary" id="accountAdd">${ic('plus')} Add account</button></div></div>
       <section id="crProjectCosts" class="cr-project-costs" aria-label="Project cost estimates"></section><div class="cr-tools">${segmented('accountProvider',[['','All providers'],['codex','ChatGPT'],['claude','Claude']],accountProvider,'Provider')}<span class="sp"></span>${segmented('accountDays',[['7','7 days'],['30','30 days']],accountDays,'Usage date range')}<button class="cr-icon" id="accountRefresh" title="Refresh usage" aria-label="Refresh usage">${ic('repeat')}</button></div>
       <div id="accountStatus" role="status" class="cr-note"></div><div id="accountStats" class="cr-stats"></div>
-      <div class="cr-charts"><section class="cr-chart-card"><header><h2>Activity over time</h2>${segmented('accountMetric',[['attempts','Attempts'],['tokens','Tokens']],chartMetric,'Chart metric')}</header><div class="chart-legend"><span><i></i>ChatGPT</span><span><i class="claude"></i>Claude</span><small>UTC</small></div><div id="accountChart"></div><div id="accountChartCaption" class="cr-chart-caption" role="status"></div></section><section class="cr-chart-card"><header><h2>Tokens by model</h2><span>Reported usage</span></header><div id="accountModels"></div></section></div>
+      <div class="cr-charts"><section class="cr-chart-card"><header><h2>Activity over time</h2>${segmented('accountMetric',[['tokens','Tokens'],['attempts','Attempts']],chartMetric,'Chart metric')}</header><div class="chart-legend"><span><i></i>ChatGPT</span><span><i class="claude"></i>Claude</span><small>UTC</small></div><div id="accountChart"></div><div id="accountChartCaption" class="cr-chart-caption" role="status"></div></section><section class="cr-chart-card"><header><h2>Tokens by model</h2><span>Reported usage</span></header><div id="accountModels"></div></section></div>
       <div class="cr-section-head"><h2>Connected accounts <small id="accountCount"></small></h2><span>Live availability · Provider limits</span></div><div id="accountRows"></div><div id="accountRouting"></div><p id="accountCoverage" class="cr-note"></p>`;
     on('accountHealth',()=>showHealth()); on('accountAdd',()=>$('addAcctBtn').click()); on('accountExport',exportCsv);
     on('accountRefresh',()=>{engine.pollAccounts();loadAnalytics();});
@@ -666,8 +716,8 @@ window.createControlRoom = function (engine) {
     preferences.querySelectorAll('[data-settings]').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settings));
     const body=$('settingsBody');
     if(tab==='general'){
-      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><div id="displayFields"></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
-      const stageHelp=()=>{$('stageModeHelp').textContent=stageMode==='pinned'?'Only chats you pin appear in the bubbles. The separate running indicator stays visible.':'Recent and running chats appear in the bubbles. The separate running indicator is hidden on desktop.';};stageHelp();wireSegment('stageMode',value=>{setStageMode(value);stageHelp();});
+      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats'],['smart','Smart']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><div id="displayFields"></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
+      const stageHelp=()=>{$('stageModeHelp').textContent=stageMode==='pinned'?'Only chats you pin appear in the bubbles. The separate running indicator stays visible.':stageMode==='smart'?'Pinned chats, then requests for input, unread replies, running work, and your last few chats. Up to 8 chats, plus any extra pins. Dismiss any chat to remove it.':'Recent and running chats appear in the bubbles. The separate running indicator is hidden on desktop.';};stageHelp();wireSegment('stageMode',value=>{setStageMode(value);stageHelp();});
       for(const field of generalFields)$('displayFields').append(field);
       for(const name of ['open','maximize'])preferences.querySelector(`input[name="${name}"][value="${prefs[name]}"]`).checked=true;
       body.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{engine.setTheme(b.dataset.themeChoice);syncTheme();body.querySelectorAll('[data-theme-choice]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));});
@@ -1022,6 +1072,41 @@ window.createControlRoom = function (engine) {
   async function workspaceRequest(path,body){const r=await engine.api('/api/'+path,body===undefined?undefined:{method:'POST',body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.message||'Request failed');return j;}
   function workspaceDialog(title,body){const d=document.createElement('dialog');d.className='cr-dialog workspace-dialog';d.innerHTML=`<header><h2>${esc(title)}</h2><button class="cr-icon" aria-label="Close">${ic('x')}</button></header>${body}`;if(d.querySelector('form')){d.classList.add('workspace-form-dialog');d.querySelectorAll('select[name=conversation],select[name=after]').forEach(select=>{if(select.disabled||select.options.length<13)return;const options=[...select.options].map(x=>({value:x.value,text:x.text})),search=document.createElement('input');search.type='search';search.placeholder='Find a project or conversation';search.setAttribute('aria-label','Filter '+(select.name==='after'?'dependency conversations':'conversations'));select.before(search);search.oninput=()=>{const value=select.value,query=search.value.toLowerCase();select.replaceChildren(...options.filter(x=>!x.value||x.value===value||x.text.toLowerCase().includes(query)).map(x=>new Option(x.text,x.value)));select.value=value;};});}document.body.append(d);d.querySelector('header button').onclick=()=>d.close();d.addEventListener('click',e=>{const r=d.getBoundingClientRect();if(e.target===d&&(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom))d.close();});d.addEventListener('close',()=>{d.querySelectorAll('img').forEach(img=>{if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);});d.remove();});d.showModal();return d;}
   async function loadConversationMeta(){try{const data=await workspaceRequest('workspace/metadata');if(JSON.stringify(data)!==JSON.stringify(conversationMeta)){conversationMeta=data;boardSignature='';refresh();}}catch{}}
+  // A static build stamp also works on backends predating /api/version.
+  const interfaceVersion = document.querySelector('meta[name="x056-ui-version"]')?.content || 'unknown';
+  let publishedInterface = interfaceVersion, interfaceError = '';
+  $('crConnection').insertAdjacentHTML('beforebegin', '<button id="currentVersion" aria-label="Current version"></button>');
+  function renderInterfaceVersion() {
+    const changed = publishedInterface !== interfaceVersion;
+    $('currentVersion').textContent = changed ? 'Update available' : 'UI ' + interfaceVersion;
+    $('currentVersion').dataset.stale = String(changed);
+    $('currentVersion').title = changed ? 'Refresh to load the published interface' : 'Current interface version';
+  }
+  async function checkInterfaceVersion() {
+    try {
+      const response = await fetch('/', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+      if (!response.ok) throw new Error('Could not check the published version.');
+      const html = await response.text();
+      const stamp = html.match(/<meta name="x056-ui-version" content="([a-zA-Z0-9-]+)">/);
+      // The full backend release replaces this compatibility stamp with its own build information.
+      if (!stamp && !html.includes('window.X056_RELEASE=')) throw new Error('Could not verify the published version.');
+      publishedInterface = stamp ? stamp[1] : 'backend-release';
+      interfaceError = '';
+    } catch (e) { interfaceError = e.message; }
+    renderInterfaceVersion();
+  }
+  $('currentVersion').onclick = async () => {
+    await checkInterfaceVersion();
+    const changed = publishedInterface !== interfaceVersion;
+    const d = workspaceDialog('Current version', `<p class="release-state">${interfaceError ? esc(interfaceError) : changed ? 'A newer interface is published. Refresh this page to load it.' : 'This page matches the published interface.'}</p><dl class="release-info"><dt>Loaded interface</dt><dd>${esc(interfaceVersion)}</dd>${changed ? `<dt>Published interface</dt><dd>${esc(publishedInterface)}</dd>` : ''}</dl><div class="workspace-actions"><button class="cr-primary" data-refresh-page>Refresh page</button><button class="cr-secondary" data-check-release>Check again</button></div>`);
+    d.classList.add('workspace-form-dialog');
+    d.querySelector('[data-refresh-page]').onclick = () => location.reload();
+    d.querySelector('[data-check-release]').onclick = () => { d.close(); $('currentVersion').click(); };
+  };
+  renderInterfaceVersion();
+  setInterval(() => { if (!document.hidden) checkInterfaceVersion(); }, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkInterfaceVersion(); });
+
   function renderBulk(){const bar=$('crBulkBar');bar.hidden=!bulkMode;$('crSelectToggle').textContent=bulkMode?'Done selecting':'Select';bar.querySelector('strong').textContent=bulkSelection.size+' selected';$('crBulkAll').textContent=bulkCandidates.length>500?'Select first 500 matches':'Select all matches';bar.querySelectorAll('[data-bulk]').forEach(b=>b.disabled=!bulkSelection.size);}
   async function bulkAction(action){
     const selected=cards().filter(x=>bulkSelection.has(x.k));if(!selected.length)return;
@@ -1037,12 +1122,92 @@ window.createControlRoom = function (engine) {
   function conversationOptions(value=''){return cards().map(x=>`<option value="${esc(x.k)}" ${value===x.k?'selected':''}>${esc(x.p.name+' · '+(x.c.title||'Conversation'))}</option>`).join('');}
   const artifactKinds={image:'Screenshot',file:'File',preview:'Preview',test:'Test result'};
   async function artifactFile(item,download=false){const r=await engine.api('/api/workspace/artifact-file?id='+encodeURIComponent(item.id));if(!r.ok)throw new Error('File is unavailable');const blob=await r.blob(),url=URL.createObjectURL(blob);if(download){const a=document.createElement('a');a.href=url;a.download=item.original?.split('/').pop()||item.title;a.click();setTimeout(()=>URL.revokeObjectURL(url),5000);return;}return url;}
-  function artifactCards(rows){return rows.map(x=>`<article class="artifact-card" data-artifact="${esc(x.id)}">${x.kind==='image'?`<button class="artifact-image" data-view="${esc(x.id)}" aria-label="View ${esc(x.title)}"><img alt="${esc(x.title)}" loading="lazy"></button>`:''}<div class="artifact-copy"><small>${artifactKinds[x.kind]} · ${esc(relativeDate(x.at))}</small><strong>${esc(x.title)}</strong>${x.kind==='test'?`<p class="test-result ${esc(x.status)}">${esc(x.summary)}</p><small>${x.source==='response'?'Reported by assistant':'Added manually'}</small>`:''}<small>${esc(engine.state().projects.find(p=>p.id===x.projectId)?.name||'Project')} · ${esc(cards().find(c=>c.k===x.projectId+'::'+x.sessionId)?.c.title||'Conversation')}</small><div class="artifact-actions">${x.url?`<a class="cr-secondary" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">Open preview ${ic('up')}</a>`:x.file?`<button class="cr-secondary" data-download="${esc(x.id)}">Download</button>`:''}<button class="cr-text-button" data-source="${esc(x.id)}">Conversation</button><button class="cr-icon" data-remove-artifact="${esc(x.id)}" aria-label="Remove from library">${ic('x')}</button></div></div></article>`).join('')||'<div class="cr-empty">No saved outputs in this view.</div>';}
+  function artifactCards(rows,origin){return rows.map(x=>`<article class="artifact-card" data-artifact="${esc(x.id)}">${x.kind==='image'?`<button class="artifact-image" data-view="${esc(x.id)}" aria-label="View ${esc(x.title)}"><img alt="${esc(x.title)}" loading="lazy"></button>`:''}<div class="artifact-copy"><small>${artifactKinds[x.kind]} · ${esc(relativeDate(x.at))}</small><strong>${esc(x.title)}</strong>${x.kind==='test'?`<p class="test-result ${esc(x.status)}">${esc(x.summary)}</p><small>${x.source==='response'?'Reported by assistant':'Added manually'}</small>`:''}<small>${esc(engine.state().projects.find(p=>p.id===x.projectId)?.name||'Project')} · ${esc(cards().find(c=>c.k===x.projectId+'::'+x.sessionId)?.c.title||'Conversation')}</small><div class="artifact-actions">${x.url?`<a class="cr-secondary" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">Open preview ${ic('up')}</a>`:x.file?`<button class="cr-secondary" data-download="${esc(x.id)}">Download</button>`:''}${(!origin||x.projectId!==origin.projectId||x.sessionId!==origin.sessionId)?`<button class="cr-text-button" data-source="${esc(x.id)}">Open conversation</button>`:''}<button class="cr-icon" data-remove-artifact="${esc(x.id)}" aria-label="Remove from library">${ic('x')}</button></div></div></article>`).join('')||'<div class="cr-empty">No saved outputs in this view.</div>';}
   function bindArtifacts(container,rows,reload){const byId=new Map(rows.map(x=>[x.id,x]));container.querySelectorAll('.artifact-image img').forEach(async img=>{try{const url=await artifactFile(byId.get(img.closest('[data-artifact]').dataset.artifact));if(img.isConnected)img.src=url;else URL.revokeObjectURL(url);}catch{img.alt='Image unavailable';}});container.querySelectorAll('[data-view]').forEach(b=>b.onclick=async()=>{const x=byId.get(b.dataset.view);try{const url=await artifactFile(x),d=workspaceDialog(x.title,'<img class="artifact-large" alt="">');d.querySelector('img').src=url;d.querySelector('img').alt=x.title;}catch(e){toast(e.message);}});container.querySelectorAll('[data-download]').forEach(b=>b.onclick=()=>artifactFile(byId.get(b.dataset.download),true).catch(e=>toast(e.message)));container.querySelectorAll('[data-source]').forEach(b=>b.onclick=async()=>{const x=byId.get(b.dataset.source);b.closest('dialog')?.close();await engine.select(x.projectId,x.sessionId);open();});container.querySelectorAll('[data-remove-artifact]').forEach(b=>b.onclick=async()=>{try{await workspaceRequest('workspace/artifacts/remove',{id:b.dataset.removeArtifact});reload();}catch(e){toast(e.message);}});}
   async function addArtifact(pid,sid,reload){const current=pid&&sid?pid+'::'+sid:key(),d=workspaceDialog('Add to artifact library',`<form class="workspace-form"><label>Conversation<select name="conversation">${conversationOptions(current)}</select></label><label>Type<select name="kind"><option value="file">Screenshot or file</option><option value="preview">Preview link</option><option value="test">Test result</option></select></label><label>Title<input name="title" placeholder="Optional title"></label><label id="artifactValueLabel">File path<input name="value" required placeholder="/tmp/screenshot.png"></label><label class="test-status-field" hidden>Result<select name="status"><option value="passed">Passed</option><option value="failed">Failed</option><option value="reported">Reported</option></select></label><p role="alert"></p><footer><button class="cr-primary">Save</button></footer></form>`);const f=d.querySelector('form');f.elements.kind.onchange=()=>{const kind=f.elements.kind.value;d.querySelector('#artifactValueLabel').firstChild.textContent=kind==='file'?'File path':kind==='preview'?'Preview URL':'Test summary';f.elements.value.placeholder=kind==='file'?'/tmp/screenshot.png':kind==='preview'?'https://…':'Tests: 24 passed';d.querySelector('.test-status-field').hidden=kind!=='test';};f.onsubmit=async e=>{e.preventDefault();const [projectId,sessionId]=f.elements.conversation.value.split('::'),kind=f.elements.kind.value;f.querySelector('button').disabled=true;try{await workspaceRequest('workspace/artifacts',{projectId,sessionId,title:f.elements.title.value,...(kind==='file'?{path:f.elements.value.value}:kind==='preview'?{url:f.elements.value.value}:{summary:f.elements.value.value,status:f.elements.status.value})});d.close();reload();}catch(err){f.querySelector('[role=alert]').textContent=err.message;f.querySelector('button').disabled=false;}};}
   async function loadArtifacts(){const el=$('artifactItems');try{artifactRows=await workspaceRequest('workspace/artifacts');renderArtifacts();}catch(e){el.textContent=e.message;}}
   function renderArtifacts(){const query=$('artifactSearch').value.toLowerCase(),pid=$('artifactProject').value,kind=$('artifactKinds').querySelector('.selected')?.dataset.kind||'';const rows=artifactRows.filter(x=>(!pid||x.projectId===pid)&&(!kind||x.kind===kind)&&(!query||(x.title+' '+(x.summary||'')).toLowerCase().includes(query)));$('artifactItems').querySelectorAll('img').forEach(img=>{if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);});$('artifactItems').innerHTML=artifactCards(rows);bindArtifacts($('artifactItems'),rows,loadArtifacts);}
-  async function showResults(target=engine.state()){const {projectId,sessionId}=target;if(!sessionId){toast('Open a conversation first.');return;}const d=workspaceDialog('Conversation results',`<p class="cr-note">Screenshots, previews, and reported test results.</p><div class="workspace-actions"><button class="cr-secondary" data-add>Add output</button><button class="cr-secondary" data-scan>Find outputs in recent replies</button></div><div class="artifact-grid" data-results>Loading…</div>`);async function load(scan=false){try{const rows=scan?await workspaceRequest('workspace/artifacts/scan',{projectId,sessionId}):await workspaceRequest('workspace/artifacts?projectId='+encodeURIComponent(projectId)+'&sessionId='+encodeURIComponent(sessionId));if(!d.open)return;d.querySelector('[data-results]').innerHTML=artifactCards(rows.filter(x=>x.kind!=='file'));bindArtifacts(d.querySelector('[data-results]'),rows,()=>load());}catch(e){d.querySelector('[data-results]').textContent=e.message;}}d.querySelector('[data-add]').onclick=()=>addArtifact(projectId,sessionId,()=>load());d.querySelector('[data-scan]').onclick=()=>load(true);load(true);}
+  async function showResults(target = engine.state()) {
+    const { projectId, sessionId } = target;
+    if (!sessionId) {
+      toast('Open a conversation first.');
+      return;
+    }
+    const d = workspaceDialog(
+      'Conversation results',
+      `<div class="results-toolbar"><div class="cr-tabs" role="group" aria-label="Result type"><button data-result-kind="" class="selected">All</button><button data-result-kind="image">Screenshots</button><button data-result-kind="preview">Previews</button><button data-result-kind="test">Tests</button></div><button class="cr-icon" data-scan aria-label="Scan conversation outputs" title="Scan conversation outputs">${ic('refresh')}</button><button class="cr-secondary" data-add>${ic('plus')} Add output</button></div><div class="artifact-grid" data-results>Loading…</div><p class="results-note" data-results-note></p>`,
+    );
+    d.classList.add('results-dialog');
+    let rows = [],
+      filter = '',
+      request = 0;
+    function render() {
+      const area = d.querySelector('[data-results]');
+      area.querySelectorAll('img').forEach((img) => {
+        if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+      });
+      area.innerHTML = artifactCards(
+        rows.filter((x) => (!filter || x.kind === filter) && x.kind !== 'file'),
+        target,
+      );
+      bindArtifacts(area, rows, () => load());
+      d.querySelectorAll('[data-result-kind]').forEach((b) => {
+        b.classList.toggle('selected', b.dataset.resultKind === filter);
+      });
+    }
+    async function load(scan = false) {
+      const serial = ++request,
+        b = d.querySelector('[data-scan]');
+      b.disabled = true;
+      try {
+        rows = scan
+          ? await workspaceRequest('workspace/artifacts/scan', { projectId, sessionId })
+          : await workspaceRequest(
+              'workspace/artifacts?projectId=' +
+                encodeURIComponent(projectId) +
+                '&sessionId=' +
+                encodeURIComponent(sessionId),
+            );
+        if (!d.open || serial !== request) return;
+        const report = scan ? { items: rows, warnings: [], truncated: false } : null;
+        if (report) rows = report.items;
+        render();
+        d.querySelector('[data-results-note]').textContent = scan
+          ? (report.truncated ? 'Checked the latest ' + report.scanned + ' history entries; older entries remain. ' : 'Checked conversation replies. ') + 'Test summaries are reported results.'
+          : 'Test summaries are reported results.';
+        d.querySelector('[data-results-warnings]')?.remove();
+        if (report?.warnings.length) {
+          const details = document.createElement('details');
+          details.dataset.resultsWarnings = '';
+          details.className = 'results-note';
+          const summary = document.createElement('summary');
+          summary.textContent = report.warnings.length + ' image reference' + (report.warnings.length === 1 ? '' : 's') + ' could not be added';
+          details.append(summary);
+          for (const item of report.warnings) {
+            const line = document.createElement('p');
+            line.textContent = item.path + ' · ' + item.reason;
+            details.append(line);
+          }
+          d.append(details);
+        }
+      } catch (e) {
+        if (d.open) d.querySelector('[data-results-note]').textContent = e.message;
+      } finally {
+        if (serial === request) b.disabled = false;
+      }
+    }
+    d.querySelectorAll('[data-result-kind]').forEach(
+      (b) =>
+        (b.onclick = () => {
+          filter = b.dataset.resultKind;
+          render();
+        }),
+    );
+    d.querySelector('[data-add]').onclick = () => addArtifact(projectId, sessionId, () => load());
+    d.querySelector('[data-scan]').onclick = () => load(true);
+    load(true);
+  }
+
   async function loadPlanner(){try{plannerRows=await workspaceRequest('queue');renderPlanner();}catch(e){$('plannerItems').textContent=e.message;}}
   function queueReason(item){
     if(item.dispatching)return 'Interrupted delivery · review conversation before resuming';
@@ -1054,7 +1219,7 @@ window.createControlRoom = function (engine) {
     if(!reasons.length){const target=cards().find(x=>x.c.sessionId===item.sessionId),queue=Object.values(plannerRows).find(rows=>rows.some(x=>x.id===item.id))||[],head=queue.find(x=>x.sessionId===item.sessionId);reasons.push(head&&head.id!==item.id?'Waiting for earlier message':target&&['running','background'].includes(target.status)?'Waiting for current turn':'Ready to send');}
     return reasons.join(' · ');
   }
-  function renderPlanner(){const pid=$('plannerProject').value;const rows=Object.entries(plannerRows).filter(([p])=>!pid||pid===p).flatMap(([projectId,items])=>items.map((item,index)=>({projectId,item,index})));$('plannerItems').innerHTML=rows.map(({projectId,item,index})=>`<article class="planner-item" draggable="true" data-queue="${esc(item.id)}" data-project="${esc(projectId)}"><span class="planner-order" title="Drag to reorder">${index+1}</span><div class="planner-copy"><strong>${esc(cards().find(x=>x.c.sessionId===item.sessionId)?.c.title||'Conversation')}</strong><p>${esc(item.text)}</p><small>${esc(engine.state().projects.find(p=>p.id===projectId)?.name)} · ${esc(queueReason(item))}</small></div><div class="planner-actions"><button class="cr-icon" data-move="-1" aria-label="Move up">${ic('up')}</button><button class="cr-icon" data-move="1" aria-label="Move down">${ic('down')}</button><button class="cr-secondary" data-edit>Edit</button><button class="cr-secondary" data-pause>${item.paused||item.dispatching?'Resume':'Pause'}</button><button class="cr-icon" data-remove aria-label="Remove queued message">${ic('x')}</button></div></article>`).join('')||'<div class="cr-empty">No messages waiting. Plan a message to get started.</div>';
+  function renderPlanner(){const pid=$('plannerProject').value;const rows=Object.entries(plannerRows).filter(([p])=>!pid||pid===p).flatMap(([projectId,items])=>items.map((item,index)=>({projectId,item,index})));$('plannerItems').innerHTML=rows.map(({projectId,item,index})=>`<article class="planner-item" draggable="true" data-queue="${esc(item.id)}" data-project="${esc(projectId)}"><span class="planner-order" title="Drag to reorder">${index+1}</span><div class="planner-copy"><strong>${esc(engine.state().projects.find(p=>p.id===projectId)?.name||'Project')}</strong><small class="planner-conversation">${esc(cards().find(x=>x.c.sessionId===item.sessionId)?.c.title||'Conversation')}</small><p>${esc(item.text)}</p><small>${esc(queueReason(item))}</small></div><div class="planner-actions"><button class="cr-icon" data-move="-1" aria-label="Move up">${ic('up')}</button><button class="cr-icon" data-move="1" aria-label="Move down">${ic('down')}</button><button class="cr-secondary" data-edit>Edit</button><button class="cr-secondary" data-pause>${item.paused||item.dispatching?'Resume':'Pause'}</button><button class="cr-icon" data-remove aria-label="Remove queued message">${ic('x')}</button></div></article>`).join('')||'<div class="cr-empty">No messages waiting. Plan a message to get started.</div>';
     $('plannerItems').querySelectorAll('[data-queue]').forEach(el=>{const p=el.dataset.project,id=el.dataset.queue,item=plannerRows[p].find(x=>x.id===id);el.querySelector('[data-edit]').onclick=()=>editPlannedMessage(p,item);el.querySelector('[data-pause]').onclick=()=>workspaceRequest('queue/edit',{projectId:p,id,paused:item.dispatching?false:!item.paused}).then(loadPlanner).catch(e=>toast(e.message));el.querySelector('[data-remove]').onclick=()=>workspaceRequest('queue/remove',{projectId:p,id}).then(loadPlanner).catch(e=>toast(e.message));el.querySelectorAll('[data-move]').forEach(b=>b.onclick=()=>movePlanned(p,id,Number(b.dataset.move)));el.ondragstart=e=>e.dataTransfer.setData('text/plain',JSON.stringify({projectId:p,id}));el.ondragover=e=>e.preventDefault();el.ondrop=e=>{e.preventDefault();try{const moved=JSON.parse(e.dataTransfer.getData('text/plain'));if(moved.projectId!==p)return;const items=plannerRows[p],from=items.findIndex(x=>x.id===moved.id),to=items.findIndex(x=>x.id===id);movePlanned(p,moved.id,to-from);}catch{}};});}
   async function movePlanned(pid,id,delta){const ids=plannerRows[pid].map(x=>x.id),from=ids.indexOf(id),to=Math.max(0,Math.min(ids.length-1,from+delta));ids.splice(from,1);ids.splice(to,0,id);try{await workspaceRequest('queue/reorder',{projectId:pid,ids});await loadPlanner();}catch(e){toast(e.message);loadPlanner();}}
   function editPlannedMessage(pid,item){const current=item?pid+'::'+item.sessionId:key(),d=workspaceDialog(item?'Edit planned message':'Plan a message',`<form class="workspace-form"><label>Conversation<select name="conversation" ${item?'disabled':''}>${conversationOptions(current)}</select></label><label>Message<textarea name="prompt" rows="5" required>${esc(item?.text||'')}</textarea></label><label>Start no earlier than<input name="time" type="datetime-local"></label><label>Wait until this conversation is idle<select name="after"><option value="">No dependency</option>${conversationOptions()}</select></label><label class="workspace-check"><input type="checkbox" name="paused" ${item?.paused?'checked':''}>Keep paused until I resume it</label><p role="alert"></p><footer><button class="cr-primary">${item?'Save changes':'Add to queue'}</button></footer></form>`);const f=d.querySelector('form');if(item?.notBefore){const date=new Date(item.notBefore);f.elements.time.value=new Date(date-date.getTimezoneOffset()*60000).toISOString().slice(0,16);}if(item?.afterSessionId){const dep=cards().find(x=>x.c.sessionId===item.afterSessionId);f.elements.after.value=dep?.k||'';}f.onsubmit=async e=>{e.preventDefault();const [projectId,sessionId]=f.elements.conversation.value.split('::'),afterSessionId=f.elements.after.value.split('::')[1]||'';f.querySelector('button').disabled=true;try{await workspaceRequest(item?'queue/edit':'queue',{projectId,sessionId,id:item?.id,prompt:f.elements.prompt.value,notBefore:f.elements.time.value?new Date(f.elements.time.value).getTime():0,afterSessionId,paused:f.elements.paused.checked,...(!item?{requestId:crypto.randomUUID()}:{})});d.close();loadPlanner();}catch(err){f.querySelector('[role=alert]').textContent=err.message;f.querySelector('button').disabled=false;}};}

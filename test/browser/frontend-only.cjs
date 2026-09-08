@@ -1,0 +1,122 @@
+// Run after workspace-v3.cjs against the old backend with the frontend compatibility bundle.
+const assert = require('node:assert/strict');
+const { chromium } = require('/usr/local/lib/node_modules/playwright');
+const base = process.argv[2] || 'http://127.0.0.1:8782';
+(async () => {
+  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+  try {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    await context.addInitScript(() => {
+      localStorage.setItem('x056_token', 'browser-fixture-token-0123456789');
+      localStorage.setItem('x056_display_preferences', JSON.stringify({ open: 'max', maximize: 'modal' }));
+    });
+    const page = await context.newPage(), errors = [], missing = [];
+    page.on('pageerror', e => errors.push(e.message));
+    page.on('response', r => { if (r.url().includes('/api/') && r.status() === 404) missing.push(r.url()); });
+    const headers = { Authorization: 'Bearer browser-fixture-token-0123456789' };
+    const { projects } = await (await context.request.get(base + '/api/projects', { headers })).json();
+    const p = projects.find(p => p.name === 'Website refresh');
+    const c = p.conversations.find(c => c.title === 'Build the new homepage');
+    const second = p.conversations.find(row => row.sessionId !== c.sessionId);
+    const other = projects.find(row => row.id !== p.id);
+    await context.addInitScript(({ p, c, second, other }) => {
+      localStorage.setItem('x056_stage_pins', JSON.stringify([p.id+'::'+c.sessionId, other.id+'::'+other.conversations[0].sessionId, p.id+'::'+second.sessionId]));
+    }, { p, c, second, other });
+    await page.goto(base);
+    await page.locator('.cr-task').first().waitFor();
+    assert.match(await page.locator('#currentVersion').innerText(), /^UI fe-/);
+    const row = page.locator('.cr-task[data-session="' + c.sessionId + '"]');
+    assert.equal(await row.locator('.cr-row-title').innerText(), p.name);
+    assert.equal(await row.locator('.cr-row-subtitle').innerText(), c.title);
+    await page.locator('#crAccountsTab').click();
+    assert.equal(await page.locator('#accountMetric [data-value=tokens]').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('#accountMetric button').first().innerText(), 'Tokens');
+    await page.locator('#crBoardTab').click();
+    assert.equal(await page.locator('#crMemoryTab, [data-bulk=titles]').count(), 0);
+    await page.locator('#crSettings').click();
+    assert.equal(await page.locator('#settingsTitles').count(), 0);
+    await page.locator('#stageMode [data-value=smart]').click();
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('body').getAttribute('data-stage-mode'), 'smart');
+    await page.locator('.cr-task[data-session="' + second.sessionId + '"]').click({ button: 'right' });
+    assert.equal(await page.getByRole('menuitem', { name: 'Suggest another title', exact: true }).count(), 0);
+    const unread = page.getByRole('menuitem', { name: 'Mark as unread', exact: true });
+    if (await unread.count()) await unread.click(); else await page.keyboard.press('Escape');
+    await page.locator('#stageToggle').hover();
+    const bubble = page.locator('.stage-conversation.unread[data-session="' + second.sessionId + '"]');
+    await bubble.waitFor();
+    const projectLabels = await page.locator('#stageItems .stage-caption strong').allTextContents();
+    assert.deepEqual(projectLabels, [...projectLabels].sort((a,b) => a.localeCompare(b, undefined, { numeric:true, sensitivity:'base' })));
+    assert.equal(await bubble.locator('.stage-caption strong').innerText(), p.name);
+    assert.equal(await bubble.locator('.stage-caption small').innerText(), second.title);
+    const colors = await bubble.evaluate(e => ({ border: getComputedStyle(e).borderColor, label: getComputedStyle(e.querySelector('.stage-caption strong')).color }));
+    assert.equal(colors.border, colors.label);
+    await page.screenshot({ path: '/tmp/frontend-smart.png' });
+    await bubble.hover();
+    await page.locator('[data-stage-unpin="' + p.id + '::' + second.sessionId + '"]').click();
+    await bubble.waitFor({ state: 'detached' });
+    await page.mouse.move(5, 5);
+    await page.locator('.cr-task[data-session="' + c.sessionId + '"]').click();
+    assert.equal(await page.locator('#chatProjectName').innerText(), p.name);
+    assert.equal(await page.locator('#projTitle').innerText(), c.title);
+    if (await page.locator('#chatResults').isVisible()) await page.locator('#chatResults').click();
+    else { await page.locator('#moreBtn').click(); await page.getByRole('menuitem', { name:'Conversation results', exact:true }).click(); }
+    await page.locator('.results-dialog .artifact-card').first().waitFor();
+    assert.equal(await page.locator('.results-dialog [data-source], .results-dialog [data-memory-artifact]').count(), 0);
+    await page.locator('[data-result-kind=test]').click();
+    assert.equal(await page.locator('.results-dialog .artifact-card').count(), 1);
+    await page.locator('[data-result-kind=image]').click();
+    const img = page.locator('.results-dialog .artifact-image img');
+    await img.waitFor();
+    await page.waitForFunction(() => document.querySelector('.results-dialog .artifact-image img')?.naturalWidth > 0);
+    await page.screenshot({ path: '/tmp/frontend-results.png' });
+    await page.mouse.click(15, 400);
+    await page.locator('.results-dialog').waitFor({ state: 'detached' });
+    await page.evaluate(({ pid, sid }) => new Promise((resolve, reject) => {
+      const request = indexedDB.open('x056-delivery', 1);
+      request.onsuccess = () => {
+        const tx = request.result.transaction('messages', 'readwrite');
+        tx.objectStore('messages').put({ id: 'frontend-accepted', status: 'accepted', at: Date.now(), body: { projectId: pid, prompt: 'A delivered message' }, sessionId: sid });
+        tx.oncomplete = resolve; tx.onerror = reject;
+      };
+    }), { pid: p.id, sid: c.sessionId });
+    await page.reload();
+    await page.locator('.cr-task[data-session="' + c.sessionId + '"]').click();
+    await page.locator('#deliveryStrip button').waitFor();
+    const footer = await page.locator('.composer-footer').boundingBox();
+    assert(footer.height < 55, 'Delivery shares the account footer');
+    await page.locator('#deliveryStrip button').click();
+    assert.equal(await page.locator('.delivery-item').count(), 1);
+    assert.equal(await page.getByRole('button', { name: 'Open conversation', exact: true }).count(), 0);
+    await page.screenshot({ path: '/tmp/frontend-delivery.png' });
+    await page.keyboard.press('Escape');
+    await page.locator('#chatClose').click();
+    await page.locator('#currentVersion').click();
+    assert.match(await page.locator('.release-state').innerText(), /matches the published interface/);
+    await page.keyboard.press('Escape');
+    await page.route(base + '/', async route => {
+      const response = await route.fetch();
+      await route.fulfill({ response, body: (await response.text()).replace(/(<meta name="x056-ui-version" content=")[^"]+/, '$1fe-newer') });
+    });
+    await page.locator('#currentVersion').click();
+    assert.match(await page.locator('.release-state').innerText(), /newer interface/);
+    assert.equal(await page.locator('#currentVersion').innerText(), 'Update available');
+    await page.keyboard.press('Escape');
+    await page.unroute(base + '/');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('.cr-task[data-session="' + c.sessionId + '"]').click();
+    assert.equal(await page.locator('#chatProjectName').innerText(), p.name);
+    assert.equal(await page.locator('#projTitle').innerText(), c.title);
+    if (await page.locator('#chatResults').isVisible()) await page.locator('#chatResults').click();
+    else { await page.locator('#moreBtn').click(); await page.getByRole('menuitem', { name:'Conversation results', exact:true }).click(); }
+    await page.locator('.results-dialog .artifact-card').first().waitFor();
+    assert(await page.locator('.results-dialog').evaluate(e => e.scrollWidth <= e.clientWidth));
+    await page.screenshot({ path: '/tmp/frontend-mobile.png' });
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#conversationStage').isVisible(), false);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    assert.deepEqual(errors, []);
+    assert.deepEqual(missing, [], 'All API calls are supported by the old backend');
+    console.log('Frontend compatibility passed: results/PNGs, delivery, Smart/unread switcher, version freshness, desktop/mobile, no unsupported API calls.');
+  } finally { await browser.close(); }
+})().catch(e => { console.error(e); process.exitCode = 1; });
