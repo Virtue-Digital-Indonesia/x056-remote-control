@@ -947,10 +947,12 @@
     <div class="composer-hint" id="composerHint">Enter to send · Shift+Enter for a new line · Paste or drop files</div>
   </div>
 </main>
-<aside id="wfIsland" hidden>
+<aside id="wfIsland" aria-labelledby="wfTitle" hidden>
   <div class="wf-head">
-    <span class="t">Workflows</span>
-    <button class="ico" id="wfCloseBtn" title="hide the workflow island"><svg class="ic sm"><use href="#i-x"/></svg></button>
+    <svg class="ic sm" aria-hidden="true"><use href="#i-fanout"/></svg>
+    <span class="t" id="wfTitle">Workflows</span>
+    <span id="wfSummary"></span>
+    <button class="ico" id="wfCloseBtn" aria-label="Close workflows" title="Close workflows"><svg class="ic sm"><use href="#i-x"/></svg></button>
   </div>
   <div class="wf-body" id="wfBody"></div>
 </aside>
@@ -3789,6 +3791,9 @@
     if (e.key === 'Escape') {
       if (closeTopModal()) { e.preventDefault(); return; }
       if (!backdrop.hidden) { e.preventDefault(); closeAllPops(); return; }
+      if (!$('wfIsland').hidden && !document.querySelector('dialog[open],:popover-open')) {
+        e.preventDefault(); $('wfCloseBtn').click(); ($('chatActivity') || $('wfBtn')).focus(); return;
+      }
       if (document.body.classList.contains('nav-open')) { e.preventDefault(); setNav(false); return; }
       return;
     }
@@ -4447,6 +4452,7 @@
     btn.hidden = wfRuns.length === 0;
     badge.hidden = live === 0;
     badge.textContent = String(live);
+    $('wfSummary').textContent = live ? live + ' running' : '';
     // As a column it could sit open harmlessly; floating over the chat it
     // cannot, so it opens on its own only when something is actually MOVING.
     // A finished run stays one click away on the topbar button.
@@ -4454,7 +4460,9 @@
     island.hidden = !show;
     if (!show) return;
 
-    var body = $('wfBody'); body.textContent = '';
+    var body = $('wfBody'), scrollTop = body.scrollTop;
+    var focused = body.contains(document.activeElement) ? document.activeElement.dataset.wfFocus : null;
+    body.textContent = '';
     var shownRuns = wfHideOld ? wfRuns.filter(wfIsCurrent) : wfRuns;
     var hiddenRuns = wfRuns.length - shownRuns.length;
     if (!shownRuns.length) {
@@ -4469,23 +4477,28 @@
       var card = document.createElement('div');
       card.className = 'wf-run' + (live1 ? ' live' : stalled ? ' stalled' : ' done');
 
-      var top = document.createElement('div'); top.className = 'wf-top';
-      var nm = document.createElement('div'); nm.className = 'wf-nm';
+      var expanded = wfOpenRun === r.runId;
+      var top = document.createElement('button'); top.type = 'button'; top.className = 'wf-top';
+      top.dataset.wfFocus = 'run:' + r.runId;
+      top.setAttribute('aria-expanded', String(expanded));
+      var nm = document.createElement('span'); nm.className = 'wf-nm';
       if (live1) { var sp = document.createElement('span'); sp.className = 'rspin'; nm.appendChild(sp); }
       var nt = document.createElement('span');
       nt.textContent = r.name || r.runId;
-      nm.appendChild(nt); top.appendChild(nm);
+      nm.appendChild(nt);
+      var chevron = document.createElement('span'); chevron.className = 'wf-chevron'; chevron.setAttribute('aria-hidden', 'true');
+      chevron.textContent = '›'; nm.appendChild(chevron); top.appendChild(nm);
 
       // A run launched by NAME (a saved workflow) stores no script, so there is
       // no meta to read. Say so, rather than leaving a bare id that reads like
       // the panel failed to render something.
       var desc = r.description || (r.name ? '' : 'ran from a saved workflow — no script stored');
       if (desc) {
-        var d = document.createElement('div'); d.className = 'wf-desc';
+        var d = document.createElement('span'); d.className = 'wf-desc';
         d.textContent = desc; d.title = desc; top.appendChild(d);
       }
-      if (r.phases && r.phases.length) {
-        var ph = document.createElement('div'); ph.className = 'wf-phases';
+      if (expanded && r.phases && r.phases.length) {
+        var ph = document.createElement('span'); ph.className = 'wf-phases';
         r.phases.forEach(function (p) {
           var t = document.createElement('span'); t.className = 'wf-ph';
           t.textContent = p.title; if (p.detail) t.title = p.detail;
@@ -4493,13 +4506,13 @@
         });
         top.appendChild(ph);
       }
-      var meter = document.createElement('div'); meter.className = 'wf-meter';
+      var meter = document.createElement('span'); meter.className = 'wf-meter';
       var fill = document.createElement('i');
       fill.style.width = (r.started ? Math.round((r.finished / r.started) * 100) : 0) + '%';
       meter.appendChild(fill); top.appendChild(meter);
 
-      var c = document.createElement('div'); c.className = 'wf-count';
-      c.textContent = r.finished + ' / ' + r.started + ' agents'
+      var c = document.createElement('span'); c.className = 'wf-count';
+      c.textContent = r.finished + ' of ' + r.started + ' agents completed'
         + (live1 ? ' · running' : stalled ? ' · stopped before finishing' : '');
       top.appendChild(c);
 
@@ -4518,7 +4531,8 @@
           list.appendChild(le);
         }
         ags.forEach(function (a) {
-          var row = document.createElement('div'); row.className = 'wf-ag' + (a.done ? ' fin' : '');
+          var row = document.createElement('button'); row.type = 'button'; row.className = 'wf-ag' + (a.done ? ' fin' : '');
+          row.dataset.wfFocus = 'agent:' + r.runId + ':' + a.agentId;
           var st = document.createElement('span'); st.className = 'st'; row.appendChild(st);
           var lb = document.createElement('span'); lb.className = 'lb';
           lb.textContent = a.brief || a.agentId;
@@ -4537,17 +4551,20 @@
     if (hiddenRuns > 0 || !wfHideOld) {
       var f = document.createElement('label'); f.className = 'subfilter';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = wfHideOld;
+      cb.dataset.wfFocus = 'filter';
       cb.addEventListener('change', function () {
         wfHideOld = cb.checked; lsSet(WF_HIDE_KEY, wfHideOld ? 'on' : 'off'); renderWorkflows();
       });
       var tx = document.createElement('span');
       tx.textContent = wfHideOld
-        ? 'hiding ' + hiddenRuns + ' older · showing ' + shownRuns.length + ' of ' + wfRuns.length
-        : 'showing all ' + wfRuns.length;
+        ? 'Hide older runs (' + hiddenRuns + ')'
+        : 'Hide older runs';
       f.appendChild(cb); f.appendChild(tx);
       f.title = 'hides runs that stopped moving more than 30 minutes ago';
       body.appendChild(f);
     }
+    if (focused) Array.from(body.querySelectorAll('[data-wf-focus]')).find(function (node) { return node.dataset.wfFocus === focused; })?.focus({preventScroll:true});
+    body.scrollTop = scrollTop;
   }
 
   /** A workflow agent's transcript, in the same shell a plain subagent uses. */

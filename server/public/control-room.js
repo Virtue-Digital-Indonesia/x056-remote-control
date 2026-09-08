@@ -12,6 +12,17 @@ window.createControlRoom = function (engine) {
   const content = document.createElement('div'); content.className = 'focus-main';
   while (main.firstChild) content.append(main.firstChild);
   main.append(content);
+  // Keep workflow activity attached to this conversation, above its composer.
+  const workflow = $('wfIsland');
+  content.append(workflow);
+  function fitWorkflow() {
+    const toolbar = content.querySelector('.topbar'), composer = content.querySelector('.composer-wrap');
+    const top = toolbar.offsetHeight + 12;
+    workflow.style.setProperty('--wf-top', top + 'px');
+    workflow.style.setProperty('--wf-height', Math.max(0, content.clientHeight - top - composer.offsetHeight - 12) + 'px');
+  }
+  const workflowResize = new ResizeObserver(fitWorkflow);
+  [content, content.querySelector('.topbar'), content.querySelector('.composer-wrap')].forEach(node => workflowResize.observe(node));
   main.insertAdjacentHTML('afterbegin', `<nav id="focusNav" aria-label="Focus navigation"><button class="cr-logo" id="focusHome" title="Back to Control room">x0</button>${iconButton('focusBack','left','Back to Control room')}${iconButton('focusSearch','search','Search conversations')}${iconButton('focusNew','compose','New conversation')}<span class="sp"></span>${iconButton('focusAccounts','user','Accounts')}${iconButton('focusSettings','gear','Display settings')}</nav>`);
   // The existing toolbar actions remain wired; less-used actions live in More.
   main.querySelector('.topbar').insertAdjacentHTML('beforeend', `<button class="cr-secondary" id="chatActivity">${ic('sparkles')}<span>Activity</span><small id="chatActivityCount"></small></button>${iconButton('chatResults','file','Conversation results')}${iconButton('chatRefresh','refresh','Refresh conversation')}${iconButton('chatMax','expand','Maximize conversation')}${iconButton('chatClose','x','Close conversation')}`);
