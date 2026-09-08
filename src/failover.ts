@@ -1,5 +1,5 @@
 import type { AccountAnalytics } from './account-analytics.js';
-import type { AccountRegistry } from './accounts.js';
+import type { AccountRegistry, AccountRouteContext } from './accounts.js';
 import { claudeAdapter } from './adapters/claude.js';
 import type { EventLog } from './eventlog.js';
 import { DEFAULT_CONTINUE_PROMPT } from './provider.js';
@@ -28,6 +28,7 @@ export interface RunSessionOptions {
   registry: AccountRegistry;
   analytics?: AccountAnalytics;
   accountLoads?: () => Record<string, number>;
+  routing?: AccountRouteContext;
   log: EventLog;
   sessionId: string;
   cwd: string;
@@ -67,8 +68,8 @@ export interface RunControl {
   /** Drain the current turn and resume on another account. By default (a legacy
    *  or automatic switch) the account being left is benched for a cooldown; pass
    *  { bench: false } for a user-directed switch to a specific account (the
-   *  caller sets which account is active first) so the old one stays available. */
-  forceSwitch: (opts?: { bench?: boolean }) => void;
+   *  caller passes the destination account) so the old one stays available. */
+  forceSwitch: (opts?: { bench?: boolean; account?: string }) => void;
   abort: () => void;
 }
 
@@ -107,6 +108,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     : opts.sessionId;
   let aborted = false, wakeWait: (() => void) | undefined;
   let retryAccount: string | undefined;
+  let requestedAccount: string | undefined;
+  let waitSignature = '';
   let waitingUntil = 0;
   let forceSwitchRequested = false;
   let forceBench = true; // whether the account being left is benched on the pending forced switch
@@ -125,6 +128,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   }
   opts.control?.({
     forceSwitch: (o) => {
+      if(o?.account) requestedAccount=o.account;
       forceSwitchRequested = !wakeWait;
       wakeWait?.();
       if (o && o.bench === false) forceBench = false;
@@ -138,13 +142,25 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   try {
     for (;;) {
       if (aborted) return { status: 'failed', failovers: failoverTimes.length, reason: 'Stopped by user.', providerSessionId: cliSessionId };
-      const account = retryAccount ? registry.get(retryAccount) : registry.pickActive(now(), adapter.id, opts.accountLoads?.());
-      retryAccount = undefined;
+      const destination = requestedAccount || retryAccount;
+      const context = { ...opts.routing, ...(destination ? { preferredAccount: destination, lockedAccount: opts.routing?.lockedAccount || destination } : {}) };
+      const loads=opts.accountLoads?.()||{};
+      const route=registry.explain(now(),adapter.id,loads,context);
+      const account=registry.pickActive(now(),adapter.id,loads,context);
+      if(!account&&(context.lockedAccount||route.candidates.some(c=>c.reasons.some(r=>/Concurrent-task|reserved/.test(r))))){
+        const signature=JSON.stringify(route);
+        if(signature!==waitSignature){waitSignature=signature;log.append({type:'routing_wait',sessionId,...route});}
+        await new Promise<void>(resolve=>{const timer=setTimeout(()=>{wakeWait=undefined;resolve();},2000);wakeWait=()=>{clearTimeout(timer);wakeWait=undefined;resolve();};});
+        continue;
+      }
+      if(account){log.append({type:'routing_decision',sessionId,...route});requestedAccount=undefined;retryAccount=undefined;waitSignature='';}
+
       if (!account) {
-        const preferred = registry.list().find(a => a.provider === adapter.id && a.name === registry.activeName(adapter.id));
-        if (registry.routingPolicy(adapter.id).strategy === 'wait' && preferred && !preferred.paused && preferred.state.kind === 'limited' && preferred.state.until > now()) {
-          if (waitingUntil !== preferred.state.until) {
-            waitingUntil = preferred.state.until;
+        const preferred = registry.list().find(a => a.provider === adapter.id && a.name === (context.preferredAccount || registry.activeName(adapter.id)));
+        const preferredState = preferred && registry.effectiveState(preferred.name, now());
+        if (registry.routingPolicy(adapter.id).strategy === 'wait' && preferred && !preferred.paused && preferredState?.kind === 'limited' && preferredState.until > now()) {
+          if (waitingUntil !== preferredState.until) {
+            waitingUntil = preferredState.until;
             log.append({ type: 'waiting_for_reset', sessionId, account: preferred.name, until: waitingUntil });
           }
           await new Promise<void>(resolve => {
@@ -375,7 +391,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // specific account (bench:false) leaves the old one available to return to.
         registry.markLimited(account.name, now() + FORCED_COOLDOWN, true);
       }
-      if (!state.forced && state.limited && registry.routingPolicy(adapter.id).strategy === 'wait') {
+      if (!state.forced && (opts.routing?.lockedAccount || state.limited && registry.routingPolicy(adapter.id).strategy === 'wait')) {
         mode = 'resume'; prompt = adapter.continuePrompt;
         continue;
       }

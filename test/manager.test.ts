@@ -479,9 +479,9 @@ describe('SessionManager targeted account switch', () => {
     expect(calls).toEqual([]); // neither reached the run control
     // a different, valid account → performed as a user-directed (non-benching) switch
     expect(mgr.forceSwitch(p.id, sid, 'b')).toBe(true);
-    expect(calls).toEqual([{ bench: false }]);
-    // and the registry now prefers the target, so the resumed turn lands there
-    expect(mgr.nextUpAccount()).toBe('b');
+    expect(calls).toEqual([{ bench: false, account: 'b' }]);
+    // The target is scoped to this run; another conversation keeps its route.
+    expect(mgr.nextUpAccount()).toBe('a');
     await waitFor(() => mgr.listProjects().projects.every((pp) => !pp.running));
   });
 
@@ -538,9 +538,9 @@ describe('SessionManager targeted account switch', () => {
     // happens either way) — what matters is that pickActive(), re-run once the
     // turn actually resumes, doesn't just skip straight back past 'b'.
     expect(mgr.forceSwitch(p.id, sid, 'b', true)).toBe(true);
-    expect(calls).toEqual([{ bench: false }]);
+    expect(calls).toEqual([{ bench: false, account: 'b' }]);
     expect(AccountRegistry.load(join(sd, 'accounts.json')).get('b').state).toEqual({ kind: 'ok' });
-    expect(mgr.nextUpAccount()).toBe('b');
+    expect(mgr.nextUpAccount()).toBe('a');
     await waitFor(() => mgr.listProjects().projects.every((pp) => !pp.running));
   });
 });

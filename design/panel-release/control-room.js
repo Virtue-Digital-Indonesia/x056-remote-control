@@ -5,6 +5,7 @@ window.createControlRoom = function (engine) {
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
   const ic = name => `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const iconButton = (id, name, label) => `<button class="cr-icon" id="${id}" aria-label="${label}" title="${label}">${ic(name)}</button>`;
+  const routeCache=new Map(),routeFetched=new Map(),routePending=new Map();
   const main = document.querySelector('body > main'); main.id = 'conversationSurface';
   const legacyNav = document.querySelector('body > aside'); legacyNav.id = 'projectDrawer';
   const scroll = main.querySelector('.scroll');
@@ -404,7 +405,8 @@ window.createControlRoom = function (engine) {
   function accountStatus(a) { return a.paused?'Paused':a.state?.kind==='unauthenticated'?'Needs login':accountQuotaLimited(a)||a.state?.kind==='limited'?'Limited':a.state?.kind==='ok'?'Available':'Not checked'; }
   function identity(a) { return `<span class="cr-account-avatar ${esc(a.provider)}">${a.provider==='codex'?'G':'C'}</span><span class="identity-copy"><strong>${esc(accountName(a))}</strong><small>${esc(a.email || providerName(a.provider))}</small></span>`; }
   function renderSendAccounts(force=false) {
-    const s=engine.state(), pool=s.accounts.filter(a=>a.provider===s.provider), next=pool.find(a=>a.nextUp&&available(a));
+    const s=engine.state(), pool=s.accounts.filter(a=>a.provider===s.provider), preview=routeCache.get(routeKey(s)), chosen=s.sessionId?preview?.selected:s.composerAccount, next=chosen?pool.find(a=>a.name===chosen):preview?null:pool.find(a=>a.nextUp&&available(a));
+    loadRoutePreview(s);
     const isRunning=!!s.running[s.projectId]?.[s.sessionId], running=pool.find(a=>a.name===s.runningAccount);
     const chip=ic('user')+`<span>${isRunning?'Next message':'Send with'} <strong>${esc(next?accountName(next):'No available account')}</strong></span><small>${esc(next?.email || providerName(s.provider))}</small>`+ic('down');
     if($('sendAccountChip').innerHTML!==chip) $('sendAccountChip').innerHTML=chip;
@@ -418,12 +420,12 @@ window.createControlRoom = function (engine) {
       ${isRunning?`<div class="picker-running">${ic('repeat')}<span>Running with <strong>${esc(accountName(running))}</strong></span></div>`:''}
       <div class="send-account-list" role="radiogroup" aria-label="${providerName(s.provider)} accounts">${pool.map(a=>`<label class="account-pick-card ${a.name===selectedSendAccount?'selected':''} ${available(a)?'':'unavailable'}">
         <div class="picker-account-head"><span class="cr-identity">${identity(a)}</span><input type="radio" name="send-account" value="${esc(a.name)}" ${a.name===selectedSendAccount?'checked':''} ${available(a)?'':'disabled'} aria-label="${esc(accountName(a))}"></div>
-        <div class="picker-status">${esc(accountStatus(a))}${a.nextUp&&available(a)?' · Next message':''}${isRunning&&a.name===s.runningAccount?' · Running this turn':''}</div>
+        <div class="picker-status">${esc(accountStatus(a))}${a.name===next?.name?' · Next message':''}${isRunning&&a.name===s.runningAccount?' · Running this turn':''}</div>
         <div class="picker-quotas">${quotaCell(a,quotaWindows(a).five,'5-hour window')}${quotaCell(a,quotaWindows(a).seven,'7-day window')}</div>
         ${quotaWindows(a).other.length?`<details class="picker-extra"><summary>${quotaWindows(a).other.length} additional usage ${quotaWindows(a).other.length===1?'limit':'limits'}</summary><div class="picker-quotas">${quotaWindows(a).other.map(w=>quotaCell(a,w,w.label)).join('')}</div></details>`:''}
         ${quotaFreshness(a)}</label>`).join('')||'<div class="cr-empty">No accounts connected for this provider.</div>'}</div>
-      <p class="picker-note">This choice overrides routing for the next ${providerName(s.provider)} attempt. ${isRunning?'Use “Switch this turn” to resume the current turn on another account.':''}</p>
-      <div id="pickerError" class="cr-error" role="alert"></div><footer><button class="cr-text-button" data-manage-accounts>Manage accounts</button><span class="sp"></span>${isRunning?`<button class="cr-secondary" data-switch-turn ${!selectedSendAccount||selectedSendAccount===s.runningAccount?'disabled':''}>Switch this turn</button>`:''}<button class="cr-primary" data-send-next ${selectedSendAccount?'':'disabled'}>Use for next message</button></footer>`;
+      <p class="picker-note">This choice applies to this conversation’s next turn. If unavailable, automatic routing may use a fallback. Use an account lock to prevent that. ${isRunning?'Use “Switch this turn” to resume the current turn on another account.':''}</p>
+      <div id="pickerError" class="cr-error" role="alert"></div><footer><button class="cr-text-button" data-manage-accounts>Routing & locks</button><span class="sp"></span>${isRunning?`<button class="cr-secondary" data-switch-turn ${!selectedSendAccount||selectedSendAccount===s.runningAccount?'disabled':''}>Switch this turn</button>`:''}<button class="cr-primary" data-send-next ${selectedSendAccount?'':'disabled'}>Use for next message</button></footer>`;
     if(html===sendAccountSignature&&!force)return;
     sendAccountSignature=html;
     const focused=document.activeElement, focusValue=focused?.name==='send-account'?focused.value:null, oldScroll=sendAccounts.querySelector('.send-account-list')?.scrollTop||0;
@@ -431,7 +433,7 @@ window.createControlRoom = function (engine) {
     sendAccounts.querySelector('.send-account-list').scrollTop=oldScroll;
     if(focusValue) [...sendAccounts.querySelectorAll('input')].find(n=>n.value===focusValue)?.focus({preventScroll:true});
     sendAccounts.querySelector('[data-close]').onclick=()=>sendAccounts.close();
-    sendAccounts.querySelector('[data-manage-accounts]').onclick=()=>{sendAccounts.close();showSection('accounts');};
+    sendAccounts.querySelector('[data-manage-accounts]').onclick=()=>{sendAccounts.close();if(s.sessionId)showRouting(s);else showSection('accounts');};
     sendAccounts.querySelectorAll('[name="send-account"]').forEach(input=>input.onchange=()=>{selectedSendAccount=input.value;renderSendAccounts(true);});
     const choose=async(switching)=>{
       // Recheck current state: this dialog may have stayed open across a completed turn.
@@ -439,8 +441,11 @@ window.createControlRoom = function (engine) {
       if(!selected||!available(selected)||state.provider!==s.provider) { renderSendAccounts(true);return; }
       let failure='';pickerBusy=true; sendAccounts.querySelectorAll('button,input').forEach(b=>b.disabled=true);
       try {
-        await json(switching?'/api/switch':'/api/accounts/active',switching?{projectId:s.projectId,sessionId:s.sessionId,account:selected.name}:{name:selected.name});
-        await engine.pollAccounts(); sendAccounts.close(); toast(switching?'Switching this turn to '+accountName(selected)+'…':'Next message will use '+accountName(selected)+'.');
+        if(switching)await json('/api/switch',{projectId:s.projectId,sessionId:s.sessionId,account:selected.name});
+        else if(s.sessionId)await json('/api/routing/conversation',{projectId:s.projectId,sessionId:s.sessionId,nextAccount:selected.name});
+        else engine.setComposerAccount(selected.name);
+        routeCache.delete(routeKey(s));await loadRoutePreview(s,true);
+        await engine.pollAccounts(); sendAccounts.close(); toast(switching?'Switching this turn to '+accountName(selected)+'…':'Next turn prefers '+accountName(selected)+'.');
       } catch(e) { failure=e.message; }
       finally {pickerBusy=false;renderSendAccounts(true);if(failure)$('pickerError').textContent=failure;}
     };
@@ -480,12 +485,12 @@ window.createControlRoom = function (engine) {
   function wireSegment(id, change) { $(id).querySelectorAll('button').forEach(b=>b.onclick=()=>{ $(id).querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));change(b.dataset.value); }); }
   function renderAccountsPage() {
     if ($('accountProvider')) return;
-    $('crAccounts').innerHTML=`<div class="cr-heading"><div><h1>Dashboard</h1><p>Account usage, project costs, and routing.</p></div><div class="cr-actions"><button class="cr-secondary" id="accountExport">${ic('down')} Export CSV</button><button class="cr-primary" id="accountAdd">${ic('plus')} Add account</button></div></div>
+    $('crAccounts').innerHTML=`<div class="cr-heading"><div><h1>Dashboard</h1><p>Account usage, project costs, and routing.</p></div><div class="cr-actions"><button class="cr-secondary" id="accountHealth">${ic('user')} Health & capacity</button><button class="cr-secondary" id="accountExport">${ic('down')} Export CSV</button><button class="cr-primary" id="accountAdd">${ic('plus')} Add account</button></div></div>
       <section id="crProjectCosts" class="cr-project-costs" aria-label="Project cost estimates"></section><div class="cr-tools">${segmented('accountProvider',[['','All providers'],['codex','ChatGPT'],['claude','Claude']],accountProvider,'Provider')}<span class="sp"></span>${segmented('accountDays',[['7','7 days'],['30','30 days']],accountDays,'Usage date range')}<button class="cr-icon" id="accountRefresh" title="Refresh usage" aria-label="Refresh usage">${ic('repeat')}</button></div>
       <div id="accountStatus" role="status" class="cr-note"></div><div id="accountStats" class="cr-stats"></div>
       <div class="cr-charts"><section class="cr-chart-card"><header><h2>Activity over time</h2>${segmented('accountMetric',[['attempts','Attempts'],['tokens','Tokens']],chartMetric,'Chart metric')}</header><div class="chart-legend"><span><i></i>ChatGPT</span><span><i class="claude"></i>Claude</span><small>UTC</small></div><div id="accountChart"></div><div id="accountChartCaption" class="cr-chart-caption" role="status"></div></section><section class="cr-chart-card"><header><h2>Tokens by model</h2><span>Reported usage</span></header><div id="accountModels"></div></section></div>
       <div class="cr-section-head"><h2>Connected accounts <small id="accountCount"></small></h2><span>Live availability · Provider limits</span></div><div id="accountRows"></div><div id="accountRouting"></div><p id="accountCoverage" class="cr-note"></p>`;
-    on('accountAdd',()=>$('addAcctBtn').click()); on('accountExport',exportCsv);
+    on('accountHealth',()=>showHealth()); on('accountAdd',()=>$('addAcctBtn').click()); on('accountExport',exportCsv);
     on('accountRefresh',()=>{engine.pollAccounts();loadAnalytics();});
     wireSegment('accountProvider',value=>{accountProvider=value;renderAccountRows();loadAnalytics();});
     wireSegment('accountDays',value=>{accountDays=value;loadAnalytics();});
@@ -754,7 +759,7 @@ window.createControlRoom = function (engine) {
       {label:isStagePinned(pid,sid)?'Unpin conversation':'Pin conversation',icon:'pin',run:()=>pinStage(pid,sid,!isStagePinned(pid,sid))},
       {label:unread?'Mark as read':'Mark as unread',icon:'bell',run:()=>{engine.setConversationUnread(pid,sid,!unread);refresh();}},
       {label:recentDismissed.includes(stageKey(pid,sid))?'Restore to recents':'Dismiss from recents',icon:'history',run:()=>recentDismissed.includes(stageKey(pid,sid))?restoreRecent(pid,sid):dismissRecent(pid,sid)},
-      {label:'Conversation results',icon:'file',run:()=>showResults({projectId:pid,sessionId:sid})},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',run:()=>navigator.clipboard.writeText(sid).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},
+      {label:'Conversation results',icon:'file',run:()=>showResults({projectId:pid,sessionId:sid})},{label:'Routing & accounts',icon:'repeat',disabled:!sid,run:()=>showRouting({projectId:pid,sessionId:sid})},{label:'Continue with another provider',icon:'repeat',disabled:!sid,run:()=>showHandoff({projectId:pid,sessionId:sid})},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',run:()=>navigator.clipboard.writeText(sid).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},
       ...(running?[{label:'Stop turn',icon:'x',run:async()=>{try{await json('/api/sessions/current/stop',{projectId:pid,sessionId:sid});toast('Stopping turn.');}catch(e){toast(e.message);}}}]:[]),
       {label:'Remove from panel',icon:'x',disabled:running,run:()=>engine.removeConversation(pid,sid)},
     ],point);
@@ -770,12 +775,248 @@ window.createControlRoom = function (engine) {
   function themeMenu(anchor){openMenu(anchor,[['system','auto','Follow device theme'],['light','sun','Light'],['dark','moon','Dark']].map(([value,icon,label])=>({label,icon,checked:engine.theme()===value,run:()=>{engine.setTheme(value);syncTheme();}})));}
   function notificationMenu(anchor){const s=engine.state(),count=Object.keys(s.notifications).length;openMenu(anchor,[{label:'Unread conversations'+(count?' · '+count:''),icon:'bell',run:()=>{if(preferences.open)preferences.close();boardFilter='unread';shell.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('selected',b.dataset.filter==='unread'));showSection('board');}},{label:'Message approvals'+($('mcpApprovalsBadge').textContent?' · '+$('mcpApprovalsBadge').textContent:''),icon:'sparkles',run:()=>$('mcpApprovalsBtn').click()},{label:'Browser notifications',icon:'bell',run:()=>$('notifyBtn').click()}]);}
   function activityMenu(anchor){openMenu(anchor,[{label:'Usage & subagents',icon:'sparkles',run:()=>$('subagentsBtn').click()},{label:'Workflow runs',icon:'fanout',disabled:$('wfBtn').hidden,run:()=>$('wfBtn').click()},{label:'Message approvals',icon:'bell',run:()=>$('mcpApprovalsBtn').click()}]);}
-  function conversationMenu(anchor){const s=engine.state();openMenu(anchor,[{label:isStagePinned(s.projectId,s.sessionId)?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{const pinned=!isStagePinned(s.projectId,s.sessionId);pinStage(s.projectId,s.sessionId,pinned);toast(pinned?'Conversation pinned.':'Conversation unpinned.');}},{label:'Rename conversation',icon:'compose',disabled:!s.sessionId,run:engine.renameConversation},{label:'Resume a session',icon:'history',run:()=>$('resumeBtn').click()},{label:'Conversation results',icon:'file',disabled:!s.sessionId,run:()=>showResults()},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'x',disabled:!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
+  function conversationMenu(anchor){const s=engine.state();openMenu(anchor,[{label:isStagePinned(s.projectId,s.sessionId)?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{const pinned=!isStagePinned(s.projectId,s.sessionId);pinStage(s.projectId,s.sessionId,pinned);toast(pinned?'Conversation pinned.':'Conversation unpinned.');}},{label:'Rename conversation',icon:'compose',disabled:!s.sessionId,run:engine.renameConversation},{label:'Resume a session',icon:'history',run:()=>$('resumeBtn').click()},{label:'Conversation results',icon:'file',disabled:!s.sessionId,run:()=>showResults()},{label:'Routing & accounts',icon:'repeat',disabled:!s.sessionId,run:()=>showRouting(s)},{label:'Continue with another provider',icon:'repeat',disabled:!s.sessionId,run:()=>showHandoff(s)},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'x',disabled:!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
   const runningLabel=document.createElement('div');runningLabel.id='runningAccountLabel';runningLabel.hidden=true;content.querySelector('.composer').before(runningLabel);
   $('autopilotBtn').insertAdjacentHTML('beforeend','<span>Autopilot</span>');
   const syncActivity=()=>{$('chatActivityCount').textContent=$('subagentsBadge').textContent||'';};
   new MutationObserver(syncActivity).observe($('subagentsBadge'),{childList:true,subtree:true,characterData:true});
   new MutationObserver(syncTheme).observe($('themeBtn'),{childList:true,subtree:true});syncTheme();
+
+  function routeKey(s) {
+    return [s.projectId, s.sessionId || '', s.model || ''].join('::');
+  }
+  function routeQuery(s) {
+    return (
+      'projectId=' +
+      encodeURIComponent(s.projectId) +
+      (s.sessionId ? '&sessionId=' + encodeURIComponent(s.sessionId) : '') +
+      (s.model ? '&model=' + encodeURIComponent(s.model) : '')
+    );
+  }
+  async function loadRoutePreview(s = engine.state(), force = false) {
+    if (!s.projectId) return;
+    const key = routeKey(s);
+    if (routePending.has(key)) return routePending.get(key);
+    if (!force && Date.now() - (routeFetched.get(key) || 0) < 5000) return routeCache.get(key);
+    routeFetched.set(key, Date.now());
+    const work = workspaceRequest('routing/preview?' + routeQuery(s))
+      .then((data) => {
+        routeCache.set(key, data);
+        if (routeKey(engine.state()) === key) renderSendAccounts();
+        return data;
+      })
+      .catch(() => undefined)
+      .finally(() => routePending.delete(key));
+    routePending.set(key, work);
+    return work;
+  }
+  function routeAccount(name) {
+    return accountName(engine.state().accounts.find((a) => a.name === name));
+  }
+  function routingCards(data) {
+    return `<div class="route-decision"><small>Next turn · ${esc(data.strategy)}</small><strong>${data.selected ? esc(routeAccount(data.selected)) : 'Waiting for an eligible account'}</strong><p>${esc(data.reason)}. Selection is checked again when work starts.</p>${data.runningAccount ? `<p>Current turn: ${esc(routeAccount(data.runningAccount))}</p>` : ''}</div><div class="route-candidates">${data.candidates.map((c) => `<article><div><strong>${esc(routeAccount(c.name))}</strong><span class="route-badge ${c.eligible ? 'eligible' : ''}">${c.name === data.selected ? 'Selected' : c.eligible ? 'Fallback' : 'Excluded'}</span></div><p>${c.eligible ? 'Eligible for this turn' : esc(c.reasons.join(' · '))}</p><small>${c.load} active${c.maxConcurrent ? ' / ' + c.maxConcurrent + ' slots' : ''} · ${c.usedPercent === undefined ? 'Quota unknown' : Math.round(c.usedPercent) + '% used'}${c.reservePercent ? ' · ' + c.reservePercent + '% reserved' : ''}${c.quotaAt ? ' · Read ' + esc(new Date(c.quotaAt).toLocaleTimeString()) : ''}</small></article>`).join('')}</div>`;
+  }
+  async function showRouting(target = engine.state()) {
+    const d = workspaceDialog(
+      'Routing & accounts',
+      `<nav class="route-tabs" aria-label="Routing views"><button class="active" data-tab="preview">Preview & controls</button><button data-tab="history">History</button></nav><div data-route-body>Loading…</div>`,
+    );
+    let tab = 'preview';
+    async function render() {
+      try {
+        const el = d.querySelector('[data-route-body]');
+        if (tab === 'history') {
+          const data = await workspaceRequest('routing/history?' + routeQuery(target));
+          if (!d.open || tab !== 'history') return;
+          el.innerHTML = `${data.handoffs.map((h) => `<button class="cr-secondary route-link" data-handoff="${esc(h.sourceSessionId === target.sessionId ? h.targetSessionId : h.sourceSessionId)}">${h.sourceSessionId === target.sessionId ? 'Open continuation' : 'Open source conversation'} · ${providerName(h.targetProvider)}</button>`).join('')}<div class="route-history">${data.events.map((h) => `<article><time>${esc(new Date(h.at).toLocaleString())}</time><strong>${esc(h.kind.replaceAll('_', ' '))}</strong><p>${h.account ? esc(routeAccount(h.account)) + ' · ' : ''}${esc(h.model || h.provider || '')}</p>${h.kind === 'routing_preference' ? `<p>Next turn: ${h.detail.nextAccount ? esc(routeAccount(h.detail.nextAccount)) : 'Automatic'} · Lock: ${h.detail.lockedAccount ? esc(routeAccount(h.detail.lockedAccount)) : 'None'}${h.detail.useReserve ? ' · Priority work' : ''}</p>` : ''}${h.detail.reason ? `<small>${esc(h.detail.reason)}</small>` : ''}${h.detail.candidates ? `<details><summary>Decision details</summary>${routingCards(h.detail)}</details>` : ''}</article>`).join('') || '<p class="cr-empty">Routing history appears when a new turn starts.</p>'}</div>`;
+          el.querySelectorAll('[data-handoff]').forEach(
+            (b) =>
+              (b.onclick = async () => {
+                await engine.reloadProjects();
+                await engine.select(target.projectId, b.dataset.handoff);
+                d.close();
+                open();
+              }),
+          );
+          return;
+        }
+        const data = await workspaceRequest('routing/preview?' + routeQuery(target));
+        if (!d.open || tab !== 'preview') return;
+        routeCache.set(routeKey(target), data);
+        const pool = engine.state().accounts.filter((a) => a.provider === data.provider),
+          options = (selected) =>
+            '<option value="">Automatic routing</option>' +
+            pool
+              .map(
+                (a) =>
+                  `<option value="${esc(a.name)}" ${a.name === selected ? 'selected' : ''}>${esc(accountName(a))}</option>`,
+              )
+              .join('');
+        el.innerHTML = `${routingCards(data)}<form class="workspace-form route-controls"><label>Account for the next turn<select name="next">${options(data.preferences.nextAccount)}</select></label><label>Account lock<select name="lock">${options(data.preferences.lockedAccount)}</select></label><p class="cr-note">A lock stays with this conversation. Work waits if that account is unavailable. Changing a lock leaves the current attempt running.</p><label class="workspace-check"><input type="checkbox" name="reserve" ${data.preferences.useReserve ? 'checked' : ''}>Priority work: allow this conversation to use reserved quota</label><p class="cr-note">Provider limits and concurrent-task limits still apply.</p><p role="alert"></p><footer><button type="button" class="cr-secondary" data-switch ${!data.runningAccount ? 'disabled' : ''}>Switch now</button><button class="cr-primary">Save for next turn</button></footer><small>Switch now interrupts at a resumable boundary. Background work may stop when the account changes.</small></form>`;
+        const f = el.querySelector('form');
+        async function save(switchNow) {
+          const buttons = f.querySelectorAll('button');
+          buttons.forEach((b) => (b.disabled = true));
+          try {
+            const next = f.elements.next.value,
+              lock = f.elements.lock.value;
+            if (next && lock && next !== lock)
+              throw new Error('Choose the locked account, or clear the lock.');
+            if (switchNow && !next && !lock) throw new Error('Choose an account to switch to.');
+            await workspaceRequest('routing/conversation', {
+              projectId: target.projectId,
+              sessionId: target.sessionId,
+              nextAccount: next || null,
+              lockedAccount: lock || null,
+              useReserve: f.elements.reserve.checked,
+            });
+            if (switchNow)
+              await workspaceRequest('switch', {
+                projectId: target.projectId,
+                sessionId: target.sessionId,
+                account: next || lock,
+              });
+            routeCache.delete(routeKey(target));
+            toast(switchNow ? 'Switch requested.' : 'Conversation routing saved.');
+            await render();
+            await loadRoutePreview(engine.state(), true);
+          } catch (e) {
+            f.querySelector('[role=alert]').textContent = e.message;
+            buttons.forEach((b) => (b.disabled = false));
+          }
+        }
+        f.onsubmit = (e) => {
+          e.preventDefault();
+          save(false);
+        };
+        f.querySelector('[data-switch]').onclick = () => save(true);
+      } catch (e) {
+        if (d.open) d.querySelector('[data-route-body]').textContent = e.message;
+      }
+    }
+    d.querySelectorAll('[data-tab]').forEach(
+      (b) =>
+        (b.onclick = () => {
+          tab = b.dataset.tab;
+          d.querySelectorAll('[data-tab]').forEach((x) => x.classList.toggle('active', x === b));
+          render();
+        }),
+    );
+    render();
+  }
+  async function showHealth() {
+    const d = workspaceDialog(
+      'Account health & capacity',
+      `<p class="cr-note">Checks local credentials, quota freshness, and cached model compatibility. No test prompt is sent.</p><div class="workspace-actions"><button class="cr-secondary" data-refresh>Refresh checks</button></div><div data-health>Loading…</div>`,
+    );
+    async function load() {
+      try {
+        const model = engine.state().model,
+          rows = await workspaceRequest(
+            'accounts/health' + (model ? '?model=' + encodeURIComponent(model) : ''),
+          );
+        if (!d.open) return;
+        d.querySelector('[data-health]').innerHTML =
+          `${model ? `<p class="cr-note">Requested model: ${esc(model)}</p>` : ''}<div class="health-grid">${rows.map((a) => `<form class="workspace-form health-card" data-account="${esc(a.name)}"><h3>${esc(a.displayName)}</h3><small>${providerName(a.provider)} · ${a.paused ? 'Paused' : a.load + ' active tasks'}</small><dl><dt>Authentication</dt><dd>${esc(a.credentials)}</dd><dt>Model</dt><dd>${esc(a.compatibility)}</dd><dt>Usage reading</dt><dd>${a.quotaAt ? esc(new Date(a.quotaAt).toLocaleString()) + (a.quotaStale ? ' · Stale' : ' · Recent') : 'Unavailable'}${a.quotaRetryAt ? '<br>Next retry ' + esc(new Date(a.quotaRetryAt).toLocaleTimeString()) : ''}</dd></dl><div class="capacity-fields"><label>Concurrent tasks<input name="capacity" type="number" min="0" max="100" step="1" value="${a.maxConcurrent}"><small>0 means unlimited</small></label><label>Reserve quota (%)<input name="reserve" type="number" min="0" max="95" value="${a.reservePercent}"><small>Held for priority work</small></label></div><p role="alert"></p><footer><button class="cr-secondary">Save limits</button></footer></form>`).join('')}</div><p class="cr-note">Reserves use the tightest applicable reported quota window. Unknown usage cannot enforce a reserve. Active and background tasks count toward capacity; new limits apply to future attempts.</p>`;
+        d.querySelectorAll('form').forEach(
+          (f) =>
+            (f.onsubmit = async (e) => {
+              e.preventDefault();
+              const b = f.querySelector('button');
+              b.disabled = true;
+              try {
+                await workspaceRequest('accounts/capacity', {
+                  name: f.dataset.account,
+                  maxConcurrent: Number(f.elements.capacity.value),
+                  reservePercent: Number(f.elements.reserve.value),
+                });
+                f.querySelector('[role=alert]').classList.add('saved');
+                f.querySelector('[role=alert]').textContent = 'Limits saved.';
+                routeCache.clear();
+                await engine.pollAccounts();
+              } catch (e) {
+                f.querySelector('[role=alert]').textContent = e.message;
+              } finally {
+                b.disabled = false;
+              }
+            }),
+        );
+      } catch (e) {
+        d.querySelector('[data-health]').textContent = e.message;
+      }
+    }
+    d.querySelector('[data-refresh]').onclick = load;
+    load();
+  }
+  async function showHandoff(target = engine.state()) {
+    const d = workspaceDialog(
+      'Continue with another provider',
+      `<div data-handoff-body>Preparing context…</div>`,
+    );
+    d.classList.add('handoff-dialog');
+    try {
+      const data = await workspaceRequest('routing/handoff?' + routeQuery(target));
+      if (!d.open) return;
+      d.querySelector('[data-handoff-body]').innerHTML =
+        `<form class="workspace-form"><p class="cr-note">Start a linked conversation in the same project. Review the source excerpts below and add missing decisions or next steps.</p><fieldset class="route-provider"><legend>Continue with</legend>${data.providers.map((p, i) => `<label><input type="radio" name="provider" value="${p}" ${!i ? 'checked' : ''}>${providerName(p)}</label>`).join('') || '<p>Connect an account for another provider first.</p>'}</fieldset><label>Context to carry over<textarea name="context" rows="11" maxlength="50000" required>${esc(data.context)}</textarea></label><label>Next instruction<textarea name="instruction" rows="3" maxlength="10000" required placeholder="What should the next provider do?"></textarea></label><p class="cr-note">Finish or stop the source conversation, stop autopilot, and remove pending messages before starting.</p><p role="alert"></p><footer><button class="cr-primary" ${data.providers.length ? '' : 'disabled'}>Start continuation</button></footer></form>`;
+      const f = d.querySelector('form'),
+        storageKey = 'x056_handoff_' + target.projectId + '_' + target.sessionId;
+      let ticket = null;
+      try {
+        ticket = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+      } catch {}
+      if (ticket) {
+        f.elements.context.value = ticket.input.context;
+        f.elements.instruction.value = ticket.input.instruction;
+        f.elements.provider.value = ticket.input.provider;
+        f.querySelectorAll('input,textarea').forEach((x) => (x.disabled = true));
+        f.querySelector('button').textContent = 'Check continuation';
+      }
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        const b = f.querySelector('button');
+        b.disabled = true;
+        try {
+          const input = {
+            projectId: target.projectId,
+            sessionId: target.sessionId,
+            provider: f.elements.provider.value,
+            context: f.elements.context.value,
+            instruction: f.elements.instruction.value,
+          };
+          if (!ticket || JSON.stringify(ticket.input) !== JSON.stringify(input))
+            ticket = { input, requestId: crypto.randomUUID() };
+          sessionStorage.setItem(storageKey, JSON.stringify(ticket));
+          f.querySelectorAll('input,textarea').forEach((x) => (x.disabled = true));
+          const result = await workspaceRequest('routing/handoff', { ...input, requestId: ticket.requestId });
+          if (result.status !== 'accepted' || !result.sessionId)
+            throw new Error(
+              'Delivery is uncertain. Keep this dialog open and retry to check the same request.',
+            );
+          sessionStorage.removeItem(storageKey);
+          await engine.reloadProjects();
+          await engine.select(target.projectId, result.sessionId);
+          d.close();
+          open();
+        } catch (e) {
+          f.querySelector('[role=alert]').textContent = e.message;
+          b.disabled = false;
+          b.textContent = 'Check continuation';
+          try {
+            const status = await workspaceRequest('messages/status?requestId=' + ticket.requestId);
+            if (['failed', 'not_received'].includes(status.status)) {
+              sessionStorage.removeItem(storageKey);
+              ticket = null;
+              f.querySelectorAll('input,textarea').forEach((x) => (x.disabled = false));
+              b.textContent = 'Start continuation';
+            }
+          } catch {}
+        }
+      };
+    } catch (e) {
+      if (d.open) d.querySelector('[data-handoff-body]').textContent = e.message;
+    }
+  }
 
   // Review outputs and manage the workspace without adding permanent chat chrome.
   async function workspaceRequest(path,body){const r=await engine.api('/api/'+path,body===undefined?undefined:{method:'POST',body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.message||'Request failed');return j;}

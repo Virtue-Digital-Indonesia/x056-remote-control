@@ -161,6 +161,8 @@ export class PersistentTurns {
     return out;
   }
 
+  workingAccounts(): {sessionId:string;configDir:string}[] {return [...this.live.values()].filter(e=>this.working(e)&&e.opts).map(e=>({sessionId:e.sessionId,configDir:e.opts!.configDir}));}
+
   /**
    * Write a user message into a conversation's live process WITHOUT waiting for
    * its turn to end. Verified against CLI 2.1.258: a second user line on stdin

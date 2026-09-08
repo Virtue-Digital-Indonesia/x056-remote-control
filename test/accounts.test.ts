@@ -10,9 +10,10 @@ function freshFile(): string {
 }
 
 describe('AccountRegistry', () => {
+  const accountHomes = mkdtempSync(join(tmpdir(), 'x056-account-homes-'));
   const specs = [
-    { name: 'a', configDir: '/home/efran/.claude-x056-a' },
-    { name: 'b', configDir: '/home/efran/.claude-x056-b' },
+    { name: 'a', configDir: join(accountHomes, 'a') },
+    { name: 'b', configDir: join(accountHomes, 'b') },
   ];
 
   it('init + load round-trips and picks the active account', () => {

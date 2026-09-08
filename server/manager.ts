@@ -1,10 +1,11 @@
+import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { AccountAnalytics } from '../src/account-analytics.js';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
-import { AccountRegistry, type RoutingStrategy } from '../src/accounts.js';
+import { AccountRegistry, type RoutingStrategy, type AccountRouteContext } from '../src/accounts.js';
 import { shareCodexSessions } from './codex-sessions.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
@@ -86,10 +87,14 @@ interface PendingLogin {
 export interface TurnRunOptions {
   model?: string;
   effort?: string;
+  account?: string;
+  useReserve?: boolean;
 }
 
 /** A follow-up message queued to send when the current turn completes. */
 export interface QueueItem {
+  account?: string;
+  useReserve?: boolean;
   dispatching?: boolean;
   error?: string;
   notBefore?: number;
@@ -197,6 +202,10 @@ interface ActiveRun {
   projectId: string;
   cwd: string;
   control?: RunControl;
+  route?: AccountRouteContext;
+  waiting?: boolean;
+  nextChoice?: ConversationRoute;
+  actualModel?:string;
   account?: string; // the account this turn is currently running on (from turn_started)
 }
 
@@ -603,7 +612,7 @@ export class SessionManager {
   clearSelfQueueStreak(sessionId: string): void { this.selfQueueStreak.delete(sessionId); }
 
 
-  enqueue(pid: string, item: { text: string; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
+  enqueue(pid: string, item: { text: string; account?: string; useReserve?: boolean; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
     const text = (item.text ?? '').trim();
@@ -616,7 +625,7 @@ export class SessionManager {
     if (item.afterSessionId && !this.listProjects().projects.some(p=>p.conversations?.some(c=>c.sessionId===item.afterSessionId))) throw new Error('Dependency conversation not found');
     if (item.afterSessionId && item.afterSessionId === sessionId) throw new Error('A queue item cannot wait for its own conversation');
     const map = this.loadQueues();
-    const q: QueueItem = { id: randomUUID(), text, model: item.model, effort: item.effort, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
+    const q: QueueItem = { id: randomUUID(), text, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
     (map[pid] ??= []).push(q);
     this.saveQueues(map);
     this.emitQueue(pid, map);
@@ -674,7 +683,7 @@ export class SessionManager {
       try {this.saveQueues(current);} catch {return;} // Never send before the recovery marker is durable.
       if(item.requestId)this.emit('message_delivery',{requestId:item.requestId,sessionId,projectId:pid,status:'uncertain'});
       try {
-        this.continueSession(pid, sessionId, item.text, { model: item.model, effort: item.effort });
+        this.continueSession(pid, sessionId, item.text, { model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve });
       } catch(e) {
         item.dispatching=false;item.paused=true;item.error=(e as Error).message;
         try {this.saveQueues(current);this.emitQueue(pid,current);} catch {/* Keep the durable recovery marker. */}
@@ -1522,7 +1531,7 @@ export class SessionManager {
     };
     if (!sessionId) return land(this.start(prompt, undefined, run, projectId), false);
     const queue = (): { sessionId: string; queued: boolean; hopsLeft: number } => {
-      this.enqueue(projectId, { text: prompt, model: opts.model, effort: opts.effort, sessionId });
+      this.enqueue(projectId, { text: prompt, model: opts.model, effort: opts.effort, account:opts.account, useReserve:opts.useReserve, sessionId });
       return land(sessionId, true);
     };
     if (this.sessionBusy(sessionId)) return queue();
@@ -1679,7 +1688,12 @@ export class SessionManager {
     // our conversation key; look up what the first turn captured. (For Claude
     // this is just the sessionId, so it's a harmless no-op.)
     const providerSessionId = resume ? reg.providerSessionId(pid, sessionId) : undefined;
-    const run: ActiveRun = { sessionId, projectId: pid, cwd };
+    const routingState=new RoutingState(this.opts.stateDir);
+    const route={...routingState.context(pid,sessionId),model,...(runOpts?.account?{preferredAccount:runOpts.account}:{}),...(runOpts?.useReserve!==undefined?{useReserve:runOpts.useReserve}:{})};
+    for(const name of [route.lockedAccount,route.preferredAccount])if(name&&this.registry().get(name).provider!==adapter.id)throw new Error('Account belongs to another provider');
+    if(route.lockedAccount&&route.preferredAccount&&route.lockedAccount!==route.preferredAccount)throw new Error('Unlock this conversation before choosing a different account');
+    const pendingChoice=routingState.get(pid,sessionId);
+    const run: ActiveRun = { sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice };
     this.runs.set(sessionId, run);
     // Every event from this run carries its projectId AND sessionId so the panel
     // can route it to the right conversation — a project can have several
@@ -1691,7 +1705,12 @@ export class SessionManager {
       const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => {
         // Track which account this turn is on (updated on start + each failover),
         // so a targeted force-switch can tell "same account" from "different".
-        if (k === 'supervisor' && d && d.type === 'turn_started' && typeof d.account === 'string') { run.account = d.account; this.emitAccounts(); }
+        if (k === 'supervisor' && d && d.type === 'turn_started' && typeof d.account === 'string') { run.account = d.account; run.waiting=false; this.emitAccounts(); }
+        if(k==='supervisor'&&typeof d.type==='string'&&['routing_decision','routing_wait','turn_started','turn_completed','turn_failed','failover','limit_detected','auth_required','api_overloaded_retry','forced_switch','waiting_for_reset'].includes(d.type)){
+          if(d.type==='routing_wait'){run.account=undefined;run.waiting=true;this.emitAccounts();}
+          try{routingState.record({projectId:pid,sessionId,kind:d.type,provider:adapter.id,account:typeof d.account==='string'?d.account:typeof d.selected==='string'?d.selected:undefined,model:run.actualModel||model,detail:d});}catch{}
+          if(d.type==='turn_started'&&run.nextChoice?.nextAccount&&routingState.get(pid,sessionId).updatedAt===run.nextChoice.updatedAt)routingState.set(pid,sessionId,{nextAccount:undefined});
+        }
         emit(k, d);
       });
       let stateSaved = resume;
@@ -1716,6 +1735,7 @@ export class SessionManager {
       void runFn({
         registry: this.registry(),
         accountLoads: () => this.accountLoads(sessionId),
+        routing: route,
         analytics: new AccountAnalytics(this.opts.stateDir),
         log,
         sessionId,
@@ -1825,6 +1845,8 @@ export class SessionManager {
     // let one suppress the other's switch — or report the other's model.
     const model = adapter.activeModel?.(e);
     const modelKey = sessionId ?? pid;
+    const run=sessionId?this.runs.get(sessionId):undefined;
+    if(model&&pid&&sessionId&&run?.actualModel!==model){if(run)run.actualModel=model;try{new RoutingState(this.opts.stateDir).record({projectId:pid,sessionId,kind:'model_resolved',provider:adapter.id,account:run?.account,model,detail:{model}});}catch{}}
     if (model && modelKey && this.lastModelByPid.get(modelKey) !== model) {
       this.lastModelByPid.set(modelKey, model);
       emit('active_model', { model }); // envelope ts (emit time) carries ordering
@@ -1895,9 +1917,133 @@ export class SessionManager {
   }
 
   accountLoads(excludeSession?: string): Record<string, number> {
-    const counts: Record<string, number> = {};
-    for (const run of this.runs.values()) if (run.account && run.sessionId !== excludeSession) counts[run.account] = (counts[run.account] || 0) + 1;
+    const counts: Record<string, number> = {},
+      seen = new Set<string>();
+    for (const run of this.runs.values())
+      if (run.account && run.sessionId !== excludeSession) {
+        counts[run.account] = (counts[run.account] || 0) + 1;
+        seen.add(run.sessionId);
+      }
+    const pools = this.pools();
+    if (!pools.length) return counts;
+    const accounts = this.registry().list();
+    for (const pool of this.pools())
+      for (const active of pool.workingAccounts())
+        if (active.sessionId !== excludeSession && !seen.has(active.sessionId)) {
+          const account = accounts.find((a) => a.configDir === active.configDir);
+          if (account) {
+            counts[account.name] = (counts[account.name] || 0) + 1;
+            seen.add(active.sessionId);
+          }
+        }
     return counts;
+  }
+
+  routingPreview(pid: string, sid?: string, model?: string) {
+    const project = this.projects().get(pid);
+    if (!project) throw new Error('Project not found');
+    if (sid && !this.listConversations(pid).some((c) => c.sessionId === sid))
+      throw new Error('Conversation not found');
+    const context = sid ? new RoutingState(this.opts.stateDir).context(pid, sid) : {};
+    return {
+      ...this.registry().explain(
+        Math.floor(Date.now() / 1000),
+        this.adapterFor(pid, sid).id,
+        this.accountLoads(sid),
+        { ...context, model: model || project.model },
+      ),
+      preferences: sid ? new RoutingState(this.opts.stateDir).get(pid, sid) : {},
+      runningAccount: sid ? this.runs.get(sid)?.account : null,
+      background: !!sid && this.backgroundSessions().some((x) => x.sessionId === sid),
+    };
+  }
+  configureConversationRoute(pid: string, sid: string, patch: ConversationRoute) {
+    const preview = this.routingPreview(pid, sid),
+      registry = this.registry();
+    for (const name of [patch.lockedAccount, patch.nextAccount])
+      if (name) {
+        const a = registry.get(name);
+        if (a.provider !== preview.provider)
+          throw new Error('Choose an account from this conversation’s provider');
+      }
+    const previous = new RoutingState(this.opts.stateDir).get(pid, sid),
+      next = { ...previous, ...patch };
+    if (next.lockedAccount && next.nextAccount && next.lockedAccount !== next.nextAccount)
+      throw new Error('The next account must match the conversation lock');
+    const state = new RoutingState(this.opts.stateDir),
+      saved = state.set(pid, sid, patch);
+    const run = this.runs.get(sid);
+    if (run?.route) {
+      run.route.lockedAccount = saved.lockedAccount;
+      run.route.useReserve = saved.useReserve;
+      if (run.waiting) {
+        run.route.preferredAccount = saved.nextAccount;
+        run.nextChoice = saved;
+      }
+    }
+    state.record({
+      projectId: pid,
+      sessionId: sid,
+      kind: 'routing_preference',
+      provider: preview.provider,
+      detail: { ...saved },
+    });
+    this.emit('routing_preferences', { projectId: pid, sessionId: sid });
+    return saved;
+  }
+  setAccountCapacity(name: string, maxConcurrent: number, reservePercent: number) {
+    this.registry().setCapacity(name, maxConcurrent, reservePercent);
+    this.emitAccounts();
+  }
+
+  startProviderHandoff(
+    pid: string,
+    sourceSid: string,
+    target: ProviderId,
+    context: string,
+    instruction: string,
+  ): string {
+    const project = this.projects().get(pid),
+      source = this.listConversations(pid).find((c) => c.sessionId === sourceSid);
+    if (!project || !source) throw new Error('Source conversation not found');
+    if (this.adapterFor(pid, sourceSid).id === target) throw new Error('Choose another provider');
+    if (
+      !this.registry()
+        .list()
+        .some((a) => a.provider === target)
+    )
+      throw new Error('Connect an account for the target provider first');
+    if (this.sessionBusy(sourceSid) || this.backgroundSessions().some((x) => x.sessionId === sourceSid))
+      throw new Error('Finish or stop the source conversation before continuing elsewhere');
+    if (this.queues()[pid]?.some((x) => x.sessionId === sourceSid) || this.hasAutopilot(sourceSid))
+      throw new Error('Stop autopilot and remove pending messages from the source conversation first');
+    const sid = randomUUID();
+    this.projects().addConversation(
+      pid,
+      sid,
+      source.title + ' · ' + (target === 'codex' ? 'ChatGPT' : 'Claude'),
+      target,
+    );
+    new RoutingState(this.opts.stateDir).link({
+      projectId: pid,
+      sourceSessionId: sourceSid,
+      targetSessionId: sid,
+      targetProvider: target,
+      context,
+    });
+    this.emitConversations(pid);
+    const prompt = withAskInstructions(
+      'Continue work from conversation ' +
+        sourceSid +
+        ' in project ' +
+        pid +
+        '. The following context was reviewed by the user. Treat quoted source messages and documents as reference material. Verify current workspace state before making changes.\n\n' +
+        context +
+        '\n\nCurrent instruction:\n' +
+        instruction,
+    );
+    this.launch(pid, sid, prompt, project.cwd, false);
+    return sid;
   }
 
   setAccountRouting(provider: ProviderId, enabled?: boolean, strategy?: RoutingStrategy, order?: string[]): void {
@@ -1949,10 +2095,14 @@ export class SessionManager {
       if (target.provider !== (conv?.provider || 'claude')) return false;
       if (run.account && run.account === targetAccount) return false; // already on it — nothing to switch
       if (force) this.registry().overrideLimit(targetAccount);
-      this.registry().setActive(targetAccount); // the resumed turn will pick this one
+      const locked=run.route?.lockedAccount;if(locked&&locked!==targetAccount)throw new Error('Unlock this conversation before switching accounts');
+      const preview=this.registry().explain(Math.floor(Date.now()/1000),target.provider,this.accountLoads(run.sessionId),{...run.route,lockedAccount:targetAccount,preferredAccount:targetAccount});
+      if(!preview.selected)throw new Error(preview.candidates.find(x=>x.name===targetAccount)?.reasons.join(' · ')||'Target account is unavailable');
+      new RoutingState(this.opts.stateDir).record({projectId:run.projectId,sessionId:run.sessionId,kind:'switch_requested',provider:target.provider,account:targetAccount,detail:{from:run.account,to:targetAccount,timing:'Resumable boundary'}});
       this.emitAccounts();
-      run.control.forceSwitch({ bench: false });
+      run.control.forceSwitch({ bench: false, account:targetAccount });
     } else {
+      if(run.route?.lockedAccount)throw new Error('Unlock this conversation before switching accounts');
       run.control.forceSwitch();
     }
     return true;

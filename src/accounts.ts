@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import { quotaLimit, type QuotaReading } from './account-availability.js';
 import type { ProviderId } from './provider.js';
+import { getAdapter } from './adapters/registry.js';
 
 export type AccountState =
   | { kind: 'unknown' }
@@ -27,12 +28,16 @@ export interface Account {
   state: AccountState;
   /** Exclude from future attempts without changing authentication or live turns. */
   paused?: boolean;
+  maxConcurrent?: number;
+  reservePercent?: number;
   /** Explicit human override applies only to quota readings at or before this time. */
   quotaOverrideAt?: number;
 }
 
 export const ROUTING_STRATEGIES = ['sticky', 'priority', 'round-robin', 'least-busy', 'wait'] as const;
 export type RoutingStrategy = typeof ROUTING_STRATEGIES[number];
+export interface AccountRouteContext { lockedAccount?: string; preferredAccount?: string; useReserve?: boolean; model?: string }
+export interface RouteCandidate { name: string; eligible: boolean; reasons: string[]; load: number; maxConcurrent: number; reservePercent: number; quotaAt?: number; usedPercent?: number }
 export interface RoutingPolicy { strategy: RoutingStrategy; order: string[] }
 
 interface RegistryFile {
@@ -197,30 +202,142 @@ export class AccountRegistry {
     this.save();
   }
 
-  peekActive(now: number, provider: ProviderId = 'claude', busy: Record<string, number> = {}): Account | null {
-    const policy = this.routingPolicy(provider);
-    const pool = policy.order.map(n => this.find(n));
-    if (!pool.length) return null;
-    const manual = pool.find(a => a.name === this.data.manualNext?.[provider]);
-    if (manual && this.usable(manual, now)) return structuredClone(manual);
-    const preferred = pool.find(a => a.name === this.data.activeByProvider[provider]) || pool[0];
-    if (!this.automaticSwitching(provider)) return this.usable(preferred, now) ? structuredClone(preferred) : null;
-    let usable = pool.filter(a => this.usable(a, now));
-    if (policy.strategy === 'least-busy') usable.sort((a,b) => (busy[a.name] || 0) - (busy[b.name] || 0));
-    else if (policy.strategy === 'round-robin') {
-      const index = pool.findIndex(a => a.name === this.data.lastRouted?.[provider]);
-      const rotated = [...pool.slice(index + 1), ...pool.slice(0, index + 1)];
-      usable = rotated.filter(a => this.usable(a, now));
-    } else if (policy.strategy === 'sticky' && this.usable(preferred, now)) return structuredClone(preferred);
-    return usable[0] ? structuredClone(usable[0]) : null;
+  setCapacity(name: string, maxConcurrent: number, reservePercent: number): void {
+    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 0 || maxConcurrent > 100)
+      throw new Error('Concurrency must be 0–100 (0 means unlimited)');
+    if (!Number.isFinite(reservePercent) || reservePercent < 0 || reservePercent > 95)
+      throw new Error('Reserve must be 0–95%');
+    Object.assign(this.find(name), { maxConcurrent, reservePercent });
+    this.save();
   }
 
-  pickActive(now: number, provider: ProviderId = 'claude', busy: Record<string, number> = {}): Account | null {
-    const selected = this.peekActive(now, provider, busy);
+  explain(
+    now: number,
+    provider: ProviderId,
+    busy: Record<string, number> = {},
+    context: AccountRouteContext = {},
+  ) {
+    const policy = this.routingPolicy(provider);
+    let names = [...policy.order];
+    if (policy.strategy === 'round-robin') {
+      const i = names.indexOf(this.data.lastRouted?.[provider] || '');
+      names = [...names.slice(i + 1), ...names.slice(0, i + 1)];
+    }
+    if (policy.strategy === 'least-busy') names.sort((a, b) => (busy[a] || 0) - (busy[b] || 0));
+    const fixed =
+      context.lockedAccount ||
+      (!this.automaticSwitching(provider)
+        ? context.preferredAccount || this.data.activeByProvider[provider]
+        : undefined);
+    const preferred =
+      context.preferredAccount ||
+      this.data.manualNext?.[provider] ||
+      (policy.strategy === 'sticky' ? this.data.activeByProvider[provider] : undefined);
+    if (preferred && names.includes(preferred)) names = [preferred, ...names.filter((n) => n !== preferred)];
+    let readings: Record<string, QuotaReading> = {};
+    try {
+      readings = JSON.parse(readFileSync(join(dirname(this.file), 'quota-cache.json'), 'utf8'));
+    } catch {}
+    const candidates: RouteCandidate[] = names.map((name) => {
+      const a = this.find(name),
+        state = this.effectiveState(name, now),
+        reasons: string[] = [],
+        reading = readings[name];
+      if (fixed && name !== fixed) reasons.push('Conversation/account policy excludes this account');
+      if (a.paused) reasons.push('Account is paused');
+      if (state.kind === 'unauthenticated' || getAdapter(provider).hasCredentials?.(a.configDir) === false)
+        reasons.push('Sign-in required');
+      if (state.kind === 'limited') reasons.push('Usage limit has not reset');
+      const load = busy[name] || 0;
+      if (a.maxConcurrent && load >= a.maxConcurrent) reasons.push('Concurrent-task limit reached');
+      const quota = reading?.quota as
+        | { fiveHour?: unknown; sevenDay?: unknown; windows?: unknown[]; weeklyScoped?: unknown[] }
+        | undefined;
+      const windows = provider === 'codex' ? quota?.windows || [] : [quota?.fiveHour, quota?.sevenDay];
+      if (provider === 'claude' && context.model)
+        for (const w of quota?.weeklyScoped || []) {
+          const value = w as { label?: string };
+          if (value.label && context.model.toLowerCase().includes(value.label.toLowerCase())) windows.push(w);
+        }
+      const usage = windows.flatMap((w) => {
+        if (!w || typeof w !== 'object') return [];
+        const x = w as { utilization?: number; resetsAt?: string | number };
+        const reset = typeof x.resetsAt === 'number' ? x.resetsAt : Date.parse(x.resetsAt || '') / 1000;
+        if (Number.isFinite(reset) ? reset <= now : !reading || reading.at / 1000 + 300 <= now) return [];
+        return typeof x.utilization === 'number' && Number.isFinite(x.utilization)
+          ? [x.utilization * (provider === 'codex' ? 100 : 1)]
+          : [];
+      });
+      const usedPercent = usage.length ? Math.max(...usage) : undefined;
+      if (
+        usedPercent !== undefined &&
+        usedPercent >= 100 &&
+        !(a.quotaOverrideAt && reading.at <= a.quotaOverrideAt)
+      )
+        reasons.push('Applicable quota window is exhausted');
+      if (
+        a.reservePercent &&
+        !context.useReserve &&
+        usedPercent !== undefined &&
+        usedPercent >= 100 - a.reservePercent
+      )
+        reasons.push('Remaining quota is reserved for priority work');
+      return {
+        name,
+        eligible: !reasons.length,
+        reasons,
+        load,
+        maxConcurrent: a.maxConcurrent || 0,
+        reservePercent: a.reservePercent || 0,
+        quotaAt: reading?.at,
+        usedPercent,
+      };
+    });
+    const selected = candidates.find((x) => x.eligible)?.name || null;
+    const reason = context.lockedAccount
+      ? 'Conversation is locked to this account'
+      : context.preferredAccount === selected
+        ? 'Chosen for this conversation'
+        : preferred === selected
+          ? 'Preferred account'
+          : policy.strategy === 'least-busy'
+            ? 'Lowest active load'
+            : policy.strategy === 'round-robin'
+              ? 'Next in round robin'
+              : 'First eligible account in priority order';
+    return {
+      provider,
+      strategy: policy.strategy,
+      selected,
+      reason: selected ? reason : 'No eligible account',
+      fallback: candidates.filter((x) => x.eligible && x.name !== selected).map((x) => x.name),
+      candidates,
+      context,
+    };
+  }
+
+  peekActive(
+    now: number,
+    provider: ProviderId = 'claude',
+    busy: Record<string, number> = {},
+    context: AccountRouteContext = {},
+  ): Account | null {
+    const name = this.explain(now, provider, busy, context).selected;
+    return name ? this.get(name) : null;
+  }
+
+  pickActive(
+    now: number,
+    provider: ProviderId = 'claude',
+    busy: Record<string, number> = {},
+    context: AccountRouteContext = {},
+  ): Account | null {
+    const selected = this.peekActive(now, provider, busy, context);
     if (selected) {
       this.data.activeByProvider[provider] = selected.name;
       (this.data.lastRouted ??= {})[provider] = selected.name;
-      if (this.data.manualNext) delete this.data.manualNext[provider];
+      if (this.data.manualNext && !context.preferredAccount && !context.lockedAccount)
+        delete this.data.manualNext[provider];
       this.save();
     }
     return selected;

@@ -1,3 +1,6 @@
+import { RoutingState, type ConversationRoute } from './routing-state.js';
+import { ArtifactStore } from './workspace-store.js';
+import { accountHealth } from './routing-health.js';
 import { DeliveryStore, type DeliveryReceipt } from './workspace-store.js';
 import { ConversationActivity } from './conversation-activity.js';
 import { rolloutHeads } from '../src/adapters/codex.js';
@@ -83,6 +86,8 @@ function saveAttachment(stateDir: string, dataUrl: string, name?: string): { pat
 interface Attachment { name?: string; data: string } // data = base64 data URL
 
 interface SendBody {
+  account?: string;
+  useReserve?: boolean;
   requestId?: string;
   notBefore?: number;
   afterSessionId?: string;
@@ -213,6 +218,8 @@ export class ApiController {
    *  can Read any file (text, code, PDFs, images, …), so every attachment — not
    *  just images — is saved and handed over by path. */
   private composePrompt(body: SendBody): { prompt: string; opts: TurnRunOptions } {
+    if(body.account!==undefined&&typeof body.account!=='string')throw new BadRequestException('Invalid account');
+    if(body.useReserve!==undefined&&typeof body.useReserve!=='boolean')throw new BadRequestException('Invalid reserve preference');
     let prompt = body.prompt ?? '';
     // New unified `attachments` (name + data), plus legacy image-only fields.
     const specs: Attachment[] = [
@@ -235,7 +242,7 @@ export class ApiController {
     // it into the command's arguments and break the invocation.
     const isSlashCommand = (body.prompt ?? '').trimStart().startsWith('/');
     if (body.interactive !== false && !isSlashCommand) prompt = withAskInstructions(prompt);
-    return { prompt, opts: { model: body.model, effort: body.effort } };
+    return { prompt, opts: { model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve } };
   }
 
   @Post('sessions')
@@ -1043,6 +1050,149 @@ export class ApiController {
     return new AccountAnalytics(this.stateDir).summary(Number(days || 7), provider as ProviderId | undefined);
   }
 
+  @Get('routing/preview')
+  routingPreview(
+    @Query('projectId') pid: string,
+    @Query('sessionId') sid?: string,
+    @Query('model') model?: string,
+  ) {
+    try {
+      return this.manager.routingPreview(pid, sid, model);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+  @Get('routing/history')
+  routingHistory(@Query('projectId') pid: string, @Query('sessionId') sid: string) {
+    this.routingPreview(pid, sid);
+    const state = new RoutingState(this.stateDir);
+    return {
+      events: state.history(pid, sid).slice(0, 200),
+      handoffs: state
+        .links()
+        .filter((x) => x.projectId === pid && (x.sourceSessionId === sid || x.targetSessionId === sid)),
+    };
+  }
+  @Post('routing/conversation')
+  @HttpCode(200)
+  conversationRoute(
+    @Body()
+    body: {
+      projectId: string;
+      sessionId: string;
+      lockedAccount?: string | null;
+      nextAccount?: string | null;
+      useReserve?: boolean;
+    },
+  ) {
+    if (!body?.projectId || !body.sessionId) throw new BadRequestException('Choose a conversation');
+    const patch: ConversationRoute = {};
+    for (const key of ['lockedAccount', 'nextAccount'] as const)
+      if (key in body) {
+        if (body[key] !== null && typeof body[key] !== 'string')
+          throw new BadRequestException('Invalid account');
+        patch[key] = body[key] || undefined;
+      }
+    if ('useReserve' in body) {
+      if (typeof body.useReserve !== 'boolean') throw new BadRequestException('Invalid reserve preference');
+      patch.useReserve = body.useReserve;
+    }
+    try {
+      return this.manager.configureConversationRoute(body.projectId, body.sessionId, patch);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+  @Post('accounts/capacity')
+  @HttpCode(200)
+  accountCapacity(@Body() body: { name: string; maxConcurrent: number; reservePercent: number }) {
+    try {
+      this.manager.setAccountCapacity(body.name, body.maxConcurrent, body.reservePercent);
+      return { ok: true };
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+  @Get('accounts/health')
+  async accountHealth(@Query('model') model?: string) {
+    const rows = await this.accounts();
+    return accountHealth(rows as Parameters<typeof accountHealth>[0], this.manager.accountLoads(), model);
+  }
+  @Get('routing/handoff')
+  handoffPreview(@Query('projectId') pid: string, @Query('sessionId') sid: string) {
+    const route = this.routingPreview(pid, sid);
+    const rows = this.conversationHistory(pid, sid, '60')
+      .filter((x) => x.role === 'user' || x.role === 'assistant')
+      .slice(-12);
+    const store = new ArtifactStore(this.stateDir, () => []),
+      artifacts = store.list().filter((x) => x.projectId === pid && x.sessionId === sid);
+    const context = [
+      'Recent source messages (excerpts, not a summary):',
+      ...rows.map((x) => x.role.toUpperCase() + ': ' + x.text.slice(0, 2200)),
+      artifacts.length
+        ? 'Result references:\n' +
+          artifacts
+            .slice(0, 12)
+            .map(
+              (x) =>
+                x.title +
+                (x.url ? ' — ' + x.url : store.fileFor(x.id) ? ' — ' + store.fileFor(x.id)!.path : '') +
+                (x.summary ? ' — ' + x.summary : ''),
+            )
+            .join('\n')
+        : '',
+    ].join('\n\n');
+    return {
+      sourceProvider: route.provider,
+      context,
+      providers: [
+        ...new Set(
+          AccountRegistry.load(join(this.stateDir, 'accounts.json'))
+            .list()
+            .map((x) => x.provider),
+        ),
+      ].filter((p) => p !== route.provider),
+    };
+  }
+  @Post('routing/handoff')
+  @HttpCode(200)
+  handoff(
+    @Body()
+    body: {
+      projectId: string;
+      sessionId: string;
+      provider: ProviderId;
+      context: string;
+      instruction: string;
+      requestId: string;
+    },
+  ) {
+    if (
+      !body ||
+      !['claude', 'codex'].includes(body.provider) ||
+      typeof body.context !== 'string' ||
+      !body.context.trim() ||
+      body.context.length > 50000 ||
+      typeof body.instruction !== 'string' ||
+      !body.instruction.trim() ||
+      body.instruction.length > 10000
+    )
+      throw new BadRequestException('Choose a provider, context, and next instruction');
+    try {
+      return this.deliveries.run(body, () => ({
+        sessionId: this.manager.startProviderHandoff(
+          body.projectId,
+          body.sessionId,
+          body.provider,
+          body.context,
+          body.instruction,
+        ),
+      }));
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
   @Get('accounts/routing')
   accountRouting() { return this.manager.accountRouting(); }
 
@@ -1110,10 +1260,12 @@ export class ApiController {
   @Post('switch')
   @HttpCode(200)
   switch(@Body() body: { projectId?: string; sessionId?: string; account?: string; force?: boolean }): { switched: boolean } {
+    try {
     if (!this.manager.forceSwitch(body?.projectId, body?.sessionId, body?.account, body?.force === true)) {
       throw new ConflictException(body?.account ? 'no running turn to switch, or it is already on that account' : 'no session running');
     }
     return { switched: true };
+    }catch(e){if(e instanceof ConflictException)throw e;throw new BadRequestException((e as Error).message);}
   }
 
   /** Choose which account the next message uses (when idle). `force: true`
@@ -1353,7 +1505,7 @@ export class ApiController {
         this.manager.clearRelayChain(body.sessionId);
       }
       if(body.sessionId&&!this.manager.listConversations(body.projectId).some(c=>c.sessionId===body.sessionId))throw new BadRequestException('Conversation not found');
-      const item = this.manager.enqueue(body.projectId, { text: body.prompt, model: body.model, effort: body.effort, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId });
+      const item = this.manager.enqueue(body.projectId, { text: body.prompt, model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId });
       return { queued: true, id: item.id, sessionId:item.sessionId };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
@@ -1382,7 +1534,7 @@ export class ApiController {
       this.manager.clearSelfQueueStreak(body.sessionId);
       this.manager.clearRelayChain(body.sessionId);
       const item = this.manager.enqueue(body.projectId, {
-        text: body.prompt, model: body.model, effort: body.effort, sessionId: body.sessionId,
+        text: body.prompt, model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId,
       });
       return { steered: false, queued: true, id: item.id };
     } catch (err) {

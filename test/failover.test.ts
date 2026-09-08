@@ -262,11 +262,12 @@ describe('runSession', () => {
       ),
     });
     // Ask for the switch once the first turn is underway (before its USER_EVENT
-    // drains). The manager points the registry at the target first (that's how a
-    // user-directed switch chooses WHERE to resume); mirror that here.
+    // drains). The destination belongs to this run, even if a sibling changes
+    // the shared account preference during the drain.
     await new Promise((r) => setTimeout(r, 10));
-    registry.setActive('b');
-    ctrl!.forceSwitch({ bench: false });
+    ctrl!.forceSwitch({ bench: false, account: 'b' });
+    registry.pickActive(100);
+    registry.setActive('a');
     const res = await resultPromise;
 
     expect(res).toMatchObject({ status: 'completed', finalAccount: 'b' });
@@ -511,4 +512,20 @@ describe('load balancing during retries and waiting', () => {
     const promise=runSession({...base,registry,log,now:()=>1000,control:c=>{control=c;},startTurnFn:()=>{calls++;throw Error('Must not start');}});
     control!.abort();expect(await promise).toMatchObject({status:'failed',reason:'Stopped by user.'});expect(calls).toBe(0);
   });
+});
+
+it('honors a newly applied account lock while a targeted switch is draining', async () => {
+  const { registry, log } = fixtures();
+  const recorded: Recorded[] = [], routing: { lockedAccount?: string } = {};
+  let control: RunControl | undefined;
+  const work = runSession({
+    ...base, registry, log, routing, now: () => 100,
+    control: c => { control = c; },
+    startTurnFn: scriptTurns([[ASSISTANT, { __delayMs: 50 }, USER_EVENT], [SUCCESS]], recorded),
+  });
+  await new Promise(r => setTimeout(r, 10));
+  control!.forceSwitch({ bench: false, account: 'b' });
+  routing.lockedAccount = 'a';
+  expect(await work).toMatchObject({ status: 'completed', finalAccount: 'a' });
+  expect(recorded.map(r => r.configDir)).toEqual(['/cfg/a', '/cfg/a']);
 });

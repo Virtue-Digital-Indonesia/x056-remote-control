@@ -1319,6 +1319,8 @@
   // the blank composer the user has since moved on to (creating a SECOND new
   // conversation, whose message would otherwise be misrouted into the first).
   var blankSeq = 1;
+  var composerAccounts = {};
+  function composerAccountKey(){return currentProjectId+"::"+blankSeq;}
 
   // Boot: syncPicker() sets these per-project once projects load; this is just
   // the pre-load default, so read Claude's (the default provider's) memory.
@@ -4962,14 +4964,14 @@
       return;
     }
     var files = pendingFiles.slice();
-    var body = { prompt: text }; var m = effectiveModel(); if (m) body.model = m; if (effortEl.value) body.effort = effortEl.value;
+    var body = { prompt: text }; if((pendingNew||!lastSessionId)&&composerAccounts[composerAccountKey()])body.account=composerAccounts[composerAccountKey()]; var m = effectiveModel(); if (m) body.model = m; if (effortEl.value) body.effort = effortEl.value;
     if (files.length) body.attachments = files.map(function (f) { return { name: f.name, data: f.url }; });
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
     if (!useNew) body.sessionId=lastSessionId;
     var myProject=currentProjectId,myBlank=blankSeq,myConvoSession=useNew?null:lastSessionId,draftSnapshot=promptEl.value,ticket;
     deliveryPreparing=true;
-    try {ticket=await prepareDelivery(path,body);}catch(e){addSys(e.message,'banner');return;}finally{deliveryPreparing=false;}
+    try {ticket=await prepareDelivery(path,body);if(body.account&&composerAccounts[myProject+"::"+myBlank]===body.account)delete composerAccounts[myProject+"::"+myBlank];}catch(e){addSys(e.message,'banner');return;}finally{deliveryPreparing=false;}
     var label = text || (files.length > 1 ? '(' + files.length + ' files)' : '(' + (files[0] && files[0].name || 'file') + ')');
     // Echo a slash command as the same chip the transcript will show on reload,
     // so the live view and the reloaded view do not disagree about what it was.
@@ -5243,8 +5245,9 @@
       if (action === 'design') startDesignLogin(a);
     },
     showDelivery: openDeliveryPanel,
+    setComposerAccount: function(name){composerAccounts[composerAccountKey()]=name;},
     markRead: function () { clearConvNotif(currentProjectId,lastSessionId); },
-    state: function () { return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, views: views, provider:currentProvider(), runningAccount:activeAccount[viewKey(currentProjectId,lastSessionId)] || null }; },
+    state: function () { return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, views: views, provider:currentProvider(), model:effectiveModel(), composerAccount:composerAccounts[composerAccountKey()]||null, runningAccount:activeAccount[viewKey(currentProjectId,lastSessionId)] || null }; },
     select: function (pid, sid) {
       if (pid === currentProjectId) return Promise.resolve(switchConversation(pid, sid));
       // Select the target conversation before switching project, then the existing
