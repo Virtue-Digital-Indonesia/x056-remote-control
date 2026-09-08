@@ -5,6 +5,7 @@ window.createControlRoom = function (engine) {
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
   const ic = name => `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const iconButton = (id, name, label) => `<button class="cr-icon" id="${id}" aria-label="${label}" title="${label}">${ic(name)}</button>`;
+  const routeCache=new Map(),routeFetched=new Map(),routePending=new Map();
   const main = document.querySelector('body > main'); main.id = 'conversationSurface';
   const legacyNav = document.querySelector('body > aside'); legacyNav.id = 'projectDrawer';
   const scroll = main.querySelector('.scroll');
@@ -13,21 +14,23 @@ window.createControlRoom = function (engine) {
   main.append(content);
   main.insertAdjacentHTML('afterbegin', `<nav id="focusNav" aria-label="Focus navigation"><button class="cr-logo" id="focusHome" title="Back to Control room">x0</button>${iconButton('focusBack','left','Back to Control room')}${iconButton('focusSearch','search','Search conversations')}${iconButton('focusNew','compose','New conversation')}<span class="sp"></span>${iconButton('focusAccounts','user','Accounts')}${iconButton('focusSettings','gear','Display settings')}</nav>`);
   // The existing toolbar actions remain wired; less-used actions live in More.
-  main.querySelector('.topbar').insertAdjacentHTML('beforeend', `<button class="cr-secondary" id="chatActivity">${ic('sparkles')}<span>Activity</span><small id="chatActivityCount"></small></button>${iconButton('chatRefresh','refresh','Refresh conversation')}${iconButton('chatMax','expand','Maximize conversation')}${iconButton('chatClose','x','Close conversation')}`);
+  main.querySelector('.topbar').insertAdjacentHTML('beforeend', `<button class="cr-secondary" id="chatActivity">${ic('sparkles')}<span>Activity</span><small id="chatActivityCount"></small></button>${iconButton('chatResults','file','Conversation results')}${iconButton('chatRefresh','refresh','Refresh conversation')}${iconButton('chatMax','expand','Maximize conversation')}${iconButton('chatClose','x','Close conversation')}`);
   const shell = document.createElement('section'); shell.id = 'controlRoom'; shell.setAttribute('aria-label', 'Control room');
   shell.innerHTML = `<header class="cr-top"><button class="cr-logo" id="crHome">x0<span>x056</span></button><nav aria-label="Main navigation"><button id="crBoardTab" aria-current="page">Control room</button><button id="crAccountsTab">Accounts</button></nav><span class="sp"></span><span id="crConnection" class="cr-connection">Connecting</span>${iconButton('crProjects','folder','Projects')}${iconButton('crTheme','moon','Change theme')}${iconButton('crSettings','gear','Display settings')}${iconButton('crNotifications','bell','Notifications')}</header>
-  <div id="crBoard" class="cr-page"><div class="cr-heading"><div><div class="cr-eyebrow">CONVERSATIONS</div><h1 id="crScopeTitle">All projects</h1><p id="crScopeSubtitle">Conversations across your workspace</p></div><div class="cr-actions">${iconButton('crScopeActions','more','Project actions')}<button class="cr-primary" id="crNew">${ic('plus')} New conversation</button></div></div><div id="crStats" class="cr-stats"></div><div class="cr-tools"><div class="cr-tabs" role="group" aria-label="Conversation filter"><button data-filter="all" class="selected">All conversations</button><button data-filter="question">Needs input</button><button data-filter="active">Running</button><button data-filter="unread">Unread</button></div><label class="cr-search">${ic('search')}<input id="crSearch" type="search" placeholder="Search conversations…" aria-label="Search conversations" /></label><select id="crProjectFilter" aria-label="Filter by project"><option value="">All projects</option></select></div><div id="crBoardError" role="status"></div><div class="cr-board" id="crLanes"></div></div>
+  <div id="crBoard" class="cr-page"><div class="cr-heading"><div><div class="cr-eyebrow">CONVERSATIONS</div><h1 id="crScopeTitle">All projects</h1><p id="crScopeSubtitle">Conversations across your workspace</p></div><div class="cr-actions">${iconButton('crScopeActions','more','Project actions')}<button id="crSelectToggle" class="cr-secondary">Select</button><button class="cr-primary" id="crNew">${ic('plus')} New conversation</button></div></div><div id="crStats" class="cr-stats"></div><div class="cr-tools"><div class="cr-tabs" role="group" aria-label="Conversation filter"><button data-filter="all" class="selected">All conversations</button><button data-filter="question">Needs input</button><button data-filter="active">Running</button><button data-filter="unread">Unread</button><button data-filter="archived">Archived</button></div><label class="cr-search">${ic('search')}<input id="crSearch" type="search" placeholder="Search conversations…" aria-label="Search conversations" /></label><select id="crProjectFilter" aria-label="Filter by project"><option value="">All projects</option></select></div><div id="crBulkBar" class="workspace-bulk" hidden><strong>0 selected</strong><button id="crBulkAll">Select all matches</button><button id="crBulkClear">Clear</button><button data-bulk="archive">Archive</button><button data-bulk="restore">Restore</button><button data-bulk="tag">Tags</button><button data-bulk="pin">Pin</button><button data-bulk="unpin">Unpin</button><button data-bulk="read">Mark read</button><button data-bulk="unread">Mark unread</button></div><div id="crBoardError" role="status"></div><div class="cr-board" id="crLanes"></div></div>
   <div id="crAccounts" class="cr-page" hidden></div><div id="crAutomations" class="cr-page" hidden><div class="cr-heading"><div><h1>Automations</h1><p>Scheduled messages and conversation autopilots.</p></div><button id="refreshAutomations" class="cr-secondary">Refresh</button></div><section id="automationAutopilots" aria-label="Conversation autopilots"></section><header class="automation-section-heading"><h2>Scheduled messages</h2></header><div id="automationContent"></div></div><div id="crToast" role="status" hidden></div>`;
   document.body.prepend(shell);
   const workspace = document.createElement('div'); workspace.id = 'crWorkspace';
   $('crBoard').before(workspace);
   workspace.innerHTML = `<nav id="crProjectNav" aria-label="Projects"><header><span>Projects</span>${iconButton('crAddProject','plus','Add project')}</header><label class="cr-project-search">${ic('search')}<input id="crProjectSearch" type="search" aria-label="Find a project" placeholder="Find a project" /></label><div id="crProjectLinks"></div><button id="crManageProjects" class="cr-project-manage">${ic('folder')} Manage projects</button></nav>`;
   workspace.append($('crBoard'), $('crAccounts'), $('crAutomations'));
+  workspace.insertAdjacentHTML('beforeend', `<div id="crArtifacts" class="cr-page" hidden><div class="cr-heading"><div><h1>Artifact library</h1><p>Saved screenshots, files, previews and reported tests.</p></div><div class="workspace-actions"><button id="artifactRefresh" class="cr-secondary">Refresh</button><button id="artifactAdd" class="cr-primary">Add output</button></div></div><div class="workspace-tools"><label class="cr-search">${ic('search')}<input type="search" id="artifactSearch" aria-label="Search artifacts" placeholder="Search outputs…"></label><select id="artifactProject" aria-label="Artifact project"></select><div class="cr-tabs" id="artifactKinds"><button data-kind="" class="selected">All</button><button data-kind="image">Screenshots</button><button data-kind="file">Files</button><button data-kind="preview">Previews</button><button data-kind="test">Tests</button></div></div><div id="artifactItems" class="artifact-grid"></div></div><div id="crPlanner" class="cr-page" hidden><div class="cr-heading"><div><h1>Queue planner</h1><p>Schedule messages and decide what runs next.</p></div><div class="workspace-actions"><button id="plannerRefresh" class="cr-secondary">Refresh</button><button id="plannerAdd" class="cr-primary">Plan a message</button></div></div><div class="workspace-tools"><select id="plannerProject" aria-label="Queue project"></select><span class="cr-note">Messages run in order per conversation. Other conversations can run in parallel.</span></div><div id="plannerItems"></div></div>`);
   const primaryNav = shell.querySelector('.cr-top nav'); primaryNav.className = 'cr-primary-nav';
   $('crProjectNav').prepend(primaryNav);
   $('crBoardTab').innerHTML = ic('menu') + '<span>Control room</span>';
   $('crAccountsTab').innerHTML = ic('chart') + '<span>Dashboard</span>';
   primaryNav.insertAdjacentHTML('beforeend', '<button id="crAutomationsTab">'+ic('alarm')+'<span>Automations</span></button>');
+  primaryNav.insertAdjacentHTML('beforeend','<button id="crArtifactsTab">'+ic('file')+'<span>Artifacts</span></button><button id="crPlannerTab">'+ic('menu')+'<span>Queue planner</span></button>');
   $('crProjectNav').insertAdjacentHTML('beforeend','<button id="sidebarSettings" class="cr-project-manage">'+ic('gear')+'Settings</button>');
   $('crHome').insertAdjacentHTML('afterend','<span id="crBreadcrumb">Workspace <span>/ Control room</span></span>');
   const projectVeil = document.createElement('div'); projectVeil.id='crProjectVeil'; projectVeil.hidden=true; shell.append(projectVeil);
@@ -40,8 +43,9 @@ window.createControlRoom = function (engine) {
   document.body.append(preferences);
   let prefs = { open: 'max', maximize: 'modal' };
   try { const saved = JSON.parse(localStorage.getItem('x056_display_preferences') || localStorage.getItem('x056_draft_chat_preferences_v1') || '{}'); if (['side','max','maximized'].includes(saved.open)) prefs.open = saved.open === 'maximized' ? 'max' : saved.open; if (['page','modal'].includes(saved.maximize)) prefs.maximize = saved.maximize; } catch {}
-  const sectionScroll = {board:0,accounts:0,automations:0};
+  const sectionScroll = {board:0,accounts:0,automations:0,artifacts:0,planner:0};
   let accountProvider = '', accountDays = '7', chartMetric = 'attempts', selectedSendAccount = '', pickerBusy = false;
+  let conversationMeta={},bulkMode=false,bulkSelection=new Set(),bulkCandidates=[],artifactRows=[],plannerRows={};
   let recentLimit=10, selectedProject='', projectNavSignature='', sendAccountSignature='';
   let dismissedProjects=[],showDismissedProjects=false;
   const messageActivity=new Map(),messageMetadata=new Map();
@@ -198,21 +202,23 @@ window.createControlRoom = function (engine) {
     main.setAttribute('role', mode === 'modal' ? 'dialog' : 'region');
     main.setAttribute('aria-label', 'Conversation');
     if (mode === 'modal') main.setAttribute('aria-modal','true'); else main.removeAttribute('aria-modal');
-    $('chatMax').title = $('chatMax').ariaLabel = mode === 'side' ? 'Maximize conversation' : 'Restore side panel';
+    $('chatMax').title = $('chatMax').ariaLabel = mode === 'side' ? 'Open large modal' : mode === 'modal' ? 'Open full screen' : 'Return to large modal';
     if (mode !== 'closed') restorePosition();
     if(mode==='modal')main.setAttribute('aria-owns','conversationStage');else main.removeAttribute('aria-owns');
   }
   function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode(prefs.open === 'side' ? 'side' : prefs.maximize); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
   function close() { engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
-  function pageFor(name) { return $(name==='board'?'crBoard':name==='accounts'?'crAccounts':'crAutomations'); }
+  function pageFor(name) { return $('cr'+({board:'Board',accounts:'Accounts',automations:'Automations',artifacts:'Artifacts',planner:'Planner'}[name])); }
   function showSection(next) {
     sectionScroll[section] = pageFor(section).scrollTop;
     close(); engine.nav(false); section = next; projectNav(false);
-    ['board','accounts','automations'].forEach(name=>pageFor(name).hidden=name!==next);
-    ['Board','Accounts','Automations'].forEach(name=>$('cr'+name+'Tab').setAttribute('aria-current',next===name.toLowerCase()?'page':'false'));
-    $('crBreadcrumb').innerHTML='Workspace <span>/ '+({board:'Control room',accounts:'Dashboard',automations:'Automations'}[next])+'</span>';
+    ['board','accounts','automations','artifacts','planner'].forEach(name=>pageFor(name).hidden=name!==next);
+    ['Board','Accounts','Automations','Artifacts','Planner'].forEach(name=>$('cr'+name+'Tab').setAttribute('aria-current',next===name.toLowerCase()?'page':'false'));
+    $('crBreadcrumb').innerHTML='Workspace <span>/ '+({board:'Control room',accounts:'Dashboard',automations:'Automations',artifacts:'Artifact library',planner:'Queue planner'}[next])+'</span>';
     if(next==='accounts') { renderAccountsPage(); renderProjectCosts(); loadProjectCosts(); loadAnalytics(); engine.pollAccounts(); }
     else if(next==='automations') { $('cronBtn').click(); loadAutomationAutopilots(); }
+    else if(next==='artifacts'){$('artifactProject').innerHTML=workspaceProjectOptions();loadArtifacts();}
+    else if(next==='planner'){$('plannerProject').innerHTML=workspaceProjectOptions();loadPlanner();}
     else refresh();
     pageFor(next).scrollTop=sectionScroll[next];
   }
@@ -237,7 +243,7 @@ window.createControlRoom = function (engine) {
     catch(err){toast('Could not refresh. '+err.message);}
     finally{button.disabled=false;button.removeAttribute('aria-busy');}
   });
-  on('chatClose', close); on('chatMax', () => setMode(mode === 'side' ? prefs.maximize : 'side'));
+  on('chatClose', close); on('chatMax', () => setMode(mode === 'side' ? 'modal' : mode === 'modal' ? 'page' : 'modal'));
   veil.addEventListener('click', close);
   $('acctChip').addEventListener('click', e => { e.stopImmediatePropagation(); engine.closePops(); showSection('accounts'); }, true);
   $('crSearch').addEventListener('input', () => {recentLimit=10;renderBoard();});
@@ -303,12 +309,12 @@ window.createControlRoom = function (engine) {
     catch(e){toast(e.message);}finally{if(button.isConnected)button.disabled=false;}
   }
   function conversationRow(x) {
-    return `<article class="cr-conversation-row ${x.status}" data-row="${esc(x.c.sessionId)}"><button class="cr-task" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span class="cr-row-copy"><span class="cr-row-title">${esc(x.c.title||'Conversation')}${x.unread?'<i class="cr-unread-dot" title="Unread"></i>':''}</span><span class="cr-row-subtitle">${esc(selectedProject ? (x.label || (x.c.provider==='codex'?'ChatGPT':'Claude')) : x.p.name+(x.label?' · '+x.label:''))}</span></span><span class="cr-status ${x.status}"><i></i>${statusLabels[x.status]}</span><time ${x.time?'datetime="'+new Date(x.time).toISOString()+'" title="Last message: '+esc(new Date(x.time).toLocaleString())+'"':'title="No message timestamp available"'}>${esc(relativeDate(x.time))}</time></button><button class="cr-row-menu cr-icon" data-conversation-menu="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" aria-label="Actions for ${esc(x.c.title||'conversation')}">${ic('more')}</button><button class="cr-row-pin ${isStagePinned(x.p.id,x.c.sessionId)?'pinned':''}" data-pin-project="${esc(x.p.id)}" data-pin-session="${esc(x.c.sessionId)}" aria-label="${isStagePinned(x.p.id,x.c.sessionId)?'Unpin':'Pin'} ${esc(x.c.title||'conversation')}" aria-pressed="${isStagePinned(x.p.id,x.c.sessionId)}">${ic('pin')}</button>${['finished','idle'].includes(x.status)?`<button class="cr-recent-dismiss" data-recent-project="${esc(x.p.id)}" data-recent-session="${esc(x.c.sessionId)}" aria-label="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore':'Dismiss'} ${esc(x.c.title||'conversation')} ${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'to':'from'} recents" title="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore to recents':'Dismiss from recents'}">${ic(recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'history':'x')}</button>`:''}${x.status==='question'?`<button class="cr-dismiss" data-dismiss="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" title="Dismiss question without sending a reply">Dismiss question</button>`:''}</article>`;
+    return `<article class="cr-conversation-row ${x.status}" data-row="${esc(x.c.sessionId)}">${bulkMode?`<input class="bulk-checkbox" type="checkbox" data-bulk-key="${esc(x.k)}" aria-label="Select ${esc(x.c.title||'conversation')}" ${bulkSelection.has(x.k)?'checked':''}>`:''}<button class="cr-task" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}"><i class="cr-project-color" style="--project-color:${projectColor(x.p.id)}"></i><span class="cr-row-copy"><span class="cr-row-title">${esc(x.c.title||'Conversation')}<small class="cr-row-tags">${esc((conversationMeta[x.k]?.tags||[]).join(' · '))}</small>${x.unread?'<i class="cr-unread-dot" title="Unread"></i>':''}</span><span class="cr-row-subtitle">${esc(selectedProject ? (x.label || (x.c.provider==='codex'?'ChatGPT':'Claude')) : x.p.name+(x.label?' · '+x.label:''))}</span></span><span class="cr-status ${x.status}"><i></i>${statusLabels[x.status]}</span><time ${x.time?'datetime="'+new Date(x.time).toISOString()+'" title="Last message: '+esc(new Date(x.time).toLocaleString())+'"':'title="No message timestamp available"'}>${esc(relativeDate(x.time))}</time></button><button class="cr-row-menu cr-icon" data-conversation-menu="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" aria-label="Actions for ${esc(x.c.title||'conversation')}">${ic('more')}</button><button class="cr-row-pin ${isStagePinned(x.p.id,x.c.sessionId)?'pinned':''}" data-pin-project="${esc(x.p.id)}" data-pin-session="${esc(x.c.sessionId)}" aria-label="${isStagePinned(x.p.id,x.c.sessionId)?'Unpin':'Pin'} ${esc(x.c.title||'conversation')}" aria-pressed="${isStagePinned(x.p.id,x.c.sessionId)}">${ic('pin')}</button>${['finished','idle'].includes(x.status)?`<button class="cr-recent-dismiss" data-recent-project="${esc(x.p.id)}" data-recent-session="${esc(x.c.sessionId)}" aria-label="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore':'Dismiss'} ${esc(x.c.title||'conversation')} ${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'to':'from'} recents" title="${recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'Restore to recents':'Dismiss from recents'}">${ic(recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))?'history':'x')}</button>`:''}${x.status==='question'?`<button class="cr-dismiss" data-dismiss="${esc(x.c.sessionId)}" data-project="${esc(x.p.id)}" title="Dismiss question without sending a reply">Dismiss question</button>`:''}</article>`;
   }
   function renderBoard() {
     const all=cards(),state=engine.state();
     if(selectedProject&&!state.projects.some(p=>p.id===selectedProject)&&state.projects.length)selectedProject='';
-    const scope=all.filter(x=>(showDismissedProjects||!dismissedProjects.includes(x.p.id))&&(!selectedProject||x.p.id===selectedProject)),project=state.projects.find(p=>p.id===selectedProject);
+    const scope=all.filter(x=>(boardFilter==='archived'?conversationMeta[x.k]?.archived:!conversationMeta[x.k]?.archived)&&(showDismissedProjects||!dismissedProjects.includes(x.p.id))&&(!selectedProject||x.p.id===selectedProject)),project=state.projects.find(p=>p.id===selectedProject);
     $('crScopeActions').hidden=!project;
     $('crScopeTitle').textContent=project?.name||'All projects';
     $('crScopeSubtitle').textContent=scope.length+' conversations'+(project?'':' across '+state.projects.filter(p=>showDismissedProjects||!dismissedProjects.includes(p.id)).length+' projects');
@@ -316,9 +322,11 @@ window.createControlRoom = function (engine) {
     renderProjectNav(all,state);
     const selector=$('crProjectFilter');selector.innerHTML='<option value="">All projects</option>'+state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');selector.value=selectedProject;
     const query=$('crSearch').value.toLowerCase();
-    const filtered=scope.filter(x=>(!query||(x.c.title+' '+x.p.name+' '+x.label).toLowerCase().includes(query))&&(boardFilter==='all'||boardFilter==='question'&&x.status==='question'||boardFilter==='unread'&&x.unread||boardFilter==='active'&&['running','background'].includes(x.status)));
+    const filtered=scope.filter(x=>(!query||(x.c.title+' '+x.p.name+' '+x.label+' '+(conversationMeta[x.k]?.tags||[]).join(' ')).toLowerCase().includes(query))&&(boardFilter==='all'||boardFilter==='archived'||boardFilter==='question'&&x.status==='question'||boardFilter==='unread'&&x.unread||boardFilter==='active'&&['running','background'].includes(x.status)));
+
     const unread=filtered.filter(x=>x.unread),attention=filtered.filter(x=>!x.unread&&['question','failed','parked'].includes(x.status)),active=filtered.filter(x=>!x.unread&&['running','background'].includes(x.status)),recent=filtered.filter(x=>!x.unread&&['finished','idle'].includes(x.status)&&(!recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))||query||showDismissedRecents||boardFilter!=='all'));
     const dismissedCount=scope.filter(x=>['finished','idle'].includes(x.status)&&recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))).length;
+    bulkCandidates=[...unread,...attention,...active,...recent];renderBulk();
     const groups=[['Unread',unread],['Needs attention',attention],['In progress',active],['Recent conversations',recent.slice(0,recentLimit)]];
     let html=groups.filter(([,rows])=>rows.length).map(([title,rows])=>`<section class="cr-conversation-group"><header><h2>${title}</h2><span>${title==='Recent conversations'?recent.length:rows.length}</span></header>${rows.map(conversationRow).join('')}</section>`).join('');
     if(!html)html=`<div class="cr-empty">${query?'No conversations match your search.':boardFilter==='question'?'No questions need your input.':'No conversations in this view.'}</div>`;
@@ -330,6 +338,7 @@ window.createControlRoom = function (engine) {
       $('crLanes').innerHTML=html;
       if(focused)([...$('crLanes').querySelectorAll('.cr-task')].find(n=>n.dataset.session===focused)||shell.querySelector('[data-filter="question"]')).focus({preventScroll:true});
       if(moreFocused)($('crShowMore')||$('crLanes').querySelector('.cr-task:last-child'))?.focus({preventScroll:true});
+      $('crLanes').querySelectorAll('[data-bulk-key]').forEach(box=>box.onchange=()=>{box.checked?bulkSelection.add(box.dataset.bulkKey):bulkSelection.delete(box.dataset.bulkKey);renderBulk();});
       $('crLanes').querySelectorAll('.cr-task').forEach(b=>b.onclick=()=>openConversation(b));
       $('crLanes').querySelectorAll('[data-recent-session]').forEach(b=>b.onclick=()=>{const pid=b.dataset.recentProject,sid=b.dataset.recentSession;if(recentDismissed.includes(stageKey(pid,sid)))restoreRecent(pid,sid);else dismissRecent(pid,sid);});
       if($('crDismissedRecents'))$('crDismissedRecents').onclick=()=>{showDismissedRecents=!showDismissedRecents;renderBoard();};
@@ -396,7 +405,8 @@ window.createControlRoom = function (engine) {
   function accountStatus(a) { return a.paused?'Paused':a.state?.kind==='unauthenticated'?'Needs login':accountQuotaLimited(a)||a.state?.kind==='limited'?'Limited':a.state?.kind==='ok'?'Available':'Not checked'; }
   function identity(a) { return `<span class="cr-account-avatar ${esc(a.provider)}">${a.provider==='codex'?'G':'C'}</span><span class="identity-copy"><strong>${esc(accountName(a))}</strong><small>${esc(a.email || providerName(a.provider))}</small></span>`; }
   function renderSendAccounts(force=false) {
-    const s=engine.state(), pool=s.accounts.filter(a=>a.provider===s.provider), next=pool.find(a=>a.nextUp&&available(a));
+    const s=engine.state(), pool=s.accounts.filter(a=>a.provider===s.provider), preview=routeCache.get(routeKey(s)), chosen=s.sessionId?preview?.selected:s.composerAccount, next=chosen?pool.find(a=>a.name===chosen):preview?null:pool.find(a=>a.nextUp&&available(a));
+    loadRoutePreview(s);
     const isRunning=!!s.running[s.projectId]?.[s.sessionId], running=pool.find(a=>a.name===s.runningAccount);
     const chip=ic('user')+`<span>${isRunning?'Next message':'Send with'} <strong>${esc(next?accountName(next):'No available account')}</strong></span><small>${esc(next?.email || providerName(s.provider))}</small>`+ic('down');
     if($('sendAccountChip').innerHTML!==chip) $('sendAccountChip').innerHTML=chip;
@@ -410,12 +420,12 @@ window.createControlRoom = function (engine) {
       ${isRunning?`<div class="picker-running">${ic('repeat')}<span>Running with <strong>${esc(accountName(running))}</strong></span></div>`:''}
       <div class="send-account-list" role="radiogroup" aria-label="${providerName(s.provider)} accounts">${pool.map(a=>`<label class="account-pick-card ${a.name===selectedSendAccount?'selected':''} ${available(a)?'':'unavailable'}">
         <div class="picker-account-head"><span class="cr-identity">${identity(a)}</span><input type="radio" name="send-account" value="${esc(a.name)}" ${a.name===selectedSendAccount?'checked':''} ${available(a)?'':'disabled'} aria-label="${esc(accountName(a))}"></div>
-        <div class="picker-status">${esc(accountStatus(a))}${a.nextUp&&available(a)?' · Next message':''}${isRunning&&a.name===s.runningAccount?' · Running this turn':''}</div>
+        <div class="picker-status">${esc(accountStatus(a))}${a.name===next?.name?' · Next message':''}${isRunning&&a.name===s.runningAccount?' · Running this turn':''}</div>
         <div class="picker-quotas">${quotaCell(a,quotaWindows(a).five,'5-hour window')}${quotaCell(a,quotaWindows(a).seven,'7-day window')}</div>
         ${quotaWindows(a).other.length?`<details class="picker-extra"><summary>${quotaWindows(a).other.length} additional usage ${quotaWindows(a).other.length===1?'limit':'limits'}</summary><div class="picker-quotas">${quotaWindows(a).other.map(w=>quotaCell(a,w,w.label)).join('')}</div></details>`:''}
         ${quotaFreshness(a)}</label>`).join('')||'<div class="cr-empty">No accounts connected for this provider.</div>'}</div>
-      <p class="picker-note">This choice overrides routing for the next ${providerName(s.provider)} attempt. ${isRunning?'Use “Switch this turn” to resume the current turn on another account.':''}</p>
-      <div id="pickerError" class="cr-error" role="alert"></div><footer><button class="cr-text-button" data-manage-accounts>Manage accounts</button><span class="sp"></span>${isRunning?`<button class="cr-secondary" data-switch-turn ${!selectedSendAccount||selectedSendAccount===s.runningAccount?'disabled':''}>Switch this turn</button>`:''}<button class="cr-primary" data-send-next ${selectedSendAccount?'':'disabled'}>Use for next message</button></footer>`;
+      <p class="picker-note">This choice applies to this conversation’s next turn. If unavailable, automatic routing may use a fallback. Use an account lock to prevent that. ${isRunning?'Use “Switch this turn” to resume the current turn on another account.':''}</p>
+      <div id="pickerError" class="cr-error" role="alert"></div><footer><button class="cr-text-button" data-manage-accounts>Routing & locks</button><span class="sp"></span>${isRunning?`<button class="cr-secondary" data-switch-turn ${!selectedSendAccount||selectedSendAccount===s.runningAccount?'disabled':''}>Switch this turn</button>`:''}<button class="cr-primary" data-send-next ${selectedSendAccount?'':'disabled'}>Use for next message</button></footer>`;
     if(html===sendAccountSignature&&!force)return;
     sendAccountSignature=html;
     const focused=document.activeElement, focusValue=focused?.name==='send-account'?focused.value:null, oldScroll=sendAccounts.querySelector('.send-account-list')?.scrollTop||0;
@@ -423,7 +433,7 @@ window.createControlRoom = function (engine) {
     sendAccounts.querySelector('.send-account-list').scrollTop=oldScroll;
     if(focusValue) [...sendAccounts.querySelectorAll('input')].find(n=>n.value===focusValue)?.focus({preventScroll:true});
     sendAccounts.querySelector('[data-close]').onclick=()=>sendAccounts.close();
-    sendAccounts.querySelector('[data-manage-accounts]').onclick=()=>{sendAccounts.close();showSection('accounts');};
+    sendAccounts.querySelector('[data-manage-accounts]').onclick=()=>{sendAccounts.close();if(s.sessionId)showRouting(s);else showSection('accounts');};
     sendAccounts.querySelectorAll('[name="send-account"]').forEach(input=>input.onchange=()=>{selectedSendAccount=input.value;renderSendAccounts(true);});
     const choose=async(switching)=>{
       // Recheck current state: this dialog may have stayed open across a completed turn.
@@ -431,8 +441,11 @@ window.createControlRoom = function (engine) {
       if(!selected||!available(selected)||state.provider!==s.provider) { renderSendAccounts(true);return; }
       let failure='';pickerBusy=true; sendAccounts.querySelectorAll('button,input').forEach(b=>b.disabled=true);
       try {
-        await json(switching?'/api/switch':'/api/accounts/active',switching?{projectId:s.projectId,sessionId:s.sessionId,account:selected.name}:{name:selected.name});
-        await engine.pollAccounts(); sendAccounts.close(); toast(switching?'Switching this turn to '+accountName(selected)+'…':'Next message will use '+accountName(selected)+'.');
+        if(switching)await json('/api/switch',{projectId:s.projectId,sessionId:s.sessionId,account:selected.name});
+        else if(s.sessionId)await json('/api/routing/conversation',{projectId:s.projectId,sessionId:s.sessionId,nextAccount:selected.name});
+        else engine.setComposerAccount(selected.name);
+        routeCache.delete(routeKey(s));await loadRoutePreview(s,true);
+        await engine.pollAccounts(); sendAccounts.close(); toast(switching?'Switching this turn to '+accountName(selected)+'…':'Next turn prefers '+accountName(selected)+'.');
       } catch(e) { failure=e.message; }
       finally {pickerBusy=false;renderSendAccounts(true);if(failure)$('pickerError').textContent=failure;}
     };
@@ -448,6 +461,7 @@ window.createControlRoom = function (engine) {
     refresh();
     if(section==='automations'&&['autopilot','session_started','session_done','session_error','project_removed'].includes(kind))loadAutomationAutopilots();
     if (section === 'accounts' && ['session_done','accounts'].includes(kind)) loadAnalytics();
+    if (section==='planner'&&kind==='queue')loadPlanner();
   }
   let automationBusy=false,automationAgain=false;
   async function loadAutomationAutopilots(){
@@ -471,12 +485,12 @@ window.createControlRoom = function (engine) {
   function wireSegment(id, change) { $(id).querySelectorAll('button').forEach(b=>b.onclick=()=>{ $(id).querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));change(b.dataset.value); }); }
   function renderAccountsPage() {
     if ($('accountProvider')) return;
-    $('crAccounts').innerHTML=`<div class="cr-heading"><div><h1>Dashboard</h1><p>Account usage, project costs, and routing.</p></div><div class="cr-actions"><button class="cr-secondary" id="accountExport">${ic('down')} Export CSV</button><button class="cr-primary" id="accountAdd">${ic('plus')} Add account</button></div></div>
+    $('crAccounts').innerHTML=`<div class="cr-heading"><div><h1>Dashboard</h1><p>Account usage, project costs, and routing.</p></div><div class="cr-actions"><button class="cr-secondary" id="accountHealth">${ic('user')} Health & capacity</button><button class="cr-secondary" id="accountExport">${ic('down')} Export CSV</button><button class="cr-primary" id="accountAdd">${ic('plus')} Add account</button></div></div>
       <section id="crProjectCosts" class="cr-project-costs" aria-label="Project cost estimates"></section><div class="cr-tools">${segmented('accountProvider',[['','All providers'],['codex','ChatGPT'],['claude','Claude']],accountProvider,'Provider')}<span class="sp"></span>${segmented('accountDays',[['7','7 days'],['30','30 days']],accountDays,'Usage date range')}<button class="cr-icon" id="accountRefresh" title="Refresh usage" aria-label="Refresh usage">${ic('repeat')}</button></div>
       <div id="accountStatus" role="status" class="cr-note"></div><div id="accountStats" class="cr-stats"></div>
       <div class="cr-charts"><section class="cr-chart-card"><header><h2>Activity over time</h2>${segmented('accountMetric',[['attempts','Attempts'],['tokens','Tokens']],chartMetric,'Chart metric')}</header><div class="chart-legend"><span><i></i>ChatGPT</span><span><i class="claude"></i>Claude</span><small>UTC</small></div><div id="accountChart"></div><div id="accountChartCaption" class="cr-chart-caption" role="status"></div></section><section class="cr-chart-card"><header><h2>Tokens by model</h2><span>Reported usage</span></header><div id="accountModels"></div></section></div>
       <div class="cr-section-head"><h2>Connected accounts <small id="accountCount"></small></h2><span>Live availability · Provider limits</span></div><div id="accountRows"></div><div id="accountRouting"></div><p id="accountCoverage" class="cr-note"></p>`;
-    on('accountAdd',()=>$('addAcctBtn').click()); on('accountExport',exportCsv);
+    on('accountHealth',()=>showHealth()); on('accountAdd',()=>$('addAcctBtn').click()); on('accountExport',exportCsv);
     on('accountRefresh',()=>{engine.pollAccounts();loadAnalytics();});
     wireSegment('accountProvider',value=>{accountProvider=value;renderAccountRows();loadAnalytics();});
     wireSegment('accountDays',value=>{accountDays=value;loadAnalytics();});
@@ -745,7 +759,7 @@ window.createControlRoom = function (engine) {
       {label:isStagePinned(pid,sid)?'Unpin conversation':'Pin conversation',icon:'pin',run:()=>pinStage(pid,sid,!isStagePinned(pid,sid))},
       {label:unread?'Mark as read':'Mark as unread',icon:'bell',run:()=>{engine.setConversationUnread(pid,sid,!unread);refresh();}},
       {label:recentDismissed.includes(stageKey(pid,sid))?'Restore to recents':'Dismiss from recents',icon:'history',run:()=>recentDismissed.includes(stageKey(pid,sid))?restoreRecent(pid,sid):dismissRecent(pid,sid)},
-      {label:'Copy conversation ID',icon:'copy',run:()=>navigator.clipboard.writeText(sid).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},
+      {label:'Conversation results',icon:'file',run:()=>showResults({projectId:pid,sessionId:sid})},{label:'Routing & accounts',icon:'repeat',disabled:!sid,run:()=>showRouting({projectId:pid,sessionId:sid})},{label:'Continue with another provider',icon:'repeat',disabled:!sid,run:()=>showHandoff({projectId:pid,sessionId:sid})},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',run:()=>navigator.clipboard.writeText(sid).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},
       ...(running?[{label:'Stop turn',icon:'x',run:async()=>{try{await json('/api/sessions/current/stop',{projectId:pid,sessionId:sid});toast('Stopping turn.');}catch(e){toast(e.message);}}}]:[]),
       {label:'Remove from panel',icon:'x',disabled:running,run:()=>engine.removeConversation(pid,sid)},
     ],point);
@@ -761,12 +775,295 @@ window.createControlRoom = function (engine) {
   function themeMenu(anchor){openMenu(anchor,[['system','auto','Follow device theme'],['light','sun','Light'],['dark','moon','Dark']].map(([value,icon,label])=>({label,icon,checked:engine.theme()===value,run:()=>{engine.setTheme(value);syncTheme();}})));}
   function notificationMenu(anchor){const s=engine.state(),count=Object.keys(s.notifications).length;openMenu(anchor,[{label:'Unread conversations'+(count?' · '+count:''),icon:'bell',run:()=>{if(preferences.open)preferences.close();boardFilter='unread';shell.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('selected',b.dataset.filter==='unread'));showSection('board');}},{label:'Message approvals'+($('mcpApprovalsBadge').textContent?' · '+$('mcpApprovalsBadge').textContent:''),icon:'sparkles',run:()=>$('mcpApprovalsBtn').click()},{label:'Browser notifications',icon:'bell',run:()=>$('notifyBtn').click()}]);}
   function activityMenu(anchor){openMenu(anchor,[{label:'Usage & subagents',icon:'sparkles',run:()=>$('subagentsBtn').click()},{label:'Workflow runs',icon:'fanout',disabled:$('wfBtn').hidden,run:()=>$('wfBtn').click()},{label:'Message approvals',icon:'bell',run:()=>$('mcpApprovalsBtn').click()}]);}
-  function conversationMenu(anchor){const s=engine.state();openMenu(anchor,[{label:isStagePinned(s.projectId,s.sessionId)?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{const pinned=!isStagePinned(s.projectId,s.sessionId);pinStage(s.projectId,s.sessionId,pinned);toast(pinned?'Conversation pinned.':'Conversation unpinned.');}},{label:'Rename conversation',icon:'compose',disabled:!s.sessionId,run:engine.renameConversation},{label:'Resume a session',icon:'history',run:()=>$('resumeBtn').click()},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'x',disabled:!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
+  function conversationMenu(anchor){const s=engine.state();openMenu(anchor,[{label:isStagePinned(s.projectId,s.sessionId)?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{const pinned=!isStagePinned(s.projectId,s.sessionId);pinStage(s.projectId,s.sessionId,pinned);toast(pinned?'Conversation pinned.':'Conversation unpinned.');}},{label:'Rename conversation',icon:'compose',disabled:!s.sessionId,run:engine.renameConversation},{label:'Resume a session',icon:'history',run:()=>$('resumeBtn').click()},{label:'Conversation results',icon:'file',disabled:!s.sessionId,run:()=>showResults()},{label:'Routing & accounts',icon:'repeat',disabled:!s.sessionId,run:()=>showRouting(s)},{label:'Continue with another provider',icon:'repeat',disabled:!s.sessionId,run:()=>showHandoff(s)},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'x',disabled:!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
   const runningLabel=document.createElement('div');runningLabel.id='runningAccountLabel';runningLabel.hidden=true;content.querySelector('.composer').before(runningLabel);
   $('autopilotBtn').insertAdjacentHTML('beforeend','<span>Autopilot</span>');
   const syncActivity=()=>{$('chatActivityCount').textContent=$('subagentsBadge').textContent||'';};
   new MutationObserver(syncActivity).observe($('subagentsBadge'),{childList:true,subtree:true,characterData:true});
   new MutationObserver(syncTheme).observe($('themeBtn'),{childList:true,subtree:true});syncTheme();
+
+  function routeKey(s) {
+    return [s.projectId, s.sessionId || '', s.model || ''].join('::');
+  }
+  function routeQuery(s) {
+    return (
+      'projectId=' +
+      encodeURIComponent(s.projectId) +
+      (s.sessionId ? '&sessionId=' + encodeURIComponent(s.sessionId) : '') +
+      (s.model ? '&model=' + encodeURIComponent(s.model) : '')
+    );
+  }
+  async function loadRoutePreview(s = engine.state(), force = false) {
+    if (!s.projectId) return;
+    const key = routeKey(s);
+    if (routePending.has(key)) return routePending.get(key);
+    if (!force && Date.now() - (routeFetched.get(key) || 0) < 5000) return routeCache.get(key);
+    routeFetched.set(key, Date.now());
+    const work = workspaceRequest('routing/preview?' + routeQuery(s))
+      .then((data) => {
+        routeCache.set(key, data);
+        if (routeKey(engine.state()) === key) renderSendAccounts();
+        return data;
+      })
+      .catch(() => undefined)
+      .finally(() => routePending.delete(key));
+    routePending.set(key, work);
+    return work;
+  }
+  function routeAccount(name) {
+    return accountName(engine.state().accounts.find((a) => a.name === name));
+  }
+  function routingCards(data) {
+    return `<div class="route-decision"><small>Next turn · ${esc(data.strategy)}</small><strong>${data.selected ? esc(routeAccount(data.selected)) : 'Waiting for an eligible account'}</strong><p>${esc(data.reason)}. Selection is checked again when work starts.</p>${data.runningAccount ? `<p>Current turn: ${esc(routeAccount(data.runningAccount))}</p>` : ''}</div><div class="route-candidates">${data.candidates.map((c) => `<article><div><strong>${esc(routeAccount(c.name))}</strong><span class="route-badge ${c.eligible ? 'eligible' : ''}">${c.name === data.selected ? 'Selected' : c.eligible ? 'Fallback' : 'Excluded'}</span></div><p>${c.eligible ? 'Eligible for this turn' : esc(c.reasons.join(' · '))}</p><small>${c.load} active${c.maxConcurrent ? ' / ' + c.maxConcurrent + ' slots' : ''} · ${c.usedPercent === undefined ? 'Quota unknown' : Math.round(c.usedPercent) + '% used'}${c.reservePercent ? ' · ' + c.reservePercent + '% reserved' : ''}${c.quotaAt ? ' · Read ' + esc(new Date(c.quotaAt).toLocaleTimeString()) : ''}</small></article>`).join('')}</div>`;
+  }
+  async function showRouting(target = engine.state()) {
+    const d = workspaceDialog(
+      'Routing & accounts',
+      `<nav class="route-tabs" aria-label="Routing views"><button class="active" data-tab="preview">Preview & controls</button><button data-tab="history">History</button></nav><div data-route-body>Loading…</div>`,
+    );
+    let tab = 'preview';
+    async function render() {
+      try {
+        const el = d.querySelector('[data-route-body]');
+        if (tab === 'history') {
+          const data = await workspaceRequest('routing/history?' + routeQuery(target));
+          if (!d.open || tab !== 'history') return;
+          el.innerHTML = `${data.handoffs.map((h) => `<button class="cr-secondary route-link" data-handoff="${esc(h.sourceSessionId === target.sessionId ? h.targetSessionId : h.sourceSessionId)}">${h.sourceSessionId === target.sessionId ? 'Open continuation' : 'Open source conversation'} · ${providerName(h.targetProvider)}</button>`).join('')}<div class="route-history">${data.events.map((h) => `<article><time>${esc(new Date(h.at).toLocaleString())}</time><strong>${esc(h.kind.replaceAll('_', ' '))}</strong><p>${h.account ? esc(routeAccount(h.account)) + ' · ' : ''}${esc(h.model || h.provider || '')}</p>${h.kind === 'routing_preference' ? `<p>Next turn: ${h.detail.nextAccount ? esc(routeAccount(h.detail.nextAccount)) : 'Automatic'} · Lock: ${h.detail.lockedAccount ? esc(routeAccount(h.detail.lockedAccount)) : 'None'}${h.detail.useReserve ? ' · Priority work' : ''}</p>` : ''}${h.detail.reason ? `<small>${esc(h.detail.reason)}</small>` : ''}${h.detail.candidates ? `<details><summary>Decision details</summary>${routingCards(h.detail)}</details>` : ''}</article>`).join('') || '<p class="cr-empty">Routing history appears when a new turn starts.</p>'}</div>`;
+          el.querySelectorAll('[data-handoff]').forEach(
+            (b) =>
+              (b.onclick = async () => {
+                await engine.reloadProjects();
+                await engine.select(target.projectId, b.dataset.handoff);
+                d.close();
+                open();
+              }),
+          );
+          return;
+        }
+        const data = await workspaceRequest('routing/preview?' + routeQuery(target));
+        if (!d.open || tab !== 'preview') return;
+        routeCache.set(routeKey(target), data);
+        const pool = engine.state().accounts.filter((a) => a.provider === data.provider),
+          options = (selected) =>
+            '<option value="">Automatic routing</option>' +
+            pool
+              .map(
+                (a) =>
+                  `<option value="${esc(a.name)}" ${a.name === selected ? 'selected' : ''}>${esc(accountName(a))}</option>`,
+              )
+              .join('');
+        el.innerHTML = `${routingCards(data)}<form class="workspace-form route-controls"><label>Account for the next turn<select name="next">${options(data.preferences.nextAccount)}</select></label><label>Account lock<select name="lock">${options(data.preferences.lockedAccount)}</select></label><p class="cr-note">A lock stays with this conversation. Work waits if that account is unavailable. Changing a lock leaves the current attempt running.</p><label class="workspace-check"><input type="checkbox" name="reserve" ${data.preferences.useReserve ? 'checked' : ''}>Priority work: allow this conversation to use reserved quota</label><p class="cr-note">Provider limits and concurrent-task limits still apply.</p><p role="alert"></p><footer><button type="button" class="cr-secondary" data-switch ${!data.runningAccount ? 'disabled' : ''}>Switch now</button><button class="cr-primary">Save for next turn</button></footer><small>Switch now interrupts at a resumable boundary. Background work may stop when the account changes.</small></form>`;
+        const f = el.querySelector('form');
+        async function save(switchNow) {
+          const buttons = f.querySelectorAll('button');
+          buttons.forEach((b) => (b.disabled = true));
+          try {
+            const next = f.elements.next.value,
+              lock = f.elements.lock.value;
+            if (next && lock && next !== lock)
+              throw new Error('Choose the locked account, or clear the lock.');
+            if (switchNow && !next && !lock) throw new Error('Choose an account to switch to.');
+            await workspaceRequest('routing/conversation', {
+              projectId: target.projectId,
+              sessionId: target.sessionId,
+              nextAccount: next || null,
+              lockedAccount: lock || null,
+              useReserve: f.elements.reserve.checked,
+            });
+            if (switchNow)
+              await workspaceRequest('switch', {
+                projectId: target.projectId,
+                sessionId: target.sessionId,
+                account: next || lock,
+              });
+            routeCache.delete(routeKey(target));
+            toast(switchNow ? 'Switch requested.' : 'Conversation routing saved.');
+            await render();
+            await loadRoutePreview(engine.state(), true);
+          } catch (e) {
+            f.querySelector('[role=alert]').textContent = e.message;
+            buttons.forEach((b) => (b.disabled = false));
+          }
+        }
+        f.onsubmit = (e) => {
+          e.preventDefault();
+          save(false);
+        };
+        f.querySelector('[data-switch]').onclick = () => save(true);
+      } catch (e) {
+        if (d.open) d.querySelector('[data-route-body]').textContent = e.message;
+      }
+    }
+    d.querySelectorAll('[data-tab]').forEach(
+      (b) =>
+        (b.onclick = () => {
+          tab = b.dataset.tab;
+          d.querySelectorAll('[data-tab]').forEach((x) => x.classList.toggle('active', x === b));
+          render();
+        }),
+    );
+    render();
+  }
+  async function showHealth() {
+    const d = workspaceDialog(
+      'Account health & capacity',
+      `<p class="cr-note">Checks local credentials, quota freshness, and cached model compatibility. No test prompt is sent.</p><div class="workspace-actions"><button class="cr-secondary" data-refresh>Refresh checks</button></div><div data-health>Loading…</div>`,
+    );
+    async function load() {
+      try {
+        const model = engine.state().model,
+          rows = await workspaceRequest(
+            'accounts/health' + (model ? '?model=' + encodeURIComponent(model) : ''),
+          );
+        if (!d.open) return;
+        d.querySelector('[data-health]').innerHTML =
+          `${model ? `<p class="cr-note">Requested model: ${esc(model)}</p>` : ''}<div class="health-grid">${rows.map((a) => `<form class="workspace-form health-card" data-account="${esc(a.name)}"><h3>${esc(a.displayName)}</h3><small>${providerName(a.provider)} · ${a.paused ? 'Paused' : a.load + ' active tasks'}</small><dl><dt>Authentication</dt><dd>${esc(a.credentials)}</dd><dt>Model</dt><dd>${esc(a.compatibility)}</dd><dt>Usage reading</dt><dd>${a.quotaAt ? esc(new Date(a.quotaAt).toLocaleString()) + (a.quotaStale ? ' · Stale' : ' · Recent') : 'Unavailable'}${a.quotaRetryAt ? '<br>Next retry ' + esc(new Date(a.quotaRetryAt).toLocaleTimeString()) : ''}</dd></dl><div class="capacity-fields"><label>Concurrent tasks<input name="capacity" type="number" min="0" max="100" step="1" value="${a.maxConcurrent}"><small>0 means unlimited</small></label><label>Reserve quota (%)<input name="reserve" type="number" min="0" max="95" value="${a.reservePercent}"><small>Held for priority work</small></label></div><p role="alert"></p><footer><button class="cr-secondary">Save limits</button></footer></form>`).join('')}</div><p class="cr-note">Reserves use the tightest applicable reported quota window. Unknown usage cannot enforce a reserve. Active and background tasks count toward capacity; new limits apply to future attempts.</p>`;
+        d.querySelectorAll('form').forEach(
+          (f) =>
+            (f.onsubmit = async (e) => {
+              e.preventDefault();
+              const b = f.querySelector('button');
+              b.disabled = true;
+              try {
+                await workspaceRequest('accounts/capacity', {
+                  name: f.dataset.account,
+                  maxConcurrent: Number(f.elements.capacity.value),
+                  reservePercent: Number(f.elements.reserve.value),
+                });
+                f.querySelector('[role=alert]').classList.add('saved');
+                f.querySelector('[role=alert]').textContent = 'Limits saved.';
+                routeCache.clear();
+                await engine.pollAccounts();
+              } catch (e) {
+                f.querySelector('[role=alert]').textContent = e.message;
+              } finally {
+                b.disabled = false;
+              }
+            }),
+        );
+      } catch (e) {
+        d.querySelector('[data-health]').textContent = e.message;
+      }
+    }
+    d.querySelector('[data-refresh]').onclick = load;
+    load();
+  }
+  async function showHandoff(target = engine.state()) {
+    const d = workspaceDialog(
+      'Continue with another provider',
+      `<div data-handoff-body>Preparing context…</div>`,
+    );
+    d.classList.add('handoff-dialog');
+    try {
+      const data = await workspaceRequest('routing/handoff?' + routeQuery(target));
+      if (!d.open) return;
+      d.querySelector('[data-handoff-body]').innerHTML =
+        `<form class="workspace-form"><p class="cr-note">Start a linked conversation in the same project. Review the source excerpts below and add missing decisions or next steps.</p><fieldset class="route-provider"><legend>Continue with</legend>${data.providers.map((p, i) => `<label><input type="radio" name="provider" value="${p}" ${!i ? 'checked' : ''}>${providerName(p)}</label>`).join('') || '<p>Connect an account for another provider first.</p>'}</fieldset><label>Context to carry over<textarea name="context" rows="11" maxlength="50000" required>${esc(data.context)}</textarea></label><label>Next instruction<textarea name="instruction" rows="3" maxlength="10000" required placeholder="What should the next provider do?"></textarea></label><p class="cr-note">Finish or stop the source conversation, stop autopilot, and remove pending messages before starting.</p><p role="alert"></p><footer><button class="cr-primary" ${data.providers.length ? '' : 'disabled'}>Start continuation</button></footer></form>`;
+      const f = d.querySelector('form'),
+        storageKey = 'x056_handoff_' + target.projectId + '_' + target.sessionId;
+      let ticket = null;
+      try {
+        ticket = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+      } catch {}
+      if (ticket) {
+        f.elements.context.value = ticket.input.context;
+        f.elements.instruction.value = ticket.input.instruction;
+        f.elements.provider.value = ticket.input.provider;
+        f.querySelectorAll('input,textarea').forEach((x) => (x.disabled = true));
+        f.querySelector('button').textContent = 'Check continuation';
+      }
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        const b = f.querySelector('button');
+        b.disabled = true;
+        try {
+          const input = {
+            projectId: target.projectId,
+            sessionId: target.sessionId,
+            provider: f.elements.provider.value,
+            context: f.elements.context.value,
+            instruction: f.elements.instruction.value,
+          };
+          if (!ticket || JSON.stringify(ticket.input) !== JSON.stringify(input))
+            ticket = { input, requestId: crypto.randomUUID() };
+          sessionStorage.setItem(storageKey, JSON.stringify(ticket));
+          f.querySelectorAll('input,textarea').forEach((x) => (x.disabled = true));
+          const result = await workspaceRequest('routing/handoff', { ...input, requestId: ticket.requestId });
+          if (result.status !== 'accepted' || !result.sessionId)
+            throw new Error(
+              'Delivery is uncertain. Keep this dialog open and retry to check the same request.',
+            );
+          sessionStorage.removeItem(storageKey);
+          await engine.reloadProjects();
+          await engine.select(target.projectId, result.sessionId);
+          d.close();
+          open();
+        } catch (e) {
+          f.querySelector('[role=alert]').textContent = e.message;
+          b.disabled = false;
+          b.textContent = 'Check continuation';
+          try {
+            const status = await workspaceRequest('messages/status?requestId=' + ticket.requestId);
+            if (['failed', 'not_received'].includes(status.status)) {
+              sessionStorage.removeItem(storageKey);
+              ticket = null;
+              f.querySelectorAll('input,textarea').forEach((x) => (x.disabled = false));
+              b.textContent = 'Start continuation';
+            }
+          } catch {}
+        }
+      };
+    } catch (e) {
+      if (d.open) d.querySelector('[data-handoff-body]').textContent = e.message;
+    }
+  }
+
+  // Review outputs and manage the workspace without adding permanent chat chrome.
+  async function workspaceRequest(path,body){const r=await engine.api('/api/'+path,body===undefined?undefined:{method:'POST',body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.message||'Request failed');return j;}
+  function workspaceDialog(title,body){const d=document.createElement('dialog');d.className='cr-dialog workspace-dialog';d.innerHTML=`<header><h2>${esc(title)}</h2><button class="cr-icon" aria-label="Close">${ic('x')}</button></header>${body}`;if(d.querySelector('form')){d.classList.add('workspace-form-dialog');d.querySelectorAll('select[name=conversation],select[name=after]').forEach(select=>{if(select.disabled||select.options.length<13)return;const options=[...select.options].map(x=>({value:x.value,text:x.text})),search=document.createElement('input');search.type='search';search.placeholder='Find a project or conversation';search.setAttribute('aria-label','Filter '+(select.name==='after'?'dependency conversations':'conversations'));select.before(search);search.oninput=()=>{const value=select.value,query=search.value.toLowerCase();select.replaceChildren(...options.filter(x=>!x.value||x.value===value||x.text.toLowerCase().includes(query)).map(x=>new Option(x.text,x.value)));select.value=value;};});}document.body.append(d);d.querySelector('header button').onclick=()=>d.close();d.addEventListener('click',e=>{const r=d.getBoundingClientRect();if(e.target===d&&(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom))d.close();});d.addEventListener('close',()=>{d.querySelectorAll('img').forEach(img=>{if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);});d.remove();});d.showModal();return d;}
+  async function loadConversationMeta(){try{const data=await workspaceRequest('workspace/metadata');if(JSON.stringify(data)!==JSON.stringify(conversationMeta)){conversationMeta=data;boardSignature='';refresh();}}catch{}}
+  function renderBulk(){const bar=$('crBulkBar');bar.hidden=!bulkMode;$('crSelectToggle').textContent=bulkMode?'Done selecting':'Select';bar.querySelector('strong').textContent=bulkSelection.size+' selected';$('crBulkAll').textContent=bulkCandidates.length>500?'Select first 500 matches':'Select all matches';bar.querySelectorAll('[data-bulk]').forEach(b=>b.disabled=!bulkSelection.size);}
+  async function bulkAction(action){
+    const selected=cards().filter(x=>bulkSelection.has(x.k));if(!selected.length)return;
+    if(['read','unread','pin','unpin'].includes(action)){const before=selected.map(x=>({x,unread:x.unread,pinned:isStagePinned(x.p.id,x.c.sessionId)}));selected.forEach(x=>action==='read'||action==='unread'?engine.setConversationUnread(x.p.id,x.c.sessionId,action==='unread'):pinStage(x.p.id,x.c.sessionId,action==='pin'));toast('Updated '+selected.length+' conversations.',()=>{before.forEach(({x,unread,pinned})=>action==='read'||action==='unread'?engine.setConversationUnread(x.p.id,x.c.sessionId,unread):pinStage(x.p.id,x.c.sessionId,pinned));refresh();});refresh();return;}
+    let tags;if(action==='tag'){const value=await engine.prompt({title:'Tag selected conversations',message:'Comma-separated tags. Leave blank to clear tags.',value:'',okText:'Apply'});if(value===null)return;tags=value.split(',').map(x=>x.trim()).filter(Boolean);}
+    const previous=selected.map(x=>({projectId:x.p.id,sessionId:x.c.sessionId,archived:!!conversationMeta[x.k]?.archived,tags:conversationMeta[x.k]?.tags||[]}));
+    try{conversationMeta=await workspaceRequest('workspace/metadata',{items:selected.map(x=>({projectId:x.p.id,sessionId:x.c.sessionId,...(tags?{tags}:{archived:action==='archive'})}))});bulkSelection.clear();boardSignature='';refresh();toast('Updated '+selected.length+' conversations.',async()=>{try{conversationMeta=await workspaceRequest('workspace/metadata',{items:previous});boardSignature='';refresh();}catch(e){toast(e.message);}});}catch(e){toast(e.message);}
+  }
+  $('crSelectToggle').onclick=()=>{bulkMode=!bulkMode;bulkSelection.clear();boardSignature='';renderBoard();};
+  $('crBulkAll').onclick=()=>{bulkCandidates.slice(0,500).forEach(x=>bulkSelection.add(x.k));boardSignature='';renderBoard();};
+  $('crBulkClear').onclick=()=>{bulkSelection.clear();boardSignature='';renderBoard();};
+  $('crBulkBar').querySelectorAll('[data-bulk]').forEach(b=>b.onclick=()=>bulkAction(b.dataset.bulk));
+  function conversationOptions(value=''){return cards().map(x=>`<option value="${esc(x.k)}" ${value===x.k?'selected':''}>${esc(x.p.name+' · '+(x.c.title||'Conversation'))}</option>`).join('');}
+  const artifactKinds={image:'Screenshot',file:'File',preview:'Preview',test:'Test result'};
+  async function artifactFile(item,download=false){const r=await engine.api('/api/workspace/artifact-file?id='+encodeURIComponent(item.id));if(!r.ok)throw new Error('File is unavailable');const blob=await r.blob(),url=URL.createObjectURL(blob);if(download){const a=document.createElement('a');a.href=url;a.download=item.original?.split('/').pop()||item.title;a.click();setTimeout(()=>URL.revokeObjectURL(url),5000);return;}return url;}
+  function artifactCards(rows){return rows.map(x=>`<article class="artifact-card" data-artifact="${esc(x.id)}">${x.kind==='image'?`<button class="artifact-image" data-view="${esc(x.id)}" aria-label="View ${esc(x.title)}"><img alt="${esc(x.title)}" loading="lazy"></button>`:''}<div class="artifact-copy"><small>${artifactKinds[x.kind]} · ${esc(relativeDate(x.at))}</small><strong>${esc(x.title)}</strong>${x.kind==='test'?`<p class="test-result ${esc(x.status)}">${esc(x.summary)}</p><small>${x.source==='response'?'Reported by assistant':'Added manually'}</small>`:''}<small>${esc(engine.state().projects.find(p=>p.id===x.projectId)?.name||'Project')} · ${esc(cards().find(c=>c.k===x.projectId+'::'+x.sessionId)?.c.title||'Conversation')}</small><div class="artifact-actions">${x.url?`<a class="cr-secondary" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">Open preview ${ic('up')}</a>`:x.file?`<button class="cr-secondary" data-download="${esc(x.id)}">Download</button>`:''}<button class="cr-text-button" data-source="${esc(x.id)}">Conversation</button><button class="cr-icon" data-remove-artifact="${esc(x.id)}" aria-label="Remove from library">${ic('x')}</button></div></div></article>`).join('')||'<div class="cr-empty">No saved outputs in this view.</div>';}
+  function bindArtifacts(container,rows,reload){const byId=new Map(rows.map(x=>[x.id,x]));container.querySelectorAll('.artifact-image img').forEach(async img=>{try{const url=await artifactFile(byId.get(img.closest('[data-artifact]').dataset.artifact));if(img.isConnected)img.src=url;else URL.revokeObjectURL(url);}catch{img.alt='Image unavailable';}});container.querySelectorAll('[data-view]').forEach(b=>b.onclick=async()=>{const x=byId.get(b.dataset.view);try{const url=await artifactFile(x),d=workspaceDialog(x.title,'<img class="artifact-large" alt="">');d.querySelector('img').src=url;d.querySelector('img').alt=x.title;}catch(e){toast(e.message);}});container.querySelectorAll('[data-download]').forEach(b=>b.onclick=()=>artifactFile(byId.get(b.dataset.download),true).catch(e=>toast(e.message)));container.querySelectorAll('[data-source]').forEach(b=>b.onclick=async()=>{const x=byId.get(b.dataset.source);b.closest('dialog')?.close();await engine.select(x.projectId,x.sessionId);open();});container.querySelectorAll('[data-remove-artifact]').forEach(b=>b.onclick=async()=>{try{await workspaceRequest('workspace/artifacts/remove',{id:b.dataset.removeArtifact});reload();}catch(e){toast(e.message);}});}
+  async function addArtifact(pid,sid,reload){const current=pid&&sid?pid+'::'+sid:key(),d=workspaceDialog('Add to artifact library',`<form class="workspace-form"><label>Conversation<select name="conversation">${conversationOptions(current)}</select></label><label>Type<select name="kind"><option value="file">Screenshot or file</option><option value="preview">Preview link</option><option value="test">Test result</option></select></label><label>Title<input name="title" placeholder="Optional title"></label><label id="artifactValueLabel">File path<input name="value" required placeholder="/tmp/screenshot.png"></label><label class="test-status-field" hidden>Result<select name="status"><option value="passed">Passed</option><option value="failed">Failed</option><option value="reported">Reported</option></select></label><p role="alert"></p><footer><button class="cr-primary">Save</button></footer></form>`);const f=d.querySelector('form');f.elements.kind.onchange=()=>{const kind=f.elements.kind.value;d.querySelector('#artifactValueLabel').firstChild.textContent=kind==='file'?'File path':kind==='preview'?'Preview URL':'Test summary';f.elements.value.placeholder=kind==='file'?'/tmp/screenshot.png':kind==='preview'?'https://…':'Tests: 24 passed';d.querySelector('.test-status-field').hidden=kind!=='test';};f.onsubmit=async e=>{e.preventDefault();const [projectId,sessionId]=f.elements.conversation.value.split('::'),kind=f.elements.kind.value;f.querySelector('button').disabled=true;try{await workspaceRequest('workspace/artifacts',{projectId,sessionId,title:f.elements.title.value,...(kind==='file'?{path:f.elements.value.value}:kind==='preview'?{url:f.elements.value.value}:{summary:f.elements.value.value,status:f.elements.status.value})});d.close();reload();}catch(err){f.querySelector('[role=alert]').textContent=err.message;f.querySelector('button').disabled=false;}};}
+  async function loadArtifacts(){const el=$('artifactItems');try{artifactRows=await workspaceRequest('workspace/artifacts');renderArtifacts();}catch(e){el.textContent=e.message;}}
+  function renderArtifacts(){const query=$('artifactSearch').value.toLowerCase(),pid=$('artifactProject').value,kind=$('artifactKinds').querySelector('.selected')?.dataset.kind||'';const rows=artifactRows.filter(x=>(!pid||x.projectId===pid)&&(!kind||x.kind===kind)&&(!query||(x.title+' '+(x.summary||'')).toLowerCase().includes(query)));$('artifactItems').querySelectorAll('img').forEach(img=>{if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);});$('artifactItems').innerHTML=artifactCards(rows);bindArtifacts($('artifactItems'),rows,loadArtifacts);}
+  async function showResults(target=engine.state()){const {projectId,sessionId}=target;if(!sessionId){toast('Open a conversation first.');return;}const d=workspaceDialog('Conversation results',`<p class="cr-note">Screenshots, previews, and reported test results.</p><div class="workspace-actions"><button class="cr-secondary" data-add>Add output</button><button class="cr-secondary" data-scan>Find outputs in recent replies</button></div><div class="artifact-grid" data-results>Loading…</div>`);async function load(scan=false){try{const rows=scan?await workspaceRequest('workspace/artifacts/scan',{projectId,sessionId}):await workspaceRequest('workspace/artifacts?projectId='+encodeURIComponent(projectId)+'&sessionId='+encodeURIComponent(sessionId));if(!d.open)return;d.querySelector('[data-results]').innerHTML=artifactCards(rows.filter(x=>x.kind!=='file'));bindArtifacts(d.querySelector('[data-results]'),rows,()=>load());}catch(e){d.querySelector('[data-results]').textContent=e.message;}}d.querySelector('[data-add]').onclick=()=>addArtifact(projectId,sessionId,()=>load());d.querySelector('[data-scan]').onclick=()=>load(true);load(true);}
+  async function loadPlanner(){try{plannerRows=await workspaceRequest('queue');renderPlanner();}catch(e){$('plannerItems').textContent=e.message;}}
+  function queueReason(item){
+    if(item.dispatching)return 'Interrupted delivery · review conversation before resuming';
+    const reasons=[];
+    if(item.paused)reasons.push(item.error?'Paused: '+item.error:'Paused');
+    if(item.notBefore>Date.now())reasons.push('Scheduled '+new Date(item.notBefore).toLocaleString());
+    const dep=cards().find(x=>x.c.sessionId===item.afterSessionId);
+    if(dep&&['running','background'].includes(dep.status))reasons.push('Waiting for '+dep.c.title);
+    if(!reasons.length){const target=cards().find(x=>x.c.sessionId===item.sessionId),queue=Object.values(plannerRows).find(rows=>rows.some(x=>x.id===item.id))||[],head=queue.find(x=>x.sessionId===item.sessionId);reasons.push(head&&head.id!==item.id?'Waiting for earlier message':target&&['running','background'].includes(target.status)?'Waiting for current turn':'Ready to send');}
+    return reasons.join(' · ');
+  }
+  function renderPlanner(){const pid=$('plannerProject').value;const rows=Object.entries(plannerRows).filter(([p])=>!pid||pid===p).flatMap(([projectId,items])=>items.map((item,index)=>({projectId,item,index})));$('plannerItems').innerHTML=rows.map(({projectId,item,index})=>`<article class="planner-item" draggable="true" data-queue="${esc(item.id)}" data-project="${esc(projectId)}"><span class="planner-order" title="Drag to reorder">${index+1}</span><div class="planner-copy"><strong>${esc(cards().find(x=>x.c.sessionId===item.sessionId)?.c.title||'Conversation')}</strong><p>${esc(item.text)}</p><small>${esc(engine.state().projects.find(p=>p.id===projectId)?.name)} · ${esc(queueReason(item))}</small></div><div class="planner-actions"><button class="cr-icon" data-move="-1" aria-label="Move up">${ic('up')}</button><button class="cr-icon" data-move="1" aria-label="Move down">${ic('down')}</button><button class="cr-secondary" data-edit>Edit</button><button class="cr-secondary" data-pause>${item.paused||item.dispatching?'Resume':'Pause'}</button><button class="cr-icon" data-remove aria-label="Remove queued message">${ic('x')}</button></div></article>`).join('')||'<div class="cr-empty">No messages waiting. Plan a message to get started.</div>';
+    $('plannerItems').querySelectorAll('[data-queue]').forEach(el=>{const p=el.dataset.project,id=el.dataset.queue,item=plannerRows[p].find(x=>x.id===id);el.querySelector('[data-edit]').onclick=()=>editPlannedMessage(p,item);el.querySelector('[data-pause]').onclick=()=>workspaceRequest('queue/edit',{projectId:p,id,paused:item.dispatching?false:!item.paused}).then(loadPlanner).catch(e=>toast(e.message));el.querySelector('[data-remove]').onclick=()=>workspaceRequest('queue/remove',{projectId:p,id}).then(loadPlanner).catch(e=>toast(e.message));el.querySelectorAll('[data-move]').forEach(b=>b.onclick=()=>movePlanned(p,id,Number(b.dataset.move)));el.ondragstart=e=>e.dataTransfer.setData('text/plain',JSON.stringify({projectId:p,id}));el.ondragover=e=>e.preventDefault();el.ondrop=e=>{e.preventDefault();try{const moved=JSON.parse(e.dataTransfer.getData('text/plain'));if(moved.projectId!==p)return;const items=plannerRows[p],from=items.findIndex(x=>x.id===moved.id),to=items.findIndex(x=>x.id===id);movePlanned(p,moved.id,to-from);}catch{}};});}
+  async function movePlanned(pid,id,delta){const ids=plannerRows[pid].map(x=>x.id),from=ids.indexOf(id),to=Math.max(0,Math.min(ids.length-1,from+delta));ids.splice(from,1);ids.splice(to,0,id);try{await workspaceRequest('queue/reorder',{projectId:pid,ids});await loadPlanner();}catch(e){toast(e.message);loadPlanner();}}
+  function editPlannedMessage(pid,item){const current=item?pid+'::'+item.sessionId:key(),d=workspaceDialog(item?'Edit planned message':'Plan a message',`<form class="workspace-form"><label>Conversation<select name="conversation" ${item?'disabled':''}>${conversationOptions(current)}</select></label><label>Message<textarea name="prompt" rows="5" required>${esc(item?.text||'')}</textarea></label><label>Start no earlier than<input name="time" type="datetime-local"></label><label>Wait until this conversation is idle<select name="after"><option value="">No dependency</option>${conversationOptions()}</select></label><label class="workspace-check"><input type="checkbox" name="paused" ${item?.paused?'checked':''}>Keep paused until I resume it</label><p role="alert"></p><footer><button class="cr-primary">${item?'Save changes':'Add to queue'}</button></footer></form>`);const f=d.querySelector('form');if(item?.notBefore){const date=new Date(item.notBefore);f.elements.time.value=new Date(date-date.getTimezoneOffset()*60000).toISOString().slice(0,16);}if(item?.afterSessionId){const dep=cards().find(x=>x.c.sessionId===item.afterSessionId);f.elements.after.value=dep?.k||'';}f.onsubmit=async e=>{e.preventDefault();const [projectId,sessionId]=f.elements.conversation.value.split('::'),afterSessionId=f.elements.after.value.split('::')[1]||'';f.querySelector('button').disabled=true;try{await workspaceRequest(item?'queue/edit':'queue',{projectId,sessionId,id:item?.id,prompt:f.elements.prompt.value,notBefore:f.elements.time.value?new Date(f.elements.time.value).getTime():0,afterSessionId,paused:f.elements.paused.checked,...(!item?{requestId:crypto.randomUUID()}:{})});d.close();loadPlanner();}catch(err){f.querySelector('[role=alert]').textContent=err.message;f.querySelector('button').disabled=false;}};}
+  function workspaceProjectOptions(){return '<option value="">All projects</option>'+engine.state().projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');}
+  on('chatResults',()=>showResults());on('crArtifactsTab',()=>showSection('artifacts'));on('crPlannerTab',()=>showSection('planner'));
+  on('artifactAdd',()=>addArtifact(null,null,loadArtifacts));on('artifactRefresh',loadArtifacts);on('plannerAdd',()=>editPlannedMessage());on('plannerRefresh',loadPlanner);
+  $('artifactSearch').oninput=renderArtifacts;$('artifactProject').onchange=renderArtifacts;$('plannerProject').onchange=renderPlanner;
+  $('artifactKinds').querySelectorAll('button').forEach(b=>b.onclick=()=>{$('artifactKinds').querySelectorAll('button').forEach(x=>x.classList.toggle('selected',x===b));renderArtifacts();});
+  setInterval(()=>{if(document.hidden)return;loadConversationMeta();if(section==='planner')loadPlanner();},5000);setTimeout(loadConversationMeta,1000);
 
   setMode('closed'); projectNav(false); refresh();
   return { notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
