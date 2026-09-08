@@ -286,8 +286,7 @@ TOOLS.push({
   description:
     'Save a durable note into one of this gateway\'s projects, so its future sessions know it. '
     + 'Use for a conclusion worth keeping — a decision, a gotcha, a convention — not for chat transcripts or anything already in the repo. '
-    + 'The note is written into that project\'s memory directory (so it is loaded into that project\'s future sessions) and becomes searchable from every project via wiki_search. '
-    + 'It is stamped as externally authored and its name is prefixed "desktop-", so it can never overwrite a memory this gateway wrote itself. Re-saving the same name replaces it.',
+    + 'The note is saved in canonical shared memory as a review proposal. Confirm it in the Memory workspace before automatic inclusion in future turns. Search confirmed knowledge with memory_search.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -345,7 +344,87 @@ async function waitForReply(api, projectId, sid, before, waitSeconds) {
   return `sent (sessionId: ${sid}), but no reply within ${Math.round(waitMs / 1000)}s — the turn may still be running. Poll read_conversation for the result.`;
 }
 
+const MEMORY_TOOLS = [
+  [
+    'memory_search',
+    'Search reviewed gateway memory across conversations, projects and providers. Omit projectId for the current project; crossProject=true searches all shared knowledge. Results include source links and revisions.',
+    {
+      query: { type: 'string' },
+      projectId: { type: 'string' },
+      sessionId: { type: 'string' },
+      crossProject: { type: 'boolean' },
+      kind: { type: 'string' },
+      limit: { type: 'number' },
+    },
+    ['query'],
+  ],
+  [
+    'memory_read',
+    'Read a shared memory, its source evidence, revision history and relationships.',
+    { id: { type: 'string' } },
+    ['id'],
+  ],
+  [
+    'memory_propose',
+    'Propose durable knowledge for human review. Use concise facts, decisions or procedures with source references. This does not confirm the note or inject it automatically.',
+    {
+      title: { type: 'string' },
+      content: { type: 'string' },
+      kind: { type: 'string', enum: ['fact', 'decision', 'preference', 'procedure', 'knowledge', 'context'] },
+      scope: { type: 'string', enum: ['conversation', 'project', 'shared', 'global'] },
+      projectId: { type: 'string' },
+      sessionId: { type: 'string' },
+      sharedProjectIds: { type: 'array', items: { type: 'string' } },
+      tags: { type: 'array', items: { type: 'string' } },
+    },
+    ['title', 'content'],
+  ],
+  [
+    'memory_update',
+    'Propose a correction to an existing memory using its current revision. The correction needs review before automatic context inclusion.',
+    {
+      id: { type: 'string' },
+      revision: { type: 'number' },
+      title: { type: 'string' },
+      content: { type: 'string' },
+    },
+    ['id', 'revision', 'content'],
+  ],
+  [
+    'memory_context',
+    'Preview the reviewed memories that this conversation would receive for a prompt.',
+    { query: { type: 'string' }, projectId: { type: 'string' }, sessionId: { type: 'string' } },
+    ['query'],
+  ],
+  [
+    'memory_link',
+    'Link two memories as related, supporting, contradicting or dependent knowledge.',
+    {
+      from: { type: 'string' },
+      to: { type: 'string' },
+      kind: { type: 'string', enum: ['related', 'supports', 'contradicts', 'depends_on'] },
+    },
+    ['from', 'to', 'kind'],
+  ],
+];
+for (const [name, description, properties, required] of MEMORY_TOOLS)
+  TOOLS.push({
+    name,
+    description,
+    inputSchema: { type: 'object', properties, required, additionalProperties: false },
+  });
 export async function callTool(api, name, args) {
+  if(MEMORY_TOOLS.some(t=>t[0]===name)){
+    const pid=args.projectId||SELF.projectId,sid=args.sessionId||(pid===SELF.projectId?SELF.sessionId:'');
+    let path,body;
+    if(name==='memory_search'){const query=new URLSearchParams({query:args.query||'',status:'confirmed',...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{}),limit:String(Math.min(100,args.limit||20)),...(args.kind?{kind:args.kind}:{}),...(!args.crossProject&&pid?{projectId:pid,sessionId:sid||'',access:'context'}:{})});path='/api/memory/search?'+query;}
+    else if(name==='memory_read')path='/api/memory/entry?'+new URLSearchParams({id:args.id,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})});
+    else if(name==='memory_context')path='/api/memory/context?'+new URLSearchParams({projectId:pid,sessionId:sid||'',query:args.query||''});
+    else if(name==='memory_link'){path='/api/memory/link';body={from:args.from,to:args.to,kind:args.kind};}
+    else {path='/api/memory/propose';const {id,revision,...entry}=args;body={id,revision,entry:name==='memory_update'?entry:{...entry,projectId:pid,sessionId:sid,sources:[{label:'Agent proposal',projectId:pid,sessionId:sid}]}};}
+    return JSON.stringify(await api(path,body?{method:'POST',body:JSON.stringify(body)}:undefined),null,2);
+  }
+
   if (CRON_TOOL_NAMES.has(name)) {
     if (name === 'list_scheduled') return fmtJobs(await api('/api/cron'));
     if (name === 'cancel_scheduled') {
@@ -422,10 +501,9 @@ export async function callTool(api, name, args) {
         source: 'claude-desktop',
       }),
     });
+    if(res?.shared)return `Saved shared memory ${res.id} (${res.status}). Review it in Memory before automatic context inclusion. Search confirmed notes with memory_search.`;
     const where = res?.accounts?.length ? ` on ${res.accounts.length} account(s)` : '';
-    return `${res?.existed ? 'Replaced' : 'Saved'} memory ${res?.file}${where}.\n`
-      + 'It loads into that project\'s future sessions, and is searchable from any project with wiki_search '
-      + '(within the hour, once the memory mirror next runs).';
+    return `Saved memory ${res?.file}${where}.`;
   }
   if (name === 'list_projects') {
     const reg = await api('/api/projects');

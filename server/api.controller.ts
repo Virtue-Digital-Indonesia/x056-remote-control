@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { AccountRegistry, ROUTING_STRATEGIES, type RoutingStrategy } from '../src/accounts.js';
 import { UsageRateLimitedError } from '../src/quota.js';
 import { CODEGRAPH, CodegraphClient } from './codegraph.js';
+import { cleanMemorySource } from './memory-sources.js';
 import { MEMORY_WRITER, MemoryWriter } from './memories.js';
 import { PROVISIONER, AccountProvisioner } from './provision.js';
 import { CRON, CronScheduler } from './cron.js';
@@ -1142,7 +1143,25 @@ export class ApiController {
             .join('\n')
         : '',
     ].join('\n\n');
+    const memories = Object.fromEntries(
+      (['claude', 'codex'] as const).map((provider) => {
+        const selected = this.manager.memory().context(
+          pid,
+          '',
+          provider,
+          rows
+            .map((x) => x.text)
+            .join(' ')
+            .slice(-12000),
+        );
+        return [
+          provider,
+          selected.items.map((item) => ({ ...item, content: this.manager.memory().get(item.id)!.content })),
+        ];
+      }),
+    );
     return {
+      memories,
       sourceProvider: route.provider,
       context,
       providers: [
@@ -1641,13 +1660,30 @@ export class ApiController {
     const proj = this.manager.listProjects().projects.find((p) => p.id === projectId);
     if (!proj) throw new BadRequestException('unknown projectId — use list_projects');
     try {
-      return this.memories.save({
-        cwd: proj.cwd,
-        name: body?.name ?? '',
-        description: body?.description ?? '',
-        content: body?.content ?? '',
-        source: body?.source,
-      });
+      const name = body?.name || 'Saved memory',
+        content = cleanMemorySource(body?.content || '');
+      const source = this.manager
+        .memory()
+        .ingest({
+          key: 'external:' + projectId + ':' + name,
+          kind: 'document',
+          projectId,
+          title: name,
+          content,
+          at: Date.now(),
+          ref: body.source || 'external MCP client',
+        }).source;
+      const saved = this.manager
+        .memory()
+        .proposeSource(source.id, { summary: body.description || '' }, body.source || 'external MCP client');
+      return {
+        id: saved.entry.id,
+        file: saved.entry.id,
+        accounts: [],
+        existed: saved.existed,
+        status: saved.entry.status,
+        shared: true,
+      };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
     }

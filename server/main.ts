@@ -1,3 +1,4 @@
+import { VersionInfo } from './version.js';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
@@ -32,10 +33,16 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   const panelPath = cfg.panelPath ?? join(__dir, 'public', 'panel.html');
   // PWA assets live alongside the panel (bind-mounted, so edits are live too).
   const publicDir = dirname(panelPath);
+  const version = new VersionInfo(publicDir);
+  express.get('/api/version', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(version.current());
+  });
   express.get('/healthz', (_req, res) => res.json({ ok: true }));
   express.get('/', (_req, res) => {
     try {
-      res.type('html').send(readFileSync(panelPath, 'utf8'));
+      res.setHeader('Cache-Control','no-cache');
+      res.type('html').send(version.html(readFileSync(panelPath, 'utf8')));
     } catch {
       res.status(500).send('panel unavailable');
     }

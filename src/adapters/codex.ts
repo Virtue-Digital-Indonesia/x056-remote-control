@@ -1,3 +1,5 @@
+import { toolImagePaths } from '../artifact-references.js';
+import { stripMemoryContext } from '../memory-context.js';
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -436,7 +438,13 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
     if (entry.type === 'response_item') {
       const p = asObj(entry.payload);
       const label = rolloutActionLabel(p);
-      if (label) { push({ role: 'action', text: label, ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined }, at); }
+      const artifacts = toolImagePaths(p);
+      if (label) {
+        push({
+          role: 'action', text: label, ...(artifacts.length ? { artifacts } : {}),
+          ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined,
+        }, at);
+      }
       continue;
     }
     if (entry.type !== 'event_msg') continue;
@@ -446,7 +454,7 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
       const item = asObj(payload.item);
       const kind = firstStr(item.type);
       if (kind === 'UserMessage' || kind === 'userMessage') {
-        const shown = stripAskInstructions(itemText(item).trim());
+        const shown = stripAskInstructions(stripMemoryContext(itemText(item).trim()));
         if (shown && shown !== lastUser) { push({ role: 'user', text: shown, ts }, at); lastUser = shown; }
       } else if (kind === 'AgentMessage' || kind === 'agentMessage') {
         const shown = stripAsk(itemText(item).trim());
@@ -456,7 +464,7 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
       }
       // Command/patch items are already rendered from response_item above.
     } else if (payload.type === 'user_message' && typeof payload.message === 'string') {
-      const shown = stripAskInstructions(payload.message.trim());
+      const shown = stripAskInstructions(stripMemoryContext(payload.message.trim()));
       if (shown && shown !== lastUser) { push({ role: 'user', text: shown, ts }, at); lastUser = shown; }
     } else if (payload.type === 'agent_message' && typeof payload.message === 'string') {
       // EVERY assistant message the turn streamed — confirmed live: a real

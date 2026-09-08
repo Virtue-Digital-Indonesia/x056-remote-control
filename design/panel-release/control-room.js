@@ -35,7 +35,8 @@ window.createControlRoom = function (engine) {
   $('crHome').insertAdjacentHTML('afterend','<span id="crBreadcrumb">Workspace <span>/ Control room</span></span>');
   const projectVeil = document.createElement('div'); projectVeil.id='crProjectVeil'; projectVeil.hidden=true; shell.append(projectVeil);
   // Account selection stays next to the composer, in every presentation mode.
-  content.querySelector('.composer').insertAdjacentHTML('beforeend', '<button id="sendAccountChip" class="send-account-chip" aria-haspopup="dialog"></button>');
+  content.querySelector('.composer').insertAdjacentHTML('beforeend', '<div class="composer-footer"><button id="sendAccountChip" class="send-account-chip" aria-haspopup="dialog"></button></div>');
+  if($('deliveryStrip'))content.querySelector('.composer-footer').append($('deliveryStrip'));
   const sendAccounts = document.createElement('dialog'); sendAccounts.id='sendAccountPicker'; sendAccounts.className='cr-dialog';sendAccounts.setAttribute('aria-label','Choose an account'); document.body.append(sendAccounts);
   const veil = document.createElement('div'); veil.id = 'chatVeil'; veil.hidden = true; document.body.append(veil);
   const preferences = document.createElement('dialog'); preferences.id = 'displayPreferences'; preferences.className = 'cr-dialog'; preferences.setAttribute('aria-label','Settings');
@@ -43,7 +44,7 @@ window.createControlRoom = function (engine) {
   document.body.append(preferences);
   let prefs = { open: 'max', maximize: 'modal' };
   try { const saved = JSON.parse(localStorage.getItem('x056_display_preferences') || localStorage.getItem('x056_draft_chat_preferences_v1') || '{}'); if (['side','max','maximized'].includes(saved.open)) prefs.open = saved.open === 'maximized' ? 'max' : saved.open; if (['page','modal'].includes(saved.maximize)) prefs.maximize = saved.maximize; } catch {}
-  const sectionScroll = {board:0,accounts:0,automations:0,artifacts:0,planner:0};
+  const sectionScroll = {board:0,accounts:0,automations:0,artifacts:0,planner:0,memory:0};
   let accountProvider = '', accountDays = '7', chartMetric = 'attempts', selectedSendAccount = '', pickerBusy = false;
   let conversationMeta={},bulkMode=false,bulkSelection=new Set(),bulkCandidates=[],artifactRows=[],plannerRows={};
   let recentLimit=10, selectedProject='', projectNavSignature='', sendAccountSignature='';
@@ -60,18 +61,52 @@ window.createControlRoom = function (engine) {
   document.body.append(stage);
   let stagePins=[],stageRecent=[],recentDismissed=[],stageMode='pinned',showDismissedRecents=false,stageSignature='',stageCloseTimer,stageExpanded=false,stagePage=0,stageMotion=0,stageAnimations=[];
   try{const saved=JSON.parse(localStorage.getItem('x056_stage_pins')||'[]');if(Array.isArray(saved))stagePins=[...new Set(saved.filter(x=>typeof x==='string'))];}catch{}
-  try{stageMode=localStorage.getItem('x056_stage_mode')==='recent'?'recent':'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
+  try{stageMode=['recent','smart'].includes(localStorage.getItem('x056_stage_mode'))?localStorage.getItem('x056_stage_mode'):'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
   document.body.dataset.stageMode=stageMode;
   function saveRecents(){try{localStorage.setItem('x056_stage_recent',JSON.stringify(stageRecent.slice(0,30)));localStorage.setItem('x056_recent_dismissed',JSON.stringify(recentDismissed));}catch{toast('This browser could not save recent conversations.');}}
   function rememberStage(){const state=engine.state();if(!state.sessionId)return;const id=stageKey(state.projectId,state.sessionId);stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);recentDismissed=recentDismissed.filter(x=>x!==id);saveRecents();renderStage();}
   function dismissRecent(project,session){const id=stageKey(project,session);recentDismissed=[...new Set([...recentDismissed,id])];saveRecents();renderStage();refresh();toast('Conversation dismissed from recents.',()=>restoreRecent(project,session));}
   function restoreRecent(project,session){recentDismissed=recentDismissed.filter(x=>x!==stageKey(project,session));saveRecents();renderStage();refresh();}
-  function setStageMode(value){stageMode=value==='recent'?'recent':'pinned';stagePage=0;document.body.dataset.stageMode=stageMode;try{localStorage.setItem('x056_stage_mode',stageMode);}catch{toast('This browser could not save the switcher mode.');}renderStage();}
-  function stageCandidates(all=cards()){
-    const byId=new Map(all.map(x=>[stageKey(x.p.id,x.c.sessionId),x]));
-    if(stageMode==='pinned')return stagePins.map(id=>byId.get(id)).filter(Boolean);
-    const opened=stageRecent.map(id=>byId.get(id)).filter(Boolean),running=all.filter(x=>['running','background'].includes(x.status));
-    const seen=new Set();return [...running,...opened].filter(x=>{const id=stageKey(x.p.id,x.c.sessionId);if(seen.has(id)||recentDismissed.includes(id))return false;seen.add(id);return true;});
+  function setStageMode(value){stageMode=['recent','smart'].includes(value)?value:'pinned';stagePage=0;document.body.dataset.stageMode=stageMode;try{localStorage.setItem('x056_stage_mode',stageMode);}catch{toast('This browser could not save the switcher mode.');}renderStage();}
+  function stageCandidates(all = cards()) {
+    const byId = new Map(all.map((x) => [stageKey(x.p.id, x.c.sessionId), x]));
+    if (stageMode === 'pinned') return stagePins.map((id) => byId.get(id)).filter(Boolean);
+    if (stageMode === 'smart') {
+      const pins = stagePins.map((id) => byId.get(id)).filter(Boolean),
+        pinIds = new Set(pins.map((x) => x.k)),
+        recentIds = new Set(stageRecent.slice(0, 3));
+      const eligible = all.filter(
+        (x) =>
+          !pinIds.has(x.k) &&
+          !recentDismissed.includes(x.k) &&
+          !dismissedProjects.includes(x.p.id) &&
+          !conversationMeta[x.k]?.archived &&
+          (x.status === 'question' ||
+            x.unread ||
+            ['running', 'background'].includes(x.status) ||
+            recentIds.has(x.k)),
+      );
+      const priority = (x) =>
+        x.status === 'question' ? 4 : x.unread ? 3 : ['running', 'background'].includes(x.status) ? 2 : 1;
+      eligible.sort((a, b) => priority(b) - priority(a) || b.time - a.time || a.k.localeCompare(b.k));
+      const room = Math.max(0, 8 - pins.length),
+        suggested = eligible.slice(0, room),
+        lastOpened = eligible.find((x) => x.k === stageRecent[0]);
+      if (room && lastOpened && !suggested.some((x) => x.k === lastOpened.k)) {
+        if (suggested.length === room) suggested.pop();
+        suggested.push(lastOpened);
+      }
+      return [...pins, ...suggested];
+    }
+    const opened = stageRecent.map((id) => byId.get(id)).filter(Boolean),
+      running = all.filter((x) => ['running', 'background'].includes(x.status));
+    const seen = new Set();
+    return [...running, ...opened].filter((x) => {
+      const id = stageKey(x.p.id, x.c.sessionId);
+      if (seen.has(id) || recentDismissed.includes(id)) return false;
+      seen.add(id);
+      return true;
+    });
   }
   function stageKey(project,session){return project+'::'+session;}
   function isStagePinned(project,session){return stagePins.includes(stageKey(project,session));}
@@ -126,7 +161,7 @@ window.createControlRoom = function (engine) {
   $('stageNext').onclick=()=>{stagePage++;renderStage();};
   window.addEventListener('resize',()=>{renderStage();if(innerWidth<=850){stageExpanded=false;stageOpen(false);}});
   window.addEventListener('storage',e=>{
-    if(e.key==='x056_stage_mode'){stageMode=e.newValue==='recent'?'recent':'pinned';document.body.dataset.stageMode=stageMode;stagePage=0;renderStage();return;}
+    if(e.key==='x056_stage_mode'){stageMode=['recent','smart'].includes(e.newValue)?e.newValue:'pinned';document.body.dataset.stageMode=stageMode;stagePage=0;renderStage();return;}
     const assign={'x056_stage_pins':v=>stagePins=v,'x056_stage_recent':v=>stageRecent=v,'x056_recent_dismissed':v=>recentDismissed=v};if(!assign[e.key])return;
     try{const value=JSON.parse(e.newValue||'[]');if(Array.isArray(value)){assign[e.key]([...new Set(value.filter(x=>typeof x==='string'))]);renderStage();refresh();}}catch{}
   });
@@ -136,15 +171,15 @@ window.createControlRoom = function (engine) {
     stagePage=Math.min(stagePage,Math.max(0,Math.ceil(pinned.length/pageSize)-1));
     const rows=pinned.slice(stagePage*pageSize,(stagePage+1)*pageSize);
     $('stageCount').textContent=pinned.length||'';$('stageCount').hidden=!pinned.length;
-    $('stageToggle').setAttribute('aria-label',pinned.length?(stageMode==='pinned'?'Pinned conversations':'Recent conversations')+' ('+pinned.length+') · Click to switch, hover to browse':'Pin a conversation');
-    stage.setAttribute('aria-label',stageMode==='pinned'?'Pinned conversations':'Recent conversations');
-    stage.dataset.count=String(pinned.length);updateStageToggle();
+    $('stageToggle').setAttribute('aria-label',pinned.length?(stageMode==='pinned'?'Pinned conversations':stageMode==='smart'?'Smart conversations':'Recent conversations')+' ('+pinned.length+') · Click to switch, hover to browse':'Pin a conversation');
+    stage.setAttribute('aria-label',stageMode==='pinned'?'Pinned conversations':stageMode==='smart'?'Smart conversations':'Recent conversations');
+    stage.dataset.count=String(pinned.length);stage.dataset.unread=String(pinned.some(x=>x.unread));const visibleIds=new Set(pinned.map(x=>x.k));document.body.dataset.stageCoversRuns=String(stageMode==='recent'||stageMode==='smart'&&all.filter(x=>['running','background'].includes(x.status)).every(x=>visibleIds.has(x.k)));updateStageToggle();
     $('stagePrevious').setAttribute('aria-label','Previous conversations');$('stageNext').setAttribute('aria-label','More conversations');
     $('stagePrevious').hidden=stagePage===0;$('stageNext').hidden=(stagePage+1)*pageSize>=pinned.length;
-    const html=rows.map(x=>{const title=x.c.title||'Conversation',current=x.c.sessionId===s.sessionId&&x.p.id===s.projectId;return `<div class="stage-item ${current?'current':''}"><button class="stage-conversation ${x.status}" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}" aria-label="${esc(title+' · '+x.p.name+' · '+(statusLabels[x.status]||'Idle'))}" ${current?'aria-current="true"':''} style="--project-color:${projectColor(x.p.id)}"><span class="stage-caption"><strong>${esc(title)}</strong><small>${esc(x.p.name)} · ${statusLabels[x.status]||'Idle'}</small></span>${ic(['running','background'].includes(x.status)?'sparkles':'chat')}<i class="stage-status" aria-hidden="true"></i></button><button class="stage-unpin" data-stage-unpin="${esc(stageKey(x.p.id,x.c.sessionId))}" aria-label="${stageMode==='pinned'?'Unpin':'Dismiss'} ${esc(title)}">${ic('x')}</button></div>`;}).join('');
+    const html=rows.map(x=>{const title=x.c.title||'Conversation',current=x.c.sessionId===s.sessionId&&x.p.id===s.projectId;return `<div class="stage-item ${current?'current':''}"><button class="stage-conversation ${x.status} ${x.unread?'unread':''}" data-project="${esc(x.p.id)}" data-session="${esc(x.c.sessionId)}" aria-label="${esc(title+' · '+x.p.name+' · '+(x.unread?'Unread · ':'')+(statusLabels[x.status]||'Idle'))}" ${current?'aria-current="true"':''} style="--project-color:${projectColor(x.p.id)}"><span class="stage-caption"><strong>${esc(title)}</strong><small>${esc(x.p.name)} · ${x.unread?'Unread · ':''}${stageMode==='smart'&&isStagePinned(x.p.id,x.c.sessionId)?'Pinned · ':''}${statusLabels[x.status]||'Idle'}</small></span>${ic(['running','background'].includes(x.status)?'sparkles':'chat')}<i class="stage-status" aria-hidden="true"></i></button><button class="stage-unpin" data-stage-unpin="${esc(stageKey(x.p.id,x.c.sessionId))}" aria-label="${stageMode==='pinned'?'Unpin':'Dismiss'} ${esc(title)}">${ic('x')}</button></div>`;}).join('');
     if(html===stageSignature)return;stageSignature=html;const focused=document.activeElement,focus=focused?.dataset.session,unpinFocus=focused?.dataset.stageUnpin;$('stageItems').innerHTML=html;
     $('stageItems').querySelectorAll('[data-session]').forEach(b=>b.onclick=()=>openConversation(b));
-    $('stageItems').querySelectorAll('[data-stage-unpin]').forEach(b=>b.onclick=()=>{const x=byId.get(b.dataset.stageUnpin);if(x){if(stageMode==='pinned')pinStage(x.p.id,x.c.sessionId,false);else dismissRecent(x.p.id,x.c.sessionId);}$('stageToggle').focus();});
+    $('stageItems').querySelectorAll('[data-stage-unpin]').forEach(b=>b.onclick=()=>{const x=byId.get(b.dataset.stageUnpin);if(x){if(stageMode==='pinned')pinStage(x.p.id,x.c.sessionId,false);else {const wasPinned=stageMode==='smart'&&isStagePinned(x.p.id,x.c.sessionId);if(wasPinned)pinStage(x.p.id,x.c.sessionId,false);dismissRecent(x.p.id,x.c.sessionId);if(wasPinned)toast('Conversation unpinned and dismissed.',()=>{restoreRecent(x.p.id,x.c.sessionId);pinStage(x.p.id,x.c.sessionId,true);});}}$('stageToggle').focus();});
     if(focus)[...$('stageItems').querySelectorAll('[data-session]')].find(b=>b.dataset.session===focus)?.focus({preventScroll:true});
     if(unpinFocus)[...$('stageItems').querySelectorAll('[data-stage-unpin]')].find(b=>b.dataset.stageUnpin===unpinFocus)?.focus({preventScroll:true});
   }
@@ -208,16 +243,17 @@ window.createControlRoom = function (engine) {
   }
   function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode(prefs.open === 'side' ? 'side' : prefs.maximize); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
   function close() { engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
-  function pageFor(name) { return $('cr'+({board:'Board',accounts:'Accounts',automations:'Automations',artifacts:'Artifacts',planner:'Planner'}[name])); }
+  function pageFor(name) { return $('cr'+({board:'Board',accounts:'Accounts',automations:'Automations',artifacts:'Artifacts',planner:'Planner',memory:'Memory'}[name])); }
   function showSection(next) {
     sectionScroll[section] = pageFor(section).scrollTop;
     close(); engine.nav(false); section = next; projectNav(false);
-    ['board','accounts','automations','artifacts','planner'].forEach(name=>pageFor(name).hidden=name!==next);
-    ['Board','Accounts','Automations','Artifacts','Planner'].forEach(name=>$('cr'+name+'Tab').setAttribute('aria-current',next===name.toLowerCase()?'page':'false'));
-    $('crBreadcrumb').innerHTML='Workspace <span>/ '+({board:'Control room',accounts:'Dashboard',automations:'Automations',artifacts:'Artifact library',planner:'Queue planner'}[next])+'</span>';
+    ['board','accounts','automations','artifacts','planner','memory'].forEach(name=>pageFor(name).hidden=name!==next);
+    ['Board','Accounts','Automations','Artifacts','Planner','Memory'].forEach(name=>$('cr'+name+'Tab').setAttribute('aria-current',next===name.toLowerCase()?'page':'false'));
+    $('crBreadcrumb').innerHTML='Workspace <span>/ '+({board:'Control room',accounts:'Dashboard',automations:'Automations',artifacts:'Artifact library',planner:'Queue planner',memory:'Memory'}[next])+'</span>';
     if(next==='accounts') { renderAccountsPage(); renderProjectCosts(); loadProjectCosts(); loadAnalytics(); engine.pollAccounts(); }
     else if(next==='automations') { $('cronBtn').click(); loadAutomationAutopilots(); }
     else if(next==='artifacts'){$('artifactProject').innerHTML=workspaceProjectOptions();loadArtifacts();}
+    else if(next==='memory'){const pid=$('memoryProject').value;$('memoryProject').innerHTML=memoryOptions(pid);memoryConversations();loadMemory();}
     else if(next==='planner'){$('plannerProject').innerHTML=workspaceProjectOptions();loadPlanner();}
     else refresh();
     pageFor(next).scrollTop=sectionScroll[next];
@@ -455,6 +491,8 @@ window.createControlRoom = function (engine) {
   function refresh() { clearTimeout(renderTimer); renderTimer = setTimeout(() => { renderBoard(); if (section === 'accounts') renderAccountRows(); }, 60); }
   async function json(url, body) { const res = await engine.api(url, body === undefined ? undefined : { method:'POST', body:JSON.stringify(body) }); const data = await res.json(); if (!res.ok) throw new Error(data.message || 'Request failed'); return data; }
   function event(kind, data) {
+    if(kind==='memory_warning'&&data.projectId===engine.state().projectId&&data.sessionId===engine.state().sessionId)toast(data.message);
+    if(section==='memory'&&['memory_context','session_done'].includes(kind)&&!memorySelection.size)loadMemory();
     if(kind==='assistant_text'&&data.projectId&&data.sessionId)messageActivity.set(data.projectId+'::'+data.sessionId,Date.parse(data.ts)||Date.now());
     if (['session_done','session_error','turn_orphaned'].includes(kind)) outcomes.set(data.projectId + '::' + data.sessionId, { status:kind === 'session_done' ? data.status : 'failed', reason:data.reason || data.message, ts:data.ts || Date.now() });
     if (kind === 'session_started') outcomes.delete(data.projectId + '::' + data.sessionId);
@@ -666,8 +704,8 @@ window.createControlRoom = function (engine) {
     preferences.querySelectorAll('[data-settings]').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settings));
     const body=$('settingsBody');
     if(tab==='general'){
-      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><div id="displayFields"></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
-      const stageHelp=()=>{$('stageModeHelp').textContent=stageMode==='pinned'?'Only chats you pin appear in the bubbles. The separate running indicator stays visible.':'Recent and running chats appear in the bubbles. The separate running indicator is hidden on desktop.';};stageHelp();wireSegment('stageMode',value=>{setStageMode(value);stageHelp();});
+      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats'],['smart','Smart']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><div id="displayFields"></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
+      const stageHelp=()=>{$('stageModeHelp').textContent=stageMode==='pinned'?'Only chats you pin appear in the bubbles. The separate running indicator stays visible.':stageMode==='smart'?'Pinned chats, then requests for input, unread replies, running work, and your last few chats. Up to 8 chats, plus any extra pins. Dismiss any chat to remove it.':'Recent and running chats appear in the bubbles. The separate running indicator is hidden on desktop.';};stageHelp();wireSegment('stageMode',value=>{setStageMode(value);stageHelp();});
       for(const field of generalFields)$('displayFields').append(field);
       for(const name of ['open','maximize'])preferences.querySelector(`input[name="${name}"][value="${prefs[name]}"]`).checked=true;
       body.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{engine.setTheme(b.dataset.themeChoice);syncTheme();body.querySelectorAll('[data-theme-choice]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));});
@@ -759,7 +797,7 @@ window.createControlRoom = function (engine) {
       {label:isStagePinned(pid,sid)?'Unpin conversation':'Pin conversation',icon:'pin',run:()=>pinStage(pid,sid,!isStagePinned(pid,sid))},
       {label:unread?'Mark as read':'Mark as unread',icon:'bell',run:()=>{engine.setConversationUnread(pid,sid,!unread);refresh();}},
       {label:recentDismissed.includes(stageKey(pid,sid))?'Restore to recents':'Dismiss from recents',icon:'history',run:()=>recentDismissed.includes(stageKey(pid,sid))?restoreRecent(pid,sid):dismissRecent(pid,sid)},
-      {label:'Conversation results',icon:'file',run:()=>showResults({projectId:pid,sessionId:sid})},{label:'Routing & accounts',icon:'repeat',disabled:!sid,run:()=>showRouting({projectId:pid,sessionId:sid})},{label:'Continue with another provider',icon:'repeat',disabled:!sid,run:()=>showHandoff({projectId:pid,sessionId:sid})},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',run:()=>navigator.clipboard.writeText(sid).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},
+      {label:'Conversation results',icon:'file',run:()=>showResults({projectId:pid,sessionId:sid})},{label:'Routing & accounts',icon:'repeat',disabled:!sid,run:()=>showRouting({projectId:pid,sessionId:sid})},{label:'Continue with another provider',icon:'repeat',disabled:!sid,run:()=>showHandoff({projectId:pid,sessionId:sid})},{label:'Conversation memory',icon:'snippet',run:()=>showMemoryContext({projectId:pid,sessionId:sid})},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',run:()=>navigator.clipboard.writeText(sid).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},
       ...(running?[{label:'Stop turn',icon:'x',run:async()=>{try{await json('/api/sessions/current/stop',{projectId:pid,sessionId:sid});toast('Stopping turn.');}catch(e){toast(e.message);}}}]:[]),
       {label:'Remove from panel',icon:'x',disabled:running,run:()=>engine.removeConversation(pid,sid)},
     ],point);
@@ -775,7 +813,7 @@ window.createControlRoom = function (engine) {
   function themeMenu(anchor){openMenu(anchor,[['system','auto','Follow device theme'],['light','sun','Light'],['dark','moon','Dark']].map(([value,icon,label])=>({label,icon,checked:engine.theme()===value,run:()=>{engine.setTheme(value);syncTheme();}})));}
   function notificationMenu(anchor){const s=engine.state(),count=Object.keys(s.notifications).length;openMenu(anchor,[{label:'Unread conversations'+(count?' · '+count:''),icon:'bell',run:()=>{if(preferences.open)preferences.close();boardFilter='unread';shell.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('selected',b.dataset.filter==='unread'));showSection('board');}},{label:'Message approvals'+($('mcpApprovalsBadge').textContent?' · '+$('mcpApprovalsBadge').textContent:''),icon:'sparkles',run:()=>$('mcpApprovalsBtn').click()},{label:'Browser notifications',icon:'bell',run:()=>$('notifyBtn').click()}]);}
   function activityMenu(anchor){openMenu(anchor,[{label:'Usage & subagents',icon:'sparkles',run:()=>$('subagentsBtn').click()},{label:'Workflow runs',icon:'fanout',disabled:$('wfBtn').hidden,run:()=>$('wfBtn').click()},{label:'Message approvals',icon:'bell',run:()=>$('mcpApprovalsBtn').click()}]);}
-  function conversationMenu(anchor){const s=engine.state();openMenu(anchor,[{label:isStagePinned(s.projectId,s.sessionId)?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{const pinned=!isStagePinned(s.projectId,s.sessionId);pinStage(s.projectId,s.sessionId,pinned);toast(pinned?'Conversation pinned.':'Conversation unpinned.');}},{label:'Rename conversation',icon:'compose',disabled:!s.sessionId,run:engine.renameConversation},{label:'Resume a session',icon:'history',run:()=>$('resumeBtn').click()},{label:'Conversation results',icon:'file',disabled:!s.sessionId,run:()=>showResults()},{label:'Routing & accounts',icon:'repeat',disabled:!s.sessionId,run:()=>showRouting(s)},{label:'Continue with another provider',icon:'repeat',disabled:!s.sessionId,run:()=>showHandoff(s)},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'x',disabled:!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
+  function conversationMenu(anchor){const s=engine.state();openMenu(anchor,[{label:isStagePinned(s.projectId,s.sessionId)?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{const pinned=!isStagePinned(s.projectId,s.sessionId);pinStage(s.projectId,s.sessionId,pinned);toast(pinned?'Conversation pinned.':'Conversation unpinned.');}},{label:'Rename conversation',icon:'compose',disabled:!s.sessionId,run:engine.renameConversation},{label:'Resume a session',icon:'history',run:()=>$('resumeBtn').click()},{label:'Conversation results',icon:'file',disabled:!s.sessionId,run:()=>showResults()},{label:'Routing & accounts',icon:'repeat',disabled:!s.sessionId,run:()=>showRouting(s)},{label:'Continue with another provider',icon:'repeat',disabled:!s.sessionId,run:()=>showHandoff(s)},{label:'Conversation memory',icon:'snippet',run:()=>showMemoryContext()},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'x',disabled:!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
   const runningLabel=document.createElement('div');runningLabel.id='runningAccountLabel';runningLabel.hidden=true;content.querySelector('.composer').before(runningLabel);
   $('autopilotBtn').insertAdjacentHTML('beforeend','<span>Autopilot</span>');
   const syncActivity=()=>{$('chatActivityCount').textContent=$('subagentsBadge').textContent||'';};
@@ -958,14 +996,17 @@ window.createControlRoom = function (engine) {
       const data = await workspaceRequest('routing/handoff?' + routeQuery(target));
       if (!d.open) return;
       d.querySelector('[data-handoff-body]').innerHTML =
-        `<form class="workspace-form"><p class="cr-note">Start a linked conversation in the same project. Review the source excerpts below and add missing decisions or next steps.</p><fieldset class="route-provider"><legend>Continue with</legend>${data.providers.map((p, i) => `<label><input type="radio" name="provider" value="${p}" ${!i ? 'checked' : ''}>${providerName(p)}</label>`).join('') || '<p>Connect an account for another provider first.</p>'}</fieldset><label>Context to carry over<textarea name="context" rows="11" maxlength="50000" required>${esc(data.context)}</textarea></label><label>Next instruction<textarea name="instruction" rows="3" maxlength="10000" required placeholder="What should the next provider do?"></textarea></label><p class="cr-note">Finish or stop the source conversation, stop autopilot, and remove pending messages before starting.</p><p role="alert"></p><footer><button class="cr-primary" ${data.providers.length ? '' : 'disabled'}>Start continuation</button></footer></form>`;
+        `<form class="workspace-form"><p class="cr-note">Start a linked conversation in the same project. Review the source excerpts below and add missing decisions or next steps.</p><fieldset class="route-provider"><legend>Continue with</legend>${data.providers.map((p, i) => `<label><input type="radio" name="provider" value="${p}" ${!i ? 'checked' : ''}>${providerName(p)}</label>`).join('') || '<p>Connect an account for another provider first.</p>'}</fieldset><label>Context to carry over<textarea name="context" rows="11" maxlength="50000" required>${esc(data.context)}</textarea></label><fieldset class="memory-share" data-handoff-memory><legend>Shared memory to carry over</legend><div data-handoff-choices></div></fieldset><label>Next instruction<textarea name="instruction" rows="3" maxlength="10000" required placeholder="What should the next provider do?"></textarea></label><p class="cr-note">Finish or stop the source conversation, stop autopilot, and remove pending messages before starting.</p><p role="alert"></p><footer><button class="cr-primary" ${data.providers.length ? '' : 'disabled'}>Start continuation</button></footer></form>`;
       const f = d.querySelector('form'),
         storageKey = 'x056_handoff_' + target.projectId + '_' + target.sessionId;
+      function memoryChoices(){const entries=data.memories?.[f.elements.provider.value]||[];f.querySelector('[data-handoff-choices]').innerHTML=entries.map(m=>`<label class="workspace-check"><input type="checkbox" name="handoffMemory" value="${esc(m.id)}" checked><span>${esc(m.title)} <small>v${m.revision}</small></span></label>`).join('')||'<p class="cr-note">No matching shared knowledge for this provider.</p>';}
+      f.querySelectorAll('[name=provider]').forEach(x=>x.onchange=memoryChoices);memoryChoices();
       let ticket = null;
       try {
         ticket = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
       } catch {}
       if (ticket) {
+        f.querySelector('[data-handoff-memory]').hidden=true;
         f.elements.context.value = ticket.input.context;
         f.elements.instruction.value = ticket.input.instruction;
         f.elements.provider.value = ticket.input.provider;
@@ -977,11 +1018,12 @@ window.createControlRoom = function (engine) {
         const b = f.querySelector('button');
         b.disabled = true;
         try {
-          const input = {
+          const included=(data.memories?.[f.elements.provider.value]||[]).filter(m=>[...f.querySelectorAll('[name=handoffMemory]:checked')].some(x=>x.value===m.id));
+          const input = ticket?.input || {
             projectId: target.projectId,
             sessionId: target.sessionId,
             provider: f.elements.provider.value,
-            context: f.elements.context.value,
+            context: f.elements.context.value+(included.length?'\n\nOperator-selected shared knowledge:\n'+included.map(m=>'['+m.id+' rev '+m.revision+'] '+m.title+'\n'+m.content).join('\n\n'):''),
             instruction: f.elements.instruction.value,
           };
           if (!ticket || JSON.stringify(ticket.input) !== JSON.stringify(input))
@@ -1007,6 +1049,7 @@ window.createControlRoom = function (engine) {
             if (['failed', 'not_received'].includes(status.status)) {
               sessionStorage.removeItem(storageKey);
               ticket = null;
+              f.querySelector('[data-handoff-memory]').hidden=false;
               f.querySelectorAll('input,textarea').forEach((x) => (x.disabled = false));
               b.textContent = 'Start continuation';
             }
@@ -1015,6 +1058,880 @@ window.createControlRoom = function (engine) {
       };
     } catch (e) {
       if (d.open) d.querySelector('[data-handoff-body]').textContent = e.message;
+    }
+  }
+
+  const releaseLoaded = window.X056_RELEASE || null;
+  let releaseCurrent = null,
+    releaseError = '';
+  $('crConnection').insertAdjacentHTML(
+    'beforebegin',
+    '<button id="currentVersion" aria-label="Current version">Version…</button>',
+  );
+  function releaseChanged() {
+    return !!(
+      releaseLoaded &&
+      releaseCurrent &&
+      (releaseLoaded.backend.revision !== releaseCurrent.backend.revision ||
+        releaseLoaded.backend.source !== releaseCurrent.backend.source ||
+        releaseLoaded.ui.fingerprint !== releaseCurrent.ui.fingerprint)
+    );
+  }
+  async function checkRelease() {
+    try {
+      const response = await fetch('/api/version', { cache: 'no-store' });
+      if (!response.ok) throw new Error('Version information is unavailable');
+      releaseCurrent = await response.json();
+      releaseError = '';
+    } catch (e) {
+      releaseError = e.message;
+    }
+    const b = $('currentVersion');
+    b.dataset.stale = String(releaseChanged());
+    b.textContent = releaseChanged()
+      ? 'Update available'
+      : releaseLoaded
+        ? 'v' + releaseLoaded.backend.revision
+        : 'Version unavailable';
+    b.title = releaseChanged()
+      ? 'The server has a newer release. Click for details.'
+      : releaseError || 'Current version';
+  }
+  $('currentVersion').onclick = async () => {
+    await checkRelease();
+    const server = releaseCurrent,
+      loaded = releaseLoaded && { ...releaseLoaded,
+        ui: server?.ui.fingerprint === releaseLoaded.ui.fingerprint ? server.ui : releaseLoaded.ui },
+      d = workspaceDialog(
+        'Current version',
+        `<p class="release-state">${releaseChanged() ? 'A newer release is running. Refresh this page to load it.' : releaseError ? esc(releaseError) : loaded ? 'This page matches the running release.' : 'This page has no build stamp. Refresh after deployment to verify the loaded version.'}</p>${loaded ? `<dl class="release-info"><dt>Backend</dt><dd>${esc(loaded.backend.revision)}</dd><dt>Interface</dt><dd>${esc(loaded.ui.revision)}${loaded.ui.dirty ? ' · staged changes' : ''}<br><small>${esc(loaded.ui.fingerprint.slice(0, 12))}</small></dd><dt>Built</dt><dd>${loaded.backend.builtAt ? esc(new Date(loaded.backend.builtAt).toLocaleString()) : 'Development build'}</dd><dt>Server started</dt><dd>${esc(new Date(loaded.backend.startedAt).toLocaleString())}</dd></dl>` : ''}${releaseChanged() ? `<p class="cr-note">Running backend ${esc(server.backend.revision)} · interface ${esc(server.ui.revision)}</p>` : ''}<div class="workspace-actions"><button class="cr-primary" data-refresh-page>Refresh page</button><button class="cr-secondary" data-check-release>Check again</button></div>`,
+      );
+    d.classList.add('workspace-form-dialog');
+    d.querySelector('[data-refresh-page]').onclick = () => location.reload();
+    d.querySelector('[data-check-release]').onclick = () => {
+      d.close();
+      $('currentVersion').click();
+    };
+  };
+  checkRelease();
+  setInterval(() => {
+    if (!document.hidden) checkRelease();
+  }, 60000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkRelease();
+  });
+
+  // Shared memory workspace. Sources and proposals remain distinct from confirmed knowledge.
+  const memoryKinds = ['fact', 'decision', 'preference', 'procedure', 'knowledge', 'context'];
+  let memoryTab = 'knowledge',
+    memoryOffset = 0,
+    memoryRows = [],
+    memorySelection = new Map(),
+    memoryRequest = 0,
+    memoryTimer;
+  workspace.insertAdjacentHTML(
+    'beforeend',
+    `<div id="crMemory" class="cr-page" hidden><div class="cr-heading"><div><div class="cr-eyebrow">SHARED KNOWLEDGE</div><h1>Memory</h1><p>Decisions and context that travel with your work.</p></div><div class="workspace-actions"><button id="memoryMore" class="cr-icon" aria-label="Memory tools">${ic('more')}</button><button id="memoryImport" class="cr-secondary">Import sources</button><button id="memoryNew" class="cr-primary">${ic('plus')} New memory</button></div></div><div id="memoryStats" class="memory-stats"></div><div class="cr-tabs memory-tabs" role="group" aria-label="Memory view"><button data-memory-tab="knowledge" class="selected">Knowledge</button><button data-memory-tab="inbox">Review inbox <span id="memoryInboxCount"></span></button><button data-memory-tab="sources">Sources</button><button data-memory-tab="activity">Context history</button></div><div class="memory-filters"><label class="cr-search">${ic('search')}<input id="memorySearch" type="search" placeholder="Search knowledge and decisions" aria-label="Search memory"></label><select id="memoryProject" aria-label="Memory project"></select><select id="memoryKind" aria-label="Memory type"><option value="">All types</option>${memoryKinds.map((k) => `<option>${k}</option>`).join('')}</select><select id="memoryProvider" aria-label="Memory provider"><option value="">Both providers</option><option value="codex">ChatGPT / Codex</option><option value="claude">Claude</option></select><button id="memoryFilters" class="cr-secondary">Filters</button></div><div id="memoryExtra" class="memory-filters" hidden><select id="memoryConversation" aria-label="Memory conversation"><option value="">All conversations</option></select><select id="memoryStatus" aria-label="Memory status"><option value="confirmed">Confirmed</option><option value="archived">Archived</option><option value="deleted">Trash</option><option value="superseded">Superseded</option></select><select id="memoryScope" aria-label="Memory sharing scope"><option value="">All scopes</option><option value="conversation">Conversation</option><option value="project">Project</option><option value="shared">Shared projects</option><option value="global">Workspace</option></select><input id="memoryTag" type="search" placeholder="Filter by tag" aria-label="Memory tag"><label class="workspace-check"><input type="checkbox" id="memoryExcluded">Excluded sources</label></div><div id="memoryBulk" class="workspace-bulk" hidden><strong></strong><button data-memory-bulk="confirmed">Confirm</button><button data-memory-bulk="archived">Archive</button><button data-memory-bulk="deleted">Move to trash</button><button data-memory-merge>Merge</button><button data-memory-clear>Clear</button></div><p id="memoryNotice" class="cr-note"></p><div id="memoryItems" aria-live="polite"></div><div id="memoryPages" class="memory-pagination"></div></div>`,
+  );
+  primaryNav.insertAdjacentHTML(
+    'beforeend',
+    `<button id="crMemoryTab">${ic('snippet')}<span>Memory</span></button>`,
+  );
+  const memoryProjectName = (id) => engine.state().projects.find((p) => p.id === id)?.name || 'Workspace';
+  const memoryDate = (value) => (value ? new Date(value).toLocaleString() : '');
+  const memoryRequestApi = (path, body) => workspaceRequest('memory/' + path, body);
+  function memoryOptions(selected = '', all = true) {
+    return (
+      (all ? '<option value="">All projects</option>' : '') +
+      engine
+        .state()
+        .projects.map(
+          (p) =>
+            `<option value="${esc(p.id)}" ${p.id === selected ? 'selected' : ''}>${esc(p.name)}</option>`,
+        )
+        .join('')
+    );
+  }
+  function memoryConversations() {
+    const selected = $('memoryConversation').value,
+      pid = $('memoryProject').value;
+    $('memoryConversation').innerHTML =
+      '<option value="">All conversations</option>' +
+      cards()
+        .filter((c) => !pid || c.p.id === pid)
+        .map(
+          (c) =>
+            `<option value="${esc(c.c.sessionId)}" ${c.c.sessionId === selected ? 'selected' : ''}>${esc(c.c.title || 'Conversation')}</option>`,
+        )
+        .join('');
+  }
+  function memoryQuery() {
+    const q = {
+      query: $('memorySearch').value,
+      projectId: $('memoryProject').value,
+      sessionId: $('memoryConversation').value,
+      provider: $('memoryProvider').value,
+      kind: $('memoryKind').value,
+      status: memoryTab === 'inbox' ? 'proposed' : $('memoryStatus').value,
+      scope: $('memoryScope').value,
+      tag: $('memoryTag').value,
+      limit: 40,
+      offset: memoryOffset,
+    };
+    return new URLSearchParams(Object.entries(q).filter(([, v]) => v !== ''));
+  }
+  async function loadMemory() {
+    const serial = ++memoryRequest;
+    $('memoryStatus').hidden=memoryTab!=='knowledge';
+    $('memoryExcluded').parentElement.hidden=memoryTab!=='sources';
+    $('memoryScope').hidden=$('memoryTag').hidden=memoryTab==='sources'||memoryTab==='activity';
+    const activeFilters=[$('memoryConversation').value,memoryTab==='knowledge'&&$('memoryStatus').value!=='confirmed',$('memoryScope').hidden?'':$('memoryScope').value,$('memoryTag').hidden?'':$('memoryTag').value,memoryTab==='sources'&&$('memoryExcluded').checked].filter(Boolean).length;
+    $('memoryFilters').textContent='Filters'+(activeFilters?' · '+activeFilters:'');
+    memorySelection.clear();
+    renderMemoryBulk();
+    try {
+      const q = memoryQuery(),
+        [stats, data] = await Promise.all([
+          memoryRequestApi('stats'),
+          memoryRequestApi(
+            memoryTab === 'activity'
+              ? 'activity?' + q
+              : memoryTab === 'sources'
+                ? 'sources?' + q + '&excluded=' + $('memoryExcluded').checked
+                : 'search?' + q,
+          ),
+        ]);
+      if (serial !== memoryRequest) return;
+      const counts = Object.fromEntries(stats.entries.map((x) => [x.status, Number(x.count)]));
+      $('memoryInboxCount').textContent = counts.proposed || '';
+      $('memoryStats').innerHTML =
+        `<span><strong>${counts.confirmed || 0}</strong> confirmed</span><span><strong>${counts.proposed || 0}</strong> to review</span><span><strong>${stats.sources}</strong> sources</span><span class="memory-enabled">${stats.settings.enabled ? 'Memory on' : 'Memory off'} · ${stats.settings.maxTokens.toLocaleString()} token budget</span>`;
+      $('memoryNotice').textContent =
+        memoryTab === 'inbox'
+          ? 'Review proposals before they can be included in new turns.'
+          : memoryTab === 'sources'
+            ? 'Original excerpts and documents. Open a source to create a memory or exclude it.'
+            : memoryTab === 'activity'
+              ? 'The exact memory revisions included when each turn started.'
+              : 'Confirmed memories are retrieved within their sharing scope. Archived and trashed entries are excluded.';
+      memoryRows = Array.isArray(data) ? data : data.items;
+      $('memoryItems').innerHTML =
+        memoryTab === 'activity'
+          ? memoryActivity(memoryRows)
+          : memoryTab === 'sources'
+            ? memorySourceRows(memoryRows)
+            : memoryEntryRows(memoryRows);
+      const total = data.total || memoryRows.length;
+      $('memoryPages').innerHTML =
+        memoryTab === 'activity'
+          ? ''
+          : `<span>${total ? memoryOffset + 1 : 0}–${Math.min(memoryOffset + 40, total)} of ${total}${data.truncated ? '+' : ''}</span><button class="cr-secondary" data-memory-prev ${memoryOffset === 0 ? 'disabled' : ''}>Previous</button><button class="cr-secondary" data-memory-next ${memoryOffset + 40 >= total ? 'disabled' : ''}>Next</button>`;
+      $('memoryPages')
+        .querySelector('[data-memory-prev]')
+        ?.addEventListener('click', () => {
+          memoryOffset = Math.max(0, memoryOffset - 40);
+          loadMemory();
+        });
+      $('memoryPages')
+        .querySelector('[data-memory-next]')
+        ?.addEventListener('click', () => {
+          memoryOffset += 40;
+          loadMemory();
+        });
+    } catch (e) {
+      if (serial === memoryRequest)
+        $('memoryItems').innerHTML =
+          `<div class="cr-empty" role="alert">${esc(e.message)} <button class="cr-text-button" id="memoryRetry">Retry</button></div>`;
+      $('memoryRetry')?.addEventListener('click', loadMemory);
+    }
+  }
+  function memoryEmpty(text) {
+    return `<div class="memory-empty">${ic('snippet')}<h3>${esc(text)}</h3><p>Add a memory or import source material to start building shared knowledge.</p></div>`;
+  }
+  function memoryEntryRows(rows) {
+    return (
+      rows
+        .map(
+          (e) =>
+            `<article class="memory-row"><input type="checkbox" data-memory-select="${esc(e.id)}" aria-label="Select ${esc(e.title)}"><button class="memory-row-main" data-memory-open="${esc(e.id)}"><span class="memory-row-top"><strong>${esc(e.title)}</strong>${e.pinned ? ic('pin') : ''}<span class="memory-kind">${esc(e.kind)}</span></span><span class="memory-excerpt">${esc(e.summary || e.content.slice(0, 200))}</span><span class="memory-meta">${esc(memoryProjectName(e.projectId))} · ${esc(e.scope === 'global' ? 'Workspace' : e.scope)} · ${esc(e.providers.map(providerName).join(' + '))} · v${e.revision}${e.tags.length ? ' · ' + esc(e.tags.map((t) => '#' + t).join(' ')) : ''}</span>${e.staleReason || e.expired ? `<span class="memory-warning">${esc(e.staleReason || 'Expired')}</span>` : ''}</button><span class="memory-row-end"><time title="${esc(memoryDate(e.updatedAt))}">${esc(relativeDate(new Date(e.updatedAt).toISOString()))}</time>${e.status === 'proposed' ? `<button class="cr-secondary" data-memory-confirm="${esc(e.id)}">Review</button>` : ''}</span></article>`,
+        )
+        .join('') ||
+      memoryEmpty(memoryTab === 'inbox' ? 'Nothing waiting for review' : 'No memories in this view')
+    );
+  }
+  function memorySourceRows(rows) {
+    return (
+      rows
+        .map(
+          (s) =>
+            `<article class="memory-row"><span class="memory-source-icon">${ic(s.kind === 'conversation' ? 'chat' : 'file')}</span><button class="memory-row-main" data-memory-source="${esc(s.id)}"><span class="memory-row-top"><strong>${esc(s.title)}</strong><span class="memory-kind">${esc(s.kind)}</span></span><span class="memory-excerpt">${esc(s.content.slice(0, 180))}</span><span class="memory-meta">${esc(memoryProjectName(s.projectId))} · ${esc(memoryDate(s.at))}${s.excluded ? ' · Excluded' : ''}</span></button></article>`,
+        )
+        .join('') || memoryEmpty('No sources in this view')
+    );
+  }
+  function memoryActivity(rows) {
+    return (
+      rows
+        .map(
+          (r) =>
+            `<details class="memory-activity"><summary><span>${ic('history')}<strong>${esc(cards().find((c) => c.c.sessionId === r.sessionId)?.c.title || 'Conversation')}</strong><small>${esc(providerName(r.provider))} · ${esc(memoryProjectName(r.projectId))}</small></span><span>${r.items.length} memories · ~${r.estimatedTokens} tokens<small>${esc(memoryDate(r.at))}</small></span></summary><div class="memory-activity-body">${r.enabled ? '' : '<p>Memory was disabled for this turn.</p>'}${r.items.map((i) => `<button class="memory-context-row" data-memory-open="${esc(i.id)}"><span>${esc(i.title)} <small>v${i.revision}</small></span><small>${esc(i.reason)}</small></button>`).join('') || '<p>No memories were included.</p>'}${r.skipped.length ? `<small>${r.skipped.length} excluded or beyond the context budget.</small>` : ''}</div></details>`,
+        )
+        .join('') || memoryEmpty('No context history yet')
+    );
+  }
+  function renderMemoryBulk() {
+    const bar = $('memoryBulk');
+    bar.hidden = !memorySelection.size;
+    bar.querySelector('strong').textContent = memorySelection.size + ' selected';
+    bar.querySelector('[data-memory-merge]').disabled = memorySelection.size < 2 || memorySelection.size > 21;
+  }
+  $('memoryItems').onclick = (e) => {
+    const b = e.target.closest('[data-memory-open],[data-memory-confirm],[data-memory-source]');
+    if (b) {
+      if (b.dataset.memorySource) showMemorySource(b.dataset.memorySource);
+      else showMemoryEntry(b.dataset.memoryOpen || b.dataset.memoryConfirm);
+    }
+  };
+  $('memoryItems').onchange = (e) => {
+    const id = e.target.dataset.memorySelect;
+    if (id) {
+      if (e.target.checked)
+        memorySelection.set(
+          id,
+          memoryRows.find((x) => x.id === id),
+        );
+      else memorySelection.delete(id);
+      renderMemoryBulk();
+    }
+  };
+  $('memoryBulk').onclick = async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.hasAttribute('data-memory-clear')) {
+      $('memoryItems')
+        .querySelectorAll('input:checked')
+        .forEach((x) => (x.checked = false));
+      memorySelection.clear();
+      renderMemoryBulk();
+      return;
+    }
+    if (b.hasAttribute('data-memory-merge')) {
+      mergeMemories([...memorySelection.values()]);
+      return;
+    }
+    if (!b.dataset.memoryBulk) return;
+    b.disabled = true;
+    try {
+      await memoryRequestApi('bulk', {
+        items: [...memorySelection.values()].map(({ id, revision }) => ({ id, revision })),
+        status: b.dataset.memoryBulk,
+      });
+      loadMemory();
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      b.disabled = false;
+    }
+  };
+  document.querySelectorAll('[data-memory-tab]').forEach(
+    (b) =>
+      (b.onclick = () => {
+        memoryTab = b.dataset.memoryTab;
+        memoryOffset = 0;
+        document
+          .querySelectorAll('[data-memory-tab]')
+          .forEach((x) => x.classList.toggle('selected', x === b));
+        $('memoryKind').hidden = memoryTab === 'sources' || memoryTab === 'activity';
+        $('memoryStatus').disabled = memoryTab !== 'knowledge';
+        $('memoryProvider').hidden = memoryTab === 'sources' || memoryTab === 'activity';
+        $('memorySearch').disabled = memoryTab === 'activity';
+        loadMemory();
+      }),
+  );
+  for (const id of ['memorySearch', 'memoryTag'])
+    $(id).oninput = () => {
+      clearTimeout(memoryTimer);
+      memoryTimer = setTimeout(() => {
+        memoryOffset = 0;
+        loadMemory();
+      }, 220);
+    };
+  for (const id of [
+    'memoryProject',
+    'memoryKind',
+    'memoryProvider',
+    'memoryStatus',
+    'memoryScope',
+    'memoryConversation',
+    'memoryExcluded',
+  ])
+    $(id).onchange = () => {
+      memoryOffset = 0;
+      if (id === 'memoryProject') memoryConversations();
+      loadMemory();
+    };
+  $('memoryFilters').onclick = () => {
+    $('memoryExtra').hidden = !$('memoryExtra').hidden;
+  };
+  $('memoryNew').onclick = () => editMemory();
+  $('memoryImport').onclick = () => importMemorySources();
+  $('crMemoryTab').onclick = () => showSection('memory');
+  $('memoryMore').onclick = (e) =>
+    openMenu(e.currentTarget, [
+      { label: 'Memory settings', icon: 'gear', run: memorySettings },
+      { label: 'Add a document', icon: 'file', run: memoryDocument },
+      { label: 'Export memory', icon: 'down', run: exportMemory },
+      { label: 'Import memory export', icon: 'up', run: importMemoryPackage },
+      { label: 'Refresh', icon: 'refresh', run: loadMemory },
+    ]);
+  async function showMemoryEntry(id) {
+    const d = workspaceDialog('Memory', '<div class="memory-detail">Loading…</div>');
+    d.classList.add('memory-detail-dialog');
+    async function load() {
+      try {
+        const data = await memoryRequestApi('entry?id=' + encodeURIComponent(id));
+        if (!d.open) return;
+        const e = data.entry;
+        d.querySelector('h2').textContent = e.title;
+        const body = d.querySelector('.memory-detail');
+        body.innerHTML = `<div class="memory-detail-meta"><span class="memory-kind">${esc(e.status)}</span><span>${esc(e.kind)} · v${e.revision} · ${esc(memoryProjectName(e.projectId))}</span></div><div class="memory-content">${esc(e.content)}</div><div class="memory-detail-actions"><button class="cr-primary" data-edit>${e.status === 'proposed' ? 'Review & confirm' : 'Edit memory'}</button><button class="cr-secondary" data-more>More</button></div><dl class="memory-properties"><dt>Available in</dt><dd>${esc(e.scope === 'global' ? 'Entire workspace' : e.scope === 'shared' ? [e.projectId, ...e.sharedProjectIds].map(memoryProjectName).join(', ') : e.scope === 'conversation' ? 'This conversation' : memoryProjectName(e.projectId))}</dd><dt>Providers</dt><dd>${esc(e.providers.map(providerName).join(', '))}</dd><dt>Updated</dt><dd>${esc(memoryDate(e.updatedAt))} by ${esc(e.actor)}</dd>${e.expiresAt ? `<dt>Expires</dt><dd>${esc(memoryDate(e.expiresAt))}</dd>` : ''}</dl><h3>Sources <small>${data.sources.length}</small></h3><div class="memory-evidence">${data.sources.map((s) => (s.current ? `<button class="memory-context-row" data-memory-source="${esc(s.id)}"><span>${esc(s.label)}${s.hash !== s.current.hash ? ' <em>Source changed</em>' : ''}${s.current.excluded ? ' <em>Excluded</em>' : ''}</span><small>${esc(memoryDate(s.at))}</small></button>${s.original && s.hash !== s.current.hash ? `<button class="cr-text-button" data-original="${esc(s.id)}" data-source-hash="${esc(s.hash)}">View original source version</button>` : ''}` : `<div class="memory-meta">${esc(s.label)}${s.ref ? ' · ' + esc(s.ref) : ''}</div>`)).join('') || '<p class="cr-note">Manual note. No source attached.</p>'}</div><div class="memory-section-title"><h3>Relationships</h3><button class="cr-text-button" data-link>Link memory</button></div>${data.related.map((r) => `<div class="memory-related"><button class="cr-text-button" data-related="${esc(r.entry.id)}">${esc(r.entry.title)}</button><small>${esc(r.kind.replace('_', ' '))}</small><button class="cr-icon" data-unlink="${esc(r.id)}" aria-label="Remove relationship">${ic('x')}</button></div>`).join('') || '<p class="cr-note">No linked memories.</p>'}<details class="memory-revisions"><summary>Version history · ${data.revisions.length}</summary>${data.revisions.map((v) => `<details><summary>v${v.revision} · ${esc(v.status)} · ${esc(memoryDate(v.updatedAt))}</summary><div class="memory-content">${esc(v.content)}</div>${v.revision !== e.revision ? `<button class="cr-secondary" data-restore="${v.revision}">Restore as proposal</button>` : ''}</details>`).join('')}</details>`;
+        body.querySelector('[data-edit]').onclick = () =>
+          editMemory(e, () => {
+            load();
+            loadMemory();
+          });
+        body.querySelector('[data-more]').onclick = (event) =>
+          openMenu(event.currentTarget, [
+            {
+              label: e.pinned ? 'Unpin from context' : 'Pin for automatic context',
+              icon: 'pin',
+              run: () => change({ pinned: !e.pinned }),
+            },
+            {
+              label: 'Archive',
+              icon: 'folder',
+              disabled: e.status === 'archived',
+              run: () => change({ status: 'archived' }),
+            },
+            {
+              label: 'Restore to review inbox',
+              icon: 'history',
+              disabled: e.status === 'proposed',
+              run: () => change({ status: 'proposed' }),
+            },
+            {
+              label: 'Move to trash',
+              icon: 'x',
+              disabled: e.status === 'deleted',
+              run: () => change({ status: 'deleted' }),
+            },
+          ]);
+        async function change(patch) {
+          try {
+            await memoryRequestApi('entry', { id: e.id, revision: e.revision, entry: patch });
+            load();
+            loadMemory();
+          } catch (err) {
+            toast(err.message);
+          }
+        }
+        body
+          .querySelectorAll('[data-original]')
+          .forEach(
+            (b) => (b.onclick = () => showMemorySourceRevision(b.dataset.original, b.dataset.sourceHash)),
+          );
+        body
+          .querySelectorAll('[data-memory-source]')
+          .forEach((b) => (b.onclick = () => showMemorySource(b.dataset.memorySource)));
+        body
+          .querySelectorAll('[data-related]')
+          .forEach((b) => (b.onclick = () => showMemoryEntry(b.dataset.related)));
+        body.querySelector('[data-link]').onclick = () => linkMemory(e, load);
+        body.querySelectorAll('[data-unlink]').forEach(
+          (b) =>
+            (b.onclick = async () => {
+              try {
+                await memoryRequestApi('unlink', { id: b.dataset.unlink });
+                load();
+              } catch (err) {
+                toast(err.message);
+              }
+            }),
+        );
+        body.querySelectorAll('[data-restore]').forEach(
+          (b) =>
+            (b.onclick = async () => {
+              try {
+                await memoryRequestApi('restore-revision', {
+                  id: e.id,
+                  revision: e.revision,
+                  restoreRevision: Number(b.dataset.restore),
+                });
+                load();
+                loadMemory();
+              } catch (err) {
+                toast(err.message);
+              }
+            }),
+        );
+      } catch (err) {
+        d.querySelector('.memory-detail').textContent = err.message;
+      }
+    }
+    load();
+  }
+  function editMemory(entry = {}, after = loadMemory) {
+    const pid =
+        entry.projectId ||
+        $('memoryProject').value ||
+        engine.state().projectId ||
+        engine.state().projects[0]?.id ||
+        '',
+      status = entry.status === 'confirmed' ? 'confirmed' : 'proposed';
+    const d = workspaceDialog(
+      entry.id ? 'Edit memory' : 'New memory',
+      `<form class="workspace-form memory-editor"><label>Title<input name="title" required maxlength="180" value="${esc(entry.title || '')}" placeholder="A clear, specific fact or decision"></label><label>Knowledge<textarea name="content" rows="7" required maxlength="64000" placeholder="What should future conversations remember?">${esc(entry.content || '')}</textarea></label><div class="memory-form-grid"><label>Type<select name="kind">${memoryKinds.map((k) => `<option ${k === (entry.kind || 'knowledge') ? 'selected' : ''}>${k}</option>`).join('')}</select></label><label>Owning project<select name="projectId">${memoryOptions(pid, false)}</select></label><label>Sharing<select name="scope">${[
+        ['project', 'This project'],
+        ['conversation', 'This conversation'],
+        ['shared', 'Selected projects'],
+        ['global', 'Entire workspace'],
+      ]
+        .map(
+          ([v, l]) =>
+            `<option value="${v}" ${v === (entry.scope || 'project') ? 'selected' : ''}>${l}</option>`,
+        )
+        .join(
+          '',
+        )}</select></label><label>Review status<select name="status"><option value="proposed" ${status === 'proposed' ? 'selected' : ''}>Proposal</option><option value="confirmed" ${status === 'confirmed' ? 'selected' : ''}>Confirmed</option></select></label></div><label data-conversation-field>Conversation<select name="sessionId"></select></label><fieldset class="memory-share" data-shared-field><legend>Share with projects</legend>${engine
+        .state()
+        .projects.map(
+          (p) =>
+            `<label class="workspace-check"><input name="sharedProjectIds" type="checkbox" value="${esc(p.id)}" ${(entry.sharedProjectIds || []).includes(p.id) ? 'checked' : ''}>${esc(p.name)}</label>`,
+        )
+        .join(
+          '',
+        )}</fieldset><details class="memory-advanced"><summary>Tags, providers & context</summary><label>Tags<input name="tags" value="${esc((entry.tags || []).join(', '))}" placeholder="architecture, preferences, deployment"></label><fieldset class="route-provider"><legend>Providers</legend>${['claude', 'codex'].map((p) => `<label><input type="checkbox" name="providers" value="${p}" ${!entry.providers || entry.providers.includes(p) ? 'checked' : ''}>${providerName(p)}</label>`).join('')}</fieldset><label>Expires<input type="date" name="expiresAt" value="${entry.expiresAt ? new Date(entry.expiresAt).toISOString().slice(0, 10) : ''}"></label><label class="workspace-check"><input type="checkbox" name="pinned" ${entry.pinned ? 'checked' : ''}>Always consider for context within its sharing scope</label></details>${entry.sources?.some((s) => s.id) ? '<label class="workspace-check"><input type="checkbox" name="reviewSources">I reviewed the current source versions</label>' : ''}<p role="alert"></p><footer><button type="button" class="cr-secondary" data-cancel>Cancel</button><button class="cr-primary">Save memory</button></footer></form>`,
+    );
+    d.classList.add('memory-editor-dialog');
+    const f = d.querySelector('form');
+    function fields() {
+      d.querySelector('[data-conversation-field]').hidden = f.elements.scope.value !== 'conversation';
+      d.querySelector('[data-shared-field]').hidden = f.elements.scope.value !== 'shared';
+      const chosen = f.elements.sessionId.value || entry.sessionId || engine.state().sessionId;
+      f.elements.sessionId.innerHTML = cards()
+        .filter((c) => c.p.id === f.elements.projectId.value)
+        .map(
+          (c) =>
+            `<option value="${esc(c.c.sessionId)}" ${c.c.sessionId === chosen ? 'selected' : ''}>${esc(c.c.title)}</option>`,
+        )
+        .join('');
+    }
+    fields();
+    f.elements.scope.onchange = fields;
+    f.elements.projectId.onchange = fields;
+    f.querySelector('[data-cancel]').onclick = () => d.close();
+    f.onsubmit = async (event) => {
+      event.preventDefault();
+      const button = f.querySelector('button.cr-primary');
+      button.disabled = true;
+      try {
+        let sources = entry.sources || [];
+        if (f.elements.reviewSources?.checked)
+          sources = await Promise.all(
+            sources.map(async (s) =>
+              s.id
+                ? { ...s, hash: (await memoryRequestApi('source?id=' + encodeURIComponent(s.id))).hash }
+                : s,
+            ),
+          );
+        const change = {
+          title: f.elements.title.value,
+          content: f.elements.content.value,
+          kind: f.elements.kind.value,
+          status: f.elements.status.value,
+          projectId: f.elements.projectId.value,
+          scope: f.elements.scope.value,
+          sessionId: f.elements.scope.value === 'conversation' ? f.elements.sessionId.value : '',
+          sharedProjectIds: [...f.querySelectorAll('[name=sharedProjectIds]:checked')].map((x) => x.value),
+          providers: [...f.querySelectorAll('[name=providers]:checked')].map((x) => x.value),
+          tags: f.elements.tags.value
+            .split(',')
+            .map((x) => x.trim())
+            .filter(Boolean),
+          pinned: f.elements.pinned.checked,
+          expiresAt: f.elements.expiresAt.value
+            ? new Date(f.elements.expiresAt.value + 'T23:59:59').getTime()
+            : null,
+          sources,
+        };
+        const saved = await memoryRequestApi('entry', {
+          id: entry.id,
+          revision: entry.revision,
+          entry: change,
+        });
+        d.close();
+        toast(saved.status === 'confirmed' ? 'Memory confirmed.' : 'Saved to the review inbox.');
+        after(saved);
+      } catch (err) {
+        f.querySelector('[role=alert]').textContent = err.message;
+      } finally {
+        button.disabled = false;
+      }
+    };
+  }
+  async function showMemorySourceRevision(id, hash) {
+    const d = workspaceDialog('Original source version', '<div data-original-body>Loading…</div>');
+    d.classList.add('memory-detail-dialog');
+    try {
+      const source = await memoryRequestApi('source?' + new URLSearchParams({ id, hash }));
+      if (!d.open) return;
+      d.querySelector('[data-original-body]').innerHTML =
+        `<p class="memory-meta">${esc(source.title)} · ${esc(memoryDate(source.at))}</p><div class="memory-content">${esc(source.content)}</div><button class="cr-secondary" data-current>View current source</button>`;
+      d.querySelector('[data-current]').onclick = () => showMemorySource(id);
+    } catch (err) {
+      d.querySelector('[data-original-body]').textContent = err.message;
+    }
+  }
+  async function showMemorySource(id) {
+    const d = workspaceDialog('Source', '<div data-source-body>Loading…</div>');
+    d.classList.add('memory-detail-dialog');
+    try {
+      const s = await memoryRequestApi('source?id=' + encodeURIComponent(id));
+      if (!d.open) return;
+      d.querySelector('h2').textContent = s.title;
+      d.querySelector('[data-source-body]').innerHTML =
+        `<p class="memory-meta">${esc(s.kind)} · ${esc(memoryProjectName(s.projectId))} · ${esc(memoryDate(s.at))}</p><div class="memory-content memory-source-content">${esc(s.content)}</div>${s.ref ? `<p class="memory-source-ref">${esc(s.ref)}</p>` : ''}<div class="workspace-actions"><button class="cr-primary" data-promote ${s.excluded ? 'disabled' : ''}>Create memory</button><button class="cr-secondary" data-exclude>${s.excluded ? 'Restore source' : 'Exclude source'}</button>${s.sessionId ? '<button class="cr-text-button" data-origin>Open source conversation</button>' : ''}</div><p class="cr-note">Excluding a source also prevents memories based on it from being injected.</p>`;
+      d.querySelector('[data-promote]').onclick = async () => {
+        try {
+          const result = await memoryRequestApi('source/promote', { id });
+          editMemory(result.entry, () => {
+            loadMemory();
+            d.close();
+          });
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+      d.querySelector('[data-exclude]').onclick = async () => {
+        try {
+          await memoryRequestApi('source/exclude', { id, excluded: !s.excluded });
+          d.close();
+          loadMemory();
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+      d.querySelector('[data-origin]')?.addEventListener('click', async () => {
+        d.close();
+        await engine.select(s.projectId, s.sessionId);
+        open();
+      });
+    } catch (err) {
+      d.querySelector('[data-source-body]').textContent = err.message;
+    }
+  }
+  function linkMemory(entry, after) {
+    const d = workspaceDialog(
+      'Link memory',
+      `<form class="workspace-form"><label>Find a memory<input name="query" type="search" placeholder="Search by title or content"></label><label>Memory<select name="target" required></select></label><label>Relationship<select name="kind"><option value="related">Related</option><option value="supports">Supports</option><option value="contradicts">Contradicts</option><option value="depends_on">Depends on</option></select></label><p role="alert"></p><footer><button class="cr-primary">Link memory</button></footer></form>`,
+    );
+    const f = d.querySelector('form');
+    let request = 0;
+    async function search() {
+      const seq = ++request;
+      try {
+        const data = await memoryRequestApi('search?query=' + encodeURIComponent(f.elements.query.value));
+        if (seq === request && d.open)
+          f.elements.target.innerHTML = data.items
+            .filter((e) => e.id !== entry.id)
+            .map((e) => `<option value="${esc(e.id)}">${esc(e.title)}</option>`)
+            .join('');
+      } catch (err) {
+        f.querySelector('[role=alert]').textContent = err.message;
+      }
+    }
+    f.elements.query.oninput = search;
+    search();
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await memoryRequestApi('link', {
+          from: entry.id,
+          to: f.elements.target.value,
+          kind: f.elements.kind.value,
+        });
+        d.close();
+        after();
+      } catch (err) {
+        f.querySelector('[role=alert]').textContent = err.message;
+      }
+    };
+  }
+  function mergeMemories(entries) {
+    const first = entries[0],
+      d = workspaceDialog(
+        'Merge memories',
+        `<form class="workspace-form"><p class="cr-note">Keep “${esc(first.title)}” and supersede ${entries.length - 1} other entries. Sharing and providers must match. The merged memory returns to review.</p><label>Merged knowledge<textarea name="content" rows="10" required>${esc(entries.map((e) => e.content).join('\n\n'))}</textarea></label><p role="alert"></p><footer><button class="cr-primary">Merge as proposal</button></footer></form>`,
+      );
+    d.querySelector('form').onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await memoryRequestApi('merge', {
+          id: first.id,
+          revision: first.revision,
+          others: entries.slice(1).map(({ id, revision }) => ({ id, revision })),
+          content: e.target.elements.content.value,
+        });
+        d.close();
+        loadMemory();
+      } catch (err) {
+        d.querySelector('[role=alert]').textContent = err.message;
+      }
+    };
+  }
+  function importMemorySources() {
+    const d = workspaceDialog(
+      'Import source material',
+      `<form class="workspace-form"><p class="cr-note">Import existing conversation excerpts, result references, and provider memory files. Only memory files become review proposals automatically.</p><label>Project<select name="projectId">${memoryOptions($('memoryProject').value || engine.state().projectId)}</select></label><label class="workspace-check"><input name="conversations" type="checkbox" checked>Recent user and assistant messages</label><label class="workspace-check"><input name="legacy" type="checkbox" checked>Existing provider memory files</label><label class="workspace-check"><input name="artifacts" type="checkbox" checked>Screenshots, previews, files and test summaries</label><p role="status"></p><p role="alert"></p><footer><button class="cr-primary">Import sources</button></footer></form>`,
+    );
+    const f = d.querySelector('form');
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const button = f.querySelector('button');
+      button.disabled = true;
+      try {
+        const projects = f.elements.projectId.value
+            ? [f.elements.projectId.value]
+            : engine.state().projects.map((p) => p.id),
+          totals = { created: 0, updated: 0, unchanged: 0, proposed: 0 },
+          errors = [];
+        let truncated = false;
+        for (const [i, projectId] of projects.entries()) {
+          f.querySelector('[role=status]').textContent =
+            `Importing ${i + 1} of ${projects.length}: ${memoryProjectName(projectId)}…`;
+          const rows = await memoryRequestApi('ingest', {
+            projectId,
+            conversations: f.elements.conversations.checked,
+            legacy: f.elements.legacy.checked,
+            artifacts: f.elements.artifacts.checked,
+          });
+          for (const row of rows) {
+            for (const k of Object.keys(totals)) totals[k] += row[k];
+            errors.push(...row.errors);
+            truncated ||= row.truncated;
+          }
+        }
+        f.querySelector('[role=status]').textContent =
+          `${totals.created} new sources, ${totals.updated} updated, ${totals.unchanged} unchanged, ${totals.proposed} proposals.${truncated ? ' Imported the latest 150 messages in up to 100 conversations per project; older history remains in the original conversations.' : ''}`;
+        f.querySelector('[role=alert]').textContent = errors.slice(0, 4).join('\n');
+        button.textContent = 'Import again';
+        loadMemory();
+      } catch (err) {
+        f.querySelector('[role=alert]').textContent = err.message;
+      } finally {
+        button.disabled = false;
+      }
+    };
+  }
+  function memoryDocument() {
+    const d = workspaceDialog(
+      'Add a document',
+      `<form class="workspace-form"><label>Title<input name="title" required maxlength="300"></label><label>Project<select name="projectId">${memoryOptions(engine.state().projectId, false)}</select></label><label>Source link or reference<input name="reference" placeholder="Optional URL or document reference"></label><label>Document text<textarea name="content" required rows="10" maxlength="200000"></textarea></label><p role="alert"></p><footer><button class="cr-primary">Save source</button></footer></form>`,
+    );
+    d.querySelector('form').onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        const result = await memoryRequestApi('document', Object.fromEntries(new FormData(e.target)));
+        d.close();
+        showMemorySource(result.source.id);
+        loadMemory();
+      } catch (err) {
+        d.querySelector('[role=alert]').textContent = err.message;
+      }
+    };
+  }
+  async function exportMemory() {
+    try {
+      const data = await memoryRequestApi('export'),
+        url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })),
+        a = document.createElement('a');
+      a.href = url;
+      a.download = 'x056-memory-' + new Date().toISOString().slice(0, 10) + '.json';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+  function importMemoryPackage() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = async () => {
+      try {
+        const file = input.files[0];
+        if (!file) return;
+        if (file.size > 50 * 1024 * 1024) throw new Error('Choose an export smaller than 50 MB');
+        const result = await memoryRequestApi('import', JSON.parse(await file.text()));
+        const d = workspaceDialog(
+          'Memory imported',
+          `<p>${result.created} proposals created. ${result.skipped} existing or retired entries skipped.</p>${result.errors.length ? `<div class="memory-content">${esc(result.errors.join('\n'))}</div>` : ''}<p class="cr-note">Review imported knowledge before confirming it for use.</p>`,
+        );
+        loadMemory();
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+    input.click();
+  }
+  async function memorySettings() {
+    const d = workspaceDialog('Memory settings', '<div data-settings>Loading…</div>');
+    try {
+      const s = await memoryRequestApi('settings');
+      if (!d.open) return;
+      d.classList.add('workspace-form-dialog');
+      d.querySelector('[data-settings]').innerHTML =
+        `<form class="workspace-form"><label class="workspace-check"><input type="checkbox" name="enabled" ${s.enabled ? 'checked' : ''}>Include relevant memory in new turns</label><label class="workspace-check"><input type="checkbox" name="autoCapture" ${s.autoCapture ? 'checked' : ''}>Save completed turn excerpts as sources</label><label class="workspace-check"><input type="checkbox" name="crossProject" ${s.crossProject ? 'checked' : ''}>Retrieve knowledge shared from other projects</label><div class="memory-form-grid"><label>Context token budget<input type="number" name="maxTokens" min="300" max="12000" value="${s.maxTokens}"></label><label>Maximum memories per turn<input type="number" name="maxEntries" min="1" max="40" value="${s.maxEntries}"></label></div><fieldset class="route-provider"><legend>Automatic context for</legend>${['claude', 'codex'].map((p) => `<label><input name="providers" type="checkbox" value="${p}" ${s.providers.includes(p) ? 'checked' : ''}>${providerName(p)}</label>`).join('')}</fieldset><fieldset class="memory-share"><legend>Exclude projects from automatic capture and context</legend>${engine
+          .state()
+          .projects.map(
+            (p) =>
+              `<label class="workspace-check"><input name="excludedProjects" type="checkbox" value="${esc(p.id)}" ${s.excludedProjects.includes(p.id) ? 'checked' : ''}>${esc(p.name)}</label>`,
+          )
+          .join(
+            '',
+          )}</fieldset><p class="cr-note">Changes apply to future turns. Context already sent to a provider remains in that conversation’s history.</p><p role="alert"></p><footer><button class="cr-primary">Save settings</button></footer></form>`;
+      d.querySelector('form').onsubmit = async (e) => {
+        e.preventDefault();
+        const f = e.target;
+        try {
+          await memoryRequestApi('settings', {
+            ...Object.fromEntries(
+              ['enabled', 'autoCapture', 'crossProject'].map((k) => [k, f.elements[k].checked]),
+            ),
+            maxTokens: Number(f.elements.maxTokens.value),
+            maxEntries: Number(f.elements.maxEntries.value),
+            providers: [...f.querySelectorAll('[name=providers]:checked')].map((x) => x.value),
+            excludedProjects: [...f.querySelectorAll('[name=excludedProjects]:checked')].map((x) => x.value),
+          });
+          d.close();
+          loadMemory();
+        } catch (err) {
+          f.querySelector('[role=alert]').textContent = err.message;
+        }
+      };
+    } catch (err) {
+      d.querySelector('[data-settings]').textContent = err.message;
+    }
+  }
+  async function showMemoryContext(target = engine.state()) {
+    if (!target.sessionId) {
+      toast('Open a conversation first.');
+      return;
+    }
+    const d = workspaceDialog(
+      'Conversation memory',
+      `<div class="memory-context-controls"><label class="cr-search">${ic('search')}<input data-context-query type="search" aria-label="Preview context for a prompt" placeholder="Preview memory for a prompt" value="${esc(engine.promptText?.() || '')}"></label><button class="cr-secondary" data-context-refresh>Preview</button></div><div data-context-body>Loading…</div>`,
+    );
+    d.classList.add('memory-detail-dialog');
+    let request = 0;
+    async function load() {
+      const seq = ++request;
+      try {
+        const query = d.querySelector('[data-context-query]').value,
+          params = new URLSearchParams({ projectId: target.projectId, sessionId: target.sessionId, query }),
+          data = await memoryRequestApi('context?' + params),
+          available = await memoryRequestApi(
+            'search?' +
+              params +
+              '&status=confirmed&access=context&provider=' +
+              encodeURIComponent(data.provider || target.provider || engine.state().provider || ''),
+          );
+        if (seq !== request || !d.open) return;
+        const prefs = data.preferences,
+          body = d.querySelector('[data-context-body]');
+        body.innerHTML = `<div class="memory-context-summary"><span><strong>${data.items.length} memories</strong> · ~${data.estimatedTokens} / ${data.budget} tokens</span><label class="workspace-check"><input type="checkbox" data-enabled ${prefs.enabled !== false ? 'checked' : ''}>Use memory here</label></div>${!data.enabled ? '<p class="cr-note">Retrieval is disabled for this conversation, project, provider, or slash command.</p>' : ''}<p class="cr-note">Preview for the next turn. Pins respect sharing, provider settings, exclusions, and the context budget.</p><h3>Included</h3>${data.items.map((i) => `<div class="memory-context-item"><button class="memory-row-main" data-memory-open="${esc(i.id)}"><strong>${esc(i.title)}</strong><small>v${i.revision} · ${esc(i.reason)}</small></button><button class="cr-icon" data-exclude="${esc(i.id)}" title="Exclude from this conversation" aria-label="Exclude ${esc(i.title)}">${ic('x')}</button></div>`).join('') || '<p class="cr-note">No matching confirmed knowledge.</p>'}<details><summary>Choose context · ${available.total} eligible memories</summary>${available.items.map((e) => `<div class="memory-context-item"><span>${esc(e.title)}</span><label class="workspace-check"><input type="checkbox" data-pin="${esc(e.id)}" ${prefs.pinnedIds?.includes(e.id) ? 'checked' : ''}>Pin</label><label class="workspace-check"><input type="checkbox" data-allow="${esc(e.id)}" ${!prefs.excludedIds?.includes(e.id) ? 'checked' : ''}>Allow</label></div>`).join('')}</details>${data.skipped.length ? `<details><summary>${data.skipped.length} skipped</summary>${data.skipped.map((i) => `<p class="memory-meta">${esc(available.items.find((e) => e.id === i.id)?.title || i.id.slice(0, 8))} · ${esc(i.reason)}</p>`).join('')}</details>` : ''}<details><summary>Recent turns</summary>${memoryActivity(data.history.slice(0, 10))}</details>`;
+        async function save(patch) {
+          try {
+            await memoryRequestApi('context/preferences', {
+              projectId: target.projectId,
+              sessionId: target.sessionId,
+              preferences: patch,
+            });
+            load();
+          } catch (err) {
+            toast(err.message);
+          }
+        }
+        body.querySelector('[data-enabled]').onchange = (e) => save({ enabled: e.target.checked });
+        body
+          .querySelectorAll('[data-exclude]')
+          .forEach(
+            (b) =>
+              (b.onclick = () =>
+                save({ excludedIds: [...new Set([...(prefs.excludedIds || []), b.dataset.exclude])] })),
+          );
+        body
+          .querySelectorAll('[data-pin]')
+          .forEach(
+            (b) =>
+              (b.onchange = () =>
+                save({
+                  pinnedIds: b.checked
+                    ? [...new Set([...(prefs.pinnedIds || []), b.dataset.pin])]
+                    : (prefs.pinnedIds || []).filter((id) => id !== b.dataset.pin),
+                })),
+          );
+        body
+          .querySelectorAll('[data-allow]')
+          .forEach(
+            (b) =>
+              (b.onchange = () =>
+                save({
+                  excludedIds: b.checked
+                    ? (prefs.excludedIds || []).filter((id) => id !== b.dataset.allow)
+                    : [...new Set([...(prefs.excludedIds || []), b.dataset.allow])],
+                })),
+          );
+        body
+          .querySelectorAll('[data-memory-open]')
+          .forEach((b) => (b.onclick = () => showMemoryEntry(b.dataset.memoryOpen)));
+      } catch (err) {
+        if (seq === request && d.open) d.querySelector('[data-context-body]').textContent = err.message;
+      }
+    }
+    d.querySelector('[data-context-refresh]').onclick = load;
+    d.querySelector('[data-context-query]').onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        load();
+      }
+    };
+    load();
+  }
+  async function saveArtifactMemory(item) {
+    try {
+      await memoryRequestApi('ingest', {
+        projectId: item.projectId,
+        sessionId: item.sessionId,
+        conversations: false,
+        legacy: false,
+        artifacts: true,
+      });
+      const data = await memoryRequestApi(
+          'sources?' +
+            new URLSearchParams({
+              projectId: item.projectId,
+              sessionId: item.sessionId,
+              query: item.title,
+              limit: 200,
+            }),
+        ),
+        source = data.items.find((s) => s.key === 'artifact:' + item.id);
+      if (!source) throw new Error('The output source could not be imported.');
+      const proposed = await memoryRequestApi('source/promote', { id: source.id });
+      editMemory(proposed.entry);
+    } catch (err) {
+      toast(err.message);
     }
   }
 
@@ -1037,12 +1954,92 @@ window.createControlRoom = function (engine) {
   function conversationOptions(value=''){return cards().map(x=>`<option value="${esc(x.k)}" ${value===x.k?'selected':''}>${esc(x.p.name+' · '+(x.c.title||'Conversation'))}</option>`).join('');}
   const artifactKinds={image:'Screenshot',file:'File',preview:'Preview',test:'Test result'};
   async function artifactFile(item,download=false){const r=await engine.api('/api/workspace/artifact-file?id='+encodeURIComponent(item.id));if(!r.ok)throw new Error('File is unavailable');const blob=await r.blob(),url=URL.createObjectURL(blob);if(download){const a=document.createElement('a');a.href=url;a.download=item.original?.split('/').pop()||item.title;a.click();setTimeout(()=>URL.revokeObjectURL(url),5000);return;}return url;}
-  function artifactCards(rows){return rows.map(x=>`<article class="artifact-card" data-artifact="${esc(x.id)}">${x.kind==='image'?`<button class="artifact-image" data-view="${esc(x.id)}" aria-label="View ${esc(x.title)}"><img alt="${esc(x.title)}" loading="lazy"></button>`:''}<div class="artifact-copy"><small>${artifactKinds[x.kind]} · ${esc(relativeDate(x.at))}</small><strong>${esc(x.title)}</strong>${x.kind==='test'?`<p class="test-result ${esc(x.status)}">${esc(x.summary)}</p><small>${x.source==='response'?'Reported by assistant':'Added manually'}</small>`:''}<small>${esc(engine.state().projects.find(p=>p.id===x.projectId)?.name||'Project')} · ${esc(cards().find(c=>c.k===x.projectId+'::'+x.sessionId)?.c.title||'Conversation')}</small><div class="artifact-actions">${x.url?`<a class="cr-secondary" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">Open preview ${ic('up')}</a>`:x.file?`<button class="cr-secondary" data-download="${esc(x.id)}">Download</button>`:''}<button class="cr-text-button" data-source="${esc(x.id)}">Conversation</button><button class="cr-icon" data-remove-artifact="${esc(x.id)}" aria-label="Remove from library">${ic('x')}</button></div></div></article>`).join('')||'<div class="cr-empty">No saved outputs in this view.</div>';}
-  function bindArtifacts(container,rows,reload){const byId=new Map(rows.map(x=>[x.id,x]));container.querySelectorAll('.artifact-image img').forEach(async img=>{try{const url=await artifactFile(byId.get(img.closest('[data-artifact]').dataset.artifact));if(img.isConnected)img.src=url;else URL.revokeObjectURL(url);}catch{img.alt='Image unavailable';}});container.querySelectorAll('[data-view]').forEach(b=>b.onclick=async()=>{const x=byId.get(b.dataset.view);try{const url=await artifactFile(x),d=workspaceDialog(x.title,'<img class="artifact-large" alt="">');d.querySelector('img').src=url;d.querySelector('img').alt=x.title;}catch(e){toast(e.message);}});container.querySelectorAll('[data-download]').forEach(b=>b.onclick=()=>artifactFile(byId.get(b.dataset.download),true).catch(e=>toast(e.message)));container.querySelectorAll('[data-source]').forEach(b=>b.onclick=async()=>{const x=byId.get(b.dataset.source);b.closest('dialog')?.close();await engine.select(x.projectId,x.sessionId);open();});container.querySelectorAll('[data-remove-artifact]').forEach(b=>b.onclick=async()=>{try{await workspaceRequest('workspace/artifacts/remove',{id:b.dataset.removeArtifact});reload();}catch(e){toast(e.message);}});}
+  function artifactCards(rows,origin){return rows.map(x=>`<article class="artifact-card" data-artifact="${esc(x.id)}">${x.kind==='image'?`<button class="artifact-image" data-view="${esc(x.id)}" aria-label="View ${esc(x.title)}"><img alt="${esc(x.title)}" loading="lazy"></button>`:''}<div class="artifact-copy"><small>${artifactKinds[x.kind]} · ${esc(relativeDate(x.at))}</small><strong>${esc(x.title)}</strong>${x.kind==='test'?`<p class="test-result ${esc(x.status)}">${esc(x.summary)}</p><small>${x.source==='response'?'Reported by assistant':'Added manually'}</small>`:''}<small>${esc(engine.state().projects.find(p=>p.id===x.projectId)?.name||'Project')} · ${esc(cards().find(c=>c.k===x.projectId+'::'+x.sessionId)?.c.title||'Conversation')}</small><div class="artifact-actions">${x.url?`<a class="cr-secondary" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">Open preview ${ic('up')}</a>`:x.file?`<button class="cr-secondary" data-download="${esc(x.id)}">Download</button>`:''}${(!origin||x.projectId!==origin.projectId||x.sessionId!==origin.sessionId)?`<button class="cr-text-button" data-source="${esc(x.id)}">Open conversation</button>`:''}<button class="cr-text-button" data-memory-artifact="${esc(x.id)}">Save to memory</button><button class="cr-icon" data-remove-artifact="${esc(x.id)}" aria-label="Remove from library">${ic('x')}</button></div></div></article>`).join('')||'<div class="cr-empty">No saved outputs in this view.</div>';}
+  function bindArtifacts(container,rows,reload){const byId=new Map(rows.map(x=>[x.id,x]));container.querySelectorAll('[data-memory-artifact]').forEach(b=>b.onclick=()=>saveArtifactMemory(byId.get(b.dataset.memoryArtifact)));container.querySelectorAll('.artifact-image img').forEach(async img=>{try{const url=await artifactFile(byId.get(img.closest('[data-artifact]').dataset.artifact));if(img.isConnected)img.src=url;else URL.revokeObjectURL(url);}catch{img.alt='Image unavailable';}});container.querySelectorAll('[data-view]').forEach(b=>b.onclick=async()=>{const x=byId.get(b.dataset.view);try{const url=await artifactFile(x),d=workspaceDialog(x.title,'<img class="artifact-large" alt="">');d.querySelector('img').src=url;d.querySelector('img').alt=x.title;}catch(e){toast(e.message);}});container.querySelectorAll('[data-download]').forEach(b=>b.onclick=()=>artifactFile(byId.get(b.dataset.download),true).catch(e=>toast(e.message)));container.querySelectorAll('[data-source]').forEach(b=>b.onclick=async()=>{const x=byId.get(b.dataset.source);b.closest('dialog')?.close();await engine.select(x.projectId,x.sessionId);open();});container.querySelectorAll('[data-remove-artifact]').forEach(b=>b.onclick=async()=>{try{await workspaceRequest('workspace/artifacts/remove',{id:b.dataset.removeArtifact});reload();}catch(e){toast(e.message);}});}
   async function addArtifact(pid,sid,reload){const current=pid&&sid?pid+'::'+sid:key(),d=workspaceDialog('Add to artifact library',`<form class="workspace-form"><label>Conversation<select name="conversation">${conversationOptions(current)}</select></label><label>Type<select name="kind"><option value="file">Screenshot or file</option><option value="preview">Preview link</option><option value="test">Test result</option></select></label><label>Title<input name="title" placeholder="Optional title"></label><label id="artifactValueLabel">File path<input name="value" required placeholder="/tmp/screenshot.png"></label><label class="test-status-field" hidden>Result<select name="status"><option value="passed">Passed</option><option value="failed">Failed</option><option value="reported">Reported</option></select></label><p role="alert"></p><footer><button class="cr-primary">Save</button></footer></form>`);const f=d.querySelector('form');f.elements.kind.onchange=()=>{const kind=f.elements.kind.value;d.querySelector('#artifactValueLabel').firstChild.textContent=kind==='file'?'File path':kind==='preview'?'Preview URL':'Test summary';f.elements.value.placeholder=kind==='file'?'/tmp/screenshot.png':kind==='preview'?'https://…':'Tests: 24 passed';d.querySelector('.test-status-field').hidden=kind!=='test';};f.onsubmit=async e=>{e.preventDefault();const [projectId,sessionId]=f.elements.conversation.value.split('::'),kind=f.elements.kind.value;f.querySelector('button').disabled=true;try{await workspaceRequest('workspace/artifacts',{projectId,sessionId,title:f.elements.title.value,...(kind==='file'?{path:f.elements.value.value}:kind==='preview'?{url:f.elements.value.value}:{summary:f.elements.value.value,status:f.elements.status.value})});d.close();reload();}catch(err){f.querySelector('[role=alert]').textContent=err.message;f.querySelector('button').disabled=false;}};}
   async function loadArtifacts(){const el=$('artifactItems');try{artifactRows=await workspaceRequest('workspace/artifacts');renderArtifacts();}catch(e){el.textContent=e.message;}}
   function renderArtifacts(){const query=$('artifactSearch').value.toLowerCase(),pid=$('artifactProject').value,kind=$('artifactKinds').querySelector('.selected')?.dataset.kind||'';const rows=artifactRows.filter(x=>(!pid||x.projectId===pid)&&(!kind||x.kind===kind)&&(!query||(x.title+' '+(x.summary||'')).toLowerCase().includes(query)));$('artifactItems').querySelectorAll('img').forEach(img=>{if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);});$('artifactItems').innerHTML=artifactCards(rows);bindArtifacts($('artifactItems'),rows,loadArtifacts);}
-  async function showResults(target=engine.state()){const {projectId,sessionId}=target;if(!sessionId){toast('Open a conversation first.');return;}const d=workspaceDialog('Conversation results',`<p class="cr-note">Screenshots, previews, and reported test results.</p><div class="workspace-actions"><button class="cr-secondary" data-add>Add output</button><button class="cr-secondary" data-scan>Find outputs in recent replies</button></div><div class="artifact-grid" data-results>Loading…</div>`);async function load(scan=false){try{const rows=scan?await workspaceRequest('workspace/artifacts/scan',{projectId,sessionId}):await workspaceRequest('workspace/artifacts?projectId='+encodeURIComponent(projectId)+'&sessionId='+encodeURIComponent(sessionId));if(!d.open)return;d.querySelector('[data-results]').innerHTML=artifactCards(rows.filter(x=>x.kind!=='file'));bindArtifacts(d.querySelector('[data-results]'),rows,()=>load());}catch(e){d.querySelector('[data-results]').textContent=e.message;}}d.querySelector('[data-add]').onclick=()=>addArtifact(projectId,sessionId,()=>load());d.querySelector('[data-scan]').onclick=()=>load(true);load(true);}
+  async function showResults(target = engine.state()) {
+    const { projectId, sessionId } = target;
+    if (!sessionId) {
+      toast('Open a conversation first.');
+      return;
+    }
+    const d = workspaceDialog(
+      'Conversation results',
+      `<div class="results-toolbar"><div class="cr-tabs" role="group" aria-label="Result type"><button data-result-kind="" class="selected">All</button><button data-result-kind="image">Screenshots</button><button data-result-kind="preview">Previews</button><button data-result-kind="test">Tests</button></div><button class="cr-icon" data-scan aria-label="Scan conversation outputs" title="Scan conversation outputs">${ic('refresh')}</button><button class="cr-secondary" data-add>${ic('plus')} Add output</button></div><div class="artifact-grid" data-results>Loading…</div><p class="results-note" data-results-note></p>`,
+    );
+    d.classList.add('results-dialog');
+    let rows = [],
+      filter = '',
+      request = 0;
+    function render() {
+      const area = d.querySelector('[data-results]');
+      area.querySelectorAll('img').forEach((img) => {
+        if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+      });
+      area.innerHTML = artifactCards(
+        rows.filter((x) => (!filter || x.kind === filter) && x.kind !== 'file'),
+        target,
+      );
+      bindArtifacts(area, rows, () => load());
+      d.querySelectorAll('[data-result-kind]').forEach((b) => {
+        b.classList.toggle('selected', b.dataset.resultKind === filter);
+      });
+    }
+    async function load(scan = false) {
+      const serial = ++request,
+        b = d.querySelector('[data-scan]');
+      b.disabled = true;
+      try {
+        rows = scan
+          ? await workspaceRequest('workspace/artifacts/scan-report', { projectId, sessionId })
+          : await workspaceRequest(
+              'workspace/artifacts?projectId=' +
+                encodeURIComponent(projectId) +
+                '&sessionId=' +
+                encodeURIComponent(sessionId),
+            );
+        if (!d.open || serial !== request) return;
+        const report = scan ? rows : null;
+        if (report) rows = report.items;
+        render();
+        d.querySelector('[data-results-note]').textContent = scan
+          ? (report.truncated ? 'Checked the latest ' + report.scanned + ' history entries; older entries remain. ' : 'Checked conversation replies and image references. ') + 'Test summaries are reported results.'
+          : 'Test summaries are reported results.';
+        d.querySelector('[data-results-warnings]')?.remove();
+        if (report?.warnings.length) {
+          const details = document.createElement('details');
+          details.dataset.resultsWarnings = '';
+          details.className = 'results-note';
+          const summary = document.createElement('summary');
+          summary.textContent = report.warnings.length + ' image reference' + (report.warnings.length === 1 ? '' : 's') + ' could not be added';
+          details.append(summary);
+          for (const item of report.warnings) {
+            const line = document.createElement('p');
+            line.textContent = item.path + ' · ' + item.reason;
+            details.append(line);
+          }
+          d.append(details);
+        }
+      } catch (e) {
+        if (d.open) d.querySelector('[data-results-note]').textContent = e.message;
+      } finally {
+        if (serial === request) b.disabled = false;
+      }
+    }
+    d.querySelectorAll('[data-result-kind]').forEach(
+      (b) =>
+        (b.onclick = () => {
+          filter = b.dataset.resultKind;
+          render();
+        }),
+    );
+    d.querySelector('[data-add]').onclick = () => addArtifact(projectId, sessionId, () => load());
+    d.querySelector('[data-scan]').onclick = () => load(true);
+    load(true);
+  }
+
   async function loadPlanner(){try{plannerRows=await workspaceRequest('queue');renderPlanner();}catch(e){$('plannerItems').textContent=e.message;}}
   function queueReason(item){
     if(item.dispatching)return 'Interrupted delivery · review conversation before resuming';

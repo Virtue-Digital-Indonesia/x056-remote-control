@@ -1,3 +1,5 @@
+import { toolImagePaths } from '../artifact-references.js';
+import { stripMemoryContext } from '../memory-context.js';
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { classifyEvent } from '../detector.js';
@@ -348,7 +350,7 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
       if (att?.type !== 'queued_command' || att.commandMode !== 'prompt') continue;
       const qt = textFromContent(att.prompt).trim();
       if (qt === '') continue;
-      const shownQ = stripAskInstructions(qt);
+      const shownQ = stripAskInstructions(stripMemoryContext(qt));
       if (shownQ === '') continue;
       out.push({ role: 'user', text: shownQ, ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined });
       offsets.push(at);
@@ -375,7 +377,11 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
       for (const block of message.content as unknown[]) {
         const b = block as { type?: string; name?: string; input?: Record<string, unknown> };
         if (b && b.type === 'tool_use' && b.name) {
-          out.push({ role: 'action', text: labelFor(b.name, b.input ?? {}), sub: SUBAGENT_TOOLS.has(b.name), ts });
+          const artifacts = toolImagePaths(b as Record<string, unknown>);
+          out.push({
+            role: 'action', text: labelFor(b.name, b.input ?? {}),
+            ...(artifacts.length ? { artifacts } : {}), sub: SUBAGENT_TOOLS.has(b.name), ts,
+          });
           offsets.push(at);
         }
       }
@@ -411,7 +417,7 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
     // Users' prompts carry the appended ASK convention; assistants' final
     // messages carry the raw <<<ASK>>> block — strip both so neither leaks into
     // the rendered transcript on reload. Drop a message that was only an ASK.
-    const shown = type === 'user' ? stripAskInstructions(text) : stripAsk(text);
+    const shown = type === 'user' ? stripAskInstructions(stripMemoryContext(text)) : stripAsk(text);
     if (shown === '') continue;
     out.push({ role: type, text: shown, ts }); offsets.push(at);
   }

@@ -7,7 +7,9 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, extname, join, resolve, sep } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { imagePaths } from '../src/artifact-references.js';
+import { basename, extname, join, resolve, sep, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 export interface Artifact {
@@ -44,6 +46,12 @@ const TYPES: Record<string, string> = {
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 };
+export function artifactFailureReason(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (code === 'ENOENT') return 'The original file is no longer available.';
+  if (code === 'EACCES' || code === 'EPERM') return 'The gateway cannot read this file.';
+  return error instanceof Error ? error.message : 'The file could not be added.';
+}
 export function readState<T>(file: string, fallback: T): T {
   try {
     return JSON.parse(readFileSync(file, 'utf8')) as T;
@@ -58,6 +66,7 @@ export function writeState(file: string, value: unknown): void {
 }
 export class ArtifactStore {
   private file: string;
+  private worktrees = new Map<string, { at: number; paths: string[] }>();
   constructor(
     private state: string,
     private roots: () => string[],
@@ -80,21 +89,75 @@ export class ArtifactStore {
   }
   add(input: Omit<Artifact, 'id' | 'at'> & { path?: string }): Artifact {
     const all = this.all(),
-      item: Artifact = { ...input, id: randomUUID(), at: new Date().toISOString() };
+      item: Artifact = {
+        ...input,
+        id: randomUUID(),
+        at: new Date().toISOString(),
+      };
     delete (item as Artifact & { path?: string }).path;
     if (input.path) {
-      const path = realpathSync(input.path),
-        allowed = [...this.roots(), join(this.state, 'uploads'), '/tmp'].some((root) => {
+      let path: string;
+      try {
+        path = realpathSync(input.path);
+      } catch (error) {
+        // A temporary source may be gone after we preserved its bytes. Reuse
+        // the retained artifact instead of claiming that its screenshot is lost.
+        const retained = all.find(
+          (x) =>
+            x.projectId === input.projectId &&
+            x.sessionId === input.sessionId &&
+            x.original === resolve(input.path!) &&
+            x.file,
+        );
+        if (retained) {
           try {
-            const r = realpathSync(root);
-            return path.startsWith(r + sep);
-          } catch {
-            return false;
+            if (statSync(join(this.state, 'artifacts', basename(retained.file!))).isFile())
+              return this.reuse(retained, input.source, all);
+          } catch {}
+        }
+        throw error;
+      }
+      const roots = [...this.roots(), join(this.state, 'uploads'), '/tmp'];
+      const matches = (root: string) => {
+        try {
+          return path.startsWith(realpathSync(root) + sep);
+        } catch {
+          return false;
+        }
+      };
+      const visible = (root: string) =>
+        matches(root) &&
+        !relative(realpathSync(root), path)
+          .split(sep)
+          .some((p) => p.startsWith('.'));
+      let allowedRoot = roots.find(visible);
+      if (!allowedRoot)
+        for (const root of this.roots()) {
+          let cached = this.worktrees.get(root);
+          if (!cached || Date.now() - cached.at > 30000) {
+            let paths: string[] = [];
+            try {
+              paths = execFileSync('git', ['-C', root, 'worktree', 'list', '--porcelain', '-z'], {
+                encoding: 'utf8',
+                timeout: 2000,
+                maxBuffer: 1024 * 1024,
+                stdio: ['ignore', 'pipe', 'ignore'],
+              })
+                .split('\0')
+                .filter((x) => x.startsWith('worktree '))
+                .map((x) => x.slice(9));
+            } catch {}
+            cached = { at: Date.now(), paths };
+            this.worktrees.set(root, cached);
           }
-        });
+          allowedRoot = cached.paths.filter(visible).sort((a, b) => b.length - a.length)[0];
+          if (allowedRoot) break;
+        }
       if (
-        !allowed ||
-        path.split(sep).some((p) => p.startsWith('.')) ||
+        !allowedRoot ||
+        relative(realpathSync(allowedRoot), path)
+          .split(sep)
+          .some((p) => p.startsWith('.')) ||
         /(?:credential|secret|token|password|auth\.json)/i.test(basename(path))
       )
         throw new Error('This file cannot be added to the library.');
@@ -107,7 +170,6 @@ export class ArtifactStore {
         (x) =>
           x.projectId === input.projectId &&
           x.sessionId === input.sessionId &&
-          x.original === path &&
           x.file?.startsWith(digest),
       );
       if (previous) return this.reuse(previous, input.source, all);
@@ -152,12 +214,26 @@ export class ArtifactStore {
     if (!item?.file) return;
     return { item, path: join(this.state, 'artifacts', basename(item.file)) };
   }
-  collect(projectId: string, sessionId: string, text: string): void {
-    for (const m of text.matchAll(/\[([^\]\n]+)\]\((<?(?:https?:\/\/|\/)[^)\n]+>?)\)/g)) {
-      const target = m[2].replace(/^<|>$/g, '');
+  collect(
+    projectId: string,
+    sessionId: string,
+    text: string,
+    cwd?: string,
+  ): { skipped: { target: string; reason: string }[] } {
+    const skipped: { target: string; reason: string }[] = [];
+    for (const m of text.matchAll(/\[([^\]\n]+)\]\((<?[^)\n]+>?)\)/g)) {
+      let target = m[2].replace(/^<|>$/g, '').replace(/^sandbox:/, '');
+      if (cwd && !/^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(target) && TYPES[extname(target).toLowerCase()])
+        target = resolve(cwd, target);
+      if (target.startsWith('/'))
+        try {
+          target = decodeURIComponent(target);
+        } catch {}
       if (
         !target.startsWith('/') &&
-        !/preview|demo|draft|localhost|127\.0\.0\.1|\.think\.|\.rc\.|\.val\.id/i.test(m[1] + ' ' + target)
+        !/preview|demo|draft|localhost|127\.0\.0\.1|\.think\.|\.rc\.|\.val\.id/i.test(
+          m[1] + ' ' + target,
+        )
       )
         continue;
       try {
@@ -169,8 +245,24 @@ export class ArtifactStore {
           ...(target.startsWith('/') ? { path: target.replace(/:\d+(?::\d+)?$/, '') } : { url: target }),
           source: 'response',
         });
-      } catch {
-        /* Missing temporary files and unsupported links stay in the transcript. */
+      } catch (error) {
+        if (/\.(png|jpe?g|webp|gif)$/i.test(target))
+          skipped.push({ target, reason: artifactFailureReason(error) });
+      }
+    }
+    for (const path of imagePaths(text)) {
+      try {
+        this.add({
+          projectId,
+          sessionId,
+          title: basename(path),
+          kind: 'image',
+          path,
+          source: 'response',
+        });
+      } catch (error) {
+        if (!skipped.some((x) => x.target === path))
+          skipped.push({ target: path, reason: artifactFailureReason(error) });
       }
     }
     const testLine = text
@@ -199,6 +291,7 @@ export class ArtifactStore {
             ? 'passed'
             : 'reported',
       });
+    return { skipped };
   }
 }
 export interface DeliveryReceipt {
@@ -236,7 +329,12 @@ export class DeliveryStore {
   }
   run<T extends { requestId?: string }>(
     body: T,
-    action: () => { sessionId?: string; id?: string; queued?: boolean; steered?: boolean },
+    action: () => {
+      sessionId?: string;
+      id?: string;
+      queued?: boolean;
+      steered?: boolean;
+    },
   ): DeliveryReceipt {
     const id = body.requestId || '';
     if (!/^[a-zA-Z0-9-]{16,80}$/.test(id)) throw new Error('Invalid request ID');
@@ -248,7 +346,12 @@ export class DeliveryStore {
     if (previous && previous.status !== 'failed') return previous;
     rows[id] = { requestId: id, hash, status: 'processing', at: Date.now() };
     writeState(this.file, rows);
-    let result: { sessionId?: string; id?: string; queued?: boolean; steered?: boolean };
+    let result: {
+      sessionId?: string;
+      id?: string;
+      queued?: boolean;
+      steered?: boolean;
+    };
     try {
       result = action();
     } catch (e) {
@@ -256,7 +359,11 @@ export class DeliveryStore {
       writeState(this.file, rows);
       throw e;
     }
-    rows[id] = { ...rows[id], ...result, status: result.queued ? 'queued' : 'accepted' };
+    rows[id] = {
+      ...rows[id],
+      ...result,
+      status: result.queued ? 'queued' : 'accepted',
+    };
     // A persistence error after dispatch leaves the durable processing marker;
     // it must never turn an already-started request into a retryable failure.
     writeState(this.file, rows);

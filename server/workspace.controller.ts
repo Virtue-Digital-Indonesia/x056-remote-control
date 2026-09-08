@@ -1,31 +1,69 @@
 import { BadRequestException, Body, Controller, Get, Inject, Post, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { SessionManager } from './manager.js';
 import { STATE_DIR } from './api.controller.js';
-import { ArtifactStore, readState, writeState } from './workspace-store.js';
+import { ArtifactStore, artifactFailureReason, readState, writeState } from './workspace-store.js';
 @Controller('api/workspace')
 export class WorkspaceController {
   private artifacts: ArtifactStore;
   private metaFile: string;
   private unsubscribe: () => void;
+  private imageReferences = new Map<string, Set<string>>();
   private plannerTimer: ReturnType<typeof setInterval>;
   constructor(
     @Inject(SessionManager) private manager: SessionManager,
     @Inject(STATE_DIR) state: string,
   ) {
-    this.artifacts = new ArtifactStore(state, () => this.manager.listProjects().projects.map((p) => p.cwd));
+    this.artifacts = new ArtifactStore(state, () =>
+      this.manager.listProjects().projects.map((p) => p.cwd),
+    );
     this.metaFile = join(state, 'conversation-metadata.json');
     this.plannerTimer = setInterval(() => this.manager.tickQueuePlanner(), 1000);
     this.plannerTimer.unref();
     this.unsubscribe = this.manager.subscribe((e) => {
+      const pid = String(e.data.projectId || ''),
+        sid = String(e.data.sessionId || ''),
+        key = pid + '::' + sid;
+      if (pid && sid && e.kind === 'artifact_reference' && Array.isArray(e.data.paths)) {
+        const paths = this.imageReferences.get(key) || new Set<string>();
+        for (const path of e.data.paths)
+          if (typeof path === 'string' && paths.size < 100) paths.add(path);
+        this.imageReferences.set(key, paths);
+      }
+      if (
+        pid &&
+        sid &&
+        (e.kind === 'session_done' ||
+          e.kind === 'session_error' ||
+          (e.kind === 'activity' && e.data.status !== 'start'))
+      ) {
+        for (const path of this.imageReferences.get(key) || [])
+          try {
+            this.artifacts.add({
+              projectId: pid,
+              sessionId: sid,
+              title: basename(path),
+              kind: 'image',
+              path,
+              source: 'response',
+            });
+            this.imageReferences.get(key)?.delete(path);
+          } catch {}
+        if (e.kind !== 'activity') this.imageReferences.delete(key);
+      }
+
       if (
         e.kind === 'assistant_text' &&
         e.data.projectId &&
         e.data.sessionId &&
         typeof e.data.text === 'string'
-      )
-        this.artifacts.collect(String(e.data.projectId), String(e.data.sessionId), e.data.text);
+      ) {
+        const cwd = /\]\((?:<?\.\.?\/|<?[^/:#\s]+\/)/.test(e.data.text)
+          ? this.manager.listProjects().projects.find((p) => p.id === pid)?.cwd
+          : undefined;
+        this.artifacts.collect(pid, sid, e.data.text, cwd);
+      }
     });
   }
   onModuleDestroy() {
@@ -40,13 +78,24 @@ export class WorkspaceController {
     return readState<Record<string, { archived?: boolean; tags?: string[] }>>(this.metaFile, {});
   }
   @Post('metadata') update(
-    @Body() body: { items: { projectId: string; sessionId: string; archived?: boolean; tags?: string[] }[] },
+    @Body()
+    body: {
+      items: {
+        projectId: string;
+        sessionId: string;
+        archived?: boolean;
+        tags?: string[];
+      }[];
+    },
   ) {
     if (!Array.isArray(body.items) || body.items.length > 500)
       throw new BadRequestException('Select up to 500 conversations');
     for (const x of body.items) {
       this.validate(x.projectId, x.sessionId);
-      if (x.tags && (!Array.isArray(x.tags) || x.tags.some((t) => typeof t !== 'string' || t.length > 40)))
+      if (
+        x.tags &&
+        (!Array.isArray(x.tags) || x.tags.some((t) => typeof t !== 'string' || t.length > 40))
+      )
         throw new BadRequestException('Tags must be short text');
     }
     const all = this.metadata();
@@ -96,21 +145,61 @@ export class WorkspaceController {
         status: body.status,
       });
     } catch (e) {
-      throw new BadRequestException((e as Error).message);
+      throw new BadRequestException(artifactFailureReason(e));
     }
   }
   @Post('artifacts/scan') scan(@Body() body: { projectId: string; sessionId: string }) {
+    return this.scanReport(body).items;
+  }
+  @Post('artifacts/scan-report') scanReport(@Body() body: { projectId: string; sessionId: string }) {
     this.validate(body.projectId, body.sessionId);
     const { adapter, providerSessionId, configDirs } = this.manager.historyContext(
       body.projectId,
       body.sessionId,
     );
-    const page = adapter.readHistoryPage
-      ? adapter.readHistoryPage(configDirs, providerSessionId, 150)
-      : { rows: adapter.readHistory?.(configDirs, providerSessionId, 150) || [] };
-    for (const r of page.rows)
-      if (r.role === 'assistant') this.artifacts.collect(body.projectId, body.sessionId, r.text);
-    return this.list(body.projectId, body.sessionId);
+    const cwd = this.manager.listProjects().projects.find((p) => p.id === body.projectId)?.cwd;
+    const warnings = new Map<string, string>();
+    let before: number | undefined,
+      done = false,
+      scanned = 0;
+    for (let n = 0; n < 10 && !done; n++) {
+      const page = adapter.readHistoryPage
+        ? adapter.readHistoryPage(configDirs, providerSessionId, 150, before)
+        : {
+            rows: adapter.readHistory?.(configDirs, providerSessionId, 150) || [],
+            cursor: 0,
+            done: true,
+          };
+      for (const row of page.rows) {
+        scanned++;
+        if (row.role === 'assistant') {
+          for (const item of this.artifacts.collect(body.projectId, body.sessionId, row.text, cwd)
+            .skipped)
+            warnings.set(item.target, item.reason);
+        }
+        for (const path of row.artifacts || [])
+          try {
+            this.artifacts.add({
+              projectId: body.projectId,
+              sessionId: body.sessionId,
+              title: basename(path),
+              kind: 'image',
+              path,
+              source: 'response',
+            });
+          } catch (error) {
+            warnings.set(path, artifactFailureReason(error));
+          }
+      }
+      done = page.done || page.cursor === before || page.cursor <= 0;
+      before = page.cursor;
+    }
+    return {
+      items: this.list(body.projectId, body.sessionId),
+      warnings: [...warnings].map(([path, reason]) => ({ path, reason })),
+      scanned,
+      truncated: !done,
+    };
   }
   @Get('artifact-file') file(@Query('id') id: string, @Res() res: Response) {
     const found = this.artifacts.fileFor(id);

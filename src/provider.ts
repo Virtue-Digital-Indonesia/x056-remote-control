@@ -42,6 +42,7 @@ export interface HistoryEntry {
    *  'summary' = the recap injected after a compaction. It arrives as a `user`
    *  turn, so rendering it as one made a 15k-token block look like something
    *  the user typed. */
+  artifacts?: string[];
   role: 'user' | 'assistant' | 'model' | 'action' | 'command' | 'notice' | 'summary';
   text: string;
   /** For 'action': the call was a subagent/task spawn (rendered differently). */

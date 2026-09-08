@@ -1,6 +1,9 @@
 services:
   x056:
-    build: .
+    build:
+      context: .
+      args:
+        X056_BUILD_REVISION: ${X056_BUILD_REVISION:-unknown}
     init: true
     restart: unless-stopped
     depends_on:

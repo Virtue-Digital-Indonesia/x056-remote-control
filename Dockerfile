@@ -53,6 +53,8 @@ WORKDIR /app
 COPY --chown=efran:efran package.json package-lock.json ./
 RUN npm ci
 COPY --chown=efran:efran . .
+ARG X056_BUILD_REVISION=unknown
+RUN node scripts/build-info.mjs
 # Pre-create the state mountpoint so the named volume inherits efran ownership,
 # and point ~/.ssh at the dedicated key material kept in that persistent volume
 # (state/ssh/: scoped key + pinned known_hosts + config for the VPN target).

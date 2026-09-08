@@ -84,6 +84,7 @@ if runs:
 {
   echo "=== tick $(date -Is) commit $(git -C "$DIR" rev-parse --short HEAD) ==="
   # 1. Build ahead of time — safe while a turn runs; only creates a new image.
+  export X056_BUILD_REVISION="$(git -C "$DIR" rev-parse HEAD)"
   if ! docker compose --project-directory "$DIR" build; then
     rm -f "$FLAG" "$FORCE"
     printf '{"status":"build_failed","ts":"%s"}\n' "$(date -Is)" > "$STATUS"
