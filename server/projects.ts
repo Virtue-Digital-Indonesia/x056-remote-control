@@ -14,6 +14,9 @@ export interface Conversation {
   createdAt: number;
   /** Derived from the latest user/assistant transcript message in API responses. */
   lastMessageAt?: number | null;
+  /** Last selected model/effort for this conversation. Empty means provider default. */
+  model?: string;
+  effort?: string;
   lastOutcome?: { status: 'completed' | 'failed' | 'parked'; at: string; reason?: string };
   /** Which agent CLI this conversation runs on. Stamped when it's created (from
    *  the project's provider) and then FIXED: its transcript is that provider's
@@ -40,8 +43,8 @@ export interface Project {
   lastSessionId?: string;
   /** All conversations under this project, newest last. */
   conversations?: Conversation[];
-  /** Last explicitly-chosen model/effort, reused on continuations (autopilot,
-   *  orphan-resume, question answers) so the session doesn't revert to default. */
+  /** Defaults for new conversations and legacy conversations without their own
+   *  saved selections. Continuations prefer Conversation.model/effort. */
   model?: string;
   effort?: string;
 }
@@ -264,14 +267,31 @@ export class ProjectRegistry {
     if (changed) this.save();
   }
 
-  /** Remember the model/effort last chosen for a project (only overwrites the
-   *  fields actually provided), so continuations can reuse them. */
+  /** Remember defaults for new conversations, preserving legacy siblings first. */
   setPrefs(id: string, prefs: { model?: string; effort?: string }): void {
     const p = this.data.projects.find((x) => x.id === id);
     if (!p) return;
+    // Migrate legacy siblings once, before a new choice changes the project
+    // fallback. A large project still needs only one file write.
+    for (const c of p.conversations ?? []) {
+      const codex = c.provider === 'codex';
+      if (c.model === undefined) c.model = p.model && (codex === /^(gpt-|codex-)/i.test(p.model)) ? p.model : '';
+      if (c.effort === undefined) c.effort = p.effort && p.effort !== (codex ? 'ultracode' : 'ultra') ? p.effort : '';
+    }
     if (prefs.model) p.model = prefs.model;
     if (prefs.effort) p.effort = prefs.effort;
     this.save();
+  }
+
+  setConversationPrefs(id: string, sessionId: string, prefs: { model?: string; effort?: string }): void {
+    const p = this.data.projects.find((x) => x.id === id);
+    const c = p?.conversations?.find((x) => x.sessionId === sessionId);
+    if (!c) throw new Error('unknown conversation for that project');
+    let changed = false;
+    for (const key of ['model', 'effort'] as const) {
+      if (prefs[key] !== undefined && prefs[key] !== c[key]) { c[key] = prefs[key]; changed = true; }
+    }
+    if (changed) this.save();
   }
 
   private save(): void {

@@ -144,7 +144,7 @@ describe('SessionManager', () => {
     expect(calls[1].providerSessionId).toBe('codex-thread-1'); // the captured codex thread, not sid
   });
 
-  it('reuses a project\'s last chosen model/effort on a continue that specifies none', async () => {
+  it('reuses a conversation\'s last chosen model/effort on a continue that specifies none', async () => {
     const { mgr, calls } = fixture(COMPLETED);
     mgr.start('first', undefined, { model: 'fable', effort: 'high' });
     await waitFor(() => mgr.snapshot().running === false);
@@ -156,6 +156,63 @@ describe('SessionManager', () => {
     await waitFor(() => calls.length === 2);
     expect(calls[1].model).toBe('fable');
     expect(calls[1].effort).toBe('high');
+  });
+
+  it.each(['claude', 'codex'] as const)('MCP sends preserve the target %s model across siblings, approval, queues and restart', async (provider) => {
+    const { mgr, calls, stateDir, dir } = fixture(COMPLETED, { delayMs: 80 });
+    const project = mgr.createProject('Models', undefined, provider);
+    const first = provider === 'codex' ? 'gpt-5.6-sol' : 'fable';
+    const second = provider === 'codex' ? 'gpt-6-astra' : 'opus';
+    const target = mgr.start('target', undefined, { model:first, effort:'high' }, project.id);
+    await waitFor(() => !mgr.snapshot().running);
+    const sibling = mgr.start('sibling', undefined, { model:second, effort:'low' }, project.id);
+    await waitFor(() => !mgr.snapshot().running);
+    mgr.setProjectProvider(project.id, provider === 'codex' ? 'claude' : 'codex');
+    // Selection without sending also becomes the default for incoming messages.
+    mgr.setConversationRunPrefs(project.id, target, { model:first, effort:'medium' });
+    mgr.deliverMcpMessage(project.id, target, 'use my model');
+    expect(calls.at(-1)).toMatchObject({model:first,effort:'medium'});
+    expect(calls.at(-1)?.adapter?.id).toBe(provider);
+    const queued = mgr.deliverMcpMessage(project.id, target, 'queue my model');
+    expect(queued.queued).toBe(true);
+    expect(mgr.queues()[project.id].at(-1)).toMatchObject({model:first,effort:'medium'});
+    mgr.setConversationRunPrefs(project.id, target, {model:second});
+    await waitFor(() => calls.length===4 && !mgr.snapshot().running);
+    expect(calls[3]).toMatchObject({model:first,effort:'medium'});
+    // The pending approval names the resolved model and cannot change underneath
+    // the operator. Denying a send must never mutate the target's selection.
+    const approval = mgr.requestMcpSend(project.id, target, 'approved model');
+    expect(approval).toMatchObject({model:first,effort:'medium',status:'pending'});
+    mgr.setConversationRunPrefs(project.id, target, {model:second});
+    mgr.decideMcpApproval(approval.id,true);
+    expect(calls.at(-1)).toMatchObject({model:first,effort:'medium'});
+    await waitFor(() => !mgr.snapshot().running);
+    const denied=mgr.requestMcpSend(project.id,target,'do not send',{model:second});
+    mgr.decideMcpApproval(denied.id,false);
+    expect(mgr.conversationRunPrefs(project.id,target).model).toBe(first);
+    mgr.deliverMcpMessage(project.id,target,'explicit override',{model:second,effort:'high'});
+    expect(calls.at(-1)).toMatchObject({model:second,effort:'high'});
+    await waitFor(() => !mgr.snapshot().running);
+    const reloaded = new SessionManager({stateDir,workspaceRoot:dir});
+    expect(reloaded.conversationRunPrefs(project.id,target)).toEqual({model:second,effort:'high'});
+    expect(reloaded.conversationRunPrefs(project.id,sibling)).toEqual({model:second,effort:'low'});
+    mgr.setConversationRunPrefs(project.id,target,{model:'',effort:''});
+    mgr.deliverMcpMessage(project.id,target,'provider defaults');
+    expect(calls.at(-1)?.model).toBeUndefined();
+    expect(calls.at(-1)?.effort).toBeUndefined();
+    await waitFor(() => !mgr.snapshot().running);
+  });
+
+  it('refuses cross-provider and malformed selections before saving or requesting approval', async () => {
+    const {mgr}=fixture(COMPLETED);
+    const p=mgr.createProject('Validation');
+    const sid=mgr.start('target',undefined,{model:'fable'},p.id);
+    expect(()=>mgr.setConversationRunPrefs(p.id,sid,{model:'gpt-6-astra'})).toThrow(/compatible/);
+    expect(()=>mgr.validateConversationRunPrefs(p.id,sid,{effort:'ultra'})).toThrow(/compatible/);
+    expect(()=>mgr.validateConversationRunPrefs(p.id,sid,{model:42 as unknown as string})).toThrow(/invalid model/);
+    expect(()=>mgr.setConversationRunPrefs(p.id,'unknown',{model:'opus'})).toThrow(/unknown conversation/);
+    expect(mgr.conversationRunPrefs(p.id,sid).model).toBe('fable');
+    await waitFor(()=>!mgr.snapshot().running);
   });
 
   it('persists the model->effort default map, replacing on save and dropping blank entries', () => {

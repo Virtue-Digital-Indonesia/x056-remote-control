@@ -116,6 +116,9 @@ describe('x056 MCP bridge (real script against a live gateway)', () => {
     // were added alongside them and must not displace any.
     expect(names.slice(0, 4)).toEqual(['list_projects', 'list_conversations', 'read_conversation', 'send_message']);
     expect(names).toEqual(expect.arrayContaining(['code_callers', 'code_impact', 'wiki_search', 'wiki_read']));
+    const sendTool = (tools.result as {tools:{name:string;inputSchema:{properties:Record<string,{description?:string}>}}[]}).tools.find(t=>t.name==='send_message');
+    expect(sendTool?.inputSchema.properties.model.description).toContain('last selected model');
+    expect(sendTool?.inputSchema.properties.effort).toBeTruthy();
   });
 
   it('list_projects / list_conversations expose the gateway state with providers', async () => {
@@ -180,6 +183,32 @@ describe('x056 MCP bridge (real script against a live gateway)', () => {
     const r = res.result as { isError?: boolean };
     expect(r.isError).toBe(true);
     expect(toolText(res)).toContain('unknown conversation');
+  });
+
+  it.each([undefined, 'opus'])('send_message resolves saved preferences and passes explicit model %s through the approval gate', async (model) => {
+    const saved = await fetch(`${base}/api/conversations/preferences`,{method:'POST',headers:auth,body:JSON.stringify({projectId:'p1',sessionId:'seeded-conv-1',model:'fable',effort:'high'})});
+    expect(saved.status).toBe(200);
+    const message='check model '+String(model);
+    const call=rpc('tools/call',{name:'send_message',arguments:{projectId:'p1',sessionId:'seeded-conv-1',message,...(model?{model}:{} )}});
+    const pending=await waitForPendingApproval(message);
+    const listed=await (await fetch(`${base}/api/mcp/approvals`,{headers:auth})).json() as {id:string;model:string;effort:string}[];
+    expect(listed.find(a=>a.id===pending.id)).toMatchObject({model:model || 'fable',effort:'high'});
+    await decideApproval(pending.id,false);
+    expect(toolText(await call)).toContain('not sent');
+    const convs=JSON.parse(toolText(await rpc('tools/call',{name:'list_conversations',arguments:{projectId:'p1'}})));
+    // The actual registry API also exposes saved choices to the web picker.
+    const projects=await (await fetch(`${base}/api/projects`,{headers:auth})).json() as {projects:{id:string;conversations:{sessionId:string;model:string}[]}[]};
+    expect(projects.projects.find(p=>p.id==='p1')?.conversations.find(c=>c.sessionId==='seeded-conv-1')?.model).toBe('fable');
+    expect(convs.find((c:{sessionId:string})=>c.sessionId==='seeded-conv-1')).toMatchObject({model:'fable',effort:'high'});
+  });
+
+  it('rejects incompatible or malformed models before creating an approval', async () => {
+    for (const model of ['gpt-6-astra',42]) {
+      const response=await fetch(`${base}/api/conversations/send`,{method:'POST',headers:auth,body:JSON.stringify({projectId:'p1',sessionId:'seeded-conv-1',prompt:'bad model',model})});
+      expect(response.status).toBe(400);
+    }
+    const listed=await (await fetch(`${base}/api/mcp/approvals`,{headers:auth})).json() as unknown[];
+    expect(listed).toHaveLength(0);
   });
 });
 

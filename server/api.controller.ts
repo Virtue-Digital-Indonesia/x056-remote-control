@@ -472,6 +472,16 @@ export class ApiController {
     }
   }
 
+  @Post('conversations/preferences')
+  @HttpCode(200)
+  conversationPreferences(@Body() body: { projectId?: string; sessionId?: string; model?: string; effort?: string }): { ok: boolean } {
+    if (!body?.projectId || !body.sessionId || (body.model === undefined && body.effort === undefined)) throw new BadRequestException('projectId, sessionId and model or effort required');
+    try {
+      this.manager.setConversationRunPrefs(body.projectId, body.sessionId, { model: body.model, effort: body.effort });
+      return { ok: true };
+    } catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
   /** Read ANY conversation's history by address — the MCP bridge's read tool
    *  (the /sessions/current/history endpoint below only reads the currently
    *  selected one, which a cross-conversation reader must not depend on). */
@@ -514,6 +524,8 @@ export class ApiController {
     // rather than the model, so a caller cannot disown its own chain by leaving
     // it out — an external client (Claude Desktop) genuinely has none.
     const opts = { model: body.model, effort: body.effort, interactive: body.interactive, from: body.from };
+    try { this.manager.validateConversationRunPrefs(body.projectId, body.sessionId, opts); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
     // The MODE is the operator's setting, never the caller's choice — an AI that
     // could ask for 'auto' would make the approval gate worthless.
     if (this.manager.mcpSendMode() === 'auto') {

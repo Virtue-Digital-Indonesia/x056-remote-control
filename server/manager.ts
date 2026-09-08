@@ -1174,6 +1174,38 @@ export class SessionManager {
 
   listConversations(projectId: string): Conversation[] { return this.projects().conversations(projectId); }
 
+  /** Resolve on the target conversation, never the panel's selected chat. Blank
+   *  values deliberately select provider defaults instead of a project fallback. */
+  conversationRunPrefs(projectId: string, sessionId?: string, opts: TurnRunOptions = {}): Pick<TurnRunOptions, 'model' | 'effort'> {
+    const project = this.projects().get(projectId);
+    if (!project) throw new Error('unknown project');
+    const conversation = project.conversations?.find(c => c.sessionId === sessionId);
+    if (sessionId && !conversation) throw new Error('unknown conversation for that project');
+    const provider = sessionId ? this.projects().conversationProvider(projectId, sessionId) : project.provider ?? 'claude';
+    const fitsModel = (value?: string) => !value || (provider === 'codex' ? /^(gpt-|codex-)/i.test(value) : !/^(gpt-|codex-)/i.test(value));
+    const fitsEffort = (value?: string) => !value || (provider === 'codex' ? value !== 'ultracode' : value !== 'ultra');
+    const model = [opts.model, conversation?.model, project.model].find(value => value !== undefined && fitsModel(value)) ?? '';
+    const effort = [opts.effort, conversation?.effort, project.effort].find(value => value !== undefined && fitsEffort(value)) ?? '';
+    return { model, effort };
+  }
+
+  validateConversationRunPrefs(projectId: string, sessionId: string | undefined, prefs: Pick<TurnRunOptions, 'model' | 'effort'>): void {
+    for (const key of ['model', 'effort'] as const) {
+      const value = prefs[key];
+      if (value !== undefined && (typeof value !== 'string' || value.length > 200 || value.trim() !== value || /[\x00-\x1f]/.test(value))) throw new Error('invalid ' + key);
+    }
+    const resolved = this.conversationRunPrefs(projectId, sessionId, prefs);
+    for (const key of ['model', 'effort'] as const) {
+      if (prefs[key] !== undefined && prefs[key] !== resolved[key]) throw new Error(key + ' is not compatible with this conversation’s provider');
+    }
+  }
+
+  setConversationRunPrefs(projectId: string, sessionId: string, prefs: Pick<TurnRunOptions, 'model' | 'effort'>): void {
+    this.validateConversationRunPrefs(projectId, sessionId, prefs);
+    this.projects().setConversationPrefs(projectId, sessionId, prefs);
+    this.emitConversations(projectId);
+  }
+
   /** Make a conversation the active one for its project (and current project). */
   selectConversation(projectId: string, sessionId: string): void {
     const reg = this.projects();
@@ -1445,6 +1477,7 @@ export class SessionManager {
    *  request as 'pending' and returns immediately — it is NOT sent yet. */
   requestMcpSend(projectId: string, sessionId: string | undefined, message: string, opts?: TurnRunOptions & { interactive?: boolean }): McpApproval {
     const proj = this.projects().get(projectId);
+    const prefs = this.conversationRunPrefs(projectId, sessionId, opts);
     const targetLabel = sessionId
       ? (this.listConversations(projectId).find((c) => c.sessionId === sessionId)?.title ?? sessionId)
       : 'a new conversation';
@@ -1455,8 +1488,8 @@ export class SessionManager {
       sessionId,
       targetLabel,
       message,
-      model: opts?.model,
-      effort: opts?.effort,
+      model: prefs.model,
+      effort: prefs.effort,
       interactive: opts?.interactive !== false,
       createdAt: new Date().toISOString(),
       status: 'pending',
@@ -1551,7 +1584,7 @@ export class SessionManager {
     }
     if (sessionId) this.clearSelfQueueStreak(sessionId);
     const prompt = opts.interactive !== false && !message.trimStart().startsWith('/') ? withAskInstructions(message) : message;
-    const run = { model: opts.model, effort: opts.effort };
+    const run = this.conversationRunPrefs(projectId, sessionId, opts);
     // Record the chain against the TARGET before the turn can start, so a send
     // it makes in that turn is counted as the next hop rather than a new chain.
     const land = (sid: string, queued: boolean): { sessionId: string; queued: boolean; hopsLeft: number } => {
@@ -1562,7 +1595,7 @@ export class SessionManager {
     };
     if (!sessionId) return land(this.start(prompt, undefined, run, projectId), false);
     const queue = (): { sessionId: string; queued: boolean; hopsLeft: number } => {
-      this.enqueue(projectId, { text: prompt, model: opts.model, effort: opts.effort, account:opts.account, useReserve:opts.useReserve, sessionId });
+      this.enqueue(projectId, { text: prompt, ...run, account:opts.account, useReserve:opts.useReserve, sessionId });
       return land(sessionId, true);
     };
     if (this.sessionBusy(sessionId)) return queue();
@@ -1684,38 +1717,12 @@ export class SessionManager {
     if (this.pendingQuestions.delete(sessionId)) this.savePendingQuestions();
     const reg = this.projects();
     const adapter = this.adapterFor(pid, sessionId);
-    // A model id is only meaningful to the CLI that defines it — "opus" means
-    // nothing to `codex -m` and "gpt-5.6-sol" nothing to `claude --model`. A
-    // stale client (or a pref persisted before this guard existed — it really
-    // happened: a codex project stored model "fable") could still send a
-    // mismatched id, so validate server-side rather than trusting the panel:
-    // drop a model that doesn't belong to this conversation's provider, and an
-    // effort level the provider doesn't have ("ultra" is codex-only).
-    const modelFitsProvider = (m: string | undefined): boolean => {
-      if (!m) return true;
-      const isGpt = /^(gpt-|codex-)/i.test(m);
-      return adapter.id === 'codex' ? isGpt : !isGpt;
-    };
-    // Each provider has one effort the other does not: 'ultra' is codex-only,
-    // 'ultracode' is claude-only. Dropping a mismatched one server-side matters
-    // because a stale client or a persisted preference can still send it, and
-    // the CLI would reject the flag outright.
-    const effortFitsProvider = (e: string | undefined): boolean => {
-      if (!e) return true;
-      return adapter.id === 'codex' ? e !== 'ultracode' : e !== 'ultra';
-    };
-    const optModel = modelFitsProvider(runOpts?.model) ? runOpts?.model : undefined;
-    const optEffort = effortFitsProvider(runOpts?.effort) ? runOpts?.effort : undefined;
-    // Persist an explicitly-chosen (valid) model/effort, and reuse the last
-    // choice when a continuation doesn't carry one (autopilot, orphan-resume,
-    // question answers), so a Fable session doesn't silently revert to the CLI
-    // default on continue.
-    if (optModel || optEffort) reg.setPrefs(pid, { model: optModel, effort: optEffort });
-    const stored = reg.get(pid);
-    const storedModel = modelFitsProvider(stored?.model) ? stored?.model : undefined;
-    const storedEffort = effortFitsProvider(stored?.effort) ? stored?.effort : undefined;
-    const model = optModel ?? storedModel;
-    const effort = optEffort ?? storedEffort;
+    const prefs = this.conversationRunPrefs(pid, sessionId, runOpts);
+    const model = prefs.model || undefined, effort = prefs.effort || undefined;
+    reg.setConversationPrefs(pid, sessionId, prefs);
+    // setPrefs snapshots legacy siblings before changing defaults for new chats.
+    if (model || effort) reg.setPrefs(pid, { model, effort });
+    this.emitConversations(pid);
     // Resuming a provider-assigned session (Codex) needs the CLI's own id, not
     // our conversation key; look up what the first turn captured. (For Claude
     // this is just the sessionId, so it's a harmless no-op.)
@@ -2032,7 +2039,7 @@ export class SessionManager {
         Math.floor(Date.now() / 1000),
         this.adapterFor(pid, sid).id,
         this.accountLoads(sid),
-        { ...context, model: model || project.model },
+        { ...context, model: this.conversationRunPrefs(pid, sid, { model }).model || undefined },
       ),
       preferences: sid ? new RoutingState(this.opts.stateDir).get(pid, sid) : {},
       runningAccount: sid ? this.runs.get(sid)?.account : null,

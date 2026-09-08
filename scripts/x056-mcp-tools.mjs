@@ -57,8 +57,8 @@ export const TOOLS = [
         projectId: { type: 'string' },
         sessionId: { type: 'string', description: 'omit to start a new conversation' },
         message: { type: 'string' },
-        model: { type: 'string', description: 'optional model id valid for that conversation\'s provider' },
-        effort: { type: 'string', description: 'optional reasoning effort valid for that provider' },
+        model: { type: 'string', description: 'Model id for the target conversation\'s provider. Omit to reuse that conversation\'s last selected model; new conversations use the project default. Empty string selects the provider default. The choice is retained through approval and queueing.' },
+        effort: { type: 'string', description: 'Reasoning effort for the target provider. Omit to reuse the target conversation\'s last selection; empty string selects the provider default.' },
         waitSeconds: { type: 'number', description: 'wait up to this long for the reply (default 0 = don\'t wait)' },
       },
       required: ['projectId', 'message'],
@@ -516,7 +516,7 @@ export async function callTool(api, name, args) {
     const reg = await api('/api/projects');
     const p = (reg.projects || reg || []).find((x) => x.id === args.projectId);
     if (!p) throw new Error('unknown projectId — use list_projects');
-    const convs = (p.conversations || []).map((c) => ({ sessionId: c.sessionId, title: c.title, provider: c.provider || 'claude', createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : undefined, current: c.sessionId === p.lastSessionId }));
+    const convs = (p.conversations || []).map((c) => ({ sessionId: c.sessionId, title: c.title, provider: c.provider || 'claude', model: c.model, effort: c.effort, createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : undefined, current: c.sessionId === p.lastSessionId }));
     return JSON.stringify(convs, null, 2);
   }
   if (name === 'read_conversation') {
