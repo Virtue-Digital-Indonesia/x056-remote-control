@@ -308,6 +308,19 @@ describe('gateway workspace picker', () => {
     const after = await (await fetch(`${base}/api/workspace`, { headers: auth })).json() as { rel: string; isProject: boolean }[];
     expect(after.find((d) => d.rel === 'repo-one')?.isProject).toBe(true);
   });
+
+  // The dev instance mounts a whole programme INSIDE its root, which puts real
+  // repos four levels down (ahu-codebase/ahu-rebuild/ahu-rebuild-ptp/<api>).
+  // They were reachable but never offered: the walk stopped at three, and the
+  // panel has no free-path input, so a dev could not add them at all.
+  it('finds a repo four levels down, and still stops somewhere', async () => {
+    const { mkdirSync: mk } = await import('node:fs');
+    mk(join(dir, 'prog', 'rebuild', 'ptp', 'api', '.git'), { recursive: true });
+    mk(join(dir, 'a', 'b', 'c', 'd', 'e', 'too-deep', '.git'), { recursive: true });
+    const rels = ((await (await fetch(`${base}/api/workspace`, { headers: auth })).json()) as { rel: string }[]).map((d) => d.rel);
+    expect(rels).toContain('prog/rebuild/ptp/api');
+    expect(rels.some((r) => r.endsWith('too-deep'))).toBe(false);
+  });
 });
 
 describe('gateway resume existing session', () => {
