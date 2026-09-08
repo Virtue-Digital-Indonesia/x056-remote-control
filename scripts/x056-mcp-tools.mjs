@@ -108,6 +108,7 @@ const CRON_TOOLS = [
     name: 'schedule_task',
     description:
       'Schedule a prompt to be sent to a conversation — a daily standup, an hourly health check, or a ONE-OFF (set once: true) like "check the deploy at 3am". '
+      + 'Works for ChatGPT/Codex and Claude. Gateway jobs persist after the CLI exits and appear in Automations; use this tool for work in this panel rather than a provider-local or desktop scheduler. Verify creation with list_scheduled. '
       + 'The prompt runs as a real turn in that conversation, so write it as an instruction to whoever picks it up, with the context they will need; they will not remember why it was scheduled. '
       + 'Omit sessionId to target your own conversation. Schedule is 5-field cron (minute hour day-of-month month day-of-week). '
       + 'Times are interpreted in the operator\'s timezone unless you pass tz, NOT in UTC — "0 9 * * *" means 9am where they are. '
@@ -163,6 +164,7 @@ function fmtJobs(data) {
     const when = j.lastRunAt ? new Date(j.lastRunAt).toISOString() : 'never';
     return `${j.enabled ? '●' : '○'} id=${j.id}  ${j.schedule}  (${j.tz})${j.once ? '  [once]' : ''}`
       + `${j.label ? '  — ' + j.label : ''}\n   project=${j.projectId} conversation=${j.sessionId ?? '(new each run)'}`
+      + `${j.provider ? ' provider=' + j.provider : ''}`
       + `\n   last run: ${when}${j.lastResult ? ' · ' + j.lastResult : ''} · ${j.runCount} run(s)`
       + `\n   prompt: ${String(j.prompt ?? '').replace(/\s+/g, ' ').slice(0, 160)}`;
   }).join('\n\n');

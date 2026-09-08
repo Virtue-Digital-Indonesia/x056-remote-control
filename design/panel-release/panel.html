@@ -1523,7 +1523,9 @@
     if (mins < 1440) return Math.round(mins / 60) + 'h ago';
     return d.toISOString().slice(0, 16).replace('T', ' ');
   }
+  var latestCronData = null;
   function renderCron(data) {
+    latestCronData = data;
     var list = $('cronList'); list.textContent = '';
     $('cronTz').textContent = (data && data.defaultTz) || '—';
     var jobs = (data && data.jobs) || [];
@@ -1533,7 +1535,16 @@
       list.appendChild(e); return;
     }
     jobs.forEach(function (j) {
-      var d = document.createElement('div'); d.className = 'cronj' + (j.enabled ? '' : ' off');
+      var d = document.createElement('div'); d.className = 'cronj' + (j.enabled ? '' : ' off'); d.dataset.cronId = j.id;
+      if (j.projectName) {
+        var identity = document.createElement('div'); identity.className = 'automation-cron-identity';
+        var names = document.body.dataset.conversationLabelOrder === 'project' ? [j.projectName, j.conversationTitle] : [j.conversationTitle, j.projectName];
+        var primary = document.createElement('strong'); primary.textContent = names[0];
+        var secondary = document.createElement('small'); secondary.textContent = names[1];
+        var provider = document.createElement('span'); provider.className = 'automation-provider';
+        provider.textContent = j.provider === 'codex' ? 'ChatGPT / Codex' : j.provider === 'claude' ? 'Claude' : 'Provider unavailable';
+        identity.append(primary, secondary, provider); d.appendChild(identity);
+      }
       var top = document.createElement('div'); top.className = 'top';
       var sc = document.createElement('span'); sc.className = 'sched'; sc.textContent = j.schedule; top.appendChild(sc);
       // A one-shot and a nightly job read identically from the schedule alone —
@@ -1576,6 +1587,7 @@
       .catch(function () { cronSetStatus('err', 'could not load scheduled tasks'); });
   }
   $('cronBtn').addEventListener('click', function () { openPop($('cronPop')); loadCron(); });
+  document.addEventListener('x056:conversation-label-order', function () { if (latestCronData) renderCron(latestCronData); });
 
   // ---- MCP servers. Each server is configured on EVERY account of its provider
   //      (the server replicates), so the list shows drift when one drops out. ----

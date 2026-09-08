@@ -21,6 +21,7 @@ let first='';
 for(const title of titles){const sid=randomUUID();if(!first)first=sid;projects.addConversation(p.id,sid,title,'claude'); const transcriptDir=join(specs[0].configDir,'projects','fixture');mkdirSync(transcriptDir,{recursive:true});writeFileSync(join(transcriptDir,sid+'.jsonl'),Array.from({length:24},(_,i)=>JSON.stringify({type:i%2?'assistant':'user',uuid:randomUUID(),timestamp:new Date(Date.now()-(24-i)*60000).toISOString(),message:{role:i%2?'assistant':'user',...(i%2?{model:'claude-sonnet-5',usage:{input_tokens:1000,output_tokens:300,cache_read_input_tokens:4000}}:{}),content:[{type:'text',text:i%2?'The layout is ready to review.\n\nWe have simplified the navigation and improved the reading area. The next step is checking this conversation on desktop and mobile.':'Please improve the layout and keep the existing chat controls working.'}]}})).join('\n')+'\n');}
 projects.addConversation(p2.id,randomUUID(),'Compare deployment options','claude');
 if (process.env.X056_TEST_SESSION_TIMER === '1') {
+  projects.addConversation(p2.id, randomUUID(), 'Codex planned follow-up', 'codex');
   // Legacy Claude conversation under a project whose default is now Codex.
   projects.setProvider(p.id, 'codex');
   const timer = [

@@ -563,7 +563,8 @@ window.createControlRoom = function (engine) {
   let automationWorkBusy=false,automationWorkAgain=false;
   function automationWorkIdentity(projectId,sessionId){
     const project=engine.state().projects.find(p=>p.id===projectId),conversation=project?.conversations?.find(c=>c.sessionId===sessionId),[primary,secondary]=conversationLabels(project,conversation);
-    return `<button class="automation-work-open" data-project="${esc(projectId)}" data-session="${esc(sessionId)}" ${conversation?'':'disabled'}><i class="cr-project-color" style="--project-color:${projectColor(projectId)}"></i><span><strong>${esc(primary)}</strong><small>${esc(secondary)}</small></span></button>`;
+    const provider=conversation?(conversation.provider||'claude'):sessionId?null:project?.provider||'claude';
+    return `<button class="automation-work-open" data-project="${esc(projectId)}" data-session="${esc(sessionId)}" ${conversation?'':'disabled'}><i class="cr-project-color" style="--project-color:${projectColor(projectId)}"></i><span><strong>${esc(primary)}</strong><small>${esc(secondary)}</small></span><span class="automation-provider">${provider==='codex'?'ChatGPT / Codex':provider==='claude'?'Claude':'Provider unavailable'}</span></button>`;
   }
   async function loadAutomationWork(){
     if(automationWorkBusy){automationWorkAgain=true;return;}automationWorkBusy=true;

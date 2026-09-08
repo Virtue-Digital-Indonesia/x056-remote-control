@@ -1,5 +1,6 @@
 import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { SessionTimerReader } from './session-timers.js';
+import type { Project } from './projects.js';
 import { transcriptIndex } from '../src/adapters/subagents.js';
 import { ArtifactStore } from './workspace-store.js';
 import { accountHealth } from './routing-health.js';
@@ -1511,7 +1512,9 @@ export class ApiController {
   reorderQueue(@Body() body:{projectId:string;ids:string[]}){try{if(!Array.isArray(body.ids))throw new Error('Queue order required');this.manager.reorderQueue(body.projectId,body.ids);return {ok:true};}catch(e){throw new BadRequestException((e as Error).message);}}
   @Get('queue')
   queue(): unknown {
-    return this.manager.queues();
+    const projects = this.manager.listProjects().projects;
+    return Object.fromEntries(Object.entries(this.manager.queues()).map(([projectId, items]) =>
+      [projectId, items.map(item => ({ ...item, ...this.automationTarget(projects, projectId, item.sessionId), source: 'gateway' }))]));
   }
 
   @Post('queue')
@@ -1823,7 +1826,17 @@ export class ApiController {
 
   @Get('cron')
   listCron(): unknown {
-    return { jobs: this.cron.list(), defaultTz: this.cron.defaultTimezone };
+    const projects = this.manager.listProjects().projects;
+    return { jobs: this.cron.list().map(job => ({ ...job, ...this.automationTarget(projects, job.projectId, job.sessionId), source: 'gateway' })), defaultTz: this.cron.defaultTimezone };
+  }
+
+  private automationTarget(projects: Project[], projectId: string, sessionId?: string) {
+    const project = projects.find(p => p.id === projectId);
+    const conversation = project?.conversations?.find(c => c.sessionId === sessionId);
+    // A project's default only applies to NEW conversations. Legacy conversations are Claude.
+    const provider = !project || (sessionId && !conversation) ? null :
+      conversation ? conversation.provider ?? 'claude' : project.provider ?? 'claude';
+    return { provider, projectName: project?.name ?? 'Project unavailable', conversationTitle: conversation?.title ?? (sessionId ? 'Conversation unavailable' : 'New conversation each run') };
   }
 
   @Post('cron')
