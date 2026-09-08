@@ -3791,7 +3791,7 @@
     if (e.key === 'Escape') {
       if (closeTopModal()) { e.preventDefault(); return; }
       if (!backdrop.hidden) { e.preventDefault(); closeAllPops(); return; }
-      if (!$('wfIsland').hidden && !document.querySelector('dialog[open],:popover-open')) {
+      if ($('wfIsland').getClientRects().length && !document.querySelector('dialog[open],:popover-open')) {
         e.preventDefault(); $('wfCloseBtn').click(); ($('chatActivity') || $('wfBtn')).focus(); return;
       }
       if (document.body.classList.contains('nav-open')) { e.preventDefault(); setNav(false); return; }
@@ -4579,7 +4579,7 @@
   // belongs to the modal.
   document.addEventListener('mousedown', function (e) {
     var island = $('wfIsland');
-    if (island.hidden) return;
+    if (!island.getClientRects().length) return;
     if (island.contains(e.target) || $('wfBtn').contains(e.target)) return;
     if (modalStack.length) return; // an agent shell is on top; the click is its own
     wfHidden = true; wfShown = false; renderWorkflows();
