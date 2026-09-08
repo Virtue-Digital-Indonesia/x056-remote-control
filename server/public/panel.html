@@ -1131,7 +1131,26 @@
   var dismissedQuestions = {};
   var questionsVersion = 0;
   var conversationPicks = {};
-  function saveConversationPick() { if (currentProjectId) conversationPicks[viewKey(currentProjectId, lastSessionId)] = {model: modelEl.value, effort: effortEl.value}; }
+  var conversationPickWrites = {}, conversationPickPending = {};
+  function saveConversationPick(event) {
+    if (!currentProjectId) return;
+    var pid = currentProjectId, sid = lastSessionId, key = viewKey(pid, sid);
+    var pick = {model: modelEl.value, effort: effortEl.value};
+    conversationPicks[key] = pick;
+    // Switching views only caches the draft; an actual selection is shared with
+    // the gateway immediately, even before the next message is sent.
+    if (!event || event.type !== 'change' || !sid || pendingNew) return;
+    conversationPickPending[key] = (conversationPickPending[key] || 0) + 1;
+    conversationPickWrites[key] = (conversationPickWrites[key] || Promise.resolve()).then(function () {
+      return api('/api/conversations/preferences', {method:'POST',body:JSON.stringify(Object.assign({projectId:pid,sessionId:sid},pick))});
+    }).then(function (response) {
+      if (!response.ok) throw new Error('Could not save the conversation’s model selection.');
+      var c = ((projCache[pid] || {}).conversations || []).find(function (row) { return row.sessionId === sid; });
+      if (c) { c.model = pick.model; c.effort = pick.effort; }
+    }).catch(function () {
+      if (pid === currentProjectId && sid === lastSessionId) addSys('Could not save the model selection. Select it again to retry.', 'banner');
+    }).finally(function () { conversationPickPending[key]--; });
+  }
   var TOKEN_KEY = 'x056_token', THEME_KEY = 'x056_theme', MODEL_KEY = 'x056_model', EFFORT_KEY = 'x056_effort';
   // The "last model/effort you picked" memory must be PER PROVIDER — a single
   // shared key let a Codex pick (gpt-5.6-sol / ultra) come back as the fallback
@@ -1769,15 +1788,19 @@
       })
       .catch(function () { addSys('could not save defaults', 'banner'); });
   });
-  // Reflect the project's persisted model/effort in the picker (falling back to
-  // the global default) so switching projects shows what that one actually runs.
+  // Reflect this conversation's saved selection, including an explicit Auto.
+  // Unsaved/new drafts retain their local choice until the gateway records it.
   function syncPicker(pid) {
     syncPickerBase(pid);
-    var pick = conversationPicks[viewKey(pid, lastSessionId)];
+    var key = viewKey(pid, lastSessionId), c = ((projCache[pid] || {}).conversations || []).find(function (row) { return row.sessionId === lastSessionId; });
+    var pick = conversationPickPending[key] || !c || c.model === undefined ? conversationPicks[key] : null;
     if (pick) { modelEl.value = pick.model; if (currentProvider() === 'codex') syncEffortOptionsForCodexModel(pick.effort); else effortEl.value = pick.effort; }
   }
   function syncPickerBase(pid) {
     var p = projCache[pid]; if (!p) return;
+    var c = (p.conversations || []).find(function (row) { return row.sessionId === lastSessionId; });
+    var savedModel = c && c.model !== undefined ? c.model : p.model;
+    var savedEffort = c && c.effort !== undefined ? c.effort : p.effort;
     var prov = currentProvider();
     providerEl.value = prov;
     // A conversation is bound to the provider it was created with (its transcript
@@ -1795,14 +1818,14 @@
       // never send those to `codex -m`, and vice versa — so both the options AND
       // the remembered "last pick" fallback are per-provider.
       if (prov === 'claude') {
-        setModelOptions(CLAUDE_MODEL_OPTS, canonModel(p.model || lsGet(modelKeyFor(prov))));
-        setEffortOptions(CLAUDE_EFFORT_OPTS, p.effort || lsGet(effortKeyFor(prov)));
+        setModelOptions(CLAUDE_MODEL_OPTS, canonModel(savedModel ?? lsGet(modelKeyFor(prov))));
+        setEffortOptions(CLAUDE_EFFORT_OPTS, savedEffort ?? lsGet(effortKeyFor(prov)));
       } else {
         // This provider's real catalog for the configured account. Empty until
         // /api/models loads (or if the account has no catalog yet) — Auto still works.
         var list = (providerModels[prov] || []).map(function (m) { return { value: m.slug, label: m.label }; });
-        setModelOptions([{ value: '', label: autoModelLabel(prov) }].concat(list), canonModel(p.model || lsGet(modelKeyFor(prov))));
-        syncEffortOptionsForCodexModel(p.effort || lsGet(effortKeyFor(prov)));
+        setModelOptions([{ value: '', label: autoModelLabel(prov) }].concat(list), canonModel(savedModel ?? lsGet(modelKeyFor(prov))));
+        syncEffortOptionsForCodexModel(savedEffort ?? lsGet(effortKeyFor(prov)));
       }
     } catch (e) {}
   }
@@ -2476,6 +2499,7 @@
     else if (kind === 'project_selected') { /* another tab switched; ignore */ }
     else if (kind === 'conversation') {
       if (projCache[pid]) { projCache[pid].conversations = data.conversations || []; if (data.currentSessionId) projCache[pid].lastSessionId = data.currentSessionId; }
+      if (pid === currentProjectId && !pendingNew) syncPicker(pid);
       if (pid === currentProjectId) loadProjects(); // re-render the sidebar sublist
     }
     else if (kind === 'settings') { // saved from another tab
