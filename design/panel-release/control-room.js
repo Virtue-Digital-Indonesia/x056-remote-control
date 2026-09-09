@@ -518,11 +518,12 @@ window.createControlRoom = function (engine) {
         ${quotaWindows(a).other.length?`<details class="picker-extra"><summary>${quotaWindows(a).other.length} additional usage ${quotaWindows(a).other.length===1?'limit':'limits'}</summary><div class="picker-quotas">${quotaWindows(a).other.map(w=>quotaCell(a,w,w.label)).join('')}</div></details>`:''}
         ${quotaFreshness(a)}</label>`).join('')||'<div class="cr-empty">No accounts connected for this provider.</div>'}</div>
       <p class="picker-note">This choice applies to this conversation’s next turn. If unavailable, automatic routing may use a fallback. Use an account lock to prevent that. ${isRunning?'Use “Switch this turn” to resume the current turn on another account.':''}</p>
-      <div id="pickerError" class="cr-error" role="alert"></div><footer><button class="cr-text-button" data-manage-accounts>Routing & locks</button><span class="sp"></span>${isRunning?`<button class="cr-secondary" data-switch-turn ${!selectedSendAccount||selectedSendAccount===s.runningAccount?'disabled':''}>Switch this turn</button>`:''}<button class="cr-primary" data-send-next ${selectedSendAccount?'':'disabled'}>Use for next message</button></footer>`;
+      <div id="pickerError" class="cr-error" role="alert"></div><footer><button class="cr-text-button" data-add-account>Add account</button><button class="cr-text-button" data-manage-accounts>Routing & locks</button><span class="sp"></span>${isRunning?`<button class="cr-secondary" data-switch-turn ${!selectedSendAccount||selectedSendAccount===s.runningAccount?'disabled':''}>Switch this turn</button>`:''}<button class="cr-primary" data-send-next ${selectedSendAccount?'':'disabled'}>Use for next message</button></footer>`;
     if(html===sendAccountSignature&&!force)return;
     sendAccountSignature=html;
     const focused=document.activeElement, focusValue=focused?.name==='send-account'?focused.value:null, oldScroll=sendAccounts.querySelector('.send-account-list')?.scrollTop||0;
     sendAccounts.innerHTML=html;
+    sendAccounts.querySelector('[data-add-account]').onclick=()=>{sendAccounts.close();$('addAcctBtn').click();};
     sendAccounts.querySelector('.send-account-list').scrollTop=oldScroll;
     if(focusValue) [...sendAccounts.querySelectorAll('input')].find(n=>n.value===focusValue)?.focus({preventScroll:true});
     sendAccounts.querySelector('[data-close]').onclick=()=>sendAccounts.close();
@@ -772,14 +773,14 @@ window.createControlRoom = function (engine) {
   document.querySelectorAll('.pop').forEach(el=>utilityHome.append(el));
   const utility=document.createElement('dialog');utility.className='cr-dialog utility-dialog';utility.id='utilityDialog';document.body.append(utility);
   let utilityElement=null, settingSection='general', connectionSection='plugins', defaultProvider='claude';
-  function closeUtility() {if(preferences.open)preferences.querySelectorAll('.pop').forEach(el=>el.hidden=false);if(utility.open)utility.close();if(utilityElement){utilityElement.hidden=true;utilityElement.classList.remove('integrated-pop');utilityHome.append(utilityElement);utilityElement=null;}}
+  function closeUtility() {if(preferences.open)preferences.querySelectorAll('.pop').forEach(el=>el.hidden=false);if(utility.open)utility.close();if(utilityElement){utilityElement.dispatchEvent(new Event('utilityclose'));utilityElement.hidden=true;utilityElement.classList.remove('integrated-pop');utilityHome.append(utilityElement);utilityElement=null;}}
   utility.addEventListener('close',()=>{if(!utility.open)closeUtility();});
   function openUtility(el) {
     if(preferences.contains(el)||$('automationContent').contains(el)){el.hidden=false;return;}
     const destinations={defaultsPop:'models',pluginsPop:'connections',mcpSrvPop:'connections',passkeyPop:'security'};
     if(destinations[el.id]){if(el.id==='pluginsPop')connectionSection='plugins';if(el.id==='mcpSrvPop')connectionSection='mcp';settings(destinations[el.id]);return;}
     if(el.id==='cronPop'){showSection('automations');return;}
-    closeUtility();utilityElement=el;utility.classList.toggle('agent-utility',el.id==='subPop');
+    closeUtility();utilityElement=el;utility.classList.toggle('agent-utility',el.id==='subPop');utility.classList.toggle('onboarding-dialog',el.id==='addAcctPop');
     const title=el.querySelector('h2')?.textContent||'Controls';utility.setAttribute('aria-label',title);
     utility.innerHTML=`<header><h2>${esc(title)}</h2><button class="cr-icon" aria-label="Close ${esc(title)}">${ic('x')}</button></header><div class="utility-body"></div>`;
     utility.querySelector('button').onclick=closeUtility;utility.querySelector('.utility-body').append(el);el.hidden=false;el.classList.add('integrated-pop');
