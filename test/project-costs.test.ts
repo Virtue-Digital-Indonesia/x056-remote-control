@@ -34,3 +34,10 @@ it('reports missing transcripts instead of calling a project fully priced',()=>{
  const f=setup();const r=projectCosts(f.projects,()=>({...f.context(),providerSessionId:'missing'}),new Set(),f.stats);
  expect(r.missing).toBe(1);expect(r.projects.find(p=>p.projectId==='p')?.missing).toBe(1);
 });
+it('does not call an unsent conversation a missing transcript',()=>{
+ const f=setup();Object.assign(f.projects[0].conversations[0],{lastMessageAt:null});
+ const r=projectCosts(f.projects,()=>({...f.context(),providerSessionId:'missing'}),new Set(),f.stats);
+ expect(r.missing).toBe(0);expect(r.unstarted).toBe(1);
+ expect(r.conversations[0]).toMatchObject({missing:false,unstarted:true,size:0});
+ expect(r.projects.find(p=>p.projectId==='p')?.unstarted).toBe(1);
+});

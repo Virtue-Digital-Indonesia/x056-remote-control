@@ -11,7 +11,7 @@ function add(to: TokenUsage, from: TokenUsage) {
     for (const k of ['input','output','cacheRead','cacheWrite'] as const) m[k] += values[k];
   }
 }
-interface Project { id: string; name: string; conversations?: { sessionId:string; title?:string }[] }
+interface Project { id: string; name: string; conversations?: { sessionId:string; title?:string; lastMessageAt?: number | null }[] }
 interface Context { adapter: { id:string }; providerSessionId:string; configDirs:string[] }
 interface Source { file:string; agent:boolean }
 
@@ -21,18 +21,18 @@ export function projectCosts(projects: Project[], context: (pid:string,sid:strin
 
   const claude=new Map<string,Map<string,string>>(), codex=new Map<string,ReturnType<typeof rolloutHeads>>();
   const seen=new Set<string>();
-  const rows=projects.flatMap(p=>(p.conversations??[]).map(c=>({ projectId:p.id,projectName:p.name,sessionId:c.sessionId,title:c.title??c.sessionId.slice(0,8),running:running.has(`${p.id}/${c.sessionId}`), usage:empty(), cost:{usd:0,unpriced:[] as string[]}, agentCost:{usd:0,unpriced:[] as string[]}, agentCount:0, partial:false,scanned:0,size:0,missing:false, sources:[] as Source[] })));
+  const rows=projects.flatMap(p=>(p.conversations??[]).map(c=>({ projectId:p.id,projectName:p.name,sessionId:c.sessionId,title:c.title??c.sessionId.slice(0,8),running:running.has(`${p.id}/${c.sessionId}`), usage:empty(), cost:{usd:0,unpriced:[] as string[]}, agentCost:{usd:0,unpriced:[] as string[]}, agentCount:0, partial:false,scanned:0,size:0,missing:false,unstarted:c.lastMessageAt===null, sources:[] as Source[] })));
   for (const row of rows) {
     try {
       const {adapter,providerSessionId:id,configDirs}=context(row.projectId,row.sessionId), key=configDirs.join('\0');
       let files:Source[]=[];
       if(adapter.id==='claude') {
         let index=claude.get(key);if(!index){index=transcriptIndex(configDirs);claude.set(key,index);}
-        const own=index.get(id); if(own)files.push({file:own,agent:false}); else row.missing=true;
+        const own=index.get(id); if(own)files.push({file:own,agent:false}); else if(!row.unstarted)row.missing=true;
         files.push(...[...subagentFiles(configDirs,id).values()].map(file=>({file,agent:true})));
       } else if(adapter.id==='codex') {
         let heads=codex.get(key);if(!heads){heads=rolloutHeads(configDirs);codex.set(key,heads);}
-        const own=heads.find(h=>h.id===id); if(own)files.push({file:own.file,agent:false});else row.missing=true;
+        const own=heads.find(h=>h.id===id); if(own)files.push({file:own.file,agent:false});else if(!row.unstarted)row.missing=true;
         const descendants=new Set([id]);let changed=true;
         while(changed){changed=false;for(const h of heads)if(h.parent&&descendants.has(h.parent)&&!descendants.has(h.id)){descendants.add(h.id);files.push({file:h.file,agent:true});changed=true;}}
       } else row.missing=true;
@@ -65,9 +65,9 @@ export function projectCosts(projects: Project[], context: (pid:string,sid:strin
   for(const row of rows)row.cost=estimateCost(row.usage);
   const groups=projects.map(p=>{
     const conversations=rows.filter(r=>r.projectId===p.id),usage=empty();conversations.forEach(r=>add(usage,r.usage));
-    return {projectId:p.id,projectName:p.name,usage,cost:estimateCost(usage),conversations:conversations.length,agentCount:conversations.reduce((n,r)=>n+r.agentCount,0),agentUsd:conversations.reduce((n,r)=>n+r.agentCost.usd,0),partial:conversations.some(r=>r.partial),missing:conversations.filter(r=>r.missing).length};
+    return {projectId:p.id,projectName:p.name,usage,cost:estimateCost(usage),conversations:conversations.length,agentCount:conversations.reduce((n,r)=>n+r.agentCount,0),agentUsd:conversations.reduce((n,r)=>n+r.agentCost.usd,0),partial:conversations.some(r=>r.partial),missing:conversations.filter(r=>r.missing).length,unstarted:conversations.filter(r=>r.unstarted).length};
   }).sort((a,b)=>b.cost.usd-a.cost.usd);
   const total=empty();rows.forEach(r=>add(total,r.usage));
-  return {conversations:rows.map(({sources,...r})=>r),projects:groups,totals:{...total,...estimateCost(total)},pending,pendingBytes,missing:rows.filter(r=>r.missing).length,running:rows.filter(r=>r.running).length,
+  return {conversations:rows.map(({sources,...r})=>r),projects:groups,totals:{...total,...estimateCost(total)},pending,pendingBytes,missing:rows.filter(r=>r.missing).length,unstarted:rows.filter(r=>r.unstarted).length,running:rows.filter(r=>r.running).length,
     pricing:{date:PRICE_DATE,basis:'Standard API token rates; subscription charges, tool fees, priority/fast tiers and long-context premiums are excluded. Cache writes use the 5-minute rate. Recorded conversation and subagent usage only; this is not a bill or a forecast.'}};
 }
