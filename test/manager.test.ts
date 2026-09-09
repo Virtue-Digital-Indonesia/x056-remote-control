@@ -1045,3 +1045,25 @@ it('keeps source attribution through approval and durable queueing while resetti
   await waitFor(()=>calls.length===4&&!mgr.snapshot().running);
   expect(readMessageSender(calls.at(-1)!.prompt).sender).toMatchObject(approval.sender!);
 });
+
+describe('Codex onboarding inherits account setup', () => {
+  it('notifies the provisioner after registering an existing Codex home', () => {
+    const root=mkdtempSync(join(tmpdir(),'x056-codex-setup-')),state=join(root,'state'),home=join(root,'home');
+    mkdirSync(state);mkdirSync(home);AccountRegistry.init(join(state,'accounts.json'),[]);
+    writeFileSync(join(home,'auth.json'),JSON.stringify({tokens:{id_token:'x.'+Buffer.from(JSON.stringify({email:'fixture@example.test'})).toString('base64url')+'.x'}}));
+    const added: unknown[]=[];
+    const mgr=new SessionManager({stateDir:state,workspaceRoot:root,onAccountAdded:a=>added.push(a)});
+    const result=mgr.registerCodexAccount(home);
+    expect(added).toEqual([{name:result.name,configDir:home,provider:'codex'}]);
+  });
+  it('notifies the provisioner after device sign-in writes credentials', () => {
+    const root=mkdtempSync(join(tmpdir(),'x056-codex-device-')),state=join(root,'state'),home=join(state,'accounts','codex-pending-test');
+    mkdirSync(home,{recursive:true});AccountRegistry.init(join(state,'accounts.json'),[]);
+    writeFileSync(join(home,'auth.json'),JSON.stringify({tokens:{id_token:'x.'+Buffer.from(JSON.stringify({email:'device@example.test'})).toString('base64url')+'.x'}}));
+    const added: unknown[]=[];
+    const mgr=new SessionManager({stateDir:state,workspaceRoot:root,onAccountAdded:a=>added.push(a)});
+    (mgr as unknown as {pendingCodexLogins:Map<string,unknown>}).pendingCodexLogins.set('fixture',{configDir:home,child:{kill(){}},buf:''});
+    const result=mgr.codexLoginStatus('fixture');expect(result.done).toBe(true);
+    expect(added).toEqual([{name:result.account!.name,configDir:join(state,'accounts',result.account!.name),provider:'codex'}]);
+  });
+});

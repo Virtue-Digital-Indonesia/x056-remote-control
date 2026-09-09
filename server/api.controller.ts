@@ -1721,11 +1721,10 @@ export class ApiController {
   async provisionAccount(@Body() body: { account?: string }) {
     const accounts = AccountRegistry.load(join(this.stateDir, 'accounts.json'))
       .list()
-      .filter((a) => a.provider === 'claude')
       .filter((a) => !body?.account || a.name === body.account);
-    if (!accounts.length) throw new BadRequestException('no matching claude account');
+    if (!accounts.length) throw new BadRequestException('no matching account');
     const results = [];
-    for (const a of accounts) results.push(await this.provisioner.provision({ name: a.name, configDir: a.configDir }));
+    for (const a of accounts) results.push(await this.provisioner.provision({ name: a.name, configDir: a.configDir, provider: a.provider }));
     return { results };
   }
 

@@ -39,6 +39,7 @@ interface RawPlugin {
 }
 
 export interface PluginManagerOptions {
+  strictReads?: boolean;
   /** Path to the `claude` binary (defaults to `claude` on PATH). */
   claudePath?: string;
   /** Path to the `codex` binary (defaults to `codex` on PATH). */
@@ -96,6 +97,11 @@ export class PluginManager {
   private dirsFor(provider: ProviderId): { name: string; configDir: string }[] {
     if (this.opts.dirs) return this.opts.dirs(provider);
     return provider === 'claude' ? (this.opts.claudeDirs?.() ?? []) : [];
+  }
+
+  /** Scope onboarding writes to one account, leaving active peers untouched. */
+  forAccounts(accounts: { name: string; configDir: string }[], provider: ProviderId): PluginManager {
+    return new PluginManager({ ...this.opts, strictReads: true, dirs: (p) => p === provider ? accounts : [] });
   }
 
   private bin(provider: ProviderId): string {
@@ -185,7 +191,15 @@ export class PluginManager {
     const dirs = this.dirsFor(provider);
     const total = dirs.length;
     const perDirPlugins = await Promise.all(
-      dirs.map(async (d) => PluginManager.parseList(provider, (await this.run(provider, d.configDir, ['list', '--json'])).stdout)),
+      dirs.map(async (d) => {
+        const r = await this.run(provider, d.configDir, ['list', '--json']);
+        if (this.opts.strictReads) {
+          if (!r.ok) throw new Error('Plugin inventory unavailable');
+          const parsed = JSON.parse(r.stdout);
+          if (!(provider === 'claude' ? Array.isArray(parsed) : Array.isArray(parsed?.installed))) throw new Error('Invalid plugin inventory');
+        }
+        return PluginManager.parseList(provider, r.stdout);
+      }),
     );
     const byId = new Map<string, PluginInfo>();
     for (const list of perDirPlugins) {
@@ -211,6 +225,7 @@ export class PluginManager {
     let marketplaces: MarketplaceInfo[] = [];
     if (dirs[0]) {
       const r = await this.run(provider, dirs[0].configDir, ['marketplace', 'list', '--json']);
+      if (this.opts.strictReads && !r.ok) throw new Error('Marketplace inventory unavailable');
       marketplaces = PluginManager.parseMarketplaces(provider, r.stdout);
     }
     return { plugins, marketplaces, dirs: total, provider, canToggle: provider === 'claude' };

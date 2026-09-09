@@ -164,3 +164,59 @@ describe('a shared skill (symlink into state/skills) follows the fleet as a link
     expect(existsSync(join(dest, 'SKILL.md'))).toBe(true);
   });
 });
+
+describe('provider-aware account setup', () => {
+  function capabilities(target: ProvisionAccount, fail = false) {
+    const writes: string[] = [], installed = new Set<string>();
+    const plugins = {
+      forAccounts: (accounts: ProvisionAccount[]) => {
+        const isTarget = accounts.length === 1 && accounts[0].name === target.name;
+        return {
+          list: async () => ({marketplaces: [], plugins: (isTarget ? [...installed] : ['context@m', 'drive@openai-curated-remote']).map(id => ({id, enabledCount: 1}))}),
+          addMarketplace: async () => ({ok: true, perDir: []}),
+          install: async (id: string) => { writes.push(`plugin:${accounts.map(a=>a.name)}:${id}`); if (!id.includes('remote') && !fail) installed.add(id); return {ok: !fail, perDir: []}; },
+          setEnabled: async () => ({ok: true, perDir: []}),
+        };
+      },
+    };
+    const mcp = {
+      forAccounts: (accounts: ProvisionAccount[]) => ({
+        list: async () => ({servers: accounts.some(a=>a.name===target.name) ? [{name:'local'}] : [{name:'shared',differing:[]},{name:'conflicting',differing:['peer']},{name:'local',differing:[]}]}),
+        add: async (_provider: string, server: {name:string}) => {writes.push(`mcp:${accounts.map(a=>a.name)}:${server.name}`);return {ok: !fail,perDir: []};},
+      }),
+    };
+    return {writes, deps:{plugins,mcp} as unknown as NonNullable<ConstructorParameters<typeof AccountProvisioner>[3]>};
+  }
+  it('only writes the target, copies same-provider skills, leaves credentials/local settings alone, and reports connector authorization', async () => {
+    const {accounts}=fleet();accounts[0].provider='claude';accounts[1].provider='codex';accounts[2].provider='codex';
+    addSkill(accounts[0].configDir,'claude-only');addSkill(accounts[1].configDir,'shared');addSkill(accounts[1].configDir,'.system');
+    writeFileSync(join(accounts[2].configDir,'auth.json'),'TARGET LOGIN');
+    const {writes,deps}=capabilities(accounts[2]);
+    const res=await new AccountProvisioner(()=>accounts,fakePlugins(),{grant:async()=>{throw Error('must not grant Claude access for Codex');}},deps).provision(accounts[2]);
+    expect(res.skills).toEqual(['shared']);expect(res.plugins).toEqual(['context@m']);expect(res.mcpServers).toEqual(['shared']);
+    expect(res.needsAuthorization).toEqual(['drive@openai-curated-remote']);
+    expect(res.errors).toEqual(['MCP conflicting: peers use different definitions; choose one in Connections']);
+    expect(writes.every(w=>w.split(':')[1]==='c')).toBe(true);
+    expect(existsSync(join(accounts[2].configDir,'skills','.system'))).toBe(false);
+    expect(readFileSync(join(accounts[2].configDir,'auth.json'),'utf8')).toBe('TARGET LOGIN');
+  });
+  it('does not count failed plugin or MCP operations as installed', async () => {
+    const {accounts}=fleet();const {deps}=capabilities(accounts[2],true);
+    const res=await new AccountProvisioner(()=>accounts,fakePlugins(),undefined,deps).provision(accounts[2]);
+    expect(res.plugins).toEqual([]);expect(res.mcpServers).toEqual([]);
+    expect(res.errors.some(e=>e.includes('installation failed'))).toBe(true);
+    expect(res.errors.some(e=>e.includes('could not install'))).toBe(true);
+  });
+  it('coalesces simultaneous setup requests for the same account', async () => {
+    const {accounts}=fleet();const {deps,writes}=capabilities(accounts[2]);
+    const prov=new AccountProvisioner(()=>accounts,fakePlugins(),undefined,deps);
+    const first=prov.provision(accounts[2]),second=prov.provision(accounts[2]);expect(first).toBe(second);
+    await first;expect(writes.filter(w=>w==='plugin:c:context@m')).toHaveLength(1);
+  });
+  it('resolves relative shared skill links from the source directory', async () => {
+    const {root,accounts}=fleet();mkdirSync(join(root,'shared'),{recursive:true});writeFileSync(join(root,'shared','SKILL.md'),'shared');
+    mkdirSync(join(accounts[0].configDir,'skills'));symlinkSync('../../shared',join(accounts[0].configDir,'skills','linked'));
+    await new AccountProvisioner(()=>accounts,fakePlugins()).provision(accounts[2]);
+    expect(readFileSync(join(accounts[2].configDir,'skills','linked','SKILL.md'),'utf8')).toBe('shared');
+  });
+});

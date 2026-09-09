@@ -10,6 +10,7 @@ import { APP_GUARD, Reflector } from '@nestjs/core';
 import { AuthGuard } from './auth.guard.js';
 import { ApiController, STATE_DIR, PUSH_SERVICE, WEBAUTHN_SERVICE, SESSION_STORE, PLUGIN_MANAGER, MCP_SERVER_MANAGER } from './api.controller.js';
 import { SessionManager } from './manager.js';
+import { AccountRegistry } from '../src/accounts.js';
 import { PushService } from './push.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
@@ -69,8 +70,8 @@ export function buildModule(cfg: GatewayConfig): unknown {
     onAccountAdded: (acct) => {
       provisioner.provision(acct)
         .then((r) => {
-          const n = r.plugins.length + r.skills.length + r.flags.length;
-          if (n) console.log(`[provision] ${acct.name}: ${r.plugins.length} plugin(s), ${r.skills.length} skill(s), ${r.flags.length} flag(s)`);
+          console.log(`[provision] ${acct.name}: ${r.plugins.length} plugin(s), ${r.skills.length} skill(s), ${r.mcpServers?.length ?? 0} MCP server(s)`);
+          for (const id of r.needsAuthorization ?? []) console.warn(`[provision] ${acct.name}: ${id} needs account authorization`);
           for (const e of r.errors) console.warn(`[provision] ${acct.name}: ${e}`);
         })
         .catch((e) => console.warn(`[provision] ${acct.name} failed:`, e));
@@ -129,9 +130,10 @@ export function buildModule(cfg: GatewayConfig): unknown {
   const designConsent = new DesignConsentGranter({ claudePath: cfg.claudePath, cwd: cfg.workspaceRoot });
 
   provisioner = new AccountProvisioner(
-    () => McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json'))('claude'),
+    () => AccountRegistry.load(join(cfg.stateDir, 'accounts.json')).list(),
     plugins,
     designConsent,
+    { plugins, mcp: mcpServers },
   );
 
   @Module({

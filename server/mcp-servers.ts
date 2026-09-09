@@ -36,6 +36,7 @@ export interface McpOpResult {
 }
 
 export interface McpServerManagerOptions {
+  strictReads?: boolean;
   claudePath?: string;
   codexPath?: string;
   /** Re-read per call so adding/removing an account is picked up without a restart. */
@@ -73,6 +74,11 @@ export class McpServerManager {
     };
   }
 
+  /** Scope onboarding writes to one account, leaving active peers untouched. */
+  forAccounts(accounts: { name: string; configDir: string }[], provider: ProviderId): McpServerManager {
+    return new McpServerManager({ ...this.opts, strictReads: true, accounts: (p) => p === provider ? accounts : [] });
+  }
+
   private bin(provider: ProviderId): string {
     return provider === 'codex' ? (this.opts.codexPath ?? 'codex') : (this.opts.claudePath ?? 'claude');
   }
@@ -98,6 +104,7 @@ export class McpServerManager {
 
   /** Claude's user-scoped servers, read straight from the config file. */
   private claudeServers(configDir: string): McpServerSpec[] {
+    if (!existsSync(join(configDir, '.claude.json'))) return [];
     try {
       const raw = JSON.parse(readFileSync(join(configDir, '.claude.json'), 'utf8')) as {
         mcpServers?: Record<string, { type?: string; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> }>;
@@ -112,6 +119,7 @@ export class McpServerManager {
         headers: s.headers,
       }));
     } catch {
+      if (this.opts.strictReads) throw new Error('MCP inventory unavailable');
       return [];
     }
   }
@@ -119,12 +127,13 @@ export class McpServerManager {
   /** Codex's servers, via its own `--json` listing. */
   private async codexServers(configDir: string): Promise<McpServerSpec[]> {
     const r = await this.run('codex', configDir, ['list', '--json']);
+    if (this.opts.strictReads && !r.ok) throw new Error('MCP inventory unavailable');
     try {
       const arr = JSON.parse(r.stdout) as {
         name: string;
         transport?: { type?: string; command?: string; args?: string[]; env?: Record<string, string> | null; url?: string; http_headers?: Record<string, string> | null };
       }[];
-      if (!Array.isArray(arr)) return [];
+      if (!Array.isArray(arr)) { if (this.opts.strictReads) throw new Error('Invalid MCP inventory'); return []; }
       return arr.map((s) => {
         const t = s.transport ?? {};
         const http = t.type !== 'stdio';
@@ -141,6 +150,7 @@ export class McpServerManager {
         };
       });
     } catch {
+      if (this.opts.strictReads) throw new Error('MCP inventory unavailable');
       return [];
     }
   }
