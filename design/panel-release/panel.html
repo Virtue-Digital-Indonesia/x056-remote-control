@@ -3873,11 +3873,11 @@
       if (document.body.classList.contains('nav-open')) { e.preventDefault(); setNav(false); return; }
       return;
     }
+    var mod = e.metaKey || e.ctrlKey;
+    if (mod && !e.altKey && (e.code === 'KeyK' || String(e.key).toLowerCase() === 'k')) { e.preventDefault(); openPalette(); return; }
     if (anyModalOpen() || document.querySelector('dialog[open]')) return; // dialogs own their keyboard input
     if (!shortcutsOn()) return; // turned off in the shortcuts dialog (Escape above still works)
-    var mod = e.metaKey || e.ctrlKey;
     if (mod && !e.altKey) {
-      if (e.code === 'KeyK') { e.preventDefault(); openPalette(); return; }
       if (e.code === 'Slash') { e.preventDefault(); openShortcuts(); return; }
       // Jump-to-project: on macOS require ⌘ (not ⌃) — Ctrl+[1-9] is the system
       // Spaces/Desktop switcher there, so we leave it to the OS. Ctrl stays on

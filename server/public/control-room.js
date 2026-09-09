@@ -327,7 +327,8 @@ window.createControlRoom = function (engine) {
   ['crSettings','sidebarSettings','focusSettings'].forEach(id => on(id, () => settings()));
   on('crTheme', e=>themeMenu(e.currentTarget));
   ['crAccountsTab','focusAccounts'].forEach(id => on(id, () => showSection('accounts')));
-  ['crHome','crBoardTab','focusHome','focusBack'].forEach(id => on(id, () => showSection('board')));
+  ['crHome','crBoardTab','focusHome'].forEach(id => on(id, () => selectProjectScope('')));
+  on('focusBack',()=>showSection('board'));
   on('crProjects', () => projectNav(!shell.classList.contains('projects-open')));
   on('crAddProject',()=>{projectNav(false);$('addProjectBtn').click();});
   on('crManageProjects',()=>{projectNav(false);engine.nav(true);});
