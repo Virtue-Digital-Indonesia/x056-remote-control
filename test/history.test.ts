@@ -1,3 +1,4 @@
+import { withMessageSender } from '../src/message-sender.js';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -309,3 +310,15 @@ describe('a prompt steered into a running turn', () => {
     expect(readSessionHistory([dir], sid).map((r) => r.role)).toEqual(['user']);
   });
 })
+
+it('restores sender metadata in normal and steered Claude prompts', () => {
+  const sender = {kind:'conversation' as const,projectId:'p',sessionId:'s',conversationTitle:'Reviewer',projectName:'Website',messageId:'one'};
+  const text=withMessageSender('Ready',sender);
+  const dir=configDirWithTranscript('senders',[
+    {type:'user',message:{role:'user',content:text}},
+    {type:'attachment',attachment:{type:'queued_command',commandMode:'prompt',prompt:text}},
+  ]);
+  const rows=readSessionHistory([dir],'senders');
+  expect(rows).toHaveLength(2);
+  for(const row of rows){expect(row.text).toBe('Ready');expect(row.sender).toEqual(sender);}
+});

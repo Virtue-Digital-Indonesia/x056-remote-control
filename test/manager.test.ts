@@ -1,3 +1,4 @@
+import { readMessageSender } from '../src/message-sender.js';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -640,7 +641,7 @@ describe('SessionManager autopilot', () => {
     AccountRegistry.init(join(sd, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }, { name: 'b', configDir: '/cfg/b' }]);
     let call = 0; const prompts: string[] = [];
     const runSessionFn = (async (o: { prompt: string; tap?: (e: unknown) => void }) => {
-      prompts.push(o.prompt);
+      prompts.push(readMessageSender(o.prompt).text);
       o.tap?.({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }] } }); // persists lastSessionId like the real CLI
       await new Promise((r) => setTimeout(r, 5));
       return results[Math.min(call++, results.length - 1)];
@@ -1023,4 +1024,24 @@ describe('queue vs autopilot priority', () => {
     await waitFor(() => (mgr.queues()[pid] ?? []).length === 0, 8000);
     expect((mgr.queues()[pid] ?? []).length).toBe(0);
   }, 20000);
+});
+
+it('keeps source attribution through approval and durable queueing while resetting the approved relay', async () => {
+  const {mgr,calls,stateDir,dir}=fixture(COMPLETED,{delayMs:80});
+  const source=mgr.createProject('Source project'),target=mgr.createProject('Target project');
+  const sid=mgr.start('Sender conversation',undefined,undefined,source.id);
+  const tid=mgr.start('Target conversation',undefined,undefined,target.id);
+  await waitFor(()=>!mgr.snapshot().running);
+  const approval=mgr.requestMcpSend(target.id,tid,'Approved message',{from:sid});
+  expect(approval.sender).toMatchObject({kind:'conversation',sessionId:sid,projectName:'Source project',conversationTitle:'Sender conversation'});
+  mgr.decideMcpApproval(approval.id,true);
+  expect(readMessageSender(calls.at(-1)!.prompt).sender).toMatchObject(approval.sender!);
+  expect(mgr.relayDepth(tid)).toBe(1);
+  const queued=mgr.deliverMcpMessage(target.id,tid,'Queued message',{from:sid});
+  expect(queued.queued).toBe(true);
+  const reloaded=new SessionManager({stateDir,workspaceRoot:dir});
+  expect(reloaded.queues()[target.id][0].sender).toMatchObject(approval.sender!);
+  expect(reloaded.queues()[target.id][0].text).not.toContain('x056 message sender');
+  await waitFor(()=>calls.length===4&&!mgr.snapshot().running);
+  expect(readMessageSender(calls.at(-1)!.prompt).sender).toMatchObject(approval.sender!);
 });

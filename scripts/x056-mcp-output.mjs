@@ -40,7 +40,8 @@ const contextFields = {
   items: array(object({ id: str, revision: integer, title: str, reason: str, estimatedTokens: integer })),
   skipped: array(object({ id: str, reason: str })), enabled: bool,
 };
-const message = object({ role: choices('user', 'assistant'), text: str, ts: str }, ['role', 'text']);
+const messageSender = object({ kind: choices('conversation', 'automation', 'autopilot', 'mcp'), messageId: str, projectId: str, sessionId: str, projectName: str, conversationTitle: str }, ['kind']);
+const message = object({ sender: messageSender, role: choices('user', 'assistant'), text: str, ts: str }, ['role', 'text']);
 const jobFields = {
   id: str, schedule: str, tz: str, projectId: str, sessionId: str, prompt: str,
   label: str, once: bool, enabled: bool, createdAt: num, createdBy: str,
@@ -49,7 +50,7 @@ const jobFields = {
 const jobRequired = ['id', 'schedule', 'tz', 'projectId', 'prompt', 'enabled', 'createdAt', 'runCount'];
 const targetFields = { provider: nullableProvider, projectName: str, conversationTitle: str, source: literal('gateway') };
 const queueItem = object({
-  projectId: str, id: str, text: str, at: num, sessionId: str, model: str, effort: str,
+  sender: messageSender, projectId: str, id: str, text: str, at: num, sessionId: str, model: str, effort: str,
   account: str, useReserve: bool, dispatching: bool, error: str, notBefore: num,
   afterSessionId: str, paused: bool, requestId: str, ...targetFields,
 }, ['projectId', 'id', 'text', 'at', ...Object.keys(targetFields)]);

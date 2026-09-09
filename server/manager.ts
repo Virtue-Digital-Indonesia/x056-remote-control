@@ -1,3 +1,4 @@
+import { withMessageSender, type MessageSender } from '../src/message-sender.js';
 import { toolImagePaths } from '../src/artifact-references.js';
 import { ConversationTitles, temporaryTitle } from './conversation-titles.js';
 import type { TitleGenerator } from './title-generator.js';
@@ -92,6 +93,7 @@ interface PendingLogin {
 
 /** Per-turn overrides chosen in the UI. */
 export interface TurnRunOptions {
+  sender?: MessageSender;
   model?: string;
   effort?: string;
   account?: string;
@@ -100,6 +102,7 @@ export interface TurnRunOptions {
 
 /** A follow-up message queued to send when the current turn completes. */
 export interface QueueItem {
+  sender?: MessageSender;
   account?: string;
   useReserve?: boolean;
   dispatching?: boolean;
@@ -124,6 +127,7 @@ export interface QueueItem {
  *  actual enforcement of "AI models must ask permission before messaging
  *  another conversation". Denial/expiry means it was never sent. */
 export interface McpApproval {
+  sender?: MessageSender;
   id: string;
   projectId: string;
   projectName: string;
@@ -559,7 +563,7 @@ export class SessionManager {
       if (!ap) return; // stopped meanwhile
       if (this.sessionBusy(sessionId)) return; // this conversation is running; skip this tick
       try {
-        this.continueSession(ap.projectId, sessionId, prompt);
+        this.continueSession(ap.projectId, sessionId, prompt, { sender: { kind: 'autopilot' } });
       } catch {
         // e.g. session gone — drop autopilot for safety
         this.stopAutopilot(sessionId);
@@ -578,7 +582,7 @@ export class SessionManager {
       const t = setTimeout(() => {
         this.autopilotTimers.delete(sessionId);
         if (!this.loadAutopilot()[sessionId] || this.sessionBusy(sessionId)) return;
-        try { this.continueSession(ap.projectId, sessionId, ap.prompt); } catch { this.stopAutopilot(sessionId); }
+        try { this.continueSession(ap.projectId, sessionId, ap.prompt, { sender: { kind: 'autopilot' } }); } catch { this.stopAutopilot(sessionId); }
       }, stagger);
       this.autopilotTimers.set(sessionId, t);
       stagger += 1500;
@@ -627,7 +631,7 @@ export class SessionManager {
         `self-message limit reached (${limit} in a row). Waiting for a message from someone else before this conversation can queue itself again.`,
       );
     }
-    const item = this.enqueue(pid, { text, sessionId });
+    const item = this.enqueue(pid, { text, sessionId, sender: this.messageSender(sessionId) });
     this.selfQueueStreak.set(sessionId, used + 1);
     return { id: item.id, remaining: limit - (used + 1) };
   }
@@ -636,7 +640,7 @@ export class SessionManager {
   clearSelfQueueStreak(sessionId: string): void { this.selfQueueStreak.delete(sessionId); }
 
 
-  enqueue(pid: string, item: { text: string; account?: string; useReserve?: boolean; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
+  enqueue(pid: string, item: { text: string; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
     const text = (item.text ?? '').trim();
@@ -649,7 +653,7 @@ export class SessionManager {
     if (item.afterSessionId && !this.listProjects().projects.some(p=>p.conversations?.some(c=>c.sessionId===item.afterSessionId))) throw new Error('Dependency conversation not found');
     if (item.afterSessionId && item.afterSessionId === sessionId) throw new Error('A queue item cannot wait for its own conversation');
     const map = this.loadQueues();
-    const q: QueueItem = { id: randomUUID(), text, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
+    const q: QueueItem = { id: randomUUID(), text, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
     (map[pid] ??= []).push(q);
     this.saveQueues(map);
     this.emitQueue(pid, map);
@@ -707,7 +711,7 @@ export class SessionManager {
       try {this.saveQueues(current);} catch {return;} // Never send before the recovery marker is durable.
       if(item.requestId)this.emit('message_delivery',{requestId:item.requestId,sessionId,projectId:pid,status:'uncertain'});
       try {
-        this.continueSession(pid, sessionId, item.text, { model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve });
+        this.continueSession(pid, sessionId, item.text, { sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve });
       } catch(e) {
         item.dispatching=false;item.paused=true;item.error=(e as Error).message;
         try {this.saveQueues(current);this.emitQueue(pid,current);} catch {/* Keep the durable recovery marker. */}
@@ -1475,7 +1479,7 @@ export class SessionManager {
 
   /** An AI model asked (via MCP) to message projectId/sessionId. Records the
    *  request as 'pending' and returns immediately — it is NOT sent yet. */
-  requestMcpSend(projectId: string, sessionId: string | undefined, message: string, opts?: TurnRunOptions & { interactive?: boolean }): McpApproval {
+  requestMcpSend(projectId: string, sessionId: string | undefined, message: string, opts?: TurnRunOptions & { interactive?: boolean; from?: string }): McpApproval {
     const proj = this.projects().get(projectId);
     const prefs = this.conversationRunPrefs(projectId, sessionId, opts);
     const targetLabel = sessionId
@@ -1487,6 +1491,7 @@ export class SessionManager {
       projectName: proj?.name ?? projectId,
       sessionId,
       targetLabel,
+      sender: this.messageSender(opts?.from),
       message,
       model: prefs.model,
       effort: prefs.effort,
@@ -1530,7 +1535,7 @@ export class SessionManager {
         // circuit breaker, and a hop cap on top of them would only block an
         // exchange they are explicitly waving through, one card at a time.
         const out = this.deliverMcpMessage(a.projectId, a.sessionId, a.message, {
-          model: a.model, effort: a.effort, interactive: a.interactive,
+          model: a.model, effort: a.effort, interactive: a.interactive, sender: a.sender,
         });
         a.resultSessionId = out.sessionId;
         a.queued = out.queued;
@@ -1569,6 +1574,14 @@ export class SessionManager {
    *  worst of the options. Composing the prompt here means a queued message
    *  carries the same ASK convention a delivered one would. */
   /** A message from ANOTHER conversation also clears the self-message brake. */
+  private messageSender(from?: string): MessageSender {
+    if (from) for (const project of this.listProjects().projects) {
+      const conversation = project.conversations?.find(c => c.sessionId === from);
+      if (conversation) return { kind: 'conversation', projectId: project.id, sessionId: from, projectName: project.name, conversationTitle: conversation.title };
+    }
+    return from ? { kind: 'conversation', sessionId: from, conversationTitle: 'Unknown conversation' } : { kind: 'mcp' };
+  }
+
   deliverMcpMessage(
     projectId: string,
     sessionId: string | undefined,
@@ -1584,7 +1597,7 @@ export class SessionManager {
     }
     if (sessionId) this.clearSelfQueueStreak(sessionId);
     const prompt = opts.interactive !== false && !message.trimStart().startsWith('/') ? withAskInstructions(message) : message;
-    const run = this.conversationRunPrefs(projectId, sessionId, opts);
+    const run = { ...this.conversationRunPrefs(projectId, sessionId, opts), sender: opts.sender || this.messageSender(opts.from) };
     // Record the chain against the TARGET before the turn can start, so a send
     // it makes in that turn is counted as the next hop rather than a new chain.
     const land = (sid: string, queued: boolean): { sessionId: string; queued: boolean; hopsLeft: number } => {
@@ -1742,6 +1755,8 @@ export class SessionManager {
     } catch (error) {
       memoryWarning = 'Shared memory was unavailable for this turn: ' + (error as Error).message;
     }
+    const sender = runOpts?.sender && !prompt.trimStart().startsWith('/') ? { ...runOpts.sender, messageId: randomUUID() } : undefined;
+    turnPrompt = withMessageSender(turnPrompt, sender);
     const sourcePrompt=prompt;
     const run: ActiveRun = { sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice };
     this.runs.set(sessionId, run);
@@ -1780,7 +1795,7 @@ export class SessionManager {
         }
       };
       this.writeMarker(pid, sessionId, cwd, prompt);
-      emit('session_started', { sessionId, cwd, resume, prompt, model, effort });
+      emit('session_started', { sessionId, cwd, resume, prompt, model, effort, sender, displayPrompt: sender ? cleanMemorySource(prompt) : undefined });
       emit('turn_state', { active: true });
       if(memoryRecord)emit('memory_context',memoryRecord);
       if(memoryWarning)emit('memory_warning',{message:memoryWarning});

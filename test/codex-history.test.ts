@@ -1,3 +1,4 @@
+import { withMessageSender } from '../src/message-sender.js';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -311,4 +312,13 @@ describe('codexAdapter.readHistory on a 0.153.4 rollout (items, not message even
     ]);
     expect(codexAdapter.readHistory!([dir], 't-both', 100).map((r) => r.text)).toEqual(['hi', 'hello']);
   });
+});
+
+it('preserves different senders of identical messages while deduplicating provider echoes', () => {
+  const sender = {kind:'conversation' as const, projectId:'p', sessionId:'s', conversationTitle:'Reviewer', projectName:'Website', messageId:'one'};
+  const first=withMessageSender('Ready',sender),second=withMessageSender('Ready',{...sender,messageId:'two'});
+  const dir=rolloutDir('senders', [first,first,second].map(message=>({type:'event_msg',payload:{type:'user_message',message}})));
+  const rows=codexAdapter.readHistory!([dir],'senders',100);
+  expect(rows.map(row=>row.text)).toEqual(['Ready','Ready']);
+  expect(rows.map(row=>row.sender?.messageId)).toEqual(['one','two']);
 });

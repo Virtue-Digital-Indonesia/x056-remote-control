@@ -1,3 +1,4 @@
+import { readMessageSender } from '../message-sender.js';
 import { toolImagePaths } from '../artifact-references.js';
 import { stripMemoryContext } from '../memory-context.js';
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
@@ -350,9 +351,10 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
       if (att?.type !== 'queued_command' || att.commandMode !== 'prompt') continue;
       const qt = textFromContent(att.prompt).trim();
       if (qt === '') continue;
-      const shownQ = stripAskInstructions(stripMemoryContext(qt));
+      const attributed = readMessageSender(qt);
+      const shownQ = stripAskInstructions(stripMemoryContext(attributed.text));
       if (shownQ === '') continue;
-      out.push({ role: 'user', text: shownQ, ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined });
+      out.push({ role: 'user', text: shownQ, ...(attributed.sender ? { sender: attributed.sender } : {}), ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined });
       offsets.push(at);
       continue;
     }
@@ -417,9 +419,10 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
     // Users' prompts carry the appended ASK convention; assistants' final
     // messages carry the raw <<<ASK>>> block — strip both so neither leaks into
     // the rendered transcript on reload. Drop a message that was only an ASK.
-    const shown = type === 'user' ? stripAskInstructions(stripMemoryContext(text)) : stripAsk(text);
+    const attributed = type === 'user' ? readMessageSender(text) : { text };
+    const shown = type === 'user' ? stripAskInstructions(stripMemoryContext(attributed.text)) : stripAsk(text);
     if (shown === '') continue;
-    out.push({ role: type, text: shown, ts }); offsets.push(at);
+    out.push({ role: type, text: shown, ...(attributed.sender ? { sender: attributed.sender } : {}), ts }); offsets.push(at);
   }
   return { rows: out, offsets };
 }

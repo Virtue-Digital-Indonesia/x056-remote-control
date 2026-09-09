@@ -253,3 +253,11 @@ body[data-conversation-label-template=static][data-conversation-label-order=conv
 body[data-conversation-label-template=static][data-conversation-label-order=conversation] .stage-pin-choice>span,body[data-conversation-label-template=static][data-conversation-label-order=conversation] .automation-ap-open>span{display:flex;flex-direction:column}
 body[data-conversation-label-template=static][data-conversation-label-order=conversation] .stage-pin-choice strong,body[data-conversation-label-template=static][data-conversation-label-order=conversation] .automation-ap-open strong,body[data-conversation-label-template=static][data-conversation-label-order=conversation] .planner-copy strong{order:2;font-size:12px;font-weight:400;color:var(--muted)}
 body[data-conversation-label-template=static][data-conversation-label-order=conversation] .stage-pin-choice small,body[data-conversation-label-template=static][data-conversation-label-order=conversation] .automation-ap-open small,body[data-conversation-label-template=static][data-conversation-label-order=conversation] .planner-conversation{order:1;font-size:13px;font-weight:600;color:var(--text)}
+
+/* Sender attribution replaces YOU without adding another badge or toolbar. */
+.msg.user>.role.message-sender{display:flex;align-items:center;justify-content:flex-end;gap:8px;max-width:88%;margin-left:auto;margin-bottom:9px;text-transform:none;letter-spacing:0;color:var(--muted);text-align:right;line-height:1.4}
+.message-sender>.ic{width:16px;height:16px;flex:none;color:var(--muted)}
+.message-sender>span{min-width:0;display:flex;flex-direction:column;gap:2px}
+.message-sender strong,.message-sender small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.message-sender strong{font-size:12px;font-weight:600;color:var(--text)}
+.message-sender small{font-size:11px;font-weight:400;color:var(--muted)}

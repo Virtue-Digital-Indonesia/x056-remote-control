@@ -73,15 +73,16 @@ describe('all advertised output contracts', () => {
     const empty = await callToolResult(async () => ({ projects: [] }), 'list_projects', {});
     expect(validateResult('list_projects', empty).projects).toEqual([]);
     const history = await callToolResult(async () => [
-      { role: 'user', text: 'hello' }, { role: 'action', text: 'internal action' },
+      { role: 'user', text: 'hello', sender: { kind: 'conversation', projectName: 'Source', conversationTitle: 'Reviewer' } }, { role: 'action', text: 'internal action' },
       { role: 'assistant', text: 'reply', ts: '2026-09-08T00:00:00Z' },
     ], 'read_conversation', { projectId: 'p', sessionId: 's' });
     expect(validateResult('read_conversation', history).messages).toHaveLength(2);
+    expect(validateResult('read_conversation', history).messages[0].sender.projectName).toBe('Source');
   });
 
   it('exercises queue edits, cancellation, self limits and stop only in the fixture', async () => {
     expect((await tool('list_queued')).data.messages).toEqual([]);
-    const first = manager.enqueue('p', { text: 'first', sessionId: 's', paused: true, model: '', effort: '', notBefore: Date.now() + 86400000 });
+    const first = manager.enqueue('p', { text: 'first', sender: { kind: 'autopilot' }, sessionId: 's', paused: true, model: '', effort: '', notBefore: Date.now() + 86400000 });
     const second = manager.enqueue('p', { text: 'second', sessionId: 'unavailable', paused: true });
     const rows = (await tool('list_queued')).data.messages;
     expect(rows.find((r: any) => r.id === second.id).provider).toBeNull();

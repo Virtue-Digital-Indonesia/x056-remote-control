@@ -1,3 +1,4 @@
+import { readMessageSender } from '../message-sender.js';
 import { toolImagePaths } from '../artifact-references.js';
 import { stripMemoryContext } from '../memory-context.js';
 import { spawn } from 'node:child_process';
@@ -454,8 +455,10 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
       const item = asObj(payload.item);
       const kind = firstStr(item.type);
       if (kind === 'UserMessage' || kind === 'userMessage') {
-        const shown = stripAskInstructions(stripMemoryContext(itemText(item).trim()));
-        if (shown && shown !== lastUser) { push({ role: 'user', text: shown, ts }, at); lastUser = shown; }
+        const attributed = readMessageSender(itemText(item).trim());
+        const shown = stripAskInstructions(stripMemoryContext(attributed.text));
+        const userKey = JSON.stringify(attributed.sender || null) + shown;
+        if (shown && userKey !== lastUser) { push({ role: 'user', text: shown, ...(attributed.sender ? { sender: attributed.sender } : {}), ts }, at); lastUser = userKey; }
       } else if (kind === 'AgentMessage' || kind === 'agentMessage') {
         const shown = stripAsk(itemText(item).trim());
         if (shown && shown !== lastAssistant) { push({ role: 'assistant', text: shown, ts }, at); lastAssistant = shown; }
@@ -464,8 +467,10 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
       }
       // Command/patch items are already rendered from response_item above.
     } else if (payload.type === 'user_message' && typeof payload.message === 'string') {
-      const shown = stripAskInstructions(stripMemoryContext(payload.message.trim()));
-      if (shown && shown !== lastUser) { push({ role: 'user', text: shown, ts }, at); lastUser = shown; }
+      const attributed = readMessageSender(payload.message.trim());
+      const shown = stripAskInstructions(stripMemoryContext(attributed.text));
+      const userKey = JSON.stringify(attributed.sender || null) + shown;
+      if (shown && userKey !== lastUser) { push({ role: 'user', text: shown, ...(attributed.sender ? { sender: attributed.sender } : {}), ts }, at); lastUser = userKey; }
     } else if (payload.type === 'agent_message' && typeof payload.message === 'string') {
       // EVERY assistant message the turn streamed — confirmed live: a real
       // rollout held 154 phase:"commentary" + 20 phase:"final_answer" messages,

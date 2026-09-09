@@ -31,6 +31,7 @@ export interface AccountIdentity {
  *  that the main turn's model changed (text = the model id), derived from the
  *  transcript rather than stored separately. */
 export interface HistoryEntry {
+  sender?: import('./message-sender.js').MessageSender;
   /** 'action' = a tool call reconstructed from the transcript, so the trail of
    *  what the agent DID survives a reload (the live activity rows only ever
    *  existed in browser memory). `text` is the display label. */

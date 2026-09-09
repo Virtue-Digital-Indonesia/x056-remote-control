@@ -330,7 +330,7 @@ function fmtHistory(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return '(no messages)';
   return rows
     .filter((r) => r.role === 'user' || r.role === 'assistant')
-    .map((r) => `[${r.role}${r.ts ? ' ' + r.ts : ''}]\n${r.text}`)
+    .map((r) => `[${r.role}${r.ts ? ' ' + r.ts : ''}]${r.sender ? '\nFrom: ' + (r.sender.conversationTitle || r.sender.kind) + (r.sender.projectName ? ' · ' + r.sender.projectName : '') : ''}\n${r.text}`)
     .join('\n\n');
 }
 
@@ -425,7 +425,7 @@ for (const tool of TOOLS) {
 const result = (text, structuredContent) => ({ content: [{ type: 'text', text }], structuredContent });
 const messages = (rows) => (Array.isArray(rows) ? rows : [])
   .filter((r) => r.role === 'user' || r.role === 'assistant')
-  .map(({ role, text, ts }) => ({ role, text, ...(ts !== undefined ? { ts } : {}) }));
+  .map(({ role, text, ts, sender }) => ({ role, text, ...(ts !== undefined ? { ts } : {}), ...(sender ? { sender } : {}) }));
 
 /** Compatibility entry point for callers that only need the legacy text. */
 export async function callTool(api, name, args) {

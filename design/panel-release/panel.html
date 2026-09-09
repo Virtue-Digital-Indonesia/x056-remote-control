@@ -2078,10 +2078,22 @@
   function fallbackCopy(txt) {
     try { var ta = document.createElement('textarea'); ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); } catch (e) {}
   }
-  function nodeMsg(role, text, atts, ts, provider) {
+  function nodeMsg(role, text, atts, ts, provider, sender) {
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role;
     var lab = document.createElement('div'); lab.className = 'role';
     lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
+    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp'].indexOf(sender.kind) >= 0) {
+      wrap.classList.add('from-sender');
+      if (sender.messageId) wrap.dataset.messageSourceId = sender.messageId;
+      lab.classList.add('message-sender'); lab.textContent = '';
+      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : 'plug', 'sm'));
+      var identity = document.createElement('span'), name = document.createElement('strong'), project = document.createElement('small');
+      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : 'External sender';
+      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : 'MCP');
+      identity.appendChild(name); identity.appendChild(project); lab.appendChild(identity);
+      lab.title = 'From ' + name.textContent + ' · ' + project.textContent;
+      lab.setAttribute('aria-label', lab.title);
+    }
     wrap.appendChild(lab);
     var content = document.createElement('div'); content.className = 'content';
     if (role === 'assistant') content.appendChild(renderMarkdown(text)); else content.appendChild(document.createTextNode(text));
@@ -2163,7 +2175,7 @@
     return d;
   }
   function nodeAct(label, isSub, agentId) { var d = document.createElement('div'); if(agentId)d.dataset.agentId=agentId; d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
-  function addMsg(role, text, imgUrl, ts) { appendNode(currentProjectId, lastSessionId, nodeMsg(role, text, imgUrl, ts, currentProvider())); }
+  function addMsg(role, text, imgUrl, ts, sender) { appendNode(currentProjectId, lastSessionId, nodeMsg(role, text, imgUrl, ts, currentProvider(), sender)); }
   function addSys(text, cls) { var node = nodeSys(text, cls); appendNode(currentProjectId, lastSessionId, node); return node; }
   // "live" / "showing cached view" float over the thread instead of being
   // inserted into it (see .stream-status) — one singleton pill, shown/faded/hidden
@@ -2445,6 +2457,11 @@
       renderStrip();
     }
     else if (kind === 'session_started') {
+      if (data.sender && data.sender.messageId && typeof data.displayPrompt === 'string') {
+        var host = mineConvo ? chatEl : viewOf(pid, sid).frag;
+        var shown = Array.prototype.some.call(host.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === data.sender.messageId; });
+        if (!shown) appendNode(pid, sid, nodeMsg('user', data.displayPrompt, null, data.ts, providerFor(pid, sid), data.sender));
+      }
       clearQuestion(pid, sid);
       var v = viewOf(pid, sid);
       if (data.resume === false) v.activityLog = []; // brand-new session — don't inherit the prior one's trail
@@ -3925,7 +3942,7 @@
                 ? function () { appendNode(pid, sid, nodeNotice(m.text)); }           // compacted / cleared divider
                 : m.role === 'summary'
                   ? function () { appendNode(pid, sid, nodeSummary(m.text, m.ts)); }  // post-compaction recap
-                  : function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts); } });
+                  : function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, m.sender); } });
       });
       // The transcript now carries the action trail itself, so replaying the
       // in-memory log on top would double every row from this browser session.
@@ -4026,7 +4043,7 @@
                   ? nodeNotice(m.text)
                   : m.role === 'summary'
                     ? nodeSummary(m.text, m.ts)
-                    : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, providerFor(pid, sid)));
+                    : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, providerFor(pid, sid), m.sender));
         });
         chatEl.insertBefore(frag, chatEl.firstChild);
         scroller.scrollTop = scroller.scrollHeight - fromBottom;
@@ -4313,7 +4330,7 @@
         : m.role === 'notice' ? nodeNotice(m.text)
         : m.role === 'summary' ? nodeSummary(m.text, m.ts)
         : m.role === 'model' ? nodeModelMark(m.text, m.ts)
-        : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, provider || 'claude');
+        : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, provider || 'claude', m.sender);
       box.appendChild(n);
     });
   }

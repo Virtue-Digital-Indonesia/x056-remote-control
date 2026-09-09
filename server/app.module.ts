@@ -115,7 +115,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // it instead of failing.
   const cron = new CronScheduler({
     stateDir: cfg.stateDir,
-    deliver: (projectId, sessionId, prompt) => manager.deliverMcpMessage(projectId, sessionId, prompt),
+    deliver: (projectId, sessionId, prompt) => manager.deliverMcpMessage(projectId, sessionId, prompt, { sender: { kind: 'automation' } }),
   });
   cron.start();
 
