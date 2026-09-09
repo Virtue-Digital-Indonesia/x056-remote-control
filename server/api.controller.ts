@@ -1,3 +1,4 @@
+import { findMessageReply } from './message-reply.js';
 import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { SessionTimerReader } from './session-timers.js';
 import type { Project } from './projects.js';
@@ -482,6 +483,19 @@ export class ApiController {
     } catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
+  /** Exact-request reply lookup. Never substitutes another turn's answer. */
+  @Get('conversations/reply')
+  conversationReply(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string, @Query('messageId') messageId: string) {
+    if (!projectId || !sessionId || !messageId || messageId.length > 128)
+      throw new BadRequestException('projectId, sessionId and messageId required');
+    if (!this.manager.listConversations(projectId).some(c => c.sessionId === sessionId))
+      throw new BadRequestException('unknown conversation for that project');
+    const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
+    if (!adapter.readHistoryPage) throw new BadRequestException('Provider does not support reply lookup');
+    try { return findMessageReply(before => adapter.readHistoryPage!(configDirs, providerSessionId, 500, before), messageId); }
+    catch { throw new BadRequestException('Conversation reply history unavailable'); }
+  }
+
   /** Read ANY conversation's history by address — the MCP bridge's read tool
    *  (the /sessions/current/history endpoint below only reads the currently
    *  selected one, which a cross-conversation reader must not depend on). */
@@ -490,13 +504,17 @@ export class ApiController {
     @Query('projectId') projectId?: string,
     @Query('sessionId') sessionId?: string,
     @Query('limit') limit?: string,
+    @Query('strict') strict?: string,
   ): HistoryEntry[] {
     if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    if (strict === 'true' && !this.manager.listConversations(projectId).some(c => c.sessionId === sessionId))
+      throw new BadRequestException('unknown conversation for that project');
     const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 100;
     try {
       const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
       return adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [];
     } catch {
+      if (strict === 'true') throw new BadRequestException('Conversation history unavailable');
       return [];
     }
   }
@@ -511,7 +529,7 @@ export class ApiController {
   @Post('conversations/send')
   @HttpCode(200)
   conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean; from?: string }):
-    { mode: 'auto'; sessionId: string; queued: boolean; hopsLeft: number } | { mode: 'approval'; approvalId: string } {
+    { mode: 'auto'; sessionId: string; queued: boolean; hopsLeft: number; messageId: string } | { mode: 'approval'; approvalId: string; messageId?: string } {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
     if (body.sessionId) {
@@ -531,7 +549,7 @@ export class ApiController {
     if (this.manager.mcpSendMode() === 'auto') {
       try {
         const out = this.manager.deliverMcpMessage(body.projectId, body.sessionId, body.prompt, opts);
-        return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued, hopsLeft: out.hopsLeft };
+        return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued, hopsLeft: out.hopsLeft, messageId: out.messageId };
       } catch (err) {
         // 409, not 400: the request is well-formed, the exchange is just over.
         if (err instanceof RelayLimitError) throw new ConflictException(err.message);
@@ -539,7 +557,7 @@ export class ApiController {
       }
     }
     const approval = this.manager.requestMcpSend(body.projectId, body.sessionId, body.prompt, opts);
-    return { mode: 'approval' as const, approvalId: approval.id };
+    return { mode: 'approval' as const, approvalId: approval.id, messageId: approval.sender?.messageId };
   }
 
   /**

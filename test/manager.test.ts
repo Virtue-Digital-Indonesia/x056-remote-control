@@ -171,15 +171,19 @@ describe('SessionManager', () => {
     mgr.setProjectProvider(project.id, provider === 'codex' ? 'claude' : 'codex');
     // Selection without sending also becomes the default for incoming messages.
     mgr.setConversationRunPrefs(project.id, target, { model:first, effort:'medium' });
-    mgr.deliverMcpMessage(project.id, target, 'use my model');
+    const sent = mgr.deliverMcpMessage(project.id, target, 'use my model');
+    expect(readMessageSender(calls.at(-1)!.prompt).sender?.messageId).toBe(sent.messageId);
     expect(calls.at(-1)).toMatchObject({model:first,effort:'medium'});
     expect(calls.at(-1)?.adapter?.id).toBe(provider);
     const queued = mgr.deliverMcpMessage(project.id, target, 'queue my model');
     expect(queued.queued).toBe(true);
+    expect(queued.messageId).not.toBe(sent.messageId);
+    expect(mgr.queues()[project.id].at(-1)?.sender?.messageId).toBe(queued.messageId);
     expect(mgr.queues()[project.id].at(-1)).toMatchObject({model:first,effort:'medium'});
     mgr.setConversationRunPrefs(project.id, target, {model:second});
     await waitFor(() => calls.length===4 && !mgr.snapshot().running);
     expect(calls[3]).toMatchObject({model:first,effort:'medium'});
+    expect(readMessageSender(calls[3].prompt).sender?.messageId).toBe(queued.messageId);
     // The pending approval names the resolved model and cannot change underneath
     // the operator. Denying a send must never mutate the target's selection.
     const approval = mgr.requestMcpSend(project.id, target, 'approved model');
@@ -1040,10 +1044,11 @@ it('keeps source attribution through approval and durable queueing while resetti
   const queued=mgr.deliverMcpMessage(target.id,tid,'Queued message',{from:sid});
   expect(queued.queued).toBe(true);
   const reloaded=new SessionManager({stateDir,workspaceRoot:dir});
-  expect(reloaded.queues()[target.id][0].sender).toMatchObject(approval.sender!);
+  expect(queued.messageId).not.toBe(approval.sender!.messageId);
+  expect(reloaded.queues()[target.id][0].sender).toMatchObject({ ...approval.sender!, messageId: queued.messageId });
   expect(reloaded.queues()[target.id][0].text).not.toContain('x056 message sender');
   await waitFor(()=>calls.length===4&&!mgr.snapshot().running);
-  expect(readMessageSender(calls.at(-1)!.prompt).sender).toMatchObject(approval.sender!);
+  expect(readMessageSender(calls.at(-1)!.prompt).sender).toMatchObject({ ...approval.sender!, messageId: queued.messageId });
 });
 
 describe('Codex onboarding inherits account setup', () => {

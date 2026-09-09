@@ -7,6 +7,7 @@ export declare const TOOLS: {
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
+  annotations: { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean };
 }[];
 
 /** Run one tool. `api` is the caller's authenticated fetch into the gateway.
@@ -18,7 +19,7 @@ export declare function callTool(
 ): Promise<string>;
 
 export interface ToolResult {
-  content: { type: 'text'; text: string }[];
+  content: [{ type: 'text'; text: string }, ...({ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string })[]];
   structuredContent: Record<string, unknown>;
 }
 export declare function callToolResult(

@@ -1,3 +1,4 @@
+import { WORKSPACE_SCHEMAS } from './x056-mcp-workspace.mjs';
 // Output contracts for the shared HTTP/stdio handlers. Sources: api.controller,
 // manager, cron, memory-store/controller, provider.HistoryEntry, and the deployed
 // MemoryKnowledge code query and wiki search/page-read handlers. No live data or
@@ -54,18 +55,20 @@ const queueItem = object({
   account: str, useReserve: bool, dispatching: bool, error: str, notBefore: num,
   afterSessionId: str, paused: bool, requestId: str, ...targetFields,
 }, ['projectId', 'id', 'text', 'at', ...Object.keys(targetFields)]);
-const deliveryFields = { mode: choices('auto', 'approval'), projectId: str, sessionId: str, approvalId: str, hopsLeft: num };
+const deliveryFields = { messageId: str, mode: choices('auto', 'approval'), projectId: str, sessionId: str, approvalId: str, hopsLeft: num };
 const delivery = (status, extra = {}, required = []) => object({ ...deliveryFields, status: literal(status), ...extra },
   ['mode', 'projectId', 'status', ...required]);
 const sendResult = { oneOf: [
   delivery('pending', {}, ['approvalId']), delivery('expired', {}, ['approvalId']),
   delivery('denied', {}, ['approvalId']), delivery('failed', { error: str }, ['approvalId', 'error']),
   delivery('queued', {}, ['sessionId']), delivery('sent', {}, ['sessionId']),
-  delivery('reply', { messages: array(message) }, ['sessionId', 'messages']),
+  delivery('reply', { messages: array(message), truncated: bool }, ['sessionId', 'messages']),
   delivery('reply_timeout', { waitSeconds: num }, ['sessionId', 'waitSeconds']),
 ] };
 
 const schemas = {
+  ...WORKSPACE_SCHEMAS,
+  read_reply: object({ messageId: str, found: bool, messages: array(message), truncated: bool }),
   list_projects: object({ projects: array(object({ id: str, name: str, cwd: str, provider, current: bool })) }),
   list_conversations: object({ conversations: array(object({ sessionId: str, title: str, provider, model: str,
     effort: str, createdAt: str, current: bool }, ['sessionId', 'title', 'provider', 'current'])) }),

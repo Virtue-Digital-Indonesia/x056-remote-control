@@ -108,7 +108,8 @@ Claude Desktop can also run the bridge locally over stdio, in
 `x056-mcp.mjs` imports `x056-mcp-tools.mjs` beside it — keep the pair together
 (clone the repo, or copy both), and use Node 18+ for built-in `fetch`.
 
-Tools: `list_projects`, `list_conversations`, `read_conversation`, `send_message`.
+The MCP exposes 34 tools for conversations, activity, artifacts, scheduling, queues, memory and code search.
+See [MCP contracts](docs/mcp-output-contracts.md) for the tool list and limits.
 Both transports share one implementation, so they always expose the same set.
 
 **`send_message` has two modes**, chosen by you in the MCP servers panel (never

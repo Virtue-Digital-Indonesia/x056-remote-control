@@ -1493,7 +1493,7 @@ export class SessionManager {
       projectName: proj?.name ?? projectId,
       sessionId,
       targetLabel,
-      sender: this.messageSender(opts?.from),
+      sender: { ...this.messageSender(opts?.from), messageId: randomUUID() },
       message,
       model: prefs.model,
       effort: prefs.effort,
@@ -1589,7 +1589,7 @@ export class SessionManager {
     sessionId: string | undefined,
     message: string,
     opts: TurnRunOptions & { interactive?: boolean; from?: string } = {},
-  ): { sessionId: string; queued: boolean; hopsLeft: number } {
+  ): { sessionId: string; queued: boolean; hopsLeft: number; messageId: string } {
     // Where this message sits in an AI-to-AI chain. `from` is the conversation
     // whose turn is making the call; absent means a human, a scheduled job, or
     // an external client is the origin, which starts a fresh chain.
@@ -1599,17 +1599,17 @@ export class SessionManager {
     }
     if (sessionId) this.clearSelfQueueStreak(sessionId);
     const prompt = opts.interactive !== false && !message.trimStart().startsWith('/') ? withAskInstructions(message) : message;
-    const run = { ...this.conversationRunPrefs(projectId, sessionId, opts), sender: opts.sender || this.messageSender(opts.from) };
+    const run = { ...this.conversationRunPrefs(projectId, sessionId, opts), sender: { ...(opts.sender || this.messageSender(opts.from)), messageId: opts.sender?.messageId || randomUUID() } };
     // Record the chain against the TARGET before the turn can start, so a send
     // it makes in that turn is counted as the next hop rather than a new chain.
-    const land = (sid: string, queued: boolean): { sessionId: string; queued: boolean; hopsLeft: number } => {
+    const land = (sid: string, queued: boolean) => {
       this.setRelayChain(sid, hop);
       // Report the remaining budget, so a caller can wrap up on its own rather
       // than discovering the bound only by being refused.
-      return { sessionId: sid, queued, hopsLeft: SessionManager.RELAY_HOP_LIMIT - hop.depth };
+      return { sessionId: sid, queued, hopsLeft: SessionManager.RELAY_HOP_LIMIT - hop.depth, messageId: run.sender.messageId };
     };
     if (!sessionId) return land(this.start(prompt, undefined, run, projectId), false);
-    const queue = (): { sessionId: string; queued: boolean; hopsLeft: number } => {
+    const queue = () => {
       this.enqueue(projectId, { text: prompt, ...run, account:opts.account, useReserve:opts.useReserve, sessionId });
       return land(sessionId, true);
     };
@@ -1757,7 +1757,7 @@ export class SessionManager {
     } catch (error) {
       memoryWarning = 'Shared memory was unavailable for this turn: ' + (error as Error).message;
     }
-    const sender = runOpts?.sender && !prompt.trimStart().startsWith('/') ? { ...runOpts.sender, messageId: randomUUID() } : undefined;
+    const sender = runOpts?.sender && !prompt.trimStart().startsWith('/') ? { ...runOpts.sender, messageId: runOpts.sender.messageId || randomUUID() } : undefined;
     turnPrompt = withMessageSender(turnPrompt, sender);
     const sourcePrompt=prompt;
     const run: ActiveRun = { sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice };

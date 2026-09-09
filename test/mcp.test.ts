@@ -142,6 +142,23 @@ describe('x056 MCP bridge (real script against a live gateway)', () => {
     expect(text).toMatch(/\[assistant.*\]/);
   });
 
+  it('exposes workspace tools and image content through the real stdio bridge', async () => {
+    expect(toolText(await rpc('tools/call', { name: 'search_conversations', arguments: { query: 'Seeded', limit: 1 } }))).toContain('seeded-conv-1');
+    expect(toolText(await rpc('tools/call', { name: 'get_activity', arguments: {} }))).toContain('observedAt');
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=';
+    const path = join(dir, 'stdio.png');
+    writeFileSync(path, Buffer.from(png, 'base64'));
+    const added = await rpc('tools/call', { name: 'register_artifact', arguments: { projectId: 'p1', sessionId: 'seeded-conv-1', path } });
+    const id = (added.result as any).structuredContent.artifact.id;
+    const read = await rpc('tools/call', { name: 'read_artifact', arguments: { id } });
+    expect((read.result as any).content[1]).toEqual({ type: 'image', data: png, mimeType: 'image/png' });
+    expect(toolText(await rpc('tools/call', { name: 'list_artifacts', arguments: { projectId: 'p1' } }))).toContain(id);
+    const reply = await rpc('tools/call', { name: 'read_reply', arguments: { projectId: 'p1', sessionId: 'seeded-conv-1', messageId: 'not-delivered' } });
+    expect((reply.result as any).structuredContent.found).toBe(false);
+    const invalid = await rpc('tools/call', { name: 'search_conversations', arguments: { limit: -1 } });
+    expect((invalid.result as any).isError).toBe(true);
+  });
+
   it('send_message pauses for approval, lists as pending, and only dispatches once approved', async () => {
     // The tool call blocks (polling) until a human decides — fire it, then act
     // as the panel operator would: see it in the pending list and approve it.

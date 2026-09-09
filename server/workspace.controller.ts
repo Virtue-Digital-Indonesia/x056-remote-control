@@ -1,3 +1,4 @@
+import { openSync, closeSync, readSync, fstatSync } from 'node:fs';
 import { BadRequestException, Body, Controller, Get, Inject, Post, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { join, basename } from 'node:path';
@@ -201,6 +202,26 @@ export class WorkspaceController {
       truncated: !done,
     };
   }
+  /** Read retained bytes only; never fetch preview URLs or arbitrary paths. */
+  @Get('artifact-content') content(@Query('id') id: string) {
+    const artifact = this.artifacts.list().find(item => item.id === id);
+    if (!artifact) throw new BadRequestException('Artifact not found');
+    const found = this.artifacts.fileFor(id);
+    if (!found) return { artifact, truncated: false, note: artifact.file ? 'Retained file is unavailable.' : 'This artifact has no file content.' };
+    const mime = artifact.mime || '';
+    const image = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mime);
+    const text = mime.startsWith('text/') || mime === 'application/json';
+    if (!image && !text) return { artifact, truncated: false, note: 'Download this file using /api/workspace/artifact-file?id=' + encodeURIComponent(id) };
+    const fd = openSync(found.path, 'r');
+    try {
+      const size = fstatSync(fd).size, max = image ? 2 * 1024 * 1024 : 64 * 1024;
+      if (image && size > max) return { artifact, truncated: true, note: 'Image exceeds the 2 MB inline limit; use the artifact download endpoint.' };
+      const bytes = Buffer.alloc(Math.min(size, max));
+      const count = readSync(fd, bytes, 0, bytes.length, 0);
+      return { artifact, truncated: size > max, ...(image ? { image: { data: bytes.subarray(0, count).toString('base64'), mimeType: mime } } : { text: bytes.subarray(0, count).toString('utf8') }) };
+    } finally { closeSync(fd); }
+  }
+
   @Get('artifact-file') file(@Query('id') id: string, @Res() res: Response) {
     const found = this.artifacts.fileFor(id);
     if (!found) {

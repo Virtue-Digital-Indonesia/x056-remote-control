@@ -44,9 +44,14 @@ const projects = await check('list_projects');
 const project = projects.projects.find(p => p.cwd === '/home/efran/remote-development/x056-remote-control');
 if (project) {
   await check('list_conversations', { projectId: project.id });
-  await check('read_conversation', { projectId: project.id, sessionId: '__mcp_output_missing_readonly__', limit: 1 });
+  await check('read_conversation', { projectId: project.id, sessionId: '__mcp_output_missing_readonly__', limit: 1 }, true);
   await check('memory_context', { projectId: project.id, query: 'deployment' });
 }
+await check('get_activity');
+await check('search_conversations', { limit: 1 });
+await check('list_artifacts', { limit: 1 });
+await check('read_artifact', { id: '__mcp_output_missing_readonly__' }, true);
+await check('read_reply', { projectId: '__missing__', sessionId: '__missing__', messageId: '__missing__' }, true);
 await check('list_queued');
 await check('list_scheduled');
 const memory = await check('memory_search', { query: '', crossProject: true, limit: 1 });

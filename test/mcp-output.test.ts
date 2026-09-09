@@ -50,9 +50,9 @@ afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllEnvs(); 
 afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir, { recursive: true, force: true }); });
 
 describe('all advertised output contracts', () => {
-  it('compiles 28 useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(28);
-    expect(validators.size).toBe(28);
+  it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
+    expect(TOOLS).toHaveLength(34);
+    expect(validators.size).toBe(34);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
       expect(ajv.validateSchema(tool.outputSchema)).toBe(true);
@@ -69,7 +69,7 @@ describe('all advertised output contracts', () => {
     const conversations = await tool('list_conversations', { projectId: 'p' });
     expect(conversations.data.conversations[0]).not.toHaveProperty('createdAt');
     expect(conversations.data.conversations[1]).toMatchObject({ provider: 'codex', model: '', effort: '', createdAt: '1970-01-01T00:00:00.001Z' });
-    expect((await tool('read_conversation', { projectId: 'p', sessionId: 'unavailable' })).data.messages).toEqual([]);
+    expect((await tool('read_conversation', { projectId: 'p', sessionId: 'unavailable' })).isError).toBe(true);
     const empty = await callToolResult(async () => ({ projects: [] }), 'list_projects', {});
     expect(validateResult('list_projects', empty).projects).toEqual([]);
     const history = await callToolResult(async () => [
@@ -127,7 +127,7 @@ describe('all advertised output contracts', () => {
     expect((await tool('cancel_scheduled', { id })).data.ok).toBe(false);
     for (const j of cron.list()) cron.remove(j.id);
     const recurring = await tool('schedule_task', { projectId: 'p', schedule: '0 9 * * *', tz: 'UTC', prompt: 'fixture' });
-    vi.spyOn(manager, 'deliverMcpMessage').mockReturnValue({ sessionId: 's', queued: true, hopsLeft: 3 });
+    vi.spyOn(manager, 'deliverMcpMessage').mockReturnValue({ sessionId: 's', queued: true, hopsLeft: 3, messageId: 'fixture-message' });
     cron.tick(new Date('2030-01-01T09:00:00Z'));
     expect((await tool('list_scheduled')).data.jobs[0]).toMatchObject({ runCount: 1, lastResult: 'queued', sessionId: 's' });
     await tool('cancel_scheduled', { id: recurring.data.job.id });
@@ -170,7 +170,7 @@ describe('all advertised output contracts', () => {
     // These are the service's actual response shapes, not invented symbol JSON.
     for (const name of ['code_search', 'code_callers', 'code_callees', 'code_impact', 'code_node', 'code_explore']) {
       call.mockResolvedValueOnce({ text: 'Fixture code result', isError: false });
-      expect((await tool(name, { query: 'fixture', symbol: 'fixture' })).data.text).toBe('Fixture code result');
+      expect((await tool(name, ['code_search', 'code_explore'].includes(name) ? { query: 'fixture' } : { symbol: 'fixture' })).data.text).toBe('Fixture code result');
     }
     call.mockResolvedValueOnce({ text: '', isError: false });
     expect((await tool('code_search', { query: 'empty' })).content[0].text).toBe('(no result)');
@@ -185,10 +185,10 @@ describe('all advertised output contracts', () => {
   });
 
   it('keeps HTTP approval denial and auto queue states distinct, with the same delivery selection', async () => {
-    const delivered = vi.spyOn(manager, 'deliverMcpMessage').mockReturnValue({ sessionId: 's', queued: true, hopsLeft: 0 });
+    const delivered = vi.spyOn(manager, 'deliverMcpMessage').mockReturnValue({ sessionId: 's', queued: true, hopsLeft: 0, messageId: 'fixture-message' });
     manager.setMcpSendMode('auto');
     const automatic = await tool('send_message', { projectId: 'p', sessionId: 's', message: 'fixture', model: '', effort: '' });
-    expect(automatic.data.delivery).toMatchObject({ mode: 'auto', status: 'queued', hopsLeft: 0 });
+    expect(automatic.data.delivery).toMatchObject({ mode: 'auto', status: 'queued', hopsLeft: 0, messageId: 'fixture-message' });
     expect(delivered.mock.calls[0][3]).toMatchObject({ model: '', effort: '' });
     manager.setMcpSendMode('approval');
     const request = tool('send_message', { projectId: 'p', sessionId: 's', message: 'deny fixture' });
@@ -212,9 +212,81 @@ describe('all advertised output contracts', () => {
     const { stdout } = await promisify(execFile)('node', ['scripts/verify-mcp-output.mjs', base], {
       env: { ...process.env, X056_TOKEN: token },
     });
-    expect(JSON.parse(stdout)).toMatchObject({ actions: 28, schemasCompiled: 28 });
+    expect(JSON.parse(stdout)).toMatchObject({ actions: 34, schemasCompiled: 34 });
     expect(send).not.toHaveBeenCalled();
     expect(snapshot()).toEqual(before);
+  });
+
+  it('exposes activity and searchable conversations without changing selection or dispatching', async () => {
+    const send = vi.spyOn(manager, 'deliverMcpMessage');
+    const before = manager.snapshot().currentProjectId;
+    expect((await tool('get_activity')).data).toMatchObject({ busy: false, workflows: [], questions: [] });
+    const result = await tool('search_conversations', { query: 'fixture', provider: 'codex', limit: 1 });
+    expect(result.data.items).toHaveLength(1);
+    expect(result.data.items[0]).toMatchObject({ sessionId: 'c', provider: 'codex', running: false, lastMessageAt: null });
+    expect((await tool('search_conversations', { query: 'no match' })).data.total).toBe(0);
+    expect((await tool('search_conversations', { limit: 1, offset: 1 })).data.items).toHaveLength(1);
+    expect((await tool('search_conversations', { status: 'running' })).data.items).toEqual([]);
+    expect(manager.snapshot().currentProjectId).toBe(before);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('registers retained images, previews and test results and reads their content', async () => {
+    const path = join(dir, 'work', 'result.png');
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=', 'base64');
+    writeFileSync(path, png);
+    const image = (await tool('register_artifact', { projectId: 'p', sessionId: 's', title: 'Screenshot', path })).data.artifact;
+    expect(image).toMatchObject({ kind: 'image', mime: 'image/png', size: png.length });
+    expect(image).not.toHaveProperty('original');
+    expect(image).not.toHaveProperty('file');
+    expect((await tool('register_artifact', { projectId: 'p', sessionId: 's', path })).data.artifact.id).toBe(image.id);
+    rmSync(path);
+    const read = await tool('read_artifact', { id: image.id });
+    expect(read.data.imageIncluded).toBe(true);
+    expect(read.content[1]).toEqual({ type: 'image', mimeType: 'image/png', data: png.toString('base64') });
+    const preview = (await tool('register_artifact', { projectId: 'p', sessionId: 'c', url: 'https://example.test/preview' })).data.artifact;
+    expect((await tool('read_artifact', { id: preview.id })).data.imageIncluded).toBe(false);
+    const test = (await tool('register_artifact', { projectId: 'p', sessionId: 's', summary: '44 tests passed', status: 'passed' })).data.artifact;
+    expect(test).toMatchObject({ kind: 'test', summary: '44 tests passed', status: 'passed' });
+    expect((await tool('list_artifacts', { sessionId: 's', kind: 'image' })).data.items[0].id).toBe(image.id);
+    expect((await tool('list_artifacts', { query: 'tests', limit: 1 })).data.total).toBe(1);
+    expect((await tool('read_artifact', { id: 'missing' })).isError).toBe(true);
+    expect((await tool('register_artifact', { projectId: 'p', sessionId: 's', url: 'javascript:alert(1)' })).isError).toBe(true);
+    expect((await tool('register_artifact', { projectId: 'p', sessionId: 's', path: '/etc/passwd' })).isError).toBe(true);
+    expect((await tool('register_artifact', { projectId: 'p', sessionId: 'missing', summary: 'invalid' })).isError).toBe(true);
+    expect((await tool('register_artifact', { projectId: 'p', sessionId: 's', summary: 'test', url: 'https://example.test' })).isError).toBe(true);
+    const large = join(dir, 'work', 'large.txt');
+    writeFileSync(large, 'a'.repeat(70_000));
+    const text = (await tool('register_artifact', { projectId: 'p', sessionId: 's', path: large })).data.artifact;
+    const textRead = (await tool('read_artifact', { id: text.id })).data;
+    expect(textRead.truncated).toBe(true);
+    expect(textRead.text).toHaveLength(65536);
+    writeFileSync(path, Buffer.alloc(2 * 1024 * 1024 + 1));
+    const big = (await tool('register_artifact', { projectId: 'p', sessionId: 's', path })).data.artifact;
+    expect((await tool('read_artifact', { id: big.id })).data).toMatchObject({ truncated: true, imageIncluded: false });
+  });
+
+  it.each(['s', 'c'])('reads correlated replies through the %s provider history adapter', async sessionId => {
+    const ctx = manager.historyContext('p', sessionId);
+    const page = vi.fn(() => ({ rows: [
+      { role: 'user' as const, text: 'request', sender: { kind: 'mcp' as const, messageId: 'wanted' } },
+      { role: 'assistant' as const, text: 'correlated answer' },
+    ], cursor: 0, done: true }));
+    vi.spyOn(manager, 'historyContext').mockReturnValue({ ...ctx, adapter: { ...ctx.adapter, readHistoryPage: page } });
+    expect((await tool('read_reply', { projectId: 'p', sessionId, messageId: 'wanted' })).data).toMatchObject({ found: true, messages: [{ text: 'correlated answer' }] });
+    expect((await tool('read_reply', { projectId: 'p', sessionId, messageId: 'other' })).data.found).toBe(false);
+    page.mockImplementation(() => { throw new Error('Fixture disk failure'); });
+    expect((await tool('read_reply', { projectId: 'p', sessionId, messageId: 'wanted' })).isError).toBe(true);
+  });
+
+  it('validates inputs before calling the API and advertises tool effects', async () => {
+    const api = vi.fn();
+    await expect(callToolResult(api, 'search_conversations', { limit: -1 })).rejects.toThrow('Invalid tool arguments');
+    await expect(callToolResult(api, 'get_activity', { unexpected: true })).rejects.toThrow('Invalid tool arguments');
+    await expect(callToolResult(api, 'send_message', { projectId: 'p' })).rejects.toThrow('Invalid tool arguments');
+    expect(api).not.toHaveBeenCalled();
+    expect(TOOLS.find(t => t.name === 'get_activity')!.annotations.readOnlyHint).toBe(true);
+    expect(TOOLS.find(t => t.name === 'stop_conversation')!.annotations.destructiveHint).toBe(true);
   });
 
   it('covers every advertised action', () => { expect([...covered].sort()).toEqual(TOOLS.map(t => t.name).sort()); });
@@ -224,10 +296,10 @@ describe('send polling variants with disposable responses and controlled time', 
   it.each(['pending', 'expired', 'denied', 'failed', 'queued', 'sent', 'reply', 'reply_timeout'])('approval %s preserves text and structured outcome', async status => {
     vi.useFakeTimers();
     const api = vi.fn(async (path: string) => {
-      if (path === '/api/conversations/send') return { mode: 'approval', approvalId: 'fixture-approval' };
+      if (path === '/api/conversations/send') return { mode: 'approval', approvalId: 'fixture-approval', messageId: 'fixture-message' };
       if (path.includes('send-status')) return { status: ['pending', 'expired', 'denied'].includes(status) ? status : 'approved',
         ...(status === 'failed' ? { error: 'fixture send failure' } : {}), resultSessionId: 's', queued: status === 'queued' };
-      return status === 'reply' ? [{ role: 'assistant', text: 'fixture reply' }] : [];
+      return { found: status === 'reply', messages: status === 'reply' ? [{ role: 'assistant', text: 'fixture reply' }] : [], truncated: false };
     });
     const pending = callToolResult(api, 'send_message', { projectId: 'p', message: 'fixture', waitSeconds: ['reply', 'reply_timeout'].includes(status) ? 3 : 0 });
     await vi.runAllTimersAsync();
@@ -241,14 +313,14 @@ describe('send polling variants with disposable responses and controlled time', 
     vi.useFakeTimers();
     let reads = 0;
     const api = vi.fn(async (path: string) => {
-      if (path === '/api/conversations/send') return { mode: 'auto', sessionId: 's', queued: status === 'queued', hopsLeft: 1 };
+      if (path === '/api/conversations/send') return { mode: 'auto', sessionId: 's', queued: status === 'queued', hopsLeft: 1, messageId: 'fixture-message' };
       if (++reads === 1) throw new Error('transient fixture read failure');
-      return status === 'reply' ? [{ role: 'assistant', text: 'fixture reply' }] : [];
+      return { found: status === 'reply', messages: status === 'reply' ? [{ role: 'assistant', text: 'fixture reply' }] : [], truncated: false };
     });
     const p = callToolResult(api, 'send_message', { projectId: 'p', message: 'fixture', waitSeconds: ['reply', 'reply_timeout'].includes(status) ? 6 : 0 });
     await vi.runAllTimersAsync();
     const r = await p;
-    expect(validateResult('send_message', r).delivery).toMatchObject({ status, hopsLeft: 1 });
+    expect(validateResult('send_message', r).delivery).toMatchObject({ status, hopsLeft: 1, messageId: 'fixture-message' });
     expect(r.content[0].text).toContain('1 hop(s) left');
   });
 });

@@ -1,3 +1,5 @@
+import { Ajv } from 'ajv';
+import { WORKSPACE_TOOLS, callWorkspaceTool } from './x056-mcp-workspace.mjs';
 // Tool definitions + implementations for the x056 MCP bridge, shared by BOTH
 // transports: the stdio server the gateway spawns per turn (scripts/x056-mcp.mjs)
 // and the Streamable HTTP endpoint the gateway serves at /mcp for external
@@ -8,7 +10,7 @@
 
 import { OUTPUT_SCHEMAS } from './x056-mcp-output.mjs';
 
-export const SERVER_INFO = { name: 'x056', version: '2.1.0' };
+export const SERVER_INFO = { name: 'x056', version: '2.2.0' };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -39,7 +41,7 @@ export const TOOLS = [
       properties: {
         projectId: { type: 'string' },
         sessionId: { type: 'string', description: 'conversation id from list_conversations' },
-        limit: { type: 'number', description: 'max messages, from the end (default 30)' },
+        limit: { type: 'integer', minimum: 1, maximum: 500, description: 'max messages, from the end (default 30, max 500)' },
       },
       required: ['projectId', 'sessionId'],
       additionalProperties: false,
@@ -51,7 +53,7 @@ export const TOOLS = [
       'Send a message to a conversation (it resumes with full context and runs a turn), or omit sessionId to start a NEW conversation in the project. ' +
       'The operator chooses the delivery mode in the panel: in APPROVAL mode (the default) this call pauses until they approve or deny it — it is not sent until approved, and may be denied; in AUTOMATIC mode it is delivered immediately. You cannot choose the mode. '
       + 'If that conversation is mid-turn the message is QUEUED and delivered when its current turn ends, ahead of any autopilot continuation. ' +
-      'Set waitSeconds > 0 to additionally wait for and return the reply once sent; otherwise returns as soon as it is sent, and the reply can be fetched later with read_conversation. The receiving AI may take minutes on hard tasks — prefer a short wait plus polling over a long block. '
+      'Set waitSeconds > 0 to additionally wait for and return the reply once sent; otherwise returns as soon as it is sent. Use read_reply with the returned messageId for the exact reply later, including queued messages. Reply text may still be streaming; it does not prove task completion. The receiving AI may take minutes on hard tasks — prefer a short wait plus polling over a long block. '
       + 'BOUNDED: an AI-to-AI exchange may run a limited number of hops before the gateway refuses further sends and requires a human message. Two conversations passing a task back and forth cannot tell that they are stuck, so treat a refusal as the answer: write up what you have, unresolved parts included, for the person. Use stop_conversation to end a runaway exchange early.',
     inputSchema: {
       type: 'object',
@@ -224,7 +226,7 @@ const QUEUE_TOOLS = [
     name: 'message_self',
     description:
       'Queue a message to YOUR OWN conversation, delivered as a new turn the moment this one ends. '
-      + 'Use it to hand yourself work you cannot finish now — a long build to check, a follow-up after a deploy lands — so it survives the end of this turn, which otherwise kills any background work. '
+      + 'Use it to hand yourself work you cannot finish now — a long build to check, a follow-up after a deploy lands — so it survives the end of this turn, without depending on a background shell surviving a process restart. '
       + 'It is a note to your future self, so write the context that self will need; it will not remember this turn\'s reasoning beyond the transcript. '
       + 'Only available to a session running on this gateway. Bounded: a few consecutive self-messages with no human message in between are refused, so this cannot become a silent infinite loop.',
     inputSchema: {
@@ -334,18 +336,17 @@ function fmtHistory(rows) {
     .join('\n\n');
 }
 
-/** Poll a conversation's history until an assistant row appears past `before`. */
-async function waitForReply(api, projectId, sid, before, waitSeconds) {
+/** Poll only the exact request; counts and timestamps cannot correlate replies. */
+async function waitForReply(api, projectId, sid, messageId, waitSeconds) {
   const waitMs = Math.min(Math.max((waitSeconds || 0) * 1000, 0), 10 * 60 * 1000);
   const deadline = Date.now() + waitMs;
+  if (!messageId) throw new Error('Gateway did not return a messageId; do not resend. Read conversation history or upgrade the gateway.');
   while (Date.now() < deadline) {
-    await sleep(3000);
-    const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(projectId)}&sessionId=${encodeURIComponent(sid)}&limit=500`).catch(() => null);
-    if (!rows) continue;
-    const reply = rows.slice(before).filter((r) => r.role === 'assistant');
-    if (reply.length) return { text: `reply from ${sid}:\n\n${reply.map((r) => r.text).join('\n\n')}`, status: 'reply', messages: messages(reply) };
+    await sleep(Math.min(3000, Math.max(0, deadline - Date.now())));
+    const data = await api('/api/conversations/reply?' + new URLSearchParams({ projectId, sessionId: sid, messageId })).catch(() => null);
+    if (data?.found && data.messages?.length) return { text: `reply from ${sid} (may still be streaming):\n\n${data.messages.map(r => r.text).join('\n\n')}`, status: 'reply', messages: messages(data.messages), truncated: !!data.truncated };
   }
-  return { text: `sent (sessionId: ${sid}), but no reply within ${Math.round(waitMs / 1000)}s — the turn may still be running. Poll read_conversation for the result.`, status: 'reply_timeout', waitSeconds: Math.round(waitMs / 1000) };
+  return { text: `No correlated reply observed within ${Math.round(waitMs / 1000)}s. The message may still be queued or running. Use read_reply with messageId ${messageId}; do not resend merely because this wait ended.`, status: 'reply_timeout', waitSeconds: Math.round(waitMs / 1000) };
 }
 
 const MEMORY_TOOLS = [
@@ -417,12 +418,19 @@ for (const [name, description, properties, required] of MEMORY_TOOLS)
     description,
     inputSchema: { type: 'object', properties, required, additionalProperties: false },
   });
+TOOLS.push(...WORKSPACE_TOOLS);
 for (const tool of TOOLS) {
   if (!OUTPUT_SCHEMAS[tool.name]) throw new Error(`missing output schema: ${tool.name}`);
   tool.outputSchema = OUTPUT_SCHEMAS[tool.name];
+  const readOnly = /^(list_|read_|search_|get_|code_|wiki_)/.test(tool.name) || ['memory_search', 'memory_read', 'memory_context'].includes(tool.name);
+  tool.annotations = { readOnlyHint: readOnly, destructiveHint: ['stop_conversation', 'cancel_queued', 'cancel_scheduled', 'edit_queued', 'pause_scheduled', 'memory_update'].includes(tool.name), idempotentHint: readOnly, openWorldHint: ['send_message', 'message_self', 'schedule_task'].includes(tool.name) };
+
 }
 
-const result = (text, structuredContent) => ({ content: [{ type: 'text', text }], structuredContent });
+const inputValidator = new Ajv({ strict: true, allErrors: true });
+const inputs = new Map(TOOLS.map(tool => [tool.name, inputValidator.compile(tool.inputSchema)]));
+
+const result = (text, structuredContent) => ({ content: [{ type: 'text', text: text + (structuredContent.delivery?.messageId ? `\nmessageId: ${structuredContent.delivery.messageId}` : '') }], structuredContent });
 const messages = (rows) => (Array.isArray(rows) ? rows : [])
   .filter((r) => r.role === 'user' || r.role === 'assistant')
   .map(({ role, text, ts, sender }) => ({ role, text, ...(ts !== undefined ? { ts } : {}), ...(sender ? { sender } : {}) }));
@@ -434,6 +442,10 @@ export async function callTool(api, name, args) {
 
 /** One execution produces both representations; neither transport replays calls. */
 export async function callToolResult(api, name, args) {
+  const validate = inputs.get(name);
+  if (!validate) throw new Error(`unknown tool: ${name}`);
+  if (!validate(args)) throw new Error('Invalid tool arguments: ' + inputValidator.errorsText(validate.errors));
+  if (WORKSPACE_TOOLS.some(tool => tool.name === name)) return callWorkspaceTool(api, name, args);
   if(MEMORY_TOOLS.some(t=>t[0]===name)){
     const pid=args.projectId||SELF.projectId,sid=args.sessionId||(pid===SELF.projectId?SELF.sessionId:'');
     let path,body;
@@ -552,13 +564,10 @@ export async function callToolResult(api, name, args) {
   }
   if (name === 'read_conversation') {
     const limit = args.limit && args.limit > 0 ? Math.floor(args.limit) : 30;
-    const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}&limit=${limit}`);
+    const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}&limit=${limit}&strict=true`);
     return result(fmtHistory(rows), { messages: messages(rows) });
   }
   if (name === 'send_message') {
-    const before = args.sessionId
-      ? (await api(`/api/conversations/history?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}&limit=500`)).length
-      : 0;
     const requested = await api('/api/conversations/send', {
       method: 'POST',
       // `from` is OUR identity from the per-turn config, not something the
@@ -570,7 +579,7 @@ export async function callToolResult(api, name, args) {
     // conversation is mid-turn the message goes on its queue rather than failing.
     if (requested.mode === 'auto') {
       const sid = requested.sessionId;
-      const delivery = { mode: 'auto', projectId: args.projectId, sessionId: sid,
+      const delivery = { mode: 'auto', projectId: args.projectId, sessionId: sid, messageId: requested.messageId,
         ...(typeof requested.hopsLeft === 'number' ? { hopsLeft: requested.hopsLeft } : {}) };
       const where = requested.queued
         ? `queued — that conversation is mid-turn, so it will be delivered the moment its current turn ends.`
@@ -582,9 +591,9 @@ export async function callToolResult(api, name, args) {
           + (requested.hopsLeft <= 1 ? ' Plan to finish here.' : '')
         : '';
       if (!args.waitSeconds || requested.queued) {
-        return result(`sent (automatic mode). ${where}\nsessionId: ${sid}\nUse read_conversation to fetch the reply later.${left}`, { delivery: { ...delivery, status: requested.queued ? 'queued' : 'sent' } });
+        return result(`sent (automatic mode). ${where}\nsessionId: ${sid}\nUse read_reply with this messageId to fetch the exact reply later.${left}`, { delivery: { ...delivery, status: requested.queued ? 'queued' : 'sent' } });
       }
-      const { text, ...reply } = await waitForReply(api, args.projectId, sid, before, args.waitSeconds);
+      const { text, ...reply } = await waitForReply(api, args.projectId, sid, requested.messageId, args.waitSeconds);
       return result(text + left, { delivery: { ...delivery, ...reply } });
     }
     // Approval mode: the send does NOT happen yet — wait for the human operator's
@@ -592,7 +601,7 @@ export async function callToolResult(api, name, args) {
     const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000 + 15000; // give the server's own 10min timeout time to land first
     const approvalDeadline = Date.now() + APPROVAL_TIMEOUT_MS;
     const statusUrl = `/api/conversations/send-status?id=${encodeURIComponent(requested.approvalId)}`;
-    const delivery = { mode: 'approval', projectId: args.projectId, approvalId: requested.approvalId };
+    const delivery = { mode: 'approval', projectId: args.projectId, approvalId: requested.approvalId, messageId: requested.messageId };
     let approval = await api(statusUrl);
     while (approval.status === 'pending' && Date.now() < approvalDeadline) {
       await sleep(2000);
@@ -604,14 +613,15 @@ export async function callToolResult(api, name, args) {
     if (approval.error) return result(`approved, but the send itself failed: ${approval.error}`, { delivery: { ...delivery, status: 'failed', error: approval.error } });
     const sid = approval.resultSessionId;
     delivery.sessionId = sid;
+    delivery.messageId = requested.messageId || approval.sender?.messageId;
     if (approval.queued) {
-      return result(`approved and queued — that conversation is mid-turn, so it will be delivered when its current turn ends.\nsessionId: ${sid}\nUse read_conversation to fetch the reply later.`, { delivery: { ...delivery, status: 'queued' } });
+      return result(`approved and queued — that conversation is mid-turn, so it will be delivered when its current turn ends.\nsessionId: ${sid}\nUse read_reply with this messageId to fetch the exact reply later.`, { delivery: { ...delivery, status: 'queued' } });
     }
     const waitMs = Math.min(Math.max((args.waitSeconds || 0) * 1000, 0), 10 * 60 * 1000);
     if (waitMs <= 0) {
-      return result(`sent — the turn is running.\nsessionId: ${sid}\nUse read_conversation (projectId=${args.projectId}, sessionId=${sid}) to fetch the reply once it finishes.`, { delivery: { ...delivery, status: 'sent' } });
+      return result(`sent — the turn is running.\nsessionId: ${sid}\nUse read_reply (projectId=${args.projectId}, sessionId=${sid}, messageId=${delivery.messageId}) to fetch its reply.`, { delivery: { ...delivery, status: 'sent' } });
     }
-    const { text, ...reply } = await waitForReply(api, args.projectId, sid, before, args.waitSeconds);
+    const { text, ...reply } = await waitForReply(api, args.projectId, sid, delivery.messageId, args.waitSeconds);
     return result(text, { delivery: { ...delivery, ...reply } });
   }
   throw new Error(`unknown tool: ${name}`);
