@@ -23,7 +23,7 @@ const shots='/tmp/x056-refinement-scale-check';fs.mkdirSync(shots,{recursive:tru
  assert.equal(await page.locator('.cr-task').count(),12,'only 10 recent conversations plus pending questions');
  assert.equal(await page.locator('.cr-project-link').count(),33);
  await page.screenshot({path:shots+'/projects-desktop.png'});
- await page.locator('#crShowMore').click();assert.equal(await page.locator('.cr-task').count(),32);
+ await page.locator('#crShowMore').click();assert.equal(await page.locator('.cr-task').count(),22);
  await page.locator('#crProjectSearch').fill('Project 27');assert.equal(await page.locator('.cr-project-link').count(),2);
  const scope=await page.locator('.cr-project-link').filter({hasText:'Project 27'}).getAttribute('data-scope');
  await page.locator(`[data-scope="${scope}"]`).click();

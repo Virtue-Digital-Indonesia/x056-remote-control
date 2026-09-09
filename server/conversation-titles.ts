@@ -57,12 +57,23 @@ export function temporaryTitle(prompt: string): string {
         !x.startsWith('[The user attached') &&
         !/^(?:hi|hello|hey|halo)(?:\s+[\p{L}-]+)?[!,. ]*$/iu.test(x),
     );
-  const title = (lines[0] || '')
-    .replace(/^(?:hi|hello|hey|halo)(?:\s+[\p{L}-]+)?[,!:]\s*/iu, '')
-    .replace(/^\s*(?:[-*#>]+|\d+[.)])\s+/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return Array.from(title).slice(0, 60).join('') || 'New conversation';
+  for (const line of lines) {
+    const title = line
+      .replace(/^(?:hi|hello|hey|halo)(?:\s+[\p{L}-]+)?[,!:]\s*/iu, '')
+      .replace(/^\s*(?:[-*#>]+|\d+[.)])\s+/, '')
+      .replace(/^(?:can|could|would)\s+you\s+/iu, '')
+      .replace(
+        /^(?:please\s+|help\s+me\s+(?:to\s+)?|i\s+(?:want|need|would\s+like)\s+(?:you\s+)?to\s+)/iu,
+        '',
+      )
+      .replace(/\s+/g, ' ')
+      .replace(/[.!?]+$/u, '')
+      .trim();
+    if (!title || /^(?:i\s+(?:want|need)|please)\s*:?$/iu.test(title)) continue;
+    const concise = title.split(' ').slice(0, 9).join(' ');
+    return Array.from(concise).slice(0, 60).join('');
+  }
+  return 'New conversation';
 }
 function meaningful(text: string): boolean {
   const clean = cleanMemorySource(text)

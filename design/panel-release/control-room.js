@@ -80,9 +80,11 @@ window.createControlRoom = function (engine) {
   let accountProvider = '', accountDays = '7', chartMetric = 'tokens', selectedSendAccount = '', pickerBusy = false;
   let conversationMeta={},bulkMode=false,bulkSelection=new Set(),bulkCandidates=[],artifactRows=[],plannerRows={};
   let recentLimit=10, selectedProject='', projectNavSignature='', sendAccountSignature='';
+  let recentPreferences={days:7,max:20};
   let dismissedProjects=[],showDismissedProjects=false;
   const messageActivity=new Map(),messageMetadata=new Map();
   try{const saved=JSON.parse(localStorage.getItem('x056_dismissed_projects')||'[]');if(Array.isArray(saved))dismissedProjects=saved.filter(x=>typeof x==='string');}catch{}
+  try{const saved=JSON.parse(localStorage.getItem('x056_recent_preferences')||'{}');if([1,7,30,0].includes(Number(saved.days)))recentPreferences.days=Number(saved.days);if([10,20,50].includes(Number(saved.max)))recentPreferences.max=Number(saved.max);}catch{}
   try { selectedProject=localStorage.getItem('x056_project_scope') || ''; } catch {}
   let mode = 'closed', section = 'board', boardFilter = 'all', renderTimer, accountTimer, returnFocus;
   let boardSignature = '', accountSignature = '', analytics = null, routing = null, analyticsError = '', requestVersion = 0;
@@ -260,6 +262,14 @@ window.createControlRoom = function (engine) {
       const event=new Event('cancel',{cancelable:true});if(dialog.dispatchEvent(event))dialog.close();
     }
   },true);
+  document.addEventListener('keydown',e=>{
+    if(e.key!=='Escape'||e.defaultPrevented)return;
+    const dialogs=[...document.querySelectorAll('dialog[open]')];
+    const dialog=dialogs[dialogs.length-1];
+    if(!dialog)return;
+    e.preventDefault();e.stopImmediatePropagation();
+    const event=new Event('cancel',{cancelable:true});if(dialog.dispatchEvent(event))dialog.close();
+  },true);
   const outcomes = new Map();
   const positions = new Map();
   const compact = n => Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n || 0);
@@ -370,7 +380,8 @@ window.createControlRoom = function (engine) {
       if(c.lastMessageAt!==undefined)messageMetadata.set(k,Number(c.lastMessageAt)||0);
       const notification = s.notifications[k];
       const status = q ? 'question' : running ? 'running' : bg ? 'background' : result?.status === 'failed' || !result && notification === 'failed' ? 'failed' : result?.status === 'parked' ? 'parked' : result?.status === 'completed' || notification === 'done' ? 'finished' : 'idle';
-      out.push({ p, c, k, status, unread: !!notification, label: q?.question || (running || bg ? s.views[k]?.label : result?.reason) || '', time: Math.max(messageMetadata.get(k)||0,messageActivity.get(k)||0) });
+      const time=Math.max(messageMetadata.get(k)||0,messageActivity.get(k)||0);
+      out.push({ p, c, k, status, unread: !!notification, label: q?.question || (running || bg ? s.views[k]?.label : result?.reason) || '', time, recentActivity:time||(Number(c.createdAt)||0) });
     }
     return out.sort((a,b) => (Number(new Date(b.time)) || 0) - (Number(new Date(a.time)) || 0));
   }
@@ -425,13 +436,19 @@ window.createControlRoom = function (engine) {
     const query=$('crSearch').value.toLowerCase();
     const filtered=scope.filter(x=>(!query||(x.c.title+' '+x.p.name+' '+x.label+' '+(conversationMeta[x.k]?.tags||[]).join(' ')).toLowerCase().includes(query))&&(boardFilter==='all'||boardFilter==='archived'||boardFilter==='question'&&x.status==='question'||boardFilter==='unread'&&x.unread||boardFilter==='active'&&['running','background'].includes(x.status)));
 
-    const unread=filtered.filter(x=>x.unread),attention=filtered.filter(x=>!x.unread&&['question','failed','parked'].includes(x.status)),active=filtered.filter(x=>!x.unread&&['running','background'].includes(x.status)),recent=filtered.filter(x=>!x.unread&&['finished','idle'].includes(x.status)&&(!recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))||query||showDismissedRecents||boardFilter!=='all'));
+    const unread=filtered.filter(x=>x.unread),attention=filtered.filter(x=>!x.unread&&['question','failed','parked'].includes(x.status)),active=filtered.filter(x=>!x.unread&&['running','background'].includes(x.status));
+    const recentCandidates=filtered.filter(x=>!x.unread&&['finished','idle'].includes(x.status)&&(!recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))||query||showDismissedRecents||boardFilter!=='all'));
+    const boundedRecents=boardFilter==='all'&&!query&&!showDismissedRecents;
+    const cutoff=recentPreferences.days?Date.now()-recentPreferences.days*86400000:0;
+    const recent=boundedRecents?recentCandidates.filter(x=>x.recentActivity>=cutoff).slice(0,recentPreferences.max):recentCandidates;
+    const olderCount=boundedRecents?recentCandidates.length-recent.length:0;
     const dismissedCount=scope.filter(x=>['finished','idle'].includes(x.status)&&recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))).length;
     bulkCandidates=[...unread,...attention,...active,...recent];renderBulk();
     const groups=[['Unread',unread],['Needs attention',attention],['In progress',active],['Recent conversations',recent.slice(0,recentLimit)]];
     let html=groups.filter(([,rows])=>rows.length).map(([title,rows])=>`<section class="cr-conversation-group"><header><h2>${title}</h2><span>${title==='Recent conversations'?recent.length:rows.length}</span></header>${rows.map(conversationRow).join('')}</section>`).join('');
     if(!html)html=`<div class="cr-empty">${query?'No conversations match your search.':boardFilter==='question'?'No questions need your input.':'No conversations in this view.'}</div>`;
     if(recent.length>recentLimit)html+=`<button class="cr-load-more" id="crShowMore">Show ${Math.min(20,recent.length-recentLimit)} more conversations <span>${recent.length-recentLimit} remaining</span></button>`;
+    if(olderCount)html+=`<button id="crRecentSettings" class="cr-text-button cr-dismissed-toggle">${olderCount} older ${olderCount===1?'conversation':'conversations'} hidden · Change recent settings</button>`;
     if(dismissedCount&&boardFilter==='all'&&!query)html+=`<button id="crDismissedRecents" class="cr-text-button cr-dismissed-toggle">${showDismissedRecents?'Hide dismissed':'Show dismissed'} (${dismissedCount})</button>`;
     if(html!==boardSignature){
       boardSignature=html;
@@ -443,6 +460,7 @@ window.createControlRoom = function (engine) {
       $('crLanes').querySelectorAll('.cr-task').forEach(b=>b.onclick=()=>openConversation(b));
       $('crLanes').querySelectorAll('[data-recent-session]').forEach(b=>b.onclick=()=>{const pid=b.dataset.recentProject,sid=b.dataset.recentSession;if(recentDismissed.includes(stageKey(pid,sid)))restoreRecent(pid,sid);else dismissRecent(pid,sid);});
       if($('crDismissedRecents'))$('crDismissedRecents').onclick=()=>{showDismissedRecents=!showDismissedRecents;renderBoard();};
+      if($('crRecentSettings'))$('crRecentSettings').onclick=()=>{settings('general');requestAnimationFrame(()=>{$('recentActivityWindow')?.focus();$('recentActivityWindow')?.scrollIntoView({block:'center'});});};
       $('crLanes').querySelectorAll('[data-pin-session]').forEach(b=>b.onclick=()=>pinStage(b.dataset.pinProject,b.dataset.pinSession,!isStagePinned(b.dataset.pinProject,b.dataset.pinSession)));
       $('crLanes').querySelectorAll('[data-dismiss]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await engine.dismissQuestion(b.dataset.project,b.dataset.dismiss);toast('Question dismissed. No reply sent.');refresh();}catch(e){toast(e.message);b.disabled=false;}});
       if($('crShowMore'))$('crShowMore').onclick=()=>{recentLimit+=20;renderBoard();};
@@ -806,9 +824,11 @@ window.createControlRoom = function (engine) {
     preferences.querySelectorAll('[data-settings]').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settings));
     const body=$('settingsBody');
     if(tab==='general'){
-      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Conversation labels</h3>${segmented('conversationLabelOrder',[['conversation','Conversation first'],['project','Project first']],conversationLabelOrder,'Conversation label order')}<p>Choose which name leads in conversation lists and details. Saved on this device.</p></section><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats'],['smart','Smart']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><div id="displayFields"></div><div class="setting-row"><span><strong>Conversation titles</strong><small>Automatic naming and saved title suggestions</small></span><button class="cr-secondary" id="settingsTitles">Manage</button></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
+      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Conversation labels</h3>${segmented('conversationLabelOrder',[['conversation','Conversation first'],['project','Project first']],conversationLabelOrder,'Conversation label order')}<p>Choose which name leads in conversation lists and details. Saved on this device.</p></section><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats'],['smart','Smart']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><section class="stage-settings recent-settings"><h3>Control room recents</h3><div class="setting-row"><label for="recentActivityWindow"><strong>Activity window</strong><small>Use the latest message or newly created time</small></label><select id="recentActivityWindow"><option value="1">Past day</option><option value="7">Past 7 days</option><option value="30">Past 30 days</option><option value="0">Any time</option></select></div><div class="setting-row"><label for="recentMaximum"><strong>Maximum conversations</strong><small>Search still finds older conversations</small></label><select id="recentMaximum"><option value="10">10</option><option value="20">20</option><option value="50">50</option></select></div></section><div id="displayFields"></div><div class="setting-row"><span><strong>Conversation titles</strong><small>Automatic naming and saved title suggestions</small></span><button class="cr-secondary" id="settingsTitles">Manage</button></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
       const stageHelp=()=>{$('stageModeHelp').textContent=stageMode==='pinned'?'Only chats you pin appear in the bubbles. The separate running indicator stays visible.':stageMode==='smart'?'Pinned chats, then requests for input, unread replies, running work, and your last few chats. Up to 8 chats, plus any extra pins. Dismiss any chat to remove it.':'Recent and running chats appear in the bubbles. The separate running indicator is hidden on desktop.';};stageHelp();wireSegment('conversationLabelOrder',setConversationLabelOrder);wireSegment('stageMode',value=>{setStageMode(value);stageHelp();});
       for(const field of generalFields)$('displayFields').append(field);
+      $('recentActivityWindow').value=String(recentPreferences.days);$('recentMaximum').value=String(recentPreferences.max);
+      for(const id of ['recentActivityWindow','recentMaximum'])$(id).onchange=()=>{recentPreferences={days:Number($('recentActivityWindow').value),max:Number($('recentMaximum').value)};recentLimit=Math.min(10,recentPreferences.max);try{localStorage.setItem('x056_recent_preferences',JSON.stringify(recentPreferences));}catch{toast('This browser could not save recent settings.');}renderBoard();};
       for(const name of ['open','maximize'])preferences.querySelector(`input[name="${name}"][value="${prefs[name]}"]`).checked=true;
       body.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{engine.setTheme(b.dataset.themeChoice);syncTheme();body.querySelectorAll('[data-theme-choice]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));});
       on('settingsTitles',showTitleSettings);on('settingsNotify',e=>notificationMenu(e.currentTarget));on('settingsShortcuts',()=>$('shortcutsBtn').click());
@@ -2057,7 +2077,7 @@ window.createControlRoom = function (engine) {
           .join('')}</select></label>`;
       };
       d.querySelector('[data-title-settings]').innerHTML =
-        `<form class="workspace-form title-settings-form"><label class="workspace-check"><input type="checkbox" name="enabled" ${settings.enabled ? 'checked' : ''}>Automatically name new conversations</label><p class="cr-note">A short title appears after the first meaningful exchange. Manual renames stay protected. Existing conversations keep their titles until you apply a suggestion.</p>${modelSelect('claude', 'Claude naming model')}${modelSelect('codex', 'ChatGPT naming model')}<p class="cr-note">Naming uses idle accounts and respects account locks and quota reserves. Chat messages take priority.</p><p role="alert"></p><footer><button type="button" class="cr-secondary" data-title-history>Review suggestions</button><button class="cr-primary">Save settings</button></footer></form>`;
+        `<form class="workspace-form title-settings-form"><label class="workspace-check"><input type="checkbox" name="enabled" ${settings.enabled ? 'checked' : ''}>Automatically refine new conversation titles</label><p class="cr-note">A useful title is created instantly from the first message. AI can refine it after the first meaningful exchange. Manual renames stay protected.</p>${modelSelect('claude', 'Claude naming model')}${modelSelect('codex', 'ChatGPT naming model')}<p class="cr-note">AI refinements use idle account capacity and respect account locks and quota reserves. Chat messages take priority.</p><p role="alert"></p><footer><button type="button" class="cr-secondary" data-title-history>Review suggestions</button><button class="cr-primary">Save settings</button></footer></form>`;
       d.querySelector('[data-title-history]').onclick = () => {
         d.close();
         showTitleSuggestions();
@@ -2144,7 +2164,7 @@ window.createControlRoom = function (engine) {
         filtered
           .map((x) => {
             const project = engine.state().projects.find((p) => p.id === x.projectId);
-            return `<article class="title-suggestion" data-title-job="${esc(x.id)}" data-status="${x.status}"><input type="checkbox" data-title-select="${esc(x.id)}" aria-label="Apply ${esc(x.title || x.before)}" ${selected.has(x.id) && x.status === 'ready' ? 'checked' : ''} ${x.status !== 'ready' ? 'disabled' : ''}><div class="title-suggestion-body"><div class="title-suggestion-meta"><span>${esc(project?.name || 'Project')} · ${x.provider === 'codex' ? 'ChatGPT' : 'Claude'}${x.beforeOrigin === 'manual' ? ' · Manually named' : ''}</span><span>${labels[x.status]}</span></div><div class="title-name-comparison"><div><small>${x.status === 'applied' ? 'Previous title' : x.status === 'stale' ? 'Original title' : 'Current title'}</small><span>${esc(x.before)}</span></div><span class="title-name-arrow" aria-hidden="true">${ic('right')}</span><div><small>${x.status === 'applied' ? 'Applied title' : 'Suggested title'}</small><strong>${esc(x.title || (x.status === 'generating' ? 'Finding a useful name…' : x.status === 'waiting' ? 'Waiting for an idle account…' : 'No suggestion'))}</strong></div></div>${x.reason ? `<p class="cr-note">${esc(x.reason)}</p>` : ''}<div class="title-suggestion-actions">${x.status === 'applied' ? `<button class="cr-text-button" data-undo-title="${x.id}">Undo rename</button>` : ['failed', 'skipped', 'stale'].includes(x.status) ? `<button class="cr-text-button" data-retry-title="${x.id}">Suggest again</button>` : ''}${['waiting', 'generating', 'ready'].includes(x.status) ? `<button class="cr-text-button" data-dismiss-title="${x.id}">Dismiss</button>` : ''}</div></div></article>`;
+            return `<article class="title-suggestion" data-title-job="${esc(x.id)}" data-status="${x.status}"><input type="checkbox" data-title-select="${esc(x.id)}" aria-label="Apply ${esc(x.title || x.before)}" ${selected.has(x.id) && x.status === 'ready' ? 'checked' : ''} ${x.status !== 'ready' ? 'disabled' : ''}><div class="title-suggestion-body"><div class="title-suggestion-meta"><span>${esc(project?.name || 'Project')} · ${x.provider === 'codex' ? 'ChatGPT' : 'Claude'}${x.beforeOrigin === 'manual' ? ' · Manually named' : ''}</span><span>${labels[x.status]}</span></div><div class="title-name-comparison"><div><small>${x.status === 'applied' ? 'Previous title' : x.status === 'stale' ? 'Original title' : 'Current title'}</small><span>${esc(x.before)}</span></div><span class="title-name-arrow" aria-hidden="true">${ic('right')}</span><div><small>${x.status === 'applied' ? 'Applied title' : 'Suggested title'}</small><strong>${esc(x.title || (x.status === 'generating' ? 'Refining the title…' : x.status === 'waiting' ? 'Queued for optional AI refinement' : 'No suggestion'))}</strong></div></div>${x.reason ? `<p class="cr-note">${esc(x.reason)}</p>` : ''}<div class="title-suggestion-actions">${x.status === 'applied' ? `<button class="cr-text-button" data-undo-title="${x.id}">Undo rename</button>` : ['failed', 'skipped', 'stale'].includes(x.status) ? `<button class="cr-text-button" data-retry-title="${x.id}">Suggest again</button>` : ''}${['waiting', 'generating', 'ready'].includes(x.status) ? `<button class="cr-text-button" data-dismiss-title="${x.id}">Dismiss</button>` : ''}</div></div></article>`;
           })
           .join('') ||
         '<div class="cr-empty">No title suggestions here. Select conversations or use “Suggest another title” from a conversation menu.</div>';

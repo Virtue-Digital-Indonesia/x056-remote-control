@@ -21,6 +21,7 @@ function select(all: ReturnType<typeof chat>[], options: Record<string, unknown>
     stagePins: [],
     stageRecent: [],
     recentDismissed: [],
+    stageDismissed: [],
     dismissedProjects: [],
     conversationMeta: {},
     stageKey: (p: string, s: string) => p + '::' + s,
@@ -48,7 +49,7 @@ describe('smart desktop conversation switcher', () => {
   it('honors dismissals and archived projects but retains deliberate pins', () => {
     const rows = [chat(1, 'question'), chat(2, 'finished', true), chat(3, 'running')];
     expect(
-      select(rows, { recentDismissed: ['p::1'], conversationMeta: { 'p::2': { archived: true } } }).map(
+      select(rows, { stageDismissed: ['p::1'], conversationMeta: { 'p::2': { archived: true } } }).map(
         (x) => x.k,
       ),
     ).toEqual(['p::3']);
@@ -65,7 +66,7 @@ describe('smart desktop conversation switcher', () => {
     ).toEqual(['p::0', 'p::1', 'p::2']);
     expect(select(rows, { stageMode: 'pinned', stagePins: ['p::20'] }).map((x) => x.k)).toEqual(['p::20']);
     expect(
-      select(rows, { stageMode: 'recent', stageRecent: recent, recentDismissed: ['p::0'] }),
+      select(rows, { stageMode: 'recent', stageRecent: recent, stageDismissed: ['p::0'] }),
     ).toHaveLength(29);
   });
 });

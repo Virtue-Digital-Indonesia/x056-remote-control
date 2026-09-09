@@ -77,6 +77,10 @@ function fixture(generate: TitleGenerator = async () => 'Conversation layout imp
 describe('conversation naming', () => {
   it('cleans greetings and Markdown while preserving multilingual prompt titles', () => {
     expect(temporaryTitle('Hi Astra, improve the panel\nmore context')).toBe('improve the panel');
+    expect(temporaryTitle('Can you please improve recent conversations?')).toBe(
+      'improve recent conversations',
+    );
+    expect(temporaryTitle('I want:\n- Better account routing')).toBe('Better account routing');
     expect(temporaryTitle('Hi Astra\n- Perbaiki navigasi percakapan')).toBe(
       'Perbaiki navigasi percakapan',
     );
@@ -338,6 +342,10 @@ describe('conversation naming', () => {
       undefined,
       f.p.id,
     );
+    expect(manager.listConversations(f.p.id).find((c) => c.sessionId === sid)).toMatchObject({
+      title: 'fix keyboard navigation',
+      titleOrigin: 'temporary',
+    });
     await new Promise((r) => setTimeout(r, 10));
     expect(manager.listConversations(f.p.id).find((c) => c.sessionId === sid)?.titleOrigin).toBe(
       'temporary',
