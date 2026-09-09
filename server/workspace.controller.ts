@@ -1,7 +1,7 @@
 import { openSync, closeSync, readSync, fstatSync } from 'node:fs';
 import { BadRequestException, Body, Controller, Get, Inject, Post, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
-import { join, basename } from 'node:path';
+import { join, basename, resolve } from 'node:path';
 import { SessionManager } from './manager.js';
 import { STATE_DIR } from './api.controller.js';
 import { ArtifactStore, artifactFailureReason, readState, writeState } from './workspace-store.js';
@@ -147,6 +147,35 @@ export class WorkspaceController {
       });
     } catch (e) {
       throw new BadRequestException(artifactFailureReason(e));
+    }
+  }
+  @Post('artifact-reference') reference(
+    @Body()
+    body: { projectId: string; sessionId: string; title?: string; target?: string },
+  ) {
+    this.validate(body.projectId, body.sessionId);
+    if (typeof body.target !== 'string' || !body.target.trim() || body.target.length > 4096)
+      throw new BadRequestException('Invalid file reference');
+    const project = this.manager.listProjects().projects.find((p) => p.id === body.projectId);
+    if (!project) throw new BadRequestException('Project not found');
+    let target = body.target.trim().replace(/^<|>$/g, '').replace(/^sandbox:/, '');
+    try {
+      target = decodeURIComponent(target);
+    } catch {}
+    target = target.replace(/:\d+(?::\d+)?$/, '');
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target))
+      throw new BadRequestException('Only local project file references are supported');
+    try {
+      return this.artifacts.add({
+        projectId: body.projectId,
+        sessionId: body.sessionId,
+        title: (body.title?.trim() || basename(target) || 'Referenced file').slice(0, 180),
+        kind: 'file',
+        path: target.startsWith('/') ? target : resolve(project.cwd, target),
+        source: 'manual',
+      });
+    } catch (error) {
+      throw new BadRequestException(artifactFailureReason(error));
     }
   }
   @Post('artifacts/scan') scan(@Body() body: { projectId: string; sessionId: string }) {

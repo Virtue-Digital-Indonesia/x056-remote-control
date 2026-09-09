@@ -215,6 +215,11 @@
   .content h3, .content h4, .content h5 { margin: 16px 0 9px; line-height: 1.3; }
   .content h3 { font-size: 18px; } .content h4 { font-size: 15.5px; } .content h5 { font-size: 14px; }
   .content a { color: var(--link); }
+  .content .local-ref { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 0 2px; border: 0; background: none; color: var(--link); font: inherit; line-height: inherit; text-align: left; vertical-align: baseline; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: pointer; }
+  .content .local-ref .ic { width: 13px; height: 13px; flex: none; }
+  .content .local-ref span { overflow-wrap: anywhere; }
+  .content .local-ref:hover { color: var(--accent); }
+  .content .local-ref:disabled { opacity: .55; cursor: wait; }
   .content hr { border: none; border-top: 1px solid var(--border); margin: 15px 0; }
   .content blockquote { margin: 0 0 11px; padding: 4px 14px; border-left: 3px solid var(--border-strong); color: var(--muted); }
   .content table { border-collapse: collapse; margin: 0 0 11px; font-size: 13px; display: block; overflow-x: auto; max-width: 100%; }
@@ -1905,14 +1910,44 @@
   systemDark.addEventListener('change', function () { if (themePref() === 'system') applyTheme(); });
 
   // markdown (DOM-only)
+  function downloadLocalReference(button, target, label) {
+    var pid = currentProjectId, sid = lastSessionId;
+    if (!pid || !sid) return;
+    button.disabled = true; button.setAttribute('aria-busy', 'true');
+    api('/api/workspace/artifact-reference', {
+      method: 'POST',
+      body: JSON.stringify({ projectId: pid, sessionId: sid, target: target, title: label })
+    }).then(function (r) {
+      return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || 'Reference unavailable'); return j; });
+    }).then(function (item) {
+      return api('/api/workspace/artifact-file?id=' + encodeURIComponent(item.id)).then(function (r) {
+        if (!r.ok) throw new Error('Reference unavailable');
+        return r.blob();
+      });
+    }).then(function (blob) {
+      var url = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = url; a.download = target.replace(/^<|>$/g, '').replace(/:\d+(?::\d+)?$/, '').split('/').pop() || label || 'file';
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+    }).catch(function (e) {
+      if (controlRoom) controlRoom.notify('Could not open reference. ' + e.message); else addSys('Could not open reference. ' + e.message, 'banner');
+    }).then(function () { if (button.isConnected) { button.disabled = false; button.removeAttribute('aria-busy'); } });
+  }
   function renderInline(text) {
-    var frag = document.createDocumentFragment(), re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*\s][^*]*)\*)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))|(https?:\/\/[^\s<>()\[\]]+)/g, last = 0, m;
+    var frag = document.createDocumentFragment(), re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*\s][^*]*)\*)|(\[([^\]]+)\]\((<?[^)\n]+>?)\))|(https?:\/\/[^\s<>()\[\]]+)/g, last = 0, m;
     while ((m = re.exec(text))) {
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
       if (m[2]) { var c = document.createElement('code'); c.textContent = m[2]; frag.appendChild(c); }
       else if (m[4]) { var b = document.createElement('strong'); b.textContent = m[4]; frag.appendChild(b); }
       else if (m[6]) { var em = document.createElement('em'); em.textContent = m[6]; frag.appendChild(em); }
-      else if (m[8]) { var a = document.createElement('a'); a.textContent = m[8]; a.href = m[9]; a.target = '_blank'; a.rel = 'noopener noreferrer'; frag.appendChild(a); }
+      else if (m[8]) {
+        var target = m[9].replace(/^<|>$/g, '');
+        if (/^https?:\/\//i.test(target)) { var a = document.createElement('a'); a.textContent = m[8]; a.href = target; a.target = '_blank'; a.rel = 'noopener noreferrer'; frag.appendChild(a); }
+        else if (/^(?:sandbox:)?\/|^\.\.?\/|^[^:?#]+\/[^?#]+|^[^:?#]+\.[a-z0-9]{1,10}(?::\d+(?::\d+)?)?$/i.test(target)) {
+          var ref = document.createElement('button'); ref.type = 'button'; ref.className = 'local-ref'; ref.title = target; ref.setAttribute('aria-label', 'Download ' + m[8]); ref.appendChild(icon('file', 'sm'));
+          var refName = document.createElement('span'); refName.textContent = m[8]; ref.appendChild(refName);
+          (function (button, path, label) { button.addEventListener('click', function () { downloadLocalReference(button, path, label); }); })(ref, target, m[8]); frag.appendChild(ref);
+        } else frag.appendChild(document.createTextNode(m[0]));
+      }
       else if (m[10]) { // bare URL — autolink, keeping trailing punctuation as text
         var url = m[10], trail = '';
         var tm = /[.,;:!?]+$/.exec(url);

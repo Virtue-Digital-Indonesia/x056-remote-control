@@ -118,6 +118,8 @@ export class ArtifactStore {
         throw error;
       }
       const roots = [...this.roots(), join(this.state, 'uploads'), '/tmp'];
+      const visiblePart = (part: string) =>
+        !part.startsWith('.') || /^\.review(?:[-_].+)?$/i.test(part);
       const matches = (root: string) => {
         try {
           return path.startsWith(realpathSync(root) + sep);
@@ -129,7 +131,7 @@ export class ArtifactStore {
         matches(root) &&
         !relative(realpathSync(root), path)
           .split(sep)
-          .some((p) => p.startsWith('.'));
+          .some((p) => !visiblePart(p));
       let allowedRoot = roots.find(visible);
       if (!allowedRoot)
         for (const root of this.roots()) {
@@ -157,7 +159,7 @@ export class ArtifactStore {
         !allowedRoot ||
         relative(realpathSync(allowedRoot), path)
           .split(sep)
-          .some((p) => p.startsWith('.')) ||
+          .some((p) => !visiblePart(p)) ||
         /(?:credential|secret|token|password|auth\.json)/i.test(basename(path))
       )
         throw new Error('This file cannot be added to the library.');

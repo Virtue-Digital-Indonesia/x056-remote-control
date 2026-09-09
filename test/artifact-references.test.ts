@@ -257,6 +257,21 @@ describe('provider image history and collection', () => {
     cleanup.push(() => controller.onModuleDestroy());
     return { root, controller, manager, projectId: project.id };
   }
+  it('opens local Markdown references through retained artifacts, including review outputs and line suffixes', () => {
+    const { root, controller: api, projectId } = controller();
+    const review = join(root, '.review-output'), report = join(review, 'result.csv');
+    mkdirSync(review);writeFileSync(report, 'id,status\n1,ok\n');
+    const item = api.reference({
+      projectId,
+      sessionId: 's',
+      title: 'Exact results',
+      target: '.review-output/result.csv:12',
+    });
+    expect(item).toMatchObject({ title: 'Exact results', original: report, kind: 'file' });
+    expect(api.content(item.id)).toMatchObject({ text: expect.stringContaining('1,ok') });
+    expect(() => api.reference({ projectId, sessionId: 's', target: 'https://example.test/a.csv' }))
+      .toThrow('Only local project file references');
+  });
   it('captures a referenced image after the tool completes and serves it after deletion', () => {
     const { root, controller: api, manager, projectId } = controller();
     const path = join(root, 'live.png');
