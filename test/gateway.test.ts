@@ -81,8 +81,8 @@ describe('gateway e2e', () => {
 
   it('serves every favicon/PWA icon the panel links to, unauthenticated', async () => {
     const html = await (await fetch(`${base}/`)).text();
-    const linked = [...html.matchAll(/href="(\/icon-[\w.]+\.png)"/g)].map((m) => m[1]);
-    expect(linked).toEqual(expect.arrayContaining(['/icon-16.png', '/icon-32.png', '/icon-180.png']));
+    const linked = [...html.matchAll(/href="(\/icon-[\w.]+\.png(?:\?[^"\s]*)?)"/g)].map((m) => m[1]);
+    expect(linked.map(path => new URL(path, base).pathname)).toEqual(expect.arrayContaining(['/icon-16.png', '/icon-32.png', '/icon-180.png']));
     for (const path of [...linked, '/icon-192.png', '/icon-512.png']) {
       const res = await fetch(`${base}${path}`);
       expect(res.status, path).toBe(200);

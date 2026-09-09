@@ -17,6 +17,15 @@ function gate(snapshot: string, opts: { token?: string; failure?: boolean; idleO
   } });
 }
 describe('idle-only release gate', () => {
+  it('never reaches the swap after the normal timeout while activity is present', () => {
+    const decision = source.slice(source.indexOf('  # 2.'), source.indexOf('  if ! release_unchanged; then'));
+    const output = execFileSync('bash', ['-c', `IDLE_ONLY=1; age=86400; MAX_DEFER=180; FORCE=/dev/null
+      live_workflows() { :; }; busy() { return 0; }
+      ${decision}
+      echo WOULD_SWAP`], { encoding: 'utf8' });
+    expect(output).toContain('idle-only release stays pending');
+    expect(output).not.toContain('WOULD_SWAP');
+  });
   it('allows a confirmed idle gateway', () => {
     expect(gate(JSON.stringify({ running: false, runningProjects: [], backgroundProjects: [] }))).toBe('idle');
   });

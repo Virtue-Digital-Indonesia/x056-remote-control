@@ -30,9 +30,23 @@ MAX_DEFER=180   # seconds; brief idle-catch window, then swap even if a TURN run
 # Opt-in for releases that must preserve all live provider processes. A host
 # release runner passes this for its isolated checkout; normal cron is unchanged.
 IDLE_ONLY="${X056_DEPLOY_IDLE_ONLY:-0}"
+# A durable per-request setting also applies to the regular host cron runner.
+[ ! -f "$DIR/.deploy/idle-only" ] || IDLE_ONLY=1
 
 [ -f "$FLAG" ] || exit 0
 mkdir -p "$DIR/.deploy"
+
+# A delayed release must not silently deploy later edits from the shared checkout.
+release_unchanged() {
+  [ ! -f "$DIR/.deploy/revision" ] || {
+    [ "$(git -C "$DIR" rev-parse HEAD)" = "$(cat "$DIR/.deploy/revision")" ] &&
+      git -C "$DIR" diff --quiet HEAD --
+  }
+}
+if ! release_unchanged; then
+  echo "$(date -Is) pinned release changed — request remains pending" >> "$LOG"
+  exit 0
+fi
 
 # The container always listens on 4056; the published host port may differ on a
 # second instance, and this script talks to the host side.
@@ -79,6 +93,10 @@ live_workflows() {
     -H "Authorization: Bearer $t" "localhost:$PORT/api/workflows/live" 2>/dev/null || echo 000)
   out=$(cat /tmp/x056-wf.$$ 2>/dev/null || true); rm -f /tmp/x056-wf.$$
   if [ "$code" = "404" ]; then
+    if [ "$IDLE_ONLY" = 1 ]; then
+      echo "workflow check unavailable — idle-only release stays pending"
+      return 0
+    fi
     echo >&2 "note: gateway predates /api/workflows/live — not blocking on workflows"
     return 0
   fi
@@ -89,7 +107,9 @@ live_workflows() {
   WF_JSON="$out" python3 -c '
 import json, os, sys
 try:
-    runs = (json.loads(os.environ["WF_JSON"]).get("runs") or [])
+    value = json.loads(os.environ["WF_JSON"])
+    runs = value["runs"]
+    if not isinstance(runs, list): raise ValueError("missing workflow list")
 except Exception:
     print("workflow check FAILED (unparseable)"); sys.exit(0)
 if runs:
@@ -138,8 +158,17 @@ if runs:
     echo "built OK; deploy pending ${age}s (> ${MAX_DEFER}s) — swapping despite active turns; they resume on the new container"
   fi
 
-  if docker compose --project-directory "$DIR" up -d; then
+  if ! release_unchanged; then
+    echo "pinned release changed during build — NOT swapping"
+    exit 0
+  fi
+  # Idle-only updates target this gateway; never recreate its Docker sidecar.
+  swap_args=(up -d)
+  if [ "$IDLE_ONLY" = 1 ]; then swap_args+=(--no-deps x056); fi
+  if docker compose --project-directory "$DIR" "${swap_args[@]}"; then
     rm -f "$FLAG" "$FORCE"
+    rm -f "$DIR/.deploy/idle-only"
+    rm -f "$DIR/.deploy/revision"
     printf '{"status":"ok","commit":"%s","ts":"%s"}\n' "$(git -C "$DIR" rev-parse --short HEAD)" "$(date -Is)" > "$STATUS"
     echo "deploy OK"
   else
