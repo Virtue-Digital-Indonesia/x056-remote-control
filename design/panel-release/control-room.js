@@ -91,14 +91,21 @@ window.createControlRoom = function (engine) {
   // Keep this at the viewport root: a transformed chat modal changes the
   // containing block of fixed descendants, making the dock jump or clip.
   document.body.append(stage);
-  let stagePins=[],stageRecent=[],recentDismissed=[],stageMode='pinned',showDismissedRecents=false,stageSignature='',stageCloseTimer,stageExpanded=false,stagePage=0,stageMotion=0,stageAnimations=[];
+  let stagePins=[],stageRecent=[],recentDismissed=[],stageDismissed=[],stageMode='pinned',showDismissedRecents=false,stageSignature='',stageCloseTimer,stageExpanded=false,stagePage=0,stageMotion=0,stageAnimations=[];
   try{const saved=JSON.parse(localStorage.getItem('x056_stage_pins')||'[]');if(Array.isArray(saved))stagePins=[...new Set(saved.filter(x=>typeof x==='string'))];}catch{}
-  try{stageMode=['recent','smart'].includes(localStorage.getItem('x056_stage_mode'))?localStorage.getItem('x056_stage_mode'):'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
+  try{stageMode=['recent','smart'].includes(localStorage.getItem('x056_stage_mode'))?localStorage.getItem('x056_stage_mode'):'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v],['x056_stage_dismissed',v=>stageDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
   document.body.dataset.stageMode=stageMode;
-  function saveRecents(){try{localStorage.setItem('x056_stage_recent',JSON.stringify(stageRecent.slice(0,30)));localStorage.setItem('x056_recent_dismissed',JSON.stringify(recentDismissed));}catch{toast('This browser could not save recent conversations.');}}
-  function rememberStage(){const state=engine.state();if(!state.sessionId)return;const id=stageKey(state.projectId,state.sessionId);stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);recentDismissed=recentDismissed.filter(x=>x!==id);saveRecents();renderStage();}
+  function saveRecents(){try{localStorage.setItem('x056_stage_recent',JSON.stringify(stageRecent.slice(0,30)));localStorage.setItem('x056_recent_dismissed',JSON.stringify(recentDismissed));localStorage.setItem('x056_stage_dismissed',JSON.stringify(stageDismissed));}catch{toast('This browser could not save recent conversations.');}}
+  function rememberStage(){const state=engine.state();if(!state.sessionId)return;const id=stageKey(state.projectId,state.sessionId);stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);recentDismissed=recentDismissed.filter(x=>x!==id);stageDismissed=stageDismissed.filter(x=>x!==id);saveRecents();renderStage();}
   function dismissRecent(project,session){const id=stageKey(project,session);recentDismissed=[...new Set([...recentDismissed,id])];saveRecents();renderStage();refresh();toast('Conversation dismissed from recents.',()=>restoreRecent(project,session));}
   function restoreRecent(project,session){recentDismissed=recentDismissed.filter(x=>x!==stageKey(project,session));saveRecents();renderStage();refresh();}
+  function restoreStage(project,session){stageDismissed=stageDismissed.filter(x=>x!==stageKey(project,session));saveRecents();renderStage();}
+  function dismissStage(project,session){
+    const id=stageKey(project,session),wasPinned=stageMode==='smart'&&isStagePinned(project,session);
+    if(wasPinned)pinStage(project,session,false);
+    stageDismissed=[...new Set([...stageDismissed,id])];saveRecents();renderStage();
+    toast('Removed from switcher.',()=>{restoreStage(project,session);if(wasPinned)pinStage(project,session,true);});
+  }
   function setStageMode(value){stageMode=['recent','smart'].includes(value)?value:'pinned';stagePage=0;document.body.dataset.stageMode=stageMode;try{localStorage.setItem('x056_stage_mode',stageMode);}catch{toast('This browser could not save the switcher mode.');}renderStage();}
   function stageCandidates(all = cards()) {
     const byId = new Map(all.map((x) => [stageKey(x.p.id, x.c.sessionId), x]));
@@ -111,6 +118,7 @@ window.createControlRoom = function (engine) {
         (x) =>
           !pinIds.has(x.k) &&
           !recentDismissed.includes(x.k) &&
+          !stageDismissed.includes(x.k) &&
           !dismissedProjects.includes(x.p.id) &&
           !conversationMeta[x.k]?.archived &&
           (x.status === 'question' ||
@@ -135,7 +143,7 @@ window.createControlRoom = function (engine) {
     const seen = new Set();
     return [...running, ...opened].filter((x) => {
       const id = stageKey(x.p.id, x.c.sessionId);
-      if (seen.has(id) || recentDismissed.includes(id)) return false;
+      if (seen.has(id) || recentDismissed.includes(id) || stageDismissed.includes(id)) return false;
       seen.add(id);
       return true;
     });
@@ -146,7 +154,7 @@ window.createControlRoom = function (engine) {
   function saveStage(){try{localStorage.setItem('x056_stage_pins',JSON.stringify(stagePins));}catch{toast('This browser could not save pinned conversations.');}}
   function pinStage(project,session,pinned){
     const id=stageKey(project,session);stagePins=stagePins.filter(x=>x!==id);if(pinned)stagePins.push(id);
-    if(pinned){recentDismissed=recentDismissed.filter(x=>x!==id);saveRecents();}saveStage();renderStage();refresh();if(stagePicker.open)renderStagePicker();
+    if(pinned){recentDismissed=recentDismissed.filter(x=>x!==id);stageDismissed=stageDismissed.filter(x=>x!==id);saveRecents();}saveStage();renderStage();refresh();if(stagePicker.open)renderStagePicker();
   }
   function stageOpen(value){
     clearTimeout(stageCloseTimer);
@@ -195,7 +203,7 @@ window.createControlRoom = function (engine) {
   window.addEventListener('resize',()=>{renderStage();if(innerWidth<=850){stageExpanded=false;stageOpen(false);}});
   window.addEventListener('storage',e=>{
     if(e.key==='x056_stage_mode'){stageMode=['recent','smart'].includes(e.newValue)?e.newValue:'pinned';document.body.dataset.stageMode=stageMode;stagePage=0;renderStage();return;}
-    const assign={'x056_stage_pins':v=>stagePins=v,'x056_stage_recent':v=>stageRecent=v,'x056_recent_dismissed':v=>recentDismissed=v};if(!assign[e.key])return;
+    const assign={'x056_stage_pins':v=>stagePins=v,'x056_stage_recent':v=>stageRecent=v,'x056_recent_dismissed':v=>recentDismissed=v,'x056_stage_dismissed':v=>stageDismissed=v};if(!assign[e.key])return;
     try{const value=JSON.parse(e.newValue||'[]');if(Array.isArray(value)){assign[e.key]([...new Set(value.filter(x=>typeof x==='string'))]);renderStage();refresh();}}catch{}
   });
   function renderStage(){
@@ -222,7 +230,7 @@ window.createControlRoom = function (engine) {
     }).join('');
     if(html===stageSignature)return;stageSignature=html;const focused=document.activeElement,focus=focused?.dataset.session,unpinFocus=focused?.dataset.stageUnpin;$('stageItems').innerHTML=html;
     $('stageItems').querySelectorAll('[data-session]').forEach(b=>b.onclick=()=>openConversation(b));
-    $('stageItems').querySelectorAll('[data-stage-unpin]').forEach(b=>b.onclick=()=>{const x=byId.get(b.dataset.stageUnpin);if(x){if(stageMode==='pinned')pinStage(x.p.id,x.c.sessionId,false);else {const wasPinned=stageMode==='smart'&&isStagePinned(x.p.id,x.c.sessionId);if(wasPinned)pinStage(x.p.id,x.c.sessionId,false);dismissRecent(x.p.id,x.c.sessionId);if(wasPinned)toast('Conversation unpinned and dismissed.',()=>{restoreRecent(x.p.id,x.c.sessionId);pinStage(x.p.id,x.c.sessionId,true);});}}$('stageToggle').focus();});
+    $('stageItems').querySelectorAll('[data-stage-unpin]').forEach(b=>b.onclick=()=>{const x=byId.get(b.dataset.stageUnpin);if(x){if(stageMode==='pinned')pinStage(x.p.id,x.c.sessionId,false);else dismissStage(x.p.id,x.c.sessionId);}$('stageToggle').focus();});
     if(focus)[...$('stageItems').querySelectorAll('[data-session]')].find(b=>b.dataset.session===focus)?.focus({preventScroll:true});
     if(unpinFocus)[...$('stageItems').querySelectorAll('[data-stage-unpin]')].find(b=>b.dataset.stageUnpin===unpinFocus)?.focus({preventScroll:true});
   }
