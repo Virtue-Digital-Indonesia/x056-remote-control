@@ -1365,8 +1365,9 @@
     // a per-model convenience so e.g. picking Fable always starts at High.
     var def = modelEffortDefaults[modelEl.value];
     if (def && [].some.call(effortEl.options, function(o) { return o.value === def; })) { effortEl.value = def; lsSet(effortKeyFor(prov), def); }
+    renderAccountChip();
   });
-  effortEl.addEventListener('change', function () { lsSet(effortKeyFor(currentProvider()), effortEl.value); });
+  effortEl.addEventListener('change', function () { lsSet(effortKeyFor(currentProvider()), effortEl.value); renderAccountChip(); });
 
   // ---- default effort per model (global setting, synced across devices/tabs) ----
   var modelEffortDefaults = {};
@@ -2058,11 +2059,11 @@
   }
   function forgetView(pid, sessionId) {
     var k = viewKey(pid, sessionId);
-    delete views[k]; delete activeModel[k]; delete activeAccount[k];
+    delete views[k]; delete activeModel[k]; delete activeEffort[k]; delete activeAccount[k];
   }
   function forgetProjectViews(pid) {
     var prefix = pid + '::';
-    [views, activeModel, activeAccount].forEach(function (m) {
+    [views, activeModel, activeEffort, activeAccount].forEach(function (m) {
       Object.keys(m).forEach(function (k) { if (k.indexOf(prefix) === 0) delete m[k]; });
     });
   }
@@ -2282,7 +2283,7 @@
   // Per CONVERSATION (viewKey), not per project: sibling conversations run at
   // the same time and on different providers, so a project-wide key showed one
   // conversation's model/account on another (a Codex chat reporting "Opus 5").
-  var activeModel = {}, activeAccount = {};
+  var activeModel = {}, activeEffort = {}, activeAccount = {};
   // sessionId -> unanswered question data (survives history reloads / SSE replays,
   // and is rehydrated from /api/questions after a refresh or container swap).
   // Keyed by CONVERSATION, not project: several conversations in one project can
@@ -2396,6 +2397,9 @@
     var vm = new RegExp(fam.toLowerCase() + '-(\\d+(?:-\\d+)?)').exec(s);
     return fam + (vm ? ' ' + vm[1].replace('-', '.') : '');
   }
+  function effortLabel(effort) {
+    return effort ? (EFFORT_LABELS[effort] || effort) : 'Auto effort';
+  }
   function renderBusy() {
     syncSteerBtn();
     busyEl.textContent = '';
@@ -2464,7 +2468,7 @@
         var changed = activeModel[viewKey(pid, sid)] !== data.model;
         activeModel[viewKey(pid, sid)] = data.model;
         if (changed) appendNode(pid, sid, nodeModelMark(data.model, data.ts)); // a switch — mark it inline
-        if (mineConvo) renderBusy();
+        if (mineConvo) { renderBusy(); renderAccountChip(); }
       }
     }
     else if (kind === 'activity') {
@@ -2495,7 +2499,9 @@
       clearQuestion(pid, sid);
       var v = viewOf(pid, sid);
       if (data.resume === false) v.activityLog = []; // brand-new session — don't inherit the prior one's trail
-      if (data.model) activeModel[viewKey(pid, sid)] = data.model; if (mineConvo) { active = true; renderBusy(); }
+      if (data.model) activeModel[viewKey(pid, sid)] = data.model;
+      if (data.effort !== undefined) activeEffort[viewKey(pid, sid)] = data.effort;
+      if (mineConvo) { active = true; renderBusy(); renderAccountChip(); }
     }
     else if (kind === 'session_done') {
       // Show WHY a turn failed. The reason was previously dropped, so a failure
@@ -3563,8 +3569,11 @@
     // Keep the one persistent identity compact: account on the first line,
     // then its active/selected model and provider. Live state belongs in the
     // running indicator, so it is not repeated here.
-    var model = modelLabel(activeModel[viewKey(currentProjectId, lastSessionId)] || effectiveModel());
-    acctPlan.textContent = [model, plan].filter(Boolean).join(' · ');
+    var vk = viewKey(currentProjectId, lastSessionId);
+    var model = modelLabel(activeModel[vk] || effectiveModel());
+    var effort = activeEffort[vk];
+    if (effort === undefined) effort = effortEl.value;
+    acctPlan.textContent = [model, effortLabel(effort), plan].filter(Boolean).join(' · ');
   }
   function pollAccounts() {
     // Every call site here is exactly "the account set (or an account's own

@@ -24,6 +24,7 @@ const base=process.argv[2]||'http://127.0.0.1:8795';
     await page.goto(base);await open(first);
     await page.locator('#model').selectOption('fable');await page.locator('#effort').selectOption('high');
     await saved('fable','high');
+    assert.match(await page.locator('#acctPlan').textContent(),/Fable · High · Max/);
     await page.locator('#chatClose').click();await open(second);
     await page.locator('#model').selectOption('opus');await page.locator('#effort').selectOption('low');
     await page.locator('#chatClose').click();await open(first);
