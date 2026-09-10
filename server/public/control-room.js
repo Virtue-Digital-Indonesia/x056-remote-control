@@ -522,6 +522,7 @@ window.createControlRoom = function (engine) {
   }
   function accountName(a) { return a ? a.label || (a.displayName !== a.name && a.displayName) || a.email || (a.provider==='codex'?'ChatGPT account':'Claude account') : 'Checking account…'; }
   function providerName(p) { return p==='codex'?'ChatGPT':'Claude'; }
+  function effortName(effort) { return effort ? ({low:'Low',medium:'Medium',high:'High',xhigh:'Extra high',max:'Max',ultra:'Ultra'}[effort]||effort) : 'Auto effort'; }
   function accountStatus(a) { return a.paused?'Paused':a.state?.kind==='unauthenticated'?'Needs login':accountQuotaLimited(a)||a.state?.kind==='limited'?'Limited':a.state?.kind==='ok'?'Available':'Not checked'; }
   function identity(a) { return `<span class="cr-account-avatar ${esc(a.provider)}">${a.provider==='codex'?'G':'C'}</span><span class="identity-copy"><strong>${esc(accountName(a))}</strong><small>${esc(a.email || providerName(a.provider))}</small></span>`; }
   function renderSendAccounts(force=false) {
@@ -532,7 +533,7 @@ window.createControlRoom = function (engine) {
     if($('sendAccountChip').innerHTML!==chip) $('sendAccountChip').innerHTML=chip;
     $('sendAccountChip').title='Choose the account for the next message';
     $('runningAccountLabel').hidden=!isRunning;
-    $('runningAccountLabel').textContent=isRunning?'Working with '+accountName(running)+' · '+providerName(s.provider):'';
+    $('runningAccountLabel').textContent=isRunning?'Working with '+[s.model||'Auto model',effortName(s.effort),providerName(s.provider),accountName(running)].join(' · '):'';
     if((!sendAccounts.open&&!force)||pickerBusy)return;
     if(!pool.some(a=>a.name===selectedSendAccount&&available(a))) selectedSendAccount=next?.name||pool.find(available)?.name||'';
     const html=`<header><h2>Choose an account</h2><button class="cr-icon" data-close aria-label="Close account picker">${ic('x')}</button></header>

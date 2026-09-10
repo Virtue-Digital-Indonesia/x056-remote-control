@@ -1365,9 +1365,9 @@
     // a per-model convenience so e.g. picking Fable always starts at High.
     var def = modelEffortDefaults[modelEl.value];
     if (def && [].some.call(effortEl.options, function(o) { return o.value === def; })) { effortEl.value = def; lsSet(effortKeyFor(prov), def); }
-    renderAccountChip();
+    renderAccountChip(); if (controlRoom) controlRoom.refresh();
   });
-  effortEl.addEventListener('change', function () { lsSet(effortKeyFor(currentProvider()), effortEl.value); renderAccountChip(); });
+  effortEl.addEventListener('change', function () { lsSet(effortKeyFor(currentProvider()), effortEl.value); renderAccountChip(); if (controlRoom) controlRoom.refresh(); });
 
   // ---- default effort per model (global setting, synced across devices/tabs) ----
   var modelEffortDefaults = {};
@@ -5556,7 +5556,7 @@
     promptText: ()=>promptEl.value,
     setComposerAccount: function(name){composerAccounts[composerAccountKey()]=name;},
     markRead: function () { clearConvNotif(currentProjectId,lastSessionId); },
-    state: function () { return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, views: views, provider:currentProvider(), model:effectiveModel(), composerAccount:composerAccounts[composerAccountKey()]||null, runningAccount:activeAccount[viewKey(currentProjectId,lastSessionId)] || null }; },
+    state: function () { var vk=viewKey(currentProjectId,lastSessionId),effort=activeEffort[vk]; return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, views: views, provider:currentProvider(), model:effectiveModel(), effort:effort===undefined?effortEl.value:effort, composerAccount:composerAccounts[composerAccountKey()]||null, runningAccount:activeAccount[vk] || null }; },
     select: function (pid, sid) {
       if (pid === currentProjectId) return Promise.resolve(switchConversation(pid, sid));
       // Select the target conversation before switching project, then the existing
