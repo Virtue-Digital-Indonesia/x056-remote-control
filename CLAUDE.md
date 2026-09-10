@@ -2,6 +2,15 @@
 
 Self-hosted Claude Code "remote control" with automatic failover between two Claude Max accounts: a supervisor drives headless `claude -p --output-format stream-json` sessions and, when the active account hits its usage limit, respawns `claude -p --resume <session-id>` under the other account's `CLAUDE_CONFIG_DIR` (shared `projects/` tree), so one continuous session survives the switch. A NestJS gateway (`server/`) + vanilla panel (`server/public/panel.html`) expose it in the browser, with parallel projects, session adoption, and live activity.
 
+## Publishing outputs
+
+- Finished shareable outputs belong on `https://x056.think.val.id`. Treat `/panel-drafts/` as preview/staging only.
+- Think has two publishing modes. Read `https://x056.think.val.id/help` for the current commands and supported formats.
+- **Native document is the default:** use it for reports, recaps, plans, runbooks, evidence write-ups, and other reading-first deliverables. Upload the original Markdown plus referenced images or media. Mermaid diagrams and rich Markdown render inside Reading room.
+- Do not convert an ordinary reading deliverable into hand-written HTML.
+- **Custom experience is the exception:** use `/sites/<slug>/` when the output genuinely requires custom HTML, CSS, JavaScript, or interactive behavior. Upload the complete bundle with `index.html` and its assets.
+- Verify the returned URL. Use the configured upload credential or trusted valbox bypass, and never print or embed secrets in commands, logs, source, or memory.
+
 ## YOU ARE (PROBABLY) RUNNING INSIDE THE DEPLOYED CONTAINER
 
 Sessions started through the panel run **inside the Docker container** this repo deploys. That changes how you must work:
