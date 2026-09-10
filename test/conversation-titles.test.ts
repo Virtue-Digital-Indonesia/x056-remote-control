@@ -311,6 +311,25 @@ describe('conversation naming', () => {
     await reopened.tick();
     expect(f.call).toHaveBeenCalledTimes(3);
   });
+  it('retries title jobs rejected by the old Claude structured-output classifier', async () => {
+    const f = fixture(),
+      t = f.add('chat');
+    f.worker.suggest([t]);
+    const state = JSON.parse(readFileSync(join(f.root, 'conversation-titles.json'), 'utf8'));
+    state.jobs[0].status = 'failed';
+    state.jobs[0].attempts = 3;
+    state.jobs[0].reason = 'The naming request tried to use tools';
+    writeFileSync(join(f.root, 'conversation-titles.json'), JSON.stringify(state));
+    const reopened = new ConversationTitles(f.root, f.options);
+    expect(reopened.list()[0]).toMatchObject({
+      status: 'waiting',
+      attempts: 0,
+      reason: 'Retrying with the updated title generator',
+    });
+    f.advance(6000);
+    await reopened.tick();
+    expect(reopened.list()[0]).toMatchObject({ status: 'ready', title: 'Conversation layout improvements' });
+  });
   it('keeps manual titles locked, deduplicates pending requests and persists dismissals', async () => {
     const f = fixture(),
       t = f.add('chat', 'manual');

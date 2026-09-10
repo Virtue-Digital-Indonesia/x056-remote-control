@@ -58,6 +58,19 @@ function setup(provider: ProviderId, events: RawEvent[]) {
 it('runs a Claude naming request without working-chat tools, hooks, MCP or a persisted session', async () => {
   const f = setup('claude', [
     {
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'structured',
+            name: 'StructuredOutput',
+            input: { title: 'Keyboard navigation improvements' },
+          },
+        ],
+      },
+    },
+    {
       type: 'result',
       subtype: 'success',
       is_error: false,
@@ -81,6 +94,7 @@ it('runs a Claude naming request without working-chat tools, hooks, MCP or a per
   expect(args).not.toContain('--dangerously-skip-permissions');
   expect(cwd).toBe(join(f.input.stateDir, 'title-worker'));
   expect(env.CLAUDE_CONFIG_DIR).toBe(f.input.account.configDir);
+  expect(f.killed).not.toHaveBeenCalled();
 });
 it('runs an isolated Codex request and extracts its final JSON answer', async () => {
   const f = setup('codex', [
@@ -126,6 +140,18 @@ it('rejects tool activity and invalid final output instead of accepting it as a 
   const f = setup('codex', [
     { type: 'item.started', item: { id: 'cmd', type: 'command_execution', command: 'do not run' } },
     { type: 'turn.completed' },
+  ]);
+  await expect(generateTitle(f.input)).rejects.toThrow('use tools');
+  expect(f.killed).toHaveBeenCalled();
+});
+it('still rejects ordinary Claude tools during structured title generation', async () => {
+  const f = setup('claude', [
+    {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'read', name: 'Read', input: { file_path: '/tmp/a' } }],
+      },
+    },
   ]);
   await expect(generateTitle(f.input)).rejects.toThrow('use tools');
   expect(f.killed).toHaveBeenCalled();

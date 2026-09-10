@@ -107,6 +107,16 @@ export class ConversationTitles {
         job.status = 'waiting';
         job.reason = 'Resuming after a server restart';
         job.notBefore = Date.now() + 5000;
+      } else if (
+        ['waiting', 'failed'].includes(job.status) &&
+        job.reason === 'The naming request tried to use tools'
+      ) {
+        // Older workers mistook Claude's schema-return channel for workspace
+        // tool activity. Retry those jobs once under the corrected classifier.
+        job.status = 'waiting';
+        job.attempts = 0;
+        job.reason = 'Retrying with the updated title generator';
+        job.notBefore = Date.now() + 5000;
       }
   }
   private save() {

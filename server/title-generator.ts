@@ -150,7 +150,18 @@ export const generateTitle: TitleGenerator = async (input) => {
         failure = 'Account needs sign-in';
         handle.kill();
       }
-      if (adapter.toActivity(e).some((x) => x.status === 'start')) {
+      // Claude implements --json-schema with its own StructuredOutput tool. It is
+      // the requested return channel, not workspace activity. Every other tool
+      // call is still forbidden for this isolated metadata job.
+      if (
+        adapter
+          .toActivity(e)
+          .some(
+            (x) =>
+              x.status === 'start' &&
+              !(input.provider === 'claude' && x.tool === 'StructuredOutput'),
+          )
+      ) {
         failure = 'The naming request tried to use tools';
         handle.kill();
       }
