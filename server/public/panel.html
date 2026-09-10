@@ -2406,10 +2406,6 @@
     var s = document.createElement('span'); s.className = 'spin' + (bgHere ? ' bgspin' : ''); busyEl.appendChild(s);
     var l = document.createElement('span'); l.className = 'lbl'; l.textContent = lastLabel || (bgHere ? 'working in the background' : 'working…'); busyEl.appendChild(l);
     if (runningSubs > 0) { var t = document.createElement('span'); t.className = 'tasks'; t.textContent = '· ' + runningSubs + ' running'; busyEl.appendChild(t); }
-    var vk = viewKey(currentProjectId, lastSessionId);
-    var meta = []; var ml = modelLabel(activeModel[vk]); if (ml) meta.push(ml);
-    var ac = activeAccount[vk]; if (ac) meta.push(acctName(ac));
-    if (meta.length) { var mm = document.createElement('span'); mm.className = 'bmeta'; mm.textContent = '· ' + meta.join(' · '); busyEl.appendChild(mm); }
     var stop = document.createElement('button'); stop.className = 'stopbtn'; stop.title = bgHere ? 'interrupt the background work (keeps the session)' : 'stop this turn'; stop.appendChild(icon('x', 'sm'));
     var sl = document.createElement('span'); sl.textContent = 'Stop'; stop.appendChild(sl);
     stop.addEventListener('click', stopCurrentTurn); busyEl.appendChild(stop);
@@ -3561,13 +3557,14 @@
     var a = pickPrimaryAccount(); if (!a) return;
     var nm = a.displayName || a.name;
     acctNameEl.textContent = nm; acctAv.textContent = (nm[0] || '?').toUpperCase();
-    var live = isSessionRunning(currentProjectId, lastSessionId) && activeAccount[viewKey(currentProjectId, lastSessionId)] === a.name;
-    var lim = a.state && a.state.kind === 'limited';
     // "Max" is Claude's plan name — a Codex account is a ChatGPT one, so label it
     // by provider rather than claiming a plan it doesn't have.
     var plan = a.provider === 'codex' ? 'ChatGPT' : 'Max';
-    // Idle: this account is the one the next prompt will use → say so.
-    acctPlan.textContent = plan + ' · ' + (live ? 'active now' : (lim ? 'limited' : (a.nextUp ? 'sends next' : 'view usage')));
+    // Keep the one persistent identity compact: account on the first line,
+    // then its active/selected model and provider. Live state belongs in the
+    // running indicator, so it is not repeated here.
+    var model = modelLabel(activeModel[viewKey(currentProjectId, lastSessionId)] || effectiveModel());
+    acctPlan.textContent = [model, plan].filter(Boolean).join(' · ');
   }
   function pollAccounts() {
     // Every call site here is exactly "the account set (or an account's own
