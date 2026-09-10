@@ -4187,7 +4187,7 @@
   // localStorage (keyed by project+conversation), so switching chats never
   // carries typed-but-unsent text into another conversation.
   function draftKey() { return currentProjectId ? ('x056_draft_' + viewKey(currentProjectId, lastSessionId)) : null; }
-  function saveDraft() { var k = draftKey(); if (!k) return; try { if (promptEl.value) localStorage.setItem(k, composerMarkdown(promptEl.value)); else localStorage.removeItem(k); } catch (e) {} }
+  function saveDraft() { var k = draftKey(); if (!k) return; try { var value = composerMarkdown(promptEl.value); if (value.trim()) localStorage.setItem(k, value); else localStorage.removeItem(k); } catch (e) {} document.dispatchEvent(new CustomEvent('x056:draft-changed')); }
   function restoreDraft() { var k = draftKey(), v = ''; try { v = (k && localStorage.getItem(k)) || ''; } catch (e) {} promptEl.value = displayComposerLists(v); autogrow(); if(deliveryRecords)renderDelivery(); }
   promptEl.addEventListener('input', function () { autogrow(); saveDraft(); });
 
