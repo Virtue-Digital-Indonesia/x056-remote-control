@@ -19,7 +19,8 @@ export class FilesController {
   list(@Param('chatId') id: string, @Query('projectId') pid?: string, @Query('sessionId') sid?: string) {
     return this.call(() => {
       if (pid || sid) this.manager.fileExecution(id, pid!, sid!);
-      return { files: this.manager.files().list(id), epoch: this.manager.files().epoch(id),
+      const memorySources=this.manager.projectSpacesEnabled()?this.manager.memory().documents.all().filter(d=>!d.excluded):[];
+      return { files: this.manager.files().list(id).map(file=>({...file,memorySources:memorySources.filter(d=>d.file.fileId===file.id).map(d=>({id:d.id,title:d.title,state:d.state}))})), epoch: this.manager.files().epoch(id),
         ...(pid && sid ? { attempt: this.manager.files().attempt(pid, sid) } : {}) };
     });
   }

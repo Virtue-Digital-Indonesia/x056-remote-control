@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module';
+const {DatabaseSync}=createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -52,9 +54,15 @@ describe('Reviewed Project migration', () => {
     expect(f.spaces.list()).toEqual([]); expect(f.spaces.resolve(f.work.id, 'work-session').spaceId).toBeUndefined();
     expect(readFileSync(f.file, 'utf8')).toBe(before); expect(f.memory.get(f.repoNote.id)).toEqual(original);
   });
+  it('does not mistake new Work-local file ownership for first-build Space data',async()=>{
+    const f=fixture(false),path=join(f.state,'local.txt');writeFileSync(path,'Work-local file');await f.store.upload(f.work.id,'work-file-type-001',[{path,name:'local.txt'}]);
+    expect(inspectSpaceMigration(f.state).requiresReview).toBe(false);expect(f.store.list(f.work.id)[0].owner).toEqual({kind:'work',id:f.work.id});
+  });
   it('requires an explicit owner decision and retains files, sessions and original note/source identities after migration', async () => {
     const f = fixture(), path = join(f.state, 'original.txt'); writeFileSync(path, 'Original bytes');
     const [saved] = await f.store.upload(f.work.id, 'migration-upload-001', [{ path, name: 'Original.txt' }]);
+    // Materialize the original v1 file-owner marker, not a new Work-local file.
+    const legacyDb=new DatabaseSync(join(f.state,'chat-files.sqlite'));legacyDb.prepare("UPDATE files SET ownerKind='project' WHERE id=?").run(saved.id);legacyDb.close();
     const reviewed = plan(f), before = readFileSync(f.file, 'utf8');
     const incomplete = structuredClone(reviewed); delete incomplete.imports[0].memoryOwners[f.brief.id];
     expect(() => applySpaceMigration(f.state, incomplete)).toThrow('every ambiguous'); expect(f.spaces.list()).toHaveLength(0);

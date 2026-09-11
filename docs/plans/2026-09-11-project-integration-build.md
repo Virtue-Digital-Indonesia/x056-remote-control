@@ -32,8 +32,8 @@ Baseline checks passed before runtime edits: 866 tests across 79 files in 169.34
 | 2. Membership and dispatch | Complete; focused dispatch, file, recovery, and MCP checks passed |
 | 3. Integration UI | Complete; two browser workflows, 24 focused tests, and typecheck passed |
 | 4. Memory scope and sharing | Complete; scope, grant, reference, handoff, MCP, and browser checks passed |
-| 5. File sources | Next |
-| 6. Release preparation | Pending |
+| 5. File sources | Complete; document extraction, citations, access, restart, and browser checks passed |
+| 6. Release preparation | In progress |
 
 No new production migration or deployment is authorized by this implementation request. Use isolated state for write tests. Continue until the requested implementation and local acceptance are complete; retain any remaining live-provider checks explicitly.
 
@@ -84,3 +84,17 @@ The Memory UI now supports Space owners, sharing recipients, revoke actions, sou
 Validation covered 84 tests across seven focused files, including both providers, MCP output contracts, handoffs, and exact-session dispatch. Typecheck and script syntax checks passed. The isolated browser workflow passed sharing, revocation, deliberate turn exceptions, mobile layout, draft refresh, and message binding. No JavaScript errors occurred.
 
 Document passage indexing and source uploads follow in Stage 5. No production panel, state, or deployment changed.
+
+## Stage 5 evidence
+
+Saved DOCX, PDF, Markdown, and text files now become versioned memory sources. Durable extraction jobs retain limits, progress, attempts, errors, and cancellation state. Cache keys include original bytes, format, extractor code, and options. Separate owners retain separate source identities and grants.
+
+The worker indexes full passages with headings, paragraphs, table cells, lines, and PDF pages. Original bytes remain in the file catalog. Empty extraction fails visibly; scanned PDFs report Needs OCR. Unsupported formats remain downloadable. Updates retain the active version until extraction completes. Restart and cancellation fence stale workers.
+
+Notes and passages share the existing token and item limits. Search applies access checks before ranking and pagination. Context previews, history, and tool reads expose exact citations. Tool read audits retain passage locators. Previous citations resolve their original saved version after updates.
+
+Memory Sources now supports upload, saved-file selection, progress, cancellation, retry, update, sharing, and removal. Files offers Add to memory and identifies retained source dependencies. Upload alone creates no confirmed facts. Derived notes require review after source changes.
+
+Validation included 55 tests across document, sharing, MCP, and migration fixtures in the final focused run. Earlier focused runs also covered existing file editing and memory contracts. Six Python document checks passed. Typecheck and script syntax checks passed. The browser workflow exercised actual DOCX uploads, cited previews, original downloads, sharing, version updates, saved-file selection, and mobile layout without JavaScript errors.
+
+Stage 6 will validate recovery after these new writes, compatible feature disable, aggregation, and the full regression suite. No production state or deployment changed.

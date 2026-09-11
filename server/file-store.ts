@@ -11,7 +11,7 @@ import { DOCUMENT_CONVERTER, documentCommand } from './documents.js';
 export const MAX_FILE_BYTES = 50 * 1024 * 1024;
 export const MAX_BATCH_BYTES = 200 * 1024 * 1024;
 export interface FileReference { fileId: string; versionId: string; ownerId?: string }
-export interface ChatFile { id: string; chatId: string; sessionId: string; name: string; mime: string; latestVersionId: string; createdAt: string; removed: boolean; versions: FileVersion[]; ownerKind?: 'chat' | 'project'; sourceOwnerId?: string; sourceFileId?: string; sourceVersionId?: string; sourceArtifactId?: string }
+export interface ChatFile { owner?:{kind:'chat'|'work'|'space';id:string}; id: string; chatId: string; sessionId: string; name: string; mime: string; latestVersionId: string; createdAt: string; removed: boolean; versions: FileVersion[]; ownerKind?: 'chat' | 'project'; sourceOwnerId?: string; sourceFileId?: string; sourceVersionId?: string; sourceArtifactId?: string }
 export interface FileVersion { id: string; fileId: string; parentVersionId?: string; hash: string; bytes: number; blob: string; artifactId: string; mime: string; createdAt: string; sourceMessageId?: string; account?: string; sourceProjectId?: string; sourceSessionId?: string }
 export interface FileExecution { projectId: string; sessionId: string; cwd: string; membershipRevision: number }
 interface SharedLease { token: string; ownerId: string; executionId: string; sessionId: string; attempt: number; membershipRevision: number }
@@ -20,7 +20,7 @@ interface Checkout { token: string; chatId: string; fileId: string; versionId: s
 interface Prepared { name: string; mime: string; hash: string; bytes: number; blob: string }
 export interface PreviewJob { id: string; chatId: string; versionId: string; converter: string; state: 'queued' | 'running' | 'ready' | 'failed' | 'unsupported'; output: string | null; error: string | null }
 export class FileError extends Error { constructor(message: string, public readonly status = 400) { super(message); } }
-const MIMES: Record<string, string> = { '.txt': 'text/plain', '.md': 'text/markdown', '.csv': 'text/csv', '.json': 'application/json', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation', '.zip': 'application/zip' };
+const MIMES: Record<string, string> = { '.pdf':'application/pdf', '.txt': 'text/plain', '.md': 'text/markdown', '.csv': 'text/csv', '.json': 'application/json', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation', '.zip': 'application/zip' };
 const now = () => new Date().toISOString();
 // Vite 5 does not recognize Node 22's new built-in; keep it native in tests too.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
@@ -44,7 +44,7 @@ export class FileStore {
     this.db = new DatabaseSync(join(state, 'chat-files.sqlite'));
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (schema.user_version > 2) throw new Error('File catalog requires a newer gateway');
+    if (schema.user_version > 3) throw new Error('File catalog requires a newer gateway');
     if (!schema.user_version) this.db.exec(`BEGIN IMMEDIATE;
       CREATE TABLE files (id TEXT PRIMARY KEY, chatId TEXT NOT NULL, sessionId TEXT NOT NULL, name TEXT NOT NULL, mime TEXT NOT NULL, latestVersionId TEXT NOT NULL, createdAt TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX files_owner ON files(chatId,sessionId);
@@ -66,6 +66,7 @@ export class FileStore {
       CREATE TABLE execution_attempts (executionId TEXT NOT NULL, sessionId TEXT NOT NULL, attempt INTEGER NOT NULL, PRIMARY KEY(executionId,sessionId));
       CREATE TABLE shared_leases (token TEXT PRIMARY KEY REFERENCES checkouts(token), ownerId TEXT NOT NULL, executionId TEXT NOT NULL, sessionId TEXT NOT NULL, attempt INTEGER NOT NULL, membershipRevision INTEGER NOT NULL);
       PRAGMA user_version=2; COMMIT;`);
+    this.db.exec('PRAGMA user_version=3');
     // Restart fences every old execution separately. No owner's shared epoch is used.
     this.db.exec('UPDATE execution_attempts SET attempt=attempt+1');
     this.artifacts = new ArtifactStore(state, () => []);
@@ -78,6 +79,7 @@ export class FileStore {
     try { const result = work(); this.db.exec('COMMIT'); return result; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
+  private ownerKind(owner:Project):'chat'|'work'|'space' {return owner.kind==='chat'?'chat':owner.id.startsWith('space_')?'space':'work';}
   private writable(chatId: string): RunnableProject {
     const chat = requireWorkspace(this.owner(chatId));
     if (chat.archivedAt) throw new FileError('Restore this Chat before changing files', 409);
@@ -111,7 +113,7 @@ export class FileStore {
   list(chatId: string): ChatFile[] {
     const chat = this.owner(chatId);
     return (this.db.prepare('SELECT * FROM files WHERE chatId=? AND sessionId=? ORDER BY createdAt,id').all(chatId, chat.lastSessionId!) as unknown as ChatFile[])
-      .map(file => ({ ...file, removed: !!file.removed, versions: this.db.prepare('SELECT * FROM versions WHERE fileId=? ORDER BY createdAt,rowid').all(file.id) as unknown as FileVersion[] }));
+      .map(file => ({ ...file,ownerKind:file.ownerKind==='chat'?'chat':'project',owner:{kind:this.ownerKind(chat),id:chat.id}, removed: !!file.removed, versions: this.db.prepare('SELECT * FROM versions WHERE fileId=? ORDER BY createdAt,rowid').all(file.id).map(v=>Object.fromEntries(Object.entries(v).filter(([,value])=>value!==null))) as unknown as FileVersion[] }));
   }
   file(chatId: string, fileId: string): ChatFile {
     const file = this.list(chatId).find(f => f.id === fileId);
@@ -193,6 +195,7 @@ export class FileStore {
     } finally { await input.close(); await output?.close(); rmSync(staged, { force: true }); }
   }
   private insertVersion(chat: Project, fileId: string, data: Prepared, parent?: string, source?: { sourceMessageId?: string; account?: string; sourceProjectId?: string; sourceSessionId?: string }): FileVersion {
+    if(chat.kind==='chat')source={sourceProjectId:chat.id,sourceSessionId:chat.lastSessionId,...source};
     const artifact = this.artifacts.registerRetained({ projectId: chat.id, sessionId: chat.lastSessionId!, title: data.name, file: data.blob, mime: data.mime, size: data.bytes });
     const version: FileVersion = { id: randomUUID(), fileId, parentVersionId: parent, hash: data.hash, bytes: data.bytes, blob: data.blob, artifactId: artifact.id, mime: data.mime, createdAt: now(), ...source };
     this.db.prepare('INSERT INTO versions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').run(version.id, fileId, parent ?? null, data.hash, data.bytes, data.blob, artifact.id, data.mime, version.createdAt, source?.sourceMessageId ?? null, source?.account ?? null, source?.sourceProjectId ?? null, source?.sourceSessionId ?? null);
@@ -214,7 +217,7 @@ export class FileStore {
       const ids: string[] = [];
       for (const data of prepared) {
         const id = randomUUID();
-        this.db.prepare('INSERT INTO files (id,chatId,sessionId,name,mime,latestVersionId,createdAt,ownerKind) VALUES (?,?,?,?,?,?,?,?)').run(id, chatId, chat.lastSessionId!, data.name, data.mime, '', now(), chat.kind === 'chat' ? 'chat' : 'project');
+        this.db.prepare('INSERT INTO files (id,chatId,sessionId,name,mime,latestVersionId,createdAt,ownerKind) VALUES (?,?,?,?,?,?,?,?)').run(id, chatId, chat.lastSessionId!, data.name, data.mime, '', now(), this.ownerKind(chat));
         const version = this.insertVersion(chat, id, data, undefined, expectedEpoch === undefined ? undefined : this.source(chatId));
         this.db.prepare('UPDATE files SET latestVersionId=? WHERE id=?').run(version.id, id); ids.push(id);
       }
@@ -348,8 +351,8 @@ export class FileStore {
       const previous = this.replay(ownerId, operationId, fingerprint); if (previous) return previous;
       const id = randomUUID();
       this.db.prepare('INSERT INTO files (id,chatId,sessionId,name,mime,latestVersionId,createdAt,ownerKind,sourceOwnerId,sourceFileId,sourceVersionId) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-        .run(id, ownerId, owner.lastSessionId!, file.name, version.mime, '', now(), 'project', sourceOwnerId, file.id, version.id);
-      const saved = this.insertVersion(owner, id, { name: file.name, mime: version.mime, bytes: version.bytes, blob: version.blob, hash: version.hash });
+        .run(id, ownerId, owner.lastSessionId!, file.name, version.mime, '', now(), this.ownerKind(owner), sourceOwnerId, file.id, version.id);
+      const saved = this.insertVersion(owner, id, { name: file.name, mime: version.mime, bytes: version.bytes, blob: version.blob, hash: version.hash },undefined,{sourceProjectId:version.sourceProjectId||(this.owner(sourceOwnerId).kind==='chat'?sourceOwnerId:undefined),sourceSessionId:version.sourceSessionId||file.sessionId||undefined,sourceMessageId:version.sourceMessageId,account:version.account});
       this.db.prepare('UPDATE files SET latestVersionId=? WHERE id=?').run(saved.id, id);
       this.db.prepare("INSERT INTO operations VALUES (?,?,?,'committed',?,NULL,?)").run(ownerId, operationId, fingerprint, JSON.stringify([id]), this.epoch(ownerId));
       return [id];
@@ -371,7 +374,7 @@ export class FileStore {
       const replay = this.replay(ownerId, operationId, fingerprint); if (replay) return replay[0];
       const id = randomUUID();
       this.db.prepare('INSERT INTO files (id,chatId,sessionId,name,mime,latestVersionId,createdAt,ownerKind,sourceOwnerId,sourceArtifactId) VALUES (?,?,?,?,?,?,?,?,?,?)')
-        .run(id, ownerId, owner.lastSessionId!, prepared.name, prepared.mime, '', now(), 'project', executionId, artifactId);
+        .run(id, ownerId, owner.lastSessionId!, prepared.name, prepared.mime, '', now(), this.ownerKind(owner), executionId, artifactId);
       const saved = this.insertVersion(owner, id, prepared, undefined, { sourceProjectId: executionId, sourceSessionId: sessionId });
       this.db.prepare('UPDATE files SET latestVersionId=? WHERE id=?').run(saved.id, id);
       this.db.prepare("INSERT INTO operations VALUES (?,?,?,'committed',?,NULL,?)").run(ownerId, operationId, fingerprint, JSON.stringify([id]), this.epoch(ownerId));

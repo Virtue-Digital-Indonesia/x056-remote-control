@@ -353,6 +353,7 @@ export class SessionManager {
     this.queueTimers.clear(); this.autopilotTimers.clear();
     for (const run of this.runs.values()) run.control?.abort();
     for (const pool of this.pools()) pool.shutdown();
+    this.sharedMemory?.documents.close();
     this.fileStore?.close(); this.titleWorker?.close();
   }
   private titleWorker?: ConversationTitles;
@@ -933,7 +934,7 @@ export class SessionManager {
   spaces(): ProjectSpaceRegistry { return new ProjectSpaceRegistry(this.opts.stateDir, () => this.projects().list()); }
   private legacySpaceReviewRequired = false;
   projectContext(): ProjectContextResolver { return new ProjectContextResolver(() => this.projects().list(), () => this.projectSpacesEnabled(), this.spaces()); }
-  memory():MemoryStore {return this.sharedMemory ??= new MemoryStore(this.opts.stateDir, this.projectContext());}
+  memory():MemoryStore {if(!this.sharedMemory){this.sharedMemory=new MemoryStore(this.opts.stateDir,this.projectContext());if(this.projectSpacesEnabled())this.sharedMemory.documents.start((ownerId,ref)=>{if(!this.projectSpacesEnabled())throw new Error('Document processing paused because Project spaces are disabled');return this.files().version(ownerId,ref);},()=>this.emit('memory_sources',{}));}return this.sharedMemory;}
 
   private registry(): AccountRegistry {
     if (!this.sharedRegistry) {

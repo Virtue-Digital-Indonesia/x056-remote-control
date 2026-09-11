@@ -1,3 +1,4 @@
+import type { Response } from 'express';
 import {
   BadRequestException,
   Body,
@@ -8,6 +9,7 @@ import {
   Inject,
   Post,
   Query,
+  Res,
 } from '@nestjs/common';
 import { SessionManager } from './manager.js';
 import { STATE_DIR } from './api.controller.js';
@@ -19,6 +21,7 @@ import {
   type MemorySettings,
   type ContextPreferences,
 } from './memory-store.js';
+import { EXTRACTION_LIMITS } from './memory-documents.js';
 import { MemorySources, cleanMemorySource } from './memory-sources.js';
 
 @Controller('api/memory')
@@ -123,7 +126,7 @@ export class MemoryController {
       const q=this.callerQuery(body);
       if(body.callerProjectId&&body.callerSessionId){
         if(body.id){const current=this.store().get(body.id);if(!current)throw new Error('Memory not found');const problem=this.store().contextProblem(current,q);if(problem)throw new Error(problem);}
-        for(const ref of body.entry.sources||[]){if(!ref.id)continue;const source=this.store().source(ref.id);if(!source)throw new Error('Source unavailable');const reason=this.store().sourceContextProblem(source,q);if(reason)throw new Error(reason);const grant=this.store().access.eligible({kind:'source',id:ref.id},body.callerProjectId,body.callerSessionId);ref.grantId=grant?.id;ref.grantRevision=grant?.revision;ref.hash=source.hash;ref.versionId=source.versionId;ref.spaceId=source.spaceId;}
+        for(const ref of body.entry.sources||[]){if(!ref.id)continue;const pinned=this.store().access.references(body.callerProjectId,body.callerSessionId,q.requestId)?.selections.find(r=>r.kind==='source'&&r.id===ref.id);const version=ref.versionId||pinned?.version;const source=version?this.store().sourceVersion(ref.id,version):this.store().source(ref.id);if(!source)throw new Error('Source unavailable');const reason=this.store().sourceContextProblem(source,q);if(reason)throw new Error(reason);const grant=this.store().access.eligible({kind:'source',id:ref.id},body.callerProjectId,body.callerSessionId);ref.grantId=grant?.id;ref.grantRevision=grant?.revision;ref.hash=source.hash;ref.versionId=source.versionId;ref.spaceId=source.spaceId;}
       }
       const entry = { ...body.entry, status: 'proposed' as const };
       return body.id
@@ -175,6 +178,43 @@ export class MemoryController {
   @Post('references') @HttpCode(200) setReferences(@Body() b:Parameters<ReturnType<MemoryController['store']>['access']['setReferences']>[0]) {
     return this.call(()=>{this.validateProject(b.projectId,b.sessionId);if(!b.projectId||!b.sessionId)throw new Error('Choose a conversation');return this.store().access.setReferences(b);});
   }
+  @Get('shared') shared(@Query() q:MemoryQuery){return this.call(()=>{
+    const recipient=q.spaceId?{kind:'space',id:q.spaceId}:q.projectId?{kind:'execution',id:q.projectId}:undefined;
+    if(!recipient)return {entries:[],sources:[],total:0};
+    const grants=this.store().access.grants().filter(g=>g.active&&g.recipient.kind===recipient.kind&&g.recipient.id===recipient.id),term=(q.query||'').toLowerCase();
+    const entries=grants.filter(g=>g.subject.kind==='entry').map(g=>this.store().get(g.subject.id)).filter((e):e is MemoryEntry=>!!e&&e.status==='confirmed'&&this.store().visible(e,q)&&(!term||(e.title+' '+e.content).toLowerCase().includes(term)));
+    const sources=grants.filter(g=>g.subject.kind==='source').map(g=>this.store().source(g.subject.id)).filter(s=>!!s&&!s.excluded&&this.store().sourceVisible(s,q)&&(!term||(s.title+' '+s.content).toLowerCase().includes(term)));
+    return {entries,sources,total:entries.length+sources.length};
+  });}
+  @Get('documents') documents(@Query() q:MemoryQuery){return this.call(()=>{
+    const rows=this.store().documents.all().filter(d=>(!q.spaceId||d.owner.kind==='space'&&d.owner.id===q.spaceId)&&(!q.projectId||d.owner.kind==='execution'&&d.owner.id===q.projectId));
+    return {items:rows,limits:EXTRACTION_LIMITS};
+  });}
+  @Post('documents') @HttpCode(200) addDocument(@Body() b:Parameters<ReturnType<MemoryController['store']>['documents']['register']>[0]){return this.call(()=>{if(!this.manager.projectSpacesEnabled())throw new Error('Project file memory is disabled');if(this.manager.fileOwner(b.file.ownerId).archivedAt)throw new Error('Restore the file owner first');return this.store().documents.register(b);});}
+  @Get('documents/jobs') documentJobs(@Query('id') id:string){return this.call(()=>({document:this.store().documents.get(id),jobs:this.store().documents.jobs(id)}));}
+  @Post('documents/cancel') @HttpCode(200) cancelDocument(@Body() b:Parameters<ReturnType<MemoryController['store']>['documents']['cancel']>[0]){return this.call(()=>this.store().documents.cancel(b));}
+  @Post('documents/exclude') @HttpCode(200) excludeDocument(@Body() b:{id:string;excluded:boolean}){return this.call(()=>{if(typeof b.excluded!=='boolean')throw new Error('Invalid exclusion');if(this.store().source(b.id))this.store().excludeSource(b.id,b.excluded);else this.store().documents.setExcluded(b.id,b.excluded);return this.store().documents.get(b.id);});}
+  @Get('source/search') searchPassages(@Query() query:MemoryQuery&{callerProjectId?:string;callerSessionId?:string}){return this.call(()=>{
+    const q=this.callerQuery(query),result=this.store().documents.search(q);
+    for(const p of result.items)if(q.projectId&&q.sessionId)this.store().access.recordRead({kind:'source',id:p.sourceId,version:p.versionId},q.projectId,q.sessionId,q.requestId,[{id:p.id,locator:p.locator}]);
+    return {items:result.items.map(p=>({...p,citation:this.store().documents.citation(p,this.store().sourceVersion(p.sourceId,p.versionId)!)})),total:result.total};
+  });}
+  @Get('source/read') readPassages(@Query() query:MemoryQuery&{id:string;versionId?:string;passageId?:string;callerProjectId?:string;callerSessionId?:string}){return this.call(()=>{
+    const q=this.callerQuery(query),pinned=q.projectId&&q.sessionId?this.store().access.references(q.projectId,q.sessionId,q.requestId)?.selections.find(r=>r.kind==='source'&&r.id===query.id):undefined;
+    const version=query.versionId||pinned?.version,source=version?this.store().sourceVersion(query.id,version):this.store().source(query.id);if(!source)throw new Error('Source version unavailable');
+    if(q.access==='context'){const reason=this.store().sourceContextProblem(source,q);if(reason)throw new Error(reason);}
+    const rows=this.store().documents.passages(source.id,source.versionId||source.hash).filter(p=>!query.passageId||p.id===query.passageId);
+    const offset=Math.max(0,Number(query.offset)||0),limit=Math.max(1,Math.min(5,Number(query.limit)||3));
+    const items=rows.slice(offset,offset+limit).map(p=>({...p,citation:this.store().documents.citation(p,source)}));
+    if(q.projectId&&q.sessionId)this.store().access.recordRead({kind:'source',id:source.id,version:source.versionId||source.hash},q.projectId,q.sessionId,q.requestId,items.map(p=>({id:p.id,locator:p.locator})));
+    return {sourceId:source.id,versionId:source.versionId||source.hash,title:source.title,items,total:rows.length,offset,limit,downloadPath:source.document?'/api/memory/source/download?'+new URLSearchParams({id:source.id,versionId:source.versionId!,...(query.callerProjectId&&query.callerSessionId?{callerProjectId:query.callerProjectId,callerSessionId:query.callerSessionId}:{})}):undefined};
+  });}
+  @Get('source/download') sourceDownload(@Query() query:{id:string;versionId:string;callerProjectId?:string;callerSessionId?:string},@Res() res:Response){return this.call(()=>{
+    const source=this.store().sourceVersion(query.id,query.versionId);if(!source?.document)throw new Error('Source file version unavailable');
+    const q=this.callerQuery(query);if(q.access==='context'){const reason=this.store().sourceContextProblem(source,q);if(reason)throw new Error(reason);}
+    const {file,version,path}=this.manager.files().version(source.document.file.ownerId,source.document.file);
+    res.setHeader('Content-Type',version.mime);res.setHeader('Content-Disposition',"attachment; filename=download; filename*=UTF-8''"+encodeURIComponent(file.name).replace(/['()*]/g,c=>'%'+c.charCodeAt(0).toString(16)));res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','private, no-store');res.setHeader('Content-Security-Policy',"sandbox; default-src 'none'");res.sendFile(path,{dotfiles:'allow',cacheControl:false});
+  });}
   @Post('source/exclude') @HttpCode(200) exclude(@Body() b: { id: string; excluded: boolean }) {
     return this.call(() => {
       if (typeof b.excluded !== 'boolean') throw new Error('Invalid exclusion');

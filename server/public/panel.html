@@ -1845,7 +1845,7 @@
     opts = opts || {};
     var h = {};
     if (token) h.Authorization = 'Bearer ' + token; // fallback token; else the same-origin session cookie authenticates
-    if (opts.body) h['Content-Type'] = 'application/json';
+    if (opts.body && !(opts.body instanceof FormData)) h['Content-Type'] = 'application/json';
     opts.headers = Object.assign(h, opts.headers || {});
     opts.credentials = 'same-origin'; // send the passkey session cookie
     return fetch(path, opts);

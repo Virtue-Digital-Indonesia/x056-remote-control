@@ -365,6 +365,8 @@ const MEMORY_TOOLS = [
     },
     ['query'],
   ],
+  ['memory_source_search','Search eligible document passages with exact file versions and locators. Results respect memory settings, ownership, sharing grants, and this turn’s selected references.',{query:{type:'string'},limit:{type:'number'},offset:{type:'number'}},['query']],
+  ['memory_source_read','Read up to five cited passages from an eligible source version. A source grant allows reading, never file editing.',{id:{type:'string'},versionId:{type:'string'},passageId:{type:'string'},offset:{type:'number'},limit:{type:'number'}},['id']],
   [
     'memory_read',
     'Read a shared memory, its source evidence, revision history and relationships.',
@@ -382,7 +384,7 @@ const MEMORY_TOOLS = [
       projectId: { type: 'string' },
       sessionId: { type: 'string' },
       spaceId:{type:'string'},
-      sources:{type:'array',maxItems:20,items:{type:'object',properties:{id:{type:'string'},label:{type:'string'}},required:['id','label'],additionalProperties:false}},
+      sources:{type:'array',maxItems:20,items:{type:'object',properties:{id:{type:'string'},label:{type:'string'},versionId:{type:'string'}},required:['id','label'],additionalProperties:false}},
       sharedProjectIds: { type: 'array', items: { type: 'string' } },
       tags: { type: 'array', items: { type: 'string' } },
     },
@@ -430,7 +432,7 @@ for (const tool of CHAT_TOOLS) OUTPUT_SCHEMAS[tool.name] = CHAT_OUTPUT;
 for (const tool of TOOLS) {
   if (!OUTPUT_SCHEMAS[tool.name]) throw new Error(`missing output schema: ${tool.name}`);
   tool.outputSchema = OUTPUT_SCHEMAS[tool.name];
-  const readOnly = /^(list_|read_|search_|get_|code_|wiki_)/.test(tool.name) || ['memory_search', 'memory_read', 'memory_context'].includes(tool.name);
+  const readOnly = /^(list_|read_|search_|get_|code_|wiki_)/.test(tool.name) || ['memory_search', 'memory_read', 'memory_context','memory_source_search','memory_source_read'].includes(tool.name);
   tool.annotations = { readOnlyHint: readOnly, destructiveHint: ['stop_conversation', 'cancel_queued', 'cancel_scheduled', 'edit_queued', 'pause_scheduled', 'memory_update'].includes(tool.name), idempotentHint: readOnly, openWorldHint: ['send_message', 'message_self', 'schedule_task'].includes(tool.name) };
 
 }
@@ -460,6 +462,7 @@ export async function callToolResult(api, name, args) {
     const pid=args.projectId||SELF.projectId,sid=args.sessionId||(pid===SELF.projectId?SELF.sessionId:'');
     let path,body;
     if(name==='memory_search'){const query=new URLSearchParams({query:args.query||'',status:'confirmed',...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{}),limit:String(Math.min(100,args.limit||20)),...(args.kind?{kind:args.kind}:{}),...(!args.crossProject&&pid?{projectId:pid,sessionId:sid||'',access:'context'}:{})});path='/api/memory/search?'+query;}
+    else if(name==='memory_source_search'||name==='memory_source_read')path='/api/memory/source/'+(name==='memory_source_search'?'search':'read')+'?'+new URLSearchParams({...args,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{projectId:pid||'',sessionId:sid||'',access:'context'})});
     else if(name==='memory_read')path='/api/memory/entry?'+new URLSearchParams({id:args.id,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})});
     else if(name==='memory_context')path='/api/memory/context?'+new URLSearchParams({projectId:pid,sessionId:sid||'',query:args.query||'',...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})});
     else if(name==='memory_link'){path='/api/memory/link';body={from:args.from,to:args.to,kind:args.kind,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})};}

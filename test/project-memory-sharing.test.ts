@@ -78,6 +78,21 @@ describe('Project memory scope and reviewed sharing',()=>{
   f.store.access.setReferences({...refs,operationId:randomUUID(),expectedRevision:1,selections:[]});expect(()=>f.store.validateSnapshot('chat','chat-session','claude',snapshot)).toThrow('references changed');
   const next=f.store.context('chat','chat-session','claude','');f.move({kind:'chat',projectId:'chat'},{mode:'space',spaceId:f.b.id});expect(()=>f.store.validateSnapshot('chat','chat-session','claude',next)).toThrow('membership');
  });
+ it('removes references independently without renewing revoked or replaced grants',()=>{
+  const f=fixture(),a=f.note({projectId:f.other.id}),b=f.note({projectId:f.other.id});
+  const grants=[a,b].map(n=>f.share({kind:'entry',id:n.id},{kind:'space',id:f.a.id}));
+  const requestId=randomUUID(),base={projectId:'chat',sessionId:'chat-session',requestId};
+  const first=f.store.access.setReferences({...base,operationId:randomUUID(),expectedRevision:0,selections:[a,b].map(n=>({kind:'entry',id:n.id,version:'1'}))});
+  for(const g of grants)f.store.access.setGrant({operationId:randomUUID(),subject:g.subject,recipient:g.recipient,expectedVersion:'1',expectedRevision:1,active:false});
+  const kept=f.store.access.setReferences({...base,operationId:randomUUID(),expectedRevision:1,selections:first.selections.slice(1)});
+  expect(kept.selections[0]).toEqual(first.selections[1]);
+  expect(()=>f.store.context('chat','chat-session','claude','',requestId)).toThrow('grant');
+  const g=grants[1];f.store.access.setGrant({operationId:randomUUID(),subject:g.subject,recipient:g.recipient,expectedVersion:'1',expectedRevision:2,active:true});
+  const unchanged=f.store.access.setReferences({...base,operationId:randomUUID(),expectedRevision:2,selections:kept.selections});
+  expect(unchanged.selections[0].grantRevision).toBe(1);
+  expect(()=>f.store.context('chat','chat-session','claude','',requestId)).toThrow('grant');
+  expect(f.store.access.setReferences({...base,operationId:randomUUID(),expectedRevision:3,selections:[]}).selections).toEqual([]);
+ });
  it('preserves grant receipts and rolls back failed changes',()=>{
   const f=fixture(),note=f.note(),input={operationId:randomUUID(),subject:{kind:'entry' as const,id:note.id},expectedVersion:'1',recipient:{kind:'space' as const,id:f.a.id},expectedRevision:0,active:true};
   const first=f.store.access.setGrant(input);expect(f.store.access.setGrant(input)).toEqual(first);

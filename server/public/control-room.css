@@ -268,3 +268,7 @@ body[data-conversation-label-template=static][data-conversation-label-order=conv
 /* Exact memory references keep source ownership readable in narrow dialogs. */
 .memory-context-item > span { min-width:0; overflow-wrap:anywhere; }
 .memory-context-item > span > small { display:block; color:var(--muted); }
+
+.memory-detail-dialog [data-document] summary,.memory-source-search-hit { overflow-wrap:anywhere; }
+.memory-source-search-hit { display:grid; gap:6px; padding:14px 0; width:100%; text-align:left; }
+#memoryFileActions { margin-bottom:18px; }

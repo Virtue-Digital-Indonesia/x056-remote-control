@@ -17,6 +17,11 @@ const provider = choices('claude', 'codex');
 const nullableProvider = { anyOf: [provider, { type: 'null' }] };
 const ref = (name) => ({ $ref: `#/$defs/${name}` });
 
+const memoryOwner=object({kind:choices('space','execution'),id:str});
+const savedFile=object({ownerId:str,fileId:str,versionId:str});
+const locator=object({kind:choices('lines','paragraph','table-cell','page'),heading:str,startLine:integer,endLine:integer,paragraph:integer,table:integer,row:integer,cell:integer,page:integer,charStart:integer,charEnd:integer},['kind']);
+const citation=object({sourceId:str,versionId:str,passageId:str,locator,file:savedFile,sourceProjectId:str,sourceSessionId:str},['sourceId','versionId','passageId','locator']);
+const passage=object({id:str,sourceId:str,versionId:str,file:savedFile,title:str,owner:memoryOwner,estimatedTokens:integer,ordinal:integer,locator,text:str,hash:str,citation},['id','sourceId','versionId','title','owner','estimatedTokens','ordinal','locator','text','hash','citation']);
 const sourceRef = object({ spaceId:str,versionId:str,grantId:str,grantRevision:integer,id: str, hash: str, label: str, projectId: str,
   sessionId: str, provider: str, ref: str, at: num }, ['label']);
 const entry = object({
@@ -29,7 +34,7 @@ const entry = object({
   actor: str, sources: array(ref('sourceRef')), supersededBy: str,
 }, ['id', 'revision', 'title', 'content', 'summary', 'kind', 'status', 'scope',
   'sharedProjectIds', 'providers', 'tags', 'pinned', 'createdAt', 'updatedAt', 'actor', 'sources']);
-const source = object({ spaceId:str,versionId:str,id: str, key: str, kind: choices('conversation', 'artifact', 'legacy', 'document'),
+const source = object({ document:object({contentHash:str,file:savedFile,extractor:str,cacheKey:str,format:str,coverage:str,warnings:array(str),sourceProjectId:str,sourceSessionId:str},['file','extractor','cacheKey','format','coverage','warnings']),spaceId:str,versionId:str,id: str, key: str, kind: choices('conversation', 'artifact', 'legacy', 'document'),
   title: str, content: str, projectId: str, sessionId: str, provider: str, ref: str,
   at: num, hash: str, excluded: bool,
 }, ['id', 'key', 'kind', 'title', 'content', 'projectId', 'at', 'hash', 'excluded']);
@@ -37,6 +42,7 @@ const relationship = object({ id: str, from_id: str, to_id: str,
   kind: choices('related', 'supports', 'contradicts', 'depends_on'), at: num, entry: ref('entry'),
 }, ['id', 'from_id', 'to_id', 'kind', 'at']);
 const contextFields = {
+  passages:array(object({id:str,sourceId:str,versionId:str,title:str,estimatedTokens:integer,citation})),
   requestId:str,referencesRevision:integer,grants:array(object({id:str,revision:integer,subject:object({kind:choices('entry','source'),id:str})})),
   scope: object({ spaceId:str,workProjectId:str,spaceArchived:bool,executionProjectId: str, sessionId: str, parentProjectId: str, membershipRevision: integer, inherited: bool }, ['executionProjectId', 'membershipRevision', 'inherited']),
   estimatedTokens: integer, budget: num,
@@ -89,6 +95,8 @@ const schemas = {
   save_memory: object({ id: str, file: str, accounts: array(str), existed: bool, status: entry.properties.status, shared: literal(true) }),
   memory_search: object({ items: array(object({ ...entry.properties, staleReason: str, expired: bool, score: num, reason: str },
     [...entry.required, 'expired', 'score', 'reason'])), total: integer, limit: num, offset: num, truncated: bool }),
+  memory_source_search:object({items:array(passage),total:integer}),
+  memory_source_read:object({sourceId:str,versionId:str,title:str,items:array(passage),total:integer,offset:integer,limit:integer,downloadPath:str},['sourceId','versionId','title','items','total','offset','limit']),
   memory_read: object({ entry: ref('entry'), revisions: array(ref('entry')), related: array(ref('relationship')),
     sources: array(object({ ...sourceRef.properties,unavailable:str, current: ref('source'), original: ref('source') }, sourceRef.required)) }),
   memory_propose: object({ entry: ref('entry') }),

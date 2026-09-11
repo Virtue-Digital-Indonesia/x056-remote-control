@@ -88,6 +88,9 @@ export class MemoryAccessStore {
       const selections = input.selections.map(s=>{
         subject(s); if (typeof s.version!=='string' || !s.version || s.version.length>180) throw new Error('Pin an exact memory revision or source version');
         for (const field of ['allowReadForTurn','allowCrossProjectForTurn'] as const) if (s[field]!==undefined&&typeof s[field]!=='boolean') throw new Error('Invalid turn permission');
+        // Removing another selection must not renew a revoked grant or prevent review.
+        const retained=previous?.selections.find(r=>r.kind===s.kind&&r.id===s.id&&r.version===s.version&&r.allowReadForTurn===!!s.allowReadForTurn&&r.allowCrossProjectForTurn===!!s.allowCrossProjectForTurn);
+        if(retained)return structuredClone(retained);
         const info=this.inspect(s,s.version); if (!info?.available) throw new MemoryReferenceConflict('The selected memory version is unavailable or unconfirmed');
         const grant=this.eligible(s,input.projectId,input.sessionId),local=recipients.some(r=>sameOwner(r,info.owner))&&(!info.sessionId||(info.owner.kind==='execution'&&info.owner.id===input.projectId&&info.sessionId===input.sessionId));
         if (!local&&!grant&&!s.allowReadForTurn) throw new MemoryReferenceConflict('Allow reading this exact reference for this turn, or share it first');
@@ -110,9 +113,9 @@ export class MemoryAccessStore {
     } else if (!ref.allowReadForTurn&&(!this.recipients(pid,sid).some(r=>sameOwner(r,info.owner))||(info.sessionId&&(info.owner.kind!=='execution'||info.owner.id!==pid||info.sessionId!==sid)))) throw new MemoryReferenceConflict('The selected memory’s owning Project changed; review this reference');
     return ref;
   }
-  recordRead(selection:MemorySelection,pid:string,sid:string,requestId?:string):void {
+  recordRead(selection:MemorySelection,pid:string,sid:string,requestId?:string,passages?:{id:string;locator:unknown}[]):void {
     const info=this.inspect(selection,selection.version);if(!info)return;
-    const grant=this.eligible(selection,pid,sid),data={...selection,projectId:pid,sessionId:sid,requestId,owner:info.owner,grantId:grant?.id,grantRevision:grant?.revision};
+    const grant=this.eligible(selection,pid,sid),data={...selection,projectId:pid,sessionId:sid,requestId,owner:info.owner,grantId:grant?.id,grantRevision:grant?.revision,passages};
     this.db.prepare('INSERT INTO memory_reads VALUES(?,?,?)').run(randomUUID(),Date.now(),JSON.stringify(data));
     this.db.exec('DELETE FROM memory_reads WHERE id IN (SELECT id FROM memory_reads ORDER BY at DESC LIMIT -1 OFFSET 10000)');
   }

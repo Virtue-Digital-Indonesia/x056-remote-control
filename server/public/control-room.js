@@ -1285,7 +1285,7 @@ window.createControlRoom = function (engine) {
     memoryTimer;
   workspace.insertAdjacentHTML(
     'beforeend',
-    `<div id="crMemory" class="cr-page" hidden><div class="cr-heading"><div><div class="cr-eyebrow">SHARED KNOWLEDGE</div><h1>Memory</h1><p>Decisions and context that travel with your work.</p></div><div class="workspace-actions"><button id="memoryMore" class="cr-icon" aria-label="Memory tools">${ic('more')}</button><button id="memoryImport" class="cr-secondary">Import sources</button><button id="memoryNew" class="cr-primary">${ic('plus')} New memory</button></div></div><div id="memoryStats" class="memory-stats"></div><div class="cr-tabs memory-tabs" role="group" aria-label="Memory view"><button data-memory-tab="knowledge" class="selected">Knowledge</button><button data-memory-tab="inbox">Review inbox <span id="memoryInboxCount"></span></button><button data-memory-tab="sources">Sources</button><button data-memory-tab="activity">Context history</button></div><div class="memory-filters"><label class="cr-search">${ic('search')}<input id="memorySearch" type="search" placeholder="Search knowledge and decisions" aria-label="Search memory"></label><select id="memoryProject" aria-label="Memory project"></select><select id="memoryKind" aria-label="Memory type"><option value="">All types</option>${memoryKinds.map((k) => `<option>${k}</option>`).join('')}</select><select id="memoryProvider" aria-label="Memory provider"><option value="">Both providers</option><option value="codex">ChatGPT / Codex</option><option value="claude">Claude</option></select><button id="memoryFilters" class="cr-secondary">Filters</button></div><div id="memoryExtra" class="memory-filters" hidden><select id="memoryConversation" aria-label="Memory conversation"><option value="">All conversations</option></select><select id="memoryStatus" aria-label="Memory status"><option value="confirmed">Confirmed</option><option value="archived">Archived</option><option value="deleted">Trash</option><option value="superseded">Superseded</option></select><select id="memoryScope" aria-label="Memory sharing scope"><option value="">All scopes</option><option value="conversation">Conversation</option><option value="project">Work / Chat</option><option value="space">Primary Project</option><option value="shared">Shared projects</option><option value="global">Workspace</option></select><input id="memoryTag" type="search" placeholder="Filter by tag" aria-label="Memory tag"><label class="workspace-check"><input type="checkbox" id="memoryExcluded">Excluded sources</label></div><div id="memoryBulk" class="workspace-bulk" hidden><strong></strong><button data-memory-bulk="confirmed">Confirm</button><button data-memory-bulk="archived">Archive</button><button data-memory-bulk="deleted">Move to trash</button><button data-memory-merge>Merge</button><button data-memory-clear>Clear</button></div><p id="memoryNotice" class="cr-note"></p><div id="memoryItems" aria-live="polite"></div><div id="memoryPages" class="memory-pagination"></div></div>`,
+    `<div id="crMemory" class="cr-page" hidden><div class="cr-heading"><div><div class="cr-eyebrow">SHARED KNOWLEDGE</div><h1>Memory</h1><p>Decisions and context that travel with your work.</p></div><div class="workspace-actions"><button id="memoryMore" class="cr-icon" aria-label="Memory tools">${ic('more')}</button><button id="memoryImport" class="cr-secondary">Import sources</button><button id="memoryNew" class="cr-primary">${ic('plus')} New memory</button></div></div><div id="memoryStats" class="memory-stats"></div><div class="cr-tabs memory-tabs" role="group" aria-label="Memory view"><button data-memory-tab="knowledge" class="selected">Brief and entries</button><button data-memory-tab="inbox">Review inbox <span id="memoryInboxCount"></span></button><button data-memory-tab="sources">Sources</button><button data-memory-tab="shared">Shared with us</button><button data-memory-tab="activity">Context history</button></div><div class="memory-filters"><label class="cr-search">${ic('search')}<input id="memorySearch" type="search" placeholder="Search knowledge and decisions" aria-label="Search memory"></label><select id="memoryProject" aria-label="Memory project"></select><select id="memoryKind" aria-label="Memory type"><option value="">All types</option>${memoryKinds.map((k) => `<option>${k}</option>`).join('')}</select><select id="memoryProvider" aria-label="Memory provider"><option value="">Both providers</option><option value="codex">ChatGPT / Codex</option><option value="claude">Claude</option></select><button id="memoryFilters" class="cr-secondary">Filters</button></div><div id="memoryExtra" class="memory-filters" hidden><select id="memoryConversation" aria-label="Memory conversation"><option value="">All conversations</option></select><select id="memoryStatus" aria-label="Memory status"><option value="confirmed">Confirmed</option><option value="archived">Archived</option><option value="deleted">Trash</option><option value="superseded">Superseded</option></select><select id="memoryScope" aria-label="Memory sharing scope"><option value="">All scopes</option><option value="conversation">Conversation</option><option value="project">Work / Chat</option><option value="space">Primary Project</option><option value="shared">Shared projects</option><option value="global">Workspace</option></select><input id="memoryTag" type="search" placeholder="Filter by tag" aria-label="Memory tag"><label class="workspace-check"><input type="checkbox" id="memoryExcluded">Excluded sources</label></div><div id="memoryBulk" class="workspace-bulk" hidden><strong></strong><button data-memory-bulk="confirmed">Confirm</button><button data-memory-bulk="archived">Archive</button><button data-memory-bulk="deleted">Move to trash</button><button data-memory-merge>Merge</button><button data-memory-clear>Clear</button></div><p id="memoryNotice" class="cr-note"></p><div id="memoryFileActions" class="workspace-actions" hidden><button id="memoryUploadFiles" class="cr-secondary">Upload files</button><button id="memoryChooseFiles" class="cr-secondary">Choose from Files</button></div><div id="memoryDocumentJobs"></div><div id="memoryItems" aria-live="polite"></div><div id="memoryPages" class="memory-pagination"></div></div>`,
   );
   primaryNav.insertAdjacentHTML(
     'beforeend',
@@ -1339,6 +1339,9 @@ window.createControlRoom = function (engine) {
   }
   async function loadMemory() {
     const serial = ++memoryRequest;
+    document.querySelectorAll('[data-memory-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.memoryTab===memoryTab));
+    $('memoryFileActions').hidden=memoryTab!=='sources'||!window.rcProjectSpaces?.enabled();
+    $('memoryDocumentJobs').innerHTML='';
     $('memoryStatus').hidden=memoryTab!=='knowledge';
     $('memoryExcluded').parentElement.hidden=memoryTab!=='sources';
     $('memoryScope').hidden=$('memoryTag').hidden=memoryTab==='sources'||memoryTab==='activity';
@@ -1351,7 +1354,7 @@ window.createControlRoom = function (engine) {
         [stats, data] = await Promise.all([
           memoryRequestApi('stats'),
           memoryRequestApi(
-            memoryTab === 'activity'
+            memoryTab === 'shared'?'shared?'+q:memoryTab === 'activity'
               ? 'activity?' + q
               : memoryTab === 'sources'
                 ? 'sources?' + q + '&excluded=' + $('memoryExcluded').checked
@@ -1359,6 +1362,7 @@ window.createControlRoom = function (engine) {
           ),
         ]);
       if (serial !== memoryRequest) return;
+      if(memoryTab==='sources'&&window.rcProjectSpaces?.enabled())loadMemoryDocuments(serial);
       const counts = Object.fromEntries(stats.entries.map((x) => [x.status, Number(x.count)]));
       $('memoryInboxCount').textContent = counts.proposed || '';
       $('memoryStats').innerHTML =
@@ -1371,13 +1375,14 @@ window.createControlRoom = function (engine) {
             : memoryTab === 'activity'
               ? 'The exact memory revisions included when each turn started.'
               : 'Confirmed memories are retrieved within their sharing scope. Archived and trashed entries are excluded.';
-      memoryRows = Array.isArray(data) ? data : data.items;
+      memoryRows = Array.isArray(data) ? data : data.items||data.entries||[];
       $('memoryItems').innerHTML =
         memoryTab === 'activity'
           ? memoryActivity(memoryRows)
           : memoryTab === 'sources'
-            ? memorySourceRows(memoryRows)
+            ? memorySourceRows(memoryRows.filter(s=>!s.document))
             : memoryEntryRows(memoryRows);
+      if(memoryTab==='shared')$('memoryItems').innerHTML=memoryEntryRows(data.entries||[])+memorySourceRows(data.sources||[]);
       const total = data.total || memoryRows.length;
       $('memoryPages').innerHTML =
         memoryTab === 'activity'
@@ -1426,12 +1431,16 @@ window.createControlRoom = function (engine) {
         .join('') || memoryEmpty('No sources in this view')
     );
   }
+  function memoryPassageRows(passages=[]) {
+    return passages.map(p=>`<button class="memory-context-row" data-cited-source="${esc(p.sourceId)}" data-version="${esc(p.versionId)}" data-passage="${esc(p.id)}"><span>${esc(p.title)}<small>${esc(memoryLocator(p.citation.locator))}</small></span><small>Source passage</small></button>`).join('');
+  }
+  function bindMemoryCitations(host){host.querySelectorAll('[data-cited-source]').forEach(b=>b.onclick=()=>showMemorySourceRevision(b.dataset.citedSource,b.dataset.version,b.dataset.passage));}
   function memoryActivity(rows) {
     return (
       rows
         .map(
           (r) =>
-            `<details class="memory-activity"><summary><span>${ic('history')}<strong>${esc(cards().find((c) => c.c.sessionId === r.sessionId)?.c.title || 'Conversation')}</strong><small>${esc(providerName(r.provider))} · ${esc(memoryProjectName(r.projectId))}</small></span><span>${r.items.length} memories · ~${r.estimatedTokens} tokens<small>${esc(memoryDate(r.at))}</small></span></summary><div class="memory-activity-body">${r.enabled ? '' : '<p>Memory was disabled for this turn.</p>'}${r.items.map((i) => `<button class="memory-context-row" data-memory-open="${esc(i.id)}"><span>${esc(i.title)} <small>v${i.revision}</small></span><small>${esc(i.reason)}</small></button>`).join('') || '<p>No memories were included.</p>'}${r.skipped.length ? `<small>${r.skipped.length} excluded or beyond the context budget.</small>` : ''}</div></details>`,
+            `<details class="memory-activity"><summary><span>${ic('history')}<strong>${esc(cards().find((c) => c.c.sessionId === r.sessionId)?.c.title || 'Conversation')}</strong><small>${esc(providerName(r.provider))} · ${esc(memoryProjectName(r.projectId))}</small></span><span>${r.items.length} notes · ${(r.passages||[]).length} passages · ~${r.estimatedTokens} tokens<small>${esc(memoryDate(r.at))}</small></span></summary><div class="memory-activity-body">${r.enabled ? '' : '<p>Memory was disabled for this turn.</p>'}${r.items.map((i) => `<button class="memory-context-row" data-memory-open="${esc(i.id)}"><span>${esc(i.title)} <small>v${i.revision}</small></span><small>${esc(i.reason)}</small></button>`).join('')}${memoryPassageRows(r.passages)}${!r.items.length&&!r.passages?.length?'<p>No memory was included.</p>':''}${r.skipped.length ? `<small>${r.skipped.length} excluded or beyond the context budget.</small>` : ''}</div></details>`,
         )
         .join('') || memoryEmpty('No context history yet')
     );
@@ -1443,9 +1452,10 @@ window.createControlRoom = function (engine) {
     bar.querySelector('[data-memory-merge]').disabled = memorySelection.size < 2 || memorySelection.size > 21;
   }
   $('memoryItems').onclick = (e) => {
-    const b = e.target.closest('[data-memory-open],[data-memory-confirm],[data-memory-source]');
+    const b = e.target.closest('[data-memory-open],[data-memory-confirm],[data-memory-source],[data-cited-source]');
     if (b) {
-      if (b.dataset.memorySource) showMemorySource(b.dataset.memorySource);
+      if(b.dataset.citedSource)showMemorySourceRevision(b.dataset.citedSource,b.dataset.version,b.dataset.passage);
+      else if (b.dataset.memorySource) showMemorySource(b.dataset.memorySource);
       else showMemoryEntry(b.dataset.memoryOpen || b.dataset.memoryConfirm);
     }
   };
@@ -1530,6 +1540,8 @@ window.createControlRoom = function (engine) {
   $('memoryFilters').onclick = () => {
     $('memoryExtra').hidden = !$('memoryExtra').hidden;
   };
+  $('memoryUploadFiles').onclick=()=>memoryFilePicker(true);
+  $('memoryChooseFiles').onclick=()=>memoryFilePicker(false);
   $('memoryNew').onclick = () => editMemory();
   $('memoryImport').onclick = () => importMemorySources();
   $('crMemoryTab').onclick = () => showSection('memory');
@@ -1744,14 +1756,17 @@ window.createControlRoom = function (engine) {
       }
     };
   }
-  async function showMemorySourceRevision(id, hash) {
+  async function showMemorySourceRevision(id, hash, passageId) {
     const d = workspaceDialog('Original source version', '<div data-original-body>Loading…</div>');
     d.classList.add('memory-detail-dialog');
     try {
       const source = await memoryRequestApi('source?' + new URLSearchParams({ id, hash }));
       if (!d.open) return;
+      const passages=source.document?await memoryRequestApi('source/read?'+new URLSearchParams({id,versionId:hash,...(passageId?{passageId}:{}),limit:5})):null;
+      if(!d.open)return;
       d.querySelector('[data-original-body]').innerHTML =
-        `<p class="memory-meta">${esc(source.title)} · ${esc(memoryDate(source.at))}</p><div class="memory-content">${esc(source.content)}</div><button class="cr-secondary" data-current>View current source</button>`;
+        `<p class="memory-meta">${esc(source.title)} · ${esc(memoryDate(source.at))}</p>${passages?passages.items.map(p=>`<p class="memory-meta">${esc(memoryLocator(p.locator))}</p><div class="memory-content">${esc(p.text)}</div>`).join('')+`<p class="cr-note">${passages.items.length} of ${passages.total} passages in this selection.</p><button class="cr-secondary" data-download-citation>Download cited file version</button>`:`<div class="memory-content">${esc(source.content)}</div>`}<button class="cr-secondary" data-current>View current source</button>`;
+      if(passages)d.querySelector('[data-download-citation]').onclick=async()=>{try{const response=await engine.api(passages.downloadPath);if(!response.ok)throw new Error('Cited file unavailable');const url=URL.createObjectURL(await response.blob()),a=document.createElement('a');a.href=url;a.download=source.title;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(e){toast(e.message);}};
       d.querySelector('[data-current]').onclick = () => showMemorySource(id);
     } catch (err) {
       d.querySelector('[data-original-body]').textContent = err.message;
@@ -1762,6 +1777,7 @@ window.createControlRoom = function (engine) {
     d.classList.add('memory-detail-dialog');
     try {
       const s = await memoryRequestApi('source?id=' + encodeURIComponent(id));
+      if(s.document){d.close();return showDocumentSource(id);}
       if (!d.open) return;
       d.querySelector('h2').textContent = s.title;
       d.querySelector('[data-source-body]').innerHTML =
@@ -1992,6 +2008,45 @@ window.createControlRoom = function (engine) {
       d.querySelector('[data-settings]').textContent = err.message;
     }
   }
+  const memoryFileBase=id=>engine.state().projects.find(p=>p.id===id)?.kind==='chat'?'/api/chats/'+encodeURIComponent(id)+'/files':'/api/project-spaces/'+encodeURIComponent(id)+'/files';
+  const memoryLocator=loc=>[loc.heading,loc.kind==='page'?'Page '+loc.page:loc.kind==='table-cell'?'Table '+loc.table+', row '+loc.row+', cell '+loc.cell:loc.kind==='paragraph'?'Paragraph '+loc.paragraph:'Lines '+loc.startLine+(loc.endLine&&loc.endLine!==loc.startLine?'–'+loc.endLine:'')].filter(Boolean).join(' · ');
+  const sourceState=state=>({needs_ocr:'Needs OCR',processing:'Processing',partial:'Partial coverage',cancelled:'Cancelled'}[state]||state.charAt(0).toUpperCase()+state.slice(1));
+  async function memoryFilePicker(upload=false,initial){
+    const ownerId=initial?.ownerId||$('memoryProject').value||engine.state().projectId;
+    const d=workspaceDialog(upload?'Upload to memory':'Add a saved version to memory',`<form class="workspace-form"><label>Memory bank<select name="owner" ${initial?'disabled':''}>${memoryOptions(ownerId,false)}</select></label><p class="cr-note">DOCX, text PDF, Markdown, and text become cited reference sources. Original files stay in Files. Uploaded statements remain reference material until you review a memory proposal.</p>${upload?'<label>Files<input type="file" name="uploads" multiple required></label>':'<div data-saved>Loading…</div>'}<p role="status"></p><p role="alert"></p><footer><button type="button" class="cr-secondary" data-cancel>Cancel</button><button class="cr-primary">${upload?'Upload and index':'Add to memory'}</button></footer></form>`);
+    const f=d.querySelector('form'),operationId=crypto.randomUUID(),abort=new AbortController();let saved=[];
+    const load=async()=>{if(upload)return;try{saved=initial?[initial.file]:(await workspaceRequest(memoryFileBase(f.elements.owner.value).slice(5))).files.filter(file=>!file.removed);if(!d.open)return;d.querySelector('[data-saved]').innerHTML=`<label>Saved file<select name="file">${saved.map(file=>`<option value="${esc(file.id)}">${esc(file.name)}</option>`).join('')}</select></label><label>Version<select name="version"></select></label>`;const versions=()=>{const file=saved.find(file=>file.id===f.elements.file.value);f.elements.version.innerHTML=[...(file?.versions||[])].reverse().map(v=>`<option value="${esc(v.id)}" ${v.id===initial?.versionId?'selected':''}>${esc(new Date(v.createdAt).toLocaleString())} · ${v.id===file.latestVersionId?'Latest':'Earlier'}</option>`).join('');};f.elements.file.onchange=versions;versions();}catch(e){f.querySelector('[role=alert]').textContent=e.message;}};
+    f.elements.owner.onchange=load;f.querySelector('[data-cancel]').onclick=()=>d.close();d.addEventListener('close',()=>abort.abort());
+    f.onsubmit=async e=>{e.preventDefault();const button=f.querySelector('.cr-primary');button.disabled=true;f.querySelector('[role=alert]').textContent='';try{const id=f.elements.owner.value,owner={kind:id.startsWith('space_')?'space':'execution',id};let selections;
+      if(upload){const input=[...f.elements.uploads.files];if(!input.length||input.length>20||input.some(file=>file.size>50*1024*1024)||input.reduce((n,file)=>n+file.size,0)>200*1024*1024)throw new Error('Choose up to 20 files, 50 MiB each and 200 MiB total.');const body=new FormData();input.forEach(file=>body.append('files',file));f.querySelector('[role=status]').textContent='Saving original files…';const response=await engine.api(memoryFileBase(id),{method:'POST',headers:{'x-upload-id':operationId},body,signal:abort.signal});const result=await response.json();if(!response.ok)throw new Error(result.message||'Upload failed');selections=result.files.map(file=>({fileId:file.id,versionId:file.latestVersionId,ownerId:id}));}
+      else selections=[{fileId:f.elements.file.value,versionId:f.elements.version.value,ownerId:id}];
+      f.querySelector('[role=status]').textContent='Queueing document extraction…';for(const [index,file] of selections.entries())await memoryRequestApi('documents',{operationId:operationId+'-'+index,owner,file});d.close();toast('Original files saved. Extraction is queued.');memoryTab='sources';$('memoryProject').innerHTML=memoryOptions(id);$('memoryProject').value=id;loadMemory();
+    }catch(error){if(d.open)f.querySelector('[role=alert]').textContent=error.message;}finally{button.disabled=false;}};load();
+  }
+  async function loadMemoryDocuments(serial){
+    try{const data=await memoryRequestApi('documents?'+memoryQuery()),query=$('memorySearch').value.trim(),hits=query?await memoryRequestApi('source/search?'+memoryQuery()+'&access=library&limit=20'):{items:[]};if(serial!==memoryRequest||memoryTab!=='sources')return;const jobs=data.items.filter(d=>d.excluded===$('memoryExcluded').checked&&(!query||d.title.toLowerCase().includes(query.toLowerCase())||hits.items.some(p=>p.sourceId===d.id)));
+      $('memoryDocumentJobs').innerHTML=jobs.length?'<h2 class="rc-space-section-title">Document sources</h2>'+jobs.map(d=>`<article class="memory-row"><button class="memory-row-main" data-memory-document="${esc(d.id)}"><strong>${esc(d.title)}</strong><span class="memory-meta">${esc(sourceState(d.state))}${d.activeVersionId&&['queued','processing','failed','cancelled'].includes(d.state)?' · Previous version remains active':''} · ${esc(memoryProjectName(d.owner.id))}</span>${d.error?`<span class="memory-warning">${esc(d.error)}</span>`:''}</button></article>`).join(''):'';
+      if(hits.items.length)$('memoryDocumentJobs').insertAdjacentHTML('beforeend','<h3>Matching passages</h3>'+hits.items.map(p=>`<button class="memory-row-main memory-source-search-hit" data-memory-document="${esc(p.sourceId)}"><strong>${esc(p.title)}</strong><span class="memory-meta">${esc(memoryLocator(p.locator))}</span><span>${esc(p.text.slice(0,350))}</span></button>`).join(''));
+      $('memoryDocumentJobs').querySelectorAll('[data-memory-document]').forEach(b=>b.onclick=()=>showDocumentSource(b.dataset.memoryDocument));
+      if(jobs.some(d=>['queued','processing'].includes(d.state)))setTimeout(()=>{if(serial===memoryRequest&&!$('crMemory').hidden)loadMemoryDocuments(serial);},900);
+    }catch(e){if(serial===memoryRequest)$('memoryDocumentJobs').textContent=e.message;}
+  }
+  async function showDocumentSource(id){
+    const d=workspaceDialog('Document source','<div data-document>Loading…</div>');d.classList.add('memory-detail-dialog');let doc,job;
+    async function load(){try{const data=await memoryRequestApi('documents/jobs?id='+encodeURIComponent(id));doc=data.document;job=data.jobs.find(j=>j.id===doc.jobId);if(!d.open)return;
+      const active=doc.activeVersionId?await memoryRequestApi('source/read?'+new URLSearchParams({id,versionId:doc.activeVersionId,limit:5})):null;
+      const files=(await workspaceRequest(memoryFileBase(doc.file.ownerId).slice(5))).files,file=files.find(f=>f.id===doc.file.fileId),newer=file?.latestVersionId!==doc.file.versionId;
+      d.querySelector('h2').textContent=doc.title;d.querySelector('[data-document]').innerHTML=`<p><strong>${esc(sourceState(doc.state))}</strong> · ${esc(memoryProjectName(doc.owner.id))} · attempt ${job?.attempt||0}</p><p class="cr-note">${doc.activeVersionId?'The active source stays pinned to its saved file version.':'The file remains downloadable while extraction runs.'}</p>${doc.warnings.map(w=>`<p class="memory-warning">${esc(w)}</p>`).join('')}${doc.error?`<p role="alert">${esc(doc.error)}</p>`:''}<div class="workspace-actions"><button class="cr-secondary" data-original-file>Download original</button>${['queued','processing'].includes(doc.state)?'<button class="cr-secondary" data-cancel-job>Cancel extraction</button>':['failed','partial','unsupported','needs_ocr','cancelled'].includes(doc.state)?'<button class="cr-secondary" data-retry-job>Retry extraction</button>':''}${newer?'<button class="cr-primary" data-update-source>Update source</button>':''}<button class="cr-secondary" data-remove-source>${doc.excluded?'Restore source':'Remove source'}</button>${active?'<button class="cr-secondary" data-share-source>Share with Projects</button><button class="cr-secondary" data-use-source>Use in a conversation</button><button class="cr-secondary" data-propose-source>Create memory proposal</button>':''}</div><p class="cr-note">Removing a source disables retrieval and retains its file and citation history.</p>${active?'<h3>Cited passages</h3>'+active.items.map(p=>`<details><summary>${esc(memoryLocator(p.locator))}</summary><div class="memory-content">${esc(p.text)}</div></details>`).join('')+`<p class="cr-note">Showing ${active.items.length} of ${active.total} passages. Search Memory for other sections.</p>`:''}<p role="status"></p>`;
+      const host=d.querySelector('[data-document]'),run=fn=>async()=>{try{await fn();await load();loadMemory();}catch(e){host.querySelector('[role=status]').textContent=e.message;}};
+      host.querySelector('[data-original-file]').onclick=run(async()=>{const response=await engine.api(memoryFileBase(doc.file.ownerId)+'/'+doc.file.fileId+'/versions/'+doc.file.versionId+'/download');if(!response.ok)throw new Error('File unavailable');const url=URL.createObjectURL(await response.blob()),a=document.createElement('a');a.href=url;a.download=doc.title;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+      if(host.querySelector('[data-cancel-job]'))host.querySelector('[data-cancel-job]').onclick=run(()=>memoryRequestApi('documents/cancel',{operationId:crypto.randomUUID(),sourceId:doc.id,expectedRevision:doc.revision}));
+      const update=versionId=>memoryRequestApi('documents',{operationId:crypto.randomUUID(),sourceId:doc.id,expectedRevision:doc.revision,owner:doc.owner,file:{...doc.file,versionId}});
+      if(host.querySelector('[data-retry-job]'))host.querySelector('[data-retry-job]').onclick=run(()=>update(doc.file.versionId));if(host.querySelector('[data-update-source]'))host.querySelector('[data-update-source]').onclick=run(()=>update(file.latestVersionId));
+      host.querySelector('[data-remove-source]').onclick=run(()=>memoryRequestApi('documents/exclude',{id:doc.id,excluded:!doc.excluded}));
+      if(active){host.querySelector('[data-share-source]').onclick=()=>shareMemory({kind:'source',id:doc.id,version:doc.activeVersionId,title:doc.title,owner:memoryOwner(doc.owner.id)});host.querySelector('[data-use-source]').onclick=()=>referenceMemory(undefined,{kind:'source',id:doc.id,version:doc.activeVersionId});host.querySelector('[data-propose-source]').onclick=run(async()=>{const result=await memoryRequestApi('source/promote',{id:doc.id});editMemory(result.entry);});}
+      if(['queued','processing'].includes(doc.state))setTimeout(()=>{if(d.open)load();},900);
+    }catch(e){if(d.open)d.querySelector('[data-document]').textContent=e.message;}}load();
+  }
   async function shareMemory(subject){
     const d=workspaceDialog('Share memory',`<form class="workspace-form"><p><strong>${esc(subject.title)}</strong> · ${esc(memoryProjectName(subject.owner.spaceId||subject.owner.projectId))} · version ${esc(subject.version)}</p><p class="cr-note">Share cited reading. Files and repository editing keep their separate permissions. Revoking access blocks future reads; context already sent to a provider cannot be recalled.</p><div data-grants>Loading…</div><label>Recipient<select name="recipient">${memoryOptions('',false)}</select></label><p role="alert"></p><footer><button class="cr-primary">Share</button></footer></form>`);
     const f=d.querySelector('form');let grants=[];
@@ -2006,7 +2061,7 @@ window.createControlRoom = function (engine) {
     const error=e=>{d.querySelector('[role=alert]').textContent=e.message;};
     async function save(selections){try{refs=await memoryRequestApi('references',{...selected(),operationId:crypto.randomUUID(),expectedRevision:refs.revision,selections});await load();after();}catch(e){error(e);}}
     async function load(){try{const who=selected();refs=await memoryRequestApi('references?'+new URLSearchParams(who));if(!d.open)return;d.querySelector('[data-selected]').innerHTML='<h3>Selected references</h3>'+ (await Promise.all(refs.selections.map(async r=>{let title=r.id;try{const item=await memoryRequestApi((r.kind==='entry'?'entry':'source')+'?id='+encodeURIComponent(r.id));title=(item.entry||item).title;}catch{}return `<div class="memory-context-item"><span>${esc(title)} · ${esc(r.kind)} · v${esc(r.version)}</span><button class="cr-icon" data-remove="${esc(r.id)}" aria-label="Remove reference">${ic('x')}</button></div>`;}))).join('')||'<p>No selected references.</p>';d.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>save(refs.selections.filter(r=>r.id!==b.dataset.remove)));}catch(e){error(e);}}
-    async function search(){const seq=++serial;try{const query=d.querySelector('[data-query]').value;const [notes,sources]=await Promise.all([memoryRequestApi('search?'+new URLSearchParams({query,status:'confirmed',limit:30})),memoryRequestApi('sources?'+new URLSearchParams({query,limit:30}))]);if(seq!==serial||!d.open)return;results=[...notes.items.map(e=>({kind:'entry',id:e.id,version:String(e.revision),title:e.title,owner:e.spaceId||e.projectId})),...sources.items.map(s=>({kind:'source',id:s.id,version:s.versionId||s.hash,title:s.title,owner:s.spaceId||s.projectId}))];d.querySelector('[data-results]').innerHTML=results.map((r,i)=>`<div class="memory-context-item"><span>${esc(r.title)}<small>${esc(memoryProjectName(r.owner))} · ${esc(r.kind)}</small></span><button class="cr-secondary" data-use="${i}">Use</button></div>`).join('')||'<p>No matches.</p>';d.querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>add(results[Number(b.dataset.use)]));}catch(e){error(e);}}
+    async function search(){const seq=++serial;try{const query=d.querySelector('[data-query]').value;const [notes,sources,passages]=await Promise.all([memoryRequestApi('search?'+new URLSearchParams({query,status:'confirmed',limit:30})),memoryRequestApi('sources?'+new URLSearchParams({query,limit:30})),memoryRequestApi('source/search?'+new URLSearchParams({query,limit:30,access:'library'}))]);if(seq!==serial||!d.open)return;results=[...notes.items.map(e=>({kind:'entry',id:e.id,version:String(e.revision),title:e.title,owner:e.spaceId||e.projectId})),...sources.items.map(s=>({kind:'source',id:s.id,version:s.versionId||s.hash,title:s.title,owner:s.spaceId||s.projectId})),...passages.items.filter(p=>!sources.items.some(s=>s.id===p.sourceId)).filter((p,i,rows)=>rows.findIndex(r=>r.sourceId===p.sourceId)===i).map(p=>({kind:'source',id:p.sourceId,version:p.versionId,title:p.title,owner:p.owner.id}))];d.querySelector('[data-results]').innerHTML=results.map((r,i)=>`<div class="memory-context-item"><span>${esc(r.title)}<small>${esc(memoryProjectName(r.owner))} · ${esc(r.kind)}</small></span><button class="cr-secondary" data-use="${i}">Use</button></div>`).join('')||'<p>No matches.</p>';d.querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>add(results[Number(b.dataset.use)]));}catch(e){error(e);}}
     function add(r){if(refs.selections.some(x=>x.kind===r.kind&&x.id===r.id))return;save([...refs.selections,{kind:r.kind,id:r.id,version:r.version,allowReadForTurn:d.querySelector('[data-read]').checked,allowCrossProjectForTurn:d.querySelector('[data-cross]').checked}]);}
     d.querySelector('[data-query]').oninput=search;d.querySelector('[data-target]').onchange=()=>load();d.querySelector('[data-done]').onclick=()=>{d.close();after();};await load();await search();if(initial){try{const found=await memoryRequestApi((initial.kind==='entry'?'entry':'source')+'?id='+encodeURIComponent(initial.id));d.querySelector('[data-query]').value=(found.entry||found).title;await search();}catch(e){error(e);}}
   }
@@ -2037,7 +2092,8 @@ window.createControlRoom = function (engine) {
         if (seq !== request || !d.open) return;
         const prefs = data.preferences,
           body = d.querySelector('[data-context-body]');
-        body.innerHTML = `<div class="memory-context-summary"><span><strong>${data.items.length} memories</strong> · ~${data.estimatedTokens} / ${data.budget} tokens</span><label class="workspace-check"><input type="checkbox" data-enabled ${prefs.enabled !== false ? 'checked' : ''}>Use memory here</label></div>${!data.enabled ? '<p class="cr-note">Retrieval is disabled for this conversation, project, provider, or slash command.</p>' : ''}<p class="cr-note">Preview for the next turn. Pins respect sharing, provider settings, exclusions, and the context budget.</p><h3>Included</h3>${data.items.map((i) => `<div class="memory-context-item"><button class="memory-row-main" data-memory-open="${esc(i.id)}"><strong>${esc(i.title)}</strong><small>v${i.revision} · ${esc(i.reason)}</small></button><button class="cr-icon" data-exclude="${esc(i.id)}" title="Exclude from this conversation" aria-label="Exclude ${esc(i.title)}">${ic('x')}</button></div>`).join('') || '<p class="cr-note">No matching confirmed knowledge.</p>'}<details><summary>Choose context · ${available.total} eligible memories</summary>${available.items.map((e) => `<div class="memory-context-item"><span>${esc(e.title)}</span><label class="workspace-check"><input type="checkbox" data-pin="${esc(e.id)}" ${prefs.pinnedIds?.includes(e.id) ? 'checked' : ''}>Pin</label><label class="workspace-check"><input type="checkbox" data-allow="${esc(e.id)}" ${!prefs.excludedIds?.includes(e.id) ? 'checked' : ''}>Allow</label></div>`).join('')}</details>${data.skipped.length ? `<details><summary>${data.skipped.length} skipped</summary>${data.skipped.map((i) => `<p class="memory-meta">${esc(available.items.find((e) => e.id === i.id)?.title || i.id.slice(0, 8))} · ${esc(i.reason)}</p>`).join('')}</details>` : ''}<details><summary>Recent turns</summary>${memoryActivity(data.history.slice(0, 10))}</details>`;
+        body.innerHTML = `<div class="memory-context-summary"><span><strong>${data.items.length} notes · ${(data.passages||[]).length} passages</strong> · ~${data.estimatedTokens} / ${data.budget} tokens</span><label class="workspace-check"><input type="checkbox" data-enabled ${prefs.enabled !== false ? 'checked' : ''}>Use memory here</label></div>${!data.enabled ? '<p class="cr-note">Retrieval is disabled for this conversation, project, provider, or slash command.</p>' : ''}<p class="cr-note">Preview for the next turn. Pins respect sharing, provider settings, exclusions, and the context budget.</p><h3>Included</h3>${data.items.map((i) => `<div class="memory-context-item"><button class="memory-row-main" data-memory-open="${esc(i.id)}"><strong>${esc(i.title)}</strong><small>v${i.revision} · ${esc(i.reason)}</small></button><button class="cr-icon" data-exclude="${esc(i.id)}" title="Exclude from this conversation" aria-label="Exclude ${esc(i.title)}">${ic('x')}</button></div>`).join('')}${memoryPassageRows(data.passages)}${!data.items.length&&!data.passages?.length?'<p class="cr-note">No matching notes or source passages.</p>':''}<details><summary>Choose context · ${available.total} eligible memories</summary>${available.items.map((e) => `<div class="memory-context-item"><span>${esc(e.title)}</span><label class="workspace-check"><input type="checkbox" data-pin="${esc(e.id)}" ${prefs.pinnedIds?.includes(e.id) ? 'checked' : ''}>Pin</label><label class="workspace-check"><input type="checkbox" data-allow="${esc(e.id)}" ${!prefs.excludedIds?.includes(e.id) ? 'checked' : ''}>Allow</label></div>`).join('')}</details>${data.skipped.length ? `<details><summary>${data.skipped.length} skipped</summary>${data.skipped.map((i) => `<p class="memory-meta">${esc(available.items.find((e) => e.id === i.id)?.title || i.id.slice(0, 8))} · ${esc(i.reason)}</p>`).join('')}</details>` : ''}<details><summary>Recent turns</summary>${memoryActivity(data.history.slice(0, 10))}</details>`;
+        bindMemoryCitations(body);
         async function save(patch) {
           try {
             await memoryRequestApi('context/preferences', {
@@ -2504,5 +2560,5 @@ window.createControlRoom = function (engine) {
   setInterval(()=>{if(document.hidden)return;loadConversationMeta();if(section==='planner')loadPlanner();},5000);setTimeout(loadConversationMeta,1000);
 
   setMode('closed'); projectNav(false); refresh();
-  return { memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory');$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
+  return { addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory');$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
 };

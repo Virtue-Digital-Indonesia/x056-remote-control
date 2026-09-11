@@ -52,7 +52,7 @@ afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir
 
 describe('all advertised output contracts', () => {
   it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(45);
+    expect(TOOLS).toHaveLength(47);
     expect(validators.size).toBe(TOOLS.length);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
@@ -322,6 +322,21 @@ describe('all advertised output contracts', () => {
     const output = join(dir, 'work', 'output.txt'); writeFileSync(output, 'Work output');
     const artifact = new ArtifactStore(dir, () => [join(dir, 'work')]).add({ projectId: 'p', sessionId: 's', title: 'output.txt', path: output, source: 'manual', kind: 'file' });
     expect((await tool('import_work_file', { ...execution, artifactId: artifact.id, operationId: 'mcp-work-import-001' })).data.data.sourceArtifactId).toBe(artifact.id);
+  });
+
+  it('reads cited source passages through the advertised contracts',async()=>{
+    manager.memory().setSettings({enabled:true,crossProject:true,providers:['claude','codex'],excludedProjects:[],excludedSpaces:[]});manager.memory().setPreferences('p','s',{enabled:true,excludedIds:[]});
+    const chat=manager.createChat({requestId:'mcp-source-chat-001'}),path=join(chat.cwd,'source.md');writeFileSync(path,'# Citations\nSourcePassageContract remains editable.');
+    const [file]=await manager.files().upload(chat.id,'mcp-source-upload-001',[{path,name:'source.md'}]);const doc=manager.memory().documents.register({operationId:'mcp-source-register-001',owner:{kind:'execution',id:chat.id},file:{ownerId:chat.id,fileId:file.id,versionId:file.latestVersionId}});
+    await vi.waitFor(()=>expect(manager.memory().documents.get(doc.id)?.state).toBe('ready'));
+    const search=await tool('memory_source_search',{query:'SourcePassageContract'});expect(search.data.items).toEqual([]);
+    const source=manager.memory().source(doc.id)!;manager.memory().access.setGrant({operationId:'mcp-source-share-001',subject:{kind:'source',id:doc.id},expectedVersion:source.versionId!,recipient:{kind:'execution',id:'p'},expectedRevision:0,active:true});
+    // SELF-free transport is read-only unless an execution is supplied by its binding.
+    const read=await tool('memory_source_read',{id:doc.id});expect(read.isError).toBe(true);
+    vi.stubEnv('X056_SELF_PROJECT_ID','p');vi.stubEnv('X056_SELF_SESSION_ID','s');vi.resetModules();const self=await import('../scripts/x056-mcp-tools.mjs');
+    const hits=validateResult('memory_source_search',await self.callToolResult(api,'memory_source_search',{query:'SourcePassageContract'}));expect(hits.items[0].citation.file.versionId).toBe(file.latestVersionId);
+    const response=validateResult('memory_source_read',await self.callToolResult(api,'memory_source_read',{id:doc.id}));expect(response.items[0].citation.file.versionId).toBe(file.latestVersionId);
+    const preview=validateResult('memory_context',await self.callToolResult(api,'memory_context',{query:'SourcePassageContract'}));expect(preview.passages.some((p:any)=>p.sourceId===doc.id)).toBe(true);
   });
 
   it('covers every advertised action', () => { expect([...covered].sort()).toEqual(TOOLS.map(t => t.name).sort()); });
