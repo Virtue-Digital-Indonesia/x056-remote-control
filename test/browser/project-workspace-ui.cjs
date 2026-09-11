@@ -57,7 +57,8 @@ const out='/tmp/project-workspace-ui';mkdirSync(out,{recursive:true});
   check('Selected Project section visible in sidebar',await page.locator('.workspace-project-children [aria-current=page]').evaluate(e=>{const r=e.getBoundingClientRect(),b=document.getElementById('crProjectLinks').getBoundingClientRect();return r.top>=b.top&&r.bottom<=b.bottom;}));
   await page.locator('#rcChatFiles').click();check('Chat file inspector opens',await page.locator('#rcChatInspector').isVisible());
   await page.locator('#rcChatPanelClose').click();check('File inspector closes on desktop',!await page.locator('#rcChatInspector').isVisible());
-  await page.locator('#rcChatTools').click();await page.locator('[data-kind=mcp]').click();await page.locator('#rcToolsList').getByText('x056',{exact:true}).waitFor();await page.keyboard.press('Escape');
+  await page.locator('#rcChatTools').click();await page.locator('[data-kind=mcp]').click();await page.locator('#rcToolsList').getByText('x056',{exact:true}).waitFor();
+  await page.locator('dialog[open] [data-manage]').click();await page.waitForURL(base+'/settings/connections');check('Managing tools opens the Settings page',await page.locator('#connectionControls').isVisible()&&await page.locator('dialog[open]').count()===0);await page.goBack();await page.locator('#prompt').waitFor();
   await shot('chat-desktop');
   await page.locator('#crAccountsTab').click();await page.waitForURL(base+'/accounts');await page.goBack();await page.locator('#prompt').waitFor();
   check('Draft retained across navigation',await page.locator('#prompt').inputValue()==='Keep this unsent proposal draft.');await page.reload();await page.locator('#prompt').waitFor();check('Draft retained across reload',await page.locator('#prompt').inputValue()==='Keep this unsent proposal draft.');
@@ -71,11 +72,21 @@ const out='/tmp/project-workspace-ui';mkdirSync(out,{recursive:true});
   const refs=await page.evaluate(({id,sid})=>JSON.parse(localStorage.getItem('x056_chat_attachments_'+id+'::'+sid)||'[]'),{id:chat.id,sid:chat.lastSessionId});check('Exact shared-file owner retained',refs.some(r=>r.ownerId===space.id&&r.versionId));
   await go(projectPath+'/memory');await page.locator('#rcProjectBody #crMemory').waitFor();await shot('memory-desktop');
   await page.locator('#crAccountsTab').click();await page.waitForURL(base+'/accounts');check('Global navigation leaves embedded Memory',!await page.locator('#rcProjectPage').isVisible());
-  await go('/settings');await page.locator('[data-settings-page=general]').click();await page.locator('#stageVisible').uncheck();check('Switcher hidden',!await page.locator('#conversationStage').isVisible());await page.keyboard.press('Escape');await page.reload();await page.locator('body.rc-workspace-ready').waitFor();check('Switcher hide preference survives refresh',!await page.locator('#conversationStage').isVisible());
-  await page.locator('[data-settings-page=general]').click();check('Styled switch control',await page.locator('#stageVisible').evaluate(e=>e.getAttribute('role')==='switch'&&getComputedStyle(e).appearance==='none'&&e.getBoundingClientRect().width===36));await page.locator('#stageVisible').focus();await page.keyboard.press('Space');check('Keyboard toggle restores switcher',await page.locator('#conversationStage').isVisible());await page.keyboard.press('Space');await page.keyboard.press('Escape');
-  await page.locator('[data-settings-page=general]').click();await page.locator('#stageVisible').check();await page.keyboard.press('Escape');check('Switcher restored',await page.locator('#conversationStage').isVisible());
-  const second=await context.newPage();await second.goto(base+'/accounts');await second.locator('body.rc-workspace-ready').waitFor();await page.locator('[data-settings-page=general]').click();await page.locator('#stageVisible').uncheck();await second.waitForFunction(()=>document.body.dataset.stageHidden==='true');check('Switcher preference syncs across tabs',!await second.locator('#conversationStage').isVisible());await page.keyboard.press('Escape');await second.close();
-  for(const path of ['/home','/activity','/accounts','/activity/automations','/activity/outputs','/activity/queue','/accounts/tools','/memory','/settings','/projects','/chat','/work/unassigned']){
+  await go('/settings');await page.locator('#workspaceSettingsBody #settingsBody').waitFor();
+  check('Settings edits in the page, not a dialog',await page.locator('#stageVisible').isVisible()&&await page.locator('dialog[open]').count()===0);
+  await page.locator('#stageVisible').uncheck();check('Switcher hidden',!await page.locator('#conversationStage').isVisible());await page.reload();await page.locator('body.rc-workspace-ready').waitFor();check('Switcher hide preference survives refresh',!await page.locator('#conversationStage').isVisible());
+  check('Styled switch control',await page.locator('#stageVisible').evaluate(e=>e.getAttribute('role')==='switch'&&getComputedStyle(e).appearance==='none'&&e.getBoundingClientRect().width===36));await page.locator('#stageVisible').focus();await page.keyboard.press('Space');check('Keyboard toggle restores switcher',await page.locator('#conversationStage').isVisible());await page.keyboard.press('Space');
+  await page.locator('#stageVisible').check();check('Switcher restored',await page.locator('#conversationStage').isVisible());
+  const second=await context.newPage();await second.goto(base+'/accounts');await second.locator('body.rc-workspace-ready').waitFor();await page.locator('#stageVisible').uncheck();await second.waitForFunction(()=>document.body.dataset.stageHidden==='true');check('Switcher preference syncs across tabs',!await second.locator('#conversationStage').isVisible());await second.close();
+  for(const [path,selector,name] of [['/settings/models','#modelDefaultsForm','Model defaults'],['/settings/routing','#routingSettings','Account routing'],['/settings/connections','#connectionControls','Connections'],['/settings/security','#securityControls','Security']]){
+    await page.locator('#workspacePreferences .workspace-view-nav a[href="'+path+'"]').click();await page.waitForURL(base+path);await page.locator(selector).waitFor();
+    check(name+' section edits in the page',await page.locator('dialog[open]').count()===0&&await page.locator('#workspacePreferences').isVisible());
+  }
+  await page.reload();await page.locator('#securityControls').waitFor();check('Settings section survives refresh',new URL(page.url()).pathname==='/settings/security');
+  await page.locator('#workspacePreferences .workspace-view-nav a[href="/settings"]').click();await page.waitForURL(base+'/settings');await page.locator('#stageVisible').waitFor();
+  await page.locator('#crAccountsTab').click();await page.waitForURL(base+'/accounts');check('Leaving Settings hides the page',await page.locator('#workspacePreferences').isHidden());
+  await go('/settings/connections');await page.locator('#connectionControls .pop').waitFor();check('Connection controls return to the page after a reload',await page.locator('#pluginsPop').evaluate(e=>document.getElementById('connectionControls').contains(e)));
+  for(const path of ['/home','/activity','/accounts','/activity/automations','/activity/outputs','/activity/queue','/accounts/tools','/memory','/settings','/settings/models','/settings/routing','/settings/connections','/settings/security','/projects','/chat','/work/unassigned']){
     await go(path);check('Direct route '+path,new URL(page.url()).pathname===path);check('No desktop overflow '+path,await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   }
   await go('/work/unassigned');await page.locator('.cr-task').first().waitFor();check('Assigned Work excluded from unassigned',await page.locator('.cr-task[data-project="'+work.id+'"]').count()===0);check('Unassigned repository retained',await page.locator('.cr-task[data-project="'+other.id+'"]').count()>0);
@@ -90,7 +101,7 @@ const out='/tmp/project-workspace-ui';mkdirSync(out,{recursive:true});
   largeEstimate=true;
   for(const width of [390,320,768]){
     await page.setViewportSize({width,height:844});
-    for(const path of [projectPath+'/overview',projectPath+'/files',projectPath+'/memory',chatPath,workPath,'/accounts','/accounts/tools','/activity/queue','/activity/automations','/activity/outputs','/settings','/projects','/chat']){
+    for(const path of [projectPath+'/overview',projectPath+'/files',projectPath+'/memory',chatPath,workPath,'/accounts','/accounts/tools','/activity/queue','/activity/automations','/activity/outputs','/settings','/settings/models','/settings/connections','/projects','/chat']){
       await go(path);await page.waitForTimeout(300);
       if(path==='/accounts'){await page.locator('.cr-cost-value').filter({hasText:'90,256'}).waitFor();check(width+'px large cost keeps breakdown inside card',await page.locator('#crCostDetails').evaluate(e=>e.getBoundingClientRect().right<=document.getElementById('crProjectCosts').getBoundingClientRect().right));}
       check(width+'px no page overflow '+path,await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));

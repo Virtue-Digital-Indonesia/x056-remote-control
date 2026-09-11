@@ -4,10 +4,15 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   const $=id=>document.getElementById(id);
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const icon=n=>`<svg class="ic" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+  const settingsSections=[['/settings','General','general'],['/settings/models','Models','models'],['/settings/routing','Routing','routing'],['/settings/connections','Connections','connections'],['/settings/security','Security','security']];
   const globals={'/':'board','/home':'board','/activity':'board','/activity/queue':'planner','/activity/automations':'automations','/activity/outputs':'artifacts','/accounts':'accounts','/accounts/tools':'connections','/memory':'memory','/settings':'preferences','/work/unassigned':'board'};
+  for(const [url] of settingsSections)globals[url]='preferences';
   const aliases={'/dashboard':'/accounts','/queue':'/activity/queue','/automations':'/activity/automations','/artifacts':'/activity/outputs'};
   const canonical=p=>aliases[p]||p;
   const labels={'/':'Home','/home':'Home','/activity':'Activity','/activity/queue':'Activity / Queued messages','/activity/automations':'Activity / Automations','/activity/outputs':'Activity / Outputs','/accounts':'Accounts & tools','/accounts/tools':'Accounts & tools / Tools','/memory':'Workspace memory','/settings':'Settings','/work/unassigned':'Unassigned Work'};
+  for(const [url,name] of settingsSections)if(url!=='/settings')labels[url]='Settings / '+name;
+  const settingsRoute=p=>settingsSections.some(([url])=>url===p);
+  const sectionOf=p=>(settingsSections.find(([url])=>url===p)||settingsSections[0])[2];
   const link=(url,text,cls='')=>`<a href="${esc(url)}" data-workspace-link class="${cls}">${text}</a>`;
   let mounted=false,navSignature='',navContext='',renderTimer,routeSerial=0,activeRoute='',returnPath='/home';
   const handles=p=>Object.hasOwn(globals,canonical(p));
@@ -51,7 +56,8 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     if($('workspaceConnections').querySelector('.cr-heading'))viewNav($('workspaceConnections'),accountViews,'Account views');
     $('crNew').hidden=activity;
     if(home)$('crNew').innerHTML=icon('plus')+' New Chat';else $('crNew').innerHTML=icon('plus')+' New conversation';
-    $('workspaceConnections').hidden=pathname!=='/accounts/tools';$('workspacePreferences').hidden=pathname!=='/settings';
+    if($('workspaceSettingsBody'))viewNav($('workspacePreferences'),settingsSections.map(([url,name])=>[url,name]),'Settings sections');
+    $('workspaceConnections').hidden=pathname!=='/accounts/tools';$('workspacePreferences').hidden=!settingsRoute(pathname);
     if(!isGlobal){$('workspaceConnections').hidden=true;$('workspacePreferences').hidden=true;}
     // The old list remains the /chat library. Conversation pages use the same
     // parent navigation as Work and retain their transcript/composer nodes.
@@ -80,8 +86,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     $('crProjects').addEventListener('click',renderNav);$('crProjectVeil').addEventListener('click',renderNav);
     $('crHome').hidden=true;
     $('crWorkspace').insertAdjacentHTML('beforeend','<section id="workspaceConnections" class="cr-page" hidden></section><section id="workspacePreferences" class="cr-page" hidden></section>');
-    const settings=$('workspacePreferences');settings.innerHTML='<div class="cr-heading"><div><h1>Settings</h1><p>Workspace preferences, routing, connections, and security.</p></div></div><div class="workspace-settings-list">'+[['general','Appearance & conversations','Theme, labels, display preferences, and the floating switcher.'],['models','Model defaults','Provider and reasoning effort defaults.'],['routing','Account routing','Account selection and failover preferences.'],['connections','Connections','Connected providers and services.'],['security','Security','Sign-in, passkeys, and access settings.']].map(([key,title,detail])=>'<button data-settings-page="'+key+'"><span><strong>'+title+'</strong><small>'+detail+'</small></span>'+icon('right')+'</button>').join('')+'</div>';
-    settings.querySelectorAll('[data-settings-page]').forEach(b=>b.onclick=()=>room.showSettings(b.dataset.settingsPage));
+    $('workspacePreferences').innerHTML='<div class="cr-heading"><div><h1>Settings</h1><p>Workspace preferences, routing, connections, and security.</p></div></div><div id="workspaceSettingsBody" class="workspace-settings-body"></div>';
     $('crNew').addEventListener('click',event=>{if(['/','/home'].includes(location.pathname)){event.preventDefault();event.stopImmediatePropagation();chat.newChat();}},true);
     // These controls have older listeners; capture ensures one route transition.
     document.addEventListener('click',event=>{
@@ -111,7 +116,8 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     if(!handles(url)){await spaces.navigate(url);if(serial===routeSerial)renderNav();return;}
     spaces.leave();chat?.leave(false,true);room.showPage(globals[url]==='connections'||globals[url]==='preferences'?'board':globals[url]);
     if(globals[url]==='board')room.selectWorkScope('');
-    if(url==='/accounts/tools'||url==='/settings'){$('crBoard').hidden=true;if(url==='/accounts/tools')connections();}
+    if(url==='/accounts/tools'||settingsRoute(url)){$('crBoard').hidden=true;if(url==='/accounts/tools')connections();}
+    if(settingsRoute(url))room.mountSettings($('workspaceSettingsBody'),sectionOf(url));else room.mountSettings(null);
     renderNav();room.refresh();
   }
   function sectionChanged(next){
@@ -122,5 +128,6 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   document.addEventListener('x056:state',sync);document.addEventListener('x056:mode',sync);
   window.addEventListener('resize',sync);
   window.addEventListener('popstate',()=>{if(mounted&&handles(location.pathname)&&activeRoute!==location.pathname)navigate(location.pathname,true);else sync();});
-  return {ready:()=>mounted,handles,renderNav,context,navigate,sectionChanged,init:async()=>{if(!spaces?.enabled())return;mount();if(handles(location.pathname))await navigate(location.pathname,true);else renderNav();room.refresh();}};
+  const openSettings=tab=>navigate((settingsSections.find(([,,key])=>key===tab)||settingsSections[0])[0]).catch(e=>room.notify(e.message));
+  return {ready:()=>mounted,handles,renderNav,context,navigate,sectionChanged,openSettings,init:async()=>{if(!spaces?.enabled())return;mount();if(handles(location.pathname))await navigate(location.pathname,true);else renderNav();room.refresh();}};
 };

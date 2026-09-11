@@ -339,8 +339,8 @@ window.createControlRoom = function (engine) {
     pageFor(next).scrollTop=sectionScroll[next];
     if(!preserveRoute)window.rcWorkspace?.sectionChanged(next);
   }
-  function settings(tab='general') { engine.closePops(); settingsTab(tab); if(!preferences.open) preferences.showModal(); }
-  preferences.addEventListener('change', e => { if (!['open','maximize'].includes(e.target.name)) return; prefs[e.target.name] = e.target.value; try { localStorage.setItem('x056_display_preferences', JSON.stringify(prefs)); } catch { toast('This browser could not save display settings.'); } if (['page','modal'].includes(mode)) setMode(prefs.maximize); });
+  function settings(tab='general') { engine.closePops(); if(window.rcWorkspace?.ready()&&window.rcWorkspace.openSettings){window.rcWorkspace.openSettings(tab);return;} settingsTab(tab,preferences); if(!preferences.open) preferences.showModal(); }
+  document.addEventListener('change', e => { if (!['open','maximize'].includes(e.target.name) || !generalFields.some(f => f.contains(e.target))) return; prefs[e.target.name] = e.target.value; try { localStorage.setItem('x056_display_preferences', JSON.stringify(prefs)); } catch { toast('This browser could not save display settings.'); } if (['page','modal'].includes(mode)) setMode(prefs.maximize); });
   const on = (id, fn) => $(id).addEventListener('click', fn);
   ['crSettings','sidebarSettings','focusSettings'].forEach(id => on(id, () => settings()));
   on('crTheme', e=>themeMenu(e.currentTarget));
@@ -854,11 +854,11 @@ window.createControlRoom = function (engine) {
   const utilityHome=document.createElement('div');utilityHome.hidden=true;document.body.append(utilityHome);
   document.querySelectorAll('.pop').forEach(el=>utilityHome.append(el));
   const utility=document.createElement('dialog');utility.className='cr-dialog utility-dialog';utility.id='utilityDialog';document.body.append(utility);
-  let utilityElement=null, settingSection='general', connectionSection='plugins', defaultProvider='claude';
-  function closeUtility() {if(preferences.open)preferences.querySelectorAll('.pop').forEach(el=>el.hidden=false);if(utility.open)utility.close();if(utilityElement){utilityElement.dispatchEvent(new Event('utilityclose'));utilityElement.hidden=true;utilityElement.classList.remove('integrated-pop');utilityHome.append(utilityElement);utilityElement=null;}}
+  let utilityElement=null, settingSection='general', connectionSection='plugins', defaultProvider='claude', settingsHost=null;
+  function closeUtility() {if(settingsHost!==preferences||preferences.open)settingsHost.querySelectorAll('.pop').forEach(el=>el.hidden=false);if(utility.open)utility.close();if(utilityElement){utilityElement.dispatchEvent(new Event('utilityclose'));utilityElement.hidden=true;utilityElement.classList.remove('integrated-pop');utilityHome.append(utilityElement);utilityElement=null;}}
   utility.addEventListener('close',()=>{if(!utility.open)closeUtility();});
   function openUtility(el) {
-    if(preferences.contains(el)||$('automationContent').contains(el)){el.hidden=false;return;}
+    if(settingsHost.contains(el)||$('automationContent').contains(el)){el.hidden=false;return;}
     const destinations={defaultsPop:'models',pluginsPop:'connections',mcpSrvPop:'connections',passkeyPop:'security'};
     if(destinations[el.id]){if(el.id==='pluginsPop')connectionSection='plugins';if(el.id==='mcpSrvPop')connectionSection='mcp';settings(destinations[el.id]);return;}
     if(el.id==='cronPop'){showSection('automations');return;}
@@ -870,14 +870,28 @@ window.createControlRoom = function (engine) {
   }
   const oldPreferenceForm=preferences.querySelector('form');
   const generalFields=[...oldPreferenceForm.querySelectorAll('fieldset')];
+  settingsHost=preferences;
+  // Settings borrows real controls (the plugin, MCP and passkey pops, the display
+  // fieldsets). Send them home before a surface is rewritten, so the dialog and the
+  // Settings page can never both claim the same node.
+  function releaseSettings(host) {
+    host=host||settingsHost;
+    if(host.contains(menu)){if(menu.matches(':popover-open'))menu.hidePopover();document.body.append(menu);}
+    host.querySelectorAll('.pop').forEach(el=>{utilityHome.append(el);el.hidden=true;});
+  }
+  function unmountSettings() {if(settingsHost===preferences)return;releaseSettings();settingsHost.innerHTML='';settingsHost=preferences;}
   function mountControl(id,host,button) {const el=$(id);host.append(el);el.classList.add('integrated-pop');el.hidden=false;if(button)$(button).click();}
-  function settingsTab(tab) {
+  function settingsTab(tab,host) {
     if(typeof tab!=='string')tab='general';settingSection=tab;
-    if(preferences.contains(menu)){if(menu.matches(':popover-open'))menu.hidePopover();document.body.append(menu);}
-    preferences.querySelectorAll('.pop').forEach(el=>{utilityHome.append(el);el.hidden=true;});
-    preferences.innerHTML=`<div class="settings-shell"><nav class="settings-nav" aria-label="Settings"><h2>Settings</h2>${[['general','auto','General'],['models','sparkles','Models'],['routing','repeat','Routing'],['connections','plug','Connections'],['security','key','Security']].map(([id,icon,label])=>`<button data-settings="${id}" aria-current="${id===tab?'page':'false'}">${ic(icon)}<span>${label}</span></button>`).join('')}</nav><section class="settings-content"><header><h2>${{general:'General',models:'Model defaults',routing:'Account routing',connections:'Connections',security:'Security'}[tab]}</h2><button class="cr-icon" data-close-settings aria-label="Close settings">${ic('x')}</button></header><div id="settingsBody"></div></section></div>`;
-    preferences.querySelector('[data-close-settings]').onclick=()=>preferences.close();
-    preferences.querySelectorAll('[data-settings]').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settings));
+    if(host&&host!==settingsHost){releaseSettings();settingsHost.innerHTML='';settingsHost=host;settingsHost.classList.add('settings-surface');}
+    releaseSettings();
+    const inline=settingsHost!==preferences;
+    if(inline)settingsHost.innerHTML='<div id="settingsBody"></div>';
+    else preferences.innerHTML=`<div class="settings-shell"><nav class="settings-nav" aria-label="Settings"><h2>Settings</h2>${[['general','auto','General'],['models','sparkles','Models'],['routing','repeat','Routing'],['connections','plug','Connections'],['security','key','Security']].map(([id,icon,label])=>`<button data-settings="${id}" aria-current="${id===tab?'page':'false'}">${ic(icon)}<span>${label}</span></button>`).join('')}</nav><section class="settings-content"><header><h2>${{general:'General',models:'Model defaults',routing:'Account routing',connections:'Connections',security:'Security'}[tab]}</h2><button class="cr-icon" data-close-settings aria-label="Close settings">${ic('x')}</button></header><div id="settingsBody"></div></section></div>`;
+    if(!inline){
+      preferences.querySelector('[data-close-settings]').onclick=()=>preferences.close();
+      preferences.querySelectorAll('[data-settings]').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settings));
+    }
     const body=$('settingsBody');
     if(tab==='general'){
       body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Conversation labels</h3>${segmented('conversationLabelOrder',[['conversation','Conversation first'],['project','Project first']],conversationLabelOrder,'Conversation label order')}<p>Choose which name leads in conversation lists and details. Saved on this device.</p></section><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats'],['smart','Smart']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><section class="stage-settings recent-settings"><h3>Control room recents</h3><div class="setting-row"><label for="recentActivityWindow"><strong>Activity window</strong><small>Use the latest message or newly created time</small></label><select id="recentActivityWindow"><option value="1">Past day</option><option value="7">Past 7 days</option><option value="30">Past 30 days</option><option value="0">Any time</option></select></div><div class="setting-row"><label for="recentMaximum"><strong>Maximum conversations</strong><small>Search still finds older conversations</small></label><select id="recentMaximum"><option value="10">10</option><option value="20">20</option><option value="50">50</option></select></div></section><div id="displayFields"></div><div class="setting-row"><span><strong>Conversation titles</strong><small>Automatic naming and saved title suggestions</small></span><button class="cr-secondary" id="settingsTitles">Manage</button></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
@@ -888,7 +902,7 @@ window.createControlRoom = function (engine) {
       for(const field of generalFields)$('displayFields').append(field);
       $('recentActivityWindow').value=String(recentPreferences.days);$('recentMaximum').value=String(recentPreferences.max);
       for(const id of ['recentActivityWindow','recentMaximum'])$(id).onchange=()=>{recentPreferences={days:Number($('recentActivityWindow').value),max:Number($('recentMaximum').value)};recentLimit=Math.min(10,recentPreferences.max);try{localStorage.setItem('x056_recent_preferences',JSON.stringify(recentPreferences));}catch{toast('This browser could not save recent settings.');}renderBoard();};
-      for(const name of ['open','maximize'])preferences.querySelector(`input[name="${name}"][value="${prefs[name]}"]`).checked=true;
+      for(const name of ['open','maximize'])settingsHost.querySelector(`input[name="${name}"][value="${prefs[name]}"]`).checked=true;
       body.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{engine.setTheme(b.dataset.themeChoice);syncTheme();body.querySelectorAll('[data-theme-choice]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));});
       on('settingsTitles',showTitleSettings);on('settingsNotify',e=>notificationMenu(e.currentTarget));on('settingsShortcuts',()=>$('shortcutsBtn').click());
     } else if(tab==='models') {
@@ -940,7 +954,7 @@ window.createControlRoom = function (engine) {
       };
     });
   }
-  preferences.classList.add('settings-dialog');
+  preferences.classList.add('settings-dialog','settings-surface');
   mountControl('cronPop',$('automationContent'));
   const menu=document.createElement('div');menu.id='controlMenu';menu.className='control-menu';menu.setAttribute('popover','auto');menu.setAttribute('role','menu');document.body.append(menu);
   let menuAnchor=null;
@@ -2647,5 +2661,5 @@ window.createControlRoom = function (engine) {
   setMode('closed'); projectNav(false); refresh();
   return { showPage:next=>showSection(next,true), workspaceRows:()=>cards().map(x=>({...x,url:window.rcProjectSpaces?.conversationPath(x.p,x.c.sessionId)})), setStageHidden,
     projectCost:async(id,force=false)=>{await loadProjectCosts(force);return {row:costRows().find(r=>r.projectId===id),error:costError,ready:!!costSnapshot,pricing:costSnapshot?.pricing};},
-    addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory',true);$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
+    addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory',true);$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, mountSettings:(host,tab)=>{if(host)settingsTab(tab,host);else unmountSettings();}, settingsSection:()=>settingSection, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
 };
