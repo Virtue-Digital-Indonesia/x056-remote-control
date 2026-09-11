@@ -27,6 +27,9 @@ export interface ArchiveOperation { id: string; projectId: string; expectedRevis
 
 /** One conversation (a resumable session) within a project. */
 export interface Conversation {
+  creationIntent?: boolean;
+  initialSpaceId?: string;
+  initialAccount?: string;
   creationRequestId?: string;
   creationFingerprint?: string;
   prepared?: boolean;
@@ -470,7 +473,7 @@ export class ProjectRegistry {
     const op = this.data.archiveOperations?.find(o => o.id === id);
     if (op && op.state !== 'complete') { op.state = 'complete'; this.save(); }
   }
-  prepareWork(id: string, input: { requestId: string; name?: string; provider: ProviderId; model?: string; effort?: string; fingerprint: string }): Conversation {
+  prepareWork(id: string, input: { requestId: string; name?: string; provider: ProviderId; model?: string; effort?: string; fingerprint: string; initialSpaceId?: string; initialAccount?: string }): Conversation {
     requireWork(this.parent(id));
     if (typeof input.requestId !== 'string' || !/^[\w-]{8,128}$/.test(input.requestId)) throw new Error('A stable requestId is required');
     const p = this.data.projects.find(p => p.id === id)!;
@@ -478,7 +481,7 @@ export class ProjectRegistry {
     if (old) { if (old.creationFingerprint !== input.fingerprint) throw new ProjectConflict('requestId was used for another conversation'); return structuredClone(old); }
     const c: Conversation = { sessionId: randomUUID(), title: input.name?.trim() || 'New work', titleOrigin: input.name ? 'manual' : 'temporary', titleRevision: 1,
       createdAt: Date.now(), provider: input.provider, model: input.model ?? '', effort: input.effort ?? '', prepared: true,
-      creationRequestId: input.requestId, creationFingerprint: input.fingerprint };
+      creationRequestId: input.requestId, creationFingerprint: input.fingerprint, creationIntent: true, initialSpaceId: input.initialSpaceId, initialAccount: input.initialAccount };
     (p.conversations ??= []).push(c); p.lastSessionId = c.sessionId;
     this.save(); return structuredClone(c);
   }

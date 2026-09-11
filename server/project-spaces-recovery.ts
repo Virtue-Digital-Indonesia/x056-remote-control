@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { ProjectRegistry } from './projects.js';
 import { ProjectSpaceRegistry } from './project-space-registry.js';
 
-const JSON_FILES = ['projects.json','project-spaces.json','project-space-migration.json','state.json','accounts.json','queues.json','autopilot.json','cron.json','questions.json','artifacts.json','conversation-routing.json','routing-history.json','provider-handoffs.json','project-handoffs.json','chat-requirements.json','message-receipts.json'];
+const JSON_FILES = ['projects.json','project-spaces.json','project-space-migration.json','state.json','accounts.json','queues.json','autopilot.json','cron.json','questions.json','mcp-approvals.json','artifacts.json','conversation-routing.json','routing-history.json','provider-handoffs.json','project-handoffs.json','chat-requirements.json','message-receipts.json'];
 const DATABASES = ['chat-files.sqlite','memory.sqlite'];
 const DIRECTORIES = ['artifacts','chats','project-files','memory-extractions'];
 interface SnapshotFile { path: string; hash?: string; link?: string; bytes?: number }
@@ -126,6 +126,6 @@ export function projectSpacesRecoveryReport(state: string) {
       if ((e.projectId && !ids.has(e.projectId)) || (e.sharedProjectIds || []).some((id: string) => !ids.has(id))) issues.push({ store: 'memory', id: String(row.id), reason: 'Owning or shared Project unavailable' });
     }
   } finally { memory?.close(); }
-  for (const row of readJSON('artifacts.json', [])) { counts.artifacts++; if (!ids.has(row.projectId)) issues.push({ store: 'artifacts', id: row.id, reason: 'Source Project unavailable' }); }
+  for (const row of readJSON('artifacts.json', [])) { counts.artifacts++; if (!ids.has(row.projectId) && !(ownerIds.has(row.projectId) && !row.sessionId)) issues.push({ store: 'artifacts', id: row.id, reason: 'Source Project unavailable' }); }
   return { registry: registry.migrateSpaces(), spaces: { count: spaces.spaces.length, revision: spaces.revision, pendingOperations: spaces.operations.filter(o => o.state === 'pending').map(o => o.id) }, counts, issues, ready: !issues.length && !registry.migrateSpaces().invalidParents.length };
 }

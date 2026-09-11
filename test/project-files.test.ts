@@ -1,3 +1,4 @@
+import { moveChat, associateWork } from './project-space-fixture.js';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,14 +15,15 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'project-files-')), stateDir = join(root, 'state'), workspaceRoot = join(root, 'work');
   mkdirSync(stateDir); mkdirSync(workspaceRoot);
   const opts = { stateDir, workspaceRoot, chatEnabled: true, projectSpacesEnabled: true };
-  const m = new SessionManager(opts); managers.push(m);
-  const parent = m.createProjectSpace({ requestId: 'files-parent-001', name: 'Proposal', cwd: workspaceRoot });
+  const m = new SessionManager(opts); managers.push(m); m.setProjectAutomationPauser(() => {});
+  const parent = m.createProjectSpace({ requestId: 'files-parent-001', name: 'Proposal' });
   const a = m.createChat({ requestId: 'files-chat-001' }), b = m.createChat({ requestId: 'files-chat-002' });
   const registry = () => ProjectRegistry.load(join(stateDir, 'projects.json'));
-  registry().moveChat(a.id, parent.id, 0, 'files-move-001'); registry().moveChat(b.id, parent.id, 0, 'files-move-002');
-  registry().addConversation(parent.id, 'work-session', 'Work');
+  moveChat(m, a.id, parent.id); moveChat(m, b.id, parent.id);
+  const work = m.createProject('Original repository', workspaceRoot);
+  registry().addConversation(work.id, 'work-session', 'Work'); associateWork(m, work.id, parent.id);
   const source = join(root, 'original.txt'); writeFileSync(source, 'Original proposal');
-  return { root, stateDir, workspaceRoot, opts, m, parent, a, b, registry, source, store: m.files() };
+  return { root, stateDir, workspaceRoot, opts, m, parent, work, a, b, registry, source, store: m.files() };
 }
 const reference = (file: { id: string; latestVersionId: string }) => ({ fileId: file.id, versionId: file.latestVersionId });
 const commit = (token: string, base: string, operationId: string) => ({ checkoutToken: token, expectedBaseVersionId: base, operationId });
@@ -52,7 +54,7 @@ describe('Project file lineage and execution leases', () => {
     expect(saved.versions).toHaveLength(2);
     expect(saved.versions[1]).toMatchObject({ sourceProjectId: f.b.id, sourceSessionId: f.b.lastSessionId });
     const competing = f.store.checkoutShared(f.parent.id, reference(saved), f.a.id, f.a.lastSessionId!);
-    const work = f.store.checkoutShared(f.parent.id, reference(saved), f.parent.id, 'work-session');
+    const work = f.store.checkoutShared(f.parent.id, reference(saved), f.work.id, 'work-session');
     writeFileSync(competing.path, 'Chat edit'); writeFileSync(work.path, 'Work edit');
     await f.store.commit(f.parent.id, two.id, commit(work.token, saved.latestVersionId, 'work-commit-001'));
     await expect(f.store.commit(f.parent.id, two.id, commit(competing.token, saved.latestVersionId, 'conflict-commit-001'))).rejects.toThrow('newer version');
@@ -63,12 +65,12 @@ describe('Project file lineage and execution leases', () => {
     const f = fixture(), [file] = await f.store.upload(f.parent.id, 'shared-upload-002', [{ path: f.source, name: 'proposal.txt' }]);
     const copy = f.store.checkoutShared(f.parent.id, reference(file), f.a.id, f.a.lastSessionId!);
     const saving = f.store.commit(f.parent.id, file.id, commit(copy.token, file.latestVersionId, 'membership-save-001'));
-    f.registry().moveChat(f.a.id, null, 1, 'detach-files-001');
+    moveChat(f.m, f.a.id, null, 'detach-files-001');
     await expect(saving).rejects.toThrow('outside');
     expect(f.store.file(f.parent.id, file.id).versions).toHaveLength(1);
     expect(() => f.store.references(f.a.id, f.a.lastSessionId!, [{ ...reference(file), ownerId: f.parent.id }])).toThrow('outside');
-    f.registry().moveChat(f.a.id, f.parent.id, 2, 'reattach-files-001');
-    await expect(f.store.commit(f.parent.id, file.id, commit(copy.token, file.latestVersionId, 'membership-save-002'))).rejects.toThrow('previous execution or membership');
+    moveChat(f.m, f.a.id, f.parent.id, 'reattach-files-001');
+    await expect(f.store.commit(f.parent.id, file.id, commit(copy.token, file.latestVersionId, 'membership-save-002'))).rejects.toThrow(/previous execution|membership/);
   });
 
   it('fences idle checkouts after restart, preserves download history, and restores through a new saved version', async () => {
@@ -90,11 +92,11 @@ describe('Project file lineage and execution leases', () => {
   it('imports only the selected retained Work output with its provenance', async () => {
     const f = fixture(), output = join(f.workspaceRoot, 'output.txt'); writeFileSync(output, 'Work result');
     const library = new ArtifactStore(f.stateDir, () => [f.workspaceRoot]);
-    const artifact = library.add({ projectId: f.parent.id, sessionId: 'work-session', title: 'output.txt', kind: 'file', source: 'manual', path: output });
-    const file = await f.store.importArtifact(f.parent.id, f.parent.id, 'work-session', artifact.id, 'work-import-001');
-    expect(file.sourceArtifactId).toBe(artifact.id); expect(file.sourceOwnerId).toBe(f.parent.id);
-    expect((await f.store.importArtifact(f.parent.id, f.parent.id, 'work-session', artifact.id, 'work-import-001')).id).toBe(file.id);
-    await expect(f.store.importArtifact(f.parent.id, f.parent.id, 'work-session', output, 'work-import-002')).rejects.toThrow('retained output');
+    const artifact = library.add({ projectId: f.work.id, sessionId: 'work-session', title: 'output.txt', kind: 'file', source: 'manual', path: output });
+    const file = await f.store.importArtifact(f.parent.id, f.work.id, 'work-session', artifact.id, 'work-import-001');
+    expect(file.sourceArtifactId).toBe(artifact.id); expect(file.sourceOwnerId).toBe(f.work.id);
+    expect((await f.store.importArtifact(f.parent.id, f.work.id, 'work-session', artifact.id, 'work-import-001')).id).toBe(file.id);
+    await expect(f.store.importArtifact(f.parent.id, f.work.id, 'work-session', output, 'work-import-002')).rejects.toThrow('retained output');
   });
 
   it.skipIf(!existsSync('/opt/rc-documents/bin/python'))('preserves DOCX originals through Chat and Work editing and persistent preview', async () => {
@@ -104,7 +106,7 @@ describe('Project file lineage and execution leases', () => {
     const original = readFileSync(path), [privateFile] = await f.store.upload(f.a.id, 'docx-upload-001', [{ path, name: 'proposal.docx' }]);
     const shared = f.store.addToProject(f.a.id, reference(privateFile), f.parent.id, 'docx-share-001');
     let current = shared;
-    for (const [pid, sid, from, to, op] of [[f.a.id, f.a.lastSessionId!, 'Original', 'Chat', 'docx-edit-001'], [f.parent.id, 'work-session', 'Chat', 'Work', 'docx-edit-002']]) {
+    for (const [pid, sid, from, to, op] of [[f.a.id, f.a.lastSessionId!, 'Original', 'Chat', 'docx-edit-001'], [f.work.id, 'work-session', 'Chat', 'Work', 'docx-edit-002']]) {
       const copy = f.store.checkoutShared(f.parent.id, reference(current), pid, sid);
       writeFileSync(spec, JSON.stringify({ replacements: [{ find: from + ' scope', replace: to + ' scope' }] }));
       await documentCommand('edit', copy.path, spec);

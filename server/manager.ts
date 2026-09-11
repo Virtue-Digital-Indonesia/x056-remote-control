@@ -8,6 +8,9 @@ import type { TitleGenerator } from './title-generator.js';
 import { withMemoryContext } from '../src/memory-context.js';
 import { MemoryStore } from './memory-store.js';
 import { ProjectContextResolver } from './project-context.js';
+import { ProjectSpaceRegistry, executionKey, type ExecutionRef, type MembershipChange, type SpaceOperation, type ProjectSpace } from './project-space-registry.js';
+import { inspectSpaceMigration, applySpaceMigration, type SpaceMigrationPlan } from './project-space-migration.js';
+import { projectSpaceViews } from './project-space-view.js';
 import { ProjectHandoffs } from './project-handoffs.js';
 import { DeliveryStore, writeState } from './workspace-store.js';
 import { projectSpacesRecoveryReport } from './project-spaces-recovery.js';
@@ -140,6 +143,7 @@ export interface QueueItem {
  *  actual enforcement of "AI models must ask permission before messaging
  *  another conversation". Denial/expiry means it was never sent. */
 export interface McpApproval {
+  contextReview?: { operationId: string; reason: string };
   sender?: MessageSender;
   id: string;
   projectId: string;
@@ -291,11 +295,19 @@ export class SessionManager {
     if (!this.capabilityService) throw new Error('Chat tool discovery is unavailable');
     return this.capabilityService;
   }
-  requiredProjectTools(pid: string): NonNullable<Project['requiredTools']> {
+  requiredProjectTools(pid: string, sessionId?: string): NonNullable<Project['requiredTools']> {
     if (!this.projectSpacesEnabled()) return [];
     const p = this.projects().get(pid); if (!p) throw new Error('Project not found');
-    const parent = p.parentProjectId ? this.projects().parent(p.parentProjectId) : undefined;
-    return [...(p.requiredTools || []), ...(parent?.requiredTools || [])];
+    const sid = sessionId || (p.kind === 'chat' ? p.lastSessionId : undefined);
+    const spaceId = sid ? this.spaces().resolve(pid, sid).spaceId : p.kind !== 'chat' ? this.spaces().defaultForWork(pid) : undefined;
+    const inherited = spaceId ? this.spaces().get(spaceId, true).requiredTools || [] : [];
+    const requirements = new Map<string, NonNullable<Project['requiredTools']>[number]>();
+    for (const r of [...(this.capabilityService?.requirements(pid, p.kind === 'chat' ? undefined : sid) || []), ...(p.requiredTools || []), ...inherited]) {
+      const previous = requirements.get(r.key);
+      if (previous?.fingerprint && r.fingerprint && previous.fingerprint !== r.fingerprint) throw new Error('Conflicting required tool versions: ' + r.key);
+      requirements.set(r.key, { key: r.key, fingerprint: r.fingerprint || previous?.fingerprint });
+    }
+    return [...requirements.values()];
   }
   private fileStore?: FileStore;
   files(): FileStore {
@@ -314,18 +326,21 @@ export class SessionManager {
     const p = this.projects().get(id);
     if (p?.kind === 'chat') return this.chat(id);
     if (!this.projectSpacesEnabled()) throw new Error('Project files are disabled');
-    this.projects().parent(id, true);
+    const canonical = this.spaces().canonical(id);
+    const space = canonical.startsWith('space_') ? this.spaces().get(canonical, true) : undefined;
+    if (!space && !p) throw new Error('File owner unavailable');
     const cwd = join(realpathSync(this.opts.stateDir), 'project-files', id);
     mkdirSync(cwd, { recursive: true });
     if (realpathSync(cwd) !== cwd) throw new Error('Invalid Project file directory');
-    return { ...p!, cwd, lastSessionId: '' };
+    return { ...(space || p!), kind: 'project', cwd, lastSessionId: '' };
   }
   fileExecution(ownerId: string, projectId: string, sessionId: string) {
     if (!this.projectSpacesEnabled()) throw new Error('Project files are disabled');
-    this.projects().parent(ownerId);
+    const owner = this.fileOwner(ownerId), canonical = this.spaces().canonical(ownerId);
+    if (owner.archivedAt) throw new Error('Restore the file owner first');
     const scope = this.projectContext().resolve(projectId, sessionId);
-    if (scope.executionProjectId !== ownerId && scope.parentProjectId !== ownerId) throw new Error('File is outside this conversation’s Project');
-    const p = this.assertExecutionAllowed(projectId);
+    if (scope.executionProjectId !== canonical && scope.spaceId !== canonical) throw new Error('File is outside this conversation’s Project');
+    const p = this.assertExecutionAllowed(projectId, sessionId);
     return { projectId, sessionId, cwd: p.cwd, membershipRevision: scope.membershipRevision };
   }
   private destroyed = false;
@@ -439,12 +454,16 @@ export class SessionManager {
     mkdirSync(opts.stateDir, { recursive: true });
     this.migrateProjects();
     this.projects().migrateConversations();
-    if (this.projectSpacesEnabled()) this.projects().migrateSpaces(true);
+    if (this.projectSpacesEnabled()) this.legacySpaceReviewRequired = inspectSpaceMigration(opts.stateDir).requiresReview;
     this.shareCodexSessionStores();
     this.loadPendingQuestions();
+    this.loadMcpApprovals();
     this.detectOrphans();
     if (this.chatsEnabled() || this.projectSpacesEnabled()) this.files();
-    if (this.projectSpacesEnabled()) this.reconcileProjectOperations();
+    if (this.projectSpacesEnabled()) {
+      if (!this.legacySpaceReviewRequired) for (const p of this.projects().list()) for (const c of p.conversations || []) if (c.creationIntent) this.finishConversationCreation(p.id, c);
+      this.reconcileProjectOperations();
+    }
     this.resumeAutopilots();
     if (opts.manageProcessSignals) {
       const onTerm = () => {
@@ -575,7 +594,7 @@ export class SessionManager {
   setAutopilot(projectId: string, sessionId: string, opts: { count: number; prompt?: string; stopPhrase?: string }): void {
     if (!this.projects().get(projectId)) throw new Error(`unknown project ${projectId}`);
     if (!sessionId) throw new Error('no conversation selected');
-    if (this.projectSpacesEnabled() && !this.assertExecutionAllowed(projectId).conversations?.some(c => c.sessionId === sessionId)) throw new Error('Conversation unavailable');
+    if (this.projectSpacesEnabled() && !this.assertExecutionAllowed(projectId, sessionId).conversations?.some(c => c.sessionId === sessionId)) throw new Error('Conversation unavailable');
     const map = this.loadAutopilot();
     map[sessionId] = {
       remaining: Math.max(1, Math.min(500, Math.floor(opts.count))),
@@ -603,9 +622,9 @@ export class SessionManager {
     this.emit('autopilot', { projectId: ap.projectId, sessionId, active: false, remaining: ap.remaining, reason });
   }
   resumeProjectAutopilot(projectId: string, sessionId: string, expectedMembershipRevision: number): void {
-    const p = this.assertExecutionAllowed(projectId), map = this.loadAutopilot(), ap = map[sessionId];
+    const p = this.assertExecutionAllowed(projectId, sessionId), map = this.loadAutopilot(), ap = map[sessionId];
     if (!ap || ap.projectId !== projectId || !p.conversations?.some(c => c.sessionId === sessionId)) throw new Error('Autopilot unavailable');
-    if ((p.membershipRevision ?? 0) !== expectedMembershipRevision) throw new ProjectConflict('Project membership changed; review again');
+    if (this.projectContext().resolve(projectId, sessionId).membershipRevision !== expectedMembershipRevision) throw new ProjectConflict('Project membership changed; review again');
     if (this.loadQueues()[projectId]?.some(q => q.sessionId === sessionId && q.contextReview)) throw new ProjectConflict('Review queued messages first');
     ap.paused = false; delete ap.pauseReason; this.saveAutopilot(map);
     this.emit('autopilot', { projectId, sessionId, active: true, remaining: ap.remaining });
@@ -745,13 +764,13 @@ export class SessionManager {
   enqueue(pid: string, item: { text: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
-    if (this.projectSpacesEnabled()) this.assertExecutionAllowed(pid);
     const text = (item.text ?? '').trim() || (item.fileRefs?.length ? 'Use the attached files.' : '');
     if (!text) throw new Error('empty message');
     // Bind the item to a conversation: the one the panel named, else the
     // project's current one. Draining resumes THIS session, so a follow-up
     // queued in "Handoff" can never be misrouted into "Main".
     const sessionId = item.sessionId ?? proj.lastSessionId ?? this.loadState().lastSessionId;
+    if (this.projectSpacesEnabled()) this.assertExecutionAllowed(pid, sessionId);
     if (proj.kind === 'chat' && proj.archivedAt) throw new Error('Chat is archived');
     if (item.fileRefs?.length) this.files().references(pid, sessionId!, item.fileRefs, item.requestId);
     if (item.notBefore !== undefined && (!Number.isFinite(item.notBefore) || item.notBefore<0)) throw new Error('Invalid scheduled time');
@@ -814,7 +833,7 @@ export class SessionManager {
       this.queueChecks.add(sessionId);
       try {
         if(this.projectSpacesEnabled()) {
-          const p=this.assertExecutionAllowed(pid), inherited=this.requiredProjectTools(pid), service=this.capabilityService;
+          const p=this.assertExecutionAllowed(pid, sessionId), inherited=this.requiredProjectTools(pid, sessionId), service=this.capabilityService;
           if(inherited.length || service?.requirements(pid,p.kind==='chat'?undefined:sessionId).length) {
             const provider=this.adapterFor(pid,sessionId).id;
             const blocks=await this.chatCapabilities().blocked({...p,provider},inherited,true,sessionId);
@@ -907,7 +926,9 @@ export class SessionManager {
   /** Shared across all concurrent runs so failover's account-limit accounting
    *  is one authoritative in-process view (no cross-run file races). */
   private sharedMemory?: MemoryStore;
-  projectContext(): ProjectContextResolver { return new ProjectContextResolver(() => this.projects().list(), () => this.projectSpacesEnabled()); }
+  spaces(): ProjectSpaceRegistry { return new ProjectSpaceRegistry(this.opts.stateDir, () => this.projects().list()); }
+  private legacySpaceReviewRequired = false;
+  projectContext(): ProjectContextResolver { return new ProjectContextResolver(() => this.projects().list(), () => this.projectSpacesEnabled(), this.spaces()); }
   memory():MemoryStore {return this.sharedMemory ??= new MemoryStore(this.opts.stateDir, this.projectContext());}
 
   private registry(): AccountRegistry {
@@ -1365,6 +1386,7 @@ export class SessionManager {
   /** Forget a conversation; refuses if it's the one currently running a turn. */
   removeConversation(projectId: string, sessionId: string): void {
     if (this.sessionBusy(sessionId)) throw new BusyError();
+    this.assertRemovalAllowed(projectId, sessionId);
     this.stopAutopilot(sessionId); // don't leave its autopilot armed against a removed conversation
     const reg = this.projects();
     reg.removeConversation(projectId, sessionId);
@@ -1403,36 +1425,41 @@ export class SessionManager {
     return { ...p, cwd: this.resolveCwd(p.cwd, id) };
   }
 
-  private assertExecutionAllowed(id: string): RunnableProject {
+  private assertExecutionAllowed(id: string, sessionId?: string): RunnableProject {
     const p = this.executionProject(id);
-    if (p.archivedAt) throw new Error('This Chat or Project is archived; restore it before running');
-    if (this.projectSpacesEnabled() && p.parentProjectId) this.projects().parent(p.parentProjectId);
+    if (p.archivedAt) throw new Error('This Chat or Work project is archived; restore it before running');
+    if (this.projectSpacesEnabled()) {
+      if (this.legacySpaceReviewRequired) throw new ProjectConflict('Review the legacy Project migration before running');
+      const sid = sessionId || (p.kind === 'chat' ? p.lastSessionId : undefined), registry = this.spaces();
+      registry.assertReady(id, sid);
+      const spaceId = sid ? registry.resolve(id, sid).spaceId : registry.defaultForWork(id);
+      if (spaceId) registry.get(spaceId);
+    }
     return p;
   }
 
   projectSpaces() {
-    if (!this.projectSpacesEnabled()) return { enabled: false, projects: [] };
-    const all = this.listProjects().projects;
-    const queues = this.queues(), questions = this.pendingQuestions;
-    return { enabled: true, projects: all.filter(p => p.kind !== 'chat').map(p => {
-      const chats = all.filter(c => c.kind === 'chat' && c.parentProjectId === p.id);
-      const executions = [p, ...chats];
-      return { ...p, workspaceConfigured: !!p.cwd, chats,
-        activity: { running: executions.reduce((n, e) => n + e.runningSessionIds.length, 0),
-          background: executions.reduce((n, e) => n + e.backgroundSessionIds.length, 0),
-          queued: executions.reduce((n, e) => n + (queues[e.id]?.length ?? 0), 0),
-          waiting: executions.reduce((n, e) => n + (queues[e.id]?.filter(q => q.paused || q.contextReview || q.error).length ?? 0), 0),
-          needsInput: executions.reduce((n, e) => n + (e.conversations?.filter(c => questions.has(c.sessionId)).length ?? 0), 0) } };
-    }) };
+    return { enabled: this.projectSpacesEnabled(), schemaVersion: 2, revision: this.spaces().snapshot().revision,
+      topology: this.spaces().topology(), migrationRequired: this.legacySpaceReviewRequired,
+      projects: this.projectSpacesEnabled() ? projectSpaceViews(this, this.spaces()) : [] };
   }
 
-  createProjectSpace(input: Parameters<ProjectRegistry['createSpace']>[0]): Project {
+  createProjectSpace(input: Parameters<ProjectSpaceRegistry['create']>[0]): ProjectSpace {
     if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    if ('cwd' in input) throw new Error('A Project space has no execution directory');
     this.validateProjectDefaults(input.defaults);
-    const p = this.projects().createSpace({ ...input, cwd: input.cwd === undefined ? undefined : this.resolveCwd(input.cwd) });
+    const p = this.spaces().create(input);
     this.emit('projects', { id: p.id }); return p;
   }
-  projectSpacesMigration() { return { ...this.projects().migrateSpaces(), recovery: projectSpacesRecoveryReport(this.opts.stateDir) }; }
+  projectSpacesMigration() { return { ...inspectSpaceMigration(this.opts.stateDir), recovery: projectSpacesRecoveryReport(this.opts.stateDir) }; }
+  applyProjectSpacesMigration(input: SpaceMigrationPlan) {
+    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    const active = this.listProjects().projects.flatMap(p => [...p.runningSessionIds, ...p.backgroundSessionIds]);
+    if (active.length) throw new ProjectConflict('Finish active work before migrating Project ownership');
+    const result = applySpaceMigration(this.opts.stateDir, input);
+    this.legacySpaceReviewRequired = inspectSpaceMigration(this.opts.stateDir).requiresReview;
+    this.reconcileProjectOperations(); this.emit('projects', {}); return result;
+  }
 
   private validateProjectDefaults(defaults: Project['defaults']): void {
     validateModeDefaults(defaults);
@@ -1442,90 +1469,148 @@ export class SessionManager {
       if (choice.model && (provider === 'codex') !== /^(gpt-|codex-)/i.test(choice.model)) throw new Error('Default model belongs to another provider');
     }
   }
-  updateProjectSpace(id: string, input: { expectedRevision: number; name?: string; cwd?: string; defaults?: Project['defaults']; requiredTools?: Project['requiredTools'] }): Project {
+  updateProjectSpace(id: string, input: { expectedRevision: number; name?: string; defaults?: Project['defaults']; requiredTools?: Project['requiredTools']; defaultWorkProjectId?: string }): ProjectSpace {
     if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
-    const current = this.projects().parent(id, true);
     this.validateProjectDefaults(input.defaults);
-    const patch: Partial<Project> = {};
-    for (const key of ['name', 'defaults', 'requiredTools'] as const) if (input[key] !== undefined) Object.assign(patch, { [key]: input[key] });
-    if (input.requiredTools !== undefined && (!Array.isArray(input.requiredTools) || input.requiredTools.length > 40 || input.requiredTools.some(r => !r || typeof r.key !== 'string' || !/^(skill|plugin|mcp):.{1,240}$/.test(r.key) || (r.fingerprint !== undefined && typeof r.fingerprint !== 'string')))) throw new Error('Invalid required tools');
-    if (input.cwd !== undefined) {
-      const cwd = this.resolveCwd(input.cwd);
-      if (cwd !== current.cwd && (current.conversations?.length || this.projectBusy(id) || this.backgroundSessionsForProject(id).length)) throw new Error('Existing Work conversations retain their workspace; create another Project to use a different directory');
-      patch.cwd = cwd;
-    }
-    const result = this.projects().updateSpace(id, input.expectedRevision, patch);
+    const { expectedRevision, ...patch } = input;
+    if ('cwd' in patch) throw new Error('A Project space has no execution directory; configure its Work project');
+    const result = this.spaces().update(id, expectedRevision, patch);
     this.refreshChatCapabilities(); this.emit('projects', { id }); return result;
   }
 
-  prepareProjectWork(id: string, input: { requestId: string; name?: string; provider?: ProviderId; model?: string; effort?: string; account?: string }) {
+  prepareProjectWork(id: string, input: { requestId: string; name?: string; provider?: ProviderId; model?: string; effort?: string; account?: string; spaceId?: string }) {
     if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
-    const p = requireWork(this.assertExecutionAllowed(id));
+    const p = requireWork(this.executionProject(id));
+    if (p.archivedAt || this.legacySpaceReviewRequired) throw new Error('Restore Work and review migration before creating a conversation');
+    this.spaces().assertReady(id);
     if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 300)) throw new Error('Invalid conversation name');
-    const defaults = { ...p.defaults?.work, ...input }, provider = defaults.provider || p.provider || 'claude';
+    const spaceId = input.spaceId || this.spaces().defaultForWork(id), space = spaceId ? this.spaces().get(spaceId) : undefined;
+    const defaults = { ...p.defaults?.work, ...space?.defaults?.work, ...input }, provider = defaults.provider || p.provider || 'claude';
     this.validateProjectDefaults({ work: { provider, model: defaults.model, effort: defaults.effort, account: defaults.account } });
-    const fingerprint = createHash('sha256').update(JSON.stringify([input.name, input.provider, input.model, input.effort, input.account])).digest('hex');
+    const fingerprint = createHash('sha256').update(JSON.stringify([input.name, input.provider, input.model, input.effort, input.account, input.spaceId])).digest('hex');
     const previous = p.conversations?.find(c => c.creationRequestId === input.requestId);
-    const c = this.projects().prepareWork(id, { ...defaults, provider, fingerprint });
-    if (!previous && defaults.account) new RoutingState(this.opts.stateDir).set(id, c.sessionId, { lockedAccount: defaults.account });
-    this.emitConversations(id); this.emit('projects', { id }); return { projectId: id, sessionId: c.sessionId };
+    const c = this.projects().prepareWork(id, { ...defaults, provider, fingerprint, initialSpaceId: input.spaceId, initialAccount: defaults.account });
+    this.finishConversationCreation(id, c);
+    if (!previous) this.emitConversations(id);
+    this.emit('projects', { id }); return { projectId: id, sessionId: c.sessionId };
   }
 
-  private automationPauser?: (executionIds: string[], reason: string) => void;
-  setProjectAutomationPauser(pause: (ids: string[], reason: string) => void): void {
-    this.automationPauser = pause; if (this.projectSpacesEnabled()) this.reconcileProjectOperations();
+  spaceWorkTarget(spaceId: string, workProjectId?: string): string {
+    const space = this.spaces().get(spaceId), view = projectSpaceViews(this, this.spaces()).find(s => s.id === space.id)!;
+    const chosen = workProjectId || space.defaultWorkProjectId || (view.workProjects.length === 1 ? view.workProjects[0].id : undefined);
+    if (!chosen) throw new Error('Choose a target Work project with a configured workspace');
+    const target = requireWork(this.executionProject(chosen));
+    if (target.archivedAt) throw new Error('Restore the target Work project first');
+    return chosen;
   }
-  private pauseProjectExecution(id: string, operationId: string, reason: string): void {
-    const p = this.projects().get(id); if (!p) return;
-    const map = this.loadQueues();
-    for (const item of map[id] || []) {
-      item.paused = true;
-      item.contextReview = { operationId, membershipRevision: p.membershipRevision ?? 0, reason };
+  prepareSpaceWork(spaceId: string, input: Omit<Parameters<SessionManager['prepareProjectWork']>[1], 'spaceId'> & { workProjectId?: string }) {
+    const target = this.spaceWorkTarget(spaceId, input.workProjectId);
+    const { workProjectId: _, ...choices } = input;
+    return this.prepareProjectWork(target, { ...choices, spaceId });
+  }
+  private finishConversationCreation(projectId: string, c: import('./projects.js').Conversation): void {
+    if (!c.creationRequestId) return;
+    const operationId = 'creation-' + createHash('sha256').update(projectId + ':' + c.creationRequestId).digest('hex');
+    const existing = this.spaces().snapshot().operations.find(o => o.id === operationId);
+    if (existing) { if (existing.state === 'pending') this.reconcileProjectOperations(); return; }
+    // Account selection is part of the durable creation intent. A later retry
+    // must not replace a lock the operator changed after creation completed.
+    if (c.initialAccount) new RoutingState(this.opts.stateDir).set(projectId, c.sessionId, { lockedAccount: c.initialAccount });
+    const p = this.projects().get(projectId)!;
+    const change: MembershipChange = { target: p.kind === 'chat' ? { kind: 'chat', projectId } : { kind: 'work-conversation', projectId, sessionId: c.sessionId },
+      assignment: c.initialSpaceId ? { mode: 'space', spaceId: c.initialSpaceId } : p.kind === 'chat' ? { mode: 'standalone' } : { mode: 'inherit' } };
+    const preview = this.spaces().preview(change);
+    this.spaces().apply({ ...change, operationId, expectedRevision: preview.revision, expectedTopology: preview.topology, expectedImpactHash: preview.impactHash });
+    this.reconcileProjectOperations();
+  }
+
+  private automationPauser?: (targets: { executions: ExecutionRef[]; futureWorkProjectIds: string[] }, reason: string, operationId: string) => void;
+  private automationInspector?: () => unknown[];
+  setProjectAutomationPauser(pause: NonNullable<SessionManager['automationPauser']>, inspect?: () => unknown[]): void {
+    this.automationPauser = pause; this.automationInspector = inspect;
+    if (this.projectSpacesEnabled()) this.reconcileProjectOperations();
+  }
+  private futureWorkTargets(op: Pick<SpaceOperation, 'change' | 'spaceId' | 'kind'>): string[] {
+    if (op.change?.target.kind === 'work-project') return [op.change.target.projectId];
+    if (op.kind === 'archive') return this.projects().list().filter(p => p.kind !== 'chat' && this.spaces().defaultForWork(p.id) === op.spaceId).map(p => p.id);
+    return [];
+  }
+  private pauseProjectExecution(ref: ExecutionRef, operationId: string, reason: string): void {
+    const { projectId: id, sessionId } = ref, p = this.projects().get(id); if (!p) return;
+    const map = this.loadQueues(), membershipRevision = this.projectContext().resolve(id, sessionId).membershipRevision;
+    for (const item of map[id] || []) if (item.sessionId === sessionId) {
+      item.paused = true; item.contextReview = { operationId, membershipRevision, reason };
     }
     this.saveQueues(map); this.emitQueue(id, map);
-    for (const c of p.conversations || []) {
-      const timer = this.queueTimers.get(c.sessionId); if (timer) { clearTimeout(timer); this.queueTimers.delete(c.sessionId); }
-      this.pauseAutopilot(c.sessionId, reason);
-      this.files().fenceExecution(id, c.sessionId);
+    const timer = this.queueTimers.get(sessionId); if (timer) { clearTimeout(timer); this.queueTimers.delete(sessionId); }
+    this.pauseAutopilot(sessionId, reason); this.files().fenceExecution(id, sessionId);
+    for (const a of this.listMcpApprovals()) if (a.projectId === id && a.sessionId === sessionId) {
+      a.contextReview = { operationId, reason }; this.emitMcpApproval(a);
     }
   }
   private reconcileProjectOperations(): void {
-    for (const op of this.projects().pendingMembershipOperations()) {
-      this.pauseProjectExecution(op.chatId, op.id, 'Project membership changed');
-      this.automationPauser?.([op.chatId], 'Project membership changed; review before resuming');
-      if (this.automationPauser) this.projects().completeMembershipOperation(op.id);
+    for (const op of this.spaces().pending()) {
+      const reason = op.kind === 'archive' ? op.archived ? 'Project archived' : 'Project restored; review retained work' : 'Project membership changed';
+      for (const ref of op.affected) this.pauseProjectExecution(ref, op.id, reason);
+      const futureWorkProjectIds = this.futureWorkTargets(op);
+      for (const a of this.listMcpApprovals()) if (!a.sessionId && futureWorkProjectIds.includes(a.projectId)) { a.contextReview = { operationId: op.id, reason }; this.emitMcpApproval(a); }
+      this.automationPauser?.({ executions: op.affected, futureWorkProjectIds }, reason, op.id);
+      if (this.automationPauser) this.spaces().complete(op.id);
     }
-    for (const op of this.projects().pendingArchiveOperations()) {
-      // Restore changes visibility only. It never resumes paused work.
-      if (op.archived) {
-        for (const id of op.executionIds) this.pauseProjectExecution(id, op.id, 'Project archived');
-        this.automationPauser?.(op.executionIds, 'Project archived; review before resuming');
-      }
-      if (this.automationPauser || !op.archived) this.projects().completeArchiveOperation(op.id);
+  }
+  previewProjectMembership(change: MembershipChange) {
+    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    if (this.legacySpaceReviewRequired) throw new ProjectConflict('Review legacy migration first');
+    const preview = this.spaces().preview(change);
+    for (const ref of preview.affected) this.spaces().assertReady(ref.projectId, ref.sessionId);
+    if (change.target.kind === 'work-project') this.spaces().assertReady(change.target.projectId);
+    const queues = this.queues(), autopilots = this.loadAutopilot();
+    const details = preview.affected.map(ref => ({ ...ref, running: this.sessionBusy(ref.sessionId),
+      background: this.backgroundSessions().some(s => s.projectId === ref.projectId && s.sessionId === ref.sessionId),
+      queues: (queues[ref.projectId] || []).filter(q => q.sessionId === ref.sessionId), autopilot: autopilots[ref.sessionId],
+      approvals: this.listMcpApprovals().filter(a => a.projectId === ref.projectId && a.sessionId === ref.sessionId) }));
+    const automations = this.automationInspector?.() || [], futureApprovals = change.target.kind === 'work-project' ? this.listMcpApprovals().filter(a => a.projectId === change.target.projectId && !a.sessionId) : [];
+    const reviewHash = createHash('sha256').update(JSON.stringify([preview.impactHash, details, automations, futureApprovals])).digest('hex');
+    return { ...preview, details, automations, futureApprovals, reviewHash };
+  }
+  applyProjectMembership(input: Parameters<ProjectSpaceRegistry['apply']>[0] & { expectedReviewHash: string }) {
+    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    const { expectedReviewHash, ...mutation } = input;
+    const previous = this.spaces().snapshot().operations.find(o => o.id === input.operationId);
+    if (!previous) {
+      const review = this.previewProjectMembership({ target: input.target, assignment: input.assignment, ...(input.includeOverrides !== undefined ? { includeOverrides: input.includeOverrides } : {}) });
+      if (review.reviewHash !== expectedReviewHash) throw new ProjectConflict('Pending work changed; review the current impact');
+      if (review.details.some(d => d.running || d.background)) throw new ProjectConflict('Finish active work in the affected conversations first');
     }
+    const op = this.spaces().apply(mutation); this.reconcileProjectOperations();
+    this.emit('projects', { id: input.target.projectId }); return this.spaces().snapshot().operations.find(o => o.id === op.id)!;
   }
   moveProjectChat(id: string, input: { parentProjectId: string | null; expectedRevision: number; operationId: string }) {
-    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
-    this.chat(id);
-    const busy = [...this.runningSessionsForProject(id), ...this.backgroundSessionsForProject(id)];
-    if (busy.length) throw new ProjectConflict('Finish active Chat work before moving: ' + busy.join(', '));
-    const op = this.projects().moveChat(id, input.parentProjectId, input.expectedRevision, input.operationId);
-    if (op.state === 'pending') this.reconcileProjectOperations();
-    this.emit('projects', { id }); return this.chat(id);
+    // Compatibility wrapper for v1 clients; the general API requires a full preview.
+    const chat = this.chat(id), old = this.spaces().snapshot().operations.find(o => o.id === input.operationId);
+    if (!old && this.spaces().resolve(id, chat.lastSessionId!).membershipRevision !== input.expectedRevision) throw new ProjectConflict('Project membership changed; review again');
+    const change: MembershipChange = { target: { kind: 'chat', projectId: id }, assignment: input.parentProjectId ? { mode: 'space', spaceId: this.spaces().get(input.parentProjectId).id } : { mode: 'standalone' } };
+    if (old) {
+      if (JSON.stringify(old.change) !== JSON.stringify(change)) throw new ProjectConflict('operationId was used for another membership change');
+      this.reconcileProjectOperations(); return this.chat(id);
+    }
+    const p = this.previewProjectMembership(change);
+    this.applyProjectMembership({ ...change, operationId: input.operationId, expectedRevision: p.revision, expectedTopology: p.topology, expectedImpactHash: p.impactHash, expectedReviewHash: p.reviewHash });
+    return this.chat(id);
   }
-  archiveProjectSpace(id: string, input: { expectedRevision: number; operationId: string; archived: boolean }) {
+  archiveProjectSpace(id: string, input: { expectedRevision: number; expectedTopology: string; operationId: string; archived: boolean }) {
     if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
-    const executions = this.projects().list().filter(p => p.id === id || p.parentProjectId === id);
-    const busy = executions.flatMap(p => [...this.runningSessionsForProject(p.id), ...this.backgroundSessionsForProject(p.id)]);
-    if (busy.length) throw new ProjectConflict('Finish active Project work before archiving: ' + busy.join(', '));
-    this.projects().archiveSpace(id, input.expectedRevision, input.operationId, input.archived);
-    this.reconcileProjectOperations(); this.emit('projects', { id }); return this.projects().parent(id, true);
+    const busy = this.spaces().members(id).filter(r => this.sessionBusy(r.sessionId) || this.backgroundSessions().some(b => b.projectId === r.projectId && b.sessionId === r.sessionId));
+    if (busy.length) throw new ProjectConflict('Finish active Project work before archiving');
+    this.spaces().archive(id, input.archived, input.expectedRevision, input.expectedTopology, input.operationId);
+    this.reconcileProjectOperations(); this.emit('projects', { id }); return this.spaces().get(id, true);
   }
   reviewProjectQueue(id: string, queueId: string, expectedMembershipRevision: number, review?: { expectedText: string; text: string; fileRefs: FileReference[] }): void {
     if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
-    const p = this.assertExecutionAllowed(id), map = this.loadQueues(), item = map[id]?.find(q => q.id === queueId);
+    const map = this.loadQueues(), item = map[id]?.find(q => q.id === queueId);
     if (!item) throw new Error('Queued message no longer exists');
-    if ((p.membershipRevision ?? 0) !== expectedMembershipRevision) throw new ProjectConflict('Project membership changed; review the current context');
+    const p = this.assertExecutionAllowed(id, item.sessionId);
+    if ((this.projectContext().resolve(id, item.sessionId).membershipRevision) !== expectedMembershipRevision) throw new ProjectConflict('Project membership changed; review the current context');
     if (item.dispatching) throw new ProjectConflict('Delivery is uncertain; reconcile delivery before resuming');
     if (!p.conversations?.some(c => c.sessionId === item.sessionId)) throw new ProjectConflict('Conversation unavailable');
     if (review) {
@@ -1546,14 +1631,15 @@ export class SessionManager {
     return this.executionProject(p.id);
   }
 
-  createChat(input: { requestId: string; name?: string; provider?: ProviderId; model?: string; effort?: string; account?: string; parentProjectId?: string }): RunnableProject {
+  createChat(input: { requestId: string; name?: string; provider?: ProviderId; model?: string; effort?: string; account?: string; parentProjectId?: string; spaceId?: string }): RunnableProject {
     if (!this.chatsEnabled()) throw new Error('Chat is disabled');
     if (typeof input.requestId !== 'string' || !/^[\w-]{8,128}$/.test(input.requestId)) throw new Error('A stable requestId is required');
     if (input.parentProjectId !== undefined && (typeof input.parentProjectId !== 'string' || !input.parentProjectId)) throw new Error('Invalid parent Project');
-    const rawFingerprint = [input.name, input.provider ?? 'claude', input.model, input.effort, input.account, ...(input.parentProjectId ? [input.parentProjectId] : [])];
-    if (input.parentProjectId) {
+    const requestedSpaceId = input.spaceId || input.parentProjectId;
+    const rawFingerprint = [input.name, input.provider ?? 'claude', input.model, input.effort, input.account, ...(requestedSpaceId ? [requestedSpaceId] : [])];
+    if (requestedSpaceId) {
       if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
-      const parent = this.projects().parent(input.parentProjectId);
+      const parent = this.spaces().get(requestedSpaceId);
       input = { ...parent.defaults?.chat, ...input };
     }
     const provider = input.provider ?? 'claude';
@@ -1565,6 +1651,7 @@ export class SessionManager {
     const previous = reg.list().find(p => p.kind === 'chat' && p.creationRequestId === input.requestId);
     if (previous) {
       if (previous.creationFingerprint !== fingerprint) throw new Error('requestId was already used for another Chat');
+      if (this.projectSpacesEnabled() && previous.conversations?.[0].creationIntent) this.finishConversationCreation(previous.id, previous.conversations[0]);
       return this.chat(previous.id);
     }
     if (input.account && this.registry().get(input.account).provider !== provider) throw new Error('Account belongs to another provider');
@@ -1577,10 +1664,10 @@ export class SessionManager {
       symlinkSync(DOCUMENT_SKILL, join(skills, 'rc-documents'), 'dir');
     }
     const project = reg.createChat({ id, kind: 'chat', name, cwd, provider, creationRequestId: input.requestId, creationFingerprint: fingerprint,
-      ...(input.parentProjectId ? { parentProjectId: input.parentProjectId, membershipRevision: 0 } : {}),
       lastSessionId: sessionId, model: input.model, effort: input.effort,
-      conversations: [{ sessionId, title: name, titleOrigin: input.name ? 'manual' : 'temporary', titleRevision: 1, createdAt: Date.now(), provider, model: input.model, effort: input.effort }] });
+      conversations: [{ sessionId, title: name, titleOrigin: input.name ? 'manual' : 'temporary', titleRevision: 1, createdAt: Date.now(), provider, model: input.model, effort: input.effort, creationRequestId: input.requestId, creationIntent: this.projectSpacesEnabled(), initialSpaceId: requestedSpaceId, initialAccount: input.account }] });
     if (input.account) new RoutingState(this.opts.stateDir).set(id, sessionId, { lockedAccount: input.account });
+    if (this.projectSpacesEnabled()) this.finishConversationCreation(id, project.conversations![0]);
     this.emit('projects', { id, kind: 'chat' });
     return project;
   }
@@ -1651,7 +1738,8 @@ export class SessionManager {
   /** Import an existing interactive session into a project and make it the
    *  session that project resumes. */
   resumeExisting(projectId: string, sessionId: string): void {
-    const proj = requireWork(this.assertExecutionAllowed(projectId));
+    const known = this.projects().get(projectId)?.conversations?.some(c => c.sessionId === sessionId);
+    const proj = requireWork(this.assertExecutionAllowed(projectId, known ? sessionId : undefined));
     if (this.sessionBusy(sessionId)) throw new BusyError();
     const accounts = this.registry().list();
     if (accounts.length === 0) throw new Error('no accounts configured');
@@ -1730,7 +1818,14 @@ export class SessionManager {
 
   /** Remove a project from the list. Refuses while it has a turn running; stops
    *  its autopilot; repoints state.json if the removed one was current. */
+  private assertRemovalAllowed(projectId: string, sessionId?: string): void {
+    const state = this.spaces().snapshot();
+    const matches = (t: import('./project-space-registry.js').SpaceTarget) => t.projectId === projectId && (!sessionId || t.kind !== 'work-conversation' || t.sessionId === sessionId);
+    if (Object.values(state.bindings).some(b => matches(b.target)) || state.references.some(r => matches(r.target)) || state.operations.some(o => o.affected.some(r => r.projectId === projectId && (!sessionId || r.sessionId === sessionId))))
+      throw new ProjectConflict('Archive this execution to retain Project membership and history');
+  }
   removeProject(id: string): void {
+    this.assertRemovalAllowed(id);
     if (this.projectBusy(id)) throw new BusyError();
     const reg = this.projects();
     if (!reg.get(id)) throw new Error(`unknown project ${id}`);
@@ -1827,7 +1922,7 @@ export class SessionManager {
    *  conversation running in the same project is fine. */
   continueSession(pid: string, sessionId: string, prompt: string, opts?: TurnRunOptions): string {
     if (this.sessionBusy(sessionId)) throw new BusyError();
-    const proj = this.assertExecutionAllowed(pid);
+    const proj = this.assertExecutionAllowed(pid, sessionId);
     if (proj?.kind === 'chat' && (proj.archivedAt || proj.lastSessionId !== sessionId)) throw new Error('Chat is archived or conversation does not match');
     if (!proj.conversations?.some(c => c.sessionId === sessionId)) throw new Error('Unknown conversation for this project');
     const dir = proj.cwd;
@@ -1840,12 +1935,29 @@ export class SessionManager {
   // ---- MCP cross-conversation send approvals: the human gate on send_message.
   //      Caller (server/api.controller.ts) has already checked the projectId/
   //      sessionId are real; this only owns the pending->decided lifecycle. ----
-  private emitMcpApproval(a: McpApproval): void { this.emit('mcp_approval', { ...a }); }
+  private get approvalsFile(): string { return join(this.opts.stateDir, 'mcp-approvals.json'); }
+  private saveMcpApprovals(): void { writeState(this.approvalsFile, [...this.mcpApprovals.values()]); }
+  private loadMcpApprovals(): void {
+    if (!existsSync(this.approvalsFile)) return;
+    const rows = JSON.parse(readFileSync(this.approvalsFile, 'utf8')) as McpApproval[];
+    if (!Array.isArray(rows) || rows.some(a => !a || typeof a.id !== 'string' || typeof a.projectId !== 'string' || !['pending','approved','denied','expired'].includes(a.status))) throw new Error('Repair the message approval journal before running');
+    for (const a of rows) {
+      const remaining = Date.parse(a.createdAt) + MCP_APPROVAL_TIMEOUT_MS - Date.now();
+      if (a.status === 'pending' && (!Number.isFinite(remaining) || remaining <= 0)) a.status = 'expired';
+      this.mcpApprovals.set(a.id, a);
+      if (a.status === 'pending') this.mcpApprovalTimers.set(a.id, setTimeout(() => {
+        if (a.status === 'pending') { a.status = 'expired'; this.emitMcpApproval(a); this.scheduleMcpApprovalCleanup(a.id, MCP_APPROVAL_RETAIN_MS); }
+      }, remaining));
+      else this.scheduleMcpApprovalCleanup(a.id, MCP_APPROVAL_RETAIN_MS);
+    }
+    this.saveMcpApprovals();
+  }
+  private emitMcpApproval(a: McpApproval): void { this.saveMcpApprovals(); this.emit('mcp_approval', { ...a }); }
 
   private scheduleMcpApprovalCleanup(id: string, delayMs: number): void {
     const existing = this.mcpApprovalTimers.get(id);
     if (existing) clearTimeout(existing);
-    this.mcpApprovalTimers.set(id, setTimeout(() => { this.mcpApprovalTimers.delete(id); this.mcpApprovals.delete(id); }, delayMs));
+    this.mcpApprovalTimers.set(id, setTimeout(() => { this.mcpApprovalTimers.delete(id); this.mcpApprovals.delete(id); this.saveMcpApprovals(); }, delayMs));
   }
 
   /** An AI model asked (via MCP) to message projectId/sessionId. Records the
@@ -1893,12 +2005,14 @@ export class SessionManager {
    *  here — that dispatch can itself fail (e.g. the conversation started running
    *  again in the meantime), which is recorded on the approval rather than thrown,
    *  since by this point there's no one left to catch an HTTP error. */
-  decideMcpApproval(id: string, approve: boolean): McpApproval | undefined {
+  decideMcpApproval(id: string, approve: boolean, reviewedOperationId?: string): McpApproval | undefined {
     const a = this.mcpApprovals.get(id);
     if (!a || a.status !== 'pending') return undefined;
+    if (approve && a.contextReview && a.contextReview.operationId !== reviewedOperationId) throw new ProjectConflict('Review the changed Project context before approving this message');
     const existingTimer = this.mcpApprovalTimers.get(id);
     if (existingTimer) clearTimeout(existingTimer);
     a.status = approve ? 'approved' : 'denied';
+    this.saveMcpApprovals();
     if (approve) {
       try {
         // No `from`: an approved send is human-origin by definition, so it
@@ -2095,7 +2209,7 @@ export class SessionManager {
   }
 
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
-    this.assertExecutionAllowed(pid);
+    this.assertExecutionAllowed(pid, sessionId);
     if (this.chatToolsChanged.has(pid)) {
       const retired = this.pools().map(pool => pool.retireIdleSession(sessionId));
       if (!retired.every(Boolean)) throw new BusyError();
@@ -2196,8 +2310,8 @@ export class SessionManager {
       if(memoryRecord)emit('memory_context',memoryRecord);
       if(memoryWarning)emit('memory_warning',{message:memoryWarning});
       void runFn({
-        accountEligibility: (this.capabilityService || this.requiredProjectTools(pid).length) && (reg.get(pid)?.kind === 'chat' || this.projectSpacesEnabled())
-          ? () => this.chatCapabilities().blocked({ ...this.assertExecutionAllowed(pid), provider: adapter.id }, this.requiredProjectTools(pid), this.projectSpacesEnabled(), sessionId) : undefined,
+        accountEligibility: (this.capabilityService || this.requiredProjectTools(pid, sessionId).length) && (reg.get(pid)?.kind === 'chat' || this.projectSpacesEnabled())
+          ? () => this.chatCapabilities().blocked({ ...this.assertExecutionAllowed(pid, sessionId), provider: adapter.id }, this.requiredProjectTools(pid, sessionId), this.projectSpacesEnabled(), sessionId) : undefined,
         registry: this.registry(),
         accountLoads: () => this.accountLoads(sessionId),
         routing: route,
@@ -2398,6 +2512,10 @@ export class SessionManager {
     if (pid && this.projects().get(pid)?.kind === 'chat') throw new Error('A Chat keeps its original conversation');
     if (pid && this.projectBusy(pid)) throw new BusyError();
     const dir = this.resolveCwd(cwd);
+    if (pid && this.projectSpacesEnabled()) {
+      const known = this.projects().get(pid)?.conversations?.some(c => c.sessionId === sessionId);
+      if (this.assertExecutionAllowed(pid, known ? sessionId : undefined).cwd !== dir) throw new Error('Work keeps its configured directory');
+    }
     const configDirs = this.registry().list().map((a) => a.configDir);
     if (!findTranscript(configDirs, sessionId)) {
       throw new Error(`no transcript for session ${sessionId} in any account's projects tree`);
@@ -2509,7 +2627,8 @@ export class SessionManager {
     context: string,
     instruction: string,
   ): string {
-    this.assertExecutionAllowed(pid);
+    this.assertExecutionAllowed(pid, sourceSid);
+    if (this.projectSpacesEnabled()) this.spaces().assertReady(pid);
     const project = this.projects().get(pid),
       source = this.listConversations(pid).find((c) => c.sessionId === sourceSid);
     if (!project || !source) throw new Error('Source conversation not found');
@@ -2532,6 +2651,12 @@ export class SessionManager {
       source.title + ' · ' + (target === 'codex' ? 'ChatGPT' : 'Claude'),
       target,
     );
+    if (this.projectSpacesEnabled()) {
+      const spaceId = this.spaces().resolve(pid, sourceSid).spaceId;
+      const change: MembershipChange = { target: { kind: 'work-conversation', projectId: pid, sessionId: sid }, assignment: spaceId ? { mode: 'space', spaceId } : { mode: 'standalone' } };
+      const preview = this.spaces().preview(change);
+      this.spaces().apply({ ...change, operationId: 'provider-handoff-' + sid, expectedRevision: preview.revision, expectedTopology: preview.topology, expectedImpactHash: preview.impactHash }); this.reconcileProjectOperations();
+    }
     new RoutingState(this.opts.stateDir).link({
       projectId: pid,
       sourceSessionId: sourceSid,
@@ -2550,7 +2675,7 @@ export class SessionManager {
         '\n\nCurrent instruction:\n' +
         instruction,
     );
-    this.launch(pid, sid, prompt, this.assertExecutionAllowed(pid).cwd, false);
+    this.launch(pid, sid, prompt, this.assertExecutionAllowed(pid, sid).cwd, false);
     return sid;
   }
 

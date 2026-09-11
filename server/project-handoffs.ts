@@ -13,6 +13,8 @@ export interface ProjectHandoffInput {
   sourceProjectId: string;
   sourceSessionId: string;
   mode: 'chat' | 'work';
+  workProjectId?: string;
+  spaceId?: string;
   brief: string;
   name?: string;
   choices?: ModeDefaults;
@@ -22,7 +24,7 @@ export interface ProjectHandoffInput {
 }
 export interface ProjectHandoff {
   id: string; hash: string; at: number; input: ProjectHandoffInput; parentProjectId?: string;
-  membershipRevision: number; choices: ModeDefaults; memories: MemoryEntry[];
+  workProjectId?: string; membershipRevision: number; choices: ModeDefaults; memories: MemoryEntry[];
   target?: { projectId: string; sessionId: string }; fileRefs?: FileReference[];
   status: 'prepared' | 'queued' | 'accepted' | 'cancelled' | 'uncertain';
 }
@@ -58,10 +60,13 @@ export class ProjectHandoffs {
     const source = m.executionProject(input.sourceProjectId);
     if (!source.conversations?.some(c => c.sessionId === input.sourceSessionId)) throw new Error('Source conversation unavailable');
     m.historyContext(source.id, input.sourceSessionId);
-    const parentId = source.kind === 'chat' ? source.parentProjectId : source.id;
+    const context = m.projectContext().resolve(source.id, input.sourceSessionId);
+    const parentId = input.spaceId || context.spaceId;
+    if (input.spaceId && input.spaceId !== context.spaceId) throw new Error('Choose the source conversation’s primary Project');
     const parent = parentId ? m.projectSpaces().projects.find(p => p.id === parentId && !p.archivedAt) : undefined;
     if (source.archivedAt || (parentId && !parent)) throw new Error('Restore the source Project before handing off');
-    if (input.mode === 'work' && !parent?.cwd) throw new Error('Configure a Project Work workspace first');
+    if (input.mode === 'work' && !parent) throw new Error('Choose a Project and target Work workspace first');
+    const workProjectId = input.mode === 'work' ? op?.workProjectId || m.spaceWorkTarget(parentId!, input.workProjectId) : undefined;
     if (!parent && input.fileRefs?.length) throw new Error('Add the source Chat to a Project before sharing files');
     if (!op) {
       const choices = { ...parent?.defaults?.[input.mode], ...input.choices };
@@ -78,15 +83,15 @@ export class ProjectHandoffs {
       if (memories.reduce((n, e) => n + e.content.length, input.brief.length) > 64000) throw new Error('Shorten the brief or select fewer memory entries');
       if (input.fileRefs?.length) m.files().references(source.id, input.sourceSessionId, input.fileRefs);
       op = { id: input.requestId, hash, at: Date.now(), input: structuredClone(input), parentProjectId: parentId,
-        membershipRevision: source.membershipRevision || 0, choices, memories, status: 'prepared' };
+        workProjectId, membershipRevision: context.membershipRevision, choices, memories, status: 'prepared' };
       this.save(op);
     }
-    if (op.parentProjectId !== parentId || op.membershipRevision !== (source.membershipRevision || 0)) throw new ProjectConflict('Source membership changed; review a new handoff');
+    if (op.parentProjectId !== parentId || op.membershipRevision !== context.membershipRevision) throw new ProjectConflict('Source membership changed; review a new handoff');
     if (!op.target) {
       const requestId = 'handoff-' + op.id;
       const created = op.input.mode === 'chat'
-        ? m.createChat({ requestId, name: input.name || 'Discuss: ' + (source.name || 'task'), parentProjectId: parentId, ...op.choices })
-        : m.prepareProjectWork(parentId!, { requestId, name: input.name || 'Continue: ' + (source.name || 'task'), ...op.choices });
+        ? m.createChat({ requestId, name: input.name || 'Discuss: ' + (source.name || 'task'), spaceId: parentId, ...op.choices })
+        : m.prepareProjectWork(op.workProjectId!, { requestId, spaceId: parentId, name: input.name || 'Continue: ' + (source.name || 'task'), ...op.choices });
       op.target = 'id' in created ? { projectId: created.id, sessionId: created.lastSessionId! } : created;
       this.save(op);
     }
@@ -100,7 +105,7 @@ export class ProjectHandoffs {
       this.save(op);
     }
     const target = m.executionProject(op.target.projectId);
-    if (target.archivedAt || (target.kind === 'chat' ? target.parentProjectId : target.id) !== parentId) throw new ProjectConflict('Target membership changed; review a new handoff');
+    if (target.archivedAt || m.projectContext().resolve(target.id, op.target.sessionId).spaceId !== parentId) throw new ProjectConflict('Target membership changed; review a new handoff');
     const text = [op.input.brief.trim(),
       ...(op.input.sources?.length ? ['Selected conversation references:', ...op.input.sources.map(ref => {
         const p = m.executionProject(ref.projectId);

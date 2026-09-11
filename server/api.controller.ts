@@ -873,9 +873,9 @@ export class ApiController {
    *  the send immediately; denying (or letting it expire) means it is never sent. */
   @Post('mcp/approvals/decide')
   @HttpCode(200)
-  mcpApprovalDecide(@Body() body: { id?: string; approve?: boolean }) {
+  mcpApprovalDecide(@Body() body: { id?: string; approve?: boolean; reviewedOperationId?: string }) {
     if (!body?.id) throw new BadRequestException('id required');
-    const a = this.manager.decideMcpApproval(body.id, !!body.approve);
+    const a = this.manager.decideMcpApproval(body.id, !!body.approve, body.reviewedOperationId);
     if (!a) throw new BadRequestException('unknown or already-decided approval id');
     return a;
   }
@@ -1908,9 +1908,9 @@ export class ApiController {
 
   @Post('cron/enabled')
   @HttpCode(200)
-  setCronEnabled(@Body() body: { id?: string; enabled?: boolean }) {
+  setCronEnabled(@Body() body: { id?: string; enabled?: boolean; reviewedOperationId?: string }) {
     if (!body?.id) throw new BadRequestException('id required');
-    const job = this.cron.setEnabled(body.id, !!body.enabled);
+    const job = this.cron.setEnabled(body.id, !!body.enabled, body.reviewedOperationId);
     if (!job) throw new BadRequestException('unknown job id');
     return job;
   }

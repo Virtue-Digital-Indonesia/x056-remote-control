@@ -29,8 +29,8 @@ Baseline checks passed before runtime edits: 866 tests across 79 files in 169.34
 | --- | --- |
 | 0. Baseline and dependency audit | Complete; 866 baseline tests and typecheck passed |
 | 1. Contracts and migration | Complete foundation; 23 focused checks and typecheck passed |
-| 2. Membership and dispatch | Next |
-| 3. Integration UI | Pending |
+| 2. Membership and dispatch | Complete; focused dispatch, file, recovery, and MCP checks passed |
+| 3. Integration UI | Next |
 | 4. Memory scope and sharing | Pending |
 | 5. File sources | Pending |
 | 6. Release preparation | Pending |
@@ -46,3 +46,15 @@ Migration reports distinguish legacy production from first-build state. Reviewed
 The recovery inventory now includes the Space registry, migration record, and retained extraction directory. Snapshot restoration preserves mapping receipts and extraction bytes. The new context resolver path separates `spaceId` from the original Work execution; runtime integration follows in Stage 2.
 
 Validation: 23 tests passed across the new registry/migration fixtures and existing recovery/memory tests. Typecheck passed. No production state changed.
+
+## Stage 2 evidence
+
+The manager now resolves membership per conversation. Reviewed operations retain queued text and attachments, pause affected autopilots and schedules, and invalidate only affected file leases. Previews reject changed queues, automations, membership, or execution topology. Unrelated active siblings remain usable.
+
+Whole Work associations include future conversations while retaining overrides. Durable creation intent preserves the requested Space and account after interruption. Retries reuse the original conversation without moving it back after a later membership change. Work always uses its original execution directory.
+
+Pending message approvals now survive restart. A context change requires a matching operator review before approval or schedule resumption. Unfinished membership receipts block affected dispatch until reconciliation completes. Handoff preparation selects and retains an actual Work project.
+
+Validation covered 158 tests across 12 focused files, including the existing manager and MCP bridge tests. Typecheck passed. Recovery checks exposed a missing Space owner check for retained file artifacts; that check now distinguishes owner records from executions. Shared DOCX editing, exact-version downloads, sibling file leases, and handoff retry tests passed.
+
+Memory ownership and source eligibility remain Stage 4 work. UI integration follows in Stage 3. No production state or deployment actuator changed.

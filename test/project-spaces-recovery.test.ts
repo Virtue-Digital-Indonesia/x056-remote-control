@@ -13,7 +13,7 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'space-recovery-')), stateDir = join(root, 'state'); mkdirSync(stateDir);
   AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'a', configDir: join(root, 'account') }]);
   const options = { stateDir, workspaceRoot: root, chatEnabled: true, projectSpacesEnabled: true, runSessionFn: async () => ({ status: 'completed' as const, failovers: 0 }) };
-  const m = new SessionManager(options); managers.push(m);
+  const m = new SessionManager(options); managers.push(m); m.setProjectAutomationPauser(() => {});
   const parent = m.createProjectSpace({ requestId: 'recovery-parent-001', name: 'Proposal' });
   const chat = m.createChat({ requestId: 'recovery-chat-001', parentProjectId: parent.id });
   return { root, stateDir, options, m, parent, chat };
@@ -58,7 +58,7 @@ describe('Project spaces backup, rollback and repair reports', () => {
     const f = fixture(), path = join(f.chat.cwd, 'proposal.txt'); writeFileSync(path, 'Exact original bytes');
     const [file] = await f.m.files().upload(f.chat.id, 'backup-upload-0001', [{ path, name: 'proposal.txt' }]);
     f.m.files().addToProject(f.chat.id, { fileId: file.id, versionId: file.latestVersionId }, f.parent.id, 'backup-copy-0001');
-    const memory = f.m.memory().create({ projectId: f.parent.id, status: 'confirmed', scope: 'project', title: 'Brief', content: 'Initial brief', pinned: true });
+    const memory = f.m.memory().create({ projectId: f.chat.id, status: 'confirmed', scope: 'project', title: 'Brief', content: 'Initial brief', pinned: true });
     expect(existsSync(join(f.stateDir, 'memory.sqlite-wal'))).toBe(true);
     const first = join(f.root, 'before-new-writes'); await backupProjectSpaces(f.stateDir, first, true);
     f.m.memory().update(memory.id, memory.revision, { content: 'New approved brief' });
@@ -69,23 +69,24 @@ describe('Project spaces backup, rollback and repair reports', () => {
     f.m.onModuleDestroy(); f.m.memory().close();
     renameSync(f.stateDir, join(f.root, 'preserved-latest-state'));
     restoreProjectSpaces(latest, f.stateDir);
-    const restored = new SessionManager(f.options); managers.push(restored);
+    const restored = new SessionManager(f.options); managers.push(restored); restored.setProjectAutomationPauser(() => {});
     expect(restored.memory().get(memory.id)!.content).toBe('New approved brief');
     expect(restored.queues()[f.chat.id][0].text).toBe('Retain this later message');
-    expect(restored.chat(f.chat.id)).toMatchObject({ cwd: f.chat.cwd, lastSessionId: f.chat.lastSessionId, parentProjectId: f.parent.id });
+    expect(restored.chat(f.chat.id)).toMatchObject({ cwd: f.chat.cwd, lastSessionId: f.chat.lastSessionId });
+    expect(restored.spaces().resolve(f.chat.id, f.chat.lastSessionId!).spaceId).toBe(f.parent.id);
     expect(readFileSync(restored.files().version(f.chat.id, { fileId: file.id, versionId: file.latestVersionId }).path, 'utf8')).toBe('Exact original bytes');
-    expect(projectSpacesRecoveryReport(f.stateDir)).toMatchObject({ ready: true, counts: { files: 2, versions: 2, memories: 1, queues: 1 } });
+    expect(projectSpacesRecoveryReport(f.stateDir), JSON.stringify(projectSpacesRecoveryReport(f.stateDir).issues)).toMatchObject({ ready: true, counts: { files: 2, versions: 2, memories: 1, queues: 1 } });
     const old = join(f.root, 'old-rollback-inspection'); restoreProjectSpaces(first, old);
     const db = new DatabaseSync(join(old, 'memory.sqlite'), { readOnly: true });
     expect(JSON.parse(String(db.prepare('SELECT data FROM memory_entries WHERE id=?').get(memory.id)!.data)).content).toBe('Initial brief'); db.close();
   });
   it('disables the hierarchy without downgrading schemas or losing later writes', () => {
-    const f = fixture(), memory = f.m.memory().create({ projectId: f.parent.id, status: 'confirmed', scope: 'project', title: 'Parent fact', content: 'Inherited when enabled', pinned: true });
+    const f = fixture(), memory = f.m.memory().create({ projectId: f.chat.id, status: 'confirmed', scope: 'project', title: 'Parent fact', content: 'Inherited when enabled', pinned: true });
     f.m.onModuleDestroy();
     const off = new SessionManager({ ...f.options, projectSpacesEnabled: false }); managers.push(off);
     expect(off.projectSpaces().enabled).toBe(false); expect(off.chat(f.chat.id).lastSessionId).toBe(f.chat.lastSessionId);
-    expect(off.memory().context(f.chat.id, f.chat.lastSessionId!, 'claude', '').items).not.toContainEqual(expect.objectContaining({ id: memory.id }));
-    expect(off.memory().get(memory.id)).toBeDefined(); expect(off.listProjects().projects.find(p => p.id === f.chat.id)!.parentProjectId).toBe(f.parent.id);
+    expect(off.memory().context(f.chat.id, f.chat.lastSessionId!, 'claude', '').items).toContainEqual(expect.objectContaining({ id: memory.id }));
+    expect(off.memory().get(memory.id)).toBeDefined(); expect(off.spaces().resolve(f.chat.id, f.chat.lastSessionId!).spaceId).toBe(f.parent.id);
     expect(() => off.fileExecution(f.parent.id, f.chat.id, f.chat.lastSessionId!)).toThrow('disabled');
   });
   it('reports broken queue and memory references without changing stored data', () => {

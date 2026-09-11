@@ -46,6 +46,7 @@ export interface CronJob {
   lastRunAt?: number;
   lastResult?: string;
   runCount: number;
+  contextReview?: { operationId: string; reason: string };
 }
 
 export interface CronDeps {
@@ -197,16 +198,18 @@ export class CronScheduler {
     return true;
   }
 
-  setEnabled(id: string, enabled: boolean): CronJob | null {
+  setEnabled(id: string, enabled: boolean, reviewedOperationId?: string): CronJob | null {
     const job = this.jobs.find((j) => j.id === id);
     if (!job) return null;
+    if (enabled && job.contextReview && job.contextReview.operationId !== reviewedOperationId) throw new Error('Review the changed Project context before resuming this schedule');
+    if (enabled) delete job.contextReview;
     job.enabled = enabled;
     this.save();
     return { ...job };
   }
-  pauseForContext(id: string, reason: string): void {
+  pauseForContext(id: string, reason: string, operationId = 'context-changed'): void {
     const job = this.jobs.find(j => j.id === id); if (!job) return;
-    job.enabled = false; job.lastResult = reason; this.save();
+    job.enabled = false; job.lastResult = reason; job.contextReview = { operationId, reason }; this.save();
   }
 
   /** Run every job whose schedule matches this minute. Never throws: one bad
@@ -215,7 +218,7 @@ export class CronScheduler {
     const ran: CronJob[] = [];
     const spent: string[] = [];
     for (const job of this.jobs) {
-      if (!job.enabled) continue;
+      if (!job.enabled || job.contextReview) continue;
       let parsed: ParsedCron;
       try { parsed = parseCron(job.schedule); } catch { continue; }
       if (!cronMatches(parsed, at, job.tz)) continue;

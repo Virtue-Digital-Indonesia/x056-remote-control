@@ -39,6 +39,6 @@ it('serves Project uploads without a Work workspace, preserving authentication, 
   const other = await (await api('/api/project-spaces', { requestId: 'api-project-002', name: 'Other' })).json();
   expect((await api(download.replace(parent.id, other.id))).status).toBe(404);
   const failedWork = await api('/api/sessions', { projectId: parent.id, prompt: 'Do work', interactive: false });
-  expect(failedWork.status).toBe(400); expect((await failedWork.json()).message).toContain('workspace');
+  expect(failedWork.status).toBe(400); expect((await failedWork.json()).message).toContain('Unknown project');
   expect((await api('/api/project-spaces/' + parent.id)).status).toBe(200);
 });

@@ -1,3 +1,4 @@
+import { moveChat } from './project-space-fixture.js';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,7 +17,7 @@ function fixture(enabled = true) {
   const calls: RunSessionOptions[] = [];
   const opts = { stateDir, workspaceRoot, chatEnabled: true, projectSpacesEnabled: enabled,
     runSessionFn: async (o: RunSessionOptions) => { calls.push(o); return { status: 'completed' as const, finalAccount: 'a', failovers: 0 }; } };
-  const manager = new SessionManager(opts); managers.push(manager);
+  const manager = new SessionManager(opts); managers.push(manager); manager.setProjectAutomationPauser(() => {});
   return { root, stateDir, workspaceRoot, calls, opts, manager, file: join(stateDir, 'projects.json') };
 }
 
@@ -45,19 +46,19 @@ describe('Project spaces contracts and migration', () => {
     const p = f.manager.createProjectSpace(input);
     expect(f.manager.createProjectSpace(input).id).toBe(p.id);
     expect(() => f.manager.createProjectSpace({ ...input, name: 'Different' })).toThrow('requestId');
-    expect(p.cwd).toBeUndefined();
+    expect(p).not.toHaveProperty('cwd');
     expect(f.manager.projectSpaces().projects.find(x => x.id === p.id)?.workspaceConfigured).toBe(false);
-    expect(() => f.manager.start('hello', undefined, undefined, p.id)).toThrow('workspace');
-    expect(() => f.manager.start('hello', f.workspaceRoot, undefined, p.id)).toThrow('workspace');
-    expect(() => f.manager.continueSession(p.id, 'arbitrary', 'hello')).toThrow('workspace');
-    expect(() => f.manager.resumeExisting(p.id, 'legacy')).toThrow('workspace');
+    expect(() => f.manager.start('hello', undefined, undefined, p.id)).toThrow('Unknown project');
+    expect(() => f.manager.start('hello', f.workspaceRoot, undefined, p.id)).toThrow('Unknown project');
+    expect(() => f.manager.continueSession(p.id, 'arbitrary', 'hello')).toThrow('Unknown project');
+    expect(() => f.manager.resumeExisting(p.id, 'legacy')).toThrow('Unknown project');
     expect(f.manager.listAvailableSessions(p.id)).toEqual([]);
     expect(f.manager.listConversations(p.id)).toEqual([]);
     expect(f.calls).toEqual([]);
   });
 
   it('persists retryable membership receipts and rejects invalid or stale parents without changing execution identity', () => {
-    const f = fixture(), parent = f.manager.createProjectSpace({ requestId: 'parent-space-001', name: 'Proposal' });
+    const f = fixture(), parent = ProjectRegistry.load(f.file).createSpace({ requestId: 'parent-space-001', name: 'Proposal' });
     const chat = f.manager.createChat({ requestId: 'member-chat-001' }), other = f.manager.createChat({ requestId: 'member-chat-002' });
     const reg = ProjectRegistry.load(f.file);
     expect(() => reg.moveChat(chat.id, 'missing', 0, 'move-0001')).toThrow('Project');
@@ -78,10 +79,10 @@ describe('Project spaces contracts and migration', () => {
   it('feature disable preserves new data and standalone access but exposes no inherited aggregate API', () => {
     const f = fixture(), p = f.manager.createProjectSpace({ requestId: 'flag-project-001', name: 'Proposal' });
     const chat = f.manager.createChat({ requestId: 'flag-chat-001' });
-    ProjectRegistry.load(f.file).moveChat(chat.id, p.id, 0, 'flag-move-001');
+    moveChat(f.manager, chat.id, p.id, 'flag-move-001');
     const bytes = readFileSync(f.file, 'utf8');
     const disabled = new SessionManager({ ...f.opts, projectSpacesEnabled: false }); managers.push(disabled);
-    expect(disabled.projectSpaces()).toEqual({ enabled: false, projects: [] });
+    expect(disabled.projectSpaces()).toMatchObject({ enabled: false, projects: [] });
     expect(disabled.chat(chat.id).cwd).toBe(chat.cwd);
     expect(() => disabled.createProjectSpace({ requestId: 'flag-project-002', name: 'Blocked' })).toThrow('disabled');
     expect(readFileSync(f.file, 'utf8')).toBe(bytes);

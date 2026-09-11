@@ -1,3 +1,4 @@
+import { associateWork } from './project-space-fixture.js';
 import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,17 +19,18 @@ function fixture() {
   const opts = { stateDir, workspaceRoot, chatEnabled: true, projectSpacesEnabled: true, runSessionFn: async (o: RunSessionOptions) => { calls.push(o); return { status: 'completed' as const, failovers: 0 }; } };
   const m = new SessionManager(opts); managers.push(m);
   const cron = new CronScheduler({ stateDir, deliver: () => { throw new Error('Unexpected fixture delivery'); } });
-  const pause = (ids: string[], reason: string) => { for (const job of cron.list()) if (ids.includes(job.projectId)) cron.pauseForContext(job.id, reason); };
-  m.setProjectAutomationPauser(pause);
-  const parent = m.createProjectSpace({ requestId: 'membership-parent-001', name: 'Proposal', cwd: workspaceRoot }), chat = m.createChat({ requestId: 'membership-chat-001' });
-  return { root, stateDir, workspaceRoot, accounts, calls, opts, m, cron, pause, parent, chat };
+  const pause: Parameters<SessionManager['setProjectAutomationPauser']>[0] = (targets, reason, operationId) => { for (const job of cron.list()) if (job.sessionId ? targets.executions.some(r => r.projectId === job.projectId && r.sessionId === job.sessionId) : targets.futureWorkProjectIds.includes(job.projectId)) cron.pauseForContext(job.id, reason, operationId); };
+  m.setProjectAutomationPauser(pause, () => cron.list());
+  const parent = m.createProjectSpace({ requestId: 'membership-parent-001', name: 'Proposal' }), chat = m.createChat({ requestId: 'membership-chat-001' });
+  const work = m.createProject('Work repository', workspaceRoot); associateWork(m, work.id, parent.id);
+  return { work, root, stateDir, workspaceRoot, accounts, calls, opts, m, cron, pause, parent, chat };
 }
 
 describe('Project membership, defaults and paused work', () => {
   it('retains queued work when required tools are unavailable, then checks again before resuming', async () => {
     const f = fixture(); let ready = false;
     f.m.updateProjectSpace(f.parent.id, { expectedRevision: 1, requiredTools: [{ key: 'skill:proposal' }] });
-    f.m.moveProjectChat(f.chat.id, { parentProjectId: f.parent.id, expectedRevision: 0, operationId: 'tools-member-001' });
+    f.m.moveProjectChat(f.chat.id, { parentProjectId: f.parent.id, expectedRevision: f.m.projectContext().resolve(f.chat.id, f.chat.lastSessionId).membershipRevision, operationId: 'tools-member-001' });
     const service = new ChatCapabilities(f.stateDir, () => f.accounts.list(), undefined as never, undefined as never, undefined, async account => ({ account: account.name, errors: [], capabilities: ready ? [{ key: 'skill:proposal', name: 'Proposal', kind: 'skill', state: 'ready' }] : [] }));
     f.m.setChatCapabilities(service);
     const item = f.m.enqueue(f.chat.id, { sessionId: f.chat.lastSessionId, text: 'Keep this tool-dependent task' });
@@ -42,18 +44,18 @@ describe('Project membership, defaults and paused work', () => {
     const item = f.m.enqueue(f.chat.id, { text: 'Keep this message', sessionId: sid, paused: true, notBefore: Date.now() + 86400000, model: 'claude-sonnet-5' });
     f.m.setAutopilot(f.chat.id, sid, { count: 4, prompt: 'Keep this plan' });
     const job = f.cron.add({ projectId: f.chat.id, sessionId: sid, schedule: '0 0 * * *', tz: 'UTC', prompt: 'Scheduled task' });
-    const moved = f.m.moveProjectChat(f.chat.id, { parentProjectId: f.parent.id, expectedRevision: 0, operationId: 'membership-move-001' });
+    const moved = f.m.moveProjectChat(f.chat.id, { parentProjectId: f.parent.id, expectedRevision: f.m.projectContext().resolve(f.chat.id, f.chat.lastSessionId).membershipRevision, operationId: 'membership-move-001' });
     expect(moved.id).toBe(f.chat.id); expect(moved.cwd).toBe(f.chat.cwd); expect(moved.lastSessionId).toBe(sid);
     const queued = f.m.queues()[f.chat.id][0];
-    expect(queued).toMatchObject({ id: item.id, text: item.text, model: item.model, notBefore: item.notBefore, contextReview: { membershipRevision: 1 }, paused: true });
+    expect(queued).toMatchObject({ id: item.id, text: item.text, model: item.model, notBefore: item.notBefore, contextReview: { membershipRevision: f.m.projectContext().resolve(f.chat.id, sid).membershipRevision }, paused: true });
     expect(f.cron.list().find(j => j.id === job.id)?.enabled).toBe(false);
     expect(f.m.autopilotStatus()[sid]).toMatchObject({ remaining: 4, paused: true });
     expect(() => f.m.editQueueItem(f.chat.id, item.id, { paused: false })).toThrow('Review');
     expect(() => f.m.reviewProjectQueue(f.chat.id, item.id, 0)).toThrow('changed');
-    f.m.reviewProjectQueue(f.chat.id, item.id, 1);
+    f.m.reviewProjectQueue(f.chat.id, item.id, f.m.projectContext().resolve(f.chat.id, sid).membershipRevision);
     expect(f.m.queues()[f.chat.id][0].contextReview).toBeUndefined();
     expect(f.m.queues()[f.chat.id][0].paused).toBe(false);
-    f.m.moveProjectChat(f.chat.id, { parentProjectId: f.parent.id, expectedRevision: 0, operationId: 'membership-move-001' });
+    f.m.moveProjectChat(f.chat.id, { parentProjectId: f.parent.id, expectedRevision: f.m.projectContext().resolve(f.chat.id, f.chat.lastSessionId).membershipRevision, operationId: 'membership-move-001' });
     expect(f.m.queues()[f.chat.id][0].contextReview).toBeUndefined();
     expect(f.calls).toHaveLength(0);
   });
@@ -61,26 +63,27 @@ describe('Project membership, defaults and paused work', () => {
   it('reconciles an interrupted membership write before queues or autopilots can resume', () => {
     const f = fixture(), sid = f.chat.lastSessionId!;
     f.m.enqueue(f.chat.id, { text: 'Pending', sessionId: sid, paused: true }); f.m.setAutopilot(f.chat.id, sid, { count: 3 });
-    ProjectRegistry.load(join(f.stateDir, 'projects.json')).moveChat(f.chat.id, f.parent.id, 0, 'interrupted-move-001');
+    const change = { target: { kind: 'chat' as const, projectId: f.chat.id }, assignment: { mode: 'space' as const, spaceId: f.parent.id } }, preview = f.m.spaces().preview(change);
+    f.m.spaces().apply({ ...change, operationId: 'interrupted-move-001', expectedRevision: preview.revision, expectedTopology: preview.topology, expectedImpactHash: preview.impactHash });
     const restarted = new SessionManager(f.opts); managers.push(restarted); restarted.setProjectAutomationPauser(f.pause);
     expect(restarted.queues()[f.chat.id][0].contextReview?.operationId).toBe('interrupted-move-001');
     expect(restarted.autopilotStatus()[sid].paused).toBe(true);
-    expect(ProjectRegistry.load(join(f.stateDir, 'projects.json')).pendingMembershipOperations()).toEqual([]);
+    expect(restarted.spaces().pending()).toEqual([]);
     expect(f.calls).toHaveLength(0);
   });
 
   it('rejects membership and archive changes during background work, and restoration never resumes paused work', () => {
     const f = fixture(), sid = f.chat.lastSessionId!;
-    f.m.moveProjectChat(f.chat.id, { parentProjectId: f.parent.id, expectedRevision: 0, operationId: 'archive-member-001' });
+    f.m.moveProjectChat(f.chat.id, { parentProjectId: f.parent.id, expectedRevision: f.m.projectContext().resolve(f.chat.id, f.chat.lastSessionId).membershipRevision, operationId: 'archive-member-001' });
     const busy = vi.spyOn(f.m, 'backgroundSessions').mockReturnValue([{ projectId: f.chat.id, sessionId: sid }]);
-    expect(() => f.m.moveProjectChat(f.chat.id, { parentProjectId: null, expectedRevision: 1, operationId: 'busy-member-001' })).toThrow('active');
-    expect(() => f.m.archiveProjectSpace(f.parent.id, { expectedRevision: 1, archived: true, operationId: 'busy-archive-001' })).toThrow('active');
+    expect(() => f.m.moveProjectChat(f.chat.id, { parentProjectId: null, expectedRevision: f.m.projectContext().resolve(f.chat.id, f.chat.lastSessionId).membershipRevision, operationId: 'busy-member-001' })).toThrow('active');
+    expect(() => f.m.archiveProjectSpace(f.parent.id, { expectedRevision: 1, expectedTopology: f.m.spaces().topology(), archived: true, operationId: 'busy-archive-001' })).toThrow('active');
     busy.mockRestore();
     const item = f.m.enqueue(f.chat.id, { text: 'Pending', sessionId: sid, paused: true });
-    const archived = f.m.archiveProjectSpace(f.parent.id, { expectedRevision: 1, archived: true, operationId: 'archive-project-001' });
+    const archived = f.m.archiveProjectSpace(f.parent.id, { expectedRevision: 1, expectedTopology: f.m.spaces().topology(), archived: true, operationId: 'archive-project-001' });
     expect(() => f.m.continueSession(f.chat.id, sid, 'Should not run')).toThrow('Restore');
-    f.m.archiveProjectSpace(f.parent.id, { expectedRevision: archived.revision!, archived: false, operationId: 'restore-project-001' });
-    expect(f.m.queues()[f.chat.id][0]).toMatchObject({ id: item.id, paused: true, contextReview: { reason: 'Project archived' } });
+    f.m.archiveProjectSpace(f.parent.id, { expectedRevision: archived.revision!, expectedTopology: f.m.spaces().topology(), archived: false, operationId: 'restore-project-001' });
+    expect(f.m.queues()[f.chat.id][0]).toMatchObject({ id: item.id, paused: true, contextReview: { reason: 'Project restored; review retained work' } });
     expect(f.calls).toHaveLength(0);
   });
 
@@ -90,14 +93,14 @@ describe('Project membership, defaults and paused work', () => {
     const chat = f.m.createChat({ requestId: 'default-chat-001', parentProjectId: f.parent.id });
     expect(chat).toMatchObject({ provider: 'codex', model: 'gpt-6-astra', effort: 'xhigh' });
     expect(f.m.chat(f.chat.id).provider).toBe('claude');
-    const work = f.m.prepareProjectWork(f.parent.id, { requestId: 'default-work-001', name: 'Prepared Work' });
-    expect(f.m.prepareProjectWork(f.parent.id, { requestId: 'default-work-001', name: 'Prepared Work' })).toEqual(work);
-    f.m.continueSession(f.parent.id, work.sessionId, 'Start prepared Work');
+    const work = f.m.prepareSpaceWork(f.parent.id, { requestId: 'default-work-001', name: 'Prepared Work' });
+    expect(f.m.prepareSpaceWork(f.parent.id, { requestId: 'default-work-001', name: 'Prepared Work' })).toEqual(work);
+    f.m.continueSession(f.work.id, work.sessionId, 'Start prepared Work');
     expect(f.calls[0]).toMatchObject({ resume: false, model: 'claude-sonnet-5', cwd: f.workspaceRoot });
     await new Promise(r => setTimeout(r, 20));
-    const p = f.m.listProjects().projects.find(p => p.id === f.parent.id)!;
-    expect(() => f.m.updateProjectSpace(p.id, { expectedRevision: p.revision!, cwd: f.root })).toThrow();
-    expect(JSON.parse(readFileSync(join(f.stateDir, 'conversation-routing.json'), 'utf8'))[f.parent.id + '::' + work.sessionId].lockedAccount).toBe('a');
+    const p = f.m.listProjects().projects.find(p => p.id === f.work.id)!;
+    expect(() => f.m.updateProjectSpace(p.id, { expectedRevision: p.revision!, cwd: f.root } as never)).toThrow();
+    expect(JSON.parse(readFileSync(join(f.stateDir, 'conversation-routing.json'), 'utf8'))[f.work.id + '::' + work.sessionId].lockedAccount).toBe('a');
   });
 
   it('checks Project requirements using the actual Work or Chat directory and account on each attempt', async () => {
@@ -109,8 +112,8 @@ describe('Project membership, defaults and paused work', () => {
     });
     f.m.setChatCapabilities(service);
     const chat = f.m.createChat({ requestId: 'capabilities-chat-001', parentProjectId: f.parent.id, provider: 'claude' });
-    const work = f.m.prepareProjectWork(f.parent.id, { requestId: 'capabilities-work-001', provider: 'claude' });
-    f.m.continueSession(chat.id, chat.lastSessionId!, 'Chat task'); f.m.continueSession(f.parent.id, work.sessionId, 'Work task');
+    const work = f.m.prepareSpaceWork(f.parent.id, { requestId: 'capabilities-work-001', provider: 'claude' });
+    f.m.continueSession(chat.id, chat.lastSessionId!, 'Chat task'); f.m.continueSession(f.work.id, work.sessionId, 'Work task');
     expect(await f.calls[0].accountEligibility!()).toMatchObject({ a: [expect.stringContaining('Required tool')] });
     expect(await f.calls[1].accountEligibility!()).toEqual({});
     expect(seen).toEqual([chat.cwd, f.workspaceRoot]);

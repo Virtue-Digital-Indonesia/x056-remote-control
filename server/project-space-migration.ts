@@ -60,7 +60,7 @@ export function inspectSpaceMigration(stateDir: string) {
     if (p.conversations?.length && !p.cwd) issues.push('Conversation workspace unavailable: ' + p.id);
   }
   for (const f of files) if (!projects.some(p => p.id === f.chatId) && !state.spaces.some(s => s.id === f.chatId)) issues.push('File owner unavailable: ' + f.id);
-  const extra = ['queues.json','autopilot.json','cron.json','project-handoffs.json'].map(name => { const path = join(stateDir, name); return [name, existsSync(path) ? hash(readFileSync(path, 'utf8')) : null]; });
+  const extra = ['mcp-approvals.json', 'queues.json','autopilot.json','cron.json','project-handoffs.json'].map(name => { const path = join(stateDir, name); return [name, existsSync(path) ? hash(readFileSync(path, 'utf8')) : null]; });
   return { fingerprint: hash([existsSync(projectPath) ? readFileSync(projectPath, 'utf8') : null, state, storeFingerprints, extra]),
     topology: spaces.topology(), revision: state.revision, candidates, issues,
     requiresReview: candidates.some(c => c.requiresMapping), counts: { projects: projects.length, spaces: state.spaces.length, notes: notes.length, sources: sources.length, files: files.length } };

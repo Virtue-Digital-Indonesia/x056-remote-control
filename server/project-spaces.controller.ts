@@ -9,6 +9,17 @@ export class ProjectSpacesController {
   private enabled() { if (!this.manager.projectSpacesEnabled()) throw new NotFoundException('Project spaces are disabled'); }
   @Get() list() { return this.manager.projectSpaces(); }
   @Get('migration') migration() { this.enabled(); return this.manager.projectSpacesMigration(); }
+  @Post('migration') applyMigration(@Body() body: Parameters<SessionManager['applyProjectSpacesMigration']>[0]) { return this.write(() => this.manager.applyProjectSpacesMigration(body)); }
+  @Post('membership/preview') preview(@Body() body: Parameters<SessionManager['previewProjectMembership']>[0]) { return this.write(() => this.manager.previewProjectMembership(body)); }
+  @Post('membership/apply') applyMembership(@Body() body: Parameters<SessionManager['applyProjectMembership']>[0]) { return this.write(() => this.manager.applyProjectMembership(body)); }
+  @Get('membership/operations/:operationId') operation(@Param('operationId') id: string) { this.enabled(); return this.manager.spaces().snapshot().operations.find(o => o.id === id); }
+  @Get('context/:projectId/:sessionId') context(@Param('projectId') id: string, @Param('sessionId') sid: string) { this.enabled(); return this.manager.projectContext().resolve(id, sid); }
+  @Post(':id/references') reference(@Param('id') id: string, @Body() body: { target: import('./project-space-registry.js').SpaceTarget; expectedRevision: number; requestId: string }) {
+    return this.write(() => this.manager.spaces().addReference(id, body.target, body.expectedRevision, body.requestId));
+  }
+  @Post(':id/references/remove') removeReference(@Param('id') id: string, @Body() body: { referenceId: string; expectedRevision: number }) {
+    return this.write(() => { const ref = this.manager.spaces().snapshot().references.find(r => r.id === body.referenceId && r.spaceId === id); if (!ref) throw new Error('Reference unavailable'); return this.manager.spaces().removeReference(ref.id, body.expectedRevision); });
+  }
   @Post('handoffs') handoff(@Body() body: import('./project-handoffs.js').ProjectHandoffInput) { return this.write(() => this.manager.projectHandoffs().run(body)); }
   @Get('handoffs') handoffs(@Query('projectId') id: string, @Query('sessionId') sid?: string) { this.enabled(); this.manager.executionProject(id); return this.manager.projectHandoffs().list(id, sid); }
   @Get(':id') get(@Param('id') id: string) {
@@ -32,15 +43,15 @@ export class ProjectSpacesController {
   @Post(':id') update(@Param('id') id: string, @Body() body: Parameters<SessionManager['updateProjectSpace']>[1]) {
     return this.write(() => this.manager.updateProjectSpace(id, body));
   }
-  @Post(':id/work') work(@Param('id') id: string, @Body() body: Parameters<SessionManager['prepareProjectWork']>[1]) {
-    return this.write(() => this.manager.prepareProjectWork(id, body));
+  @Post(':id/work') work(@Param('id') id: string, @Body() body: Parameters<SessionManager['prepareSpaceWork']>[1]) {
+    return this.write(() => this.manager.prepareSpaceWork(id, body));
   }
   @Get(':id/capabilities') async capabilities(@Param('id') id: string, @Query('sessionId') sid: string, @Query('refresh') refresh?: string) {
     this.enabled();
     const context = this.manager.historyContext(id, sid), project = this.manager.executionProject(id), service = this.manager.chatCapabilities();
     if (!project.conversations?.some(c => c.sessionId === sid)) throw new BadRequestException('Conversation unavailable');
     if (refresh === '1') this.manager.refreshChatCapabilities();
-    return { accounts: await service.inventory({ ...project, provider: context.adapter.id }, refresh === '1'), requirements: service.requirements(id, sid), projectRequirements: this.manager.requiredProjectTools(id) };
+    return { accounts: await service.inventory({ ...project, provider: context.adapter.id }, refresh === '1'), requirements: service.requirements(id, sid), projectRequirements: this.manager.requiredProjectTools(id, sid) };
   }
   @Post(':id/capabilities') requirements(@Param('id') id: string, @Body() body: { sessionId: string; requirements: import('./chat-capabilities.js').CapabilityRequirement[] }) {
     return this.write(() => { const p = this.manager.executionProject(id); if (!p.conversations?.some(c => c.sessionId === body.sessionId)) throw new Error('Conversation unavailable'); this.manager.chatCapabilities().setRequirements(id, body.requirements, body.sessionId); this.manager.refreshChatCapabilities(); return { requirements: body.requirements }; });

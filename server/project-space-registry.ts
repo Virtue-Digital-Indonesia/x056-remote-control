@@ -123,6 +123,11 @@ export class ProjectSpaceRegistry {
       membershipRevision: Math.max(binding?.revision || 0, data.epochs[executionKey(ref)] || 0), archived: !!space?.archivedAt };
   }
   resolve(projectId: string, sessionId: string) { return this.resolveInside(this.read(), this.projects(), { projectId, sessionId }); }
+  defaultForWork(projectId: string) {
+    this.assertTarget({ kind: 'work-project', projectId }, this.projects());
+    const assignment = this.read().bindings[targetKey({ kind: 'work-project', projectId })]?.assignment;
+    return assignment?.mode === 'space' ? assignment.spaceId : undefined;
+  }
   members(spaceId: string) {
     const data = this.read(), projects = this.projects();
     return this.executions(projects).filter(ref => this.resolveInside(data, projects, ref).spaceId === spaceId);
