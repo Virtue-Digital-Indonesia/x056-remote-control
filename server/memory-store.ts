@@ -70,6 +70,7 @@ export interface KnowledgeSource {
   excluded: boolean;
 }
 export interface MemoryQuery {
+  omitFileDocuments?: string;
   spaceId?: string;
   requestId?: string;
   eligibleOnly?: boolean;
@@ -728,7 +729,7 @@ export class MemoryStore {
     const offset=Math.max(0,Number(q.offset)||0),limit=Math.max(1,Math.min(200,Number(q.limit)||50)),term=includeExcluded?'':fts(q.query||'');
     const sql=term?'SELECT s.data FROM source_fts JOIN memory_sources s ON s.id=source_fts.id WHERE source_fts MATCH ? AND s.excluded=?':'SELECT s.data FROM memory_sources s WHERE s.excluded=?';
     const rows=this.db.prepare(sql).all(...(term?[term,includeExcluded?1:0]:[includeExcluded?1:0])).map(row=>this.projectSource(this.decode<KnowledgeSource>(row))!)
-      .filter(s=>this.sourceVisible(s,q)&&(!q.eligibleOnly||!this.sourceContextProblem(s,q))&&(!includeExcluded||!q.query||normalize(s.title+' '+s.content).includes(normalize(q.query))))
+      .filter(s=>(q.omitFileDocuments!=='true'||!s.document)&&this.sourceVisible(s,q)&&(!q.eligibleOnly||!this.sourceContextProblem(s,q))&&(!includeExcluded||!q.query||normalize(s.title+' '+s.content).includes(normalize(q.query))))
       .sort((a,b)=>b.at-a.at);
     return {items:rows.slice(offset,offset+limit),total:rows.length};
   }
@@ -926,7 +927,16 @@ export class MemoryStore {
       .all(...args)
       .map((x) => this.decode<Record<string, unknown>>(x)!);
   }
-  stats() {
+  stats(q:MemoryQuery = {}) {
+    if(q.projectId||q.spaceId||q.sessionId)return this.withScope(()=>{
+      const scope={projectId:q.projectId,spaceId:q.spaceId,sessionId:q.sessionId},where:string[]=[],args:string[]=[];
+      if(q.projectId){where.push('project_id=?');args.push(q.projectId);}
+      if(q.sessionId){where.push('session_id=?');args.push(q.sessionId);}
+      if(q.spaceId){where.push("json_extract(data,'$.scope.spaceId')=?");args.push(q.spaceId);}
+      return {entries:MEMORY_STATES.map(status=>({status,count:this.search({...scope,status,limit:1}).total})),
+        sources:this.sources({...scope,limit:1}).total,
+        contexts:Number(this.db.prepare('SELECT COUNT(*) count FROM memory_contexts WHERE '+where.join(' AND ')).get(...args)?.count||0),settings:this.settings()};
+    });
     return {
       entries: this.db.prepare('SELECT status,COUNT(*) count FROM memory_entries GROUP BY status').all(),
       sources: Number(

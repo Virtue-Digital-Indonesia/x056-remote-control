@@ -272,3 +272,25 @@ body[data-conversation-label-template=static][data-conversation-label-order=conv
 .memory-detail-dialog [data-document] summary,.memory-source-search-hit { overflow-wrap:anywhere; }
 .memory-source-search-hit { display:grid; gap:6px; padding:14px 0; width:100%; text-align:left; }
 #memoryFileActions { margin-bottom:18px; }
+
+/* Keep saved-file fields and source results spaced like the existing workspace forms. */
+.memory-file-dialog .workspace-form>p{margin:0}
+.memory-file-dialog [role=status]:empty,.memory-file-dialog [role=alert]:empty{display:none}
+#memoryDocumentJobs h3{margin:24px 0 12px;font-size:14px}
+.memory-source-search-hit{display:flex;width:100%;gap:8px;padding:16px 8px;border-bottom:1px solid var(--border)}
+#memoryFileActions[hidden]{display:none}
+
+.memory-detail-actions{flex-wrap:wrap}
+.workspace-dialog>header>h2{min-width:0;overflow-wrap:anywhere}
+.workspace-dialog>header>.cr-icon{flex:none}
+.memory-context-controls>.cr-secondary{white-space:normal}
+.memory-context-item>span>small{display:block;margin-top:4px}
+.memory-reference-dialog [data-results]{max-height:40dvh;overflow:auto}
+.memory-reference-dialog h3{margin:0 0 12px;font-size:14px}
+.memory-reference-dialog [role=alert]:empty{display:none}
+#memoryPages[hidden]{display:none}
+
+.workspace-form{grid-template-columns:minmax(0,1fr)}
+.workspace-form>*,.workspace-form label>*{min-width:0}
+.memory-share-dialog .workspace-form p{overflow-wrap:anywhere;margin:0}
+.memory-share-dialog [role=alert]:empty{display:none}

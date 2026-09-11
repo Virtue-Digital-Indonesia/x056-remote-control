@@ -55,15 +55,14 @@ export class MemoryController {
       if (s.id && !this.store().source(s.id)) throw new Error('Source not found');
     }
   }
-  @Get('stats') stats() {
-    return this.store().stats();
+  @Get('stats') stats(@Query() q: MemoryQuery) {
+    return this.call(() => this.store().stats(q));
   }
   @Get('search') search(@Query() q: MemoryQuery & { callerProjectId?: string; callerSessionId?: string }) {
     return this.call(() => {
+      const caller = this.callerQuery(q);
       if (q.callerProjectId && q.callerSessionId) {
-        this.validateProject(q.callerProjectId, q.callerSessionId);
-        return this.store().searchContext({ ...q, projectId: q.callerProjectId, sessionId: q.callerSessionId,
-          spaceId:undefined,requestId:this.manager.memoryRequestId(q.callerProjectId,q.callerSessionId),provider: this.manager.historyContext(q.callerProjectId, q.callerSessionId).adapter.id, access: 'context' });
+        return this.store().searchContext(caller);
       }
       return this.store().search(q);
     });
@@ -77,6 +76,7 @@ export class MemoryController {
     @Query('callerSessionId') callerSid?: string,
   ) {
     return this.call(() => {
+      this.validateCaller({callerProjectId:callerPid,callerSessionId:callerSid});
       const pinned=callerPid&&callerSid?this.store().access.references(callerPid,callerSid,this.manager.memoryRequestId(callerPid,callerSid))?.selections.find(r=>r.kind==='entry'&&r.id===id):undefined;
       const entry = pinned?this.store().revisions(id).find(e=>String(e.revision)===pinned.version):this.store().get(id);
       if (!entry) throw new Error('Memory not found');
@@ -155,8 +155,15 @@ export class MemoryController {
       );
     });
   }
+  private validateCaller(q:{callerProjectId?:string;callerSessionId?:string}):void {
+    if(q.callerProjectId===undefined&&q.callerSessionId===undefined)return;
+    if(typeof q.callerProjectId!=='string'||!q.callerProjectId||typeof q.callerSessionId!=='string'||!q.callerSessionId)
+      throw new Error('Both caller project and conversation are required');
+    this.validateProject(q.callerProjectId,q.callerSessionId);
+  }
   private callerQuery(q:MemoryQuery & {callerProjectId?:string;callerSessionId?:string}):MemoryQuery {
-    if(q.callerProjectId&&q.callerSessionId){this.validateProject(q.callerProjectId,q.callerSessionId);return {...q,projectId:q.callerProjectId,sessionId:q.callerSessionId,spaceId:undefined,requestId:this.manager.memoryRequestId(q.callerProjectId,q.callerSessionId),provider:this.manager.historyContext(q.callerProjectId,q.callerSessionId).adapter.id,access:'context',eligibleOnly:true};}
+    this.validateCaller(q);
+    if(q.callerProjectId&&q.callerSessionId){return {...q,projectId:q.callerProjectId,sessionId:q.callerSessionId,spaceId:undefined,requestId:this.manager.memoryRequestId(q.callerProjectId,q.callerSessionId),provider:this.manager.historyContext(q.callerProjectId,q.callerSessionId).adapter.id,access:'context',eligibleOnly:true,historical:false};}
     return q;
   }
   @Get('sources') sources(@Query() q: MemoryQuery & { excluded?: string;callerProjectId?:string;callerSessionId?:string }) {
@@ -164,6 +171,7 @@ export class MemoryController {
   }
   @Get('source') source(@Query('id') id: string, @Query('hash') hash?: string,@Query('callerProjectId') callerProjectId?:string,@Query('callerSessionId') callerSessionId?:string) {
     return this.call(() => {
+      this.validateCaller({callerProjectId,callerSessionId});
       const source = hash ? this.store().sourceVersion(id, hash) : this.store().source(id);
       if (!source) throw new Error('Source not found');
       if(callerProjectId&&callerSessionId){const reason=this.store().sourceContextProblem(source,this.callerQuery({callerProjectId,callerSessionId}));if(reason)throw new Error(reason);this.store().access.recordRead({kind:'source',id,version:source.versionId||source.hash},callerProjectId,callerSessionId,this.manager.memoryRequestId(callerProjectId,callerSessionId));}
@@ -275,6 +283,7 @@ export class MemoryController {
     @Query('callerSessionId') callerSid?:string,
   ) {
     return this.call(() => {
+      this.validateCaller({callerProjectId:callerPid,callerSessionId:callerSid});
       if(callerPid&&callerSid){pid=callerPid;sid=callerSid;requestId=this.manager.memoryRequestId(pid,sid);targetProvider=undefined;}
       this.validateProject(pid, sid);
       if (!pid) throw new Error('Choose a project');
@@ -308,7 +317,7 @@ export class MemoryController {
     return this.call(() => this.store().setSettings(b));
   }
   @Post('link') @HttpCode(200) link(@Body() b: { from: string; to: string; kind: string;callerProjectId?:string;callerSessionId?:string }) {
-    return this.call(() => {if(b.callerProjectId&&b.callerSessionId){const q=this.callerQuery(b);for(const id of [b.from,b.to]){const e=this.store().get(id);if(!e)throw new Error('Memory unavailable');const reason=this.store().contextProblem(e,q);if(reason)throw new Error(reason);}}return this.store().link(b.from, b.to, b.kind);});
+    return this.call(() => {const q=this.callerQuery(b);if(b.callerProjectId&&b.callerSessionId){for(const id of [b.from,b.to]){const e=this.store().get(id);if(!e)throw new Error('Memory unavailable');const reason=this.store().contextProblem(e,q);if(reason)throw new Error(reason);}}return this.store().link(b.from, b.to, b.kind);});
   }
   @Post('unlink') @HttpCode(200) unlink(@Body() b: { id: string }) {
     return this.call(() => {

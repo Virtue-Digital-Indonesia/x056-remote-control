@@ -1,7 +1,7 @@
 // Each workflow gets its own gateway, state, account fixtures, and provider processes.
 const {spawn}=require('node:child_process'),fs=require('node:fs'),path=require('node:path');
 const output=process.env.X056_BROWSER_CHECK_OUTPUT||'/tmp/project-integration-browser-checks',port=Number(process.env.X056_BROWSER_CHECK_PORT||8775);fs.mkdirSync(output,{recursive:true});
-const cases=[['project-integration',true],['project-integration-handoffs',true],['project-spaces',true],['project-spaces-workflow',true],['project-memory-sharing',true],['project-memory-documents',true],['rc-chat',false],['rc-chat-navigation',false],['memory-v5',false],['project-integration-disabled',false],['project-release-surfaces',true]];
+const cases=[['project-integration',true],['project-integration-handoffs',true],['project-spaces',true],['project-spaces-workflow',true],['project-memory-sharing',true],['project-memory-documents',true],['rc-chat',false],['rc-chat-navigation',false],['memory-v5',false],['project-integration-disabled',false],['project-release-surfaces',true],['project-integration-audit',true]];
 const selected=process.argv.slice(2),delay=ms=>new Promise(r=>setTimeout(r,ms));
 async function main(){for(const [name,enabled] of cases.filter(([name])=>!selected.length||selected.includes(name))){
  const fixtureLog=fs.openSync(path.join(output,name+'-fixture.log'),'w'),checkLog=fs.openSync(path.join(output,name+'.log'),'w');

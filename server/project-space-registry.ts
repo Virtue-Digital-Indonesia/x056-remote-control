@@ -194,6 +194,13 @@ export class ProjectSpaceRegistry {
     data.spaces.push(space); data.requests = { ...data.requests, [input.requestId]: { fingerprint, resultId: space.id } }; this.save(data); return space;
   }
   update(id: string, expectedRevision: number, patch: Partial<Pick<ProjectSpace, 'name' | 'defaults' | 'requiredTools' | 'defaultWorkProjectId'>>) {
+    // JSON bodies do not enforce the TypeScript Pick. Identity and archive state
+    // must only change through their reviewed operations.
+    const editable = new Set(['name', 'defaults', 'requiredTools', 'defaultWorkProjectId']);
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch) || Object.keys(patch).some(key => !editable.has(key)))
+      throw new Error('Only Project name, defaults, required tools and default Work project can be edited');
+    if (patch.defaultWorkProjectId !== undefined && typeof patch.defaultWorkProjectId !== 'string')
+      throw new Error('Invalid default Work project');
     const data = this.read(), s = data.spaces.find(s => s.id === id);
     if (!s) throw new Error('Project space not found');
     if (s.revision !== expectedRevision) throw new ProjectConflict('Project changed; refresh before saving');

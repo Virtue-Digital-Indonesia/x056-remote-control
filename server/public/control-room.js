@@ -264,6 +264,9 @@ window.createControlRoom = function (engine) {
   },true);
   document.addEventListener('keydown',e=>{
     if(e.key!=='Escape'||e.defaultPrevented)return;
+    if($('controlMenu')?.matches(':popover-open')){
+      e.preventDefault();e.stopImmediatePropagation();$('controlMenu').hidePopover();menuAnchor?.focus();return;
+    }
     const dialogs=[...document.querySelectorAll('dialog[open]')];
     const dialog=dialogs[dialogs.length-1];
     if(!dialog)return;
@@ -923,11 +926,20 @@ window.createControlRoom = function (engine) {
     menuAnchor=anchor; (anchor.closest('dialog')||document.body).append(menu);
     menu.innerHTML=items.map((it,i)=>`<button role="menuitem" data-menu-item="${i}" ${it.disabled?'disabled':''}>${ic(it.icon)}<span>${esc(it.label)}</span>${it.checked?ic('check'):''}</button>`).join('');
     menu.querySelectorAll('button').forEach(b=>b.onclick=()=>{menu.hidePopover();items[Number(b.dataset.menuItem)].run();});
+    // Measure in the top layer, then choose a side that leaves the trigger clear.
+    const rect=anchor.getBoundingClientRect(),below=innerHeight-rect.bottom-15,above=rect.top-15;
+    menu.style.maxHeight='calc(100dvh - 16px)';
     menu.showPopover();
-    const rect=anchor.getBoundingClientRect();menu.style.left=Math.max(8,Math.min(innerWidth-menu.offsetWidth-8,point?point.x:rect.right-menu.offsetWidth))+'px';menu.style.top=Math.max(8,Math.min(innerHeight-menu.offsetHeight-8,point?point.y:rect.bottom+7))+'px';
+    const opensAbove=!point&&below<menu.scrollHeight&&above>below;
+    menu.style.maxHeight=Math.max(0,point?innerHeight-16:opensAbove?above:below)+'px';
+    menu.style.left=Math.max(8,Math.min(innerWidth-menu.offsetWidth-8,point?point.x:rect.right-menu.offsetWidth))+'px';
+    menu.style.top=Math.max(8,Math.min(innerHeight-menu.offsetHeight-8,point?point.y:opensAbove?rect.top-menu.offsetHeight-7:rect.bottom+7))+'px';
     menu.querySelector('button:not(:disabled)')?.focus();
   }
   menu.addEventListener('keydown',e=>{const items=[...menu.querySelectorAll('button:not(:disabled)')],index=items.indexOf(document.activeElement);if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();items[e.key==='Home'?0:e.key==='End'?items.length-1:(index+(e.key==='ArrowDown'?1:-1)+items.length)%items.length]?.focus();}if(e.key==='Escape'){e.preventDefault();e.stopPropagation();menu.hidePopover();menuAnchor?.focus();}if(e.key==='Tab')menu.hidePopover();});
+  const dismissMenu=()=>{if(menu.matches(':popover-open'))menu.hidePopover();};
+  window.addEventListener('resize',dismissMenu);
+  document.addEventListener('scroll',e=>{if(!menu.contains(e.target))dismissMenu();},true);
   function syncTheme(){const name=engine.theme();$('crTheme').innerHTML=ic({system:'auto',light:'sun',dark:'moon'}[name]);$('crTheme').ariaLabel='Appearance: '+(name==='system'?'Follow device theme':name);}
   function setProjectDismissed(id,value){
     dismissedProjects=dismissedProjects.filter(x=>x!==id);if(value)dismissedProjects.push(id);
@@ -1352,12 +1364,12 @@ window.createControlRoom = function (engine) {
     try {
       const q = memoryQuery(),
         [stats, data] = await Promise.all([
-          memoryRequestApi('stats'),
+          memoryRequestApi('stats?'+new URLSearchParams(memoryOwner($('memoryProject').value))),
           memoryRequestApi(
             memoryTab === 'shared'?'shared?'+q:memoryTab === 'activity'
               ? 'activity?' + q
               : memoryTab === 'sources'
-                ? 'sources?' + q + '&excluded=' + $('memoryExcluded').checked
+                ? 'sources?' + q + '&excluded=' + $('memoryExcluded').checked + (window.rcProjectSpaces?.enabled()?'&omitFileDocuments=true':'')
                 : 'search?' + q,
           ),
         ]);
@@ -1366,7 +1378,7 @@ window.createControlRoom = function (engine) {
       const counts = Object.fromEntries(stats.entries.map((x) => [x.status, Number(x.count)]));
       $('memoryInboxCount').textContent = counts.proposed || '';
       $('memoryStats').innerHTML =
-        `<span><strong>${counts.confirmed || 0}</strong> confirmed</span><span><strong>${counts.proposed || 0}</strong> to review</span><span><strong>${stats.sources}</strong> sources</span><span class="memory-enabled">${stats.settings.enabled ? 'Memory on' : 'Memory off'} · ${stats.settings.maxTokens.toLocaleString()} token budget</span>`;
+        `<span><strong>${counts.confirmed || 0}</strong> confirmed</span><span><strong>${counts.proposed || 0}</strong> to review</span><span><strong>${stats.sources}</strong> ${stats.sources===1?'source':'sources'}</span><span class="memory-enabled">${stats.settings.enabled ? 'Memory on' : 'Memory off'} · ${stats.settings.maxTokens.toLocaleString()} token budget</span>`;
       $('memoryNotice').textContent =
         memoryTab === 'inbox'
           ? 'Review proposals before they can be included in new turns.'
@@ -1380,10 +1392,11 @@ window.createControlRoom = function (engine) {
         memoryTab === 'activity'
           ? memoryActivity(memoryRows)
           : memoryTab === 'sources'
-            ? memorySourceRows(memoryRows.filter(s=>!s.document))
+            ? (memoryRows.length?memorySourceRows(memoryRows):(window.rcProjectSpaces?.enabled()?'':memoryEmpty('No sources in this view')))
             : memoryEntryRows(memoryRows);
-      if(memoryTab==='shared')$('memoryItems').innerHTML=memoryEntryRows(data.entries||[])+memorySourceRows(data.sources||[]);
+      if(memoryTab==='shared')$('memoryItems').innerHTML=(data.entries?.length?memoryEntryRows(data.entries):'')+(data.sources?.length?memorySourceRows(data.sources):'')||memoryEmpty('No shared memory in this view');
       const total = data.total || memoryRows.length;
+      $('memoryPages').hidden=memoryTab==='sources'&&!total;
       $('memoryPages').innerHTML =
         memoryTab === 'activity'
           ? ''
@@ -1547,7 +1560,7 @@ window.createControlRoom = function (engine) {
   $('crMemoryTab').onclick = () => showSection('memory');
   $('memoryMore').onclick = (e) =>
     openMenu(e.currentTarget, [
-      { label: 'Memory settings', icon: 'gear', run: memorySettings },
+      { label: 'Workspace memory settings', icon: 'gear', run: memorySettings },
       { label: 'Add a document', icon: 'file', run: memoryDocument },
       { label: 'Export memory', icon: 'down', run: exportMemory },
       { label: 'Import memory export', icon: 'up', run: importMemoryPackage },
@@ -1969,7 +1982,7 @@ window.createControlRoom = function (engine) {
     input.click();
   }
   async function memorySettings() {
-    const d = workspaceDialog('Memory settings', '<div data-settings>Loading…</div>');
+    const d = workspaceDialog('Workspace memory settings', '<div data-settings>Loading…</div>');
     try {
       const s = await memoryRequestApi('settings');
       if (!d.open) return;
@@ -2013,9 +2026,9 @@ window.createControlRoom = function (engine) {
   const sourceState=state=>({needs_ocr:'Needs OCR',processing:'Processing',partial:'Partial coverage',cancelled:'Cancelled'}[state]||state.charAt(0).toUpperCase()+state.slice(1));
   async function memoryFilePicker(upload=false,initial){
     const ownerId=initial?.ownerId||$('memoryProject').value||engine.state().projectId;
-    const d=workspaceDialog(upload?'Upload to memory':'Add a saved version to memory',`<form class="workspace-form"><label>Memory bank<select name="owner" ${initial?'disabled':''}>${memoryOptions(ownerId,false)}</select></label><p class="cr-note">DOCX, text PDF, Markdown, and text become cited reference sources. Original files stay in Files. Uploaded statements remain reference material until you review a memory proposal.</p>${upload?'<label>Files<input type="file" name="uploads" multiple required></label>':'<div data-saved>Loading…</div>'}<p role="status"></p><p role="alert"></p><footer><button type="button" class="cr-secondary" data-cancel>Cancel</button><button class="cr-primary">${upload?'Upload and index':'Add to memory'}</button></footer></form>`);
-    const f=d.querySelector('form'),operationId=crypto.randomUUID(),abort=new AbortController();let saved=[];
-    const load=async()=>{if(upload)return;try{saved=initial?[initial.file]:(await workspaceRequest(memoryFileBase(f.elements.owner.value).slice(5))).files.filter(file=>!file.removed);if(!d.open)return;d.querySelector('[data-saved]').innerHTML=`<label>Saved file<select name="file">${saved.map(file=>`<option value="${esc(file.id)}">${esc(file.name)}</option>`).join('')}</select></label><label>Version<select name="version"></select></label>`;const versions=()=>{const file=saved.find(file=>file.id===f.elements.file.value);f.elements.version.innerHTML=[...(file?.versions||[])].reverse().map(v=>`<option value="${esc(v.id)}" ${v.id===initial?.versionId?'selected':''}>${esc(new Date(v.createdAt).toLocaleString())} · ${v.id===file.latestVersionId?'Latest':'Earlier'}</option>`).join('');};f.elements.file.onchange=versions;versions();}catch(e){f.querySelector('[role=alert]').textContent=e.message;}};
+    const d=workspaceDialog(upload?'Upload to memory':'Add a saved version to memory',`<form class="workspace-form"><label>Memory bank<select name="owner" ${initial?'disabled':''}>${memoryOptions(ownerId,false)}</select></label><p class="cr-note">DOCX, text PDF, Markdown, and text become cited reference sources. Original files stay in Files. Uploaded statements remain reference material until you review a memory proposal.</p>${upload?'<label>Files<input type="file" name="uploads" multiple required></label>':'<div data-saved class="workspace-form">Loading…</div>'}<p role="status"></p><p role="alert"></p><footer><button type="button" class="cr-secondary" data-cancel>Cancel</button><button class="cr-primary">${upload?'Upload and index':'Add to memory'}</button></footer></form>`);
+    d.classList.add('memory-file-dialog');const f=d.querySelector('form'),operationId=crypto.randomUUID(),abort=new AbortController();let saved=[],fileLoad=0;
+    const load=async()=>{if(upload)return;const serial=++fileLoad,button=f.querySelector('.cr-primary');button.disabled=true;f.querySelector('[role=alert]').textContent='';try{const files=initial?[initial.file]:(await workspaceRequest(memoryFileBase(f.elements.owner.value).slice(5))).files.filter(file=>!file.removed);if(!d.open||serial!==fileLoad)return;saved=files;if(!saved.length){d.querySelector('[data-saved]').innerHTML='<p class="cr-note">No saved files in this memory bank. Upload a file or choose another bank.</p>';return;}d.querySelector('[data-saved]').innerHTML=`<label>Saved file<select name="file">${saved.map(file=>`<option value="${esc(file.id)}">${esc(file.name)}</option>`).join('')}</select></label><label>Version<select name="version"></select></label>`;const versions=()=>{const file=saved.find(file=>file.id===f.elements.file.value);f.elements.version.innerHTML=[...(file?.versions||[])].reverse().map(v=>`<option value="${esc(v.id)}" ${v.id===initial?.versionId?'selected':''}>${esc(new Date(v.createdAt).toLocaleString())} · ${v.id===file.latestVersionId?'Latest':'Earlier'}</option>`).join('');};f.elements.file.onchange=versions;versions();button.disabled=!f.elements.version.value;}catch(e){if(serial===fileLoad)f.querySelector('[role=alert]').textContent=e.message;}};
     f.elements.owner.onchange=load;f.querySelector('[data-cancel]').onclick=()=>d.close();d.addEventListener('close',()=>abort.abort());
     f.onsubmit=async e=>{e.preventDefault();const button=f.querySelector('.cr-primary');button.disabled=true;f.querySelector('[role=alert]').textContent='';try{const id=f.elements.owner.value,owner={kind:id.startsWith('space_')?'space':'execution',id};let selections;
       if(upload){const input=[...f.elements.uploads.files];if(!input.length||input.length>20||input.some(file=>file.size>50*1024*1024)||input.reduce((n,file)=>n+file.size,0)>200*1024*1024)throw new Error('Choose up to 20 files, 50 MiB each and 200 MiB total.');const body=new FormData();input.forEach(file=>body.append('files',file));f.querySelector('[role=status]').textContent='Saving original files…';const response=await engine.api(memoryFileBase(id),{method:'POST',headers:{'x-upload-id':operationId},body,signal:abort.signal});const result=await response.json();if(!response.ok)throw new Error(result.message||'Upload failed');selections=result.files.map(file=>({fileId:file.id,versionId:file.latestVersionId,ownerId:id}));}
@@ -2027,6 +2040,7 @@ window.createControlRoom = function (engine) {
     try{const data=await memoryRequestApi('documents?'+memoryQuery()),query=$('memorySearch').value.trim(),hits=query?await memoryRequestApi('source/search?'+memoryQuery()+'&access=library&limit=20'):{items:[]};if(serial!==memoryRequest||memoryTab!=='sources')return;const jobs=data.items.filter(d=>d.excluded===$('memoryExcluded').checked&&(!query||d.title.toLowerCase().includes(query.toLowerCase())||hits.items.some(p=>p.sourceId===d.id)));
       $('memoryDocumentJobs').innerHTML=jobs.length?'<h2 class="rc-space-section-title">Document sources</h2>'+jobs.map(d=>`<article class="memory-row"><button class="memory-row-main" data-memory-document="${esc(d.id)}"><strong>${esc(d.title)}</strong><span class="memory-meta">${esc(sourceState(d.state))}${d.activeVersionId&&['queued','processing','failed','cancelled'].includes(d.state)?' · Previous version remains active':''} · ${esc(memoryProjectName(d.owner.id))}</span>${d.error?`<span class="memory-warning">${esc(d.error)}</span>`:''}</button></article>`).join(''):'';
       if(hits.items.length)$('memoryDocumentJobs').insertAdjacentHTML('beforeend','<h3>Matching passages</h3>'+hits.items.map(p=>`<button class="memory-row-main memory-source-search-hit" data-memory-document="${esc(p.sourceId)}"><strong>${esc(p.title)}</strong><span class="memory-meta">${esc(memoryLocator(p.locator))}</span><span>${esc(p.text.slice(0,350))}</span></button>`).join(''));
+      if(!memoryRows.length)$('memoryItems').innerHTML=jobs.length||hits.items.length?'':memoryEmpty('No sources in this view');
       $('memoryDocumentJobs').querySelectorAll('[data-memory-document]').forEach(b=>b.onclick=()=>showDocumentSource(b.dataset.memoryDocument));
       if(jobs.some(d=>['queued','processing'].includes(d.state)))setTimeout(()=>{if(serial===memoryRequest&&!$('crMemory').hidden)loadMemoryDocuments(serial);},900);
     }catch(e){if(serial===memoryRequest)$('memoryDocumentJobs').textContent=e.message;}
@@ -2048,8 +2062,8 @@ window.createControlRoom = function (engine) {
     }catch(e){if(d.open)d.querySelector('[data-document]').textContent=e.message;}}load();
   }
   async function shareMemory(subject){
-    const d=workspaceDialog('Share memory',`<form class="workspace-form"><p><strong>${esc(subject.title)}</strong> · ${esc(memoryProjectName(subject.owner.spaceId||subject.owner.projectId))} · version ${esc(subject.version)}</p><p class="cr-note">Share cited reading. Files and repository editing keep their separate permissions. Revoking access blocks future reads; context already sent to a provider cannot be recalled.</p><div data-grants>Loading…</div><label>Recipient<select name="recipient">${memoryOptions('',false)}</select></label><p role="alert"></p><footer><button class="cr-primary">Share</button></footer></form>`);
-    const f=d.querySelector('form');let grants=[];
+    const d=workspaceDialog('Share memory',`<form class="workspace-form"><p><strong>${esc(subject.title)}</strong> · ${esc(memoryProjectName(subject.owner.spaceId||subject.owner.projectId))} · version ${esc(subject.version)}</p><p class="cr-note">Share cited reading. Files and repository editing keep their separate permissions. Revoking access blocks future reads; context already sent to a provider cannot be recalled.</p><div data-grants>Loading…</div><label>Recipient<select name="recipient" required><option value="">Choose a recipient</option>${memoryOptions('',false)}</select></label><p role="alert"></p><footer><button class="cr-primary">Share</button></footer></form>`);
+    d.classList.add('memory-share-dialog');const f=d.querySelector('form');for(const option of [...f.elements.recipient.options])if(option.value===(subject.owner.spaceId||subject.owner.projectId))option.remove();let grants=[];
     async function load(){try{grants=await memoryRequestApi('grants?'+new URLSearchParams({kind:subject.kind,id:subject.id}));if(!d.open)return;d.querySelector('[data-grants]').innerHTML=grants.filter(g=>g.active).map(g=>`<div class="memory-context-item"><span>${esc(memoryProjectName(g.recipient.id))} · read · v${g.revision}</span><button type="button" class="cr-secondary" data-revoke="${esc(g.id)}">Revoke</button></div>`).join('')||'<p class="cr-note">No active grants.</p>';d.querySelectorAll('[data-revoke]').forEach(b=>b.onclick=()=>save(grants.find(g=>g.id===b.dataset.revoke).recipient,false));}catch(e){f.querySelector('[role=alert]').textContent=e.message;}}
     async function save(recipient,active){try{const old=grants.find(g=>g.recipient.kind===recipient.kind&&g.recipient.id===recipient.id);await memoryRequestApi('grants',{operationId:crypto.randomUUID(),subject:{kind:subject.kind,id:subject.id},expectedVersion:subject.version,recipient,expectedRevision:old?.revision||0,active});await load();}catch(e){f.querySelector('[role=alert]').textContent=e.message;}}
     f.onsubmit=e=>{e.preventDefault();const id=f.elements.recipient.value;save({kind:id.startsWith('space_')?'space':'execution',id},true);};load();
@@ -2057,14 +2071,60 @@ window.createControlRoom = function (engine) {
   async function referenceMemory(target,initial,after=()=>{}){
     const current=target||engine.state();
     const d=workspaceDialog('Memory for the next message',`<div class="workspace-form"><label>Conversation<select data-target>${conversationOptions(current.projectId+'::'+current.sessionId)}</select></label><p class="cr-note">Selections pin an exact revision to the next message, including its queue and account retries. Changing selections or grants requires review before resending.</p><div data-selected></div><label>Search other Projects<input type="search" data-query placeholder="Search notes and sources"></label><div data-results></div><label class="workspace-check"><input type="checkbox" data-read>Allow reading the selected reference for this turn</label><label class="workspace-check"><input type="checkbox" data-cross>Allow this reference when automatic cross-project retrieval is off</label><p role="alert"></p><footer><button class="cr-secondary" data-done>Done</button></footer></div>`);
-    let refs,results=[],serial=0;const selected=()=>{const [projectId,sessionId]=d.querySelector('[data-target]').value.split('::');return {projectId,sessionId,requestId:current.requestId&&projectId===current.projectId&&sessionId===current.sessionId?current.requestId:engine.memoryDraftRequest(projectId,sessionId)};};
-    const error=e=>{d.querySelector('[role=alert]').textContent=e.message;};
-    async function save(selections){try{refs=await memoryRequestApi('references',{...selected(),operationId:crypto.randomUUID(),expectedRevision:refs.revision,selections});await load();after();}catch(e){error(e);}}
-    async function load(){try{const who=selected();refs=await memoryRequestApi('references?'+new URLSearchParams(who));if(!d.open)return;d.querySelector('[data-selected]').innerHTML='<h3>Selected references</h3>'+ (await Promise.all(refs.selections.map(async r=>{let title=r.id;try{const item=await memoryRequestApi((r.kind==='entry'?'entry':'source')+'?id='+encodeURIComponent(r.id));title=(item.entry||item).title;}catch{}return `<div class="memory-context-item"><span>${esc(title)} · ${esc(r.kind)} · v${esc(r.version)}</span><button class="cr-icon" data-remove="${esc(r.id)}" aria-label="Remove reference">${ic('x')}</button></div>`;}))).join('')||'<p>No selected references.</p>';d.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>save(refs.selections.filter(r=>r.id!==b.dataset.remove)));}catch(e){error(e);}}
-    async function search(){const seq=++serial;try{const query=d.querySelector('[data-query]').value;const [notes,sources,passages]=await Promise.all([memoryRequestApi('search?'+new URLSearchParams({query,status:'confirmed',limit:30})),memoryRequestApi('sources?'+new URLSearchParams({query,limit:30})),memoryRequestApi('source/search?'+new URLSearchParams({query,limit:30,access:'library'}))]);if(seq!==serial||!d.open)return;results=[...notes.items.map(e=>({kind:'entry',id:e.id,version:String(e.revision),title:e.title,owner:e.spaceId||e.projectId})),...sources.items.map(s=>({kind:'source',id:s.id,version:s.versionId||s.hash,title:s.title,owner:s.spaceId||s.projectId})),...passages.items.filter(p=>!sources.items.some(s=>s.id===p.sourceId)).filter((p,i,rows)=>rows.findIndex(r=>r.sourceId===p.sourceId)===i).map(p=>({kind:'source',id:p.sourceId,version:p.versionId,title:p.title,owner:p.owner.id}))];d.querySelector('[data-results]').innerHTML=results.map((r,i)=>`<div class="memory-context-item"><span>${esc(r.title)}<small>${esc(memoryProjectName(r.owner))} · ${esc(r.kind)}</small></span><button class="cr-secondary" data-use="${i}">Use</button></div>`).join('')||'<p>No matches.</p>';d.querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>add(results[Number(b.dataset.use)]));}catch(e){error(e);}}
-    function add(r){if(refs.selections.some(x=>x.kind===r.kind&&x.id===r.id))return;save([...refs.selections,{kind:r.kind,id:r.id,version:r.version,allowReadForTurn:d.querySelector('[data-read]').checked,allowCrossProjectForTurn:d.querySelector('[data-cross]').checked}]);}
-    d.querySelector('[data-query]').oninput=search;d.querySelector('[data-target]').onchange=()=>load();d.querySelector('[data-done]').onclick=()=>{d.close();after();};await load();await search();if(initial){try{const found=await memoryRequestApi((initial.kind==='entry'?'entry':'source')+'?id='+encodeURIComponent(initial.id));d.querySelector('[data-query]').value=(found.entry||found).title;await search();}catch(e){error(e);}}
+    d.classList.add('memory-reference-dialog');
+    let refs, results=[], searchSerial=0, targetSerial=0, saving=false;
+    const selected=()=>{
+      const [projectId,sessionId]=d.querySelector('[data-target]').value.split('::');
+      return {projectId,sessionId,requestId:current.requestId&&projectId===current.projectId&&sessionId===current.sessionId?current.requestId:engine.memoryDraftRequest(projectId,sessionId)};
+    };
+    const sameTarget=(a,b)=>a&&b&&['projectId','sessionId','requestId'].every(key=>a[key]===b[key]);
+    const error=e=>{if(d.open)d.querySelector('[role=alert]').textContent=e.message;};
+    const buttons=()=>{
+      d.querySelector('[data-target]').disabled=saving;
+      d.querySelector('[data-done]').disabled=saving;
+      d.querySelectorAll('[data-use],[data-remove]').forEach(b=>b.disabled=saving||!sameTarget(refs,selected()));
+    };
+    async function save(selections){
+      const who=selected();if(saving||!sameTarget(refs,who))return;
+      saving=true;buttons();d.querySelector('[role=alert]').textContent='';
+      try{await memoryRequestApi('references',{...who,operationId:crypto.randomUUID(),expectedRevision:refs.revision,selections});await load();after();}
+      catch(e){error(e);}finally{saving=false;if(d.open)buttons();}
+    }
+    async function load(){
+      const seq=++targetSerial,who=selected();refs=undefined;buttons();
+      d.querySelector('[data-selected]').textContent='Loading references…';
+      d.querySelector('[role=alert]').textContent='';
+      if(!who.projectId||!who.sessionId){d.querySelector('[data-selected]').textContent='Create a conversation before selecting references.';return;}
+      try{
+        const loaded=await memoryRequestApi('references?'+new URLSearchParams(who));
+        const rows=await Promise.all(loaded.selections.map(async r=>{
+          let title=r.id;try{const item=await memoryRequestApi((r.kind==='entry'?'entry':'source')+'?id='+encodeURIComponent(r.id));title=(item.entry||item).title;}catch{}
+          return `<div class="memory-context-item"><span>${esc(title)} · ${esc(r.kind)} · v${esc(r.version)}</span><button class="cr-icon" data-remove="${esc(r.id)}" aria-label="Remove reference">${ic('x')}</button></div>`;
+        }));
+        if(!d.open||seq!==targetSerial||!sameTarget(who,selected()))return;
+        refs=loaded;d.querySelector('[data-selected]').innerHTML='<h3>Selected references</h3>'+(rows.join('')||'<p class="cr-note">No selected references.</p>');
+        d.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>save(refs.selections.filter(r=>r.id!==b.dataset.remove)));buttons();
+      }catch(e){if(seq===targetSerial)error(e);}
+    }
+    async function search(){
+      const seq=++searchSerial;
+      try{
+        const query=d.querySelector('[data-query]').value;
+        const [notes,sources,passages]=await Promise.all([memoryRequestApi('search?'+new URLSearchParams({query,status:'confirmed',limit:30})),memoryRequestApi('sources?'+new URLSearchParams({query,limit:30})),memoryRequestApi('source/search?'+new URLSearchParams({query,limit:30,access:'library'}))]);
+        if(seq!==searchSerial||!d.open)return;
+        results=[...notes.items.map(e=>({kind:'entry',id:e.id,version:String(e.revision),title:e.title,owner:e.spaceId||e.projectId})),...sources.items.map(s=>({kind:'source',id:s.id,version:s.versionId||s.hash,title:s.title,owner:s.spaceId||s.projectId})),...passages.items.filter(p=>!sources.items.some(s=>s.id===p.sourceId)).filter((p,i,rows)=>rows.findIndex(r=>r.sourceId===p.sourceId)===i).map(p=>({kind:'source',id:p.sourceId,version:p.versionId,title:p.title,owner:p.owner.id}))];
+        d.querySelector('[data-results]').innerHTML=results.map((r,i)=>`<div class="memory-context-item"><span>${esc(r.title)}<small>${esc(memoryProjectName(r.owner))} · ${esc(r.kind)}</small></span><button class="cr-secondary" data-use="${i}">Use</button></div>`).join('')||'<p>No matches.</p>';
+        d.querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>add(results[Number(b.dataset.use)]));buttons();
+      }catch(e){if(seq===searchSerial)error(e);}
+    }
+    function add(r){if(!refs||refs.selections.some(x=>x.kind===r.kind&&x.id===r.id))return;save([...refs.selections,{kind:r.kind,id:r.id,version:r.version,allowReadForTurn:d.querySelector('[data-read]').checked,allowCrossProjectForTurn:d.querySelector('[data-cross]').checked}]);}
+    d.querySelector('[data-query]').oninput=search;
+    d.querySelector('[data-target]').onchange=()=>{d.querySelector('[data-read]').checked=d.querySelector('[data-cross]').checked=false;load();};
+    d.querySelector('[data-done]').onclick=()=>{d.close();after();};
+    await load();await search();
+    if(initial){try{const found=await memoryRequestApi((initial.kind==='entry'?'entry':'source')+'?id='+encodeURIComponent(initial.id));if(!d.open)return;d.querySelector('[data-query]').value=(found.entry||found).title;await search();}catch(e){error(e);}}
   }
+
   async function showMemoryContext(target = engine.state()) {
     if (!target.sessionId) {
       toast('Open a conversation first.');
@@ -2432,7 +2492,7 @@ window.createControlRoom = function (engine) {
 
   // Review outputs and manage the workspace without adding permanent chat chrome.
   async function workspaceRequest(path,body){const r=await engine.api('/api/'+path,body===undefined?undefined:{method:'POST',body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.message||'Request failed');return j;}
-  function workspaceDialog(title,body){const d=document.createElement('dialog');d.className='cr-dialog workspace-dialog';d.innerHTML=`<header><h2>${esc(title)}</h2><button class="cr-icon" aria-label="Close">${ic('x')}</button></header>${body}`;if(d.querySelector('form')){d.classList.add('workspace-form-dialog');d.querySelectorAll('select[name=conversation],select[name=after]').forEach(select=>{if(select.disabled||select.options.length<13)return;const options=[...select.options].map(x=>({value:x.value,text:x.text})),search=document.createElement('input');search.type='search';search.placeholder='Find a project or conversation';search.setAttribute('aria-label','Filter '+(select.name==='after'?'dependency conversations':'conversations'));select.before(search);search.oninput=()=>{const value=select.value,query=search.value.toLowerCase();select.replaceChildren(...options.filter(x=>!x.value||x.value===value||x.text.toLowerCase().includes(query)).map(x=>new Option(x.text,x.value)));select.value=value;};});}document.body.append(d);d.querySelector('header button').onclick=()=>d.close();d.addEventListener('click',e=>{const r=d.getBoundingClientRect();if(e.target===d&&(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom))d.close();});d.addEventListener('close',()=>{d.querySelectorAll('img').forEach(img=>{if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);});d.remove();});d.showModal();return d;}
+  function workspaceDialog(title,body){const d=document.createElement('dialog');d.className='cr-dialog workspace-dialog';const label='workspace-dialog-'+crypto.randomUUID();d.setAttribute('aria-labelledby',label);d.innerHTML=`<header><h2 id="${label}">${esc(title)}</h2><button class="cr-icon" aria-label="Close">${ic('x')}</button></header>${body}`;if(d.querySelector('form')){d.classList.add('workspace-form-dialog');d.querySelectorAll('select[name=conversation],select[name=after]').forEach(select=>{if(select.disabled||select.options.length<13)return;const options=[...select.options].map(x=>({value:x.value,text:x.text})),search=document.createElement('input');search.type='search';search.placeholder='Find a project or conversation';search.setAttribute('aria-label','Filter '+(select.name==='after'?'dependency conversations':'conversations'));select.before(search);search.oninput=()=>{const value=select.value,query=search.value.toLowerCase();select.replaceChildren(...options.filter(x=>!x.value||x.value===value||x.text.toLowerCase().includes(query)).map(x=>new Option(x.text,x.value)));select.value=value;};});}document.body.append(d);d.querySelector('header button').onclick=()=>d.close();d.addEventListener('click',e=>{const r=d.getBoundingClientRect();if(e.target===d&&(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom))d.close();});d.addEventListener('close',()=>{d.querySelectorAll('img').forEach(img=>{if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);});d.remove();});d.showModal();return d;}
   async function loadConversationMeta(){try{const data=await workspaceRequest('workspace/metadata');if(JSON.stringify(data)!==JSON.stringify(conversationMeta)){conversationMeta=data;boardSignature='';refresh();}}catch{}}
   function renderBulk(){const bar=$('crBulkBar');bar.hidden=!bulkMode;$('crSelectToggle').textContent=bulkMode?'Done selecting':'Select';bar.querySelector('strong').textContent=bulkSelection.size+' selected';$('crBulkAll').textContent=bulkCandidates.length>500?'Select first 500 matches':'Select all matches';bar.querySelectorAll('[data-bulk]').forEach(b=>b.disabled=!bulkSelection.size);}
   async function bulkAction(action){
@@ -2560,5 +2620,5 @@ window.createControlRoom = function (engine) {
   setInterval(()=>{if(document.hidden)return;loadConversationMeta();if(section==='planner')loadPlanner();},5000);setTimeout(loadConversationMeta,1000);
 
   setMode('closed'); projectNav(false); refresh();
-  return { addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory');$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
+  return { addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory',true);$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
 };

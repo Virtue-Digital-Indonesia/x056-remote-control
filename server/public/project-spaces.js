@@ -20,7 +20,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   function dialog(title, body) {
     const d = document.createElement('dialog'); d.className = 'cr-dialog rc-space-dialog';
     const label = 'space-dialog-' + crypto.randomUUID(); d.setAttribute('aria-labelledby', label);
-    d.innerHTML = `<header><h2 id="${label}">${esc(title)}</h2><button class="cr-icon" type="button" aria-label="Close">×</button></header>${body}`;
+    d.innerHTML = `<header><h2 id="${label}">${esc(title)}</h2><button class="cr-icon" type="button" aria-label="Close" title="Close">${icon('x')}</button></header>${body}`;
     d.querySelector('header button').onclick = () => d.close();
     d.addEventListener('click', e => { if (e.target === d) { const r = d.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) d.close(); } });
     d.onclose = () => d.remove(); document.body.append(d); d.showModal(); return d;
@@ -37,7 +37,7 @@ window.createProjectSpaces = function (engine, room, chat) {
     work.href = '/work'; work.dataset.spaceLink = ''; work.innerHTML = $('crBoardTab').innerHTML; $('crBoardTab').replaceWith(work);
     room.refresh(); if(enabled)updateChatFilter();
   }
-  function restoreMemory() { const memory = $('crMemory'); if (memory && memory.parentNode !== $('crWorkspace')) $('crWorkspace').append(memory); }
+  function restoreMemory() { const memory = $('crMemory'); $('rcProjectBrief')?.remove(); if($('memoryProject'))$('memoryProject').disabled=false; if (memory && memory.parentNode !== $('crWorkspace')) $('crWorkspace').append(memory); }
   function leave() {
     restoreMemory(); document.body.classList.remove('rc-spaces-view'); $('rcProjectPage').hidden = true;
     $('crSpacesTab').removeAttribute('aria-current');if($('crBreadcrumb'))$('crBreadcrumb').innerHTML='Workspace <span>/ Work</span>';
@@ -117,11 +117,13 @@ window.createProjectSpaces = function (engine, room, chat) {
     if (activeTab === 'chat' || activeTab === 'work') renderConversations(p, activeTab);
     if (activeTab === 'files') await renderFiles(p);
     if (activeTab === 'memory') {
-      $('rcProjectBody').innerHTML='<div class="rc-space-toolbar"><button class="cr-primary" id="rcProjectBrief">Review project brief</button><span class="rc-space-note">Confirmed memory informs future Chat and Work turns.</span></div>';
-      $('rcProjectBrief').onclick=()=>editBrief(p);
       room.showProjectMemory(p.id); $('rcProjectBody').append($('crMemory')); $('crMemory').hidden = false;
+      $('memoryProject').disabled=true;
+      $('crMemory').querySelector('.workspace-actions').insertAdjacentHTML('afterbegin','<button class="cr-secondary" id="rcProjectBrief">Review project brief</button>');
+      $('rcProjectBrief').onclick=()=>editBrief(p);
       document.body.classList.add('rc-spaces-view'); $('rcProjectPage').hidden = false;
-      $('crSpacesTab').setAttribute('aria-current', 'page');
+      $('crMemoryTab').removeAttribute('aria-current'); $('crSpacesTab').setAttribute('aria-current', 'page');
+      $('crBreadcrumb').innerHTML=link('/projects','Projects')+' <span>/ '+esc(p.name)+'</span>';
     }
     if (activeTab === 'settings') renderSettings(p);
   }
@@ -269,7 +271,7 @@ window.createProjectSpaces = function (engine, room, chat) {
     }));
   }
   function renderSettings(p) {
-    $('rcProjectBody').innerHTML = `<form class="workspace-form rc-space-settings" id="rcSpaceSettings"><label>Project name<input name="name" value="${esc(p.name)}" required maxlength="300"></label>${workChoices(p.defaultWorkProjectId)}<p class="rc-space-note">Default repository for new Work. Each conversation retains its original directory.</p><fieldset><legend>Defaults for new conversations</legend><label>Mode<select name="mode"><option value="chat">Chat</option><option value="work">Work</option></select></label>${controlsMarkup}</fieldset><label>Required tools<textarea name="tools" rows="3" placeholder="One key per line, such as skill:rc-documents">${esc((p.requiredTools || []).map(r => r.key).join('\n'))}</textarea></label><p class="rc-space-note">Each account must verify required plugins, MCP servers, and skills in the conversation’s own directory.</p><p role="alert"></p><div class="rc-space-toolbar"><button class="cr-primary">Save settings</button><button type="button" class="cr-secondary" id="rcSpaceMemorySettings">Memory settings</button><button type="button" class="cr-secondary" id="rcSpaceArchive">${p.archivedAt ? 'Restore project' : 'Archive project'}</button></div></form>`;
+    $('rcProjectBody').innerHTML = `<form class="workspace-form rc-space-settings" id="rcSpaceSettings"><label>Project name<input name="name" value="${esc(p.name)}" required maxlength="300"></label>${workChoices(p.defaultWorkProjectId)}<p class="rc-space-note">Default repository for new Work. Each conversation retains its original directory.</p><fieldset><legend>Defaults for new conversations</legend><label>Mode<select name="mode"><option value="chat">Chat</option><option value="work">Work</option></select></label>${controlsMarkup}</fieldset><label>Required tools<textarea name="tools" rows="3" placeholder="One key per line, such as skill:rc-documents">${esc((p.requiredTools || []).map(r => r.key).join('\n'))}</textarea></label><p class="rc-space-note">Each account must verify required plugins, MCP servers, and skills in the conversation’s own directory.</p><p role="alert"></p><div class="rc-space-toolbar"><button class="cr-primary">Save settings</button><button type="button" class="cr-secondary" id="rcSpaceMemorySettings">Workspace memory settings</button><button type="button" class="cr-secondary" id="rcSpaceArchive">${p.archivedAt ? 'Restore project' : 'Archive project'}</button></div></form>`;
     const form = $('rcSpaceSettings'), f = form.elements, defaults = structuredClone(p.defaults || {}); let mode = 'chat'; f.workProjectId.required=false; controls(form, defaults.chat);
     const saveMode = () => { defaults[mode] = { provider: f.provider.value, model: f.model.value, effort: f.effort.value, account: f.account.value || undefined }; };
     f.mode.onchange = () => { saveMode(); mode = f.mode.value; controls(form, defaults[mode]); };
@@ -305,14 +307,14 @@ window.createProjectSpaces = function (engine, room, chat) {
     await load();await engine.reloadProjects();
     const execution=engine.state().projects.find(p=>p.id===target.projectId),conversation=execution?.conversations?.find(c=>c.sessionId===target.sessionId),current=target.kind==='work-project'?execution?.workSpaceId:scopeOf(execution,target.sessionId);
     const d=dialog('Review Project association',`<form class="workspace-form"><p><strong>${esc(conversation?.title||execution?.name)}</strong> · ${esc(target.kind==='work-project'?'Whole Work project':target.kind==='chat'?'Chat':'Work conversation')}</p><p>Current Project: ${esc(scopeName(current))}. ${target.kind==='work-project'?'Current and future inherited conversations will follow this association.':''}</p><label>Destination<select name="destination"><option value="">Standalone</option>${target.kind==='work-conversation'?'<option value="inherit">Use Work project’s Project</option>':''}${projects.filter(p=>!p.archivedAt).map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label><label>Action<select name="action"><option value="primary">${current?'Move primary association':'Set primary association'}</option><option value="reference">Add as reference only</option></select></label>${target.kind==='work-project'?'<label class="workspace-check"><input type="checkbox" name="includeOverrides">Also include conversations with explicit overrides</label>':''}<p>Earlier memory remains in provider history. A move retains messages and requires review before waiting work resumes.</p><div data-impact></div><p role="alert"></p><div class="rc-space-toolbar"><button type="button" class="cr-secondary" data-preview>Preview changes</button><button class="cr-primary" disabled>Apply reviewed change</button></div></form>`),form=d.querySelector('form'),operationId=crypto.randomUUID();
-    form.elements.destination.value=destination||current||'';let reviewed;
-    const invalidate=()=>{reviewed=null;form.querySelector('.cr-primary').disabled=true;form.querySelector('[data-impact]').textContent='';};form.onchange=invalidate;
-    form.querySelector('[data-preview]').onclick=async()=>{invalidate();form.querySelector('[role=alert]').textContent='';const f=form.elements;
+    form.elements.destination.value=destination||current||'';let reviewed,previewSerial=0;
+    const invalidate=()=>{previewSerial++;reviewed=null;form.querySelector('.cr-primary').disabled=true;form.querySelector('[data-impact]').textContent='';};form.onchange=invalidate;
+    form.querySelector('[data-preview]').onclick=async()=>{invalidate();const serial=previewSerial;form.querySelector('[role=alert]').textContent='';const f=form.elements;
       try{if(f.action.value==='reference'){if(!f.destination.value||f.destination.value==='inherit')throw new Error('Choose a Project for the reference');reviewed={reference:true,expectedRevision:registryRevision};form.querySelector('[data-impact]').textContent='Adds a link. Primary context, file access, and totals stay with the current Project.';}
-        else{const change={target,assignment:f.destination.value==='inherit'?{mode:'inherit'}:f.destination.value?{mode:'space',spaceId:f.destination.value}:{mode:'standalone'},...(target.kind==='work-project'?{includeOverrides:f.includeOverrides.checked}:{})};reviewed=await request('/api/project-spaces/membership/preview',change);
+        else{const change={target,assignment:f.destination.value==='inherit'?{mode:'inherit'}:f.destination.value?{mode:'space',spaceId:f.destination.value}:{mode:'standalone'},...(target.kind==='work-project'?{includeOverrides:f.includeOverrides.checked}:{})};const result=await request('/api/project-spaces/membership/preview',change);if(serial!==previewSerial||!d.open)return;reviewed=result;
           form.querySelector('[data-impact]').innerHTML=`<h3>${reviewed.affected.length} conversations affected</h3><div class="rc-space-impact">${reviewed.details.map(r=>{const p=engine.state().projects.find(p=>p.id===r.projectId),c=p?.conversations?.find(c=>c.sessionId===r.sessionId);return `<article><strong>${esc(c?.title||r.sessionId)}</strong><small>${esc(scopeName(r.beforeSpaceId))} → ${esc(scopeName(r.afterSpaceId))}</small><p>${r.queues.length} queued · ${r.approvals.length} approvals${r.autopilot?' · Autopilot pauses':''}${r.running||r.background?' · Finish active work first':''}</p></article>`;}).join('')}</div><p>${reviewed.exceptions.length} explicit overrides ${f.includeOverrides?.checked?'included':'retained'}. Matching schedules and pending sends need review. Shared-file access follows the destination Project.</p>`;
         }form.querySelector('.cr-primary').disabled=reviewed.details?.some(r=>r.running||r.background)||false;
-      }catch(e){form.querySelector('[role=alert]').textContent=e.message;}
+      }catch(e){if(serial===previewSerial&&d.open)form.querySelector('[role=alert]').textContent=e.message;}
     };
     form.onsubmit=async e=>{e.preventDefault();if(!reviewed)return;form.querySelector('.cr-primary').disabled=true;
       try{if(reviewed.reference)await request(base(form.elements.destination.value)+'/references',{target,expectedRevision:reviewed.expectedRevision,requestId:operationId});else await request('/api/project-spaces/membership/apply',{target:reviewed.target,assignment:reviewed.assignment,...(reviewed.includeOverrides!==undefined?{includeOverrides:reviewed.includeOverrides}:{}),operationId,expectedRevision:reviewed.revision,expectedTopology:reviewed.topology,expectedImpactHash:reviewed.impactHash,expectedReviewHash:reviewed.reviewHash});
