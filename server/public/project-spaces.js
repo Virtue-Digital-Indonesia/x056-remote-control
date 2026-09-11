@@ -4,9 +4,9 @@ window.createProjectSpaces = function (engine, room, chat) {
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const icon = name => `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
-  const path = (id, tab = 'chat') => '/projects' + (id ? '/' + encodeURIComponent(id) + '/' + tab : '');
+  const path = (id, tab = 'overview') => '/projects' + (id ? '/' + encodeURIComponent(id) + '/' + tab : '');
   const conversationPath = (p, sid) => p.kind === 'chat' ? '/chat/' + encodeURIComponent(p.id) : '/work/' + encodeURIComponent(p.id) + '/' + encodeURIComponent(sid);
-  const handles = pathname => /^\/(projects|work)(\/|$)/.test(pathname);
+  const handles = pathname => /^\/(projects|work)(\/|$)/.test(pathname) || !!window.rcWorkspace?.handles(pathname);
   let registryRevision = 0, topology = '';
   let enabled = false, mounted = false, projects = [], activeId = '', activeTab = '', generation = 0, navigating = false;
   const uploads = new Map();
@@ -44,7 +44,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   }
   async function navigate(url, replace = false) {
     if (location.pathname !== url) history[replace ? 'replaceState' : 'pushState']({}, '', url);
-    if (url.startsWith('/chat')) { leave(); return chat?.navigate(url); }
+    if (url.startsWith('/chat')) { generation++;leave(); return chat?.navigate(url); }
     return route();
   }
   async function load() { const result = await request('/api/project-spaces'); projects = result.projects || []; registryRevision = result.revision; topology = result.topology; if(mounted&&enabled)updateChatFilter(); return result; }
@@ -55,6 +55,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   }
   async function route() {
     const version = ++generation, url = location.pathname;
+    if(window.rcWorkspace?.handles(url)){if(window.rcWorkspace.ready())return window.rcWorkspace.navigate(url,true);leave();return;}
     if (!handles(url)) { leave(); updateContext(); return; }
     navigating = true;
     try {
@@ -68,7 +69,7 @@ window.createProjectSpaces = function (engine, room, chat) {
           if (!p || !p.conversations?.some(c => c.sessionId === segments[2])) throw new Error('Work conversation unavailable');
           await engine.select(p.id, segments[2]); if (generation !== version) return;
           room.openChat(); engine.markRead(); updateContext();
-        } else { await engine.reloadProjects(); if(segments[1]&&!engine.state().projects.some(p=>p.id===segments[1]&&p.kind!=='chat'))throw new Error('Work project unavailable'); room.showBoard(); room.selectWorkScope(segments[1] || ''); $('crBoardTab').setAttribute('aria-current', 'page'); }
+        } else { await engine.reloadProjects(); if(generation!==version)return;if(segments[1]&&segments[1]!=='unassigned'&&!engine.state().projects.some(p=>p.id===segments[1]&&p.kind!=='chat'))throw new Error('Work project unavailable'); room.showBoard(); room.selectWorkScope(segments[1]==='unassigned'?'':segments[1] || ''); $('crBoardTab').setAttribute('aria-current', 'page'); }
         return;
       }
       if(!enabled)throw new Error('Project spaces are disabled. Existing Work and Chat remain available.');
@@ -76,13 +77,13 @@ window.createProjectSpaces = function (engine, room, chat) {
       $('crSpacesTab').setAttribute('aria-current', 'page'); $('crBoardTab').removeAttribute('aria-current');
       $('rcProjectPage').innerHTML = '<p class="cr-empty" role="status">Loading Project…</p>';
       await load(); if (generation !== version || location.pathname !== url) return;
-      activeId = segments[1] || ''; activeTab = segments[2] || 'chat';if($('crBreadcrumb'))$('crBreadcrumb').innerHTML=link('/projects','Projects')+' <span>/ '+esc(projects.find(p=>p.id===activeId)?.name||'All projects')+'</span>';room.refresh();
+      activeId = segments[1] || ''; activeTab = segments[2] || 'overview';if($('crBreadcrumb'))$('crBreadcrumb').innerHTML=link('/projects','Projects')+' <span>/ '+esc(projects.find(p=>p.id===activeId)?.name||'All projects')+'</span>';room.refresh();
       if (!activeId) renderList();
       else {
         let project = projects.find(p => p.id === activeId);
         if(!project){project=await request(base(activeId));if(generation!==version)return;activeId=project.id;history.replaceState({},'',path(activeId,activeTab));}
         if (!project) throw new Error('Project unavailable');
-        if (!['chat', 'work', 'files', 'memory', 'settings'].includes(activeTab)) throw new Error('Project page unavailable');
+        if (!['overview','chat', 'work', 'files', 'memory', 'settings'].includes(activeTab)) throw new Error('Project page unavailable');
         if (segments.length === 2) history.replaceState({}, '', path(activeId));
         await renderProject(project);
       }
@@ -90,7 +91,7 @@ window.createProjectSpaces = function (engine, room, chat) {
     } catch (error) {
       room.showBoard(); document.body.classList.add('rc-spaces-view'); $('rcProjectPage').hidden = false;
       $('rcProjectPage').innerHTML = `<div class="cr-empty" role="alert"><h1 tabindex="-1">Page unavailable</h1><p>${esc(error.message)}</p>${link(enabled?'/projects':'/work',enabled?'Open Projects':'Open Work','cr-secondary')}</div>`;
-    } finally { navigating = false; updateContext(); }
+    } finally { navigating = false; updateContext(); window.rcWorkspace?.renderNav(); }
   }
   function renderList() {
     $('rcProjectPage').innerHTML = `<div class="cr-heading"><div><h1 tabindex="-1">Projects</h1><p>A shared home for conversations, files, and reviewed memory.</p></div><button class="cr-primary" id="rcSpaceNew">${icon('plus')} New project</button></div><div class="rc-space-list-controls"><label class="cr-search">${icon('search')}<input id="rcSpaceSearch" type="search" placeholder="Find a project" aria-label="Find a project"></label><label><input id="rcSpaceArchives" type="checkbox"> Show archived</label></div><div class="rc-space-grid" id="rcSpaceList"></div>`;
@@ -111,9 +112,10 @@ window.createProjectSpaces = function (engine, room, chat) {
     };
   }
   async function renderProject(p) {
-    $('rcProjectPage').innerHTML = `<div class="rc-space-breadcrumb">${link('/projects', 'Projects')}<span>/</span><span>${esc(p.name)}</span></div><div class="cr-heading"><div><h1 tabindex="-1">${esc(p.name)}</h1><p>${p.archivedAt ? 'Archived · saved history and files are retained' : `${p.activity.running} running · ${p.activity.background} background · ${p.activity.queued} queued · ${p.activity.needsInput} need input`}</p></div><div class="rc-space-toolbar"><button class="cr-primary" id="rcSpaceAddExisting" ${p.archivedAt?'disabled':''}>${icon('plus')} Add existing</button><button class="cr-secondary" id="rcSpaceCosts">Costs</button>${link(path(p.id, 'settings'), icon('gear') + ' Settings', 'cr-secondary')}</div></div><nav class="rc-space-tabs" aria-label="Project sections">${['chat', 'work', 'files', 'memory'].map(tab => `<a href="${path(p.id, tab)}" data-space-link ${tab === activeTab ? 'aria-current="page"' : ''}>${icon({chat:'chat',work:'menu',files:'file',memory:'snippet'}[tab])}${tab[0].toUpperCase() + tab.slice(1)}</a>`).join('')}</nav><div id="rcProjectBody"></div>`;
+    $('rcProjectPage').innerHTML = `<div class="rc-space-breadcrumb">${link('/projects', 'Projects')}<span>/</span><span>${esc(p.name)}</span></div><div class="cr-heading"><div><h1 tabindex="-1">${esc(p.name)}</h1><p>${p.archivedAt ? 'Archived · saved history and files are retained' : `${p.activity.running} running · ${p.activity.background} background · ${p.activity.queued} queued · ${p.activity.needsInput} need input`}</p></div><div class="rc-space-toolbar"><button class="cr-secondary" id="rcSpaceAddExisting" ${p.archivedAt?'disabled':''}>${icon('plus')} Add existing</button><button class="cr-secondary" id="rcSpaceCosts">Costs</button>${link(path(p.id, 'settings'), icon('gear') + ' Settings', 'cr-secondary')}</div></div><nav class="rc-space-tabs" aria-label="Project sections">${['overview','chat', 'work', 'files', 'memory'].map(tab => `<a href="${path(p.id, tab)}" data-space-link ${tab === activeTab ? 'aria-current="page"' : ''}>${icon({overview:'menu',chat:'chat',work:'terminal',files:'file',memory:'snippet'}[tab])}${tab[0].toUpperCase() + tab.slice(1)}</a>`).join('')}</nav><div id="rcProjectBody"></div>`;
     $('rcSpaceCosts').onclick=()=>room.showCosts();
     $('rcSpaceAddExisting').onclick=()=>addExisting(p);
+    if (activeTab === 'overview') await renderOverview(p);
     if (activeTab === 'chat' || activeTab === 'work') renderConversations(p, activeTab);
     if (activeTab === 'files') await renderFiles(p);
     if (activeTab === 'memory') {
@@ -130,6 +132,44 @@ window.createProjectSpaces = function (engine, room, chat) {
   const scopeOf = (p, sid) => p?.conversations?.find(c => c.sessionId === (sid || p.lastSessionId))?.spaceId;
   const scopeName = id => projects.find(s=>s.id===id)?.name || 'Standalone';
   const memberRows = p => (p.members || []).map(m => ({ p: engine.state().projects.find(x=>x.id===m.projectId), c: m.conversation, member: m })).filter(r=>r.p);
+  function overviewRows(p) {
+    const keys=new Set((p.members||[]).map(m=>JSON.stringify([m.projectId,m.sessionId||m.conversation?.sessionId])));
+    return room.workspaceRows().filter(x=>keys.has(JSON.stringify([x.p.id,x.c.sessionId]))).sort((a,b)=>b.time-a.time);
+  }
+  function overviewConversation(x){
+    const status={running:'Running',background:'Background',question:'Needs input',failed:'Failed',parked:'Paused',finished:'Ready to continue',idle:'Ready to continue'}[x.status]||'Ready to continue';
+    return link(conversationPath(x.p,x.c.sessionId),`${icon(x.p.kind==='chat'?'chat':'terminal')}<span><strong>${esc(x.c.title)}</strong><small>${x.p.kind==='chat'?'Chat':'Work · '+esc(x.p.name)}</small></span><small>${status}</small>`,'workspace-overview-row');
+  }
+  async function renderOverview(p){
+    const host=$('rcProjectBody'),serial=generation,rows=overviewRows(p),resume=rows[0];
+    host.innerHTML=`<div class="workspace-overview"><div><section class="workspace-resume"><div class="cr-eyebrow">PICK UP WHERE YOU LEFT OFF</div>${resume?`<span class="workspace-kind">${icon(resume.p.kind==='chat'?'chat':'terminal')}${resume.p.kind==='chat'?'Chat':'Work'}</span><h2>${esc(resume.c.title)}</h2><p>Continue with the same conversation, saved files, and Project context.</p><div id="rcOverviewRecentFile"></div><footer>${link(conversationPath(resume.p,resume.c.sessionId),'Continue '+(resume.p.kind==='chat'?'Chat':'Work')+' '+icon('right'),'cr-primary')}<small>${resume.time?'Last activity '+esc(new Date(resume.time).toLocaleDateString()):'Ready when you are'}</small></footer>`:`<h2>What are we working on?</h2><p>Start a Chat, or link an existing conversation and its history.</p><button class="cr-primary" data-overview-new="chat" ${p.archivedAt?'disabled':''}>${icon('plus')} New Chat</button>`}</section><div class="workspace-section-heading"><h2>Recent conversations</h2><div class="rc-space-toolbar" style="margin:0"><button class="cr-secondary" data-overview-new="chat" ${p.archivedAt?'disabled':''}>New Chat</button><button class="cr-secondary" data-overview-new="work" ${p.archivedAt||!p.workspaceConfigured?'disabled':''}>New Work</button></div></div><div class="workspace-overview-rows">${rows.slice(0,6).map(overviewConversation).join('')||'<p class="rc-space-note">Your conversations will appear here.</p>'}</div><div class="workspace-section-heading"><h2>Needs your attention</h2>${link(path(p.id,'memory'),'Open Memory')}</div><div id="rcOverviewAttention">${rows.filter(r=>['question','failed','parked'].includes(r.status)).map(overviewConversation).join('')}<p id="rcOverviewMemoryReview" class="rc-space-note" role="status">Checking memory proposals…</p></div></div><aside class="workspace-overview-aside"><section><h2>Project brief</h2><p id="rcOverviewBrief" role="status">Loading approved brief…</p><button class="cr-secondary" id="rcOverviewEditBrief">Review brief</button></section><section id="rcOverviewCost" class="workspace-cost" aria-label="Project cost estimate"><h2>Total Project cost estimate</h2><strong>—</strong><small role="status">Loading recorded usage…</small></section><section><h2>Work repositories</h2>${(p.workProjects||[]).map(w=>link('/work/'+encodeURIComponent(w.id),`${icon('terminal')}<span><strong>${esc(w.name)}</strong><small>${w.wholeProject?'Whole repository':'Selected conversations'}</small></span>`,'workspace-overview-row')).join('')||'<p>No Work repository linked yet.</p>'}<button class="cr-secondary" id="rcOverviewAddWork" ${p.archivedAt?'disabled':''}>Link a repository</button></section><section><h2>Project Files</h2><p id="rcOverviewFileCount" role="status">Loading saved files…</p>${link(path(p.id,'files'),'Browse files '+icon('right'),'cr-secondary')}</section></aside></div>`;
+    host.querySelectorAll('[data-overview-new]').forEach(b=>b.onclick=()=>newConversation(p,b.dataset.overviewNew));
+    $('rcOverviewEditBrief').onclick=()=>editBrief(p);$('rcOverviewAddWork').onclick=()=>addWorkProject(p);
+    const current=()=>generation===serial&&host.isConnected&&activeTab==='overview'&&activeId===p.id;
+    const tasks=await Promise.allSettled([
+      request('/api/memory/search?'+new URLSearchParams({spaceId:p.id,scope:'space',tag:'project-brief',status:'confirmed',access:'library',limit:100})),
+      request('/api/memory/search?'+new URLSearchParams({spaceId:p.id,status:'proposed',access:'library',limit:1})),
+      request(base(p.id)+'/files'),
+      updateOverviewCost(p.id)
+    ]);
+    if(!current())return;
+    const [brief,review,files]=tasks;
+    $('rcOverviewBrief').textContent=brief.status==='fulfilled'?(brief.value.items.find(e=>(e.spaceId||e.projectId)===p.id&&e.status==='confirmed')?.content||'Add an approved brief so every conversation can start from the same Project context.'):'Could not load the brief. Open Memory to retry.';
+    const reviewNode=$('rcOverviewMemoryReview');
+    if(review.status==='fulfilled'){const n=review.value.total??review.value.items.length;reviewNode.innerHTML=n?link(path(p.id,'memory'),`${n} memory proposal${n===1?'':'s'} ready for review`):'No memory proposals awaiting review.';}else reviewNode.textContent='Memory review count unavailable. Open Memory to retry.';
+    if(files.status==='fulfilled'){
+      const saved=files.value.files.filter(f=>!f.removed);$('rcOverviewFileCount').textContent=saved.length+' shared file'+(saved.length===1?'':'s')+' · versions retained';
+      const newest=saved.sort((a,b)=>(b.versions.at(-1)?.createdAt||0)-(a.versions.at(-1)?.createdAt||0))[0];
+      if(newest&&$('rcOverviewRecentFile')){$('rcOverviewRecentFile').innerHTML=`<button class="workspace-overview-row workspace-resume-file">${icon('file')}<span><strong>${esc(newest.name)}</strong><small>${newest.versions.length} saved version${newest.versions.length===1?'':'s'} · Project Files</small></span>${icon('right')}</button>`;$('rcOverviewRecentFile').querySelector('button').onclick=()=>versionsDialog(p,newest);}
+    }else $('rcOverviewFileCount').textContent='Could not load Files. Open Files to retry.';
+  }
+  async function updateOverviewCost(id,force=false){
+    const host=$('rcOverviewCost');if(!host)return;
+    const data=await room.projectCost(id,force);if(!host.isConnected||activeId!==id||activeTab!=='overview')return;
+    const row=data.row,money=n=>new Intl.NumberFormat(undefined,{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n),tokenCount=row?Object.values(row.usage.byModel||{}).map(m=>m.input+m.output+m.cacheRead+m.cacheWrite):[],max=Math.max(1,...tokenCount);
+    host.innerHTML='<h2>Total Project cost estimate</h2>'+(!data.ready||data.error?`<strong>—</strong><small role="status">${esc(data.error||'Cost estimate unavailable')}</small><button class="cr-secondary" data-cost-retry>Retry</button>`:`<strong>≈ ${money(row?.cost.usd||0)}</strong><small>Recorded lifetime usage · includes subagents</small><p>${row?.partial?'Scanning transcripts; total is still updating.':row?.missing?'Some conversations have missing transcripts.':row?.cost.unpriced.length?'Some models are unpriced.':'Standard API rates, not your subscription bill.'}</p>${row?`<div class="workspace-cost-bars" aria-label="Recorded tokens by model">${Object.entries(row.usage.byModel||{}).sort((a,b)=>(b[1].input+b[1].output+b[1].cacheRead+b[1].cacheWrite)-(a[1].input+a[1].output+a[1].cacheRead+a[1].cacheWrite)).slice(0,4).map(([name,m])=>{const total=m.input+m.output+m.cacheRead+m.cacheWrite;return `<div><span><span>${esc(name)}</span><span>${new Intl.NumberFormat(undefined,{notation:'compact'}).format(total)}</span></span><i><b style="width:${total/max*100}%"></b></i></div>`;}).join('')}</div>`:''}<small class="workspace-cost-caption">Current primary membership. References excluded.</small><button class="cr-secondary" data-cost-details>View breakdown</button>`);
+    host.querySelector('[data-cost-retry]')?.addEventListener('click',()=>updateOverviewCost(id,true));host.querySelector('[data-cost-details]')?.addEventListener('click',()=>room.showCosts());
+  }
   function renderConversations(p, mode) {
     $('rcProjectBody').innerHTML = `<div class="rc-space-toolbar"><label class="cr-search">${icon('search')}<input id="rcSpaceConversationSearch" type="search" placeholder="Search ${mode}" aria-label="Search ${mode}"></label>${mode==='work'?'<button class="cr-secondary" id="rcSpaceAddWork">Add Work project</button>':''}<button class="cr-primary" id="rcSpaceNewConversation" ${p.archivedAt || (mode==='work'&&!p.workspaceConfigured)?'disabled':''}>New ${mode}</button></div>${mode==='work'&&!p.workspaceConfigured?'<div class="cr-empty"><h2>Add a Work project</h2><p>Choose an existing repository or configure a Work workspace.</p></div>':''}<div class="rc-space-conversations" id="rcSpaceConversations"></div><div id="rcSpaceReferences"></div>`;
     const row = (execution,c,included=true) => `<div class="rc-space-member ${included?'':'rc-space-exception'}">${link(conversationPath(execution,c.sessionId),`${icon(mode==='chat'?'chat':'menu')}<span><strong>${esc(c.title)}</strong><small>${esc(c.provider||execution.provider||'claude')}${execution.runningSessionIds.includes(c.sessionId)?' · Running':execution.backgroundSessionIds.includes(c.sessionId)?' · Background':''}${!included?' · Uses Project '+esc(scopeName(c.spaceId)):''}</small></span>${icon('right')}`,'rc-space-conversation')}<button class="cr-icon" data-membership-project="${esc(execution.id)}" data-membership-session="${esc(c.sessionId)}" aria-label="Change Project for ${esc(c.title)}">${icon('gear')}</button></div>`;
@@ -204,6 +244,14 @@ window.createProjectSpaces = function (engine, room, chat) {
       row.querySelector('[data-versions]').onclick = () => versionsDialog(p, file);
       row.querySelector('[data-attach]').onclick = () => attachDialog(p, file, file.latestVersionId);
       row.querySelector('[data-remove]').onclick = action(async () => { await request(base(p.id) + '/files/' + file.id, { removed: !file.removed }); await renderFiles(p); });
+      if(window.rcWorkspace){
+        const actions=[...row.querySelectorAll('button')];
+        const group=document.createElement('div');group.className='workspace-file-actions';actions.forEach(b=>group.append(b));row.append(group);
+        const more=document.createElement('button');more.className='cr-icon rc-space-file-menu';more.setAttribute('aria-label','Actions for '+file.name);more.setAttribute('aria-haspopup','menu');more.innerHTML=icon('more');row.append(more);
+        more.onclick=()=>showFileMenu(more,actions);
+        row.querySelector('strong').parentElement.insertAdjacentHTML('beforeend',`<small>${Math.ceil((file.versions.find(v=>v.id===file.latestVersionId)?.bytes||0)/1024)} KiB${file.memorySources?.length?' · Memory source':''}</small>`);
+        row.querySelector('strong').tabIndex=0;row.querySelector('strong').setAttribute('role','button');row.querySelector('strong').onclick=()=>versionsDialog(p,file);row.querySelector('strong').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();versionsDialog(p,file);}};
+      }
     });
     renderUploads();
   }
@@ -212,6 +260,14 @@ window.createProjectSpaces = function (engine, room, chat) {
     node.innerHTML = [...uploads.values()].filter(j => j.ownerId === activeId).map(j => `<div class="rc-space-upload"><span>${esc(j.names)} · ${esc(j.state)}${j.progress === undefined ? '' : ' ' + j.progress + '%'}</span>${j.state === 'uploading' ? `<button data-cancel="${j.id}">Cancel</button>` : j.state !== 'saved' ? `<button data-retry="${j.id}">Retry</button>` : ''}</div>`).join('');
     node.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => uploads.get(b.dataset.cancel)?.xhr.abort());
     node.querySelectorAll('[data-retry]').forEach(b => b.onclick = () => runUpload(uploads.get(b.dataset.retry)));
+  }
+  function showFileMenu(anchor,actions){
+    let menu=$('workspaceFileMenu');if(!menu){menu=document.createElement('div');menu.id='workspaceFileMenu';menu.setAttribute('popover','auto');menu.setAttribute('role','menu');document.body.append(menu);}
+    if(menu.matches(':popover-open'))menu.hidePopover();
+    menu.replaceChildren();actions.forEach(original=>{const b=document.createElement('button');b.textContent=original.getAttribute('aria-label')||original.textContent;b.setAttribute('role','menuitem');b.disabled=original.disabled;b.onclick=()=>{menu.hidePopover();original.click();};menu.append(b);});
+    menu.showPopover();const r=anchor.getBoundingClientRect(),size=menu.getBoundingClientRect();menu.style.left=Math.max(10,Math.min(r.right-size.width,innerWidth-size.width-10))+'px';menu.style.top=(r.bottom+size.height+8<innerHeight?r.bottom+6:Math.max(10,r.top-size.height-6))+'px';
+    menu.querySelector('button:not(:disabled)')?.focus();
+    menu.onkeydown=e=>{const items=[...menu.querySelectorAll('button:not(:disabled)')],i=items.indexOf(document.activeElement);if(e.key==='Escape'){e.preventDefault();menu.hidePopover();anchor.focus();}if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();items[(i+(e.key==='ArrowDown'?1:items.length-1))%items.length]?.focus();}};
   }
   function upload(p, files) {
     if (!files.length) return;
@@ -344,7 +400,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   }
   async function editBrief(p) {
     try{const found=await request('/api/memory/search?'+new URLSearchParams({spaceId:p.id,tag:'project-brief',scope:'space',access:'library',limit:100}));
-      const entry=found.items.find(e=>e.projectId===p.id&&e.status==='confirmed');
+      const entry=found.items.find(e=>(e.spaceId||e.projectId)===p.id&&e.status==='confirmed');
       room.editMemory(entry||{title:p.name+' brief',spaceId:p.id,scope:'space',kind:'context',status:'confirmed',pinned:true,tags:['project-brief']},()=>route());
     }catch(e){room.notify(e.message);}
   }
@@ -402,14 +458,15 @@ window.createProjectSpaces = function (engine, room, chat) {
   document.addEventListener('click', event => {
     if (!enabled || !document.body.classList.contains('rc-spaces-view')) return;
     if (event.target.closest('a[data-chat-link]')) leave();
-    if (event.target.closest('.cr-primary-nav button, #crHome, #focusHome, #focusBack')) { history.pushState({}, '', '/work'); leave(); }
+    if (!window.rcWorkspace?.ready()&&event.target.closest('.cr-primary-nav button, #crHome, #focusHome, #focusBack')) { history.pushState({}, '', '/work'); leave(); }
   }, true);
   window.addEventListener('popstate', () => { if (mounted) route(); });
   document.addEventListener('x056:state', updateContext);
+  document.addEventListener('x056:costs',()=>{if(activeTab==='overview'&&$('rcOverviewCost'))updateOverviewCost(activeId);});
   document.addEventListener('x056:event',event=>{if(enabled&&event.detail.kind==='projects')load().then(()=>{updateContext();room.refresh();}).catch(e=>room.notify(e.message));});
   document.addEventListener('x056:mode', () => setTimeout(updateContext, 0));
   return {
-    enabled: () => enabled, list:()=>projects, scopeOf, handles, navigate, newWork:pid=>{const execution=engine.state().projects.find(p=>p.id===pid);if(execution?.cwd)newConversation(projects.find(p=>p.id===execution.workSpaceId),'work',pid);}, createFromWork:pid=>createProject(pid), newProject:()=>createProject(), membershipDialog, conversationPath, reviewQueue, resumeAutopilot, shareChatFile, importArtifact,
+    enabled: () => enabled, list:()=>projects, scopeOf, handles, navigate, leave:()=>{generation++;leave();}, newWork:pid=>{const execution=engine.state().projects.find(p=>p.id===pid);if(execution?.cwd)newConversation(projects.find(p=>p.id===execution.workSpaceId),'work',pid);}, createFromWork:pid=>createProject(pid), newProject:()=>createProject(), membershipDialog, conversationPath, reviewQueue, resumeAutopilot, shareChatFile, importArtifact,
     openConversation: (pid, sid) => { const p = engine.state().projects.find(p => p.id === pid); if (p) return navigate(conversationPath(p, sid)); },
     init: async () => { try { const data = await load(); enabled = data.enabled; mount(); await route(); updateContext(); } catch (error) { room.notify(error.message); } },
   };

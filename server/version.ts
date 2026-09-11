@@ -54,7 +54,7 @@ export class VersionInfo {
     };
   }
   current() {
-    const names = ['panel.html', 'control-room.js', 'control-room.css'];
+    const names = ['panel.html', 'control-room.js', 'control-room.css', 'rc-chat.js', 'rc-chat.css', 'project-spaces.js', 'project-spaces.css', 'workspace.js', 'workspace.css'];
     const stamp = names
       .map((n) => {
         try {
@@ -99,6 +99,6 @@ export class VersionInfo {
       revision = info.ui.fingerprint;
     return raw
       .replace('</head>', '<script>window.X056_RELEASE=' + serialized + ';</script></head>')
-      .replace(/(\/control-room\.(?:js|css))(?:\?[^"']*)?(?=["'])/g, '$1?v=' + revision);
+      .replace(/(\/(?:control-room|rc-chat|project-spaces|workspace)\.(?:js|css))(?:\?[^"']*)?(?=["'])/g, '$1?v=' + revision);
   }
 }

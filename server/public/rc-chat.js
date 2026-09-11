@@ -64,6 +64,7 @@ window.createRCChat = function (engine, room) {
         const chat = engine.state().projects.find(p => p.kind === 'chat' && p.id === id);
         document.body.classList.add('rc-chat-active');
         document.body.classList.toggle('rc-chat-home-view', !chat);
+        document.body.classList.toggle('rc-chat-unavailable', !!id && !chat);
         document.body.classList.remove('rc-chat-nav-open', 'rc-chat-panel-open');
         if (chat) {
           showArchived = !!chat.archivedAt;
@@ -84,7 +85,7 @@ window.createRCChat = function (engine, room) {
   function open(chat) { return navigate(chatPath(chat.id)); }
   function leave(updateURL = true, keepRoom = false) {
     if (updateURL && inChat()) window.history.pushState({}, '', '/');
-    document.body.classList.remove('rc-chat-active','rc-chat-home-view','rc-chat-nav-open','rc-chat-panel-open');
+    document.body.classList.remove('rc-chat-active','rc-chat-home-view','rc-chat-unavailable','rc-chat-nav-open','rc-chat-panel-open');
     $('crChatTab')?.removeAttribute('aria-current'); cleanupPreview(); if (!keepRoom) room.showBoard();
   }
   function renderChats() {

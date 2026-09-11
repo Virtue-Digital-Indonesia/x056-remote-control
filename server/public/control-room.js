@@ -97,6 +97,17 @@ window.createControlRoom = function (engine) {
   try{const saved=JSON.parse(localStorage.getItem('x056_stage_pins')||'[]');if(Array.isArray(saved))stagePins=[...new Set(saved.filter(x=>typeof x==='string'))];}catch{}
   try{stageMode=['recent','smart'].includes(localStorage.getItem('x056_stage_mode'))?localStorage.getItem('x056_stage_mode'):'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v],['x056_stage_dismissed',v=>stageDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
   document.body.dataset.stageMode=stageMode;
+  let stageHidden=false;
+  try{stageHidden=localStorage.getItem('x056_stage_hidden')==='true';}catch{}
+  document.body.dataset.stageHidden=String(stageHidden);
+  stage.insertAdjacentHTML('afterbegin','<button id="stageHide" class="cr-icon" aria-label="Hide conversation switcher" title="Hide switcher">'+ic('x')+'</button>');
+  function setStageHidden(hidden,save=true){
+    stageHidden=hidden;document.body.dataset.stageHidden=String(hidden);stageExpanded=false;stageOpen(false);
+    if(save)try{localStorage.setItem('x056_stage_hidden',String(hidden));}catch{toast('This browser could not save the switcher preference.');}
+    const checkbox=$('stageVisible');if(checkbox)checkbox.checked=!hidden;
+    renderStage();
+  }
+  $('stageHide').onclick=()=>{setStageHidden(true);toast('Switcher hidden. Show it again in Settings → General.',()=>setStageHidden(false));$('sidebarSettings').focus();};
   function saveRecents(){try{localStorage.setItem('x056_stage_recent',JSON.stringify(stageRecent.slice(0,30)));localStorage.setItem('x056_recent_dismissed',JSON.stringify(recentDismissed));localStorage.setItem('x056_stage_dismissed',JSON.stringify(stageDismissed));}catch{toast('This browser could not save recent conversations.');}}
   function rememberStage(){const state=engine.state();if(!state.sessionId)return;const id=stageKey(state.projectId,state.sessionId);stageRecent=[id,...stageRecent.filter(x=>x!==id)].slice(0,30);recentDismissed=recentDismissed.filter(x=>x!==id);stageDismissed=stageDismissed.filter(x=>x!==id);saveRecents();renderStage();}
   function dismissRecent(project,session){const id=stageKey(project,session);recentDismissed=[...new Set([...recentDismissed,id])];saveRecents();renderStage();refresh();toast('Conversation dismissed from recents.',()=>restoreRecent(project,session));}
@@ -204,6 +215,7 @@ window.createControlRoom = function (engine) {
   $('stageNext').onclick=()=>{stagePage++;renderStage();};
   window.addEventListener('resize',()=>{renderStage();if(innerWidth<=850){stageExpanded=false;stageOpen(false);}});
   window.addEventListener('storage',e=>{
+    if(e.key==='x056_stage_hidden'){setStageHidden(e.newValue==='true',false);return;}
     if(e.key==='x056_stage_mode'){stageMode=['recent','smart'].includes(e.newValue)?e.newValue:'pinned';document.body.dataset.stageMode=stageMode;stagePage=0;renderStage();return;}
     const assign={'x056_stage_pins':v=>stagePins=v,'x056_stage_recent':v=>stageRecent=v,'x056_recent_dismissed':v=>recentDismissed=v,'x056_stage_dismissed':v=>stageDismissed=v};if(!assign[e.key])return;
     try{const value=JSON.parse(e.newValue||'[]');if(Array.isArray(value)){assign[e.key]([...new Set(value.filter(x=>typeof x==='string'))]);renderStage();refresh();}}catch{}
@@ -299,7 +311,7 @@ window.createControlRoom = function (engine) {
     document.body.dataset.chatMode = mode;
     main.hidden = mode === 'closed';
     veil.hidden = mode !== 'modal';
-    shell.inert = mode === 'modal' || mode === 'page';
+    shell.inert = mode === 'modal' || mode === 'page' && !document.body.classList.contains('rc-workspace-ready');
     main.setAttribute('role', mode === 'modal' ? 'dialog' : 'region');
     main.setAttribute('aria-label', 'Conversation');
     if (mode === 'modal') main.setAttribute('aria-modal','true'); else main.removeAttribute('aria-modal');
@@ -324,6 +336,7 @@ window.createControlRoom = function (engine) {
     else if(next==='planner'){$('plannerProject').innerHTML=workspaceProjectOptions();loadPlanner();}
     else refresh();
     pageFor(next).scrollTop=sectionScroll[next];
+    if(!preserveRoute)window.rcWorkspace?.sectionChanged(next);
   }
   function settings(tab='general') { engine.closePops(); settingsTab(tab); if(!preferences.open) preferences.showModal(); }
   preferences.addEventListener('change', e => { if (!['open','maximize'].includes(e.target.name)) return; prefs[e.target.name] = e.target.value; try { localStorage.setItem('x056_display_preferences', JSON.stringify(prefs)); } catch { toast('This browser could not save display settings.'); } if (['page','modal'].includes(mode)) setMode(prefs.maximize); });
@@ -414,6 +427,7 @@ window.createControlRoom = function (engine) {
     $('crScopeTitle').tabIndex=-1;$('crScopeTitle').focus({preventScroll:true});
   }
   function renderProjectNav(all,state) {
+    if(window.rcWorkspace?.ready()){window.rcWorkspace.renderNav();return;}
     if(window.rcProjectSpaces?.enabled()) {
       const query=$('crProjectSearch').value.toLowerCase(),spaces=window.rcProjectSpaces.list(),active=decodeURIComponent(location.pathname.split('/')[2]||'');
       const rows=spaces.filter(p=>!p.archivedAt&&p.name.toLowerCase().includes(query));
@@ -445,10 +459,15 @@ window.createControlRoom = function (engine) {
   function renderBoard() {
     const all=cards(),state=engine.state();
     if(selectedProject&&!state.projects.some(p=>p.id===selectedProject)&&state.projects.length)selectedProject='';
-    const scope=all.filter(x=>x.p.kind!=='chat'&&(boardFilter==='archived'?conversationMeta[x.k]?.archived:!conversationMeta[x.k]?.archived)&&(showDismissedProjects||!dismissedProjects.includes(x.p.id))&&(!selectedProject||x.p.id===selectedProject)),project=state.projects.find(p=>p.id===selectedProject);
+    const workspaceView=window.rcWorkspace?.ready() ? location.pathname : '',globalView=['/','/home','/activity'].includes(workspaceView);
+    const scope=all.filter(x=>(globalView||x.p.kind!=='chat')&&(workspaceView!=='/work/unassigned'||!x.c.spaceId)&&(boardFilter==='archived'?conversationMeta[x.k]?.archived:!conversationMeta[x.k]?.archived)&&(showDismissedProjects||!dismissedProjects.includes(x.p.id))&&(!selectedProject||x.p.id===selectedProject)),project=state.projects.find(p=>p.id===selectedProject);
     $('crScopeActions').hidden=!project;
     $('crScopeTitle').textContent=project?.name||'All projects';
     $('crScopeSubtitle').textContent=scope.length+' conversations'+(project?'':' across '+state.projects.filter(p=>p.kind!=='chat'&&(showDismissedProjects||!dismissedProjects.includes(p.id))).length+' projects');
+    if(globalView||workspaceView==='/work/unassigned'){
+      $('crScopeTitle').textContent=workspaceView==='/activity'?'Activity':workspaceView==='/work/unassigned'?'Unassigned Work':'Home';
+      $('crScopeSubtitle').textContent=workspaceView==='/activity'?'Running tasks, requests for input, and recent completions across Projects.':workspaceView==='/work/unassigned'?'Work conversations outside a parent Project.':'Pick up a conversation or start something new.';
+    }
     $('crStats').innerHTML=[[scope.filter(x=>['running','background'].includes(x.status)).length,'Running'],[scope.filter(x=>x.status==='question').length,'Needs input'],[scope.filter(x=>x.unread).length,'Unread'],[scope.filter(x=>x.draft).length,'Drafts']].map(([n,t])=>`<div><strong>${n}</strong><span>${t}</span></div>`).join('');
     renderProjectNav(all,state);
     const selector=$('crProjectFilter');selector.innerHTML='<option value="">All projects</option>'+state.projects.filter(p=>p.kind!=='chat').map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');selector.value=selectedProject;
@@ -488,7 +507,7 @@ window.createControlRoom = function (engine) {
     }
     updateTitle();renderSendAccounts();if(section==='accounts'){renderProjectCosts();loadProjectCosts();}renderRuns();renderStage();
   }
-  let costSnapshot=null,costError='',costBusy=false,costUpdated=0,costSignature='';
+  let costSnapshot=null,costError='',costBusy=false,costUpdated=0,costSignature='',costRequest=null;
   const costDialog=document.createElement('dialog');costDialog.className='cr-dialog';costDialog.id='projectCostDetails';costDialog.setAttribute('aria-label','Project cost estimates');document.body.append(costDialog);
   const fxReference={rate:17653,date:'7 September 2026',source:'https://www.bi.go.id/en/statistik/informasi-kurs/jisdor/Default.aspx'};
   const rupiah=n=>new Intl.NumberFormat('id-ID',{style:'currency',currency:'IDR',maximumFractionDigits:0}).format((n||0)*fxReference.rate);
@@ -519,12 +538,14 @@ window.createControlRoom = function (engine) {
     costDialog.querySelector('[data-cost-close]').onclick=()=>costDialog.close();
     costDialog.querySelector('[data-cost-refresh]').onclick=()=>loadProjectCosts(true);
   }
-  async function loadProjectCosts(force=false){
-    if(costBusy||(!force&&Date.now()-costUpdated<30000))return;costBusy=true;
-    try{costSnapshot=await json('/api/usage/all?budgetMs=250');costError='';costUpdated=Date.now();}
-    catch(e){costError='Could not load cost estimates. '+e.message;costUpdated=Date.now();}
-    finally{costBusy=false;renderProjectCosts();if(costDialog.open)renderCostDetails();}
-    if(costSnapshot?.pendingBytes&&!costError)setTimeout(()=>{if(!document.hidden&&(section==='accounts'||costDialog.open))loadProjectCosts(true);},3000);
+  function loadProjectCosts(force=false){
+    if(costBusy)return costRequest;if(!force&&Date.now()-costUpdated<30000)return Promise.resolve();costBusy=true;
+    costRequest=(async()=>{
+      try{costSnapshot=await json('/api/usage/all?budgetMs=250');costError='';costUpdated=Date.now();}
+      catch(e){costError='Could not load cost estimates. '+e.message;costUpdated=Date.now();}
+      finally{costBusy=false;renderProjectCosts();if(costDialog.open)renderCostDetails();document.dispatchEvent(new CustomEvent('x056:costs'));}
+      if(costSnapshot?.pendingBytes&&!costError)setTimeout(()=>{if(!document.hidden&&(section==='accounts'||costDialog.open||document.getElementById('rcOverviewCost')))loadProjectCosts(true);},3000);
+    })();return costRequest;
   }
   setInterval(()=>{if(!document.hidden&&section==='board')loadProjectCosts();},30000);
   const runningDialog=document.createElement('dialog');runningDialog.id='runningConversations';runningDialog.className='cr-dialog';runningDialog.setAttribute('aria-label','Running conversations');
@@ -860,6 +881,8 @@ window.createControlRoom = function (engine) {
     if(tab==='general'){
       body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Conversation labels</h3>${segmented('conversationLabelOrder',[['conversation','Conversation first'],['project','Project first']],conversationLabelOrder,'Conversation label order')}<p>Choose which name leads in conversation lists and details. Saved on this device.</p></section><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats'],['smart','Smart']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><section class="stage-settings recent-settings"><h3>Control room recents</h3><div class="setting-row"><label for="recentActivityWindow"><strong>Activity window</strong><small>Use the latest message or newly created time</small></label><select id="recentActivityWindow"><option value="1">Past day</option><option value="7">Past 7 days</option><option value="30">Past 30 days</option><option value="0">Any time</option></select></div><div class="setting-row"><label for="recentMaximum"><strong>Maximum conversations</strong><small>Search still finds older conversations</small></label><select id="recentMaximum"><option value="10">10</option><option value="20">20</option><option value="50">50</option></select></div></section><div id="displayFields"></div><div class="setting-row"><span><strong>Conversation titles</strong><small>Automatic naming and saved title suggestions</small></span><button class="cr-secondary" id="settingsTitles">Manage</button></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
       const stageHelp=()=>{$('stageModeHelp').textContent=stageMode==='pinned'?'Only chats you pin appear in the bubbles. The separate running indicator stays visible.':stageMode==='smart'?'Pinned chats, then requests for input, unread replies, running work, and your last few chats. Up to 8 chats, plus any extra pins. Dismiss any chat to remove it.':'Recent and running chats appear in the bubbles. The separate running indicator is hidden on desktop.';};stageHelp();wireSegment('conversationLabelOrder',setConversationLabelOrder);wireSegment('stageMode',value=>{setStageMode(value);stageHelp();});
+      $('stageMode').before(Object.assign(document.createElement('label'),{className:'workspace-check',innerHTML:'<input type="checkbox" id="stageVisible" '+(stageHidden?'':'checked')+'> Show floating conversation switcher'}));
+      $('stageVisible').onchange=e=>setStageHidden(!e.target.checked);
       for(const field of generalFields)$('displayFields').append(field);
       $('recentActivityWindow').value=String(recentPreferences.days);$('recentMaximum').value=String(recentPreferences.max);
       for(const id of ['recentActivityWindow','recentMaximum'])$(id).onchange=()=>{recentPreferences={days:Number($('recentActivityWindow').value),max:Number($('recentMaximum').value)};recentLimit=Math.min(10,recentPreferences.max);try{localStorage.setItem('x056_recent_preferences',JSON.stringify(recentPreferences));}catch{toast('This browser could not save recent settings.');}renderBoard();};
@@ -2620,5 +2643,7 @@ window.createControlRoom = function (engine) {
   setInterval(()=>{if(document.hidden)return;loadConversationMeta();if(section==='planner')loadPlanner();},5000);setTimeout(loadConversationMeta,1000);
 
   setMode('closed'); projectNav(false); refresh();
-  return { addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory',true);$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
+  return { showPage:next=>showSection(next,true), workspaceRows:()=>cards().map(x=>({...x,url:window.rcProjectSpaces?.conversationPath(x.p,x.c.sessionId)})), setStageHidden,
+    projectCost:async(id,force=false)=>{await loadProjectCosts(force);return {row:costRows().find(r=>r.projectId===id),error:costError,ready:!!costSnapshot,pricing:costSnapshot?.pricing};},
+    addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory',true);$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
 };

@@ -28,10 +28,10 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   // OAuth token/consent posts are form-encoded (RFC 6749), not JSON.
   (app as unknown as { useBodyParser: (t: string, o: { extended: boolean }) => void }).useBodyParser('urlencoded', { extended: true });
   const express = app.getHttpAdapter().getInstance() as import('express').Express;
-  // Read per request so a bind-mounted panelPath serves UI changes without a
-  // rebuild; ~15KB from page cache is negligible for a single-user panel.
+  // Production points to the assets baked into the gateway image. Tests may
+  // supply a separate public directory without changing the running panel.
   const panelPath = cfg.panelPath ?? join(__dir, 'public', 'panel.html');
-  // PWA assets live alongside the panel (bind-mounted, so edits are live too).
+  // Serve all panel assets from the same release directory.
   const publicDir = dirname(panelPath);
   const version = new VersionInfo(publicDir);
   express.get('/api/version', (_req, res) => {
@@ -39,7 +39,7 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
     res.json(version.current());
   });
   express.get('/healthz', (_req, res) => res.json({ ok: true }));
-  express.get(['/', '/chat', '/chat/:chatId', '/projects', '/projects/:projectId', '/projects/:projectId/:tab', '/work', '/work/:projectId', '/work/:projectId/:sessionId'], (_req, res) => {
+  express.get(['/', '/home', '/dashboard', '/activity', '/accounts', '/automations', '/artifacts', '/queue', '/memory', '/settings', '/chat', '/chat/:chatId', '/projects', '/projects/:projectId', '/projects/:projectId/:tab', '/work', '/work/:projectId', '/work/:projectId/:sessionId'], (_req, res) => {
     try {
       res.setHeader('Cache-Control','no-cache');
       res.type('html').send(version.html(readFileSync(panelPath, 'utf8')));
@@ -70,6 +70,8 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   serveStatic('/rc-chat.css', 'rc-chat.css', 'text/css', { 'Cache-Control': 'no-cache' });
   serveStatic('/project-spaces.js', 'project-spaces.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
   serveStatic('/project-spaces.css', 'project-spaces.css', 'text/css', { 'Cache-Control': 'no-cache' });
+  serveStatic('/workspace.js', 'workspace.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
+  serveStatic('/workspace.css', 'workspace.css', 'text/css', { 'Cache-Control': 'no-cache' });
   serveStatic('/webauthn.js', 'webauthn.js', 'application/javascript'); // vendored @simplewebauthn/browser bundle
   serveStatic('/icon-16.png', 'icon-16.png', 'image/png');
   serveStatic('/icon-32.png', 'icon-32.png', 'image/png');

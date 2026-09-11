@@ -20,7 +20,7 @@ it('keeps the running backend stamp fixed while detecting a UI publication commi
   };
   try {
     mkdirSync(pub);
-    for (const name of ['panel.html', 'control-room.js', 'control-room.css'])
+    for (const name of ['panel.html', 'control-room.js', 'control-room.css', 'rc-chat.js', 'rc-chat.css', 'project-spaces.js', 'project-spaces.css', 'workspace.js', 'workspace.css'])
       writeFileSync(join(pub, name), 'initial');
     writeFileSync(
       join(root, 'build-info.json'),
@@ -55,6 +55,18 @@ it('keeps the running backend stamp fixed while detecting a UI publication commi
     expect(version.html('<head></head><script src="/control-room.js"></script>')).toContain(
       '/control-room.js?v=' + published.ui.fingerprint,
     );
+    writeFileSync(join(pub, 'workspace.js'), 'updated workspace navigation');
+    const workspace = version.current();
+    expect(workspace.ui.fingerprint).not.toBe(published.ui.fingerprint);
+    expect(workspace.ui.dirty).toBe(true);
+    for (const module of ['control-room', 'rc-chat', 'project-spaces', 'workspace']) {
+      for (const extension of ['js', 'css']) {
+        const asset = '/' + module + '.' + extension;
+        expect(version.html('<head></head><script src="' + asset + '?v=old"></script>'))
+          .toContain(asset + '?v=' + workspace.ui.fingerprint);
+      }
+    }
+    expect(workspace.backend).toEqual(first.backend);
   } finally {
     vi.restoreAllMocks();
     rmSync(root, { recursive: true, force: true });
