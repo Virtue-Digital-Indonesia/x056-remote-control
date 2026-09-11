@@ -9,6 +9,8 @@ const out='/tmp/project-workspace-ui';mkdirSync(out,{recursive:true});
  try{
   const context=await browser.newContext({viewport:{width:1440,height:1000}});await context.addInitScript(t=>localStorage.setItem('x056_token',t),token);
   const page=await context.newPage(),errors=[],checks=[];page.on('pageerror',e=>errors.push(e.stack));
+  let largeEstimate=false;
+  await page.route('**/api/usage/all?*',async route=>{const response=await route.fetch();if(!largeEstimate)return route.fulfill({response});const data=await response.json();data.projectSpaces[0].cost.usd=90256.52;data.projectSpaces[0].usage.input=95900000000;await route.fulfill({response,json:data});});
   const check=(name,value)=>{assert(value,name);checks.push(name);};
   const api=async(path,data)=>{const r=await context.request[data?'post':'get'](base+path,{headers:{Authorization:'Bearer '+token},...(data?{data}:{})});assert(r.ok(),await r.text());return r.json();};
   const seed=await api('/api/projects'),work=seed.projects.find(p=>p.name==='Website refresh'),other=seed.projects.find(p=>p.name==='Research workspace');
@@ -76,10 +78,12 @@ const out='/tmp/project-workspace-ui';mkdirSync(out,{recursive:true});
   await page.route('**/api/project-spaces',async route=>{const response=await route.fetch();listStarted();await listGate;await route.fulfill({response});});
   await page.locator('#crSpacesTab').click();await pendingList;await page.locator('#crAccountsTab').click();await page.waitForURL(base+'/dashboard');releaseList();await page.waitForTimeout(150);await page.unroute('**/api/project-spaces');
   check('Stale Project load cannot replace Dashboard',!await page.locator('#rcProjectPage').isVisible()&&await page.locator('#crProjectCosts').isVisible());
+  largeEstimate=true;
   for(const width of [390,320,768]){
     await page.setViewportSize({width,height:844});
     for(const path of [projectPath+'/overview',projectPath+'/files',projectPath+'/memory',chatPath,workPath,'/dashboard','/accounts','/settings','/projects','/chat']){
       await go(path);await page.waitForTimeout(300);
+      if(path==='/dashboard'){await page.locator('.cr-cost-value').filter({hasText:'90,256'}).waitFor();check(width+'px large cost keeps breakdown inside card',await page.locator('#crCostDetails').evaluate(e=>e.getBoundingClientRect().right<=document.getElementById('crProjectCosts').getBoundingClientRect().right));}
       check(width+'px no page overflow '+path,await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
       check(width+'px no content overflow '+path,await page.evaluate(()=>[...document.querySelectorAll('#crWorkspace>.cr-page,#conversationSurface')].filter(e=>e.getClientRects().length&&!e.hidden&&getComputedStyle(e).visibility!=='hidden').every(e=>e.scrollWidth<=e.clientWidth+1)));
     }

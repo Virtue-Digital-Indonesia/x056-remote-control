@@ -33,6 +33,9 @@ body.rc-workspace-ready .workspace-project-children .selected{background:var(--b
 .workspace-nav-empty{font-size:11px;color:var(--muted);padding:10px}
 .workspace-outside{padding:8px 0;flex:none}.workspace-outside>span{display:block;padding:5px 10px 7px;font-size:9px;color:var(--faint);letter-spacing:.5px}
 body.rc-workspace-ready #crProjectNav .workspace-global-nav{border-top:1px solid var(--border);padding-top:9px;margin-top:4px;max-height:38dvh;overflow:auto}
+body.rc-workspace-ready .cr-project-costs{flex-wrap:wrap}
+body.rc-workspace-ready .cr-project-costs>div{flex:1 1 320px;min-width:0}
+body.rc-workspace-ready .cr-cost-value{flex-wrap:wrap;overflow-wrap:anywhere}
 body.rc-workspace-ready #sidebarSettings{margin:0;border:0}
 body.rc-workspace-ready #crBoardTab,body.rc-workspace-ready #crChatTab,body.rc-workspace-ready #crManageProjects{display:none!important}
 body.rc-workspace-ready .cr-heading{margin-bottom:28px;align-items:center;gap:20px}
