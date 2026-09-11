@@ -24,7 +24,7 @@ body.rc-workspace-ready #crProjectNav .cr-primary-nav :is(a,button),body.rc-work
 body.rc-workspace-ready #crProjectNav .cr-primary-nav [hidden]{display:none!important}
 body.rc-workspace-ready #crProjectNav>header{padding:16px 10px 6px;font-size:10px;letter-spacing:.5px;color:var(--faint);flex:none}
 body.rc-workspace-ready .cr-project-search{margin:0 6px 10px;padding:6px 8px;flex:none}
-body.rc-workspace-ready #crProjectLinks{flex:1;overflow:auto;min-height:85px}
+body.rc-workspace-ready #crProjectLinks{flex:1;overflow:auto;min-height:85px;padding-right:8px;scrollbar-gutter:stable}
 body.rc-workspace-ready .cr-project-link .ic{width:16px;height:16px;flex:none}
 .workspace-project-children{margin:2px 0 9px 18px;border-left:1px solid var(--border-strong);padding-left:8px}
 body.rc-workspace-ready .workspace-project-children .cr-project-link{font-size:11px;min-height:31px;padding:7px 10px}
@@ -32,7 +32,15 @@ body.rc-workspace-ready .workspace-project-children .ic{width:14px;height:14px}
 body.rc-workspace-ready .workspace-project-children .selected{background:var(--bg)}
 .workspace-nav-empty{font-size:11px;color:var(--muted);padding:10px}
 .workspace-outside{padding:8px 0;flex:none}.workspace-outside>span{display:block;padding:5px 10px 7px;font-size:9px;color:var(--faint);letter-spacing:.5px}
-body.rc-workspace-ready #crProjectNav .workspace-global-nav{border-top:1px solid var(--border);padding-top:9px;margin-top:4px;max-height:38dvh;overflow:auto}
+body.rc-workspace-ready #crProjectNav .workspace-global-nav{border-top:1px solid var(--border);padding-top:9px;margin-top:10px;overflow:auto}
+body.rc-workspace-ready #crSettings,body.rc-workspace-ready #crNew[hidden]{display:none!important}
+#settingsBody .stage-visibility{border-top:0;padding:0 0 18px;margin:0;flex-wrap:nowrap}
+#settingsBody input.setting-switch{appearance:none;-webkit-appearance:none;position:relative;display:block;flex:none;width:36px;height:22px;margin:0;padding:0;border:1px solid var(--border-strong);border-radius:20px;background:var(--surface-3);cursor:pointer;transition:background .15s}
+#settingsBody input.setting-switch::before{content:'';position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--muted);transition:transform .15s}
+#settingsBody input.setting-switch:checked{background:var(--text);border-color:var(--text)}
+#settingsBody input.setting-switch:checked::before{background:var(--bg);transform:translateX(14px)}
+#settingsBody input.setting-switch:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.stage-settings .cr-segments button:disabled{opacity:.45;cursor:default}
 body.rc-workspace-ready .cr-project-costs{flex-wrap:wrap}
 body.rc-workspace-ready .cr-project-costs>div{flex:1 1 320px;min-width:0}
 body.rc-workspace-ready .cr-cost-value{flex-wrap:wrap;overflow-wrap:anywhere}
@@ -66,7 +74,7 @@ body.rc-workspace-ready .cr-heading .cr-eyebrow{display:none}
 .workspace-overview-row:hover{background:var(--surface-2)}
 .workspace-overview-row>.ic{width:17px;height:17px;flex:none;color:var(--muted)}.workspace-overview-row>span{flex:1;min-width:0}
 .workspace-overview-row strong{display:block;font-size:12px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.workspace-overview-row small{display:block;font-size:11px;color:var(--muted);margin-top:5px}.workspace-overview-row>small{font-size:10px;white-space:nowrap;margin:0}
-.workspace-overview-aside{position:static;width:auto;height:auto;background:transparent;padding-left:25px;border-left:1px solid var(--border)}
+.workspace-overview-aside{position:static;width:auto;height:auto;background:transparent;padding:0 24px;border-left:1px solid var(--border);border-right:0}
 .workspace-overview-aside>section{padding-bottom:24px;margin-bottom:24px;border-bottom:1px solid var(--border)}
 .workspace-overview-aside h2{font-size:14px;margin:0 0 14px}.workspace-overview-aside p{font-size:12px;color:var(--muted);line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}.workspace-overview-aside p:empty{display:none}
 .workspace-overview-aside .cr-secondary{margin-top:12px;font-size:11px}
