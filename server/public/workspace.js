@@ -8,7 +8,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   const globals={'/':'board','/home':'board','/activity':'board','/activity/queue':'planner','/activity/automations':'automations','/activity/outputs':'artifacts','/accounts':'accounts','/accounts/tools':'connections','/memory':'memory','/settings':'preferences','/work/unassigned':'board'};
   for(const [url] of settingsSections)globals[url]='preferences';
   const aliases={'/dashboard':'/accounts','/queue':'/activity/queue','/automations':'/activity/automations','/artifacts':'/activity/outputs'};
-  const canonical=p=>aliases[p]||p;
+  const canonical=p=>aliases[p]||(/^\/settings\//.test(p)&&!settingsRoute(p)?'/settings':p);
   const labels={'/':'Home','/home':'Home','/activity':'Activity','/activity/queue':'Activity / Queued messages','/activity/automations':'Activity / Automations','/activity/outputs':'Activity / Outputs','/accounts':'Accounts & tools','/accounts/tools':'Accounts & tools / Tools','/memory':'Workspace memory','/settings':'Settings','/work/unassigned':'Unassigned Work'};
   for(const [url,name] of settingsSections)if(url!=='/settings')labels[url]='Settings / '+name;
   const settingsRoute=p=>settingsSections.some(([url])=>url===p);
@@ -113,11 +113,12 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     if(location.pathname!==url){if(room.isOpen()===false)returnPath=location.pathname;history[replace?'replaceState':'pushState']({},'',url);}
     activeRoute=url;closeDrawer();
     document.querySelectorAll('#workspaceFileMenu:popover-open').forEach(p=>p.hidePopover());
+    if(!settingsRoute(url))room.mountSettings(null);
     if(!handles(url)){await spaces.navigate(url);if(serial===routeSerial)renderNav();return;}
     spaces.leave();chat?.leave(false,true);room.showPage(globals[url]==='connections'||globals[url]==='preferences'?'board':globals[url]);
     if(globals[url]==='board')room.selectWorkScope('');
     if(url==='/accounts/tools'||settingsRoute(url)){$('crBoard').hidden=true;if(url==='/accounts/tools')connections();}
-    if(settingsRoute(url))room.mountSettings($('workspaceSettingsBody'),sectionOf(url));else room.mountSettings(null);
+    if(settingsRoute(url))room.mountSettings($('workspaceSettingsBody'),sectionOf(url));
     renderNav();room.refresh();
   }
   function sectionChanged(next){

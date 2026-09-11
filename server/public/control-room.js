@@ -858,7 +858,8 @@ window.createControlRoom = function (engine) {
   function closeUtility() {if(settingsHost!==preferences||preferences.open)settingsHost.querySelectorAll('.pop').forEach(el=>el.hidden=false);if(utility.open)utility.close();if(utilityElement){utilityElement.dispatchEvent(new Event('utilityclose'));utilityElement.hidden=true;utilityElement.classList.remove('integrated-pop');utilityHome.append(utilityElement);utilityElement=null;}}
   utility.addEventListener('close',()=>{if(!utility.open)closeUtility();});
   function openUtility(el) {
-    if(settingsHost.contains(el)||$('automationContent').contains(el)){el.hidden=false;return;}
+    if((settingsHost.contains(el)&&settingsHost.getClientRects().length)||$('automationContent').contains(el)){el.hidden=false;return;}
+    if(settingsHost.contains(el))releaseSettings();
     const destinations={defaultsPop:'models',pluginsPop:'connections',mcpSrvPop:'connections',passkeyPop:'security'};
     if(destinations[el.id]){if(el.id==='pluginsPop')connectionSection='plugins';if(el.id==='mcpSrvPop')connectionSection='mcp';settings(destinations[el.id]);return;}
     if(el.id==='cronPop'){showSection('automations');return;}
@@ -886,7 +887,7 @@ window.createControlRoom = function (engine) {
     if(host&&host!==settingsHost){releaseSettings();settingsHost.innerHTML='';settingsHost=host;settingsHost.classList.add('settings-surface');}
     releaseSettings();
     const inline=settingsHost!==preferences;
-    if(inline)settingsHost.innerHTML='<div id="settingsBody"></div>';
+    if(inline)settingsHost.innerHTML=`<h2 class="sr-only">${{general:'General',models:'Model defaults',routing:'Account routing',connections:'Connections',security:'Security'}[tab]||'Settings'}</h2><div id="settingsBody"></div>`;
     else preferences.innerHTML=`<div class="settings-shell"><nav class="settings-nav" aria-label="Settings"><h2>Settings</h2>${[['general','auto','General'],['models','sparkles','Models'],['routing','repeat','Routing'],['connections','plug','Connections'],['security','key','Security']].map(([id,icon,label])=>`<button data-settings="${id}" aria-current="${id===tab?'page':'false'}">${ic(icon)}<span>${label}</span></button>`).join('')}</nav><section class="settings-content"><header><h2>${{general:'General',models:'Model defaults',routing:'Account routing',connections:'Connections',security:'Security'}[tab]}</h2><button class="cr-icon" data-close-settings aria-label="Close settings">${ic('x')}</button></header><div id="settingsBody"></div></section></div>`;
     if(!inline){
       preferences.querySelector('[data-close-settings]').onclick=()=>preferences.close();

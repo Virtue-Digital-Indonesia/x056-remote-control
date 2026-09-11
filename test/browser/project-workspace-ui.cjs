@@ -86,6 +86,11 @@ const out='/tmp/project-workspace-ui';mkdirSync(out,{recursive:true});
   await page.locator('#workspacePreferences .workspace-view-nav a[href="/settings"]').click();await page.waitForURL(base+'/settings');await page.locator('#stageVisible').waitFor();
   await page.locator('#crAccountsTab').click();await page.waitForURL(base+'/accounts');check('Leaving Settings hides the page',await page.locator('#workspacePreferences').isHidden());
   await go('/settings/connections');await page.locator('#connectionControls .pop').waitFor();check('Connection controls return to the page after a reload',await page.locator('#pluginsPop').evaluate(e=>document.getElementById('connectionControls').contains(e)));
+  await page.locator('#crProjectLinks a[href="'+projectPath+'/overview"]').click();await page.waitForURL(base+projectPath+'/overview');await page.waitForTimeout(200);
+  check('Leaving Settings hands the borrowed controls back',await page.locator('#pluginsPop').evaluate(e=>!document.getElementById('workspacePreferences').contains(e)));
+  await go('/settings/not-a-real-section');check('Unknown Settings section falls back to General',new URL(page.url()).pathname==='/settings'&&await page.locator('#stageVisible').isVisible());
+  check('Settings headings match the page scale',await page.locator('#settingsBody h3').first().evaluate(e=>parseFloat(getComputedStyle(e).fontSize)>=15));
+  check('Settings section has its own heading level',await page.locator('#workspaceSettingsBody > h2').count()===1);
   for(const path of ['/home','/activity','/accounts','/activity/automations','/activity/outputs','/activity/queue','/accounts/tools','/memory','/settings','/settings/models','/settings/routing','/settings/connections','/settings/security','/projects','/chat','/work/unassigned']){
     await go(path);check('Direct route '+path,new URL(page.url()).pathname===path);check('No desktop overflow '+path,await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   }
