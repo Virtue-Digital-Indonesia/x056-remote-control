@@ -15,7 +15,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   const sectionOf=p=>(settingsSections.find(([url])=>url===p)||settingsSections[0])[2];
   const SEP='<span class="crumb-sep">/</span>';
   const link=(url,text,cls='')=>`<a href="${esc(url)}" data-workspace-link class="${cls}">${text}</a>`;
-  let mounted=false,navSignature='',navContext='',renderTimer,routeSerial=0,activeRoute='',returnPath='/home';
+  let mounted=false,navSignature='',navContext='',renderTimer,routeSerial=0,activeRoute='',returnPath='/home',enteredPage=null;
   const handles=p=>Object.hasOwn(globals,canonical(p));
   function viewNav(host,items,label){
     if(!host)return;let nav=host.querySelector('.workspace-view-nav');
@@ -34,7 +34,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   function renderNav() {
     if(!mounted)return;
     const current=context(),query=$('crProjectSearch').value.trim().toLowerCase(),projects=spaces.list().filter(p=>!p.archivedAt);
-    const markup=projects.filter(p=>p.name.toLowerCase().includes(query)).map(p=>sidebarItem('/projects/'+encodeURIComponent(p.id)+'/overview',p.name,'folder',false,current.id===p.id?icon('down'):p.activity?.needsInput?`<small class="attention">${p.activity.needsInput}</small>`:'')+(current.id===p.id?`<div class="workspace-project-children">${[['overview','Overview','menu'],['chat','Chat','chat'],['work','Work','terminal'],['files','Files','file'],['memory','Memory','snippet']].map(([tab,name,ic])=>sidebarItem('/projects/'+encodeURIComponent(p.id)+'/'+tab,name,ic,tab===current.tab,['chat','work'].includes(tab)?`<small>${(p.members||[]).filter(m=>m.mode===tab).length}</small>`:'')).join('')}</div>`:'')).join('')||'<p class="workspace-nav-empty">No matching Projects</p>';
+    const markup=projects.filter(p=>p.name.toLowerCase().includes(query)).map(p=>sidebarItem('/projects/'+encodeURIComponent(p.id)+'/overview',p.name,'folder',false,current.id===p.id?icon('down'):p.activity?.needsInput?`<small class="attention">${p.activity.needsInput}</small>`:'')+(current.id===p.id?`<div class="workspace-project-children">${[['overview','Overview','layout'],['chat','Chat','chat'],['work','Work','terminal'],['files','Files','file'],['memory','Memory','snippet']].map(([tab,name,ic])=>sidebarItem('/projects/'+encodeURIComponent(p.id)+'/'+tab,name,ic,tab===current.tab,['chat','work'].includes(tab)?`<small>${(p.members||[]).filter(m=>m.mode===tab).length}</small>`:'')).join('')}</div>`:'')).join('')||'<p class="workspace-nav-empty">No matching Projects</p>';
     if(navSignature!==markup){navSignature=markup;const focused=document.activeElement?.closest('#crProjectLinks a')?.getAttribute('href');$('crProjectLinks').innerHTML=markup;if(focused)[...$('crProjectLinks').querySelectorAll('a')].find(a=>a.getAttribute('href')===focused)?.focus({preventScroll:true});}
     const nextContext=(current.id||'')+'/'+(current.tab||'');
     if(navContext!==nextContext){navContext=nextContext;const selected=$('crProjectLinks').querySelector('[aria-current=page]');if(selected){const container=$('crProjectLinks'),a=selected.getBoundingClientRect(),b=container.getBoundingClientRect();if(a.bottom>b.bottom)container.scrollTop+=a.bottom-b.bottom+8;else if(a.top<b.top)container.scrollTop-=b.top-a.top+8;}}
@@ -42,7 +42,8 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     document.querySelectorAll('[data-global-destination]').forEach(a=>{const href=a.getAttribute('href'),selected=href===pathname||(pathname==='/'&&href==='/home')||(['/activity','/accounts'].includes(href)&&pathname.startsWith(href+'/'));if(selected)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
     const p=projects.find(p=>p.id===current.id);
     const name=p?.name||labels[pathname]||(pathname==='/projects'?'All Projects':pathname.startsWith('/chat')?'Chat':pathname.startsWith('/work')?'Work':'Workspace');
-    $('crBreadcrumb').innerHTML=link('/home','Workspace')+SEP+(p?link('/projects/'+encodeURIComponent(p.id)+'/overview',esc(name))+SEP+`<span>${esc(current.tab[0].toUpperCase()+current.tab.slice(1))}</span>`:`<span>${esc(name)}</span>`);
+    const crumbs=link('/home','Workspace')+SEP+(p?link('/projects/'+encodeURIComponent(p.id)+'/overview',esc(name))+SEP+`<span>${esc(current.tab[0].toUpperCase()+current.tab.slice(1))}</span>`:`<span>${esc(name)}</span>`);
+    if($('crBreadcrumb').dataset.crumbs!==crumbs){$('crBreadcrumb').innerHTML=crumbs;$('crBreadcrumb').dataset.crumbs=crumbs;window.rcMotion?.crumbs($('crBreadcrumb'));}
     if(document.body.dataset.chatMode==='page')$('controlRoom').inert=false;
     const drawerOpen=innerWidth<=850&&$('controlRoom').classList.contains('projects-open');
     document.querySelectorAll('#crWorkspace>.cr-page').forEach(n=>n.inert=document.body.dataset.chatMode==='page'||drawerOpen);
@@ -56,7 +57,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     if($('accountProvider')){viewNav($('crAccounts'),accountViews,'Account views');$('crAccounts').querySelector('.cr-heading h1').textContent='Accounts & tools';$('crAccounts').querySelector('.cr-heading p').textContent='Provider accounts, usage charts, and estimated spend.';}
     if($('workspaceConnections').querySelector('.cr-heading'))viewNav($('workspaceConnections'),accountViews,'Account views');
     $('crNew').hidden=activity;
-    if(home)$('crNew').innerHTML=icon('plus')+' New Chat';else $('crNew').innerHTML=icon('plus')+' New conversation';
+    const newLabel=icon('plus')+(home?' New Chat':' New conversation');if($('crNew').dataset.label!==newLabel){$('crNew').innerHTML=newLabel;$('crNew').dataset.label=newLabel;}
     if($('workspaceSettingsBody'))viewNav($('workspacePreferences'),settingsSections.map(([url,name])=>[url,name]),'Settings sections');
     $('workspaceConnections').hidden=pathname!=='/accounts/tools';$('workspacePreferences').hidden=!settingsRoute(pathname);
     if(!isGlobal){$('workspaceConnections').hidden=true;$('workspacePreferences').hidden=true;}
@@ -64,6 +65,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     // parent navigation as Work and retain their transcript/composer nodes.
     if($('rcChatHome')){$('rcChatHome').innerHTML='<h1>Chat</h1>';}
     if($('rcChatControl'))$('rcChatControl').textContent='Home';
+    window.rcMotion?.marker();
   }
   function closeDrawer(){
     $('controlRoom').classList.remove('projects-open');$('crProjectVeil').hidden=true;$('crProjects').setAttribute('aria-expanded','false');
@@ -76,7 +78,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     const nav=$('crProjectNav'),primary=nav.querySelector('.cr-primary-nav');
     nav.insertAdjacentHTML('afterbegin',link('/home','<b>x0</b><span>Remote Control</span>','workspace-brand')+'<button id="workspaceSearch" class="workspace-search">'+icon('search')+' Search anything <kbd>⌘ K</kbd></button>');
     $('workspaceSearch').onclick=()=>$('searchChatsBtn').click();
-    const destinations=[['crHomeTab','/home','Home','menu'],['crSpacesTab','/projects','All Projects','folder'],['workspaceActivity','/activity','Activity','sparkles'],['crAccountsTab','/accounts','Accounts & tools','plug'],['crMemoryTab','/memory','Workspace memory','snippet'],['sidebarSettings','/settings','Settings','gear']];
+    const destinations=[['crHomeTab','/home','Home','home'],['crSpacesTab','/projects','All Projects','folder'],['workspaceActivity','/activity','Activity','activity'],['crAccountsTab','/accounts','Accounts & tools','user'],['crMemoryTab','/memory','Workspace memory','snippet'],['sidebarSettings','/settings','Settings','gear']];
     const bottom=document.createElement('nav');bottom.className='cr-primary-nav workspace-global-nav';bottom.setAttribute('aria-label','Workspace tools');nav.append(bottom);
     for(const [id,url,label,ic] of destinations){let a=document.createElement('a');a.id=id;a.href=url;a.dataset.workspaceLink='';a.dataset.globalDestination='';a.innerHTML=icon(ic)+'<span>'+label+'</span>';const old=$(id);if(old)old.replaceWith(a);(url==='/home'||url==='/projects'?primary:bottom).append(a);}
     // Preserve the all-Work route and repository management without listing every
@@ -115,12 +117,14 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     activeRoute=url;closeDrawer();
     document.querySelectorAll('#workspaceFileMenu:popover-open').forEach(p=>p.hidePopover());
     if(!settingsRoute(url))room.mountSettings(null);
-    if(!handles(url)){await spaces.navigate(url);if(serial===routeSerial)renderNav();return;}
+    if(!handles(url)){enteredPage=null;await spaces.navigate(url);if(serial===routeSerial)renderNav();return;}
     spaces.leave();chat?.leave(false,true);room.showPage(globals[url]==='connections'||globals[url]==='preferences'?'board':globals[url]);
     if(globals[url]==='board')room.selectWorkScope('');
     if(url==='/accounts/tools'||settingsRoute(url)){$('crBoard').hidden=true;if(url==='/accounts/tools')connections();}
     if(settingsRoute(url))room.mountSettings($('workspaceSettingsBody'),sectionOf(url));
     renderNav();room.refresh();
+    const shown=[...document.querySelectorAll('#crWorkspace>.cr-page')].find(n=>!n.hidden);
+    if(shown&&shown!==enteredPage){enteredPage=shown;window.rcMotion?.enter(shown);window.rcMotion?.list(shown);}
   }
   function sectionChanged(next){
     if(!mounted)return;const url={board:'/home',accounts:'/accounts',automations:'/activity/automations',artifacts:'/activity/outputs',planner:'/activity/queue',memory:'/memory'}[next];

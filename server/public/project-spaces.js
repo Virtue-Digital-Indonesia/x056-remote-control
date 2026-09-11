@@ -38,7 +38,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   function restoreMemory() { const memory = $('crMemory'); $('rcProjectBrief')?.remove(); if($('memoryProject'))$('memoryProject').disabled=false; if (memory && memory.parentNode !== $('crWorkspace')) $('crWorkspace').append(memory); }
   function leave() {
     restoreMemory(); document.body.classList.remove('rc-spaces-view'); $('rcProjectPage').hidden = true;
-    $('crSpacesTab').removeAttribute('aria-current');if($('crBreadcrumb'))$('crBreadcrumb').innerHTML='Workspace<span class="crumb-sep">/</span><span>Work</span>';
+    $('crSpacesTab').removeAttribute('aria-current');if($('crBreadcrumb')&&!window.rcWorkspace?.ready())$('crBreadcrumb').innerHTML='Workspace<span class="crumb-sep">/</span><span>Work</span>';
   }
   async function navigate(url, replace = false) {
     if (location.pathname !== url) history[replace ? 'replaceState' : 'pushState']({}, '', url);
@@ -71,11 +71,12 @@ window.createProjectSpaces = function (engine, room, chat) {
         return;
       }
       if(!enabled)throw new Error('Project spaces are disabled. Existing Work and Chat remain available.');
-      room.showBoard(); document.body.classList.add('rc-spaces-view'); $('rcProjectPage').hidden = false;
+      const page=$('rcProjectPage'), wasShowing=!page.hidden&&document.body.classList.contains('rc-spaces-view');
+      if(!wasShowing||room.isOpen())room.showBoard(); document.body.classList.add('rc-spaces-view'); page.hidden = false;
       $('crSpacesTab').setAttribute('aria-current', 'page'); $('crBoardTab').removeAttribute('aria-current');
-      $('rcProjectPage').innerHTML = '<p class="cr-empty" role="status">Loading Project…</p>';
+      if(!wasShowing||!page.dataset.project)page.innerHTML = '<p class="cr-empty" role="status">Loading Project…</p>';
       await load(); if (generation !== version || location.pathname !== url) return;
-      activeId = segments[1] || ''; activeTab = segments[2] || 'overview';if($('crBreadcrumb'))$('crBreadcrumb').innerHTML=link('/projects','Projects')+'<span class="crumb-sep">/</span><span>'+esc(projects.find(p=>p.id===activeId)?.name||'All projects')+'</span>';room.refresh();
+      activeId = segments[1] || ''; activeTab = segments[2] || 'overview';if($('crBreadcrumb')&&!window.rcWorkspace?.ready())$('crBreadcrumb').innerHTML=link('/projects','Projects')+'<span class="crumb-sep">/</span><span>'+esc(projects.find(p=>p.id===activeId)?.name||'All projects')+'</span>';room.refresh();
       if (!activeId) renderList();
       else {
         let project = projects.find(p => p.id === activeId);
@@ -88,16 +89,19 @@ window.createProjectSpaces = function (engine, room, chat) {
       $('rcProjectPage').querySelector('h1')?.focus({ preventScroll: true });
     } catch (error) {
       room.showBoard(); document.body.classList.add('rc-spaces-view'); $('rcProjectPage').hidden = false;
+      delete $('rcProjectPage').dataset.project;
       $('rcProjectPage').innerHTML = `<div class="cr-empty" role="alert"><h1 tabindex="-1">Page unavailable</h1><p>${esc(error.message)}</p>${link(enabled?'/projects':'/work',enabled?'Open Projects':'Open Work','cr-secondary')}</div>`;
     } finally { navigating = false; updateContext(); window.rcWorkspace?.renderNav(); }
   }
   function renderList() {
+    delete $('rcProjectPage').dataset.project;
     $('rcProjectPage').innerHTML = `<div class="cr-heading"><div><h1 tabindex="-1">Projects</h1><p>A shared home for conversations, files, and reviewed memory.</p></div><button class="cr-primary" id="rcSpaceNew">${icon('plus')} New project</button></div><div class="rc-space-list-controls"><label class="cr-search">${icon('search')}<input id="rcSpaceSearch" type="search" placeholder="Find a project" aria-label="Find a project"></label><label><input id="rcSpaceArchives" type="checkbox"> Show archived</label></div><div class="rc-space-grid" id="rcSpaceList"></div>`;
     const render = () => {
       const query = $('rcSpaceSearch').value.toLowerCase(), archived = $('rcSpaceArchives').checked;
       $('rcSpaceList').innerHTML = projects.filter(p => !!p.archivedAt === archived && p.name.toLowerCase().includes(query)).map(p => link(path(p.id), `${icon('folder')}<h2>${esc(p.name)}</h2><p>${p.chats.length} Chat · ${(p.members || []).filter(m=>m.mode==='work').length} Work</p><small>${p.activity.running || p.activity.background ? `${p.activity.running} running · ${p.activity.background} background` : p.workspaceConfigured ? 'Work workspace ready' : 'Chat and files ready'}</small>`, 'rc-space-card')).join('') || '<p class="cr-empty">No projects found.</p>';
     };
     $('rcSpaceSearch').oninput = $('rcSpaceArchives').onchange = render; $('rcSpaceNew').onclick = createProject; render();
+    window.rcMotion?.enter($('rcProjectPage')); window.rcMotion?.list($('rcSpaceList'));
   }
   function createProject(workProjectId) {
     if(typeof workProjectId!=='string')workProjectId=undefined;
@@ -110,9 +114,15 @@ window.createProjectSpaces = function (engine, room, chat) {
     };
   }
   async function renderProject(p) {
-    $('rcProjectPage').innerHTML = `<div class="rc-space-breadcrumb">${link('/projects', 'Projects')}<span>/</span><span>${esc(p.name)}</span></div><div class="cr-heading"><div><h1 tabindex="-1">${esc(p.name)}</h1><p>${p.archivedAt ? 'Archived · saved history and files are retained' : `${p.activity.running} running · ${p.activity.background} background · ${p.activity.queued} queued · ${p.activity.needsInput} need input`}</p></div><div class="rc-space-toolbar"><button class="cr-secondary" id="rcSpaceAddExisting" ${p.archivedAt?'disabled':''}>${icon('plus')} Add existing</button><button class="cr-secondary" id="rcSpaceCosts">Costs</button>${link(path(p.id, 'settings'), icon('gear') + ' Settings', 'cr-secondary')}</div></div><nav class="rc-space-tabs" aria-label="Project sections">${['overview','chat', 'work', 'files', 'memory'].map(tab => `<a href="${path(p.id, tab)}" data-space-link ${tab === activeTab ? 'aria-current="page"' : ''}>${icon({overview:'menu',chat:'chat',work:'terminal',files:'file',memory:'snippet'}[tab])}${tab[0].toUpperCase() + tab.slice(1)}</a>`).join('')}</nav><div id="rcProjectBody"></div>`;
+    const page=$('rcProjectPage'), shellBuilt=!(page.dataset.project===p.id&&$('rcProjectBody'));
+    if(!shellBuilt){
+      page.querySelectorAll('.rc-space-tabs a').forEach(a=>{if(a.getAttribute('href')===path(p.id,activeTab))a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
+      restoreMemory(); $('rcProjectBody').innerHTML='';
+    } else { page.dataset.project=p.id;
+    page.innerHTML = `<div class="rc-space-breadcrumb">${link('/projects', 'Projects')}<span>/</span><span>${esc(p.name)}</span></div><div class="cr-heading"><div><h1 tabindex="-1">${esc(p.name)}</h1><p>${p.archivedAt ? 'Archived · saved history and files are retained' : `${p.activity.running} running · ${p.activity.background} background · ${p.activity.queued} queued · ${p.activity.needsInput} need input`}</p></div><div class="rc-space-toolbar"><button class="cr-secondary" id="rcSpaceAddExisting" ${p.archivedAt?'disabled':''}>${icon('plus')} Add existing</button><button class="cr-secondary" id="rcSpaceCosts">Costs</button>${link(path(p.id, 'settings'), icon('gear') + ' Settings', 'cr-secondary')}</div></div><nav class="rc-space-tabs" aria-label="Project sections">${['overview','chat', 'work', 'files', 'memory'].map(tab => `<a href="${path(p.id, tab)}" data-space-link ${tab === activeTab ? 'aria-current="page"' : ''}>${icon({overview:'layout',chat:'chat',work:'terminal',files:'file',memory:'snippet'}[tab])}${tab[0].toUpperCase() + tab.slice(1)}</a>`).join('')}</nav><div id="rcProjectBody"></div>`;
     $('rcSpaceCosts').onclick=()=>room.showCosts();
     $('rcSpaceAddExisting').onclick=()=>addExisting(p);
+    }
     if (activeTab === 'overview') await renderOverview(p);
     if (activeTab === 'chat' || activeTab === 'work') renderConversations(p, activeTab);
     if (activeTab === 'files') await renderFiles(p);
@@ -123,9 +133,12 @@ window.createProjectSpaces = function (engine, room, chat) {
       $('rcProjectBrief').onclick=()=>editBrief(p);
       document.body.classList.add('rc-spaces-view'); $('rcProjectPage').hidden = false;
       $('crMemoryTab').removeAttribute('aria-current'); $('crSpacesTab').setAttribute('aria-current', 'page');
-      $('crBreadcrumb').innerHTML=link('/projects','Projects')+'<span class="crumb-sep">/</span><span>'+esc(p.name)+'</span>';
+      if(!window.rcWorkspace?.ready())$('crBreadcrumb').innerHTML=link('/projects','Projects')+'<span class="crumb-sep">/</span><span>'+esc(p.name)+'</span>';
     }
     if (activeTab === 'settings') renderSettings(p);
+    const body=$('rcProjectBody');
+    if(shellBuilt){window.rcMotion?.enter(page);}else if(body){window.rcMotion?.enter(body);}
+    if(body)window.rcMotion?.list(body);
   }
   const scopeOf = (p, sid) => p?.conversations?.find(c => c.sessionId === (sid || p.lastSessionId))?.spaceId;
   const scopeName = id => projects.find(s=>s.id===id)?.name || 'Standalone';
@@ -170,7 +183,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   }
   function renderConversations(p, mode) {
     $('rcProjectBody').innerHTML = `<div class="rc-space-toolbar"><label class="cr-search">${icon('search')}<input id="rcSpaceConversationSearch" type="search" placeholder="Search ${mode}" aria-label="Search ${mode}"></label>${mode==='work'?'<button class="cr-secondary" id="rcSpaceAddWork">Add Work project</button>':''}<button class="cr-primary" id="rcSpaceNewConversation" ${p.archivedAt || (mode==='work'&&!p.workspaceConfigured)?'disabled':''}>New ${mode}</button></div>${mode==='work'&&!p.workspaceConfigured?'<div class="cr-empty"><h2>Add a Work project</h2><p>Choose an existing repository or configure a Work workspace.</p></div>':''}<div class="rc-space-conversations" id="rcSpaceConversations"></div><div id="rcSpaceReferences"></div>`;
-    const row = (execution,c,included=true) => `<div class="rc-space-member ${included?'':'rc-space-exception'}">${link(conversationPath(execution,c.sessionId),`${icon(mode==='chat'?'chat':'menu')}<span><strong>${esc(c.title)}</strong><small>${esc(c.provider||execution.provider||'claude')}${execution.runningSessionIds.includes(c.sessionId)?' · Running':execution.backgroundSessionIds.includes(c.sessionId)?' · Background':''}${!included?' · Uses Project '+esc(scopeName(c.spaceId)):''}</small></span>${icon('right')}`,'rc-space-conversation')}<button class="cr-icon" data-membership-project="${esc(execution.id)}" data-membership-session="${esc(c.sessionId)}" aria-label="Change Project for ${esc(c.title)}">${icon('gear')}</button></div>`;
+    const row = (execution,c,included=true) => `<div class="rc-space-member ${included?'':'rc-space-exception'}">${link(conversationPath(execution,c.sessionId),`${icon(mode==='chat'?'chat':'terminal')}<span><strong>${esc(c.title)}</strong><small>${esc(c.provider||execution.provider||'claude')}${execution.runningSessionIds.includes(c.sessionId)?' · Running':execution.backgroundSessionIds.includes(c.sessionId)?' · Background':''}${!included?' · Uses Project '+esc(scopeName(c.spaceId)):''}</small></span>${icon('right')}`,'rc-space-conversation')}<button class="cr-icon" data-membership-project="${esc(execution.id)}" data-membership-session="${esc(c.sessionId)}" aria-label="Change Project for ${esc(c.title)}">${icon('move')}</button></div>`;
     const render = () => {
       const q=$('rcSpaceConversationSearch').value.toLowerCase();
       $('rcSpaceConversations').innerHTML = mode==='chat' ? memberRows(p).filter(r=>r.p.kind==='chat'&&r.c.title.toLowerCase().includes(q)).map(r=>row(r.p,r.c)).join('') : (p.workProjects||[]).map(work=>{
@@ -472,9 +485,9 @@ window.createProjectSpaces = function (engine, room, chat) {
       if(!enabled||!source||!sid)return [];
       const parent=projects.find(p=>p.id===scopeOf(source,sid)),isChat=source.kind==='chat';
       const items=[{label:isChat?'Continue in Work':'Discuss in Chat',icon:isChat?'terminal':'chat',disabled:isChat&&!parent?.workspaceConfigured,run:()=>handoff(isChat?'work':'chat')}];
-      if(isChat)items.push({label:'Start a fresh linked Chat',icon:'compose',run:()=>handoff('chat',true)});
-      items.push({label:'Change Project',icon:'folder',run:()=>membershipDialog(source,undefined,isChat?undefined:sid)});
-      for(const l of handoffLinks)items.push({label:l.label,icon:'chat',run:()=>navigate(l.path)});
+      if(isChat)items.push({label:'Start a fresh linked Chat',icon:'message-plus',run:()=>handoff('chat',true)});
+      items.push({label:'Change Project',icon:'move',run:()=>membershipDialog(source,undefined,isChat?undefined:sid)});
+      for(const l of handoffLinks)items.push({label:l.label,icon:'link',run:()=>navigate(l.path)});
       return items;
     },
     enabled: () => enabled, list:()=>projects, scopeOf, handles, navigate, leave:()=>{generation++;leave();}, newWork:pid=>{const execution=engine.state().projects.find(p=>p.id===pid);if(execution?.cwd)newConversation(projects.find(p=>p.id===execution.workSpaceId),'work',pid);}, createFromWork:pid=>createProject(pid), newProject:()=>createProject(), membershipDialog, conversationPath, reviewQueue, resumeAutopilot, shareChatFile, importArtifact,

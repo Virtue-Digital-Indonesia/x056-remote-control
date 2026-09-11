@@ -73,6 +73,8 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   serveStatic('/workspace.js', 'workspace.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
   serveStatic('/workspace.css', 'workspace.css', 'text/css', { 'Cache-Control': 'no-cache' });
   serveStatic('/webauthn.js', 'webauthn.js', 'application/javascript'); // vendored @simplewebauthn/browser bundle
+  serveStatic('/gsap.min.js', 'gsap.min.js', 'application/javascript'); // vendored GSAP 3.15 (standard no-charge license)
+  serveStatic('/motion.js', 'motion.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
   serveStatic('/icon-16.png', 'icon-16.png', 'image/png');
   serveStatic('/icon-32.png', 'icon-32.png', 'image/png');
   serveStatic('/icon-180.png', 'icon-180.png', 'image/png');

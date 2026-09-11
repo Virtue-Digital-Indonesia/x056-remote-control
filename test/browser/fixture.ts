@@ -14,7 +14,7 @@ const dir=mkdtempSync(join(fixtureRoot,'x056-browser-')), state=join(dir,'state'
 mkdirSync(state,{recursive:true});mkdirSync(pub);
 for(const file of ['panel.html','control-room.js','control-room.css','rc-chat.js','rc-chat.css','project-spaces.js','project-spaces.css','webauthn.js','sw.js','manifest.webmanifest']) symlinkSync(file==='panel.html' && process.env.X056_TEST_PANEL ? process.env.X056_TEST_PANEL : resolve(['control-room.js','control-room.css'].includes(file) ? process.env.X056_TEST_ASSETS || 'server/public' : 'server/public',file),join(pub,file));
 const specs=[{name:'primary',configDir:join(dir,'primary')},{name:'backup',configDir:join(dir,'backup')},{name:'chatgpt',configDir:join(dir,'chatgpt'),provider:'codex' as const}];
-for(const file of ['workspace.js','workspace.css'])symlinkSync(resolve('server/public',file),join(pub,file));
+for(const file of ['workspace.js','workspace.css','gsap.min.js','motion.js'])symlinkSync(resolve('server/public',file),join(pub,file));
 const registry=AccountRegistry.init(join(state,'accounts.json'),specs);registry.markOk('primary');registry.markLimited('backup',Math.floor(Date.now()/1000)+3600);registry.markOk('chatgpt');
 for(const s of specs) { mkdirSync(s.configDir,{recursive:true});writeFileSync(join(s.configDir,'.claude.json'),JSON.stringify({oauthAccount:{displayName:s.name==='primary'?'Personal workspace':'Backup workspace',emailAddress:s.name+'@example.test'}})); }
 const projects=ProjectRegistry.load(join(state,'projects.json'));
