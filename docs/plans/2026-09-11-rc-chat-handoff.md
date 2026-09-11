@@ -4,7 +4,9 @@
 
 Read `docs/plans/2026-09-11-rc-chat-implementation.md`, then inspect the current working tree before building. Complete its seven milestones in order.
 
-The user requested compaction preparation. Implementation has not started. Wait for the user's instruction to build; do not treat this handoff as deployment authorization.
+Implementation has started. Read `2026-09-11-rc-chat-build.md` for the current build, verification, and rollout state.
+Further changes belong in the isolated `feature/rc-chat` checkout.
+Efran withdrew deployment authorization after the panel was restored. No deployment request was sent.
 
 Recommended builder: **Codex · GPT-6 Astra · xhigh effort**. Do not spawn subagents unless the user or applicable instructions authorize them.
 
