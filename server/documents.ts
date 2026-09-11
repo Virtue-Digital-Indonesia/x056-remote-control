@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export const DOCUMENT_CONVERTER = 'rc-documents-1-libreoffice-7.4.7-deb12u14-poppler-22.12.0-deb12u3';
+export const DOCUMENT_CONVERTER = 'rc-documents-2-libreoffice-7.4.7-deb12u14-poppler-22.12.0-deb12u3';
 export const DOCUMENT_SKILL = fileURLToPath(new URL('../skills/rc-documents/', import.meta.url));
 export function documentCommand(command: string, ...args: string[]): Promise<Record<string, any>> {
   return new Promise((resolve, reject) => {

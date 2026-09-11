@@ -94,6 +94,14 @@ class DocumentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsafe"):
             documents.package(bad)
 
+    def test_preview_refuses_external_resources_without_changing_the_document(self):
+        with zipfile.ZipFile(self.original, "a") as archive:
+            archive.writestr("word/_rels/external.xml.rels", '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="external" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" TargetMode="External" Target="http://127.0.0.1/private"/></Relationships>')
+        original = self.original.read_bytes()
+        with self.assertRaisesRegex(ValueError, "externally linked"):
+            documents.preview(self.original, self.directory / "blocked")
+        self.assertEqual(self.original.read_bytes(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

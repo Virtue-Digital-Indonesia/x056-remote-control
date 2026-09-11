@@ -33,4 +33,16 @@ describe('Chat capability routing', () => {
     }});
     expect(result.status).toBe('completed');expect(used).toEqual(['/cfg/b']);
   });
+  it('honors an account choice made during capability discovery without interrupting that account', async () => {
+    const state=mkdtempSync(join(tmpdir(),'chat-discovery-switch-')),registry=AccountRegistry.init(join(state,'accounts.json'),[{name:'a',configDir:'/cfg/a'},{name:'b',configDir:'/cfg/b'}]);
+    let controls!: import('../src/failover.js').RunControl, resolve!: (value: Record<string,string[]>)=>void;
+    const eligibility=new Promise<Record<string,string[]>>(r=>{resolve=r;});
+    let interrupts=0;
+    const run=runSession({registry,log:new EventLog(join(state,'events.jsonl')),sessionId:'discovery-switch',cwd:state,prompt:'Continue',control:c=>{controls=c;},accountEligibility:()=>eligibility,startTurnFn:o=>({
+      pid:1,kill:()=>{},interrupt:()=>{interrupts++;},done:Promise.resolve().then(()=>{o.onEvent({type:'result',subtype:'success',is_error:false,result:'done'});return {code:0,signal:null};}),
+    })});
+    controls.forceSwitch({account:'b',bench:false});resolve({});
+    expect(await run).toMatchObject({status:'completed',finalAccount:'b',failovers:0});
+    expect(interrupts).toBe(0);
+  });
 });

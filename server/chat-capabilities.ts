@@ -33,29 +33,31 @@ function skillFingerprint(path: string): string {
 
 /** Read the actual Codex skill resolution for this CWD and this account. No turn
  * is started and credentials stay in the provider's process. */
-async function codexInventory(configDir: string, cwd: string): Promise<{ skills: any[]; servers: any[]; apps: any[] }> {
+async function codexInventory(configDir: string, cwd: string): Promise<{ skills: any[]; servers: any[]; apps: any[]; errors: string[] }> {
   const child = spawn('codex', ['app-server'], { cwd, env: { ...process.env, CODEX_HOME: configDir }, detached: true, stdio: ['pipe','pipe','ignore'] });
   const waiting = new Map<number, { resolve: (data: any) => void; reject: (error: Error) => void }>();
-  let id = 0;
-  const rpc = (method: string, params: unknown) => new Promise<any>((resolve, reject) => { const n = ++id; waiting.set(n, { resolve, reject }); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: n, method, params }) + '\n'); });
+  let id = 0, disconnected = false;
+  const rpc = (method: string, params: unknown) => new Promise<any>((resolve, reject) => { if (disconnected) return reject(new Error('Provider discovery ended')); const n = ++id; waiting.set(n, { resolve, reject }); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: n, method, params }) + '\n'); });
   const lines = createInterface({ input: child.stdout });
   lines.on('line', line => { try { const data = JSON.parse(line), pending = waiting.get(data.id); if (pending) { waiting.delete(data.id); data.error ? pending.reject(new Error('Provider capability discovery failed')) : pending.resolve(data.result); } } catch {} });
-  const fail = () => { for (const p of waiting.values()) p.reject(new Error('Provider capability discovery unavailable')); waiting.clear(); };
+  const fail = () => { disconnected = true; for (const p of waiting.values()) p.reject(new Error('Provider capability discovery unavailable')); waiting.clear(); };
   child.on('error', fail); child.on('close', fail);
   const timer = setTimeout(() => { fail(); try { process.kill(-child.pid!, 'SIGKILL'); } catch {} }, 30_000);
   try {
     await rpc('initialize', { clientInfo: { name: 'x056-capabilities', version: '1' }, capabilities: { experimentalApi: true } });
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }) + '\n');
     const skills = await rpc('skills/list', { cwds: [cwd], forceReload: true });
-    const servers: any[] = [], apps: any[] = [];
+    const servers: any[] = [], apps: any[] = [], errors: string[] = [];
     for (const [method, target, params] of [['mcpServerStatus/list', servers, {}], ['app/list', apps, { forceRefetch: true }]] as const) {
-      let cursor: string | undefined;
-      for (let page = 0; page < 20; page++) {
-        const response = await rpc(method, { ...params, limit: 100, ...(cursor ? { cursor } : {}) });
-        target.push(...(response.data ?? [])); cursor = response.nextCursor; if (!cursor) break;
-      }
+      try {
+        let cursor: string | undefined;
+        for (let page = 0; page < 20; page++) {
+          const response = await rpc(method, { ...params, limit: 100, ...(cursor ? { cursor } : {}) });
+          target.push(...(response.data ?? [])); cursor = response.nextCursor; if (!cursor) break;
+        }
+      } catch { errors.push(method === 'app/list' ? 'Plugin connection check unavailable' : 'MCP connection check unavailable'); }
     }
-    return { skills: (skills.data ?? []).flatMap((x: any) => x.skills ?? []), servers, apps };
+    return { skills: (skills.data ?? []).flatMap((x: any) => x.skills ?? []), servers, apps, errors };
   } finally { clearTimeout(timer); lines.close(); fail(); try { process.kill(-child.pid!, 'SIGKILL'); } catch {} }
 }
 
@@ -102,7 +104,7 @@ export class ChatCapabilities {
     let native: Awaited<ReturnType<typeof codexInventory>> | undefined;
     let claudeHealth = '';
     if (provider === 'codex') {
-      try { native = await codexInventory(account.configDir, chat.cwd); } catch { errors.push('Provider tool discovery unavailable'); }
+      try { native = await codexInventory(account.configDir, chat.cwd); errors.push(...native.errors); } catch { errors.push('Provider tool discovery unavailable'); }
     } else {
       try { claudeHealth = (await exec(this.claudePath, ['mcp','list'], { cwd: chat.cwd, env: { ...process.env, CLAUDE_CONFIG_DIR: account.configDir }, timeout: 30_000, maxBuffer: 1024 * 1024 })).stdout; } catch { errors.push('MCP connection check unavailable'); }
     }

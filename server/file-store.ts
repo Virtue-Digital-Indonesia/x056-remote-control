@@ -1,7 +1,7 @@
 import type { DatabaseSync as SqliteDatabase } from 'node:sqlite';
 import { createRequire } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, closeSync, copyFileSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
+import { constants, chmodSync, closeSync, copyFileSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
 import { open, mkdir } from 'node:fs/promises';
 import { basename, extname, join, resolve, sep } from 'node:path';
 import { ArtifactStore } from './workspace-store.js';
@@ -33,7 +33,8 @@ export class FileStore {
   private workerRunning = false;
   private closed = false;
   constructor(private readonly state: string, private readonly owner: (id: string) => Project,
-    private readonly changed: (chatId: string, data: Record<string, unknown>) => void = () => {}) {
+    private readonly changed: (chatId: string, data: Record<string, unknown>) => void = () => {},
+    private readonly source: (chatId: string) => { sourceMessageId?: string; account?: string } = () => ({})) {
     mkdirSync(state, { recursive: true });
     this.stagingDir = join(state, 'file-staging'); mkdirSync(this.stagingDir, { recursive: true });
     mkdirSync(join(state, 'artifacts'), { recursive: true });
@@ -89,6 +90,14 @@ export class FileStore {
     const file = this.list(chatId).find(f => f.id === fileId);
     if (!file) throw new FileError('File not found in this Chat', 404);
     return file;
+  }
+  setRemoved(chatId: string, fileId: string, removed: boolean): ChatFile {
+    this.writable(chatId); this.file(chatId, fileId);
+    if (typeof removed !== 'boolean') throw new FileError('removed must be boolean');
+    // Keep every saved version and queued reference usable.
+    this.db.prepare('UPDATE files SET removed=? WHERE id=? AND chatId=?').run(Number(removed), fileId, chatId);
+    this.changed(chatId, { fileId, state: removed ? 'removed' : 'restored' });
+    return this.file(chatId, fileId);
   }
   version(chatId: string, ref: FileReference): { file: ChatFile; version: FileVersion; path: string } {
     if (!ref || typeof ref.fileId !== 'string' || typeof ref.versionId !== 'string') throw new FileError('Invalid file reference');
@@ -151,6 +160,7 @@ export class FileStore {
       const target = join(this.state, 'artifacts', blob);
       // Identical blobs are interchangeable; rename only fully synced snapshots.
       renameSync(staged, target);
+      chmodSync(target, 0o400);
       const fd = openSync(join(this.state, 'artifacts'), 'r'); try { fsyncSync(fd); } finally { closeSync(fd); }
       return { name, mime, hash: checksum, bytes, blob };
     } finally { await input.close(); await output?.close(); rmSync(staged, { force: true }); }
@@ -178,7 +188,7 @@ export class FileStore {
       for (const data of prepared) {
         const id = randomUUID();
         this.db.prepare('INSERT INTO files VALUES (?,?,?,?,?,?,?,0)').run(id, chatId, chat.lastSessionId!, data.name, data.mime, '', now());
-        const version = this.insertVersion(chat, id, data);
+        const version = this.insertVersion(chat, id, data, undefined, expectedEpoch === undefined ? undefined : this.source(chatId));
         this.db.prepare('UPDATE files SET latestVersionId=? WHERE id=?').run(version.id, id); ids.push(id);
       }
       this.db.prepare("INSERT INTO operations VALUES (?,?,?,'committed',?,NULL,?)").run(chatId, operationId, fingerprint, JSON.stringify(ids), this.epoch(chatId));
@@ -189,10 +199,12 @@ export class FileStore {
   }
   checkout(chatId: string, ref: FileReference): Checkout {
     const chat = this.writable(chatId), { file, path } = this.version(chatId, ref);
+    if (file.removed) throw new FileError('Restore this file before editing', 409);
     const token = randomUUID(), folder = join(chat.cwd, 'files', token);
     mkdirSync(folder, { recursive: true });
     if (realpathSync(folder) !== folder) throw new FileError('Invalid working copy directory');
     const target = join(folder, file.name); copyFileSync(path, target, constants.COPYFILE_EXCL);
+    chmodSync(target, 0o600);
     const checkout: Checkout = { token, chatId, fileId: file.id, versionId: ref.versionId, path: target, epoch: this.epoch(chatId) };
     this.db.prepare('INSERT INTO checkouts VALUES (?,?,?,?,?,?)').run(token, chatId, file.id, ref.versionId, target, checkout.epoch);
     return checkout;
@@ -204,6 +216,7 @@ export class FileStore {
     const checkout = this.db.prepare('SELECT * FROM checkouts WHERE token=? AND chatId=? AND fileId=?').get(input.checkoutToken, chatId, fileId) as unknown as Checkout | undefined;
     if (!checkout || checkout.versionId !== input.expectedBaseVersionId) throw new FileError('Check out the expected saved version first', 409);
     const validate = () => {
+      if (this.file(chatId, fileId).removed) throw new FileError('Restore this file before editing', 409);
       if (checkout.epoch !== this.epoch(chatId)) throw new FileError('Working copy belongs to a previous run; check out again', 409);
       if (this.file(chatId, fileId).latestVersionId !== input.expectedBaseVersionId) throw new FileError('A newer version exists; check it before saving', 409);
     };
@@ -215,7 +228,7 @@ export class FileStore {
       const prepared = await this.prepare(checkout.path, this.file(chatId, fileId).name);
       this.transaction(() => {
         this.writable(chatId); validate();
-        const version = this.insertVersion(chat, fileId, prepared, input.expectedBaseVersionId, input);
+        const version = this.insertVersion(chat, fileId, prepared, input.expectedBaseVersionId, this.source(chatId));
         this.db.prepare('UPDATE files SET latestVersionId=?,mime=? WHERE id=?').run(version.id, prepared.mime, fileId);
         this.db.prepare("UPDATE operations SET state='committed',result=? WHERE chatId=? AND id=?").run(JSON.stringify([version.id]), chatId, input.operationId);
       });
@@ -262,7 +275,7 @@ export class FileStore {
     const { version } = this.version(chatId, ref);
     const supported = ['application/pdf', MIMES['.docx']].includes(version.mime);
     this.db.prepare('INSERT OR IGNORE INTO previews VALUES (?,?,?,?,?,NULL,NULL)').run(randomUUID(), chatId, version.id, DOCUMENT_CONVERTER, supported ? 'queued' : 'unsupported');
-    if (retry) this.db.prepare("UPDATE previews SET state='queued',error=NULL WHERE versionId=? AND converter=? AND state='failed'").run(version.id, DOCUMENT_CONVERTER);
+    if (retry) this.db.prepare("UPDATE previews SET state='queued',output=NULL,error=NULL WHERE versionId=? AND converter=? AND state IN ('failed','ready')").run(version.id, DOCUMENT_CONVERTER);
     const job = this.db.prepare('SELECT * FROM previews WHERE versionId=? AND converter=?').get(version.id, DOCUMENT_CONVERTER) as unknown as PreviewJob;
     setImmediate(() => { void this.drainPreviews(); });
     return job;
@@ -274,8 +287,18 @@ export class FileStore {
     const outputs = JSON.parse(job.output!) as Prepared[], output = outputs[index];
     if (!Number.isInteger(index) || !output || !/^[a-f0-9]{64}\.(png|pdf)$/.test(output.blob)) throw new FileError('Preview page not found', 404);
     const path = join(this.state, 'artifacts', output.blob);
-    if (realpathSync(path) !== join(realpathSync(this.state), 'artifacts', output.blob) || statSync(path).size !== output.bytes) throw new FileError('Preview is missing', 404);
+    if (!this.validPreview(output)) throw new FileError('Preview is missing or damaged; retry conversion', 404);
     return { path, mime: output.mime };
+  }
+
+  private validPreview(output: Prepared): boolean {
+    if (!/^[a-f0-9]{64}\.(png|pdf)$/.test(output.blob)) return false;
+    const path = join(this.state, 'artifacts', output.blob);
+    try {
+      return realpathSync(path) === join(realpathSync(this.state), 'artifacts', output.blob)
+        && statSync(path).size === output.bytes
+        && createHash('sha256').update(readFileSync(path)).digest('hex') === output.hash;
+    } catch { return false; }
   }
 
   private async drainPreviews(): Promise<void> {
@@ -291,11 +314,16 @@ export class FileStore {
         try {
           const version = this.db.prepare('SELECT * FROM versions WHERE id=?').get(job.versionId) as unknown as FileVersion;
           const { path, file } = this.version(job.chatId, { fileId: version.fileId, versionId: version.id });
-          const converted = await documentCommand('preview', path, dir);
-          const outputs: Prepared[] = [];
-          for (const output of [converted.pdf, ...converted.pages]) {
-            if (typeof output !== 'string' || (output !== path && !realpathSync(output).startsWith(realpathSync(dir) + sep))) throw new Error('Invalid converter output');
-            outputs.push(await this.prepare(output, basename(output)));
+          const cached = this.db.prepare("SELECT p.output FROM previews p JOIN versions v ON v.id=p.versionId WHERE v.hash=? AND v.mime=? AND p.converter=? AND p.state='ready' LIMIT 1")
+            .get(version.hash, version.mime, job.converter) as { output: string } | undefined;
+          let outputs: Prepared[] = cached ? JSON.parse(cached.output) : [];
+          if (!outputs.length || !outputs.every(output => this.validPreview(output))) {
+            outputs = [];
+            const converted = await documentCommand('preview', path, dir);
+            for (const output of [converted.pdf, ...converted.pages]) {
+              if (typeof output !== 'string' || (output !== path && !realpathSync(output).startsWith(realpathSync(dir) + sep))) throw new Error('Invalid converter output');
+              outputs.push(await this.prepare(output, basename(output)));
+            }
           }
           if (this.closed) return;
           const update = this.db.prepare("UPDATE previews SET state='ready',output=?,error=NULL WHERE id=? AND state='running' AND output=?").run(JSON.stringify(outputs), job.id, marker);

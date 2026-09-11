@@ -260,7 +260,10 @@ export class ApiController {
 
   @Post('sessions')
   startSession(@Body() body: SendBody): {sessionId:string}|DeliveryReceipt {
-    if(body.requestId)return this.deliveryOnce(body,()=>this.startSession({...body,requestId:undefined}));
+    if(body.requestId)return this.deliveryOnce(body,()=>this.startSessionInternal(body));
+    return this.startSessionInternal(body);
+  }
+  private startSessionInternal(body: SendBody): {sessionId:string} {
     if (!body?.prompt && !hasAttachments(body)) throw new BadRequestException('prompt or attachment required');
     try {
       const { prompt, opts } = this.composePrompt(body);
@@ -273,7 +276,10 @@ export class ApiController {
 
   @Post('sessions/current/messages')
   continueSession(@Body() body: SendBody): {sessionId:string}|DeliveryReceipt {
-    if(body.requestId)return this.deliveryOnce(body,()=>{try{return this.continueSession({...body,requestId:undefined});}catch(e){if(e instanceof ConflictException)return {...this.enqueueInternal(body),sessionId:body.sessionId};throw e;}});
+    if(body.requestId)return this.deliveryOnce(body,()=>{try{return this.continueSessionInternal(body);}catch(e){if(e instanceof ConflictException)return {...this.enqueueInternal(body),sessionId:body.sessionId};throw e;}});
+    return this.continueSessionInternal(body);
+  }
+  private continueSessionInternal(body: SendBody): {sessionId:string} {
     if (!body?.prompt && !hasAttachments(body)) throw new BadRequestException('prompt or attachment required');
     try {
       const { prompt, opts } = this.composePrompt(body);

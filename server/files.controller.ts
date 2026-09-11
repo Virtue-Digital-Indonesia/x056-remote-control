@@ -28,6 +28,11 @@ export class FilesController {
     return this.call(() => this.manager.files().restore(id, fileId, body));
   }
 
+  @Post(':fileId')
+  setRemoved(@Param('chatId') id: string, @Param('fileId') fileId: string, @Body() body: { removed: boolean }) {
+    return this.call(() => this.manager.files().setRemoved(id, fileId, body.removed));
+  }
+
   @Get(':fileId/versions/:versionId/preview')
   preview(@Param('chatId') id: string, @Param('fileId') fileId: string, @Param('versionId') versionId: string) {
     return this.call(() => this.manager.files().preview(id, { fileId, versionId }));

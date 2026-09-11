@@ -220,6 +220,7 @@ interface ActiveRun {
   sessionId: string;
   projectId: string;
   cwd: string;
+  requestId?: string;
   control?: RunControl;
   route?: AccountRouteContext;
   waiting?: boolean;
@@ -279,7 +280,10 @@ export class SessionManager {
     if (!this.chatsEnabled()) throw new Error('Chat is disabled');
     if (!this.fileStore) {
       this.fileStore = new FileStore(this.opts.stateDir, id => this.chat(id), (id, data) =>
-        this.emit('chat_files', { projectId: id, sessionId: this.projects().get(id)?.lastSessionId, ...data }));
+        this.emit('chat_files', { projectId: id, sessionId: this.projects().get(id)?.lastSessionId, ...data }), id => {
+          const run = this.runs.get(this.chat(id).lastSessionId!);
+          return { sourceMessageId: run?.requestId, account: run?.account };
+        });
       for (const p of this.projects().list().filter(p => p.kind === 'chat')) this.fileStore.fence(p.id);
     }
     return this.fileStore;
@@ -750,6 +754,12 @@ export class SessionManager {
       try {
         this.continueSession(pid, sessionId, item.text, { fileRefs: item.fileRefs, requestId: item.requestId, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve });
       } catch(e) {
+        if (e instanceof BusyError) {
+          item.dispatching=false;
+          this.saveQueues(current); this.emitQueue(pid,current);
+          this.maybeDrainQueue(pid,sessionId);
+          return;
+        }
         item.dispatching=false;item.paused=true;item.error=(e as Error).message;
         try {this.saveQueues(current);this.emitQueue(pid,current);} catch {/* Keep the durable recovery marker. */}
         return;
@@ -1836,7 +1846,8 @@ export class SessionManager {
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
     if (this.chatToolsChanged.has(pid)) {
       const retired = this.pools().map(pool => pool.retireIdleSession(sessionId));
-      if (retired.every(Boolean)) this.chatToolsChanged.delete(pid);
+      if (!retired.every(Boolean)) throw new BusyError();
+      this.chatToolsChanged.delete(pid);
     }
     const references = this.projects().get(pid)?.references;
     if (references?.length && !prompt.trimStart().startsWith('/')) prompt += '\n\n[Referenced conversations. Use read_conversation to inspect their messages and send_message for approved communication:\n' + references.map(r => `projectId=${r.projectId}, sessionId=${r.sessionId}`).join('\n') + '\n]';
@@ -1879,7 +1890,7 @@ export class SessionManager {
     const sender = runOpts?.sender && !prompt.trimStart().startsWith('/') ? { ...runOpts.sender, messageId: runOpts.sender.messageId || randomUUID() } : undefined;
     turnPrompt = withMessageSender(turnPrompt, sender);
     const sourcePrompt=prompt;
-    const run: ActiveRun = { sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice };
+    const run: ActiveRun = { sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: runOpts?.requestId };
     this.runs.set(sessionId, run);
     // Every event from this run carries its projectId AND sessionId so the panel
     // can route it to the right conversation — a project can have several
@@ -1888,11 +1899,13 @@ export class SessionManager {
     const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { sessionId, ...data, projectId: pid });
     try {
       const runFn = this.opts.runSessionFn ?? runSession;
+      let fileAccount: string | undefined;
       const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => {
         // Track which account this turn is on (updated on start + each failover),
         // so a targeted force-switch can tell "same account" from "different".
         if (k === 'supervisor' && d && d.type === 'turn_started' && typeof d.account === 'string') {
-          if (run.account && run.account !== d.account && reg.get(pid)?.kind === 'chat') this.files().fence(pid);
+          if (fileAccount && fileAccount !== d.account && reg.get(pid)?.kind === 'chat') this.files().fence(pid);
+          fileAccount = d.account;
           run.account = d.account; run.waiting=false; this.emitAccounts();
         }
         if(k==='supervisor'&&typeof d.type==='string'&&['routing_decision','routing_wait','turn_started','turn_completed','turn_failed','failover','limit_detected','auth_required','api_overloaded_retry','forced_switch','waiting_for_reset'].includes(d.type)){

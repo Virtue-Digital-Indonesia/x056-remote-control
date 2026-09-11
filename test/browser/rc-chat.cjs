@@ -6,6 +6,17 @@ const headers = { Authorization: 'Bearer browser-fixture-token-0123456789', 'Con
 (async () => {
   const browser = await chromium.launch({ args:['--no-sandbox'] });
   try {
+    // A missing optional asset must never prevent access to existing projects.
+    const compatibility = await browser.newContext();
+    await compatibility.addInitScript(()=>localStorage.setItem('x056_token','browser-fixture-token-0123456789'));
+    await compatibility.route('**/rc-chat.js*', route=>route.fulfill({status:404,body:'Not found'}));
+    const legacy = await compatibility.newPage(), bootErrors=[];
+    legacy.on('pageerror', error=>bootErrors.push(error.message));
+    await legacy.goto(base);
+    await legacy.locator('#crScopeTitle').filter({hasText:'All projects'}).waitFor();
+    await legacy.locator('.cr-task').first().waitFor();
+    assert.deepEqual(bootErrors,[]);
+    await compatibility.close();
     const context = await browser.newContext({ viewport:{width:1440,height:960}, acceptDownloads:true });
     await context.addInitScript(()=>localStorage.setItem('x056_token','browser-fixture-token-0123456789'));
     const label='Proposal draft '+Date.now();
@@ -45,12 +56,24 @@ const headers = { Authorization: 'Bearer browser-fixture-token-0123456789', 'Con
     assert.equal(await page.locator('.rc-chat-history article').count(),2);
     const downloadEvent=page.waitForEvent('download');await page.locator('.rc-chat-history article').last().locator('[data-download]').click();
     const download=await downloadEvent;assert.equal(readFileSync(await download.path(),'utf8'),'Original proposal');
-    await page.keyboard.press('Escape');await page.locator('#rcChatTools').click();
+    await page.keyboard.press('Escape');
+    await page.locator('.rc-chat-file').filter({hasText:'proposal.txt'}).locator('[data-remove]').click();
+    await page.locator('.rc-chat-file').filter({hasText:'proposal.txt'}).waitFor({state:'hidden'});
+    await page.locator('#rcChatRemoved').click();
+    await page.locator('.rc-chat-file').filter({hasText:'proposal.txt'}).locator('[data-remove]').click();
+    await page.locator('#rcChatRemoved').click();
+    await page.locator('.rc-chat-file').filter({hasText:'proposal.txt'}).waitFor();
+    await page.locator('#rcChatTools').click();
     await page.locator('[data-kind=skill]').click();await page.locator('.rc-chat-capability').filter({hasText:'rc-documents'}).waitFor();
     await page.locator('.rc-chat-capability input').check();await page.keyboard.press('Escape');
     const caps=await (await context.request.get(base+`/api/chats/${chat.id}/capabilities`,{headers})).json();assert.equal(caps.requirements[0].key,'skill:rc-documents');
     await page.locator('#rcChatReference').click();await page.locator('.rc-chat-reference-list button').first().click();
     await page.locator('.rc-chat-reference [data-read]').click();await page.locator('.rc-chat-reference-history').waitFor();await page.keyboard.press('Escape');
+    await page.locator('.rc-chat-reference [data-message]').click();
+    await page.locator('.rc-chat-dialog textarea').fill('Check the proposal scope.');
+    await page.locator('.rc-chat-dialog button.cr-primary').click();
+    assert.match(await page.locator('#prompt').inputValue(), /Use send_message.*projectId=.*sessionId=/);
+    assert.match(await page.locator('#prompt').inputValue(), /Check the proposal scope\./);
     await page.locator('[data-chat-tab=files]').click();
     await page.locator('#file').setInputFiles('design/rc-chat-review/AHU-proposal-v3.docx');
     await page.locator('.rc-chat-file').filter({hasText:'AHU-proposal-v3.docx'}).waitFor();
@@ -61,6 +84,9 @@ const headers = { Authorization: 'Bearer browser-fixture-token-0123456789', 'Con
     await page.locator('#rcChatMenu').click();await page.locator('#rcChatSearch').fill('Proposal');await page.locator('.rc-chat-item').first().click();
     await page.locator('#rcChatFiles').click();await page.screenshot({path:'/tmp/rc-chat-implemented-mobile.png'});
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.setViewportSize({width:1440,height:960});await page.locator('#rcChatAccounts').click();
+    await page.locator('#crCostDetails').click();
+    await page.locator('#projectCostDetails summary strong').filter({hasText:/^Chat$/}).waitFor();
     assert.deepEqual(errors,[]);
     console.log('Chat creation, uploads, reload, delivery, versions/download, tools, references, and mobile passed.');
   } catch (error) { const p=browser.contexts()[0]?.pages()[0]; if(p){await p.screenshot({path:"/tmp/rc-chat-browser-failure.png"});console.error((await p.locator("body").innerText()).slice(-2500));} throw error; } finally { await browser.close(); }

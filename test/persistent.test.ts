@@ -43,6 +43,19 @@ const turn = (over: Partial<TurnOptions> = {}): TurnOptions => ({
 });
 
 describe('one process across many turns', () => {
+  it('refreshes configuration after work becomes idle without killing recent background activity', async () => {
+    let time=1000;
+    const {p,spawned}=pool({now:()=>time,workingGraceMs:100});
+    const first=p.startTurn(turn());spawned[0].cli.result('done');await first.done;
+    expect(p.retireIdleSession('s1')).toBe(false);
+    expect(spawned[0].cli.killed).toBe(false);
+    time+=101;
+    expect(p.retireIdleSession('s1')).toBe(true);
+    expect(spawned[0].cli.killed).toBe(true);
+    p.startTurn(turn({mode:'resume'}));
+    expect(spawned).toHaveLength(2);
+    p.shutdown();
+  });
   it('reuses the same process for a second turn', async () => {
     const { p, spawned } = pool();
     const h1 = p.startTurn(turn({ prompt: 'first' }));

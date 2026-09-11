@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
 import { createApp } from '../server/main.js';
 import { SessionManager } from '../server/manager.js';
@@ -38,5 +38,13 @@ describe('Chat files HTTP', () => {
     const repeat = await json('/api/queue', queued); expect(repeat.status).toBe(200);
     const items = app.get(SessionManager).queues()[chat.id]; expect(items).toHaveLength(1); expect(items[0].fileRefs).toEqual(queued.fileRefs);
     expect(items[0].text).toBe('Use the attached files.');
+    const dispatch=vi.spyOn(app.get(SessionManager),'continueSession').mockReturnValue(chat.lastSessionId);
+    try {
+      const message={...queued,requestId:'api-direct-message-0001',paused:false,prompt:'Read this version'};
+      expect((await json('/api/sessions/current/messages',message)).status).toBe(201);
+      expect((await json('/api/sessions/current/messages',message)).status).toBe(201);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(dispatch.mock.calls[0][3]).toMatchObject({requestId:message.requestId,fileRefs:queued.fileRefs});
+    } finally { dispatch.mockRestore(); }
   });
 });

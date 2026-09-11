@@ -27,8 +27,9 @@ services:
       X056_WORKSPACE_ROOT: ${X056_WORKSPACE_ROOT:?set it in .env — the default was one instance's whole repo tree, including its .env and X056_TOKEN}
       X056_STATE_DIR: /app/state
       X056_CHAT_ENABLED: ${X056_CHAT_ENABLED:-0}
-      # Panel HTML is bind-mount live-served (UI edits appear on refresh, no rebuild).
-      X056_PANEL_PATH: ${X056_PANEL_PATH:?set it in .env — point it at THIS checkout, or /app/server/public/panel.html to serve the baked copy}
+      # Serve panel and assets from this image so workspace edits cannot break it.
+      # Override only for an isolated development instance.
+      X056_PANEL_PATH: ${X056_PANEL_PATH:-/app/server/public/panel.html}
       PORT: "4056"
       # WebAuthn/passkey relying-party id(s), comma-separated — the public host(s)
       # passkeys are bound to (localhost is always allowed for dev/e2e).

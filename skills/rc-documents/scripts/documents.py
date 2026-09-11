@@ -10,7 +10,7 @@ import sys
 import tempfile
 import zipfile
 
-VERSION = "rc-documents-1"
+VERSION = "rc-documents-2"
 MAX_EXPANDED = 200 * 1024 * 1024
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -163,7 +163,18 @@ def preview(path, directory):
     if Path(path).suffix.lower() == ".pdf":
         pdf = Path(path)
     else:
-        package(path, ".docx")[0].close()
+        archive, roots = package(path, ".docx")
+        with archive:
+            if any("vba" in name.lower() for name in archive.namelist()):
+                raise ValueError("Preview unavailable for documents containing macros")
+            for root in roots.values():
+                for node in root.iter():
+                    if node.get("TargetMode", "").lower() == "external" and not node.get("Type", "").endswith("/hyperlink"):
+                        raise ValueError("Preview unavailable for externally linked document resources")
+                    if node.tag in ("{" + W + "}instrText", "{" + W + "}fldSimple"):
+                        instruction = (node.text or "") + node.get("{" + W + "}instr", "")
+                        if any(word in instruction.upper().split() for word in ["DDE", "DDEAUTO", "INCLUDEPICTURE", "INCLUDETEXT", "LINK"]):
+                            raise ValueError("Preview unavailable for externally linked document fields")
         with tempfile.TemporaryDirectory(prefix="rc-office-") as profile:
             user = Path(profile) / "user"
             user.mkdir()

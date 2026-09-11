@@ -54,6 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && python3 -m venv /opt/rc-documents \
  && /opt/rc-documents/bin/pip install --no-cache-dir -r /tmp/rc-documents-requirements.txt \
  && rm -rf /var/lib/apt/lists/* /tmp/rc-documents-requirements.txt
+RUN mkdir -p /app && chown efran:efran /app
 USER efran
 WORKDIR /app
 COPY --chown=efran:efran package.json package-lock.json ./
