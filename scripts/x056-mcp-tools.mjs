@@ -1,6 +1,7 @@
 import { Ajv } from 'ajv';
 import { WORKSPACE_TOOLS, callWorkspaceTool } from './x056-mcp-workspace.mjs';
 import { CHAT_TOOLS, CHAT_OUTPUT, callChatTool } from './x056-mcp-chat.mjs';
+import { PROJECT_FILE_TOOLS, callProjectFileTool } from './x056-mcp-project-files.mjs';
 // Tool definitions + implementations for the x056 MCP bridge, shared by BOTH
 // transports: the stdio server the gateway spawns per turn (scripts/x056-mcp.mjs)
 // and the Streamable HTTP endpoint the gateway serves at /mcp for external
@@ -421,6 +422,8 @@ for (const [name, description, properties, required] of MEMORY_TOOLS)
   });
 TOOLS.push(...WORKSPACE_TOOLS);
 TOOLS.push(...CHAT_TOOLS);
+TOOLS.push(...PROJECT_FILE_TOOLS);
+for (const tool of PROJECT_FILE_TOOLS) OUTPUT_SCHEMAS[tool.name] = CHAT_OUTPUT;
 for (const tool of CHAT_TOOLS) OUTPUT_SCHEMAS[tool.name] = CHAT_OUTPUT;
 for (const tool of TOOLS) {
   if (!OUTPUT_SCHEMAS[tool.name]) throw new Error(`missing output schema: ${tool.name}`);
@@ -450,6 +453,7 @@ export async function callToolResult(api, name, args) {
   if (!validate(args)) throw new Error('Invalid tool arguments: ' + inputValidator.errorsText(validate.errors));
   if (WORKSPACE_TOOLS.some(tool => tool.name === name)) return callWorkspaceTool(api, name, args);
   if (CHAT_TOOLS.some(tool => tool.name === name)) return callChatTool(api, name, args, SELF);
+  if (PROJECT_FILE_TOOLS.some(tool => tool.name === name)) return callProjectFileTool(api, name, args, SELF);
   if(MEMORY_TOOLS.some(t=>t[0]===name)){
     const pid=args.projectId||SELF.projectId,sid=args.sessionId||(pid===SELF.projectId?SELF.sessionId:'');
     let path,body;
@@ -556,7 +560,8 @@ export async function callToolResult(api, name, args) {
   }
   if (name === 'list_projects') {
     const reg = await api('/api/projects');
-    const list = (reg.projects || reg || []).map((p) => ({ id: p.id, name: p.name, cwd: p.cwd, kind: p.kind || 'project', provider: p.provider || 'claude', current: p.id === reg.current }));
+    const list = (reg.projects || reg || []).map((p) => ({ id: p.id, name: p.name, cwd: p.cwd ?? null, kind: p.kind || 'project', provider: p.provider || 'claude', current: p.id === reg.current,
+      ...(p.parentProjectId ? { parentProjectId: p.parentProjectId, membershipRevision: p.membershipRevision ?? 0 } : {}) }));
     return result(JSON.stringify(list, null, 2), { projects: list });
   }
   if (name === 'list_conversations') {

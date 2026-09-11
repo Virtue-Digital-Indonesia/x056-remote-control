@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpException, Inject, Param, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, Get, HttpException, Inject, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import busboy from 'busboy';
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { FileError, MAX_BATCH_BYTES, MAX_FILE_BYTES, type FileStore } from './file-store.js';
 import { SessionManager } from './manager.js';
 
-@Controller('api/chats/:chatId/files')
+@Controller(['api/chats/:chatId/files', 'api/project-spaces/:chatId/files'])
 export class FilesController {
   constructor(@Inject(SessionManager) private readonly manager: SessionManager) {}
   private async call<T>(work: () => T | Promise<T>): Promise<T> {
@@ -16,7 +16,20 @@ export class FilesController {
     catch (error) { throw new HttpException((error as Error).message, error instanceof FileError ? error.status : 400); }
   }
   @Get()
-  list(@Param('chatId') id: string) { return this.call(() => ({ files: this.manager.files().list(id), epoch: this.manager.files().epoch(id) })); }
+  list(@Param('chatId') id: string, @Query('projectId') pid?: string, @Query('sessionId') sid?: string) {
+    return this.call(() => {
+      if (pid || sid) this.manager.fileExecution(id, pid!, sid!);
+      return { files: this.manager.files().list(id), epoch: this.manager.files().epoch(id),
+        ...(pid && sid ? { attempt: this.manager.files().attempt(pid, sid) } : {}) };
+    });
+  }
+
+  @Post('copy') copy(@Param('chatId') id: string, @Body() body: { sourceOwnerId: string; fileId: string; versionId: string; operationId: string }) {
+    return this.call(() => this.manager.files().addToProject(body.sourceOwnerId, body, id, body.operationId));
+  }
+  @Post('import-artifact') importArtifact(@Param('chatId') id: string, @Body() body: { executionId: string; sessionId: string; artifactId: string; operationId: string }) {
+    return this.call(() => this.manager.files().importArtifact(id, body.executionId, body.sessionId, body.artifactId, body.operationId));
+  }
 
   @Post('register')
   register(@Param('chatId') id: string, @Body() body: Parameters<FileStore['register']>[1]) {
@@ -58,7 +71,7 @@ export class FilesController {
   @Post()
   upload(@Param('chatId') id: string, @Req() req: Request) {
     return this.call(async () => {
-      const chat = this.manager.chat(id);
+      const chat = this.manager.fileOwner(id);
       if (chat.archivedAt) throw new FileError('Restore this Chat before uploading', 409);
       const operationId = req.get('x-upload-id') ?? '';
       if (!/^[\w-]{8,128}$/.test(operationId)) throw new FileError('A stable x-upload-id is required');
@@ -92,13 +105,23 @@ export class FilesController {
   }
 
   @Post(':fileId/checkout')
-  checkout(@Param('chatId') id: string, @Param('fileId') fileId: string, @Body() body: { versionId: string }) {
-    return this.call(() => this.manager.files().checkout(id, { fileId, versionId: body.versionId }));
+  checkout(@Param('chatId') id: string, @Param('fileId') fileId: string, @Body() body: { versionId: string; executionId?: string; sessionId?: string }) {
+    return this.call(() => {
+      if (this.manager.fileOwner(id).kind === 'chat') return this.manager.files().checkout(id, { fileId, versionId: body.versionId });
+      if (!body.executionId || !body.sessionId) throw new FileError('Choose a Chat or Work conversation');
+      return this.manager.files().checkoutShared(id, { fileId, versionId: body.versionId }, body.executionId, body.sessionId);
+    });
   }
 
   @Post(':fileId/versions')
   commit(@Param('chatId') id: string, @Param('fileId') fileId: string, @Body() body: Parameters<FileStore['commit']>[2]) {
-    return this.call(() => this.manager.files().commit(id, fileId, body));
+    return this.call(() => {
+      if (this.manager.fileOwner(id).kind !== 'chat') {
+        if (!body.executionId || !body.sessionId) throw new FileError('Choose the checkout’s Chat or Work conversation');
+        this.manager.fileExecution(id, body.executionId, body.sessionId);
+      }
+      return this.manager.files().commit(id, fileId, body);
+    });
   }
 
   @Get(':fileId/versions/:versionId/download')

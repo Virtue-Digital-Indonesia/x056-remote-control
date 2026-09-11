@@ -279,16 +279,34 @@ export class SessionManager {
   }
   private fileStore?: FileStore;
   files(): FileStore {
-    if (!this.chatsEnabled()) throw new Error('Chat is disabled');
+    if (!this.chatsEnabled() && !this.projectSpacesEnabled()) throw new Error('Files are disabled');
     if (!this.fileStore) {
-      this.fileStore = new FileStore(this.opts.stateDir, id => this.chat(id), (id, data) =>
-        this.emit('chat_files', { projectId: id, sessionId: this.projects().get(id)?.lastSessionId, ...data }), id => {
-          const run = this.runs.get(this.chat(id).lastSessionId!);
+      this.fileStore = new FileStore(this.opts.stateDir, id => this.fileOwner(id), (id, data) =>
+        this.emit('chat_files', { projectId: id, sessionId: this.projects().get(id)?.lastSessionId, ...data }), (id, sid) => {
+          const run = this.runs.get(sid || this.projects().get(id)?.lastSessionId || '');
           return { sourceMessageId: run?.requestId, account: run?.account };
-        });
+        }, (ownerId, pid, sid) => this.fileExecution(ownerId, pid, sid));
       for (const p of this.projects().list().filter(p => p.kind === 'chat')) this.fileStore.fence(p.id);
     }
     return this.fileStore;
+  }
+  fileOwner(id: string): RunnableProject {
+    const p = this.projects().get(id);
+    if (p?.kind === 'chat') return this.chat(id);
+    if (!this.projectSpacesEnabled()) throw new Error('Project files are disabled');
+    this.projects().parent(id, true);
+    const cwd = join(realpathSync(this.opts.stateDir), 'project-files', id);
+    mkdirSync(cwd, { recursive: true });
+    if (realpathSync(cwd) !== cwd) throw new Error('Invalid Project file directory');
+    return { ...p!, cwd, lastSessionId: '' };
+  }
+  fileExecution(ownerId: string, projectId: string, sessionId: string) {
+    if (!this.projectSpacesEnabled()) throw new Error('Project files are disabled');
+    this.projects().parent(ownerId);
+    const scope = this.projectContext().resolve(projectId, sessionId);
+    if (scope.executionProjectId !== ownerId && scope.parentProjectId !== ownerId) throw new Error('File is outside this conversation’s Project');
+    const p = this.assertExecutionAllowed(projectId);
+    return { projectId, sessionId, cwd: p.cwd, membershipRevision: scope.membershipRevision };
   }
   onModuleDestroy(): void {
     for (const run of this.runs.values()) run.control?.abort();
@@ -400,7 +418,7 @@ export class SessionManager {
     this.loadPendingQuestions();
     this.detectOrphans();
     this.resumeAutopilots();
-    if (this.chatsEnabled()) this.files();
+    if (this.chatsEnabled() || this.projectSpacesEnabled()) this.files();
     if (opts.manageProcessSignals) {
       const onTerm = () => {
         this.titleWorker?.close();
@@ -1882,6 +1900,7 @@ export class SessionManager {
   }
 
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
+    this.assertExecutionAllowed(pid);
     if (this.chatToolsChanged.has(pid)) {
       const retired = this.pools().map(pool => pool.retireIdleSession(sessionId));
       if (!retired.every(Boolean)) throw new BusyError();
@@ -1889,9 +1908,14 @@ export class SessionManager {
     }
     const references = this.projects().get(pid)?.references;
     if (references?.length && !prompt.trimStart().startsWith('/')) prompt += '\n\n[Referenced conversations. Use read_conversation to inspect their messages and send_message for approved communication:\n' + references.map(r => `projectId=${r.projectId}, sessionId=${r.sessionId}`).join('\n') + '\n]';
+    if (this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
     if (runOpts?.fileRefs?.length) {
       const paths = this.files().references(pid, sessionId, runOpts.fileRefs, runOpts.requestId);
-      prompt += `\n\n[Attached saved files. Read these paths; use checkout_chat_file before editing and commit_chat_file to save a new version. Keep originals intact.\n${paths}\n]`;
+      const copies = this.projectSpacesEnabled() ? runOpts.fileRefs.filter(ref => this.fileOwner(ref.ownerId || pid).kind !== 'chat').map(ref => {
+        const copy = this.files().checkoutShared(ref.ownerId || pid, ref, pid, sessionId);
+        return `Working copy ${copy.path}; ownerId=${copy.ownerId}, fileId=${copy.fileId}, baseVersionId=${copy.versionId}, checkoutToken=${copy.token}`;
+      }).join('\n') : '';
+      prompt += `\n\n[Attached saved files. Read these paths. Use checkout_chat_file / commit_chat_file for private Chat files or checkout_project_file / commit_project_file for shared Project files. Keep originals intact. On account failover, get a fresh checkout before saving.\n${paths}\n${copies}\n]`;
     }
     if (this.projects().get(pid)?.kind === 'chat') this.files().fence(pid);
     this.titleWorker?.preempt();
@@ -1939,9 +1963,11 @@ export class SessionManager {
       const runFn = this.opts.runSessionFn ?? runSession;
       let fileAccount: string | undefined;
       const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => {
+        if (k === 'supervisor' && this.projectSpacesEnabled() && ['turn_failed', 'failover', 'limit_detected', 'forced_switch'].includes(String(d.type))) this.files().fenceExecution(pid, sessionId);
         // Track which account this turn is on (updated on start + each failover),
         // so a targeted force-switch can tell "same account" from "different".
         if (k === 'supervisor' && d && d.type === 'turn_started' && typeof d.account === 'string') {
+          if (fileAccount && this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
           if (fileAccount && fileAccount !== d.account && reg.get(pid)?.kind === 'chat') this.files().fence(pid);
           fileAccount = d.account;
           run.account = d.account; run.waiting=false; this.emitAccounts();
@@ -2024,6 +2050,7 @@ export class SessionManager {
         },
       })
         .then((res) => {
+          if (res.status !== 'completed' && this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
           this.lastResults.set(pid, res);
           try {
             if (
@@ -2089,6 +2116,7 @@ export class SessionManager {
           if (!drained) this.maybeAutopilot(pid, sessionId, res);
         })
         .catch((err: unknown) => {
+          if (this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
           this.projects().recordOutcome(pid, sessionId, {status:'failed', at:new Date().toISOString(), reason:(err as Error).message});
           emit('session_error', { sessionId, message: (err as Error).message });
         })
@@ -2099,6 +2127,7 @@ export class SessionManager {
           emit('turn_state', { active: false });
         });
     } catch (err) {
+      if (this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
       this.runs.delete(sessionId);
       this.clearMarker(sessionId);
       emit('turn_state', { active: false });

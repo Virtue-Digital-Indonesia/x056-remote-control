@@ -11,6 +11,7 @@ import { SessionManager } from '../server/manager.js';
 import { CRON, CronScheduler } from '../server/cron.js';
 import { CODEGRAPH, CodegraphClient } from '../server/codegraph.js';
 import { AccountRegistry } from '../src/accounts.js';
+import { ArtifactStore } from '../server/workspace-store.js';
 import { TOOLS, callToolResult } from '../scripts/x056-mcp-tools.mjs';
 import { ajv, validators, validateResult } from './helpers/mcp-contract.js';
 
@@ -39,7 +40,7 @@ beforeAll(async () => {
       { sessionId: 'c', title: 'Codex', provider: 'codex', createdAt: 1, model: '', effort: '' },
     ] },
   ] }));
-  app = await createApp({ token, stateDir: dir, workspaceRoot: dir, chatEnabled: true });
+  app = await createApp({ token, stateDir: dir, workspaceRoot: dir, chatEnabled: true, projectSpacesEnabled: true });
   await app.listen(0, '127.0.0.1');
   base = await app.getUrl();
   manager = app.get(SessionManager);
@@ -51,8 +52,8 @@ afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir
 
 describe('all advertised output contracts', () => {
   it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(39);
-    expect(validators.size).toBe(39);
+    expect(TOOLS).toHaveLength(45);
+    expect(validators.size).toBe(TOOLS.length);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
       expect(ajv.validateSchema(tool.outputSchema)).toBe(true);
@@ -212,7 +213,7 @@ describe('all advertised output contracts', () => {
     const { stdout } = await promisify(execFile)('node', ['scripts/verify-mcp-output.mjs', base], {
       env: { ...process.env, X056_TOKEN: token },
     });
-    expect(JSON.parse(stdout)).toMatchObject({ actions: 39, schemasCompiled: 39 });
+    expect(JSON.parse(stdout)).toMatchObject({ actions: TOOLS.length, schemasCompiled: TOOLS.length });
     expect(send).not.toHaveBeenCalled();
     expect(snapshot()).toEqual(before);
   });
@@ -300,6 +301,25 @@ describe('all advertised output contracts', () => {
     expect(saved.versions).toHaveLength(2);
     expect(saved.versions[1].downloadPath).toContain(saved.latestVersionId);
     expect((await tool('preview_chat_file', { chatId: chat.id, fileId: file.id, versionId: saved.latestVersionId })).data.data.state).toBe('unsupported');
+  });
+
+  it('checks shared Project file contracts with exact execution identities', async () => {
+    const chat = manager.createChat({ requestId: 'mcp-shared-chat-001' });
+    const path = join(chat.cwd, 'proposal.txt'); writeFileSync(path, 'Shared original');
+    const [privateFile] = await manager.files().upload(chat.id, 'mcp-private-upload-001', [{ path, name: 'proposal.txt' }]);
+    const shared = (await tool('add_file_to_project', { parentProjectId: 'p', chatId: chat.id, fileId: privateFile.id, versionId: privateFile.latestVersionId, operationId: 'mcp-shared-copy-001' })).data.data;
+    const execution = { parentProjectId: 'p', projectId: 'p', sessionId: 's' };
+    const list = (await tool('list_project_files', execution)).data.data;
+    expect(list.files[0].id).toBe(shared.id);
+    const checkout = (await tool('checkout_project_file', { ...execution, fileId: shared.id, versionId: shared.latestVersionId })).data.data;
+    writeFileSync(checkout.path, 'Shared revision');
+    const saved = (await tool('commit_project_file', { ...execution, fileId: shared.id, checkoutToken: checkout.token, expectedBaseVersionId: shared.latestVersionId, operationId: 'mcp-shared-save-001' })).data.data;
+    expect(saved.versions).toHaveLength(2);
+    expect(saved.versions[1].downloadPath).toContain('/api/project-spaces/p/files/');
+    expect((await tool('preview_project_file', { parentProjectId: 'p', fileId: shared.id, versionId: saved.latestVersionId })).data.data.state).toBe('unsupported');
+    const output = join(dir, 'work', 'output.txt'); writeFileSync(output, 'Work output');
+    const artifact = new ArtifactStore(dir, () => [join(dir, 'work')]).add({ projectId: 'p', sessionId: 's', title: 'output.txt', path: output, source: 'manual', kind: 'file' });
+    expect((await tool('import_work_file', { ...execution, artifactId: artifact.id, operationId: 'mcp-work-import-001' })).data.data.sourceArtifactId).toBe(artifact.id);
   });
 
   it('covers every advertised action', () => { expect([...covered].sort()).toEqual(TOOLS.map(t => t.name).sort()); });

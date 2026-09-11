@@ -10,9 +10,11 @@ import { DOCUMENT_CONVERTER, documentCommand } from './documents.js';
 
 export const MAX_FILE_BYTES = 50 * 1024 * 1024;
 export const MAX_BATCH_BYTES = 200 * 1024 * 1024;
-export interface FileReference { fileId: string; versionId: string }
-export interface ChatFile { id: string; chatId: string; sessionId: string; name: string; mime: string; latestVersionId: string; createdAt: string; removed: boolean; versions: FileVersion[] }
-export interface FileVersion { id: string; fileId: string; parentVersionId?: string; hash: string; bytes: number; blob: string; artifactId: string; mime: string; createdAt: string; sourceMessageId?: string; account?: string }
+export interface FileReference { fileId: string; versionId: string; ownerId?: string }
+export interface ChatFile { id: string; chatId: string; sessionId: string; name: string; mime: string; latestVersionId: string; createdAt: string; removed: boolean; versions: FileVersion[]; ownerKind?: 'chat' | 'project'; sourceOwnerId?: string; sourceFileId?: string; sourceVersionId?: string; sourceArtifactId?: string }
+export interface FileVersion { id: string; fileId: string; parentVersionId?: string; hash: string; bytes: number; blob: string; artifactId: string; mime: string; createdAt: string; sourceMessageId?: string; account?: string; sourceProjectId?: string; sourceSessionId?: string }
+export interface FileExecution { projectId: string; sessionId: string; cwd: string; membershipRevision: number }
+interface SharedLease { token: string; ownerId: string; executionId: string; sessionId: string; attempt: number; membershipRevision: number }
 interface Operation { state: string; fingerprint: string; result: string | null; epoch: number }
 interface Checkout { token: string; chatId: string; fileId: string; versionId: string; path: string; epoch: number }
 interface Prepared { name: string; mime: string; hash: string; bytes: number; blob: string }
@@ -34,14 +36,15 @@ export class FileStore {
   private closed = false;
   constructor(private readonly state: string, private readonly owner: (id: string) => Project,
     private readonly changed: (chatId: string, data: Record<string, unknown>) => void = () => {},
-    private readonly source: (chatId: string) => { sourceMessageId?: string; account?: string } = () => ({})) {
+    private readonly source: (projectId: string, sessionId?: string) => { sourceMessageId?: string; account?: string } = () => ({}),
+    private readonly execution?: (ownerId: string, projectId: string, sessionId: string) => FileExecution) {
     mkdirSync(state, { recursive: true });
     this.stagingDir = join(state, 'file-staging'); mkdirSync(this.stagingDir, { recursive: true });
     mkdirSync(join(state, 'artifacts'), { recursive: true });
     this.db = new DatabaseSync(join(state, 'chat-files.sqlite'));
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (schema.user_version > 1) throw new Error('Chat file catalog requires a newer gateway');
+    if (schema.user_version > 2) throw new Error('File catalog requires a newer gateway');
     if (!schema.user_version) this.db.exec(`BEGIN IMMEDIATE;
       CREATE TABLE files (id TEXT PRIMARY KEY, chatId TEXT NOT NULL, sessionId TEXT NOT NULL, name TEXT NOT NULL, mime TEXT NOT NULL, latestVersionId TEXT NOT NULL, createdAt TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX files_owner ON files(chatId,sessionId);
@@ -52,6 +55,19 @@ export class FileStore {
       CREATE TABLE file_refs (requestId TEXT NOT NULL, chatId TEXT NOT NULL, fileId TEXT NOT NULL REFERENCES files(id), versionId TEXT NOT NULL REFERENCES versions(id), PRIMARY KEY(requestId,fileId,versionId));
       CREATE TABLE previews (id TEXT PRIMARY KEY, chatId TEXT NOT NULL, versionId TEXT NOT NULL REFERENCES versions(id), converter TEXT NOT NULL, state TEXT NOT NULL, output TEXT, error TEXT, UNIQUE(versionId,converter));
       PRAGMA user_version=1; COMMIT;`);
+    if (schema.user_version < 2) this.db.exec(`BEGIN IMMEDIATE;
+      ALTER TABLE files ADD COLUMN ownerKind TEXT NOT NULL DEFAULT 'chat';
+      ALTER TABLE files ADD COLUMN sourceOwnerId TEXT;
+      ALTER TABLE files ADD COLUMN sourceFileId TEXT;
+      ALTER TABLE files ADD COLUMN sourceVersionId TEXT;
+      ALTER TABLE files ADD COLUMN sourceArtifactId TEXT;
+      ALTER TABLE versions ADD COLUMN sourceProjectId TEXT;
+      ALTER TABLE versions ADD COLUMN sourceSessionId TEXT;
+      CREATE TABLE execution_attempts (executionId TEXT NOT NULL, sessionId TEXT NOT NULL, attempt INTEGER NOT NULL, PRIMARY KEY(executionId,sessionId));
+      CREATE TABLE shared_leases (token TEXT PRIMARY KEY REFERENCES checkouts(token), ownerId TEXT NOT NULL, executionId TEXT NOT NULL, sessionId TEXT NOT NULL, attempt INTEGER NOT NULL, membershipRevision INTEGER NOT NULL);
+      PRAGMA user_version=2; COMMIT;`);
+    // Restart fences every old execution separately. No owner's shared epoch is used.
+    this.db.exec('UPDATE execution_attempts SET attempt=attempt+1');
     this.artifacts = new ArtifactStore(state, () => []);
     this.db.prepare("UPDATE previews SET state='queued',output=NULL WHERE state='running'").run();
     setImmediate(() => { void this.drainPreviews(); });
@@ -72,6 +88,17 @@ export class FileStore {
   }
   epoch(chatId: string): number {
     return (this.db.prepare('SELECT epoch FROM epochs WHERE chatId=?').get(chatId) as { epoch: number } | undefined)?.epoch ?? 0;
+  }
+  attempt(executionId: string, sessionId: string): number {
+    return (this.db.prepare('SELECT attempt FROM execution_attempts WHERE executionId=? AND sessionId=?').get(executionId, sessionId) as { attempt: number } | undefined)?.attempt ?? 0;
+  }
+  fenceExecution(executionId: string, sessionId: string): number {
+    this.db.prepare('INSERT INTO execution_attempts VALUES (?,?,1) ON CONFLICT(executionId,sessionId) DO UPDATE SET attempt=attempt+1').run(executionId, sessionId);
+    return this.attempt(executionId, sessionId);
+  }
+  private sharedExecution(ownerId: string, projectId: string, sessionId: string): FileExecution {
+    if (!this.execution) throw new FileError('Project files are unavailable');
+    return this.execution(ownerId, projectId, sessionId);
   }
   /** Called at run start, account switch, and recovery to reject stale writers. */
   fence(chatId: string): void {
@@ -165,10 +192,10 @@ export class FileStore {
       return { name, mime, hash: checksum, bytes, blob };
     } finally { await input.close(); await output?.close(); rmSync(staged, { force: true }); }
   }
-  private insertVersion(chat: Project, fileId: string, data: Prepared, parent?: string, source?: { sourceMessageId?: string; account?: string }): FileVersion {
+  private insertVersion(chat: Project, fileId: string, data: Prepared, parent?: string, source?: { sourceMessageId?: string; account?: string; sourceProjectId?: string; sourceSessionId?: string }): FileVersion {
     const artifact = this.artifacts.registerRetained({ projectId: chat.id, sessionId: chat.lastSessionId!, title: data.name, file: data.blob, mime: data.mime, size: data.bytes });
     const version: FileVersion = { id: randomUUID(), fileId, parentVersionId: parent, hash: data.hash, bytes: data.bytes, blob: data.blob, artifactId: artifact.id, mime: data.mime, createdAt: now(), ...source };
-    this.db.prepare('INSERT INTO versions VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(version.id, fileId, parent ?? null, data.hash, data.bytes, data.blob, artifact.id, data.mime, version.createdAt, source?.sourceMessageId ?? null, source?.account ?? null);
+    this.db.prepare('INSERT INTO versions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').run(version.id, fileId, parent ?? null, data.hash, data.bytes, data.blob, artifact.id, data.mime, version.createdAt, source?.sourceMessageId ?? null, source?.account ?? null, source?.sourceProjectId ?? null, source?.sourceSessionId ?? null);
     return version;
   }
   async upload(chatId: string, operationId: string, uploads: { path: string; name: string }[], expectedEpoch?: number): Promise<ChatFile[]> {
@@ -187,7 +214,7 @@ export class FileStore {
       const ids: string[] = [];
       for (const data of prepared) {
         const id = randomUUID();
-        this.db.prepare('INSERT INTO files VALUES (?,?,?,?,?,?,?,0)').run(id, chatId, chat.lastSessionId!, data.name, data.mime, '', now());
+        this.db.prepare('INSERT INTO files (id,chatId,sessionId,name,mime,latestVersionId,createdAt,ownerKind) VALUES (?,?,?,?,?,?,?,?)').run(id, chatId, chat.lastSessionId!, data.name, data.mime, '', now(), chat.kind === 'chat' ? 'chat' : 'project');
         const version = this.insertVersion(chat, id, data, undefined, expectedEpoch === undefined ? undefined : this.source(chatId));
         this.db.prepare('UPDATE files SET latestVersionId=? WHERE id=?').run(version.id, id); ids.push(id);
       }
@@ -199,6 +226,7 @@ export class FileStore {
   }
   checkout(chatId: string, ref: FileReference): Checkout {
     const chat = this.writable(chatId), { file, path } = this.version(chatId, ref);
+    if (chat.kind !== 'chat') throw new FileError('Project files require an execution checkout');
     if (file.removed) throw new FileError('Restore this file before editing', 409);
     const token = randomUUID(), folder = join(chat.cwd, 'files', token);
     mkdirSync(folder, { recursive: true });
@@ -209,26 +237,59 @@ export class FileStore {
     this.db.prepare('INSERT INTO checkouts VALUES (?,?,?,?,?,?)').run(token, chatId, file.id, ref.versionId, target, checkout.epoch);
     return checkout;
   }
-  async commit(chatId: string, fileId: string, input: { operationId: string; expectedBaseVersionId: string; checkoutToken: string; sourceMessageId?: string; account?: string }): Promise<ChatFile> {
+  checkoutShared(ownerId: string, ref: FileReference, executionId: string, sessionId: string): Checkout & SharedLease {
+    this.writable(ownerId);
+    const execution = this.sharedExecution(ownerId, executionId, sessionId), { file, path } = this.version(ownerId, ref);
+    if (file.removed) throw new FileError('Restore this file before editing', 409);
+    this.db.prepare('INSERT OR IGNORE INTO execution_attempts VALUES (?,?,0)').run(executionId, sessionId);
+    const token = randomUUID(), folder = join(execution.cwd, '.x056-files', token);
+    mkdirSync(folder, { recursive: true });
+    if (realpathSync(folder) !== folder) throw new FileError('Invalid working copy directory');
+    const target = join(folder, file.name); copyFileSync(path, target, constants.COPYFILE_EXCL); chmodSync(target, 0o600);
+    const lease: Checkout & SharedLease = { token, chatId: ownerId, ownerId, fileId: file.id, versionId: ref.versionId,
+      path: target, epoch: 0, executionId, sessionId, attempt: this.attempt(executionId, sessionId), membershipRevision: execution.membershipRevision };
+    this.transaction(() => {
+      this.db.prepare('INSERT INTO checkouts VALUES (?,?,?,?,?,?)').run(token, ownerId, file.id, ref.versionId, target, 0);
+      this.db.prepare('INSERT INTO shared_leases VALUES (?,?,?,?,?,?)').run(token, ownerId, executionId, sessionId, lease.attempt, lease.membershipRevision);
+    });
+    return lease;
+  }
+  async commit(chatId: string, fileId: string, input: { operationId: string; expectedBaseVersionId: string; checkoutToken: string; sourceMessageId?: string; account?: string; executionId?: string; sessionId?: string }): Promise<ChatFile> {
     this.writable(chatId); this.operationId(input.operationId);
     const fingerprint = digest(['commit', fileId, input.expectedBaseVersionId, input.checkoutToken]);
+    const priorLease = this.db.prepare('SELECT * FROM shared_leases WHERE token=?').get(input.checkoutToken) as unknown as SharedLease | undefined;
+    if (priorLease) {
+      if ((input.executionId && input.executionId !== priorLease.executionId) || (input.sessionId && input.sessionId !== priorLease.sessionId)) throw new FileError('Checkout belongs to another conversation', 409);
+      this.sharedExecution(chatId, priorLease.executionId, priorLease.sessionId);
+    }
     if (this.replay(chatId, input.operationId, fingerprint)) return this.file(chatId, fileId);
     const checkout = this.db.prepare('SELECT * FROM checkouts WHERE token=? AND chatId=? AND fileId=?').get(input.checkoutToken, chatId, fileId) as unknown as Checkout | undefined;
     if (!checkout || checkout.versionId !== input.expectedBaseVersionId) throw new FileError('Check out the expected saved version first', 409);
+    const lease = this.db.prepare('SELECT * FROM shared_leases WHERE token=?').get(input.checkoutToken) as unknown as SharedLease | undefined;
+    const leaseExecution = () => {
+      if (!lease) return;
+      const execution = this.sharedExecution(chatId, lease.executionId, lease.sessionId);
+      if (lease.attempt !== this.attempt(lease.executionId, lease.sessionId) || lease.membershipRevision !== execution.membershipRevision) throw new FileError('Working copy belongs to a previous execution or membership; check out again', 409);
+      return execution;
+    };
     const validate = () => {
       if (this.file(chatId, fileId).removed) throw new FileError('Restore this file before editing', 409);
-      if (checkout.epoch !== this.epoch(chatId)) throw new FileError('Working copy belongs to a previous run; check out again', 409);
+      if (lease) leaseExecution();
+      else if (checkout.epoch !== this.epoch(chatId)) throw new FileError('Working copy belongs to a previous run; check out again', 409);
       if (this.file(chatId, fileId).latestVersionId !== input.expectedBaseVersionId) throw new FileError('A newer version exists; check it before saving', 409);
     };
     validate();
     const chat = this.writable(chatId);
-    if (!realpathSync(checkout.path).startsWith(chat.cwd + sep) || realpathSync(checkout.path) !== checkout.path) throw new FileError('Working copy left this Chat');
+    if (!lease && chat.kind !== 'chat') throw new FileError('Project files require an execution checkout');
+    const cwd = leaseExecution()?.cwd ?? chat.cwd;
+    if (!realpathSync(checkout.path).startsWith(cwd + sep) || realpathSync(checkout.path) !== checkout.path) throw new FileError('Working copy left its execution directory');
     this.db.prepare("INSERT INTO operations VALUES (?,?,?,'pending',NULL,NULL,?)").run(chatId, input.operationId, fingerprint, checkout.epoch);
     try {
       const prepared = await this.prepare(checkout.path, this.file(chatId, fileId).name);
       this.transaction(() => {
         this.writable(chatId); validate();
-        const version = this.insertVersion(chat, fileId, prepared, input.expectedBaseVersionId, this.source(chatId));
+        const source = lease ? { ...this.source(lease.executionId, lease.sessionId), sourceProjectId: lease.executionId, sourceSessionId: lease.sessionId } : this.source(chatId);
+        const version = this.insertVersion(chat, fileId, prepared, input.expectedBaseVersionId, source);
         this.db.prepare('UPDATE files SET latestVersionId=?,mime=? WHERE id=?').run(version.id, prepared.mime, fileId);
         this.db.prepare("UPDATE operations SET state='committed',result=? WHERE chatId=? AND id=?").run(JSON.stringify([version.id]), chatId, input.operationId);
       });
@@ -240,11 +301,16 @@ export class FileStore {
     }
   }
   references(chatId: string, sessionId: string, refs: FileReference[], requestId?: string): string {
-    if (this.owner(chatId).lastSessionId !== sessionId || !Array.isArray(refs) || refs.length > 20) throw new FileError('Invalid Chat attachment association');
+    if (!Array.isArray(refs) || refs.length > 20) throw new FileError('Invalid attachment association');
     return refs.map(ref => {
-      const { file, version, path } = this.version(chatId, ref);
+      const ownerId = ref.ownerId || chatId;
+      const owner = this.owner(ownerId);
+      if (owner.kind === 'chat') {
+        if (ownerId !== chatId || owner.lastSessionId !== sessionId) throw new FileError('Invalid Chat attachment association');
+      } else this.sharedExecution(ownerId, chatId, sessionId);
+      const { file, version, path } = this.version(ownerId, ref);
       if (requestId) this.db.prepare('INSERT OR IGNORE INTO file_refs VALUES (?,?,?,?)').run(requestId, chatId, ref.fileId, ref.versionId);
-      return `- ${JSON.stringify(file.name)} (fileId=${file.id}, versionId=${version.id}, SHA-256=${version.hash}): ${path}`;
+      return `- ${JSON.stringify(file.name)} (ownerId=${ownerId}, fileId=${file.id}, versionId=${version.id}, SHA-256=${version.hash}): ${path}`;
     }).join('\n');
   }
 
@@ -269,6 +335,49 @@ export class FileStore {
       this.db.prepare("INSERT INTO operations VALUES (?,?,?,'committed',?,NULL,?)").run(chatId, input.operationId, fingerprint, JSON.stringify([saved.id]), this.epoch(chatId));
     });
     this.changed(chatId, { fileId, state: 'saved' }); return this.file(chatId, fileId);
+  }
+
+  /** A Project copy gets its own version chain; provenance pins the source version.
+   * Immutable bytes can be reused without linking future private edits. */
+  addToProject(sourceOwnerId: string, ref: FileReference, ownerId: string, operationId: string): ChatFile {
+    const owner = this.writable(ownerId);
+    if (owner.kind === 'chat') throw new FileError('Choose a Project for the shared copy');
+    const { file, version } = this.version(sourceOwnerId, ref);
+    const fingerprint = digest(['add-to-project', sourceOwnerId, ref.fileId, ref.versionId]);
+    const ids = this.transaction(() => {
+      const previous = this.replay(ownerId, operationId, fingerprint); if (previous) return previous;
+      const id = randomUUID();
+      this.db.prepare('INSERT INTO files (id,chatId,sessionId,name,mime,latestVersionId,createdAt,ownerKind,sourceOwnerId,sourceFileId,sourceVersionId) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+        .run(id, ownerId, owner.lastSessionId!, file.name, version.mime, '', now(), 'project', sourceOwnerId, file.id, version.id);
+      const saved = this.insertVersion(owner, id, { name: file.name, mime: version.mime, bytes: version.bytes, blob: version.blob, hash: version.hash });
+      this.db.prepare('UPDATE files SET latestVersionId=? WHERE id=?').run(saved.id, id);
+      this.db.prepare("INSERT INTO operations VALUES (?,?,?,'committed',?,NULL,?)").run(ownerId, operationId, fingerprint, JSON.stringify([id]), this.epoch(ownerId));
+      return [id];
+    });
+    this.changed(ownerId, { fileIds: ids, state: 'saved' }); return this.file(ownerId, ids[0]);
+  }
+
+  async importArtifact(ownerId: string, executionId: string, sessionId: string, artifactId: string, operationId: string): Promise<ChatFile> {
+    if (this.owner(executionId).kind === 'chat') throw new FileError('Choose a Work conversation output');
+    const context = this.sharedExecution(ownerId, executionId, sessionId);
+    const owner = this.writable(ownerId), artifact = this.artifacts.fileFor(artifactId);
+    if (!artifact || artifact.item.projectId !== executionId || artifact.item.sessionId !== sessionId) throw new FileError('Choose a retained output from this Work conversation');
+    const fingerprint = digest(['import-artifact', executionId, sessionId, artifactId, artifact.item.file]);
+    const previous = this.replay(ownerId, operationId, fingerprint); if (previous) return this.file(ownerId, previous[0]);
+    const prepared = await this.prepare(artifact.path, basename(artifact.item.original || artifact.item.title) || basename(artifact.path));
+    const id = this.transaction(() => {
+      const current = this.sharedExecution(ownerId, executionId, sessionId); this.writable(ownerId);
+      if (current.membershipRevision !== context.membershipRevision) throw new FileError('Project membership changed during import', 409);
+      const replay = this.replay(ownerId, operationId, fingerprint); if (replay) return replay[0];
+      const id = randomUUID();
+      this.db.prepare('INSERT INTO files (id,chatId,sessionId,name,mime,latestVersionId,createdAt,ownerKind,sourceOwnerId,sourceArtifactId) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(id, ownerId, owner.lastSessionId!, prepared.name, prepared.mime, '', now(), 'project', executionId, artifactId);
+      const saved = this.insertVersion(owner, id, prepared, undefined, { sourceProjectId: executionId, sourceSessionId: sessionId });
+      this.db.prepare('UPDATE files SET latestVersionId=? WHERE id=?').run(saved.id, id);
+      this.db.prepare("INSERT INTO operations VALUES (?,?,?,'committed',?,NULL,?)").run(ownerId, operationId, fingerprint, JSON.stringify([id]), this.epoch(ownerId));
+      return id;
+    });
+    this.changed(ownerId, { fileIds: [id], state: 'saved' }); return this.file(ownerId, id);
   }
 
   preview(chatId: string, ref: FileReference, retry = false): PreviewJob {

@@ -37,8 +37,9 @@ const relationship = object({ id: str, from_id: str, to_id: str,
   kind: choices('related', 'supports', 'contradicts', 'depends_on'), at: num, entry: ref('entry'),
 }, ['id', 'from_id', 'to_id', 'kind', 'at']);
 const contextFields = {
+  scope: object({ executionProjectId: str, sessionId: str, parentProjectId: str, membershipRevision: integer, inherited: bool }, ['executionProjectId', 'membershipRevision', 'inherited']),
   estimatedTokens: integer, budget: num,
-  items: array(object({ id: str, revision: integer, title: str, reason: str, estimatedTokens: integer })),
+  items: array(object({ id: str, revision: integer, title: str, reason: str, estimatedTokens: integer, sources: array(sourceRef) }, ['id', 'revision', 'title', 'reason', 'estimatedTokens'])),
   skipped: array(object({ id: str, reason: str })), enabled: bool,
 };
 const messageSender = object({ kind: choices('conversation', 'automation', 'autopilot', 'mcp'), messageId: str, projectId: str, sessionId: str, projectName: str, conversationTitle: str }, ['kind']);
@@ -69,7 +70,7 @@ const sendResult = { oneOf: [
 const schemas = {
   ...WORKSPACE_SCHEMAS,
   read_reply: object({ messageId: str, found: bool, messages: array(message), truncated: bool }),
-  list_projects: object({ projects: array(object({ id: str, name: str, cwd: str, provider, current: bool, kind: choices('project','chat') }, ['id','name','cwd','provider','current'])) }),
+  list_projects: object({ projects: array(object({ id: str, name: str, cwd: { anyOf: [str, { type: 'null' }] }, provider, current: bool, kind: choices('project','chat'), parentProjectId: str, membershipRevision: integer }, ['id','name','cwd','provider','current'])) }),
   list_conversations: object({ conversations: array(object({ sessionId: str, title: str, provider, model: str,
     effort: str, createdAt: str, current: bool }, ['sessionId', 'title', 'provider', 'current'])) }),
   read_conversation: object({ messages: array(message) }),
@@ -91,10 +92,10 @@ const schemas = {
   memory_propose: object({ entry: ref('entry') }),
   memory_update: object({ entry: ref('entry') }),
   memory_link: object({ relationships: array(ref('relationship')) }),
-  memory_context: object({ text: str, ...contextFields, provider,
+  memory_context: object({ text: str, ...contextFields, provider, preview: bool,
     preferences: object({ enabled: bool, excludedIds: array(str), pinnedIds: array(str) }, []),
-    history: array(object({ id: str, projectId: str, sessionId: str, at: num, ...contextFields, provider })),
-  }),
+    history: array(object({ id: str, projectId: str, sessionId: str, at: num, ...contextFields, provider }, ['id', 'projectId', 'sessionId', 'at', 'estimatedTokens', 'budget', 'items', 'skipped', 'enabled', 'provider'])),
+  }, ['text', 'estimatedTokens', 'budget', 'items', 'skipped', 'enabled', 'provider', 'preferences', 'history']),
   wiki_search: object({ results: array(object({ path: str, title: str, snippet: str, score: num, type: str,
     hop: integer, via: str, related: array(object({ title: str, path: str, type: str, direction: choices('out', 'in', 'both') })),
   }, ['path', 'title', 'snippet', 'score', 'type'])),

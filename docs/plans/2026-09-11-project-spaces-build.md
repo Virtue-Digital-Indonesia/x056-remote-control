@@ -10,7 +10,7 @@ Efran authorized implementation after reading the handoff. The feature remains d
 | --- | --- | --- |
 | Contracts and migration | Foundation implemented | Optional workspace, validated execution targets, aggregate API, atomic registry writes, revisions, membership receipts, additive migration report. Release backup rehearsal remains. |
 | Memory scope | Foundation implemented | Parent inheritance, local isolation, shared eligibility for dispatch and MCP, dispatch audit with membership and source revisions. Project brief and membership UI remain. |
-| Project files | Next | Extend the current catalog with ownership, independent lineage, and leases for each execution attempt. |
+| Project files | Foundation implemented | Shared ownership, independent lineage, retained Work output import, execution leases, and compatibility endpoints. Files UI and broader recovery rehearsal remain. |
 | Project views | Pending | Real routes, project tabs, preserved drafts, desktop and mobile checks. |
 | Membership and defaults | Pending | Complete receipt reconciliation, queue review, settings, archive behavior, effective tool requirements. |
 | Handoffs and integrations | Pending | Durable delivery, MCP contracts, exact links, activity and cost aggregation. |
@@ -30,9 +30,13 @@ Membership receipts and membership changes share an atomic registry write. Queue
 
 The first compatibility run passed 835 tests across 73 files. Later memory changes passed 34 focused tests and typecheck. These checks cover the foundation only.
 
+Shared file checks passed six tests, including a real DOCX edit through Chat and Work followed by a persisted preview. Original bytes stayed unchanged. Existing Chat file checks passed ten tests. MCP checks passed 28 tests and covered all 45 advertised actions. Project file HTTP checks cover uploads without Work setup, authentication, Unicode filenames, ranges, and retry receipts.
+
+The additive file catalog migration is version 2. It retains legacy Chat ownership and version URLs. Project copies reuse immutable blobs but receive independent file and version IDs. Shared write leases record the execution, conversation, attempt, owner, membership revision, and base version. Restart and failed attempts invalidate old leases without invalidating sibling conversations.
+
 New fixtures cover migration retries, invalid parents, absent workspaces, revision conflicts, feature disable, inherited memory, local isolation, exclusions, budgets, and dispatch snapshots. A simulated account switch checks that an approved memory change cannot alter an already dispatched prompt.
 
-The full plan's 18 acceptance gates remain the release requirements. No live provider task, hierarchy browser workflow, shared document workflow, or rollback rehearsal has passed yet.
+The full plan's 18 acceptance gates remain the release requirements. No live provider task, hierarchy browser workflow, or rollback rehearsal has passed yet.
 
 ## Resume
 
