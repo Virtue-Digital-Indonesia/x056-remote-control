@@ -30,8 +30,8 @@ Baseline checks passed before runtime edits: 866 tests across 79 files in 169.34
 | 0. Baseline and dependency audit | Complete; 866 baseline tests and typecheck passed |
 | 1. Contracts and migration | Complete foundation; 23 focused checks and typecheck passed |
 | 2. Membership and dispatch | Complete; focused dispatch, file, recovery, and MCP checks passed |
-| 3. Integration UI | Next |
-| 4. Memory scope and sharing | Pending |
+| 3. Integration UI | Complete; two browser workflows, 24 focused tests, and typecheck passed |
+| 4. Memory scope and sharing | Next |
 | 5. File sources | Pending |
 | 6. Release preparation | Pending |
 
@@ -58,3 +58,15 @@ Pending message approvals now survive restart. A context change requires a match
 Validation covered 158 tests across 12 focused files, including the existing manager and MCP bridge tests. Typecheck passed. Recovery checks exposed a missing Space owner check for retained file artifacts; that check now distinguishes owner records from executions. Shared DOCX editing, exact-version downloads, sibling file leases, and handoff retry tests passed.
 
 Memory ownership and source eligibility remain Stage 4 work. UI integration follows in Stage 3. No production state or deployment actuator changed.
+
+## Stage 3 evidence
+
+Projects now display separate Work groups, individual members, and reference links. Add existing searches Chats, Work conversations, or whole repositories. The review shows affected conversations, retained exceptions, queues, approvals, and file access changes. The Work overview offers creation of a Project from its repository.
+
+New Work and handoffs show the target repository. Work overview routes use `/work/:projectId`; conversation routes retain their existing execution IDs. Per-conversation context annotations survive project reloads and conversation updates. Project defaults no longer replace omitted choices with undefined values.
+
+Two isolated browser workflows passed. They cover membership precedence, references, multiple repositories, uploads, file attachment, retained drafts, settings, grouped reference search, inherited Tools, handoffs, Back/Forward, refresh, direct sign-in, and mobile layout. Browser probes collected no JavaScript errors. The fixture uses temporary state and fake providers.
+
+The checks found a missing overview route and a view-close action that changed its URL. Both are fixed. A final focused run passed 24 tests, including requirement changes during asynchronous tool discovery. Typecheck and script syntax checks passed.
+
+The original memory and cost browser checks will be extended after their Stage 4 and Stage 6 integration. No production panel, state, or deployment changed.

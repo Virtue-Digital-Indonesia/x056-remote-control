@@ -90,7 +90,7 @@ window.createRCChat = function (engine, room) {
   function renderChats() {
     const query = $('rcChatSearch').value.toLowerCase(), state = engine.state();
     const filter = $('rcChatProjectFilter');
-    const chats = state.projects.filter(p => p.kind === 'chat' && (!filter?.value || (filter.value==='standalone'?!p.parentProjectId:p.parentProjectId===filter.value)) && !!p.archivedAt === showArchived && (p.name + ' ' + p.conversations?.[0]?.title).toLowerCase().includes(query));
+    const chats = state.projects.filter(p => p.kind === 'chat' && (!filter?.value || (filter.value==='standalone'?!p.spaceId:p.spaceId===filter.value)) && !!p.archivedAt === showArchived && (p.name + ' ' + p.conversations?.[0]?.title).toLowerCase().includes(query));
     chats.sort((a,b) => (b.conversations?.[0]?.lastMessageAt || b.conversations?.[0]?.createdAt || 0) - (a.conversations?.[0]?.lastMessageAt || a.conversations?.[0]?.createdAt || 0));
     $('rcChatArchives').textContent = showArchived ? 'Active chats' : 'Archived chats';
     $('rcChatList').innerHTML = chats.map(p => `<a class="rc-chat-item ${p.id === active ? 'selected' : ''}" href="${chatPath(p.id)}" data-chat-link data-chat="${esc(p.id)}" ${p.id === active ? 'aria-current="page"' : ''}><strong>${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small></a>`).join('') || '<p class="rc-chat-empty">No chats found.</p>';
@@ -164,7 +164,7 @@ window.createRCChat = function (engine, room) {
     const visible = files.filter(file => !!file.removed === showRemoved);
     $('rcChatPanelBody').innerHTML = `<div class="rc-chat-panel-heading"><span>${visible.length} ${showRemoved ? 'removed ' : ''}files</span><button id="rcChatRemoved">${showRemoved ? 'Back to files' : 'Removed'}</button><button id="rcChatUploadButton">+ Upload</button></div>` + visible.map(file => {
       const v = file.versions.find(v => v.id === file.latestVersionId);
-      return `<article class="rc-chat-file" data-file="${file.id}"><button data-preview><span class="rc-chat-file-icon">${esc(file.name.split('.').pop().slice(0,5).toUpperCase())}</span><strong>${esc(file.name)}</strong></button><small>v${file.versions.length} · ${Math.max(1,Math.round(v.bytes/1024))} KB · Saved</small><div><button data-attach>Attach</button><button data-download>Download</button><button data-history>Versions</button>${window.rcProjectSpaces?.enabled()&&current()?.parentProjectId?'<button data-share-project>Add to project</button>':''}<button data-remove>${file.removed ? 'Restore file' : 'Remove'}</button></div></article>`;
+      return `<article class="rc-chat-file" data-file="${file.id}"><button data-preview><span class="rc-chat-file-icon">${esc(file.name.split('.').pop().slice(0,5).toUpperCase())}</span><strong>${esc(file.name)}</strong></button><small>v${file.versions.length} · ${Math.max(1,Math.round(v.bytes/1024))} KB · Saved</small><div><button data-attach>Attach</button><button data-download>Download</button><button data-history>Versions</button>${window.rcProjectSpaces?.enabled()&&current()?.spaceId?'<button data-share-project>Add to project</button>':''}<button data-remove>${file.removed ? 'Restore file' : 'Remove'}</button></div></article>`;
     }).join('') + (!visible.length ? '<div class="rc-chat-empty"><strong>Bring your work here</strong><p>Upload a proposal, PDF, or reference file. Saved versions stay with this chat across accounts.</p></div>' : '');
     $('rcChatRemoved').onclick=()=>{showRemoved=!showRemoved;renderPanel();};
     $('rcChatUploadButton').onclick = () => { const input = document.createElement('input'); input.type='file';input.multiple=true;input.onchange=()=>[...input.files].forEach(upload);input.click(); };
@@ -265,10 +265,11 @@ window.createRCChat = function (engine, room) {
     const d = dialog('Reference a conversation', '<div class="rc-reference-picker"><input type="search" placeholder="Search projects and conversations" aria-label="Search references"><div class="rc-chat-reference-list"></div></div>', 'rc-chat-reference-dialog');
     function render() {
       const query = d.querySelector('input').value.trim().toLowerCase(), references = chat.references || [], host = d.querySelector('.rc-chat-reference-list');
-      const sources = engine.state().projects.filter(p => p.id !== id), matching = p => (p.conversations || []).filter(c => (p.name + ' ' + c.title).toLowerCase().includes(query)).map(c => ({p,c}));
-      const grouped = window.rcProjectSpaces?.enabled();
-      const groups = sources.filter(p => p.kind !== 'chat').map(p => ({id:p.id, name:p.name, rows:[...matching(p),...(grouped?sources.filter(c=>c.parentProjectId===p.id).flatMap(matching):[])]})).sort((a,b) => a.name.localeCompare(b.name));
-      groups.push({id:'chats', name:grouped?'Standalone Chat':'Chats', rows:sources.filter(p => p.kind === 'chat'&&(!grouped||!p.parentProjectId)).flatMap(matching)});
+      const sources = engine.state().projects.filter(p => p.id !== id), matching = p => (p.conversations || []).filter(c => (p.name + ' ' + c.title + ' ' + (window.rcProjectSpaces?.list()?.find(s=>s.id===window.rcProjectSpaces.scopeOf(p,c.sessionId))?.name||'')).toLowerCase().includes(query)).map(c => ({p,c}));
+      const grouped = window.rcProjectSpaces?.enabled(), primary = window.rcProjectSpaces?.scopeOf;
+      const spaceRows = grouped ? window.rcProjectSpaces.list().map(space=>({id:space.id,name:space.name,rows:sources.flatMap(matching).filter(({p,c})=>primary(p,c.sessionId)===space.id)})) : [];
+      const groups = [...spaceRows,...sources.filter(p=>p.kind!=='chat').map(p=>({id:p.id,name:p.name,rows:matching(p).filter(({p,c})=>!grouped||!primary(p,c.sessionId))}))].sort((a,b)=>a.name.localeCompare(b.name));
+      groups.push({id:'chats',name:grouped?'Standalone Chat':'Chats',rows:sources.filter(p=>p.kind==='chat').flatMap(matching).filter(({p,c})=>!grouped||!primary(p,c.sessionId))});
       host.innerHTML = groups.filter(g => g.rows.length).map(group => `<section class="rc-reference-group" data-project="${esc(group.id)}"><h3>${esc(group.name)}<span>${group.rows.length}</span></h3>${group.rows.map(({p,c}) => {
         const added = references.some(r => r.projectId === p.id && r.sessionId === c.sessionId);
         return `<button data-project-id="${esc(p.id)}" data-session-id="${esc(c.sessionId)}" ${added ? 'disabled' : ''}>${icon('chat')}<strong>${esc(c.title || 'Untitled conversation')}</strong><span>${added ? 'Added' : 'Add'}</span></button>`;

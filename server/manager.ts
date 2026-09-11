@@ -307,7 +307,8 @@ export class SessionManager {
       if (previous?.fingerprint && r.fingerprint && previous.fingerprint !== r.fingerprint) throw new Error('Conflicting required tool versions: ' + r.key);
       requirements.set(r.key, { key: r.key, fingerprint: r.fingerprint || previous?.fingerprint });
     }
-    return [...requirements.values()];
+    const inheritedKeys = new Set([...(p.requiredTools || []), ...inherited].map(r => r.key));
+    return [...requirements.values()].filter(r => inheritedKeys.has(r.key));
   }
   private fileStore?: FileStore;
   files(): FileStore {
@@ -836,7 +837,10 @@ export class SessionManager {
           const p=this.assertExecutionAllowed(pid, sessionId), inherited=this.requiredProjectTools(pid, sessionId), service=this.capabilityService;
           if(inherited.length || service?.requirements(pid,p.kind==='chat'?undefined:sessionId).length) {
             const provider=this.adapterFor(pid,sessionId).id;
+            const before=JSON.stringify([inherited,service?.requirements(pid,p.kind==='chat'?undefined:sessionId)]);
             const blocks=await this.chatCapabilities().blocked({...p,provider},inherited,true,sessionId);
+            this.assertExecutionAllowed(pid,sessionId);
+            if(before!==JSON.stringify([this.requiredProjectTools(pid,sessionId),this.capabilityService?.requirements(pid,p.kind==='chat'?undefined:sessionId)]))throw new Error('Required tools changed while checking; review and resume this message');
             const lock=new RoutingState(this.opts.stateDir).get(pid,sessionId).lockedAccount;
             const eligible=this.registry().list().filter(a=>a.provider===provider&&(!lock||a.name===lock));
             if(!eligible.length||eligible.every(a=>blocks[a.name]?.length))throw new Error('Required tools unavailable. Check Tools, then resume this message.');
@@ -1309,7 +1313,7 @@ export class SessionManager {
   }
 
   // ---- projects ----
-  listProjects(): { current: string | null; projects: (Project & { running: boolean; runningSessionIds: string[]; runningAccounts: Record<string, string>; backgroundSessionIds: string[] })[] } {
+  listProjects() {
     const reg = this.projects();
     return {
       current: reg.currentId(),
@@ -1320,7 +1324,9 @@ export class SessionManager {
         const running = this.runningSessionsForProject(p.id);
         const background = this.backgroundSessionsForProject(p.id);
         const runningAccounts = Object.fromEntries([...this.runs.values()].filter(r => r.projectId === p.id && r.account).map(r => [r.sessionId, r.account!]));
-        return { ...p, running: running.length > 0, runningSessionIds: running, runningAccounts, backgroundSessionIds: background };
+        const conversations = (p.conversations || []).map(c => ({ ...c, ...(this.projectSpacesEnabled() ? this.spaces().resolve(p.id, c.sessionId) : {}) }));
+        return { ...p, conversations, spaceId: p.kind === 'chat' ? conversations[0]?.spaceId : undefined, workSpaceId: p.kind !== 'chat' && this.projectSpacesEnabled() ? this.spaces().defaultForWork(p.id) : undefined,
+          running: running.length > 0, runningSessionIds: running, runningAccounts, backgroundSessionIds: background };
       }),
     };
   }
@@ -1328,10 +1334,10 @@ export class SessionManager {
   // ---- conversations (multiple Claude sessions grouped under one project) ----
   private emitConversations(projectId: string): void {
     const reg = this.projects();
-    this.emit('conversation', { projectId, conversations: reg.conversations(projectId), currentSessionId: reg.get(projectId)?.lastSessionId ?? null });
+    this.emit('conversation', { projectId, conversations: this.listConversations(projectId), currentSessionId: reg.get(projectId)?.lastSessionId ?? null });
   }
 
-  listConversations(projectId: string): Conversation[] { return this.projects().conversations(projectId); }
+  listConversations(projectId: string) { return this.projects().conversations(projectId).map(c => ({ ...c, ...(this.projectSpacesEnabled() ? this.spaces().resolve(projectId, c.sessionId) : {}) })); }
 
   /** Resolve on the target conversation, never the panel's selected chat. Blank
    *  values deliberately select provider defaults instead of a project fallback. */
@@ -1485,11 +1491,11 @@ export class SessionManager {
     this.spaces().assertReady(id);
     if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 300)) throw new Error('Invalid conversation name');
     const spaceId = input.spaceId || this.spaces().defaultForWork(id), space = spaceId ? this.spaces().get(spaceId) : undefined;
-    const defaults = { ...p.defaults?.work, ...space?.defaults?.work, ...input }, provider = defaults.provider || p.provider || 'claude';
+    const defaults = { model: p.model, effort: p.effort, ...p.defaults?.work, ...space?.defaults?.work, ...Object.fromEntries(Object.entries(input).filter(([,value])=>value!==undefined)) }, provider = defaults.provider || p.provider || 'claude';
     this.validateProjectDefaults({ work: { provider, model: defaults.model, effort: defaults.effort, account: defaults.account } });
     const fingerprint = createHash('sha256').update(JSON.stringify([input.name, input.provider, input.model, input.effort, input.account, input.spaceId])).digest('hex');
     const previous = p.conversations?.find(c => c.creationRequestId === input.requestId);
-    const c = this.projects().prepareWork(id, { ...defaults, provider, fingerprint, initialSpaceId: input.spaceId, initialAccount: defaults.account });
+    const c = this.projects().prepareWork(id, { ...defaults, requestId: input.requestId, name: input.name, provider, fingerprint, initialSpaceId: input.spaceId, initialAccount: defaults.account });
     this.finishConversationCreation(id, c);
     if (!previous) this.emitConversations(id);
     this.emit('projects', { id }); return { projectId: id, sessionId: c.sessionId };
@@ -1640,7 +1646,7 @@ export class SessionManager {
     if (requestedSpaceId) {
       if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
       const parent = this.spaces().get(requestedSpaceId);
-      input = { ...parent.defaults?.chat, ...input };
+      input = { ...parent.defaults?.chat, ...Object.fromEntries(Object.entries(input).filter(([,value])=>value!==undefined)) } as typeof input;
     }
     const provider = input.provider ?? 'claude';
     if (provider !== 'claude' && provider !== 'codex') throw new Error('Invalid provider');

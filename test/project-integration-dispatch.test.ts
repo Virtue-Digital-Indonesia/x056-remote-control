@@ -114,4 +114,16 @@ describe('exact-conversation Project integration', () => {
     expect(f.m.requiredProjectTools(f.work.id, f.y.sessionId)).toEqual([{ key: 'skill:proposal', fingerprint: 'space-version' }]);
     expect(f.m.executionProject(f.work.id).cwd).toBe(f.root);
   });
+  it('keeps a queued message when tool requirements change during asynchronous discovery', async () => {
+    const f = fixture(); f.m.updateProjectSpace(f.a.id, { expectedRevision: 1, requiredTools: [{ key: 'skill:proposal' }] });
+    const service = new ChatCapabilities(f.stateDir, () => f.accounts.list(), undefined as never, undefined as never); f.m.setChatCapabilities(service);
+    let release!: (value: Record<string, string[]>) => void; const entered = vi.fn();
+    vi.spyOn(service, 'blocked').mockImplementation(() => { entered(); return new Promise(r=>{release=r;}); });
+    const q = f.m.enqueue(f.work.id, { sessionId: f.x.sessionId, text: 'Retain during tool discovery' });
+    await vi.waitFor(()=>expect(entered).toHaveBeenCalled());
+    f.m.updateProjectSpace(f.a.id, { expectedRevision: 2, requiredTools: [{ key: 'skill:revised-proposal' }] }); release({});
+    await vi.waitFor(()=>expect(f.m.queues()[f.work.id][0]).toMatchObject({ id:q.id, paused:true, error:expect.stringContaining('Required tools changed') }));
+    expect(f.calls).toHaveLength(0);
+  });
+
 });

@@ -39,7 +39,7 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
     res.json(version.current());
   });
   express.get('/healthz', (_req, res) => res.json({ ok: true }));
-  express.get(['/', '/chat', '/chat/:chatId', '/projects', '/projects/:projectId', '/projects/:projectId/:tab', '/work', '/work/:projectId/:sessionId'], (_req, res) => {
+  express.get(['/', '/chat', '/chat/:chatId', '/projects', '/projects/:projectId', '/projects/:projectId/:tab', '/work', '/work/:projectId', '/work/:projectId/:sessionId'], (_req, res) => {
     try {
       res.setHeader('Cache-Control','no-cache');
       res.type('html').send(version.html(readFileSync(panelPath, 'utf8')));

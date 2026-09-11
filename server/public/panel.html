@@ -1583,9 +1583,10 @@
       if (j.once) { var o = document.createElement('span'); o.className = 'lbl once'; o.textContent = 'once'; top.appendChild(o); }
       if (j.label) { var l = document.createElement('span'); l.className = 'lbl'; l.textContent = j.label; top.appendChild(l); }
       var btns = document.createElement('div'); btns.className = 'btns';
-      var toggle = document.createElement('button'); toggle.className = 'btn'; toggle.textContent = j.enabled ? 'Pause' : 'Resume';
-      toggle.addEventListener('click', function () {
-        api('/api/cron/enabled', { method: 'POST', body: JSON.stringify({ id: j.id, enabled: !j.enabled }) })
+      var toggle = document.createElement('button'); toggle.className = 'btn'; toggle.textContent = j.contextReview ? 'Review and resume' : j.enabled ? 'Pause' : 'Resume';
+      toggle.addEventListener('click', async function () {
+        if(j.contextReview&&!await uiConfirm({title:'Resume scheduled task?',message:j.contextReview.reason+'. '+j.prompt+' · Future runs use the current primary Project context.',confirmText:'Review and resume'}))return;
+        api('/api/cron/enabled', { method: 'POST', body: JSON.stringify({ id: j.id, enabled: !j.enabled, reviewedOperationId:j.contextReview?.operationId }) })
           .then(loadCron).catch(function () { cronSetStatus('err', 'could not update the job'); });
       });
       var del = document.createElement('button'); del.className = 'btn'; del.textContent = 'Delete';
@@ -2847,15 +2848,17 @@
     }).catch(function () {});
   }
   var mcpDeciding = {}; // id -> true while a decision is in flight (both surfaces disable)
-  function mcpDecide(id, ok) {
+  async function mcpDecide(id, ok) {
     if (mcpDeciding[id]) return;
+    const review=mcpApprovals[id]?.contextReview;
+    if(ok&&review&&!await uiConfirm({title:'Review changed Project context',message:review.reason+'. '+mcpApprovals[id].message+' · Send using the target’s current Project context?',confirmText:'Approve and send'}))return;
     mcpDeciding[id] = true; renderMcpApprovals();
-    api('/api/mcp/approvals/decide', { method: 'POST', body: JSON.stringify({ id: id, approve: ok }) })
+    api('/api/mcp/approvals/decide', { method: 'POST', body: JSON.stringify({ id: id, approve: ok, reviewedOperationId:review?.operationId }) })
       .then(function (r) { if (!r.ok) throw new Error('decide failed'); delete mcpApprovals[id]; })
       .catch(function () { /* leave it pending so it can be retried */ })
       .then(function () { delete mcpDeciding[id]; renderMcpApprovals(); });
   }
-  function mcpToLine(a) { return 'to ' + a.projectName + ' · ' + a.targetLabel + (a.model ? ' · ' + a.model : '') + (a.effort ? ' · ' + a.effort : ''); }
+  function mcpToLine(a) { return (a.contextReview?'Review required: '+a.contextReview.reason+' · ':'')+'to ' + a.projectName + ' · ' + a.targetLabel + (a.model ? ' · ' + a.model : '') + (a.effort ? ' · ' + a.effort : ''); }
   // Two surfaces, one state: the prominent bar above the composer (the actual
   // prompt — impossible to miss) AND the topbar badge/popover (count + review).
   function renderMcpApprovals() { renderMcpApprovalBar(); renderMcpApprovalPop(); }

@@ -306,11 +306,11 @@ window.createControlRoom = function (engine) {
     renderStage();
   }
   function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode(prefs.open === 'side' ? 'side' : prefs.maximize); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
-  function close() { if(window.rcProjectSpaces?.enabled() && /^\/work\/.+/.test(location.pathname)) history.pushState({}, '', '/work'); engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
+  function close(preserveRoute=false) { if(!preserveRoute&&window.rcProjectSpaces?.enabled() && /^\/work\/.+/.test(location.pathname)) history.pushState({}, '', '/work'); engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
   function pageFor(name) { return $('cr'+({board:'Board',accounts:'Accounts',automations:'Automations',artifacts:'Artifacts',planner:'Planner',memory:'Memory'}[name])); }
-  function showSection(next) {
+  function showSection(next,preserveRoute=false) {
     sectionScroll[section] = pageFor(section).scrollTop;
-    close(); engine.nav(false); section = next; projectNav(false);
+    close(preserveRoute); engine.nav(false); section = next; projectNav(false);
     ['board','accounts','automations','artifacts','planner','memory'].forEach(name=>pageFor(name).hidden=name!==next);
     ['Board','Accounts','Automations','Artifacts','Planner','Memory'].forEach(name=>$('cr'+name+'Tab').setAttribute('aria-current',next===name.toLowerCase()?'page':'false'));
     $('crBreadcrumb').innerHTML='Workspace <span>/ '+({board:'Control room',accounts:'Dashboard',automations:'Automations',artifacts:'Artifact library',planner:'Queue planner',memory:'Memory'}[next])+'</span>';
@@ -331,8 +331,8 @@ window.createControlRoom = function (engine) {
   ['crHome','crBoardTab','focusHome'].forEach(id => on(id, () => selectProjectScope('')));
   on('focusBack',()=>showSection('board'));
   on('crProjects', () => projectNav(!shell.classList.contains('projects-open')));
-  on('crAddProject',()=>{projectNav(false);$('addProjectBtn').click();});
-  on('crManageProjects',()=>{projectNav(false);engine.nav(true);});
+  on('crAddProject',()=>{projectNav(false);if(window.rcProjectSpaces?.enabled())window.rcProjectSpaces.newProject();else $('addProjectBtn').click();});
+  on('crManageProjects',()=>{projectNav(false);if(window.rcProjectSpaces?.enabled())window.rcProjectSpaces.navigate('/projects');else engine.nav(true);});
   $('crProjectSearch').addEventListener('input',()=>renderProjectNav(cards(),engine.state()));
   projectVeil.addEventListener('click',()=>projectNav(false));
   on('sendAccountChip',()=>{selectedSendAccount='';renderSendAccounts(true);sendAccounts.showModal();});
@@ -406,9 +406,18 @@ window.createControlRoom = function (engine) {
     if(section!=='board') showSection('board');
     selectedProject=id;recentLimit=10;try{localStorage.setItem('x056_project_scope',id);}catch{}
     projectNav(false);$('crBoard').scrollTop=0;renderBoard();
+    document.getElementById('rcCreateFromWork')?.remove();
+    if(id&&window.rcProjectSpaces?.enabled()){const b=document.createElement('button');b.id='rcCreateFromWork';b.className='cr-secondary';b.textContent='Create Project from this Work project';b.onclick=()=>window.rcProjectSpaces.createFromWork(id);$('crScopeTitle').parentNode.append(b);}
     $('crScopeTitle').tabIndex=-1;$('crScopeTitle').focus({preventScroll:true});
   }
   function renderProjectNav(all,state) {
+    if(window.rcProjectSpaces?.enabled()) {
+      const query=$('crProjectSearch').value.toLowerCase(),spaces=window.rcProjectSpaces.list(),active=decodeURIComponent(location.pathname.split('/')[2]||'');
+      const rows=spaces.filter(p=>!p.archivedAt&&p.name.toLowerCase().includes(query));
+      const markup=`<a class="cr-project-link" href="/projects" data-space-link>${ic('folder')}<span>All Projects</span><small>${spaces.filter(p=>!p.archivedAt).length}</small></a>`+rows.map(p=>`<a class="cr-project-link ${active===p.id?'selected':''}" href="/projects/${encodeURIComponent(p.id)}/chat" data-space-link aria-current="${active===p.id?'page':'false'}">${ic('folder')}<span>${esc(p.name)}</span><small>${p.members.length}</small></a>`).join('')+'<div class="cr-project-separator"></div><a class="cr-project-link" href="/work" data-space-link>'+ic('menu')+'<span>All Work projects</span></a>'+state.projects.filter(p=>p.kind!=='chat'&&p.name.toLowerCase().includes(query)).map(p=>`<a class="cr-project-link" href="/work/${encodeURIComponent(p.id)}" data-space-link>${ic('menu')}<span>${esc(p.name)}</span><small>${p.conversations?.length||0}</small></a>`).join('');
+      if(markup!==projectNavSignature){projectNavSignature=markup;$('crProjectLinks').innerHTML=markup;}
+      return;
+    }
     const query=$('crProjectSearch').value.toLowerCase(), spaces=window.rcProjectSpaces?.enabled(), navSelection=spaces?(location.pathname==='/projects'?'':location.pathname.startsWith('/projects/')?decodeURIComponent(location.pathname.split('/')[2]):null):selectedProject;
     const html=`<${spaces?'a href="/projects" data-space-link':'button'} class="cr-project-link ${navSelection===''?'selected':''}" data-scope="" aria-current="${navSelection===''?'page':'false'}">${ic('menu')}<span>All projects</span><small>${all.filter(x=>x.p.kind!=='chat'&&(showDismissedProjects||!dismissedProjects.includes(x.p.id))).length}</small></${spaces?'a':'button'}><div class="cr-project-separator"></div>`+state.projects.filter(p=>p.kind!=='chat'&&(showDismissedProjects||!dismissedProjects.includes(p.id))&&p.name.toLowerCase().includes(query)).map(p=>{
       const rows=all.filter(x=>x.p.id===p.id||(spaces&&x.p.parentProjectId===p.id)), attention=rows.filter(x=>['question','failed','parked'].includes(x.status)).length, running=rows.filter(x=>['running','background'].includes(x.status)).length;
@@ -2463,5 +2472,5 @@ window.createControlRoom = function (engine) {
   setInterval(()=>{if(document.hidden)return;loadConversationMeta();if(section==='planner')loadPlanner();},5000);setTimeout(loadConversationMeta,1000);
 
   setMode('closed'); projectNav(false); refresh();
-  return { memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory');$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board'), notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
+  return { memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory');$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
 };

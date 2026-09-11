@@ -13,6 +13,7 @@ export class ProjectSpacesController {
   @Post('membership/preview') preview(@Body() body: Parameters<SessionManager['previewProjectMembership']>[0]) { return this.write(() => this.manager.previewProjectMembership(body)); }
   @Post('membership/apply') applyMembership(@Body() body: Parameters<SessionManager['applyProjectMembership']>[0]) { return this.write(() => this.manager.applyProjectMembership(body)); }
   @Get('membership/operations/:operationId') operation(@Param('operationId') id: string) { this.enabled(); return this.manager.spaces().snapshot().operations.find(o => o.id === id); }
+  @Post('executions/:projectId/work') newExecutionWork(@Param('projectId') id: string, @Body() body: Parameters<SessionManager['prepareProjectWork']>[1]) { return this.write(() => this.manager.prepareProjectWork(id, body)); }
   @Get('context/:projectId/:sessionId') context(@Param('projectId') id: string, @Param('sessionId') sid: string) { this.enabled(); return this.manager.projectContext().resolve(id, sid); }
   @Post(':id/references') reference(@Param('id') id: string, @Body() body: { target: import('./project-space-registry.js').SpaceTarget; expectedRevision: number; requestId: string }) {
     return this.write(() => this.manager.spaces().addReference(id, body.target, body.expectedRevision, body.requestId));

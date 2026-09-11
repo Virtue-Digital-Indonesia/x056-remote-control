@@ -86,4 +86,14 @@ describe('Project Chat and Work handoffs', () => {
     expect(f.m.queues()[op.target!.projectId][0].text).toContain('/chat/' + standalone.id);
     expect(f.m.chat(op.target!.projectId).id).not.toBe(standalone.id);
   });
+  it('requires a repository choice when several Work projects are available and keeps the selected execution directory', () => {
+    const f = fixture(), cwd = join(f.root, 'second-repository'); mkdirSync(cwd);
+    const second = f.m.createProject('Second repository', cwd); associateWork(f.m, second.id, f.p.id);
+    expect(() => f.m.projectHandoffs().run(f.input)).toThrow('Choose a target Work project');
+    const result = f.m.projectHandoffs().run({ ...f.input, workProjectId: second.id });
+    expect(result.target?.projectId).toBe(second.id); expect(f.m.executionProject(second.id).cwd).toBe(cwd);
+    expect(f.m.spaces().resolve(second.id, result.target!.sessionId).spaceId).toBe(f.p.id);
+    expect(f.m.listConversations(f.work.id)).toHaveLength(0);
+  });
+
 });

@@ -69,7 +69,8 @@ export class ProjectHandoffs {
     const workProjectId = input.mode === 'work' ? op?.workProjectId || m.spaceWorkTarget(parentId!, input.workProjectId) : undefined;
     if (!parent && input.fileRefs?.length) throw new Error('Add the source Chat to a Project before sharing files');
     if (!op) {
-      const choices = { ...parent?.defaults?.[input.mode], ...input.choices };
+      const workTarget = workProjectId ? m.executionProject(workProjectId) : undefined;
+      const choices = { ...(workTarget ? { provider: workTarget.provider, model: workTarget.model, effort: workTarget.effort, ...workTarget.defaults?.work } : {}), ...parent?.defaults?.[input.mode], ...input.choices };
       choices.provider ||= m.historyContext(source.id, input.sourceSessionId).adapter.id;
       choices.model ??= ''; choices.effort ??= ''; choices.account ??= '';
       for (const ref of input.sources || []) if (!m.listConversations(ref.projectId).some(c => c.sessionId === ref.sessionId)) throw new Error('Referenced conversation unavailable');
