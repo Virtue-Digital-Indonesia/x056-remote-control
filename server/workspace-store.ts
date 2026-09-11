@@ -1,6 +1,9 @@
 import {
   copyFileSync,
+  closeSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -61,8 +64,10 @@ export function readState<T>(file: string, fallback: T): T {
 }
 export function writeState(file: string, value: unknown): void {
   mkdirSync(resolve(file, '..'), { recursive: true });
-  writeFileSync(file + '.tmp', JSON.stringify(value, null, 2));
-  renameSync(file + '.tmp', file);
+  const tmp = file + '.tmp-' + randomUUID(), fd = openSync(tmp, 'wx', 0o600);
+  try { writeFileSync(fd, JSON.stringify(value, null, 2)); fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(tmp, file);
+  const dir = openSync(resolve(file, '..'), 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
 }
 export class ArtifactStore {
   private file: string;
@@ -328,12 +333,19 @@ export class DeliveryStore {
     writeState(this.file, rows);
   }
   all(): Record<string, DeliveryReceipt> {
-    return readState(this.file, {});
+    try {
+      const rows = JSON.parse(readFileSync(this.file, 'utf8'));
+      if (!rows || typeof rows !== 'object' || Array.isArray(rows)) throw new Error('Invalid delivery receipts');
+      return rows;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+      throw new Error('Delivery receipts need repair before sending: ' + (error as Error).message);
+    }
   }
   get(id: string) {
     return this.all()[id];
   }
-  accept(id: string, sessionId: string, status: 'accepted' | 'cancelled' | 'uncertain' = 'accepted') {
+  accept(id: string, sessionId: string, status: 'accepted' | 'queued' | 'cancelled' | 'uncertain' = 'accepted') {
     const rows = this.all();
     if (rows[id]) {
       rows[id].status = status;

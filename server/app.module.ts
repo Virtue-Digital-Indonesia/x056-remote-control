@@ -93,6 +93,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
     cfg.stateDir,
     (pid) => manager.projectName(pid) ?? 'a project',
     (sessionId) => manager.hasAutopilot(sessionId),
+    (pid, sid) => manager.conversationUrl(pid, sid),
   );
   manager.subscribe((e) => { push.notify(e.kind, e.data).catch(() => {}); });
 

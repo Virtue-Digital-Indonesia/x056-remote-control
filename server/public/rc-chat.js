@@ -245,7 +245,7 @@ window.createRCChat = function (engine, room) {
           if (required) requirements.push({key:capability.key, fingerprint:capability.fingerprint});
           d.querySelector('[data-refresh]').disabled = true; render();
           try {
-            await request(capabilitiesURL, {requirements});
+            await request(capabilitiesURL, {requirements,...(work?{sessionId:engine.state().sessionId}:{})});
             if (invoke && d.open) { engine.insertPrompt(capability.invocation + ' '); d.close(); }
           } catch (e) { requirements = before; notify(e); }
           finally { saving = false; if (d.open) { render(); d.querySelector('[data-refresh]').disabled = false; } }

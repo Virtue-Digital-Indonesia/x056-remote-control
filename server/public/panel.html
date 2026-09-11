@@ -2984,7 +2984,7 @@
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', function (e) {
       var d = e.data || {};
-      if (d.type === 'x056-open' && d.projectId && projCache[d.projectId]) switchProject(projCache[d.projectId]);
+      if (d.type === 'x056-open' && d.projectId && projCache[d.projectId]) { if(window.rcProjectSpaces?.enabled()&&d.sessionId)window.rcProjectSpaces.openConversation(d.projectId,d.sessionId);else if(d.sessionId)rcEngine.select(d.projectId,d.sessionId);else switchProject(projCache[d.projectId]); }
     });
   }
 
@@ -3136,6 +3136,7 @@
     }).catch(function () {});
   }
   function newConversation(projectId) {
+    if(window.rcProjectSpaces?.enabled()&&projCache[projectId]?.kind!=='chat')return window.rcProjectSpaces.newWork(projectId);
     if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(false); }
     saveConversationPick();
     setNav(false);
@@ -3828,13 +3829,14 @@
       function collect(q) {
         var items = [];
         orderedProjects().forEach(function (p) {
-          var pn = (p.name || '').toLowerCase();
-          if (!q || pn.indexOf(q) >= 0) items.push({ type: 'project', pid: p.id, title: p.name, sub: 'project', running: !!runningProjects[p.id] });
+          var parent=window.rcProjectSpaces?.enabled()&&p.parentProjectId?projCache[p.parentProjectId]:null;
+          var pn = ((parent?.name||'')+' '+(p.name || '')).toLowerCase();
+          if ((!window.rcProjectSpaces?.enabled()||p.kind!=='chat')&&(!q || pn.indexOf(q) >= 0)) items.push({ type: 'project', pid: p.id, title: p.name, sub: 'project', running: !!runningProjects[p.id] });
           (p.conversations || []).forEach(function (c) {
             var ct = (c.title || '').toLowerCase();
             if (!q || ct.indexOf(q) >= 0 || pn.indexOf(q) >= 0) {
               var conversationFirst = document.body.dataset.conversationLabelOrder !== 'project';
-              items.push({ type: 'conv', pid: p.id, sid: c.sessionId, title: conversationFirst ? c.title || 'Conversation' : p.name, sub: conversationFirst ? p.name : c.title || 'Conversation', running: isSessionRunning(p.id, c.sessionId) });
+              items.push({ type: 'conv', pid: p.id, sid: c.sessionId, title: conversationFirst ? c.title || 'Conversation' : p.name, sub: window.rcProjectSpaces?.enabled()?(parent?.name||p.name)+' · '+(p.kind==='chat'?'Chat':'Work'):conversationFirst ? p.name : c.title || 'Conversation', running: isSessionRunning(p.id, c.sessionId) });
             }
           });
         });
@@ -3842,6 +3844,7 @@
       }
       function activate(it) {
         done(null);
+        if(window.rcProjectSpaces?.enabled()){if(it.type==='project')window.rcProjectSpaces.navigate('/projects/'+encodeURIComponent(it.pid)+'/chat');else window.rcProjectSpaces.openConversation(it.pid,it.sid);return;}
         if (it.type === 'project') { if (it.pid !== currentProjectId) switchProject(projCache[it.pid]); }
         else { if (it.pid !== currentProjectId) switchProject(projCache[it.pid]); switchConversation(it.pid, it.sid); }
       }
@@ -4105,7 +4108,7 @@
     var projectsReady = loadProjects().then(function () {
       if (currentProjectId) syncPicker(currentProjectId);
       // Cold-opened from a notification tap (service worker openWindow): jump to it.
-      try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) switchProject(projCache[want]); } catch (e) {}
+      try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) {var wantedSession=new URLSearchParams(location.search).get('session');if(wantedSession)switchProject(Object.assign({},projCache[want],{lastSessionId:wantedSession}));else switchProject(projCache[want]);} } catch (e) {}
     });
     setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings(); loadMcpApprovals(); // pollAccounts() also loads the provider model catalog
     // Safety-net reconciliation for the running-turn state: SSE can silently

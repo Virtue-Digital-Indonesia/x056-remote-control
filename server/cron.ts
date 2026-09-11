@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
+import { writeState } from './workspace-store.js';
 
 /**
  * Scheduled prompts: send a message to a conversation on a cron schedule.
@@ -153,8 +154,7 @@ export class CronScheduler {
   }
 
   private save(): void {
-    mkdirSync(dirname(this.file), { recursive: true });
-    writeFileSync(this.file, JSON.stringify(this.jobs, null, 2));
+    writeState(this.file, this.jobs);
   }
 
   list(): CronJob[] { return this.jobs.map((j) => ({ ...j })); }

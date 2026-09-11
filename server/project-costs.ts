@@ -12,6 +12,21 @@ function add(to: TokenUsage, from: TokenUsage) {
   }
 }
 interface Project { id: string; name: string; conversations?: { sessionId:string; title?:string; lastMessageAt?: number | null }[] }
+/** Group already-counted rows; never rescan or add the same transcript twice. */
+export function groupSpaceCosts(result: ReturnType<typeof projectCosts>, projects: (Project & { kind?: string; parentProjectId?: string })[]) {
+  const groups = new Map<string, typeof result.projects[number] & { projectIds: string[] }>();
+  for (const row of result.projects) {
+    const execution = projects.find(p => p.id === row.projectId);
+    const parent = execution?.parentProjectId ? projects.find(p => p.id === execution.parentProjectId && p.kind !== 'chat') : undefined;
+    const id = parent?.id || (execution?.kind === 'chat' ? '__standalone_chats__' : row.projectId);
+    let group = groups.get(id);
+    if (!group) { group = { ...row, projectId: id, projectName: parent?.name || (execution?.kind === 'chat' ? 'Standalone Chat' : row.projectName), projectIds: [], usage: empty(), cost: { usd: 0, unpriced: [] }, conversations: 0, agentCount: 0, agentUsd: 0, missing: 0, unstarted: 0, partial: false }; groups.set(id, group); }
+    group.projectIds.push(row.projectId); add(group.usage, row.usage);
+    for (const key of ['conversations','agentCount','agentUsd','missing','unstarted'] as const) group[key] += row[key];
+    group.partial ||= row.partial; group.cost = estimateCost(group.usage);
+  }
+  return [...groups.values()].sort((a,b) => b.cost.usd-a.cost.usd);
+}
 interface Context { adapter: { id:string }; providerSessionId:string; configDirs:string[] }
 interface Source { file:string; agent:boolean }
 

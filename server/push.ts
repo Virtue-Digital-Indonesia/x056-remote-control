@@ -24,6 +24,7 @@ export class PushService {
     private readonly stateDir: string,
     private readonly nameOf: (pid: string) => string,
     private readonly isAutopilot: (sessionId: string) => boolean,
+    private readonly linkOf?: (projectId: string, sessionId: string) => string,
   ) {
     this.vapid = this.loadOrCreateVapid();
     webpush.setVapidDetails('mailto:x056@val.id', this.vapid.publicKey, this.vapid.privateKey);
@@ -111,10 +112,11 @@ export class PushService {
       body = reason === 'done' ? 'The task reported complete.' : `Autopilot ${reason}.`;
     }
     if (!title) return;
-    await this.sendToAll({ title, body, projectId: pid });
+    const sessionId = typeof data.sessionId === 'string' ? data.sessionId : '';
+    await this.sendToAll({ title, body, projectId: pid, sessionId, ...(this.linkOf ? { url: this.linkOf(pid, sessionId) } : {}) });
   }
 
-  private async sendToAll(payload: { title: string; body: string; projectId: string }): Promise<void> {
+  private async sendToAll(payload: { title: string; body: string; projectId: string; sessionId?: string; url?: string }): Promise<void> {
     const json = JSON.stringify(payload);
     const dead: string[] = [];
     await Promise.all(this.subs.map(async (s) => {

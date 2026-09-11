@@ -1,6 +1,6 @@
 # MCP output contracts
 
-The 34 advertised actions now declare output schemas and return matching `structuredContent` over HTTP and stdio.
+The 45 advertised actions now declare output schemas and return matching `structuredContent` over HTTP and stdio.
 MCP server version is `2.2.0`.
 Text blocks remain available alongside structured results.
 Both representations come from one handler execution.
@@ -17,7 +17,7 @@ Only referenced memory definitions appear in each schema.
 | `list_artifacts` | Filtered artifact page with authenticated download paths |
 | `register_artifact` | Registered artifact metadata |
 | `read_artifact` | Metadata, bounded text or an additional MCP image content block |
-| `list_projects` | `projects` array |
+| `list_projects` | Execution records with optional parent Project and membership revision; workspace may be null |
 | `list_conversations` | `conversations` array, with optional model, effort and creation time |
 | `read_conversation` | `messages` array of user and assistant rows |
 | `send_message` | `delivery` with mode, status and the fields available for that outcome |
@@ -32,7 +32,10 @@ Only referenced memory definitions appear in each schema.
 | `save_memory` | Shared-memory save receipt and review status |
 | `memory_search`, `memory_read` | Search results; entry, revisions, relationships and source evidence |
 | `memory_propose`, `memory_update`, `memory_link` | Entry envelope; relationships envelope |
-| `memory_context` | Context text, selection, budget, preferences and history |
+| `memory_context` | Context text, effective scope, membership revision, selected memory/source revisions, one budget, preferences and history |
+| Five `*_chat_file*` actions | Private Chat files, immutable versions, previews, checkout tokens and saved operation results |
+| `list_project_files`, `checkout_project_file`, `commit_project_file` | Shared Project versions and leases bound to the execution, attempt, membership and expected base |
+| `preview_project_file`, `add_file_to_project`, `import_work_file` | Preview status, independent file lineage from a saved Chat version, or a retained Work artifact |
 
 Send outcomes distinguish pending, expired, denied, failed, queued, sent, reply and reply timeout.
 Denial and expiry remain business outcomes.
@@ -76,4 +79,10 @@ It prints validation summaries, without printing returned records or credentials
 It does not exercise the ChatGPT client's OAuth refresh flow.
 
 Deployment uses the existing host actuator and requires deployment authorization.
-This release has no frontend changes.
+Project spaces remain behind `X056_PROJECT_SPACES_ENABLED`. Existing MCP `projectId` identifies an execution target. Shared-file tools use an explicit `parentProjectId`; membership does not change existing execution IDs.
+
+MCP memory reads derive their scope from the calling execution. Parent inheritance works with cross-project retrieval disabled. Local Chat memory stays local after a move. Related entries and old revisions must meet the same context rules before they are returned to a caller.
+
+Queued messages may include `contextReview` after a membership change or archive. Keep their text, timing, attachments and target IDs. The operator reviews the current scope before resuming; `edit_queued` cannot clear that review requirement.
+
+Handoffs use the operator UI and the existing message delivery ledger. The MCP `send_message` approval and reply contracts remain unchanged.

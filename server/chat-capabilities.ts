@@ -66,14 +66,14 @@ export class ChatCapabilities {
   constructor(private readonly state: string, private readonly accounts: () => Account[], private readonly plugins: PluginManager,
     private readonly mcp: McpServerManager, private readonly claudePath = 'claude',
     private readonly collectOverride?: (account: Account, chat: Project) => Promise<AccountCapabilities>) {}
-  requirements(chatId: string): CapabilityRequirement[] {
-    return readState<Record<string, CapabilityRequirement[]>>(join(this.state, 'chat-requirements.json'), {})[chatId] ?? [];
+  requirements(chatId: string, sessionId?: string): CapabilityRequirement[] {
+    return readState<Record<string, CapabilityRequirement[]>>(join(this.state, 'chat-requirements.json'), {})[sessionId ? chatId + '::' + sessionId : chatId] ?? [];
   }
   invalidate(): void { this.cache.clear(); }
-  setRequirements(chatId: string, requirements: CapabilityRequirement[]): void {
+  setRequirements(chatId: string, requirements: CapabilityRequirement[], sessionId?: string): void {
     if (!Array.isArray(requirements) || requirements.length > 40 || requirements.some(r => !r || typeof r.key !== 'string' || !/^(skill|plugin|mcp):.{1,240}$/.test(r.key) || (r.fingerprint !== undefined && typeof r.fingerprint !== 'string'))) throw new Error('Invalid tool requirements');
     const all = readState<Record<string, CapabilityRequirement[]>>(join(this.state, 'chat-requirements.json'), {});
-    all[chatId] = requirements; writeState(join(this.state, 'chat-requirements.json'), all); this.invalidate();
+    all[sessionId ? chatId + '::' + sessionId : chatId] = requirements; writeState(join(this.state, 'chat-requirements.json'), all); this.invalidate();
   }
   async inventory(chat: Project, force = false): Promise<AccountCapabilities[]> {
     if (!chat.cwd) throw new Error('Configure the execution workspace before discovering tools');
@@ -84,8 +84,8 @@ export class ChatCapabilities {
       (this.collectOverride ? this.collectOverride(a, chat) : this.collect(a, chat)).catch(() => ({ account: a.name, capabilities: [], errors: ['Capability discovery unavailable. Refresh after checking this account.'] }))));
     this.cache.set(cacheKey, { at: Date.now(), promise }); return promise;
   }
-  async blocked(chat: Project, inherited: CapabilityRequirement[] = [], force = false): Promise<Record<string, string[]>> {
-    const required = [...this.requirements(chat.id), ...inherited]; if (!required.length) return {};
+  async blocked(chat: Project, inherited: CapabilityRequirement[] = [], force = false, sessionId?: string): Promise<Record<string, string[]>> {
+    const required = [...this.requirements(chat.id, chat.kind === 'chat' ? undefined : sessionId), ...inherited]; if (!required.length) return {};
     const inventory = await this.inventory(chat, force), blocked: Record<string, string[]> = {};
     for (const account of inventory) {
       const reasons: string[] = [];

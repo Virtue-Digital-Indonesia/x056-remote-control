@@ -2,11 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { projectCosts } from '../server/project-costs.js';
+import { projectCosts, groupSpaceCosts } from '../server/project-costs.js';
 import { TranscriptStatsReader } from '../server/transcript-stats.js';
 
 const jsonl=(lines:unknown[])=>lines.map(l=>JSON.stringify(l)).join('\n')+'\n';
 const token=(n:number)=>({type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:n,cached_input_tokens:n/2,output_tokens:n/10}}}});
+it('groups member Chat and Work once under the parent while keeping standalone usage separate',()=>{
+ const f=setup(), projects=[...f.projects,{id:'chat',name:'Discuss',kind:'chat',parentProjectId:'p',conversations:[{sessionId:'unrelated',title:'Discuss'}]},{id:'standalone',name:'Notes',kind:'chat',conversations:[]}];
+ const result=projectCosts(projects,(pid,sid)=>({...f.context(),providerSessionId:sid}),new Set(),f.stats,1000),groups=groupSpaceCosts(result,projects);
+ expect(groups.find(g=>g.projectId==='p')).toMatchObject({projectIds:['p','chat'],conversations:2,agentCount:2});
+ expect(groups.find(g=>g.projectId==='__standalone_chats__')).toMatchObject({projectName:'Standalone Chat',conversations:0});
+ expect(groups.reduce((n,g)=>n+g.cost.usd,0)).toBeCloseTo(result.totals.usd);
+ expect(groups.reduce((n,g)=>n+g.usage.input,0)).toBe(result.totals.input);
+});
 function setup(){
  const d=mkdtempSync(join(tmpdir(),'project-costs-')),home=join(d,'home'),alias=join(d,'alias');mkdirSync(join(home,'sessions'),{recursive:true});mkdirSync(alias);symlinkSync(join(home,'sessions'),join(alias,'sessions'));
  const rollout=(id:string,parent?:string)=>{const file=join(home,'sessions',`rollout-test-${id}.jsonl`);writeFileSync(file,jsonl([{type:'session_meta',payload:{id,parent_thread_id:parent}},{type:'turn_context',payload:{model:'gpt-6-astra'}},token(1000)]));return file;};

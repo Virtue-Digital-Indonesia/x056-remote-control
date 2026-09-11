@@ -13,8 +13,8 @@ Efran authorized implementation after reading the handoff. The feature remains d
 | Project files | Foundation implemented | Shared ownership, independent lineage, retained Work output import, execution leases, and compatibility endpoints. Project Files UI is connected; broader recovery rehearsal remains. |
 | Project views | Implemented, integration checks continuing | Real Project and Work routes, project tabs, Chat parent filter, file versions and attachment drafts. Desktop, mobile, refresh and direct sign-in passed in an isolated browser. |
 | Membership and defaults | Implemented, integration checks continuing | Durable membership/archive receipts reconcile before dispatch. Queues, scheduled jobs and autopilots pause without losing content. Settings apply separate mode defaults and verify inherited tools in the execution directory. Five focused tests passed. |
-| Handoffs and integrations | Pending | Durable delivery, MCP contracts, exact links, activity and cost aggregation. |
-| Release | Pending | All acceptance gates, backup and rollback rehearsal, browser and document checks. |
+| Handoffs and integrations | Implemented | Durable handoff journal, one target and first message on retry, exact selected versions, parent activity/cost aggregation, notification links, and MCP contracts. |
+| Release | Local acceptance passed; production release pending | 865 tests, typecheck, document fidelity checks, Project workflows, and existing Chat browsers passed. WAL backup and rollback after new writes passed in isolated state. |
 
 ## Dependency audit
 
@@ -50,4 +50,24 @@ Additional controls now cover reviewing paused messages, removing inaccessible a
 
 Five membership tests cover retained queues and scheduled jobs, interrupted-operation recovery, background work guards, archive/restore behavior, separate defaults, idempotent Work preparation, and tool availability by execution directory. Typecheck and syntax checks pass. The shared document and memory tests remain part of the final release run.
 
-Handoffs, cost aggregation, backup and rollback rehearsal, and the complete acceptance matrix remain unfinished. Production is unchanged.
+The next checkpoint completed handoffs, cost aggregation, backup and rollback rehearsal, and local acceptance. Production is unchanged.
+
+## Handoff and recovery checkpoint
+
+Handoffs now create a prepared Chat or Work target through stable request IDs. Their journal preserves the selected brief, source links, memory revisions, and file versions. Copies of private Chat files have independent Project histories. The existing delivery ledger and queue prevent duplicate initial messages. An uncertain dispatch without queue evidence stays uncertain.
+
+Project costs group existing conversation totals once. Account and conversation detail keep their original identities. Project activity includes running, background, queued, paused, and needs-input counts. Tool requirements remain scoped to each Work conversation or Chat, plus inherited Project requirements.
+
+Review found a queue gap: tool discovery happened after the queue item moved into the runner. A new preflight keeps the item paused in its original place when requirements cannot be met. A focused test verifies successful dispatch after tools become available.
+
+The recovery command uses SQLite backup with WAL pages, checks copied bytes, and rejects concurrent source changes. Restore requires a new destination. Rehearsals preserve writes made after the first snapshot and recover at the original state path. The compatible feature-disable path retains new records without inheriting Project memory.
+
+Validation: `npm test` passed 864 tests in 79 files. Typecheck passed. Four document checks passed using `/opt/rc-documents/bin/python`. The Project workflow browser passed reviewed brief creation, inherited Tools, Chat to Work to Chat handoffs, linked routes, costs, queue review, and mobile layout. Both existing Chat browser suites passed after accepting the new Standalone Chat cost label.
+
+The first full run exposed seven outdated controller test doubles after the delivery store became shared. The doubles now supply that dependency; the second full run passed. Document checks use an optional output directory because an older test directory belonged to another user. No production files or permissions were changed for those checks.
+
+The provider tests use isolated accounts, fake transports, or simulated failover events. Document conversion uses the real installed toolkit. No production test conversations or messages were created. A live provider limit event and the production swap remain release checks.
+
+The final durability review added file and directory fsync for shared JSON writes. Queue, autopilot, scheduler, artifact, routing, and delivery records now persist before an operation can be marked complete. A damaged delivery journal refuses sends instead of starting with empty receipts. The restore helper also rejects paths through a snapshot symlink. Fresh checks follow these changes.
+
+The final full regression run passed **865 tests in 79 files** after the durability changes. Typecheck passed. The final browser run will use a fresh fixture loaded from the committed implementation.

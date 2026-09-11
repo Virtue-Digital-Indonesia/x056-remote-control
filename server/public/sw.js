@@ -14,20 +14,23 @@ self.addEventListener('push', function (event) {
     badge: '/icon-192.png?v=31f56a235316',
     tag: 'x056-' + (data.projectId || 'general'),
     renotify: true,
-    data: { projectId: data.projectId || '' },
+    data: { projectId: data.projectId || '', sessionId: data.sessionId || '', url: data.url || '' },
   }));
 });
 
 self.addEventListener('notificationclick', function (event) {
   event.notification.close();
   var pid = (event.notification.data && event.notification.data.projectId) || '';
+  var sid = (event.notification.data && event.notification.data.sessionId) || '';
+  var url = (event.notification.data && event.notification.data.url) || ('/?project=' + encodeURIComponent(pid) + '&session=' + encodeURIComponent(sid));
+  if (!url.startsWith('/') || url.startsWith('//')) url = '/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
       for (var i = 0; i < list.length; i++) {
         var c = list[i];
-        if ('focus' in c) { try { c.postMessage({ type: 'x056-open', projectId: pid }); } catch (e) {} return c.focus(); }
+        if ('focus' in c) { try { c.postMessage({ type: 'x056-open', projectId: pid, sessionId: sid, url: url }); } catch (e) {} return c.focus(); }
       }
-      if (self.clients.openWindow) return self.clients.openWindow('/?project=' + encodeURIComponent(pid));
+      if (self.clients.openWindow) return self.clients.openWindow(url);
     })
   );
 });

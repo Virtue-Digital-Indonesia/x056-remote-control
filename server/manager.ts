@@ -8,6 +8,9 @@ import type { TitleGenerator } from './title-generator.js';
 import { withMemoryContext } from '../src/memory-context.js';
 import { MemoryStore } from './memory-store.js';
 import { ProjectContextResolver } from './project-context.js';
+import { ProjectHandoffs } from './project-handoffs.js';
+import { DeliveryStore, writeState } from './workspace-store.js';
+import { projectSpacesRecoveryReport } from './project-spaces-recovery.js';
 import { cleanMemorySource } from './memory-sources.js';
 import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { AccountAnalytics } from '../src/account-analytics.js';
@@ -267,6 +270,16 @@ function defaultLoginSpawn(configDir: string, claudePath?: string): ChildProcess
 }
 
 export class SessionManager {
+  private deliveryStore?: DeliveryStore;
+  deliveries(): DeliveryStore {
+    if (!this.deliveryStore) {
+      this.deliveryStore = new DeliveryStore(this.opts.stateDir);
+      this.subscribe(e => { if (e.kind === 'message_delivery') this.deliveryStore!.accept(String(e.data.requestId), String(e.data.sessionId), e.data.status === 'cancelled' ? 'cancelled' : e.data.status === 'uncertain' ? 'uncertain' : 'accepted'); });
+    }
+    return this.deliveryStore;
+  }
+  private handoffStore?: ProjectHandoffs;
+  projectHandoffs(): ProjectHandoffs { return this.handoffStore ??= new ProjectHandoffs(this.opts.stateDir, this); }
   private capabilityService?: ChatCapabilities;
   private readonly chatToolsChanged = new Set<string>();
   refreshChatCapabilities(): void {
@@ -315,7 +328,10 @@ export class SessionManager {
     const p = this.assertExecutionAllowed(projectId);
     return { projectId, sessionId, cwd: p.cwd, membershipRevision: scope.membershipRevision };
   }
+  private destroyed = false;
+  private readonly queueChecks = new Set<string>();
   onModuleDestroy(): void {
+    this.destroyed = true;
     for (const timer of this.queueTimers.values()) clearTimeout(timer);
     for (const timer of this.autopilotTimers.values()) clearTimeout(timer);
     this.queueTimers.clear(); this.autopilotTimers.clear();
@@ -547,9 +563,7 @@ export class SessionManager {
     }
   }
   private saveAutopilot(map: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string }>): void {
-    const tmp = `${this.autopilotFile}.tmp`;
-    writeFileSync(tmp, JSON.stringify(map, null, 2));
-    renameSync(tmp, this.autopilotFile);
+    writeState(this.autopilotFile, map);
   }
 
   private readonly autopilotTimers = new Map<string, ReturnType<typeof setTimeout>>(); // keyed by sessionId
@@ -689,9 +703,7 @@ export class SessionManager {
     } catch { return {}; }
   }
   private saveQueues(map: Record<string, QueueItem[]>): void {
-    const tmp = `${this.queueFile}.tmp`;
-    writeFileSync(tmp, JSON.stringify(map, null, 2));
-    renameSync(tmp, this.queueFile);
+    writeState(this.queueFile, map);
   }
   private emitQueue(pid: string, map?: Record<string, QueueItem[]>): void {
     const m = map ?? this.loadQueues();
@@ -795,9 +807,28 @@ export class SessionManager {
     if (headIdx < 0) return false;
     const head = q[headIdx];
     // An unavailable head keeps its place; later messages cannot overtake it.
-    if (!this.queueReady(head) || this.queueTimers.has(sessionId)) return true;
-    const t = setTimeout(() => {
+    if (!this.queueReady(head) || this.queueTimers.has(sessionId) || this.queueChecks.has(sessionId) || this.destroyed) return true;
+    const t = setTimeout(async () => {
       this.queueTimers.delete(sessionId);
+      if(this.queueChecks.has(sessionId)||this.destroyed)return;
+      this.queueChecks.add(sessionId);
+      try {
+        if(this.projectSpacesEnabled()) {
+          const p=this.assertExecutionAllowed(pid), inherited=this.requiredProjectTools(pid), service=this.capabilityService;
+          if(inherited.length || service?.requirements(pid,p.kind==='chat'?undefined:sessionId).length) {
+            const provider=this.adapterFor(pid,sessionId).id;
+            const blocks=await this.chatCapabilities().blocked({...p,provider},inherited,true,sessionId);
+            const lock=new RoutingState(this.opts.stateDir).get(pid,sessionId).lockedAccount;
+            const eligible=this.registry().list().filter(a=>a.provider===provider&&(!lock||a.name===lock));
+            if(!eligible.length||eligible.every(a=>blocks[a.name]?.length))throw new Error('Required tools unavailable. Check Tools, then resume this message.');
+          }
+        }
+      } catch(error) {
+        const current=this.loadQueues(),item=current[pid]?.find(q=>q.id===head.id);
+        if(item&&!item.contextReview&&!this.destroyed){item.paused=true;item.error=(error as Error).message;try{this.saveQueues(current);this.emitQueue(pid,current);}catch{/* The original queued item remains persisted. */}}
+        return;
+      } finally {this.queueChecks.delete(sessionId);}
+      if(this.destroyed)return;
       const current=this.loadQueues(), rows=current[pid]||[];
       const index=rows.findIndex(x=>(x.sessionId??pid)===sessionId), item=rows[index];
       if (!item || item.id!==head.id || !this.queueReady(item) || this.sessionBusy(sessionId)) return;
@@ -1346,6 +1377,12 @@ export class SessionManager {
 
   /** Display name for a project id (for push notifications, etc.). */
   projectName(pid: string): string | undefined { return this.projects().get(pid)?.name; }
+  conversationUrl(pid: string, sid: string): string {
+    const p = this.projects().get(pid);
+    if (p?.kind === 'chat') return '/chat/' + encodeURIComponent(pid);
+    if (this.projectSpacesEnabled() && p?.conversations?.some(c => c.sessionId === sid)) return '/work/' + encodeURIComponent(pid) + '/' + encodeURIComponent(sid);
+    return '/?project=' + encodeURIComponent(pid) + '&session=' + encodeURIComponent(sid);
+  }
 
   /** Whether a project currently has autopilot armed (used to suppress noisy
    *  per-step completion pushes). */
@@ -1376,13 +1413,16 @@ export class SessionManager {
   projectSpaces() {
     if (!this.projectSpacesEnabled()) return { enabled: false, projects: [] };
     const all = this.listProjects().projects;
+    const queues = this.queues(), questions = this.pendingQuestions;
     return { enabled: true, projects: all.filter(p => p.kind !== 'chat').map(p => {
       const chats = all.filter(c => c.kind === 'chat' && c.parentProjectId === p.id);
       const executions = [p, ...chats];
       return { ...p, workspaceConfigured: !!p.cwd, chats,
         activity: { running: executions.reduce((n, e) => n + e.runningSessionIds.length, 0),
           background: executions.reduce((n, e) => n + e.backgroundSessionIds.length, 0),
-          queued: executions.reduce((n, e) => n + (this.queues()[e.id]?.length ?? 0), 0) } };
+          queued: executions.reduce((n, e) => n + (queues[e.id]?.length ?? 0), 0),
+          waiting: executions.reduce((n, e) => n + (queues[e.id]?.filter(q => q.paused || q.contextReview || q.error).length ?? 0), 0),
+          needsInput: executions.reduce((n, e) => n + (e.conversations?.filter(c => questions.has(c.sessionId)).length ?? 0), 0) } };
     }) };
   }
 
@@ -1392,7 +1432,7 @@ export class SessionManager {
     const p = this.projects().createSpace({ ...input, cwd: input.cwd === undefined ? undefined : this.resolveCwd(input.cwd) });
     this.emit('projects', { id: p.id }); return p;
   }
-  projectSpacesMigration() { return this.projects().migrateSpaces(); }
+  projectSpacesMigration() { return { ...this.projects().migrateSpaces(), recovery: projectSpacesRecoveryReport(this.opts.stateDir) }; }
 
   private validateProjectDefaults(defaults: Project['defaults']): void {
     validateModeDefaults(defaults);
@@ -2157,7 +2197,7 @@ export class SessionManager {
       if(memoryWarning)emit('memory_warning',{message:memoryWarning});
       void runFn({
         accountEligibility: (this.capabilityService || this.requiredProjectTools(pid).length) && (reg.get(pid)?.kind === 'chat' || this.projectSpacesEnabled())
-          ? () => this.chatCapabilities().blocked({ ...this.assertExecutionAllowed(pid), provider: adapter.id }, this.requiredProjectTools(pid), this.projectSpacesEnabled()) : undefined,
+          ? () => this.chatCapabilities().blocked({ ...this.assertExecutionAllowed(pid), provider: adapter.id }, this.requiredProjectTools(pid), this.projectSpacesEnabled(), sessionId) : undefined,
         registry: this.registry(),
         accountLoads: () => this.accountLoads(sessionId),
         routing: route,

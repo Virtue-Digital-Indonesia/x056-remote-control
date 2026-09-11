@@ -9,7 +9,7 @@ import { accountHealth } from './routing-health.js';
 import { DeliveryStore, type DeliveryReceipt } from './workspace-store.js';
 import { ConversationActivity } from './conversation-activity.js';
 import { rolloutHeads } from '../src/adapters/codex.js';
-import { projectCosts } from './project-costs.js';
+import { projectCosts, groupSpaceCosts } from './project-costs.js';
 import { AccountAnalytics } from '../src/account-analytics.js';
 import {
   BadRequestException,
@@ -166,8 +166,7 @@ export class ApiController {
     @Inject(TRANSCRIPT_STATS) private readonly stats: TranscriptStatsReader,
   ) {
     this.loadQuotaCache();
-    this.deliveries=new DeliveryStore(stateDir);
-    manager.subscribe(e=>{if(e.kind==='message_delivery')this.deliveries.accept(String(e.data.requestId),String(e.data.sessionId),e.data.status==='cancelled'?'cancelled':e.data.status==='uncertain'?'uncertain':'accepted');});
+    this.deliveries=manager.deliveries();
   }
 
   private deliveryOnce(body:SendBody,action:()=>{sessionId?:string;id?:string;queued?:boolean;steered?:boolean}){try{return this.deliveries.run(body,action);}catch(e){if(e instanceof BadRequestException||e instanceof ConflictException)throw e;throw new BadRequestException((e as Error).message);}}
@@ -754,7 +753,8 @@ export class ApiController {
     const budget = Math.min(Math.max(Number(budgetMs) || 400, 0), 5000);
     const running = new Set(this.manager.runningSessions().map(r => `${r.projectId}/${r.sessionId}`));
     const reg = this.manager.listProjects() as { projects: {id:string;name:string;conversations?:{sessionId:string;title?:string}[]}[] };
-    return projectCosts(reg.projects ?? [], (pid,sid) => this.manager.historyContext(pid,sid), running, this.stats, budget);
+    const result = projectCosts(reg.projects ?? [], (pid,sid) => this.manager.historyContext(pid,sid), running, this.stats, budget);
+    return { ...result, ...(this.manager.projectSpacesEnabled() ? { projectSpaces: groupSpaceCosts(result, this.manager.listProjects().projects) } : {}) };
   }
 
   /** One subagent's own history — the same rows the main chat renders. */

@@ -87,7 +87,7 @@ const headers = { Authorization: 'Bearer browser-fixture-token-0123456789', 'Con
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     await page.setViewportSize({width:1440,height:960});await page.locator('#rcChatAccounts').click();
     await page.locator('#crCostDetails').click();
-    await page.locator('#projectCostDetails summary strong').filter({hasText:/^Chat$/}).waitFor();
+    await page.locator('#projectCostDetails summary strong').filter({hasText:/^(Chat|Standalone Chat)$/}).waitFor();
     assert.deepEqual(errors,[]);
     console.log('Chat creation, uploads, reload, delivery, versions/download, tools, references, and mobile passed.');
   } catch (error) { const p=browser.contexts()[0]?.pages()[0]; if(p){await p.screenshot({path:"/tmp/rc-chat-browser-failure.png"});console.error((await p.locator("body").innerText()).slice(-2500));} throw error; } finally { await browser.close(); }

@@ -39,7 +39,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   function restoreMemory() { const memory = $('crMemory'); if (memory && memory.parentNode !== $('crWorkspace')) $('crWorkspace').append(memory); }
   function leave() {
     restoreMemory(); document.body.classList.remove('rc-spaces-view'); $('rcProjectPage').hidden = true;
-    $('crSpacesTab').removeAttribute('aria-current');
+    $('crSpacesTab').removeAttribute('aria-current');if($('crBreadcrumb'))$('crBreadcrumb').innerHTML='Workspace <span>/ Work</span>';
   }
   async function navigate(url, replace = false) {
     if (location.pathname !== url) history[replace ? 'replaceState' : 'pushState']({}, '', url);
@@ -75,7 +75,7 @@ window.createProjectSpaces = function (engine, room, chat) {
       $('crSpacesTab').setAttribute('aria-current', 'page'); $('crBoardTab').removeAttribute('aria-current');
       $('rcProjectPage').innerHTML = '<p class="cr-empty" role="status">Loading Project…</p>';
       await load(); if (generation !== version || location.pathname !== url) return;
-      activeId = segments[1] || ''; activeTab = segments[2] || 'chat';
+      activeId = segments[1] || ''; activeTab = segments[2] || 'chat';if($('crBreadcrumb'))$('crBreadcrumb').innerHTML=link('/projects','Projects')+' <span>/ '+esc(projects.find(p=>p.id===activeId)?.name||'All projects')+'</span>';room.refresh();
       if (!activeId) renderList();
       else {
         const project = projects.find(p => p.id === activeId);
@@ -107,7 +107,8 @@ window.createProjectSpaces = function (engine, room, chat) {
     };
   }
   async function renderProject(p) {
-    $('rcProjectPage').innerHTML = `<div class="rc-space-breadcrumb">${link('/projects', 'Projects')}<span>/</span><span>${esc(p.name)}</span></div><div class="cr-heading"><div><h1 tabindex="-1">${esc(p.name)}</h1><p>${p.archivedAt ? 'Archived · saved history and files are retained' : `${p.activity.running} running · ${p.activity.background} background · ${p.activity.queued} queued`}</p></div>${link(path(p.id, 'settings'), icon('gear') + ' Settings', 'cr-secondary')}</div><nav class="rc-space-tabs" aria-label="Project sections">${['chat', 'work', 'files', 'memory'].map(tab => `<a href="${path(p.id, tab)}" data-space-link ${tab === activeTab ? 'aria-current="page"' : ''}>${icon({chat:'chat',work:'menu',files:'file',memory:'snippet'}[tab])}${tab[0].toUpperCase() + tab.slice(1)}</a>`).join('')}</nav><div id="rcProjectBody"></div>`;
+    $('rcProjectPage').innerHTML = `<div class="rc-space-breadcrumb">${link('/projects', 'Projects')}<span>/</span><span>${esc(p.name)}</span></div><div class="cr-heading"><div><h1 tabindex="-1">${esc(p.name)}</h1><p>${p.archivedAt ? 'Archived · saved history and files are retained' : `${p.activity.running} running · ${p.activity.background} background · ${p.activity.queued} queued · ${p.activity.needsInput} need input`}</p></div><div class="rc-space-toolbar"><button class="cr-secondary" id="rcSpaceCosts">Costs</button>${link(path(p.id, 'settings'), icon('gear') + ' Settings', 'cr-secondary')}</div></div><nav class="rc-space-tabs" aria-label="Project sections">${['chat', 'work', 'files', 'memory'].map(tab => `<a href="${path(p.id, tab)}" data-space-link ${tab === activeTab ? 'aria-current="page"' : ''}>${icon({chat:'chat',work:'menu',files:'file',memory:'snippet'}[tab])}${tab[0].toUpperCase() + tab.slice(1)}</a>`).join('')}</nav><div id="rcProjectBody"></div>`;
+    $('rcSpaceCosts').onclick=()=>room.showCosts();
     if (activeTab === 'chat' || activeTab === 'work') renderConversations(p, activeTab);
     if (activeTab === 'files') await renderFiles(p);
     if (activeTab === 'memory') {
@@ -145,10 +146,10 @@ window.createProjectSpaces = function (engine, room, chat) {
   const controlsMarkup = '<div class="rc-chat-form-grid"><label>Provider<select name="provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><label>Account<select name="account"></select></label><label>Model<select name="model"></select></label><label>Effort<select name="effort"></select></label></div>';
   function newConversation(p, mode) {
     const d = dialog('New ' + mode, `<form class="workspace-form"><label>Name<input name="name" placeholder="New ${mode}" maxlength="300"></label>${controlsMarkup}<p role="alert"></p><button class="cr-primary">Create ${mode}</button></form>`), form = d.querySelector('form'), requestId = crypto.randomUUID();
-    controls(form, p.defaults?.[mode]);
+    controls(form, {...(mode==='work'?{provider:p.provider||'claude',model:p.model,effort:p.effort}:{provider:'claude'}),...p.defaults?.[mode]});
     form.onsubmit = async event => { event.preventDefault(); const f = form.elements; form.querySelector('button').disabled = true;
       try {
-        const input = { requestId, name: f.name.value || undefined, provider: f.provider.value, model: f.model.value, effort: f.effort.value, account: f.account.value || undefined };
+        const input = { requestId, name: f.name.value || undefined, provider: f.provider.value, model: f.model.value, effort: f.effort.value, account: f.account.value };
         const result = await request(mode === 'chat' ? '/api/chats' : base(p.id) + '/work', mode === 'chat' ? { ...input, parentProjectId: p.id } : input);
         await engine.reloadProjects(); d.close(); await navigate(mode === 'chat' ? '/chat/' + result.id : conversationPath(p, result.sessionId));
       } catch (error) { form.querySelector('[role=alert]').textContent = error.message; } finally { form.querySelector('button').disabled = false; }
@@ -192,8 +193,14 @@ window.createProjectSpaces = function (engine, room, chat) {
     xhr.onerror = () => { job.state = 'Upload interrupted'; renderUploads(); }; xhr.onabort = () => { job.state = 'Cancelled'; renderUploads(); };
     const form = new FormData(); job.files.forEach(f => form.append('files', f)); xhr.send(form); renderUploads();
   }
+  function fileSourceLink(file,version) {
+    const source=engine.state().projects.find(p=>p.id===(version.sourceProjectId||file.sourceOwnerId));
+    const sid=version.sourceSessionId||(source?.kind==='chat'?source.lastSessionId:null);
+    if(source&&sid)return link(conversationPath(source,sid),'Source '+(source.kind==='chat'?'Chat':'Work'),'cr-secondary');
+    return (version.sourceProjectId||file.sourceOwnerId)?'<small>Source conversation unavailable</small>':'';
+  }
   function versionsDialog(p, file) {
-    const d = dialog(file.name, `<div class="rc-space-version-list">${[...file.versions].reverse().map((v, i) => `<article data-version="${esc(v.id)}"><strong>${i === 0 ? 'Latest version' : 'Earlier version'}</strong><small>${esc(new Date(v.createdAt).toLocaleString())} · ${Math.ceil(v.bytes / 1024)} KiB</small><div><button data-download class="cr-secondary">Download</button><button data-preview class="cr-secondary">Preview</button><button data-attach class="cr-secondary">Attach</button><button data-restore class="cr-secondary" ${p.archivedAt ? 'disabled' : ''}>Restore as new version</button></div></article>`).join('')}</div><div id="rcSpacePreview" role="status"></div>`);
+    const d = dialog(file.name, `<div class="rc-space-version-list">${[...file.versions].reverse().map((v, i) => `<article data-version="${esc(v.id)}"><strong>${i === 0 ? 'Latest version' : 'Earlier version'}</strong><small>${esc(new Date(v.createdAt).toLocaleString())} · ${Math.ceil(v.bytes / 1024)} KiB</small><div>${fileSourceLink(file,v)}<button data-download class="cr-secondary">Download</button><button data-preview class="cr-secondary">Preview</button><button data-attach class="cr-secondary">Attach</button><button data-restore class="cr-secondary" ${p.archivedAt ? 'disabled' : ''}>Restore as new version</button></div></article>`).join('')}</div><div id="rcSpacePreview" role="status"></div>`);
     const urls = []; d.addEventListener('close', () => urls.forEach(URL.revokeObjectURL));
     const fetchBlob = async url => { const response = await engine.api(url); if (!response.ok) throw new Error('File unavailable'); const blob = await response.blob(), object = URL.createObjectURL(blob); urls.push(object); return { blob, object }; };
     d.querySelectorAll('[data-version]').forEach(row => {
@@ -276,21 +283,56 @@ window.createProjectSpaces = function (engine, room, chat) {
       room.editMemory(entry||{title:p.name+' brief',projectId:p.id,scope:'project',kind:'context',status:'confirmed',pinned:true,tags:['project-brief']},()=>route());
     }catch(e){room.notify(e.message);}
   }
+  async function handoff(mode, fresh = false) {
+    const state=engine.state(), source=state.projects.find(p=>p.id===state.projectId), sid=state.sessionId;
+    if(!source||!sid)return;
+    const parent=state.projects.find(p=>p.id===(source.kind==='chat'?source.parentProjectId:source.id));
+    const d=dialog(fresh?'Start a fresh linked Chat':mode==='work'?'Continue in Work':'Discuss in Chat','<p class="rc-chat-empty" role="status">Loading saved context…</p>');
+    try {
+      const history=await request('/api/conversations/history?'+new URLSearchParams({projectId:source.id,sessionId:sid,limit:12}));
+      const fileSets=await Promise.all([...(parent?[request(base(parent.id)+'/files').then(data=>({ownerId:parent.id,...data}))]:[]),...(source.kind==='chat'&&parent?[request('/api/chats/'+source.id+'/files').then(data=>({ownerId:source.id,...data}))]:[])]);
+      if(!d.open)return;
+      const files=fileSets.flatMap(set=>set.files.filter(f=>!f.removed).map(file=>({file,ownerId:set.ownerId}))),rows=Array.isArray(history)?history:history.rows||[];
+      const brief=fresh?'':rows.filter(r=>['user','assistant'].includes(r.role)).slice(-6).map(r=>r.role.toUpperCase()+': '+r.text.slice(0,1600)).join('\n\n');
+      d.querySelector('[role=status]').remove();d.insertAdjacentHTML('beforeend',`<form class="workspace-form"><p>A new ${mode==='work'?'Work':'Chat'} conversation starts from the brief you review here.${fresh?' Earlier provider context is left in the source conversation.':''}</p><label>Name<input name="name" value="${esc((fresh?'Fresh: ':mode==='work'?'Continue: ':'Discuss: ')+(source.conversations.find(c=>c.sessionId===sid)?.title||source.name))}" maxlength="300"></label>${controlsMarkup}<label>Task brief<textarea name="brief" rows="8" required maxlength="50000" placeholder="What should the next conversation do?">${esc(brief)}</textarea></label><label class="workspace-check"><input type="checkbox" name="source" checked>Link the source conversation</label><fieldset><legend>Saved files</legend>${files.map(({file,ownerId},i)=>`<label class="workspace-check"><input type="checkbox" data-file-choice="${i}"><span>${esc(file.name)}${ownerId!==parent?.id?' · Copies this Chat file into Project Files':''}</span></label><select aria-label="Version of ${esc(file.name)}" data-file-version="${i}">${[...file.versions].reverse().map(v=>`<option value="${esc(v.id)}">${esc(new Date(v.createdAt).toLocaleString())}${v.id===file.latestVersionId?' · Latest':''}</option>`).join('')}</select>`).join('')||'<p>No saved files selected.</p>'}</fieldset><fieldset><legend>Reviewed memory</legend><div data-memories></div></fieldset><p role="alert"></p><button class="cr-primary">Create ${mode} and send brief</button></form>`);
+      const form=d.querySelector('form'),requestId=crypto.randomUUID();controls(form,parent?.defaults?.[mode]);
+      const refreshMemories=async()=>{const data=await request('/api/memory/context?'+new URLSearchParams({projectId:source.id,sessionId:sid,provider:form.elements.provider.value}));if(d.open)form.querySelector('[data-memories]').innerHTML=data.items.map(m=>`<label class="workspace-check"><input type="checkbox" data-memory-id="${esc(m.id)}" data-revision="${m.revision}" ${fresh?'':'checked'}><span>${esc(m.title)} · v${m.revision}</span></label>`).join('')||'<p>No eligible confirmed memories.</p>';};
+      form.elements.provider.addEventListener('change',()=>refreshMemories().catch(e=>room.notify(e.message)));await refreshMemories();
+      form.onsubmit=async e=>{e.preventDefault();const f=form.elements,button=form.querySelector('.cr-primary');button.disabled=true;
+        try {const op=await request('/api/project-spaces/handoffs',{requestId,sourceProjectId:source.id,sourceSessionId:sid,mode,name:f.name.value,brief:f.brief.value,choices:{provider:f.provider.value,model:f.model.value,effort:f.effort.value,account:f.account.value},sources:f.source.checked?[{projectId:source.id,sessionId:sid}]:[],memories:[...form.querySelectorAll('[data-memory-id]:checked')].map(x=>({id:x.dataset.memoryId,revision:Number(x.dataset.revision)})),fileRefs:[...form.querySelectorAll('[data-file-choice]:checked')].map(x=>{const i=Number(x.dataset.fileChoice),{file,ownerId}=files[i];return {ownerId,fileId:file.id,versionId:form.querySelector(`[data-file-version="${i}"]`).value,name:file.name};})});
+          await engine.reloadProjects();d.close();await window.rcProjectSpaces.openConversation(op.target.projectId,op.target.sessionId);room.notify(op.status==='uncertain'?'Delivery needs review in Message delivery. The brief was not resent.':'Handoff saved. The brief is ready for the new conversation.');
+        }catch(e){form.querySelector('[role=alert]').textContent=e.message;}finally{button.disabled=false;}
+      };
+    }catch(e){d.querySelector('[role=status]').textContent=e.message;}
+  }
+  let linksIdentity='';
+  async function updateHandoffLinks(pid,sid) {
+    const identity=pid+'::'+sid;if(linksIdentity===identity)return;linksIdentity=identity;
+    try{const ops=await request('/api/project-spaces/handoffs?'+new URLSearchParams({projectId:pid,sessionId:sid}));if(linksIdentity!==identity)return;
+      const host=$('rcProjectHandoffLinks');if(!host)return;
+      host.innerHTML=ops.slice(-6).map(op=>{const other=op.target?.projectId===pid&&op.target?.sessionId===sid?{projectId:op.input.sourceProjectId,sessionId:op.input.sourceSessionId}:op.target;const p=engine.state().projects.find(p=>p.id===other?.projectId);return p?link(conversationPath(p,other.sessionId),'Linked '+(p.kind==='chat'?'Chat':'Work'),'cr-secondary'):'';}).join('');
+    }catch{linksIdentity='';}
+  }
+  let contextSignature='';
   function updateContext() {
     if (!enabled || !mounted) return;
     const state = engine.state(), p = state.projects.find(p => p.id === state.projectId), parentId = p?.kind === 'chat' ? p.parentProjectId : p?.id;
     const parent = state.projects.find(p => p.id === parentId && p.kind !== 'chat'), host = $('rcProjectContext');
     host.hidden = !state.sessionId || !p || !room.isOpen();
-    if (host.hidden) return;
+    if (host.hidden) {contextSignature='';return;}
+    const signature=JSON.stringify([p.id,p.name,parent?.id,parent?.name,parent?.cwd,p.membershipRevision,state.sessionId]);if(signature===contextSignature)return;contextSignature=signature;
     host.innerHTML = `${parent ? link(path(parent.id), icon('folder') + esc(parent.name), 'rc-space-parent') : '<span>Standalone Chat</span>'}${parent ? link(path(parent.id, 'files'), 'Project files', 'cr-secondary') : ''}${p.kind!=='chat'?'<button class="cr-secondary" data-tools>Tools</button>':''}<button class="cr-secondary" data-context>${parent ? 'Using project memory' : 'Memory context'}</button>${p.kind === 'chat' ? '<button class="cr-secondary" data-membership>Move chat</button>' : ''}`;
     host.querySelector('[data-context]').onclick = () => room.memoryContext({ projectId: p.id, sessionId: state.sessionId });
     if(host.querySelector('[data-tools]'))host.querySelector('[data-tools]').onclick=()=>chat.tools(p.id);
+    const handoffButton=document.createElement('button');handoffButton.className='cr-secondary';handoffButton.textContent=p.kind==='chat'?'Continue in Work':'Discuss in Chat';handoffButton.disabled=p.kind==='chat'&&!parent?.cwd;handoffButton.title=handoffButton.disabled?'Add this Chat to a Project with a Work workspace':'';handoffButton.onclick=()=>handoff(p.kind==='chat'?'work':'chat');host.append(handoffButton);
+    if(p.kind==='chat'){const fresh=document.createElement('button');fresh.className='cr-secondary';fresh.textContent='Fresh linked Chat';fresh.onclick=()=>handoff('chat',true);host.append(fresh);}
+    const links=document.createElement('span');links.id='rcProjectHandoffLinks';host.append(links);linksIdentity='';updateHandoffLinks(p.id,state.sessionId);
     const move = host.querySelector('[data-membership]'); if (move) move.onclick = () => membershipDialog(p);
   }
   document.addEventListener('click', event => {
     if (!enabled || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const a = event.target.closest('a[data-space-link]'); if (!a) return;
-    event.preventDefault(); navigate(new URL(a.href).pathname);
+    event.preventDefault(); a.closest('dialog')?.close(); navigate(new URL(a.href).pathname);
   });
   document.addEventListener('click', event => {
     if (!enabled || !document.body.classList.contains('rc-spaces-view')) return;
@@ -301,7 +343,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   document.addEventListener('x056:state', updateContext);
   document.addEventListener('x056:mode', () => setTimeout(updateContext, 0));
   return {
-    enabled: () => enabled, handles, navigate, membershipDialog, conversationPath, reviewQueue, resumeAutopilot, shareChatFile, importArtifact,
+    enabled: () => enabled, handles, navigate, newWork:pid=>{const p=engine.state().projects.find(p=>p.id===pid);if(p?.cwd)newConversation(p,'work');else if(p)navigate(path(pid,'settings'));}, membershipDialog, conversationPath, reviewQueue, resumeAutopilot, shareChatFile, importArtifact,
     openConversation: (pid, sid) => { const p = engine.state().projects.find(p => p.id === pid); if (p) return navigate(conversationPath(p, sid)); },
     init: async () => { try { const data = await load(); enabled = data.enabled; if (enabled) { mount(); await route(); updateContext(); } } catch (error) { room.notify(error.message); } },
   };

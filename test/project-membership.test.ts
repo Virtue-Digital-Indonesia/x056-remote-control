@@ -25,6 +25,18 @@ function fixture() {
 }
 
 describe('Project membership, defaults and paused work', () => {
+  it('retains queued work when required tools are unavailable, then checks again before resuming', async () => {
+    const f = fixture(); let ready = false;
+    f.m.updateProjectSpace(f.parent.id, { expectedRevision: 1, requiredTools: [{ key: 'skill:proposal' }] });
+    f.m.moveProjectChat(f.chat.id, { parentProjectId: f.parent.id, expectedRevision: 0, operationId: 'tools-member-001' });
+    const service = new ChatCapabilities(f.stateDir, () => f.accounts.list(), undefined as never, undefined as never, undefined, async account => ({ account: account.name, errors: [], capabilities: ready ? [{ key: 'skill:proposal', name: 'Proposal', kind: 'skill', state: 'ready' }] : [] }));
+    f.m.setChatCapabilities(service);
+    const item = f.m.enqueue(f.chat.id, { sessionId: f.chat.lastSessionId, text: 'Keep this tool-dependent task' });
+    await new Promise(r => setTimeout(r, 550));
+    expect(f.calls).toHaveLength(0); expect(f.m.queues()[f.chat.id][0]).toMatchObject({ id: item.id, text: item.text, paused: true, error: expect.stringContaining('Required tools unavailable') });
+    ready = true; f.m.refreshChatCapabilities(); f.m.editQueueItem(f.chat.id, item.id, { paused: false }); f.m.tickQueuePlanner();
+    await new Promise(r => setTimeout(r, 550)); expect(f.calls).toHaveLength(1); expect(f.m.queues()[f.chat.id]).toEqual([]);
+  });
   it('retains queued messages, references and automations, with explicit context review before dispatch', () => {
     const f = fixture(), sid = f.chat.lastSessionId!;
     const item = f.m.enqueue(f.chat.id, { text: 'Keep this message', sessionId: sid, paused: true, notBefore: Date.now() + 86400000, model: 'claude-sonnet-5' });

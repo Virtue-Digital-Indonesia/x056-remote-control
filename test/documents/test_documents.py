@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ spec.loader.exec_module(documents)
 
 class DocumentTests(unittest.TestCase):
     def setUp(self):
-        output = ROOT / ".deploy/chat-document-tests"
+        output = Path(os.environ.get("X056_DOCUMENT_TEST_OUTPUT", ROOT / ".deploy/chat-document-tests"))
         output.mkdir(parents=True, exist_ok=True)
         self.directory = Path(tempfile.mkdtemp(dir=output))
         self.original = self.directory / "proposal.docx"

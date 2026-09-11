@@ -9,6 +9,8 @@ export class ProjectSpacesController {
   private enabled() { if (!this.manager.projectSpacesEnabled()) throw new NotFoundException('Project spaces are disabled'); }
   @Get() list() { return this.manager.projectSpaces(); }
   @Get('migration') migration() { this.enabled(); return this.manager.projectSpacesMigration(); }
+  @Post('handoffs') handoff(@Body() body: import('./project-handoffs.js').ProjectHandoffInput) { return this.write(() => this.manager.projectHandoffs().run(body)); }
+  @Get('handoffs') handoffs(@Query('projectId') id: string, @Query('sessionId') sid?: string) { this.enabled(); this.manager.executionProject(id); return this.manager.projectHandoffs().list(id, sid); }
   @Get(':id') get(@Param('id') id: string) {
     this.enabled();
     const p = this.manager.projectSpaces().projects.find(p => p.id === id);
@@ -36,11 +38,12 @@ export class ProjectSpacesController {
   @Get(':id/capabilities') async capabilities(@Param('id') id: string, @Query('sessionId') sid: string, @Query('refresh') refresh?: string) {
     this.enabled();
     const context = this.manager.historyContext(id, sid), project = this.manager.executionProject(id), service = this.manager.chatCapabilities();
+    if (!project.conversations?.some(c => c.sessionId === sid)) throw new BadRequestException('Conversation unavailable');
     if (refresh === '1') this.manager.refreshChatCapabilities();
-    return { accounts: await service.inventory({ ...project, provider: context.adapter.id }, refresh === '1'), requirements: service.requirements(id), projectRequirements: this.manager.requiredProjectTools(id) };
+    return { accounts: await service.inventory({ ...project, provider: context.adapter.id }, refresh === '1'), requirements: service.requirements(id, sid), projectRequirements: this.manager.requiredProjectTools(id) };
   }
-  @Post(':id/capabilities') requirements(@Param('id') id: string, @Body() body: { requirements: import('./chat-capabilities.js').CapabilityRequirement[] }) {
-    return this.write(() => { this.manager.executionProject(id); this.manager.chatCapabilities().setRequirements(id, body.requirements); this.manager.refreshChatCapabilities(); return { requirements: body.requirements }; });
+  @Post(':id/capabilities') requirements(@Param('id') id: string, @Body() body: { sessionId: string; requirements: import('./chat-capabilities.js').CapabilityRequirement[] }) {
+    return this.write(() => { const p = this.manager.executionProject(id); if (!p.conversations?.some(c => c.sessionId === body.sessionId)) throw new Error('Conversation unavailable'); this.manager.chatCapabilities().setRequirements(id, body.requirements, body.sessionId); this.manager.refreshChatCapabilities(); return { requirements: body.requirements }; });
   }
   @Post(':id/archive') archive(@Param('id') id: string, @Body() body: Parameters<SessionManager['archiveProjectSpace']>[1]) {
     return this.write(() => this.manager.archiveProjectSpace(id, body));
