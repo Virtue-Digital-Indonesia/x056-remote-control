@@ -23,7 +23,7 @@ window.createRCChat = function (engine, room) {
   function notify(error) { room.notify(error instanceof Error ? error.message : error); }
   function mount() {
     if (mounted) return; mounted = true;
-    const button = document.createElement('a'); button.id = 'crChatTab'; button.textContent = 'Chat'; button.href = '/chat'; button.dataset.chatLink = ''; $('crBoardTab').after(button);
+    const button = document.createElement('a'); button.id = 'crChatTab'; button.innerHTML = '<svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg><span>Chat</span>'; button.href = '/chat'; button.dataset.chatLink = ''; $('crBoardTab').after(button);
     const nav = document.createElement('aside'); nav.id = 'rcChatNav'; nav.setAttribute('aria-label','Chats');
     nav.innerHTML = `<a class="rc-chat-home" id="rcChatHome" href="/chat" data-chat-link>x0 <span>Chat</span></a><button class="cr-primary" id="rcChatNew">+ New chat</button><input id="rcChatSearch" type="search" placeholder="Search chats" aria-label="Search chats"><div class="rc-chat-list" id="rcChatList"></div><button class="cr-secondary" id="rcChatArchives">Archived chats</button><button class="cr-secondary" id="rcChatAccounts">Accounts</button><a class="cr-secondary" id="rcChatControl" href="/" data-chat-link>Control room</a>`;
     $('conversationSurface').prepend(nav);

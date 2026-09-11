@@ -39,9 +39,8 @@ body.rc-chat-active #rcChatControls{display:flex;align-items:center;gap:8px;marg
 @media(max-width:760px){body.rc-chat-active #conversationSurface{grid-template-columns:minmax(0,1fr)}body.rc-chat-active #rcChatNav{display:none;position:fixed;left:0;top:0;bottom:0;width:260px;z-index:80;box-shadow:10px 0 30px #0002}body.rc-chat-active.rc-chat-nav-open #rcChatNav{display:flex}#rcChatMenu{display:block}body.rc-chat-active #rcChatInspector{width:min(100vw,380px)}body.rc-chat-active #rcChatControls{gap:5px}body.rc-chat-active #rcChatControls button{font-size:11px;padding:7px}body.rc-chat-active .composer-wrap{min-width:0}.rc-chat-form-grid{grid-template-columns:1fr}.rc-chat-dialog .workspace-form{padding:18px}}
 
 /* Chat navigation has real destinations; ordinary clicks retain local drafts and uploads. */
-#crChatTab,.rc-chat-home,.rc-chat-item,#rcChatControl{text-decoration:none;color:inherit}
-.cr-top nav #crChatTab{display:inline-flex;align-items:center;border:0;background:transparent;color:var(--muted);font-size:13px;padding:9px 14px;border-radius:8px}
-.cr-top nav #crChatTab:hover,.rc-chat-item:hover{background:var(--surface-2)}
+.rc-chat-home,.rc-chat-item,#rcChatControl{text-decoration:none;color:inherit}
+.rc-chat-item:hover{background:var(--surface-2)}
 #rcChatWelcome{display:none}
 body.rc-chat-home-view #conversationSurface{grid-template-columns:240px minmax(0,1fr)}
 body.rc-chat-home-view .focus-main,body.rc-chat-home-view #rcChatInspector{display:none!important}
@@ -113,7 +112,6 @@ body.rc-chat-home-view #rcChatWelcome{display:flex;flex-direction:column;min-wid
 @media(max-width:760px){
   body.rc-chat-home-view #conversationSurface{grid-template-columns:minmax(0,1fr)}
   #rcChatWelcomeMenu{display:inline-flex}
-  .cr-top nav #crChatTab{font-size:11px;padding:8px}
   .rc-chat-dialog{width:calc(100vw - 24px);max-height:calc(100dvh - 24px);border-radius:14px}
   .rc-chat-dialog>header{padding:16px 18px 12px}
   .rc-chat-dialog .workspace-form{padding:18px}
