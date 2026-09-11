@@ -17,7 +17,7 @@ export class WorkspaceController {
     @Inject(STATE_DIR) state: string,
   ) {
     this.artifacts = new ArtifactStore(state, () =>
-      this.manager.listProjects().projects.map((p) => p.cwd),
+      this.manager.listProjects().projects.flatMap((p) => p.cwd ? [p.cwd] : []),
     );
     this.metaFile = join(state, 'conversation-metadata.json');
     this.plannerTimer = setInterval(() => this.manager.tickQueuePlanner(), 1000);
@@ -171,7 +171,7 @@ export class WorkspaceController {
         sessionId: body.sessionId,
         title: (body.title?.trim() || basename(target) || 'Referenced file').slice(0, 180),
         kind: 'file',
-        path: target.startsWith('/') ? target : resolve(project.cwd, target),
+        path: target.startsWith('/') ? target : resolve(this.manager.executionProject(project.id).cwd, target),
         source: 'manual',
       });
     } catch (error) {

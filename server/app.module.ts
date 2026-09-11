@@ -1,5 +1,6 @@
 import { MemoryController } from './memory.controller.js';
 import { ChatsController } from './chats.controller.js';
+import { ProjectSpacesController } from './project-spaces.controller.js';
 import { FilesController } from './files.controller.js';
 import { ChatCapabilities } from './chat-capabilities.js';
 import { TitlesController } from './titles.controller.js';
@@ -46,6 +47,7 @@ function buildMcpWiring(cfg: GatewayConfig): TurnOptions['mcp'] {
 }
 
 export interface GatewayConfig {
+  projectSpacesEnabled?: boolean;
   chatEnabled?: boolean;
   titleGenerator?: TitleGenerator;
   token: string;
@@ -64,6 +66,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // Declared before the manager so the onAccountAdded hook can reach it.
   let provisioner: AccountProvisioner;
   const manager = new SessionManager({
+    projectSpacesEnabled: cfg.projectSpacesEnabled,
     chatEnabled: cfg.chatEnabled,
     titleGenerator: cfg.titleGenerator,
     stateDir: cfg.stateDir,
@@ -143,7 +146,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   );
 
   @Module({
-    controllers: [FilesController, ChatsController, MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController],
+    controllers: [ProjectSpacesController, FilesController, ChatsController, MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController],
     providers: [
       { provide: SessionManager, useValue: manager },
       { provide: PUSH_SERVICE, useValue: push },

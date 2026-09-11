@@ -3,14 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FileStore } from '../server/file-store.js';
-import type { Project } from '../server/projects.js';
+import type { RunnableProject } from '../server/projects.js';
 import { documentCommand } from '../server/documents.js';
 vi.mock('../server/documents.js', () => ({ DOCUMENT_CONVERTER: 'test-converter', documentCommand: vi.fn() }));
 const stores: FileStore[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); vi.clearAllMocks(); });
 function fixture() {
   const state = mkdtempSync(join(tmpdir(), 'chat-recovery-'));
-  const chat: Project = { id: 'chat', kind: 'chat', name: 'Chat', cwd: join(state, 'work'), lastSessionId: 'session' };
+  const chat: RunnableProject = { id: 'chat', kind: 'chat', name: 'Chat', cwd: join(state, 'work'), lastSessionId: 'session' };
   mkdirSync(chat.cwd);
   const owner = () => chat, store = new FileStore(state, owner); stores.push(store);
   const source = join(state, 'source.pdf'); writeFileSync(source, '%PDF-1.4\nfixture');

@@ -76,6 +76,7 @@ export class ChatCapabilities {
     all[chatId] = requirements; writeState(join(this.state, 'chat-requirements.json'), all); this.cache.delete(chatId);
   }
   async inventory(chat: Project, force = false): Promise<AccountCapabilities[]> {
+    if (!chat.cwd) throw new Error('Configure the execution workspace before discovering tools');
     const cached = this.cache.get(chat.id);
     if (!force && cached && cached.at > Date.now() - 30_000) return cached.promise;
     const promise = Promise.all(this.accounts().filter(a => a.provider === chat.provider).map(a =>
@@ -97,6 +98,7 @@ export class ChatCapabilities {
     return blocked;
   }
   private async collect(account: Account, chat: Project): Promise<AccountCapabilities> {
+    if (!chat.cwd) throw new Error('Configure the execution workspace before discovering tools');
     const provider = account.provider, errors: string[] = [], capabilities: ChatCapability[] = [];
     const [plugins, mcp] = await Promise.all([
       this.plugins.forAccounts([account], provider).list(provider), this.mcp.forAccounts([account], provider).list(),

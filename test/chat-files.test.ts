@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FileStore } from '../server/file-store.js';
-import type { Project } from '../server/projects.js';
+import type { RunnableProject } from '../server/projects.js';
 const stores: FileStore[] = [];
 afterEach(() => { for (const s of stores.splice(0)) s.close(); });
 function fixture() {
   const state = mkdtempSync(join(tmpdir(), 'rc-files-'));
-  const chat: Project = { id: 'chat-a', kind: 'chat', name: 'Chat', cwd: join(state, 'work'), lastSessionId: 'session-a' };
+  const chat: RunnableProject = { id: 'chat-a', kind: 'chat', name: 'Chat', cwd: join(state, 'work'), lastSessionId: 'session-a' };
   mkdirSync(chat.cwd);
   const owner = (id: string) => { if (id !== chat.id) throw new Error('unknown Chat'); return chat; };
   const store = new FileStore(state, owner); stores.push(store);

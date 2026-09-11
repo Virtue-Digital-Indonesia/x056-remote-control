@@ -99,7 +99,7 @@ export class MemorySources {
         }
       }
     }
-    if (options.legacy !== false) {
+    if (options.legacy !== false && project.cwd) {
       const seen = new Set<string>();
       for (const a of AccountRegistry.load(join(this.stateDir, 'accounts.json')).list()) {
         const dir = join(a.configDir, 'projects', projectDirName(project.cwd), 'memory');
@@ -145,7 +145,7 @@ export class MemorySources {
       }
     }
     if (options.artifacts !== false) {
-      const library = new ArtifactStore(this.stateDir, () => [project.cwd]);
+      const library = new ArtifactStore(this.stateDir, () => project.cwd ? [project.cwd] : []);
       for (const a of library
         .list()
         .filter((x) => x.projectId === pid && (!options.sessionId || x.sessionId === options.sessionId))

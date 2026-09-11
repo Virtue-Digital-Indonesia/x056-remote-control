@@ -1,7 +1,28 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import type { ProviderId } from '../src/provider.js';
+
+export interface ModeDefaults { provider?: ProviderId; model?: string; effort?: string; account?: string }
+export function validateModeDefaults(defaults: Project['defaults']): void {
+  if (defaults === undefined) return;
+  if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults) || Object.keys(defaults).some(k => k !== 'chat' && k !== 'work')) throw new Error('Invalid conversation defaults');
+  for (const mode of ['chat', 'work'] as const) {
+    const values = defaults[mode];
+    if (values === undefined) continue;
+    if (!values || typeof values !== 'object' || Array.isArray(values) || Object.keys(values).some(k => !['provider', 'model', 'effort', 'account'].includes(k))) throw new Error('Invalid conversation defaults');
+    if (values.provider !== undefined && !['claude', 'codex'].includes(values.provider)) throw new Error('Invalid default provider');
+    for (const key of ['model', 'effort', 'account'] as const) {
+      const value = values[key];
+      if (value !== undefined && (typeof value !== 'string' || value.length > 200 || value.trim() !== value || /[\x00-\x1f]/.test(value))) throw new Error('Invalid default ' + key);
+    }
+  }
+}
+export class ProjectConflict extends Error {}
+export interface MembershipOperation {
+  id: string; chatId: string; parentProjectId: string | null; expectedRevision: number;
+  membershipRevision: number; state: 'pending' | 'complete';
+}
 
 /** One conversation (a resumable session) within a project. */
 export interface Conversation {
@@ -37,10 +58,15 @@ export interface Project {
   creationRequestId?: string;
   creationFingerprint?: string;
   archivedAt?: number;
+  revision?: number;
+  parentProjectId?: string;
+  membershipRevision?: number;
+  defaults?: { chat?: ModeDefaults; work?: ModeDefaults };
+  requiredTools?: { key: string; fingerprint?: string }[];
   references?: { projectId: string; sessionId: string }[];
   id: string;
   name: string;
-  cwd: string;
+  cwd?: string;
   /** The provider NEW conversations in this project start on (changeable —
    *  see setProvider). Existing conversations keep whatever they were created
    *  with; only Conversation.provider decides what a given turn actually runs on.
@@ -55,7 +81,28 @@ export interface Project {
   effort?: string;
 }
 
+/** Only validated execution targets may reach filesystem discovery or a CLI. */
+export type RunnableProject = Project & { cwd: string };
+export type RunnableWork = RunnableProject & { kind?: 'project' };
+export function requireWorkspace(project: Project | undefined): RunnableProject {
+  if (!project) throw new Error('Unknown project');
+  if (typeof project.cwd !== 'string' || !project.cwd.trim()) throw new Error('Configure a Work workspace before running this project');
+  return project as RunnableProject;
+}
+export function requireWork(project: Project | undefined): RunnableWork {
+  const target = requireWorkspace(project);
+  if (target.kind === 'chat') throw new Error('Choose a Work project');
+  return target as RunnableWork;
+}
+
+export interface SpacesMigrationReport {
+  schemaVersion: number; projects: number; chats: number; conversations: number; changes: number;
+  invalidParents: string[]; missingWorkspaces: string[]; brokenReferences: string[];
+}
+
 interface ProjectsFile {
+  spacesVersion?: number;
+  membershipOperations?: MembershipOperation[];
   current: string | null;
   projects: Project[];
 }
@@ -73,15 +120,16 @@ export class ProjectRegistry {
     if (!existsSync(file)) return new ProjectRegistry(file, { current: null, projects: [] });
     try {
       const data = JSON.parse(readFileSync(file, 'utf8')) as ProjectsFile;
-      if (!Array.isArray(data.projects)) return new ProjectRegistry(file, { current: null, projects: [] });
+      if (!Array.isArray(data.projects)) throw new Error('Invalid project records');
+      if ((data.spacesVersion ?? 0) > 1) throw new Error('Project registry requires a newer gateway');
       return new ProjectRegistry(file, data);
-    } catch {
-      return new ProjectRegistry(file, { current: null, projects: [] });
+    } catch (error) {
+      throw new Error('Cannot read project registry; restore or repair it before writing: ' + (error as Error).message);
     }
   }
 
   list(): Project[] {
-    return this.data.projects.map((p) => ({ ...p }));
+    return structuredClone(this.data.projects);
   }
 
   currentId(): string | null {
@@ -90,25 +138,26 @@ export class ProjectRegistry {
 
   get(id: string): Project | undefined {
     const p = this.data.projects.find((x) => x.id === id);
-    return p ? { ...p } : undefined;
+    return p ? structuredClone(p) : undefined;
   }
 
   current(): Project | undefined {
     return this.data.current ? this.get(this.data.current) : undefined;
   }
 
-  create(name: string, cwd: string, provider: ProviderId = 'claude'): Project {
+  create(name: string, cwd: string, provider: ProviderId = 'claude'): RunnableProject {
     const proj: Project = { id: randomUUID(), name: name.trim() || 'Untitled', cwd, provider };
     this.data.projects.push(proj);
     if (!this.data.current) this.data.current = proj.id;
     this.save();
-    return { ...proj };
+    return requireWorkspace(structuredClone(proj));
   }
 
-  createChat(project: Project): Project {
+  createChat(project: RunnableProject): RunnableProject {
     if (project.kind !== 'chat' || project.conversations?.length !== 1 || project.lastSessionId !== project.conversations[0].sessionId)
       throw new Error('A Chat must have exactly one conversation');
     if (this.get(project.id)) throw new Error('Chat already exists');
+    if (project.parentProjectId) this.parent(project.parentProjectId);
     this.data.projects.push(structuredClone(project));
     this.save();
     return structuredClone(project);
@@ -137,11 +186,13 @@ export class ProjectRegistry {
     const p = this.data.projects.find((x) => x.id === id);
     if (!p) throw new Error(`unknown project ${id}`);
     p.name = name.trim() || p.name;
+    p.revision = (p.revision ?? 0) + 1;
     this.save();
   }
 
   remove(id: string): void {
     if (this.get(id)?.kind === 'chat') throw new Error('Archive Chats to retain their files');
+    if (this.data.projects.some(p => p.parentProjectId === id)) throw new Error('Archive this Project to retain its member Chats');
     this.data.projects = this.data.projects.filter((p) => p.id !== id);
     if (this.data.current === id) this.data.current = this.data.projects[0]?.id ?? null;
     this.save();
@@ -219,6 +270,7 @@ export class ProjectRegistry {
     if (!p) throw new Error(`unknown project ${id}`);
     if (p.kind === 'chat' && p.provider !== provider) throw new Error('Create a new Chat to use another provider');
     p.provider = provider;
+    p.revision = (p.revision ?? 0) + 1;
     this.save();
   }
 
@@ -330,7 +382,90 @@ export class ProjectRegistry {
   private save(): void {
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.data, null, 2));
+    const fd = openSync(tmp, 'w', 0o600);
+    try { writeFileSync(fd, JSON.stringify(this.data, null, 2)); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(tmp, this.file);
+    const dir = openSync(dirname(this.file), 'r');
+    try { fsyncSync(dir); } finally { closeSync(dir); }
+  }
+
+  parent(id: string, allowArchived = false): Project {
+    const p = this.get(id);
+    if (!p || p.kind === 'chat' || p.parentProjectId) throw new Error('Choose an existing ordinary Project');
+    if (p.archivedAt && !allowArchived) throw new Error('Restore this Project first');
+    return p;
+  }
+
+  createSpace(input: { requestId: string; name: string; cwd?: string; defaults?: Project['defaults'] }): Project {
+    if (typeof input.requestId !== 'string' || !/^[\w-]{8,128}$/.test(input.requestId)) throw new Error('A stable requestId is required');
+    if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 300) throw new Error('Use a project name between 1 and 300 characters');
+    validateModeDefaults(input.defaults);
+    const fingerprint = JSON.stringify([input.name.trim(), input.cwd, input.defaults]);
+    const previous = this.data.projects.find(p => p.kind !== 'chat' && p.creationRequestId === input.requestId);
+    if (previous) {
+      if (previous.creationFingerprint !== fingerprint) throw new ProjectConflict('requestId was used for another Project');
+      return structuredClone(previous);
+    }
+    const p: Project = { id: randomUUID(), kind: 'project', name: input.name.trim(), cwd: input.cwd,
+      revision: 1, defaults: structuredClone(input.defaults), creationRequestId: input.requestId, creationFingerprint: fingerprint };
+    this.data.projects.push(p); this.save(); return structuredClone(p);
+  }
+
+  updateSpace(id: string, expectedRevision: number, patch: Partial<Pick<Project, 'name' | 'cwd' | 'defaults' | 'requiredTools' | 'archivedAt'>>): Project {
+    validateModeDefaults(patch.defaults);
+    if (patch.name !== undefined && (typeof patch.name !== 'string' || !patch.name.trim() || patch.name.length > 300)) throw new Error('Invalid project name');
+    const current = this.parent(id, true);
+    if (!Number.isInteger(expectedRevision) || (current.revision ?? 0) !== expectedRevision) throw new ProjectConflict('Project changed; refresh before saving');
+    const p = this.data.projects.find(p => p.id === id)!;
+    Object.assign(p, structuredClone(patch), { revision: expectedRevision + 1 });
+    this.save(); return structuredClone(p);
+  }
+
+  /** Registry mutation and its reconciliation receipt share one atomic file write.
+   * Manager serializes the synchronous call and completes queue/file effects. */
+  moveChat(chatId: string, parentProjectId: string | null, expectedRevision: number, operationId: string): MembershipOperation {
+    if (typeof operationId !== 'string' || !/^[\w:-]{8,160}$/.test(operationId)) throw new Error('A stable operationId is required');
+    const old = this.data.membershipOperations?.find(o => o.id === operationId);
+    if (old) {
+      if (old.chatId !== chatId || old.parentProjectId !== parentProjectId || old.expectedRevision !== expectedRevision) throw new ProjectConflict('operationId was used for another move');
+      return structuredClone(old);
+    }
+    const p = this.data.projects.find(p => p.id === chatId && p.kind === 'chat');
+    if (!p) throw new Error('Unknown Chat');
+    if (!Number.isInteger(expectedRevision) || (p.membershipRevision ?? 0) !== expectedRevision) throw new ProjectConflict('Chat membership changed; refresh before moving');
+    if (parentProjectId !== null) this.parent(parentProjectId);
+    p.parentProjectId = parentProjectId ?? undefined;
+    p.membershipRevision = expectedRevision + 1;
+    const op: MembershipOperation = { id: operationId, chatId, parentProjectId, expectedRevision, membershipRevision: p.membershipRevision, state: 'pending' };
+    (this.data.membershipOperations ??= []).push(op);
+    this.save(); return structuredClone(op);
+  }
+  pendingMembershipOperations(): MembershipOperation[] { return structuredClone((this.data.membershipOperations ?? []).filter(o => o.state === 'pending')); }
+  completeMembershipOperation(id: string): void {
+    const op = this.data.membershipOperations?.find(o => o.id === id);
+    if (op && op.state !== 'complete') { op.state = 'complete'; this.save(); }
+  }
+
+  /** Additive only: never infer membership or alter directories/session identities. */
+  migrateSpaces(apply = false): SpacesMigrationReport {
+    if ((this.data.spacesVersion ?? 0) > 1) throw new Error('Project registry requires a newer gateway');
+    const report: SpacesMigrationReport = { schemaVersion: this.data.spacesVersion ?? 0, projects: 0, chats: 0, conversations: 0,
+      changes: 0, invalidParents: [], missingWorkspaces: [], brokenReferences: [] };
+    for (const p of this.data.projects) {
+      if (p.kind === 'chat') report.chats++; else report.projects++;
+      report.conversations += p.conversations?.length ?? (p.lastSessionId ? 1 : 0);
+      if (!p.cwd || !existsSync(p.cwd)) report.missingWorkspaces.push(p.id);
+      if (p.parentProjectId && (p.kind !== 'chat' || !this.data.projects.some(parent => parent.id === p.parentProjectId && parent.kind !== 'chat' && !parent.parentProjectId))) report.invalidParents.push(p.id);
+      for (const r of p.references ?? []) if (!this.data.projects.some(target => target.id === r.projectId && (target.conversations?.some(c => c.sessionId === r.sessionId) || target.lastSessionId === r.sessionId))) report.brokenReferences.push(p.id + ':' + r.projectId + ':' + r.sessionId);
+      if (p.revision === undefined || (p.kind === 'chat' && p.membershipRevision === undefined)) report.changes++;
+    }
+    if (apply) {
+      if (report.invalidParents.length) throw new Error('Repair invalid Project parents before migration');
+      if (report.changes || this.data.spacesVersion !== 1) {
+        for (const p of this.data.projects) { p.revision ??= 0; if (p.kind === 'chat') p.membershipRevision ??= 0; }
+        this.data.spacesVersion = 1; this.save();
+      }
+    }
+    return report;
   }
 }

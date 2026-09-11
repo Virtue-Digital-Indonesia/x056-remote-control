@@ -7,10 +7,11 @@ import { ConversationTitles, temporaryTitle } from './conversation-titles.js';
 import type { TitleGenerator } from './title-generator.js';
 import { withMemoryContext } from '../src/memory-context.js';
 import { MemoryStore } from './memory-store.js';
+import { ProjectContextResolver } from './project-context.js';
 import { cleanMemorySource } from './memory-sources.js';
 import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { AccountAnalytics } from '../src/account-analytics.js';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -20,7 +21,7 @@ import { shareCodexSessions } from './codex-sessions.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { getAdapter } from '../src/adapters/registry.js';
-import { ProjectRegistry, type Project, type Conversation } from './projects.js';
+import { ProjectRegistry, requireWorkspace, requireWork, type RunnableProject, type Project, type Conversation } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import { PersistentTurns } from '../src/persistent.js';
@@ -56,6 +57,7 @@ export class RelayLimitError extends Error {
 }
 
 export interface SessionManagerOptions {
+  projectSpacesEnabled?: boolean;
   chatEnabled?: boolean;
   titleGenerator?: TitleGenerator;
   stateDir: string;
@@ -393,6 +395,7 @@ export class SessionManager {
     mkdirSync(opts.stateDir, { recursive: true });
     this.migrateProjects();
     this.projects().migrateConversations();
+    if (this.projectSpacesEnabled()) this.projects().migrateSpaces(true);
     this.shareCodexSessionStores();
     this.loadPendingQuestions();
     this.detectOrphans();
@@ -823,7 +826,8 @@ export class SessionManager {
   /** Shared across all concurrent runs so failover's account-limit accounting
    *  is one authoritative in-process view (no cross-run file races). */
   private sharedMemory?: MemoryStore;
-  memory():MemoryStore {return this.sharedMemory ??= new MemoryStore(this.opts.stateDir);}
+  projectContext(): ProjectContextResolver { return new ProjectContextResolver(() => this.projects().list(), () => this.projectSpacesEnabled()); }
+  memory():MemoryStore {return this.sharedMemory ??= new MemoryStore(this.opts.stateDir, this.projectContext());}
 
   private registry(): AccountRegistry {
     if (!this.sharedRegistry) {
@@ -1296,23 +1300,56 @@ export class SessionManager {
    *  per-step completion pushes). */
   hasAutopilot(sessionId: string): boolean { return !!this.loadAutopilot()[sessionId]; }
 
-  createProject(name: string, cwd?: string, provider: ProviderId = 'claude'): Project {
+  createProject(name: string, cwd?: string, provider: ProviderId = 'claude'): RunnableProject {
     const dir = this.resolveCwd(cwd ?? this.opts.workspaceRoot);
     const proj = this.projects().create(name, dir, provider);
     return proj;
   }
 
   chatsEnabled(): boolean { return this.opts.chatEnabled ?? process.env.X056_CHAT_ENABLED === '1'; }
+  projectSpacesEnabled(): boolean { return this.opts.projectSpacesEnabled ?? process.env.X056_PROJECT_SPACES_ENABLED === '1'; }
 
-  chat(id: string): Project {
-    if (!this.chatsEnabled()) throw new Error('Chat is disabled');
-    const p = this.projects().get(id);
-    if (!p || p.kind !== 'chat') throw new Error('unknown Chat');
-    this.resolveCwd(p.cwd, p.id);
+  /** Actual execution directory, never a parent Project's directory for Chat. */
+  executionProject(id: string): RunnableProject {
+    const p = requireWorkspace(this.projects().get(id));
+    return { ...p, cwd: this.resolveCwd(p.cwd, id) };
+  }
+
+  private assertExecutionAllowed(id: string): RunnableProject {
+    const p = this.executionProject(id);
+    if (p.archivedAt) throw new Error('This Chat or Project is archived; restore it before running');
+    if (this.projectSpacesEnabled() && p.parentProjectId) this.projects().parent(p.parentProjectId);
     return p;
   }
 
-  createChat(input: { requestId: string; name?: string; provider?: ProviderId; model?: string; effort?: string; account?: string }): Project {
+  projectSpaces() {
+    if (!this.projectSpacesEnabled()) return { enabled: false, projects: [] };
+    const all = this.listProjects().projects;
+    return { enabled: true, projects: all.filter(p => p.kind !== 'chat').map(p => {
+      const chats = all.filter(c => c.kind === 'chat' && c.parentProjectId === p.id);
+      const executions = [p, ...chats];
+      return { ...p, workspaceConfigured: !!p.cwd, chats,
+        activity: { running: executions.reduce((n, e) => n + e.runningSessionIds.length, 0),
+          background: executions.reduce((n, e) => n + e.backgroundSessionIds.length, 0),
+          queued: executions.reduce((n, e) => n + (this.queues()[e.id]?.length ?? 0), 0) } };
+    }) };
+  }
+
+  createProjectSpace(input: Parameters<ProjectRegistry['createSpace']>[0]): Project {
+    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    const p = this.projects().createSpace({ ...input, cwd: input.cwd === undefined ? undefined : this.resolveCwd(input.cwd) });
+    this.emit('projects', { id: p.id }); return p;
+  }
+  projectSpacesMigration() { return this.projects().migrateSpaces(); }
+
+  chat(id: string): RunnableProject {
+    if (!this.chatsEnabled()) throw new Error('Chat is disabled');
+    const p = this.projects().get(id);
+    if (!p || p.kind !== 'chat') throw new Error('unknown Chat');
+    return this.executionProject(p.id);
+  }
+
+  createChat(input: { requestId: string; name?: string; provider?: ProviderId; model?: string; effort?: string; account?: string }): RunnableProject {
     if (!this.chatsEnabled()) throw new Error('Chat is disabled');
     if (typeof input.requestId !== 'string' || !/^[\w-]{8,128}$/.test(input.requestId)) throw new Error('A stable requestId is required');
     const provider = input.provider ?? 'claude';
@@ -1343,7 +1380,7 @@ export class SessionManager {
     return project;
   }
 
-  updateChat(id: string, patch: { name?: string; archived?: boolean }): Project {
+  updateChat(id: string, patch: { name?: string; archived?: boolean }): RunnableProject {
     const p = this.chat(id), reg = this.projects();
     if (patch.archived !== undefined) {
       if (typeof patch.archived !== 'boolean') throw new Error('Invalid archive state');
@@ -1402,16 +1439,14 @@ export class SessionManager {
   listAvailableSessions(projectId?: string): AvailableSession[] {
     const pid = projectId ?? this.projects().currentId();
     const proj = pid ? this.projects().get(pid) : undefined;
-    if (!proj) return [];
+    if (!proj?.cwd || proj.kind === 'chat') return [];
     return listInteractiveSessions(this.interactiveDir, proj.cwd);
   }
 
   /** Import an existing interactive session into a project and make it the
    *  session that project resumes. */
   resumeExisting(projectId: string, sessionId: string): void {
-    const proj = this.projects().get(projectId);
-    if (!proj) throw new Error(`unknown project ${projectId}`);
-    if (proj.kind === 'chat') throw new Error('A Chat keeps its original conversation');
+    const proj = requireWork(this.assertExecutionAllowed(projectId));
     if (this.sessionBusy(sessionId)) throw new BusyError();
     const accounts = this.registry().list();
     if (accounts.length === 0) throw new Error('no accounts configured');
@@ -1529,8 +1564,10 @@ export class SessionManager {
   }
 
   private resolveCwd(cwd: string, projectId?: string): string {
+    if (typeof cwd !== 'string' || !cwd.trim()) throw new Error('Configure a Work workspace before running this project');
     const root = realpathSync(this.opts.workspaceRoot);
     const target = realpathSync(resolve(cwd));
+    if (!statSync(target).isDirectory()) throw new Error('Work workspace must be a directory');
     const project = projectId ? this.projects().get(projectId) : undefined;
     if (project?.kind === 'chat') {
       if (!this.chatsEnabled()) throw new Error('Chat is disabled');
@@ -1549,12 +1586,12 @@ export class SessionManager {
     if (!pid) throw new Error('no project selected');
     // A brand-new conversation always gets a fresh sessionId, so it can start
     // even while OTHER conversations in the same project are running.
-    const proj = this.projects().get(pid);
+    const proj = this.assertExecutionAllowed(pid);
     if (proj?.kind === 'chat') {
       if (cwd && resolve(cwd) !== proj.cwd) throw new Error('Chat working directory cannot be changed');
       return this.continueSession(pid, proj.lastSessionId!, prompt, opts);
     }
-    const dir = this.resolveCwd(cwd ?? proj?.cwd ?? this.opts.workspaceRoot, pid);
+    const dir = this.resolveCwd(cwd ?? proj.cwd, pid);
     const sessionId = randomUUID();
     // Register the new session as its own conversation (prompt-derived title),
     // grouped under the project, and make it current.
@@ -1568,7 +1605,7 @@ export class SessionManager {
     const pid = projectId ?? this.projects().currentId();
     if (!pid) throw new Error('no project selected');
     const proj = this.projects().get(pid);
-    const sessionId = proj?.lastSessionId ?? this.loadState().lastSessionId;
+    const sessionId = proj?.lastSessionId;
     if (!sessionId) throw new Error('no previous session — start one first');
     return this.continueSession(pid, sessionId, prompt, opts);
   }
@@ -1578,9 +1615,10 @@ export class SessionManager {
    *  conversation running in the same project is fine. */
   continueSession(pid: string, sessionId: string, prompt: string, opts?: TurnRunOptions): string {
     if (this.sessionBusy(sessionId)) throw new BusyError();
-    const proj = this.projects().get(pid);
+    const proj = this.assertExecutionAllowed(pid);
     if (proj?.kind === 'chat' && (proj.archivedAt || proj.lastSessionId !== sessionId)) throw new Error('Chat is archived or conversation does not match');
-    const dir = this.resolveCwd(proj?.cwd ?? this.loadState().cwd ?? this.opts.workspaceRoot, pid);
+    if (!proj.conversations?.some(c => c.sessionId === sessionId)) throw new Error('Unknown conversation for this project');
+    const dir = proj.cwd;
     const resume = proj?.kind !== 'chat' || !!this.projects().providerSessionId(pid, sessionId);
     this.launch(pid, sessionId, prompt, dir, resume, opts);
     return sessionId;
@@ -2246,6 +2284,7 @@ export class SessionManager {
     context: string,
     instruction: string,
   ): string {
+    this.assertExecutionAllowed(pid);
     const project = this.projects().get(pid),
       source = this.listConversations(pid).find((c) => c.sessionId === sourceSid);
     if (!project || !source) throw new Error('Source conversation not found');
@@ -2286,7 +2325,7 @@ export class SessionManager {
         '\n\nCurrent instruction:\n' +
         instruction,
     );
-    this.launch(pid, sid, prompt, project.cwd, false);
+    this.launch(pid, sid, prompt, this.assertExecutionAllowed(pid).cwd, false);
     return sid;
   }
 

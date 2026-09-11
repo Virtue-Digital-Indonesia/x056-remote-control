@@ -58,7 +58,8 @@ export class MemoryController {
     return this.call(() => {
       if (q.callerProjectId && q.callerSessionId) {
         this.validateProject(q.callerProjectId, q.callerSessionId);
-        q.provider = this.manager.historyContext(q.callerProjectId, q.callerSessionId).adapter.id;
+        return this.store().searchContext({ ...q, projectId: q.callerProjectId, sessionId: q.callerSessionId,
+          provider: this.manager.historyContext(q.callerProjectId, q.callerSessionId).adapter.id, access: 'context' });
       }
       return this.store().search(q);
     });
@@ -77,7 +78,8 @@ export class MemoryController {
       if (callerPid && callerSid) {
         this.validateProject(callerPid, callerSid);
         const caller = this.manager.historyContext(callerPid, callerSid).adapter.id;
-        if (!entry.providers.includes(caller)) throw new Error('Memory is not enabled for this provider');
+        const reason = this.store().contextProblem(entry, { projectId: callerPid, sessionId: callerSid, provider: caller, access: 'context' });
+        if (reason) throw new Error(reason);
       }
       if (
         provider &&
@@ -192,7 +194,7 @@ export class MemoryController {
     return this.call(() => {
       this.validateProject(b.projectId, b.sessionId);
       const service = new MemorySources(this.manager, this.store(), this.state),
-        projects = b.projectId ? [b.projectId] : this.manager.listProjects().projects.map((p) => p.id);
+        projects = b.projectId ? b.sessionId ? [b.projectId] : this.manager.projectContext().sourceProjects(b.projectId) : this.manager.listProjects().projects.map((p) => p.id);
       if (projects.length > 100) throw new Error('Import up to 100 projects at a time');
       return projects.map((projectId) => ({ projectId, ...service.ingestProject(projectId, b) }));
     });
@@ -210,6 +212,7 @@ export class MemoryController {
       if (!['claude', 'codex'].includes(provider)) throw new Error('Unknown provider');
       return {
         ...this.store().context(pid, sid || '', provider, query || ''),
+        preview: true,
         provider,
         preferences: this.store().preferences(pid, sid || ''),
         history: this.store().contextHistory(pid, sid),

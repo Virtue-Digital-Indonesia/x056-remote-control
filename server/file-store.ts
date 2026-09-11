@@ -5,7 +5,7 @@ import { constants, chmodSync, closeSync, copyFileSync, fsyncSync, mkdirSync, op
 import { open, mkdir } from 'node:fs/promises';
 import { basename, extname, join, resolve, sep } from 'node:path';
 import { ArtifactStore } from './workspace-store.js';
-import type { Project } from './projects.js';
+import { requireWorkspace, type Project, type RunnableProject } from './projects.js';
 import { DOCUMENT_CONVERTER, documentCommand } from './documents.js';
 
 export const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -62,8 +62,8 @@ export class FileStore {
     try { const result = work(); this.db.exec('COMMIT'); return result; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  private writable(chatId: string): Project {
-    const chat = this.owner(chatId);
+  private writable(chatId: string): RunnableProject {
+    const chat = requireWorkspace(this.owner(chatId));
     if (chat.archivedAt) throw new FileError('Restore this Chat before changing files', 409);
     return chat;
   }
