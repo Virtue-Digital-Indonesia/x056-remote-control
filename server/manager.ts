@@ -319,6 +319,7 @@ export class SessionManager {
           const run = this.runs.get(sid || this.projects().get(id)?.lastSessionId || '');
           return { sourceMessageId: run?.requestId, account: run?.account };
         }, (ownerId, pid, sid) => this.fileExecution(ownerId, pid, sid));
+      if(this.projectSpacesEnabled()){const state=this.spaces().snapshot();this.fileStore.applyOwnershipMappings(state.ownerOverrides.file,state.aliases);}
       for (const p of this.projects().list().filter(p => p.kind === 'chat')) this.fileStore.fence(p.id);
     }
     return this.fileStore;
@@ -327,7 +328,7 @@ export class SessionManager {
     const p = this.projects().get(id);
     if (p?.kind === 'chat') return this.chat(id);
     if (!this.projectSpacesEnabled()) throw new Error('Project files are disabled');
-    const canonical = this.spaces().canonical(id);
+    const canonical = p?.cwd ? id : this.spaces().canonical(id);
     const space = canonical.startsWith('space_') ? this.spaces().get(canonical, true) : undefined;
     if (!space && !p) throw new Error('File owner unavailable');
     const cwd = join(realpathSync(this.opts.stateDir), 'project-files', id);
@@ -337,13 +338,14 @@ export class SessionManager {
   }
   fileExecution(ownerId: string, projectId: string, sessionId: string) {
     if (!this.projectSpacesEnabled()) throw new Error('Project files are disabled');
-    const owner = this.fileOwner(ownerId), canonical = this.spaces().canonical(ownerId);
+    const owner = this.fileOwner(ownerId), canonical = owner.id;
     if (owner.archivedAt) throw new Error('Restore the file owner first');
     const scope = this.projectContext().resolve(projectId, sessionId);
     if (scope.executionProjectId !== canonical && scope.spaceId !== canonical) throw new Error('File is outside this conversation’s Project');
     const p = this.assertExecutionAllowed(projectId, sessionId);
     return { projectId, sessionId, cwd: p.cwd, membershipRevision: scope.membershipRevision };
   }
+  private recoveryIssues:string[]=[];
   private destroyed = false;
   private readonly queueChecks = new Set<string>();
   onModuleDestroy(): void {
@@ -466,6 +468,8 @@ export class SessionManager {
       if (!this.legacySpaceReviewRequired) for (const p of this.projects().list()) for (const c of p.conversations || []) if (c.creationIntent) this.finishConversationCreation(p.id, c);
       this.reconcileProjectOperations();
     }
+    this.reconcileRuntimeMode();this.reconcileWorkArchives();
+    if(this.projectSpacesEnabled())this.recoveryIssues=projectSpacesRecoveryReport(this.opts.stateDir).issues.map(i=>i.store+': '+i.reason);
     this.resumeAutopilots();
     if (opts.manageProcessSignals) {
       const onTerm = () => {
@@ -1315,6 +1319,7 @@ export class SessionManager {
 
   // ---- projects ----
   listProjects() {
+    const spaceView=this.projectSpacesEnabled()?this.spaces().readView():undefined;
     const reg = this.projects();
     return {
       current: reg.currentId(),
@@ -1325,8 +1330,8 @@ export class SessionManager {
         const running = this.runningSessionsForProject(p.id);
         const background = this.backgroundSessionsForProject(p.id);
         const runningAccounts = Object.fromEntries([...this.runs.values()].filter(r => r.projectId === p.id && r.account).map(r => [r.sessionId, r.account!]));
-        const conversations = (p.conversations || []).map(c => ({ ...c, ...(this.projectSpacesEnabled() ? this.spaces().resolve(p.id, c.sessionId) : {}) }));
-        return { ...p, conversations, spaceId: p.kind === 'chat' ? conversations[0]?.spaceId : undefined, workSpaceId: p.kind !== 'chat' && this.projectSpacesEnabled() ? this.spaces().defaultForWork(p.id) : undefined,
+        const conversations = (p.conversations || []).map(c => ({ ...c, ...(spaceView ? spaceView.resolve(p.id, c.sessionId) : {}) }));
+        return { ...p, conversations, spaceId: p.kind === 'chat' ? conversations[0]?.spaceId : undefined, workSpaceId: p.kind !== 'chat' ? spaceView?.defaultForWork(p.id) : undefined,
           running: running.length > 0, runningSessionIds: running, runningAccounts, backgroundSessionIds: background };
       }),
     };
@@ -1434,6 +1439,10 @@ export class SessionManager {
 
   private assertExecutionAllowed(id: string, sessionId?: string): RunnableProject {
     const p = this.executionProject(id);
+    if(this.recoveryIssues.length)throw new ProjectConflict('Project state needs repair before dispatch: '+this.recoveryIssues.slice(0,3).join('; '));
+    const pending=this.runtimeState()?.pending;
+    if(pending&&(pending.affected.some(r=>r.projectId===id&&(!sessionId||r.sessionId===sessionId))||(!sessionId&&pending.futureWorkProjectIds.includes(id))))throw new ProjectConflict('Project context recovery is pending');
+    if(this.projects().pendingArchiveOperations().some(o=>o.executionIds.includes(id)))throw new ProjectConflict('Work archive recovery is pending');
     if (p.archivedAt) throw new Error('This Chat or Work project is archived; restore it before running');
     if (this.projectSpacesEnabled()) {
       if (this.legacySpaceReviewRequired) throw new ProjectConflict('Review the legacy Project migration before running');
@@ -1459,13 +1468,16 @@ export class SessionManager {
     this.emit('projects', { id: p.id }); return p;
   }
   memoryRequestId(pid:string,sid:string):string|undefined { const run=this.runs.get(sid);return run?.projectId===pid?run.requestId:undefined; }
-  projectSpacesMigration() { return { ...inspectSpaceMigration(this.opts.stateDir), recovery: projectSpacesRecoveryReport(this.opts.stateDir) }; }
+  projectSpacesMigration() { const recovery=projectSpacesRecoveryReport(this.opts.stateDir);this.recoveryIssues=recovery.issues.map(i=>i.store+': '+i.reason);return { ...inspectSpaceMigration(this.opts.stateDir), recovery }; }
   applyProjectSpacesMigration(input: SpaceMigrationPlan) {
     if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
     const active = this.listProjects().projects.flatMap(p => [...p.runningSessionIds, ...p.backgroundSessionIds]);
     if (active.length) throw new ProjectConflict('Finish active work before migrating Project ownership');
     const result = applySpaceMigration(this.opts.stateDir, input);
+    const state=this.spaces().snapshot();this.files().applyOwnershipMappings(state.ownerOverrides.file,state.aliases);
     this.memory().applyOwnershipMappings();
+    this.recoveryIssues=projectSpacesRecoveryReport(this.opts.stateDir).issues.map(i=>i.store+': '+i.reason);
+    if(this.recoveryIssues.length)throw new ProjectConflict('Repair retained state before completing migration: '+this.recoveryIssues.join('; '));
     this.legacySpaceReviewRequired = inspectSpaceMigration(this.opts.stateDir).requiresReview;
     this.reconcileProjectOperations(); this.emit('projects', {}); return result;
   }
@@ -1533,11 +1545,52 @@ export class SessionManager {
     this.reconcileProjectOperations();
   }
 
+  private runtimeFile(){return join(this.opts.stateDir,'project-space-runtime.json');}
+  private runtimeState():{schemaVersion:1;enabled:boolean;revision:number;pending?:{id:string;affected:ExecutionRef[];futureWorkProjectIds:string[];reason:string}}|undefined {
+    if(!existsSync(this.runtimeFile()))return;
+    const data=JSON.parse(readFileSync(this.runtimeFile(),'utf8'));
+    if(data.schemaVersion!==1||typeof data.enabled!=='boolean'||!Number.isSafeInteger(data.revision))throw new ProjectConflict('Repair Project runtime state before dispatch');
+    return data;
+  }
+  private reconcileRuntimeMode():void {
+    const enabled=this.projectSpacesEnabled(),previous=this.runtimeState(),registry=this.spaces();
+    let state=previous;
+    if(!state||state.enabled!==enabled){
+      const affected=this.projects().list().flatMap(p=>(p.conversations||[]).filter(c=>registry.resolve(p.id,c.sessionId).spaceId).map(c=>({projectId:p.id,sessionId:c.sessionId})));
+      const futureWorkProjectIds=this.projects().list().filter(p=>p.kind!=='chat'&&registry.defaultForWork(p.id)).map(p=>p.id);
+      const revision=(state?.revision||0)+1,changed=!!previous||(!enabled&&(affected.length>0||futureWorkProjectIds.length>0));
+      state={schemaVersion:1,enabled,revision,...(changed?{pending:{id:'project-mode-'+revision,affected,futureWorkProjectIds,reason:enabled?'Project spaces restored; review retained context':'Project spaces disabled; review local context and attachments'}}:{})};
+      writeState(this.runtimeFile(),state);
+    }
+    if(state.pending){
+      const op=state.pending;for(const ref of op.affected)this.pauseProjectExecution(ref,op.id,op.reason);
+      for(const a of this.listMcpApprovals())if(!a.sessionId&&op.futureWorkProjectIds.includes(a.projectId)){a.contextReview={operationId:op.id,reason:op.reason};this.emitMcpApproval(a);}
+      this.automationPauser?.({executions:op.affected,futureWorkProjectIds:op.futureWorkProjectIds},op.reason,op.id);
+      if(this.automationPauser){delete state.pending;writeState(this.runtimeFile(),state);}
+    }
+  }
+  private reconcileWorkArchives():void {
+    for(const op of this.projects().pendingArchiveOperations()){
+      const executions=op.executionIds.flatMap(id=>(this.projects().get(id)?.conversations||[]).map(c=>({projectId:id,sessionId:c.sessionId})));
+      const reason=op.archived?'Work project archived':'Work project restored; review retained work';
+      for(const ref of executions)this.pauseProjectExecution(ref,op.id,reason);
+      for(const a of this.listMcpApprovals())if(!a.sessionId&&op.executionIds.includes(a.projectId)){a.contextReview={operationId:op.id,reason};this.emitMcpApproval(a);}
+      this.automationPauser?.({executions,futureWorkProjectIds:op.executionIds},reason,op.id);
+      if(this.automationPauser)this.projects().completeArchiveOperation(op.id);
+    }
+  }
+  archiveWorkProject(id:string,input:{expectedRevision:number;operationId:string;archived:boolean}) {
+    const p=this.projects().get(id);if(!p||p.kind==='chat'||!p.cwd)throw new Error('Choose an original Work project');
+    if(this.projectBusy(id)||this.backgroundSessions().some(r=>r.projectId===id))throw new ProjectConflict('Finish active Work conversations before archiving');
+    this.projects().archiveWork(id,input.expectedRevision,input.operationId,input.archived);
+    this.reconcileWorkArchives();this.emit('projects',{id});return this.projects().get(id)!;
+  }
   private automationPauser?: (targets: { executions: ExecutionRef[]; futureWorkProjectIds: string[] }, reason: string, operationId: string) => void;
   private automationInspector?: () => unknown[];
   setProjectAutomationPauser(pause: NonNullable<SessionManager['automationPauser']>, inspect?: () => unknown[]): void {
     this.automationPauser = pause; this.automationInspector = inspect;
     if (this.projectSpacesEnabled()) this.reconcileProjectOperations();
+    this.reconcileRuntimeMode();this.reconcileWorkArchives();
   }
   private futureWorkTargets(op: Pick<SpaceOperation, 'change' | 'spaceId' | 'kind'>): string[] {
     if (op.change?.target.kind === 'work-project') return [op.change.target.projectId];
@@ -1552,13 +1605,14 @@ export class SessionManager {
     }
     this.saveQueues(map); this.emitQueue(id, map);
     const timer = this.queueTimers.get(sessionId); if (timer) { clearTimeout(timer); this.queueTimers.delete(sessionId); }
-    this.pauseAutopilot(sessionId, reason); this.files().fenceExecution(id, sessionId);
+    this.pauseAutopilot(sessionId, reason); if(this.fileStore)this.fileStore.fenceExecution(id, sessionId);
     for (const a of this.listMcpApprovals()) if (a.projectId === id && a.sessionId === sessionId) {
       a.contextReview = { operationId, reason }; this.emitMcpApproval(a);
     }
   }
   private reconcileProjectOperations(): void {
     for (const op of this.spaces().pending()) {
+      if(op.kind==='migration'){const state=this.spaces().snapshot();this.files().applyOwnershipMappings(state.ownerOverrides.file,state.aliases);this.memory().applyOwnershipMappings();}
       const reason = op.kind === 'archive' ? op.archived ? 'Project archived' : 'Project restored; review retained work' : 'Project membership changed';
       for (const ref of op.affected) this.pauseProjectExecution(ref, op.id, reason);
       const futureWorkProjectIds = this.futureWorkTargets(op);
@@ -1615,7 +1669,6 @@ export class SessionManager {
     this.reconcileProjectOperations(); this.emit('projects', { id }); return this.spaces().get(id, true);
   }
   reviewProjectQueue(id: string, queueId: string, expectedMembershipRevision: number, review?: { expectedText: string; text: string; fileRefs: FileReference[] }): void {
-    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
     const map = this.loadQueues(), item = map[id]?.find(q => q.id === queueId);
     if (!item) throw new Error('Queued message no longer exists');
     const p = this.assertExecutionAllowed(id, item.sessionId);
@@ -1628,6 +1681,8 @@ export class SessionManager {
       item.text = review.text.trim(); item.fileRefs = review.fileRefs;
     }
     if (item.fileRefs?.length) this.files().references(id, item.sessionId!, item.fileRefs, item.requestId);
+    this.memory().context(id,item.sessionId!,this.adapterFor(id,item.sessionId!).id,cleanMemorySource(item.text),item.requestId);
+    this.projectHandoffs().validateMemory(item.requestId||'',id,item.sessionId!);
     item.contextReview = undefined; item.paused = false; item.error = undefined;
     this.saveQueues(map); this.emitQueue(id, map);
     if (item.sessionId) this.maybeDrainQueue(id, item.sessionId);
@@ -1829,6 +1884,7 @@ export class SessionManager {
    *  its autopilot; repoints state.json if the removed one was current. */
   private assertRemovalAllowed(projectId: string, sessionId?: string): void {
     const state = this.spaces().snapshot();
+    if(this.fileStore?.retainsExecution(projectId,sessionId)||this.memory().retainsExecution(projectId,sessionId))throw new ProjectConflict('Archive this execution to retain saved files, memory and citation identities');
     const matches = (t: import('./project-space-registry.js').SpaceTarget) => t.projectId === projectId && (!sessionId || t.kind !== 'work-conversation' || t.sessionId === sessionId);
     if (Object.values(state.bindings).some(b => matches(b.target)) || state.references.some(r => matches(r.target)) || state.operations.some(o => o.affected.some(r => r.projectId === projectId && (!sessionId || r.sessionId === sessionId))))
       throw new ProjectConflict('Archive this execution to retain Project membership and history');
@@ -2285,6 +2341,7 @@ export class SessionManager {
     try {
       const runFn = this.opts.runSessionFn ?? runSession;
       let fileAccount: string | undefined;
+      new EventLog(join(this.opts.stateDir,'project-dispatches.jsonl')).append({requestId:memoryRequestId,projectId:pid,sessionId,provider:adapter.id,...this.projectContext().resolve(pid,sessionId)});
       const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => {
         if (k === 'supervisor' && this.projectSpacesEnabled() && ['turn_failed', 'failover', 'limit_detected', 'forced_switch'].includes(String(d.type))) this.files().fenceExecution(pid, sessionId);
         // Track which account this turn is on (updated on start + each failover),

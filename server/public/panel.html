@@ -3832,14 +3832,15 @@
       function collect(q) {
         var items = [];
         orderedProjects().forEach(function (p) {
-          var parent=window.rcProjectSpaces?.enabled()&&p.parentProjectId?projCache[p.parentProjectId]:null;
+          var parent=window.rcProjectSpaces?.enabled()?window.rcProjectSpaces.list().find(s=>s.id===(p.spaceId||p.workSpaceId)):null;
           var pn = ((parent?.name||'')+' '+(p.name || '')).toLowerCase();
           if ((!window.rcProjectSpaces?.enabled()||p.kind!=='chat')&&(!q || pn.indexOf(q) >= 0)) items.push({ type: 'project', pid: p.id, title: p.name, sub: 'project', running: !!runningProjects[p.id] });
           (p.conversations || []).forEach(function (c) {
-            var ct = (c.title || '').toLowerCase();
+            var primary=window.rcProjectSpaces?.enabled()?window.rcProjectSpaces.list().find(s=>s.id===c.spaceId):null;
+            var ct = ((primary?.name||'')+' '+(c.title || '')).toLowerCase();
             if (!q || ct.indexOf(q) >= 0 || pn.indexOf(q) >= 0) {
               var conversationFirst = document.body.dataset.conversationLabelOrder !== 'project';
-              items.push({ type: 'conv', pid: p.id, sid: c.sessionId, title: conversationFirst ? c.title || 'Conversation' : p.name, sub: window.rcProjectSpaces?.enabled()?(parent?.name||p.name)+' · '+(p.kind==='chat'?'Chat':'Work'):conversationFirst ? p.name : c.title || 'Conversation', running: isSessionRunning(p.id, c.sessionId) });
+              items.push({ type: 'conv', pid: p.id, sid: c.sessionId, title: conversationFirst ? c.title || 'Conversation' : p.name, sub: window.rcProjectSpaces?.enabled()?(primary?.name||p.name)+' · '+(p.kind==='chat'?'Chat':'Work'):conversationFirst ? p.name : c.title || 'Conversation', running: isSessionRunning(p.id, c.sessionId) });
             }
           });
         });
@@ -3847,7 +3848,7 @@
       }
       function activate(it) {
         done(null);
-        if(window.rcProjectSpaces?.enabled()){if(it.type==='project')window.rcProjectSpaces.navigate('/projects/'+encodeURIComponent(it.pid)+'/chat');else window.rcProjectSpaces.openConversation(it.pid,it.sid);return;}
+        if(window.rcProjectSpaces?.enabled()){if(it.type==='project')window.rcProjectSpaces.navigate('/work/'+encodeURIComponent(it.pid));else window.rcProjectSpaces.openConversation(it.pid,it.sid);return;}
         if (it.type === 'project') { if (it.pid !== currentProjectId) switchProject(projCache[it.pid]); }
         else { if (it.pid !== currentProjectId) switchProject(projCache[it.pid]); switchConversation(it.pid, it.sid); }
       }

@@ -13,8 +13,9 @@ export class ProjectSpacesController {
   @Post('membership/preview') preview(@Body() body: Parameters<SessionManager['previewProjectMembership']>[0]) { return this.write(() => this.manager.previewProjectMembership(body)); }
   @Post('membership/apply') applyMembership(@Body() body: Parameters<SessionManager['applyProjectMembership']>[0]) { return this.write(() => this.manager.applyProjectMembership(body)); }
   @Get('membership/operations/:operationId') operation(@Param('operationId') id: string) { this.enabled(); return this.manager.spaces().snapshot().operations.find(o => o.id === id); }
+  @Post('executions/:projectId/archive') archiveWork(@Param('projectId') id:string,@Body() body:Parameters<SessionManager['archiveWorkProject']>[1]){return this.write(()=>this.manager.archiveWorkProject(id,body),true);}
   @Post('executions/:projectId/work') newExecutionWork(@Param('projectId') id: string, @Body() body: Parameters<SessionManager['prepareProjectWork']>[1]) { return this.write(() => this.manager.prepareProjectWork(id, body)); }
-  @Get('context/:projectId/:sessionId') context(@Param('projectId') id: string, @Param('sessionId') sid: string) { this.enabled(); return this.manager.projectContext().resolve(id, sid); }
+  @Get('context/:projectId/:sessionId') context(@Param('projectId') id: string, @Param('sessionId') sid: string) { return this.manager.projectContext().resolve(id, sid); }
   @Post(':id/references') reference(@Param('id') id: string, @Body() body: { target: import('./project-space-registry.js').SpaceTarget; expectedRevision: number; requestId: string }) {
     return this.write(() => this.manager.spaces().addReference(id, body.target, body.expectedRevision, body.requestId));
   }
@@ -25,7 +26,7 @@ export class ProjectSpacesController {
   @Get('handoffs') handoffs(@Query('projectId') id: string, @Query('sessionId') sid?: string) { this.enabled(); this.manager.executionProject(id); return this.manager.projectHandoffs().list(id, sid); }
   @Get(':id') get(@Param('id') id: string) {
     this.enabled();
-    const p = this.manager.projectSpaces().projects.find(p => p.id === id);
+    const canonical=this.manager.spaces().canonical(id),p = this.manager.projectSpaces().projects.find(p => p.id === canonical);
     if (!p) throw new NotFoundException('Project not found');
     return p;
   }
@@ -34,8 +35,8 @@ export class ProjectSpacesController {
     try { return this.manager.createProjectSpace(body); }
     catch (e) { if (e instanceof ProjectConflict) throw new ConflictException(e.message); throw new BadRequestException((e as Error).message); }
   }
-  private write<T>(fn: () => T): T {
-    this.enabled();
+  private write<T>(fn: () => T, retainedExecution = false): T {
+    if(!retainedExecution)this.enabled();
     try { return fn(); } catch (e) { if (e instanceof ProjectConflict) throw new ConflictException(e.message); throw new BadRequestException((e as Error).message); }
   }
   @Post('membership/:id') membership(@Param('id') id: string, @Body() body: Parameters<SessionManager['moveProjectChat']>[1]) {
@@ -61,9 +62,9 @@ export class ProjectSpacesController {
     return this.write(() => this.manager.archiveProjectSpace(id, body));
   }
   @Post(':id/queue/:queueId/review') review(@Param('id') id: string, @Param('queueId') queueId: string, @Body() body: { expectedMembershipRevision: number; review: NonNullable<Parameters<SessionManager['reviewProjectQueue']>[3]> }) {
-    return this.write(() => { if (!body.review) throw new Error('Review the message and its attachments'); this.manager.reviewProjectQueue(id, queueId, body.expectedMembershipRevision, body.review); return { ok: true }; });
+    return this.write(() => { if (!body.review) throw new Error('Review the message and its attachments'); this.manager.reviewProjectQueue(id, queueId, body.expectedMembershipRevision, body.review); return { ok: true }; },true);
   }
   @Post(':id/autopilot/:sid/resume') resume(@Param('id') id: string, @Param('sid') sid: string, @Body() body: { expectedMembershipRevision: number }) {
-    return this.write(() => { this.manager.resumeProjectAutopilot(id, sid, body.expectedMembershipRevision); return { ok: true }; });
+    return this.write(() => { this.manager.resumeProjectAutopilot(id, sid, body.expectedMembershipRevision); return { ok: true }; },true);
   }
 }

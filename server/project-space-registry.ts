@@ -122,6 +122,10 @@ export class ProjectSpaceRegistry {
     return { spaceId, assignment, workProjectId: p.kind !== 'chat' ? p.id : undefined, inherited,
       membershipRevision: Math.max(binding?.revision || 0, data.epochs[executionKey(ref)] || 0), archived: !!space?.archivedAt };
   }
+  /** A synchronous read batch never carries a snapshot across an await or mutation. */
+  readView(){const state=this.read(),projects=this.projects();return {state,projects,
+    resolve:(projectId:string,sessionId:string)=>this.resolveInside(state,projects,{projectId,sessionId}),
+    defaultForWork:(projectId:string)=>{const assignment=state.bindings[targetKey({kind:'work-project',projectId})]?.assignment;return assignment?.mode==='space'?assignment.spaceId:undefined;}};}
   resolve(projectId: string, sessionId: string) { return this.resolveInside(this.read(), this.projects(), { projectId, sessionId }); }
   defaultForWork(projectId: string) {
     this.assertTarget({ kind: 'work-project', projectId }, this.projects());

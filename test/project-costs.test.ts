@@ -1,3 +1,5 @@
+import { ProjectRegistry } from '../server/projects.js';
+import { ProjectSpaceRegistry } from '../server/project-space-registry.js';
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -48,4 +50,15 @@ it('does not call an unsent conversation a missing transcript',()=>{
  expect(r.missing).toBe(0);expect(r.unstarted).toBe(1);
  expect(r.conversations[0]).toMatchObject({missing:false,unstarted:true,size:0});
  expect(r.projects.find(p=>p.projectId==='p')?.unstarted).toBe(1);
+});
+
+it('aggregates exact primary conversations after moves without counting references or changing totals',()=>{
+ const f=setup(),file=join(f.d,'projects.json'),reg=ProjectRegistry.load(file),p=reg.create('Original Work',f.d);reg.addConversation(p.id,'root','Build','codex');reg.addConversation(p.id,'unrelated','Research','codex');
+ const spaces=new ProjectSpaceRegistry(f.d,()=>ProjectRegistry.load(file).list()),a=spaces.create({requestId:'cost-space-a-001',name:'A'}),b=spaces.create({requestId:'cost-space-b-001',name:'B'});
+ const changes=[{target:{kind:'work-project' as const,projectId:p.id},assignment:{mode:'space' as const,spaceId:a.id}},{target:{kind:'work-conversation' as const,projectId:p.id,sessionId:'unrelated'},assignment:{mode:'space' as const,spaceId:b.id}}];
+ for(const change of changes){const preview=spaces.preview(change),op=spaces.apply({...change,operationId:'cost-'+crypto.randomUUID(),expectedRevision:preview.revision,expectedTopology:preview.topology,expectedImpactHash:preview.impactHash});spaces.complete(op.id);}
+ spaces.addReference(a.id,{kind:'work-project',projectId:p.id},spaces.snapshot().revision,'cost-reference-001');
+ const projects=reg.list(),result=projectCosts(projects,(_pid,sid)=>({...f.context(),providerSessionId:sid}),new Set(),f.stats,1000),groups=groupSpaceCosts(result,projects,spaces);
+ expect(groups.find(g=>g.projectId===a.id)).toMatchObject({conversations:1,agentCount:2,conversationKeys:[JSON.stringify([p.id,'root'])]});expect(groups.find(g=>g.projectId===b.id)).toMatchObject({conversations:1,agentCount:0,conversationKeys:[JSON.stringify([p.id,'unrelated'])]});
+ expect(groups.reduce((sum,g)=>sum+g.usage.input,0)).toBe(result.totals.input);expect(groups.reduce((sum,g)=>sum+g.cost.usd,0)).toBeCloseTo(result.totals.usd);
 });

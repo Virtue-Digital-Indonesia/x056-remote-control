@@ -44,7 +44,7 @@ export class FileStore {
     this.db = new DatabaseSync(join(state, 'chat-files.sqlite'));
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (schema.user_version > 3) throw new Error('File catalog requires a newer gateway');
+    if (schema.user_version > 4) throw new Error('File catalog requires a newer gateway');
     if (!schema.user_version) this.db.exec(`BEGIN IMMEDIATE;
       CREATE TABLE files (id TEXT PRIMARY KEY, chatId TEXT NOT NULL, sessionId TEXT NOT NULL, name TEXT NOT NULL, mime TEXT NOT NULL, latestVersionId TEXT NOT NULL, createdAt TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX files_owner ON files(chatId,sessionId);
@@ -66,7 +66,7 @@ export class FileStore {
       CREATE TABLE execution_attempts (executionId TEXT NOT NULL, sessionId TEXT NOT NULL, attempt INTEGER NOT NULL, PRIMARY KEY(executionId,sessionId));
       CREATE TABLE shared_leases (token TEXT PRIMARY KEY REFERENCES checkouts(token), ownerId TEXT NOT NULL, executionId TEXT NOT NULL, sessionId TEXT NOT NULL, attempt INTEGER NOT NULL, membershipRevision INTEGER NOT NULL);
       PRAGMA user_version=2; COMMIT;`);
-    this.db.exec('PRAGMA user_version=3');
+    this.db.exec('CREATE TABLE IF NOT EXISTS file_owner_aliases(legacyOwnerId TEXT NOT NULL,fileId TEXT NOT NULL REFERENCES files(id),ownerId TEXT NOT NULL,legacySessionId TEXT NOT NULL,PRIMARY KEY(legacyOwnerId,fileId)); PRAGMA user_version=4');
     // Restart fences every old execution separately. No owner's shared epoch is used.
     this.db.exec('UPDATE execution_attempts SET attempt=attempt+1');
     this.artifacts = new ArtifactStore(state, () => []);
@@ -78,6 +78,32 @@ export class FileStore {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = work(); this.db.exec('COMMIT'); return result; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  /** Reviewed mappings change only catalog ownership. Historical links and bytes retain their identities. */
+  applyOwnershipMappings(mapping:Record<string,string>,aliases:Record<string,string>):void {
+    this.transaction(()=>{for(const [fileId,ownerId] of Object.entries(mapping)){
+      const row=this.db.prepare('SELECT chatId,sessionId FROM files WHERE id=?').get(fileId);
+      if(!row)throw new FileError('Reviewed file unavailable: '+fileId);
+      if(row.chatId===ownerId)continue;
+      if(aliases[String(row.chatId)]!==ownerId||this.owner(ownerId).id!==ownerId)throw new FileError('Reviewed file owner does not match its legacy alias');
+      this.db.prepare('INSERT INTO file_owner_aliases VALUES(?,?,?,?)').run(row.chatId!,fileId,ownerId,row.sessionId!);
+      this.db.prepare("UPDATE files SET chatId=?,sessionId='',ownerKind='space' WHERE id=?").run(ownerId,fileId);
+      // Pending operations keep their recorded owner and must be reviewed. New leases use the canonical owner.
+      this.db.prepare("UPDATE operations SET state='interrupted',error='File ownership migrated; review saved files before retrying' WHERE chatId=? AND state='pending'").run(row.chatId!);
+      this.db.prepare('UPDATE execution_attempts SET attempt=attempt+1 WHERE EXISTS(SELECT 1 FROM shared_leases l WHERE l.executionId=execution_attempts.executionId AND l.sessionId=execution_attempts.sessionId AND l.ownerId=?)').run(row.chatId!);
+      this.db.prepare('INSERT INTO epochs VALUES(?,1) ON CONFLICT(chatId) DO UPDATE SET epoch=epoch+1').run(row.chatId!);
+    }});
+  }
+  retainsExecution(projectId:string,sessionId?:string):boolean {
+    if(!sessionId&&this.db.prepare('SELECT id FROM files WHERE chatId=? LIMIT 1').get(projectId))return true;
+    return !!this.db.prepare('SELECT id FROM versions WHERE sourceProjectId=?'+(sessionId?' AND sourceSessionId=?':'')+' LIMIT 1').get(projectId,...(sessionId?[sessionId]:[]));
+  }
+  canonicalFileOwner(ownerId:string,fileId:string):string {
+    const alias=this.db.prepare('SELECT ownerId FROM file_owner_aliases WHERE legacyOwnerId=? AND fileId=?').get(ownerId,fileId);
+    if(!alias)return ownerId;
+    const current=this.db.prepare('SELECT chatId FROM files WHERE id=?').get(fileId);
+    if(current?.chatId!==alias.ownerId)throw new FileError('File ownership alias is invalid');
+    return String(alias.ownerId);
   }
   private ownerKind(owner:Project):'chat'|'work'|'space' {return owner.kind==='chat'?'chat':owner.id.startsWith('space_')?'space':'work';}
   private writable(chatId: string): RunnableProject {
@@ -116,11 +142,13 @@ export class FileStore {
       .map(file => ({ ...file,ownerKind:file.ownerKind==='chat'?'chat':'project',owner:{kind:this.ownerKind(chat),id:chat.id}, removed: !!file.removed, versions: this.db.prepare('SELECT * FROM versions WHERE fileId=? ORDER BY createdAt,rowid').all(file.id).map(v=>Object.fromEntries(Object.entries(v).filter(([,value])=>value!==null))) as unknown as FileVersion[] }));
   }
   file(chatId: string, fileId: string): ChatFile {
+    chatId=this.canonicalFileOwner(chatId,fileId);
     const file = this.list(chatId).find(f => f.id === fileId);
     if (!file) throw new FileError('File not found in this Chat', 404);
     return file;
   }
   setRemoved(chatId: string, fileId: string, removed: boolean): ChatFile {
+    chatId=this.canonicalFileOwner(chatId,fileId);
     this.writable(chatId); this.file(chatId, fileId);
     if (typeof removed !== 'boolean') throw new FileError('removed must be boolean');
     // Keep every saved version and queued reference usable.
@@ -241,6 +269,7 @@ export class FileStore {
     return checkout;
   }
   checkoutShared(ownerId: string, ref: FileReference, executionId: string, sessionId: string): Checkout & SharedLease {
+    ownerId=this.canonicalFileOwner(ownerId,ref.fileId);
     this.writable(ownerId);
     const execution = this.sharedExecution(ownerId, executionId, sessionId), { file, path } = this.version(ownerId, ref);
     if (file.removed) throw new FileError('Restore this file before editing', 409);
@@ -258,6 +287,7 @@ export class FileStore {
     return lease;
   }
   async commit(chatId: string, fileId: string, input: { operationId: string; expectedBaseVersionId: string; checkoutToken: string; sourceMessageId?: string; account?: string; executionId?: string; sessionId?: string }): Promise<ChatFile> {
+    const originalOwnerId=chatId;chatId=this.canonicalFileOwner(chatId,fileId);
     this.writable(chatId); this.operationId(input.operationId);
     const fingerprint = digest(['commit', fileId, input.expectedBaseVersionId, input.checkoutToken]);
     const priorLease = this.db.prepare('SELECT * FROM shared_leases WHERE token=?').get(input.checkoutToken) as unknown as SharedLease | undefined;
@@ -265,6 +295,7 @@ export class FileStore {
       if ((input.executionId && input.executionId !== priorLease.executionId) || (input.sessionId && input.sessionId !== priorLease.sessionId)) throw new FileError('Checkout belongs to another conversation', 409);
       this.sharedExecution(chatId, priorLease.executionId, priorLease.sessionId);
     }
+    if(originalOwnerId!==chatId&&this.replay(originalOwnerId,input.operationId,fingerprint))return this.file(chatId,fileId);
     if (this.replay(chatId, input.operationId, fingerprint)) return this.file(chatId, fileId);
     const checkout = this.db.prepare('SELECT * FROM checkouts WHERE token=? AND chatId=? AND fileId=?').get(input.checkoutToken, chatId, fileId) as unknown as Checkout | undefined;
     if (!checkout || checkout.versionId !== input.expectedBaseVersionId) throw new FileError('Check out the expected saved version first', 409);
@@ -306,7 +337,7 @@ export class FileStore {
   references(chatId: string, sessionId: string, refs: FileReference[], requestId?: string): string {
     if (!Array.isArray(refs) || refs.length > 20) throw new FileError('Invalid attachment association');
     return refs.map(ref => {
-      const ownerId = ref.ownerId || chatId;
+      const ownerId = this.canonicalFileOwner(ref.ownerId || chatId,ref.fileId);
       const owner = this.owner(ownerId);
       if (owner.kind === 'chat') {
         if (ownerId !== chatId || owner.lastSessionId !== sessionId) throw new FileError('Invalid Chat attachment association');
@@ -328,7 +359,9 @@ export class FileStore {
   }
 
   async restore(chatId: string, fileId: string, input: { versionId: string; expectedBaseVersionId: string; operationId: string }): Promise<ChatFile> {
+    const originalOwnerId=chatId;chatId=this.canonicalFileOwner(chatId,fileId);this.writable(chatId);
     const fingerprint = digest(['restore', fileId, input.versionId, input.expectedBaseVersionId]);
+    if(originalOwnerId!==chatId&&this.replay(originalOwnerId,input.operationId,fingerprint))return this.file(chatId,fileId);
     if (this.replay(chatId, input.operationId, fingerprint)) return this.file(chatId, fileId);
     const chat = this.writable(chatId), { file, version } = this.version(chatId, { fileId, versionId: input.versionId });
     this.transaction(() => {

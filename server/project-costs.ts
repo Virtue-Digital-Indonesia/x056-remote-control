@@ -1,3 +1,4 @@
+import type { ProjectSpaceRegistry } from './project-space-registry.js';
 import { realpathSync, statSync } from 'node:fs';
 import { rolloutHeads } from '../src/adapters/codex.js';
 import { subagentFiles, transcriptIndex } from '../src/adapters/subagents.js';
@@ -13,7 +14,8 @@ function add(to: TokenUsage, from: TokenUsage) {
 }
 interface Project { id: string; name: string; conversations?: { sessionId:string; title?:string; lastMessageAt?: number | null }[] }
 /** Group already-counted rows; never rescan or add the same transcript twice. */
-export function groupSpaceCosts(result: ReturnType<typeof projectCosts>, projects: (Project & { kind?: string; parentProjectId?: string })[]) {
+export function groupSpaceCosts(result: ReturnType<typeof projectCosts>, projects: (Project & { kind?: string; parentProjectId?: string })[], registry?:ProjectSpaceRegistry): (ReturnType<typeof projectCosts>['projects'][number]&{projectIds:string[];conversationKeys?:string[];basis?:string})[] {
+  if(registry)return groupEffectiveSpaceCosts(result,projects,registry);
   const groups = new Map<string, typeof result.projects[number] & { projectIds: string[] }>();
   for (const row of result.projects) {
     const execution = projects.find(p => p.id === row.projectId);
@@ -26,6 +28,21 @@ export function groupSpaceCosts(result: ReturnType<typeof projectCosts>, project
     group.partial ||= row.partial; group.cost = estimateCost(group.usage);
   }
   return [...groups.values()].sort((a,b) => b.cost.usd-a.cost.usd);
+}
+function groupEffectiveSpaceCosts(result:ReturnType<typeof projectCosts>,projects:(Project&{kind?:string})[],registry:ProjectSpaceRegistry){
+  const view=registry.readView(),groups=new Map<string,ReturnType<typeof groupSpaceCosts>[number]&{conversationKeys:string[];basis:string}>();
+  const ensure=(id:string,name:string)=>{let g=groups.get(id);if(!g){g={projectId:id,projectName:name,projectIds:[],conversationKeys:[],basis:'Conversation lifetime usage under current primary membership. References are excluded.',usage:empty(),cost:{usd:0,unpriced:[]},conversations:0,agentCount:0,agentUsd:0,missing:0,unstarted:0,partial:false};groups.set(id,g);}return g;};
+  for(const space of view.state.spaces)ensure(space.id,space.name);
+  for(const p of projects)if(!p.conversations?.length&&!view.defaultForWork(p.id))ensure(p.kind==='chat'?'__standalone_chats__':p.id,p.kind==='chat'?'Standalone Chat':p.name);
+  const seen=new Set<string>();
+  for(const row of result.conversations){
+    const key=JSON.stringify([row.projectId,row.sessionId]);if(seen.has(key))continue;seen.add(key);
+    const p=projects.find(p=>p.id===row.projectId),spaceId=view.resolve(row.projectId,row.sessionId).spaceId,space=view.state.spaces.find(s=>s.id===spaceId);
+    const g=ensure(spaceId|| (p?.kind==='chat'?'__standalone_chats__':row.projectId),space?.name|| (p?.kind==='chat'?'Standalone Chat':row.projectName));
+    if(!g.projectIds.includes(row.projectId))g.projectIds.push(row.projectId);g.conversationKeys.push(key);g.conversations++;add(g.usage,row.usage);
+    g.agentCount+=row.agentCount;g.agentUsd+=row.agentCost.usd;g.missing+=Number(row.missing);g.unstarted+=Number(row.unstarted);g.partial ||= row.partial;g.cost=estimateCost(g.usage);
+  }
+  return [...groups.values()].sort((a,b)=>b.cost.usd-a.cost.usd);
 }
 interface Context { adapter: { id:string }; providerSessionId:string; configDirs:string[] }
 interface Source { file:string; agent:boolean }

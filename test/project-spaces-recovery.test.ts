@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AccountRegistry } from '../src/accounts.js';
 import { SessionManager } from '../server/manager.js';
 import { backupProjectSpaces, restoreProjectSpaces, projectSpacesRecoveryReport } from '../server/project-spaces-recovery.js';
@@ -89,6 +89,34 @@ describe('Project spaces backup, rollback and repair reports', () => {
     expect(off.memory().get(memory.id)).toBeDefined(); expect(off.spaces().resolve(f.chat.id, f.chat.lastSessionId!).spaceId).toBe(f.parent.id);
     expect(() => off.fileExecution(f.parent.id, f.chat.id, f.chat.lastSessionId!)).toThrow('disabled');
   });
+  it('restores later document versions, grants, references, leases, notes and queues from one checked snapshot',async()=>{
+    const f=fixture(),store=f.m.memory(),recipient=f.m.createProjectSpace({requestId:'recovery-recipient-001',name:'Recipient'}),reader=f.m.createChat({requestId:'recovery-reader-001',spaceId:recipient.id});
+    const path=join(f.root,'source.md');writeFileSync(path,'# Recovery\nOriginal recovery evidence.');
+    const [file]=await f.m.files().upload(f.parent.id,'recovery-document-file-001',[{path,name:'source.md'}]);
+    const doc=store.documents.register({operationId:'recovery-source-001',owner:{kind:'space',id:f.parent.id},file:{ownerId:f.parent.id,fileId:file.id,versionId:file.latestVersionId}});
+    await vi.waitFor(()=>expect(store.documents.get(doc.id)?.state).toBe('ready'));
+    const original=store.documents.get(doc.id)!,source=store.source(doc.id)!;
+    const grant=store.access.setGrant({operationId:'recovery-grant-001',subject:{kind:'source',id:doc.id},expectedVersion:source.versionId!,expectedRevision:0,recipient:{kind:'space',id:recipient.id},active:true});
+    const refs=store.access.setReferences({operationId:'recovery-reference-001',projectId:reader.id,sessionId:reader.lastSessionId!,requestId:'recovery-logical-turn-001',expectedRevision:0,selections:[{kind:'source',id:doc.id,version:source.versionId!}]});
+    const note=store.create({scope:'space',spaceId:f.parent.id,title:'Derived document note',content:'Original recovery evidence.',sources:[{id:doc.id,label:'Evidence',versionId:source.versionId,hash:source.hash}],status:'confirmed'});
+    const copy=f.m.files().checkoutShared(f.parent.id,{fileId:file.id,versionId:file.latestVersionId},f.chat.id,f.chat.lastSessionId!);writeFileSync(copy.path,'# Recovery\nUpdated recovery evidence.');
+    const updated=await f.m.files().commit(f.parent.id,file.id,{operationId:'recovery-version-002',checkoutToken:copy.token,expectedBaseVersionId:file.latestVersionId});
+    store.documents.register({operationId:'recovery-source-update-002',sourceId:doc.id,expectedRevision:original.revision,owner:original.owner,file:{...original.file,versionId:updated.latestVersionId}});
+    await vi.waitFor(()=>expect(store.documents.get(doc.id)?.activeVersionId).not.toBe(original.activeVersionId));
+    expect(store.search({spaceId:f.parent.id}).items.find(e=>e.id===note.id)?.staleReason).toBeDefined();
+    const q=f.m.enqueue(reader.id,{sessionId:reader.lastSessionId,text:'Retained selected version',requestId:refs.requestId,paused:true});
+    const context=store.context(reader.id,reader.lastSessionId!,'codex','Recovery',refs.requestId);store.recordContext(reader.id,reader.lastSessionId!,'codex',context);
+    const countBefore=projectSpacesRecoveryReport(f.stateDir);expect(countBefore.ready).toBe(true);expect(countBefore.counts).toMatchObject({documents:1,sourceVersions:2,grants:1,turnReferences:1,queues:1});
+    f.m.onModuleDestroy();const snap=join(f.root,'with-documents');await backupProjectSpaces(f.stateDir,snap,true);
+    const newer=store.create({projectId:reader.id,title:'Write after backup',content:'Preserve separately'});const newerSnapshot=join(f.root,'newer-write');await backupProjectSpaces(f.stateDir,newerSnapshot,true);
+    renameSync(f.stateDir,join(f.root,'retained-newer-state'));restoreProjectSpaces(snap,f.stateDir);
+    const restored=new SessionManager(f.options);managers.push(restored);restored.setProjectAutomationPauser(()=>{});
+    expect(restored.memory().get(newer.id)).toBeUndefined();expect(existsSync(join(newerSnapshot,'memory.sqlite'))).toBe(true);
+    expect(restored.memory().access.grant(grant.id)).toEqual(grant);expect(restored.memory().documents.passages(doc.id,original.activeVersionId!)[0].text).toContain('Original recovery');
+    expect(restored.files().file(f.parent.id,file.id).latestVersionId).toBe(updated.latestVersionId);expect(restored.queues()[reader.id][0]).toMatchObject({id:q.id,requestId:refs.requestId,text:q.text,paused:true});
+    expect(projectSpacesRecoveryReport(f.stateDir)).toMatchObject({ready:true,counts:countBefore.counts});
+    await expect(restored.files().commit(f.parent.id,file.id,{operationId:'recovery-stale-lease-003',checkoutToken:copy.token,expectedBaseVersionId:updated.latestVersionId})).rejects.toThrow();
+  });
   it('reports broken queue and memory references without changing stored data', () => {
     const f = fixture(); f.m.memory().create({ projectId: 'gone', title: 'Retained orphan', content: 'Do not discard' });
     writeFileSync(join(f.stateDir, 'queues.json'), JSON.stringify({ [f.chat.id]: [{ id: 'orphan-queue', sessionId: 'gone', text: 'Retain', fileRefs: [{ fileId: 'gone', versionId: 'gone' }] }] }));
@@ -96,6 +124,22 @@ describe('Project spaces backup, rollback and repair reports', () => {
     const report = projectSpacesRecoveryReport(f.stateDir); expect(report.ready).toBe(false);
     expect(report.issues.map(x => x.store)).toEqual(expect.arrayContaining(['queues','memory']));
     expect(readFileSync(join(f.stateDir, 'projects.json'))).toEqual(before);
+  });
+  it('blocks dispatch after an invalid grant is restored and reports the repair without dropping records',()=>{
+    const f=fixture(),note=f.m.memory().create({scope:'space',spaceId:f.parent.id,title:'Reviewed fact',content:'Keep the saved original',status:'confirmed'});
+    const grant=f.m.memory().access.setGrant({operationId:'repair-grant-001',subject:{kind:'entry',id:note.id},expectedVersion:'1',recipient:{kind:'execution',id:f.chat.id},expectedRevision:0,active:true});
+    f.m.onModuleDestroy();const db=new DatabaseSync(join(f.stateDir,'memory.sqlite'));db.prepare('UPDATE memory_grants SET data=? WHERE id=?').run(JSON.stringify({...grant,recipient:{kind:'execution',id:'missing-execution'}}),grant.id);
+    const restored=new SessionManager(f.options);managers.push(restored);restored.setProjectAutomationPauser(()=>{});
+    expect(()=>restored.continueSession(f.chat.id,f.chat.lastSessionId!,'Do not run')).toThrow('needs repair');expect(restored.projectSpacesMigration().recovery.issues.some(i=>i.store==='grants')).toBe(true);
+    db.prepare('UPDATE memory_grants SET data=? WHERE id=?').run(JSON.stringify(grant),grant.id);db.close();expect(restored.projectSpacesMigration().recovery.ready).toBe(true);
+    expect(restored.memory().access.grant(grant.id)).toEqual(grant);
+  });
+  it('retains standalone Work identities used by saved files and reviewed memory',async()=>{
+    const f=fixture(),work=f.m.createProject('Local Work',f.root),target=f.m.prepareProjectWork(work.id,{requestId:'retained-local-work-001'});
+    const source=join(f.root,'local.txt');writeFileSync(source,'Original');await f.m.files().upload(work.id,'local-owned-file-001',[{path:source,name:'local.txt'}]);
+    f.m.memory().create({projectId:work.id,sessionId:target.sessionId,scope:'conversation',title:'Keep context',content:'Reviewed local fact',status:'confirmed'});
+    expect(()=>f.m.removeProject(work.id)).toThrow('Archive');expect(()=>f.m.removeConversation(work.id,target.sessionId)).toThrow('Archive');
+    expect(f.m.executionProject(work.id).cwd).toBe(f.root);expect(projectSpacesRecoveryReport(f.stateDir).ready).toBe(true);
   });
   it('requires offline backup and rejects damaged snapshots before creating a restore', async () => {
     const f = fixture(); await expect(backupProjectSpaces(f.stateDir, join(f.root, 'unsafe'), false)).rejects.toThrow('Stop all');

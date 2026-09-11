@@ -46,6 +46,12 @@ if(many){const sid=projects.get(p.id)!.conversations!.find(c=>c.title==='Review 
 writeFileSync(join(state,'questions.json'),JSON.stringify(pending));
 const metrics=new AccountAnalytics(state);const a=metrics.begin('primary','claude','test-model');a.observe({type:'assistant',message:{id:'1',model:'test-model',usage:{input_tokens:3000,output_tokens:700,cache_read_input_tokens:5000}}});a.finish('completed');
 const fake=resolve('test/bin/fake-claude');const scenario=join(dir,'scenario.jsonl');writeFileSync(scenario,[{event:{type:'system',subtype:'init'}},{delayMs:many?10000:1200},{event:{type:'assistant',message:{content:[{type:'text',text:'Fixture response received.'}],usage:{input_tokens:10,output_tokens:8}}}},{event:{type:'result',subtype:'success',is_error:false,result:'Fixture response received.'}},{exit:0}].map(x=>JSON.stringify(x)).join('\n'));process.env.X056_FAKE_SCENARIO=scenario;process.env.X056_FAKE_SCENARIO_RESUME=scenario;
+if(process.env.X056_TEST_SPACE_DISABLE==='1'){
+  const seed=new SessionManager({stateDir:state,workspaceRoot:dir,chatEnabled:true,projectSpacesEnabled:true});seed.setProjectAutomationPauser(()=>{});
+  const space=seed.createProjectSpace({requestId:'disabled-fixture-space-001',name:'Retained disabled Project'}),chat=seed.createChat({requestId:'disabled-fixture-chat-001',name:'Retained disabled Chat',spaceId:space.id});
+  seed.enqueue(chat.id,{sessionId:chat.lastSessionId,text:'Review after feature disable',requestId:'disabled-fixture-message-001',paused:true,notBefore:Date.now()+3600000});
+  seed.onModuleDestroy();
+}
 const app=await createApp({token:'browser-fixture-token-0123456789',stateDir:state,workspaceRoot:dir,claudePath:fake,panelPath:join(pub,'panel.html'),titleGenerator:async input=>{await new Promise(r=>setTimeout(r,300));return /keyboard/i.test(input.prompt)?'Keyboard navigation improvements':'Website layout improvements';}});
 if(process.env.X056_TEST_CHAT)app.get(SessionManager).setChatCapabilities(new ChatCapabilities(state,()=>registry.list(),undefined as never,undefined as never,undefined,async account=>({account:account.name,errors:[],capabilities:[{key:'skill:rc-documents',name:'rc-documents',kind:'skill',state:'ready',fingerprint:'fixture-v1',invocation:'/rc-documents'},{key:'mcp:x056',name:'x056',kind:'mcp',state:'ready',fingerprint:'chat-files-v1'},{key:'plugin:fixture',name:'Fixture plugin',kind:'plugin',state:account.name==='backup'?'authorization-needed':'ready'}]})));
 await app.listen(Number(process.env.X056_TEST_PORT||8768),'127.0.0.1');

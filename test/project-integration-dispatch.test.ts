@@ -28,6 +28,33 @@ function fixture() {
   return { root, stateDir, accounts, opts, calls, m, cron, pause, work, a, b, x, y, change, applyPreview };
 }
 describe('exact-conversation Project integration', () => {
+  it('pauses inherited queues across compatible disable and restore, with review available while disabled',async()=>{
+    const f=fixture(),q=f.m.enqueue(f.work.id,{sessionId:f.x.sessionId,text:'Retained queue',paused:true,notBefore:Date.now()+600000});
+    const standalone=f.m.createChat({requestId:'disable-standalone-001'}),local=f.m.enqueue(standalone.id,{sessionId:standalone.lastSessionId,text:'Local only',paused:true});
+    f.m.setAutopilot(f.work.id,f.x.sessionId,{count:3});const job=f.cron.add({projectId:f.work.id,schedule:'0 0 * * *',tz:'UTC',prompt:'Future work'});
+    f.m.onModuleDestroy();const off=new SessionManager({...f.opts,projectSpacesEnabled:false});managers.push(off);
+    expect(()=>off.reviewProjectQueue(f.work.id,q.id,0)).toThrow('recovery');off.setProjectAutomationPauser(f.pause);
+    expect(off.queues()[f.work.id][0]).toMatchObject({id:q.id,text:q.text,paused:true,contextReview:{membershipRevision:0}});
+    expect(off.queues()[standalone.id][0]).toEqual(local);expect(f.cron.list().find(j=>j.id===job.id)?.enabled).toBe(false);
+    expect(off.autopilotStatus()[f.x.sessionId].paused).toBe(true);
+    off.reviewProjectQueue(f.work.id,q.id,0,{expectedText:q.text,text:'Reviewed local context',fileRefs:[]});
+    expect(off.queues()[f.work.id][0].contextReview).toBeUndefined();off.onModuleDestroy();
+    const again=new SessionManager({...f.opts,projectSpacesEnabled:false});managers.push(again);again.setProjectAutomationPauser(f.pause);
+    expect(again.queues()[f.work.id][0].contextReview).toBeUndefined();again.onModuleDestroy();
+    const restored=new SessionManager(f.opts);managers.push(restored);restored.setProjectAutomationPauser(f.pause);
+    expect(restored.queues()[f.work.id][0]).toMatchObject({text:'Reviewed local context',paused:true,contextReview:{reason:expect.stringContaining('restored')}});expect(f.calls).toHaveLength(0);
+  });
+  it('archives original Work wherever its conversations are organized without pausing member Chats or references',()=>{
+    const f=fixture();associate(f.m,f.change);const chat=f.m.createChat({requestId:'archive-member-chat-001',spaceId:f.a.id});
+    const qx=f.m.enqueue(f.work.id,{sessionId:f.x.sessionId,text:'X',paused:true}),qy=f.m.enqueue(f.work.id,{sessionId:f.y.sessionId,text:'Y',paused:true}),qc=f.m.enqueue(chat.id,{sessionId:chat.lastSessionId,text:'Chat',paused:true});
+    const approval=f.m.requestMcpSend(f.work.id,undefined,'Retained future Work approval');
+    const before=f.m.executionProject(f.work.id);f.m.archiveWorkProject(f.work.id,{operationId:'archive-work-001',expectedRevision:before.revision||0,archived:true});
+    expect(approval.contextReview?.operationId).toBe('archive-work-001');
+    for(const q of [qx,qy])expect(f.m.queues()[f.work.id].find(r=>r.id===q.id)?.contextReview).toBeDefined();expect(f.m.queues()[chat.id][0]).toEqual(qc);
+    expect(()=>f.m.continueSession(f.work.id,f.x.sessionId,'Blocked')).toThrow('archived');
+    const archived=f.m.executionProject(f.work.id);f.m.archiveWorkProject(f.work.id,{operationId:'restore-work-001',expectedRevision:archived.revision!,archived:false});
+    expect(f.m.queues()[f.work.id].every(q=>q.paused&&q.contextReview)).toBe(true);expect(f.m.spaces().resolve(f.work.id,f.x.sessionId).spaceId).toBe(f.b.id);expect(f.calls).toHaveLength(0);
+  });
   it('moves one conversation without pausing sibling queues, schedules, autopilots or leases', async () => {
     const f = fixture(), { m, work, x, y } = f;
     const qx = m.enqueue(work.id, { sessionId: x.sessionId, text: 'X', paused: true }), qy = m.enqueue(work.id, { sessionId: y.sessionId, text: 'Y', paused: true });

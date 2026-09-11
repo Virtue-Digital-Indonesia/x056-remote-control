@@ -1,3 +1,4 @@
+import { SessionManager } from '../server/manager.js';
 import { createRequire } from 'node:module';
 const {DatabaseSync}=createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -78,6 +79,27 @@ describe('Reviewed Project migration', () => {
     expect(applySpaceMigration(f.state, reviewed)).toEqual(op); expect(f.spaces.list()).toHaveLength(1);
     const changed = structuredClone(reviewed); changed.imports[0].memoryOwners[f.repoNote.id] = { kind: 'space', id };
     expect(() => applySpaceMigration(f.state, changed)).toThrow('Migration ID');
+  });
+  it('migrates file ownership once, retains old links, and keeps real Work files independent',async()=>{
+    const f=fixture(),path=join(f.state,'migration.txt');writeFileSync(path,'Retained original');
+    const [file]=await f.store.upload(f.work.id,'alias-original-001',[{path,name:'migration.txt'}]);
+    const db=new DatabaseSync(join(f.state,'chat-files.sqlite'));db.prepare("UPDATE files SET ownerKind='project' WHERE id=?").run(file.id);db.close();
+    const raw=JSON.parse(readFileSync(f.file,'utf8'));raw.projects.find((p:any)=>p.id==='chat').cwd=join(f.state,'chats','chat','work');mkdirSync(join(f.state,'chats','chat','work'),{recursive:true});writeFileSync(f.file,JSON.stringify(raw));
+    const reviewed=plan(f),originalRegistry=readFileSync(f.file,'utf8');applySpaceMigration(f.state,reviewed);
+    const opts={stateDir:f.state,workspaceRoot:f.state,chatEnabled:true,projectSpacesEnabled:true};
+    const m=new SessionManager(opts);close.push(()=>m.onModuleDestroy());m.setProjectAutomationPauser(()=>{});
+    const owner=reviewed.imports[0].spaceId,ref={fileId:file.id,versionId:file.latestVersionId};
+    expect(m.files().list(owner).map(f=>f.id)).toEqual([file.id]);expect(m.files().list(f.work.id)).toEqual([]);
+    expect(m.files().version(f.work.id,ref).version).toEqual(m.files().version(owner,ref).version);
+    expect(readFileSync(m.files().version(f.work.id,ref).path,'utf8')).toBe('Retained original');
+    expect(m.executionProject(f.work.id).cwd).toBe(f.work.cwd);expect(readFileSync(f.file,'utf8')).toBe(originalRegistry);
+    const checkout=m.files().checkoutShared(f.work.id,ref,'chat','chat-session');expect(checkout.ownerId).toBe(owner);
+    writeFileSync(checkout.path,'New shared version');const updated=await m.files().commit(f.work.id,file.id,{operationId:'alias-new-version-001',checkoutToken:checkout.token,expectedBaseVersionId:ref.versionId});
+    expect(updated.versions).toHaveLength(2);expect(updated.versions[1].parentVersionId).toBe(ref.versionId);
+    const [local]=await m.files().upload(f.work.id,'work-after-migration-001',[{path,name:'local.txt'}]);expect(local.owner).toEqual({kind:'work',id:f.work.id});expect(m.files().list(owner)).toHaveLength(1);
+    m.onModuleDestroy();const restarted=new SessionManager(opts);close.push(()=>restarted.onModuleDestroy());restarted.setProjectAutomationPauser(()=>{});
+    expect(restarted.files().file(f.work.id,file.id).latestVersionId).toBe(updated.latestVersionId);
+    expect(restarted.files().list(f.work.id).map(f=>f.id)).toEqual([local.id]);expect(restarted.spaces().pending()).toEqual([]);
   });
   it('rejects a stale review and unrelated owner mappings without partial writes', () => {
     const f = fixture(), reviewed = plan(f); f.memory.update(f.brief.id, f.brief.revision, { content: 'Changed before apply' });

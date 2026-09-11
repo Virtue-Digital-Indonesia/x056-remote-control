@@ -754,7 +754,7 @@ export class ApiController {
     const running = new Set(this.manager.runningSessions().map(r => `${r.projectId}/${r.sessionId}`));
     const reg = this.manager.listProjects() as { projects: {id:string;name:string;conversations?:{sessionId:string;title?:string}[]}[] };
     const result = projectCosts(reg.projects ?? [], (pid,sid) => this.manager.historyContext(pid,sid), running, this.stats, budget);
-    return { ...result, ...(this.manager.projectSpacesEnabled() ? { projectSpaces: groupSpaceCosts(result, this.manager.listProjects().projects) } : {}) };
+    return { ...result, ...(this.manager.projectSpacesEnabled() ? { projectSpaces: groupSpaceCosts(result, this.manager.listProjects().projects,this.manager.spaces()) } : {}) };
   }
 
   /** One subagent's own history — the same rows the main chat renders. */

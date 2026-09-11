@@ -50,6 +50,16 @@ export class MemoryDocuments {
  job(id:string):ExtractionJob|undefined{return this.decode(this.db.prepare('SELECT data FROM memory_extraction_jobs WHERE id=?').get(id));}
  private save(doc:MemoryDocument){this.db.prepare('INSERT INTO memory_documents VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(doc.id,JSON.stringify(doc));}
  private saveJob(job:ExtractionJob){this.db.prepare('INSERT INTO memory_extraction_jobs VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,data=excluded.data').run(job.id,job.sourceId,job.state,JSON.stringify(job));}
+ /** Runs within the memory store migration transaction; extraction identities remain immutable. */
+ applyOwnershipMappings(owners:Record<string,MemoryOwner>,files:Record<string,string>):void {
+  for(const [id,owner] of Object.entries(owners)){
+   const doc=this.get(id);if(!doc||same(doc.owner,owner))continue;
+   const fileOwner=files[doc.file.fileId]||doc.file.ownerId;
+   if(fileOwner!==owner.id)throw new MemoryConflict('Review matching ownership for the document source and its original file');
+   doc.owner=owner;doc.file={...doc.file,ownerId:fileOwner};doc.generation++;doc.revision++;this.save(doc);
+   for(const job of this.jobs(id).filter(j=>['queued','processing'].includes(j.state))){job.generation=doc.generation;job.file={...job.file,ownerId:fileOwner};job.token=undefined;job.state='queued';this.saveJob(job);}
+  }
+ }
  start(reader:FileReader,changed=()=>{}){
   if(this.reader)return;this.reader=reader;this.changed=changed;
   this.tx(()=>{for(const job of this.jobs().filter(j=>j.state==='processing')){job.state='queued';job.token=undefined;job.updatedAt=Date.now();this.saveJob(job);const doc=this.get(job.sourceId);if(doc?.jobId===job.id&&!doc.excluded){doc.state='queued';this.save(doc);}}});
@@ -134,7 +144,7 @@ export class MemoryDocuments {
  }
  passages(sourceId:string,versionId:string):MemoryPassage[]{
   const source=this.store.sourceVersion(sourceId,versionId);if(!source)return [];
-  if(source.document)return this.db.prepare('SELECT data FROM memory_passages WHERE source_id=? AND version_id=? ORDER BY ordinal').all(sourceId,versionId).map(r=>this.decode<MemoryPassage>(r)!);
+  if(source.document)return this.db.prepare('SELECT data FROM memory_passages WHERE source_id=? AND version_id=? ORDER BY ordinal').all(sourceId,versionId).map(r=>({...this.decode<MemoryPassage>(r)!,owner:this.store.ownerOf(source)}));
   const rows:MemoryPassage[]=[];for(let start=0;start<source.content.length;start+=1600){const text=source.content.slice(start,start+1800);rows.push({id:hash([sourceId,versionId,start]),sourceId,versionId,title:source.title,owner:this.store.ownerOf(source),ordinal:rows.length,locator:{kind:'lines',charStart:start,charEnd:start+text.length,startLine:source.content.slice(0,start).split('\n').length},text,hash:hash(text),estimatedTokens:Math.ceil(Buffer.byteLength(text)/3)});if(start+1800>=source.content.length)break;}return rows;
  }
  selectedPassages(sourceId:string,versionId:string,query:string):MemoryPassage[]{
@@ -143,10 +153,11 @@ export class MemoryDocuments {
   return all.sort((a,b)=>score(b)-score(a)||a.ordinal-b.ordinal);
  }
  passage(id:string):MemoryPassage|undefined{return this.decode(this.db.prepare('SELECT data FROM memory_passages WHERE id=?').get(id));}
- search(q:MemoryQuery):{items:MemoryPassage[];total:number}{
+ search(q:MemoryQuery):{items:MemoryPassage[];total:number}{return this.store.withScope(()=>this.searchInside(q));}
+ private searchInside(q:MemoryQuery):{items:MemoryPassage[];total:number}{
   const term=fts(q.query||''),sql=term?'SELECT p.data FROM passage_fts JOIN memory_passages p ON p.id=passage_fts.id WHERE passage_fts MATCH ? ORDER BY bm25(passage_fts)':'SELECT data FROM memory_passages ORDER BY rowid DESC';
   const rows=this.db.prepare(sql).all(...(term?[term]:[])).map(r=>this.decode<MemoryPassage>(r)!).filter(p=>{const source=this.store.source(p.sourceId);return !!source&&source.versionId===p.versionId&&(q.access==='library'?!source.excluded&&this.store.sourceVisible(source,q):!this.store.sourceContextProblem(source,q));});
-  const offset=Math.max(0,Number(q.offset)||0),limit=Math.max(1,Math.min(200,Number(q.limit)||20));return {items:rows.slice(offset,offset+limit),total:rows.length};
+  const offset=Math.max(0,Number(q.offset)||0),limit=Math.max(1,Math.min(200,Number(q.limit)||20));return {items:rows.slice(offset,offset+limit).map(p=>({...p,owner:this.store.ownerOf(this.store.source(p.sourceId)!)})),total:rows.length};
  }
  citation(p:MemoryPassage,source:KnowledgeSource):SourceCitation{return {sourceId:p.sourceId,versionId:p.versionId,passageId:p.id,locator:p.locator,file:p.file,sourceProjectId:source.document?.sourceProjectId||undefined,sourceSessionId:source.document?.sourceSessionId||undefined};}
 }

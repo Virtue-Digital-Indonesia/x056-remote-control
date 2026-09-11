@@ -221,7 +221,13 @@ export class MemoryStore {
     this.transaction(()=>{for(const [kind,owners] of [['entry',mapping.memory],['source',mapping.source]] as const) for(const [id,owner] of Object.entries(owners)) {
       this.resolver?.validateMemoryOwner(owner);
       this.db.prepare('INSERT INTO memory_owners VALUES(?,?,?,?) ON CONFLICT(subject_kind,subject_id) DO UPDATE SET owner_kind=excluded.owner_kind,owner_id=excluded.owner_id').run(kind,id,owner.kind,owner.id);
-    }});
+    }this.documents.applyOwnershipMappings(mapping.source,mapping.file);});
+  }
+  retainsExecution(projectId:string,sessionId?:string):boolean {
+    if(this.db.prepare('SELECT id FROM memory_entries WHERE project_id=?'+(sessionId?" AND json_extract(data,'$.sessionId')=?":'')+' LIMIT 1').get(projectId,...(sessionId?[sessionId]:[])))return true;
+    if(!sessionId&&this.access.grants().some(g=>g.owner.kind==='execution'&&g.owner.id===projectId||g.recipient.kind==='execution'&&g.recipient.id===projectId))return true;
+    if(this.db.prepare('SELECT request_id FROM memory_turn_references WHERE project_id=?'+(sessionId?' AND session_id=?':'')+' LIMIT 1').get(projectId,...(sessionId?[sessionId]:[])))return true;
+    return this.documents.all().some(d=>d.owner.kind==='execution'&&d.owner.id===projectId&&!sessionId)||this.db.prepare("SELECT data FROM memory_source_versions WHERE json_extract(data,'$.document.sourceProjectId')=?"+(sessionId?" AND json_extract(data,'$.document.sourceSessionId')=?":'')+' LIMIT 1').get(projectId,...(sessionId?[sessionId]:[]))!==undefined;
   }
   validateOwner(owner:MemoryOwner):void {if(!owner||!['space','execution'].includes(owner.kind)||typeof owner.id!=='string'||!owner.id)throw new Error('Choose a typed memory owner');this.resolver?.validateMemoryOwner(owner);}
   ownerOf(item: Pick<MemoryEntry,'projectId'|'spaceId'>): MemoryOwner { return item.spaceId?{kind:'space',id:item.spaceId}:{kind:'execution',id:item.projectId||''}; }
@@ -483,8 +489,10 @@ export class MemoryStore {
     if(!settings.crossProject&&!this.local(this.ownerOf(e),q)&&(e.scope!=='global'||!!e.projectId)&&!this.selected({kind:'entry',id:e.id,version:String(e.revision)},q)?.allowCrossProjectForTurn)return 'Cross-project retrieval disabled';
     return;
   }
+  withScope<T>(work:()=>T):T{return this.resolver?this.resolver.withSnapshot(work):work();}
   searchContext(q:MemoryQuery) { return this.search({...q,access:'context',status:'confirmed',eligibleOnly:true}); }
-  search(q: MemoryQuery = {}) {
+  search(q:MemoryQuery={}) {return this.withScope(()=>this.searchInside(q));}
+  private searchInside(q: MemoryQuery = {}) {
     const limit = Math.max(1, Math.min(200, Number(q.limit) || 50)),
       offset = Math.max(0, Number(q.offset) || 0),
       term = fts(q.query || ''),
@@ -715,7 +723,8 @@ export class MemoryStore {
     if((s.spaceId&&settings.excludedSpaces.includes(s.spaceId))||(scope?.spaceId&&settings.excludedSpaces.includes(scope.spaceId)))return 'Project space excluded';
     if(!settings.crossProject&&!this.local(this.ownerOf(s),q)&&!this.selected({kind:'source',id:s.id,version:s.versionId||s.hash},q)?.allowCrossProjectForTurn)return 'Cross-project retrieval disabled';
   }
-  sources(q: MemoryQuery = {}, includeExcluded = false) {
+  sources(q:MemoryQuery={},includeExcluded=false){return this.withScope(()=>this.sourcesInside(q,includeExcluded));}
+  private sourcesInside(q: MemoryQuery = {}, includeExcluded = false) {
     const offset=Math.max(0,Number(q.offset)||0),limit=Math.max(1,Math.min(200,Number(q.limit)||50)),term=includeExcluded?'':fts(q.query||'');
     const sql=term?'SELECT s.data FROM source_fts JOIN memory_sources s ON s.id=source_fts.id WHERE source_fts MATCH ? AND s.excluded=?':'SELECT s.data FROM memory_sources s WHERE s.excluded=?';
     const rows=this.db.prepare(sql).all(...(term?[term,includeExcluded?1:0]:[includeExcluded?1:0])).map(row=>this.projectSource(this.decode<KnowledgeSource>(row))!)
@@ -761,7 +770,8 @@ export class MemoryStore {
     );
     return { entry, existed: false };
   }
-  context(pid: string, sid: string, provider: MemoryProvider, query: string, requestId?:string): MemoryContext {
+  context(pid:string,sid:string,provider:MemoryProvider,query:string,requestId?:string):MemoryContext{return this.withScope(()=>this.contextInside(pid,sid,provider,query,requestId));}
+  private contextInside(pid: string, sid: string, provider: MemoryProvider, query: string, requestId?:string): MemoryContext {
     const scope = this.resolver?.resolve(pid, sid || undefined);
     const references=this.access.references(pid,sid,requestId);
     for(const ref of references?.selections||[])this.access.reference(ref,pid,sid,requestId);
@@ -865,7 +875,8 @@ export class MemoryStore {
     result.estimatedTokens = estimateMemoryTokens(result.text);
     return result;
   }
-  validateSnapshot(pid:string,sid:string,provider:MemoryProvider,context:MemoryContext):void {
+  validateSnapshot(pid:string,sid:string,provider:MemoryProvider,context:MemoryContext):void {return this.withScope(()=>this.validateSnapshotInside(pid,sid,provider,context));}
+  private validateSnapshotInside(pid:string,sid:string,provider:MemoryProvider,context:MemoryContext):void {
     const scope=this.resolver?.resolve(pid,sid||undefined);
     if(context.scope&&(context.scope.spaceId!==scope?.spaceId||context.scope.membershipRevision!==scope?.membershipRevision))throw new MemoryReferenceConflict('Project membership changed; review a continuation');
     const refs=this.access.references(pid,sid,context.requestId);

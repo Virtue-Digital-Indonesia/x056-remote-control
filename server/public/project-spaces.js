@@ -28,14 +28,14 @@ window.createProjectSpaces = function (engine, room, chat) {
   function mount() {
     if (mounted) return; mounted = true;
     $('crBoardTab').insertAdjacentHTML('beforebegin', link('/projects', icon('folder') + '<span>Projects</span>', 'rc-project-nav-link'));
-    document.querySelector('.rc-project-nav-link').id = 'crSpacesTab';
+    document.querySelector('.rc-project-nav-link').id = 'crSpacesTab';$('crSpacesTab').hidden=!enabled;
     const panel = document.createElement('section'); panel.id = 'rcProjectPage'; panel.className = 'cr-page'; panel.hidden = true; $('crWorkspace').append(panel);
     const context = document.createElement('div'); context.id = 'rcProjectContext'; context.hidden = true;
     document.querySelector('.composer-wrap').prepend(context);
     $('crBoardTab').innerHTML = icon('menu') + '<span>Work</span>';
     const work = document.createElement('a'); for (const attr of $('crBoardTab').attributes) work.setAttribute(attr.name, attr.value);
     work.href = '/work'; work.dataset.spaceLink = ''; work.innerHTML = $('crBoardTab').innerHTML; $('crBoardTab').replaceWith(work);
-    room.refresh(); updateChatFilter();
+    room.refresh(); if(enabled)updateChatFilter();
   }
   function restoreMemory() { const memory = $('crMemory'); if (memory && memory.parentNode !== $('crWorkspace')) $('crWorkspace').append(memory); }
   function leave() {
@@ -47,14 +47,13 @@ window.createProjectSpaces = function (engine, room, chat) {
     if (url.startsWith('/chat')) { leave(); return chat?.navigate(url); }
     return route();
   }
-  async function load() { const result = await request('/api/project-spaces'); projects = result.projects || []; registryRevision = result.revision; topology = result.topology; if(mounted)updateChatFilter(); return result; }
+  async function load() { const result = await request('/api/project-spaces'); projects = result.projects || []; registryRevision = result.revision; topology = result.topology; if(mounted&&enabled)updateChatFilter(); return result; }
   function updateChatFilter() {
     if(!$('rcChatSearch'))return; let select=$('rcChatProjectFilter');
     if(!select){select=document.createElement('select');select.id='rcChatProjectFilter';select.setAttribute('aria-label','Filter chats by project');$('rcChatSearch').after(select);select.onchange=()=>chat.refresh();}
     const selected=select.value;select.innerHTML='<option value="">All Chat</option><option value="standalone">Standalone Chat</option>'+projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');select.value=selected;chat.refresh();
   }
   async function route() {
-    if (!enabled) return;
     const version = ++generation, url = location.pathname;
     if (!handles(url)) { leave(); updateContext(); return; }
     navigating = true;
@@ -72,6 +71,7 @@ window.createProjectSpaces = function (engine, room, chat) {
         } else { await engine.reloadProjects(); if(segments[1]&&!engine.state().projects.some(p=>p.id===segments[1]&&p.kind!=='chat'))throw new Error('Work project unavailable'); room.showBoard(); room.selectWorkScope(segments[1] || ''); $('crBoardTab').setAttribute('aria-current', 'page'); }
         return;
       }
+      if(!enabled)throw new Error('Project spaces are disabled. Existing Work and Chat remain available.');
       room.showBoard(); document.body.classList.add('rc-spaces-view'); $('rcProjectPage').hidden = false;
       $('crSpacesTab').setAttribute('aria-current', 'page'); $('crBoardTab').removeAttribute('aria-current');
       $('rcProjectPage').innerHTML = '<p class="cr-empty" role="status">Loading Project…</p>';
@@ -79,7 +79,8 @@ window.createProjectSpaces = function (engine, room, chat) {
       activeId = segments[1] || ''; activeTab = segments[2] || 'chat';if($('crBreadcrumb'))$('crBreadcrumb').innerHTML=link('/projects','Projects')+' <span>/ '+esc(projects.find(p=>p.id===activeId)?.name||'All projects')+'</span>';room.refresh();
       if (!activeId) renderList();
       else {
-        const project = projects.find(p => p.id === activeId);
+        let project = projects.find(p => p.id === activeId);
+        if(!project){project=await request(base(activeId));if(generation!==version)return;activeId=project.id;history.replaceState({},'',path(activeId,activeTab));}
         if (!project) throw new Error('Project unavailable');
         if (!['chat', 'work', 'files', 'memory', 'settings'].includes(activeTab)) throw new Error('Project page unavailable');
         if (segments.length === 2) history.replaceState({}, '', path(activeId));
@@ -88,7 +89,7 @@ window.createProjectSpaces = function (engine, room, chat) {
       $('rcProjectPage').querySelector('h1')?.focus({ preventScroll: true });
     } catch (error) {
       room.showBoard(); document.body.classList.add('rc-spaces-view'); $('rcProjectPage').hidden = false;
-      $('rcProjectPage').innerHTML = `<div class="cr-empty" role="alert"><h1 tabindex="-1">Page unavailable</h1><p>${esc(error.message)}</p>${link('/projects', 'Open Projects', 'cr-secondary')}</div>`;
+      $('rcProjectPage').innerHTML = `<div class="cr-empty" role="alert"><h1 tabindex="-1">Page unavailable</h1><p>${esc(error.message)}</p>${link(enabled?'/projects':'/work',enabled?'Open Projects':'Open Work','cr-secondary')}</div>`;
     } finally { navigating = false; updateContext(); }
   }
   function renderList() {
@@ -322,7 +323,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   async function reviewQueue(id, item, after) {
     await engine.reloadProjects();const p=engine.state().projects.find(p=>p.id===id),context=await request('/api/project-spaces/context/'+encodeURIComponent(id)+'/'+encodeURIComponent(item.sessionId)),parent=projects.find(x=>x.id===context.spaceId);
     const d=dialog('Review waiting message',`<form class="workspace-form"><p>${esc(item.contextReview.reason)}. Future turns use ${esc(parent?.name||'local conversation')} memory. Earlier context remains in provider history.</p><button type="button" class="cr-secondary" data-context>Inspect memory context</button><label>Message<textarea name="text" rows="6" required>${esc(item.text)}</textarea></label><fieldset><legend>Keep these saved versions</legend>${(item.fileRefs||[]).map((ref,i)=>`<label class="workspace-check"><input type="checkbox" data-ref="${i}" checked><span>${esc(ref.name||ref.fileId)} · ${esc(ref.versionId)}</span></label>`).join('')||'<p>No attached files.</p>'}</fieldset><p>Uncheck files from a previous Project to remove them. Remaining attachments are checked before dispatch.</p><p role="alert"></p><button class="cr-primary">Save review and resume</button></form>`);
-    d.querySelector('[data-context]').onclick=()=>room.memoryContext({projectId:id,sessionId:item.sessionId});const form=d.querySelector('form');
+    d.querySelector('[data-context]').onclick=()=>room.memoryContext({projectId:id,sessionId:item.sessionId,requestId:item.requestId});const form=d.querySelector('form');
     form.onsubmit=async e=>{e.preventDefault();form.querySelector('.cr-primary').disabled=true;try{const fileRefs=[...form.querySelectorAll('[data-ref]:checked')].map(x=>item.fileRefs[Number(x.dataset.ref)]);await request(base(id)+'/queue/'+item.id+'/review',{expectedMembershipRevision:context.membershipRevision,review:{expectedText:item.text,text:form.elements.text.value,fileRefs}});d.close();after();}catch(e){form.querySelector('[role=alert]').textContent=e.message;}finally{form.querySelector('.cr-primary').disabled=false;}};
   }
   async function resumeAutopilot(id,sid,after) {
@@ -392,7 +393,7 @@ window.createProjectSpaces = function (engine, room, chat) {
     const move = host.querySelector('[data-membership]'); if (move) move.onclick = () => membershipDialog(p);
   }
   document.addEventListener('click', event => {
-    if (!enabled || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (!mounted || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const a = event.target.closest('a[data-space-link]'); if (!a) return;
     event.preventDefault(); a.closest('dialog')?.close(); navigate(new URL(a.href).pathname);
   });
@@ -401,13 +402,13 @@ window.createProjectSpaces = function (engine, room, chat) {
     if (event.target.closest('a[data-chat-link]')) leave();
     if (event.target.closest('.cr-primary-nav button, #crHome, #focusHome, #focusBack')) { history.pushState({}, '', '/work'); leave(); }
   }, true);
-  window.addEventListener('popstate', () => { if (enabled) route(); });
+  window.addEventListener('popstate', () => { if (mounted) route(); });
   document.addEventListener('x056:state', updateContext);
   document.addEventListener('x056:event',event=>{if(enabled&&event.detail.kind==='projects')load().then(()=>{updateContext();room.refresh();}).catch(e=>room.notify(e.message));});
   document.addEventListener('x056:mode', () => setTimeout(updateContext, 0));
   return {
     enabled: () => enabled, list:()=>projects, scopeOf, handles, navigate, newWork:pid=>{const execution=engine.state().projects.find(p=>p.id===pid);if(execution?.cwd)newConversation(projects.find(p=>p.id===execution.workSpaceId),'work',pid);}, createFromWork:pid=>createProject(pid), newProject:()=>createProject(), membershipDialog, conversationPath, reviewQueue, resumeAutopilot, shareChatFile, importArtifact,
     openConversation: (pid, sid) => { const p = engine.state().projects.find(p => p.id === pid); if (p) return navigate(conversationPath(p, sid)); },
-    init: async () => { try { const data = await load(); enabled = data.enabled; if (enabled) { mount(); await route(); updateContext(); } } catch (error) { room.notify(error.message); } },
+    init: async () => { try { const data = await load(); enabled = data.enabled; mount(); await route(); updateContext(); } catch (error) { room.notify(error.message); } },
   };
 };

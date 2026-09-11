@@ -33,7 +33,7 @@ Baseline checks passed before runtime edits: 866 tests across 79 files in 169.34
 | 3. Integration UI | Complete; two browser workflows, 24 focused tests, and typecheck passed |
 | 4. Memory scope and sharing | Complete; scope, grant, reference, handoff, MCP, and browser checks passed |
 | 5. File sources | Complete; document extraction, citations, access, restart, and browser checks passed |
-| 6. Release preparation | In progress |
+| 6. Release preparation | Complete; full tests, document checks, browser checks, and recovery rehearsal passed |
 
 No new production migration or deployment is authorized by this implementation request. Use isolated state for write tests. Continue until the requested implementation and local acceptance are complete; retain any remaining live-provider checks explicitly.
 
@@ -98,3 +98,63 @@ Memory Sources now supports upload, saved-file selection, progress, cancellation
 Validation included 55 tests across document, sharing, MCP, and migration fixtures in the final focused run. Earlier focused runs also covered existing file editing and memory contracts. Six Python document checks passed. Typecheck and script syntax checks passed. The browser workflow exercised actual DOCX uploads, cited previews, original downloads, sharing, version updates, saved-file selection, and mobile layout without JavaScript errors.
 
 Stage 6 will validate recovery after these new writes, compatible feature disable, aggregation, and the full regression suite. No production state or deployment changed.
+
+## Stage 6 evidence
+
+Reviewed file mappings now move catalog ownership without changing file IDs, versions, or original bytes. Per-file aliases preserve old download links. Original Work keeps its own file bank. Migration fingerprints include grants, references, source jobs, passages, leases, and operation receipts. A document source and its original file require matching ownership.
+
+Feature transitions retain durable receipts. Disabling Project spaces pauses inherited-context queues, autopilots, schedules, and approvals. Queue review remains available while disabled and uses the queued message's own reference set. Re-enabling requires review again. Work links remain usable while the hierarchy is disabled.
+
+Archiving original Work pauses its own conversations across every Project association. Member Chats and secondary references remain independent. Restoring Work leaves retained queues paused. Removal refuses identities still used by saved files, memory, or citations.
+
+Cost groups use exact primary conversations. The UI labels their lifetime usage under current membership. Reference links contribute no duplicate totals. New dispatch records retain execution and Space attribution. Synchronous reads share one registry snapshot within each query; no cached scope survives an asynchronous boundary.
+
+The recovery report checks typed owners, file aliases, source versions, locators, jobs, grants, references, and handoff dependencies. Startup blocks dispatch when retained relationships need repair. The backup rehearsal preserved later writes through SQLite WAL snapshots. It retained a separate newer snapshot and rejected stale leases after restore.
+
+Final validation passed 920 tests across 84 files, plus typecheck and all 10 Python document checks. Eleven browser workflows cover the original and revised interfaces. Each workflow uses fresh temporary state and records JavaScript errors. The browser checks found no JavaScript errors. Extra focused checks cover sessionless approval review after Work archive.
+
+The complete build remains on `feature/project-integration`. No production state, deployment actuator, or live-served panel was changed. Live-provider and production swap verification remain separate from this build.
+
+## Acceptance record
+
+These fixtures passed with the revised implementation. Browser fixtures use simulated providers and isolated state.
+
+| Gate | Evidence |
+| --- | --- |
+| 1. Legacy Work resumes | Manager, routing, provider session, and exact-session dispatch tests |
+| 2. Whole Work association | Registry and dispatch tests; integration browser |
+| 3. Individual Work association | Dispatch tests preserve sibling queues, tools, schedules, and leases |
+| 4. Chat association | Integration and Chat browsers retain files, drafts, uploads, history, and links |
+| 5. Inherit versus Standalone | Registry, dispatch, and integration browser checks |
+| 6. Secondary references | Registry and cost tests; grouped reference browser checks |
+| 7. Bulk race | Queue edits, new conversations, and changed schedules invalidate preview |
+| 8. Interrupted membership | Dispatch restart and migration receipt tests |
+| 9. Queues and automations | Exact targets, approvals, schedules, feature disable, and reviewed restart tests |
+| 10. Multiple repositories | Handoff and integration browser checks select an actual Work directory |
+| 11. Defaults and tools | Capability and dispatch tests cover actual account/cwd and requirement changes |
+| 12. Local memory isolation | Project memory, sharing, and provider integration tests |
+| 13. Shared retrieval | Sharing tests and browser; MCP source output contracts |
+| 14. Deliberate turn exception | Sharing browser and tests bind references to a message request |
+| 15. Revocation | Snapshot, queued handoff, reference removal, and read-access tests |
+| 16. Preview and failover | Both providers, one context budget, exact revisions, and simulated account limits |
+| 17. Document upload | Real DOCX/PDF/Markdown/text extraction; browser upload and byte checks |
+| 18. Document coverage | Tables, headings, boundaries, large sources, scans, limits, and empty extraction |
+| 19. Source restart/update | Durable worker, cancellation, retry, deduplication, and stale-publication tests |
+| 20. File ownership | Shared-file tests and browser deny writes through read grants |
+| 21. Concurrent shared files | Exact execution leases, membership changes, stale attempts, and conflicts |
+| 22. Derived memory | Upload creates no confirmed facts; source updates retain old citations and require review |
+| 23. Handoffs and messaging | Exact targets, retained versions, idempotent delivery, approvals, and hop-limit tests |
+| 24. Navigation/mobile | Eleven browser workflows include refresh, sign-in, notifications, drafts, and mobile |
+| 25. Archive and totals | Work/Space archive tests, exact cost groups, and release surface browser |
+| 26. Migrations and rollback | Production/first-build fixtures, aliases, WAL backup, later writes, and compatible disable |
+
+## Reproducing the checks
+
+```sh
+npm test
+npm run typecheck
+X056_DOCUMENT_TEST_OUTPUT=/tmp/project-document-checks /opt/rc-documents/bin/python -m unittest discover -s test/documents -p 'test_*.py'
+node scripts/check-project-integration-browsers.cjs
+```
+
+The browser runner starts and stops only its own fixture processes. It never connects to production. The [review document](2026-09-11-project-integration-review.md) includes screenshots and release limits.

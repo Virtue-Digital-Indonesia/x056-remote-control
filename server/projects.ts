@@ -468,6 +468,16 @@ export class ProjectRegistry {
       executionIds: [id, ...this.data.projects.filter(p => p.parentProjectId === id).map(p => p.id)], state: 'pending' };
     (this.data.archiveOperations ??= []).push(op); this.save(); return structuredClone(op);
   }
+  archiveWork(id:string,expectedRevision:number,operationId:string,archived:boolean):ArchiveOperation {
+    if(typeof operationId!=='string'||!/^[\w:-]{8,160}$/.test(operationId)||typeof archived!=='boolean')throw new Error('Invalid archive operation');
+    const old=this.data.archiveOperations?.find(o=>o.id===operationId);
+    if(old){if(old.projectId!==id||old.expectedRevision!==expectedRevision||old.archived!==archived)throw new ProjectConflict('operationId was used for another archive change');return structuredClone(old);}
+    const p=this.data.projects.find(p=>p.id===id);if(!p||p.kind==='chat'||!p.cwd)throw new Error('Choose an original Work project');
+    if(!Number.isInteger(expectedRevision)||(p.revision||0)!==expectedRevision)throw new ProjectConflict('Work project changed; refresh before archiving');
+    p.archivedAt=archived?Date.now():undefined;p.revision=expectedRevision+1;
+    const op:ArchiveOperation={id:operationId,projectId:id,expectedRevision,archived,executionIds:[id],state:'pending'};
+    (this.data.archiveOperations??=[]).push(op);this.save();return structuredClone(op);
+  }
   pendingArchiveOperations(): ArchiveOperation[] { return structuredClone((this.data.archiveOperations ?? []).filter(o => o.state === 'pending')); }
   completeArchiveOperation(id: string): void {
     const op = this.data.archiveOperations?.find(o => o.id === id);

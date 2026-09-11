@@ -9,7 +9,7 @@ const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(valu
 const sameIds = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 
 interface OwnedNote { id: string; revision: number; projectId?: string; sessionId?: string; scope: string }
-interface OwnedSource { id: string; projectId: string; sessionId?: string; kind: string; hash: string }
+interface OwnedSource { id: string; projectId: string; sessionId?: string; kind: string; hash: string; document?:{file:{fileId:string;ownerId:string}} }
 interface OwnedFile { id: string; chatId: string; ownerKind: string; latestVersionId: string }
 export interface SpaceMigrationCandidate {
   projectId: string; name: string; cwd?: string; archived: boolean; hasWork: boolean;
@@ -34,6 +34,9 @@ export function inspectSpaceMigration(stateDir: string) {
       const rawSources = db.prepare('SELECT data FROM memory_sources ORDER BY id').all();
       notes.push(...entries.map(row => JSON.parse(String(row.data)))); sources.push(...rawSources.map(row => JSON.parse(String(row.data))));
       storeFingerprints.push(entries, rawSources);
+      for(const table of ['memory_revisions','memory_source_versions','memory_owners','memory_grants','memory_turn_references','memory_documents','memory_extraction_jobs','memory_extraction_cache','memory_passages','memory_document_operations','memory_access_operations']){
+        if(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))storeFingerprints.push([table,db.prepare('SELECT * FROM '+table+' ORDER BY rowid').all()]);
+      }
     } finally { db.close(); }
   }
   const filesPath = join(stateDir, 'chat-files.sqlite');
@@ -42,7 +45,8 @@ export function inspectSpaceMigration(stateDir: string) {
     try {
       const hasOwnerKind = db.prepare('PRAGMA table_info(files)').all().some(c => c.name === 'ownerKind');
       files.push(...db.prepare(`SELECT id,chatId,latestVersionId,${hasOwnerKind ? 'ownerKind' : "'chat' AS ownerKind"} FROM files ORDER BY id`).all() as unknown as OwnedFile[]);
-      storeFingerprints.push(files, db.prepare('SELECT id,fileId,hash FROM versions ORDER BY id').all());
+      storeFingerprints.push(files, db.prepare('SELECT * FROM versions ORDER BY id').all());
+      for(const table of ['file_owner_aliases','operations','checkouts','shared_leases','file_refs','epochs','execution_attempts'])if(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))storeFingerprints.push([table,db.prepare('SELECT * FROM '+table+' ORDER BY rowid').all()]);
     } finally { db.close(); }
   }
   const candidates: SpaceMigrationCandidate[] = projects.filter(p => p.kind !== 'chat' && !Object.hasOwn(state.aliases, p.id)).map(p => {
@@ -66,6 +70,10 @@ export function inspectSpaceMigration(stateDir: string) {
     requiresReview: candidates.some(c => c.requiresMapping), counts: { projects: projects.length, spaces: state.spaces.length, notes: notes.length, sources: sources.length, files: files.length } };
 }
 
+function sourcesForMigration(stateDir:string,ids:string[]):OwnedSource[]{
+  if(!ids.length||!existsSync(join(stateDir,'memory.sqlite')))return [];
+  const db=new DatabaseSync(join(stateDir,'memory.sqlite'),{readOnly:true});try{return ids.map(id=>db.prepare('SELECT data FROM memory_sources WHERE id=?').get(id)).filter(Boolean).map(row=>JSON.parse(String(row!.data)));}finally{db.close();}
+}
 export function applySpaceMigration(stateDir: string, plan: SpaceMigrationPlan) {
   const registry = new ProjectSpaceRegistry(stateDir, () => ProjectRegistry.load(join(stateDir, 'projects.json')).list());
   // A completed or interrupted migration reuses its exact persisted intent even
@@ -85,6 +93,7 @@ export function applySpaceMigration(stateDir: string, plan: SpaceMigrationPlan) 
       if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping) || !sameIds(Object.keys(mapping), ids)) throw new Error('Review every ambiguous memory and source owner explicitly');
       for (const owner of Object.values(mapping)) if (!owner || (owner.kind === 'space' ? owner.id !== input.spaceId : owner.kind !== 'execution' || owner.id !== candidate.projectId)) throw new Error('A migration cannot share ownership with an unrelated Project');
     }
+    for(const source of sourcesForMigration(stateDir,candidate.sourceIds)){if(source.document){const fileOwner=input.fileIds?.includes(source.document.file.fileId)?input.spaceId:source.document.file.ownerId;if(input.sourceOwners[source.id].id!==fileOwner)throw new Error('Review matching ownership for the document source and original file');}}
     if (!Array.isArray(input.fileIds) || !sameIds(input.fileIds, candidate.fileIds)) throw new Error('Preserve every existing Project file in its reviewed Space');
   }
   if (report.candidates.some(c => c.requiresMapping && !imported.has(c.projectId))) throw new Error('Review all first-build Projects before applying migration');
