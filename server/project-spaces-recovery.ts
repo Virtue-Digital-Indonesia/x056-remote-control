@@ -20,7 +20,10 @@ function entries(root: string, name: string): SnapshotFile[] {
   return [{ path: name, hash: hash(readFileSync(full)), bytes: stat.size }];
 }
 function inventory(root: string, wal: boolean): SnapshotFile[] {
-  return [...JSON_FILES, ...DIRECTORIES, ...DATABASES, ...(wal ? DATABASES.map(p => p + '-wal') : [])].flatMap(p => entries(root, p)).sort((a,b) => a.path.localeCompare(b.path));
+  return [...JSON_FILES, ...DIRECTORIES, ...DATABASES, ...(wal ? DATABASES.map(p => p + '-wal') : [])].flatMap(p => entries(root, p))
+    // Opening an offline WAL database may create an empty WAL. It contains no
+    // frames and is not a source write; committed pages still change its hash.
+    .filter(e => !(DATABASES.some(db => e.path === db + '-wal') && e.link === undefined && (e.bytes ?? 0) <= 32)).sort((a,b) => a.path.localeCompare(b.path));
 }
 function checkPath(path: string) {
   if (path !== relative('.', path) || path.startsWith('..') || path.startsWith(sep)) throw new Error('Invalid backup path');

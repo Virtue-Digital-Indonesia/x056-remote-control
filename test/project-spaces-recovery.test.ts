@@ -19,6 +19,41 @@ function fixture() {
   return { root, stateDir, options, m, parent, chat };
 }
 describe('Project spaces backup, rollback and repair reports', () => {
+  it('migrates a populated legacy file catalog and restores its schema-1 snapshot without discarding the later snapshot', async () => {
+    const f = fixture(), path = join(f.chat.cwd, 'legacy.txt'); writeFileSync(path, 'Legacy original');
+    const [file] = await f.m.files().upload(f.chat.id, 'legacy-upload-0001', [{ path, name: 'legacy.txt' }]);
+    writeFileSync(join(f.stateDir, 'artifacts', 'notes-wal'), 'Keep me');
+    const checkout = f.m.files().checkout(f.chat.id, { fileId: file.id, versionId: file.latestVersionId });
+    f.m.onModuleDestroy();
+    // Materialize the deployed schema-1 layout with populated records. Every
+    // removed column/table is additive in schema 2; original rows remain.
+    const db = new DatabaseSync(join(f.stateDir, 'chat-files.sqlite'));
+    db.exec('DROP TABLE shared_leases; DROP TABLE execution_attempts;');
+    for (const column of ['ownerKind','sourceOwnerId','sourceFileId','sourceVersionId','sourceArtifactId']) db.exec('ALTER TABLE files DROP COLUMN ' + column);
+    for (const column of ['sourceProjectId','sourceSessionId']) db.exec('ALTER TABLE versions DROP COLUMN ' + column);
+    db.exec('PRAGMA user_version=1'); db.close();
+    const registryPath = join(f.stateDir, 'projects.json'), registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+    delete registry.spacesVersion;
+    for (const p of registry.projects) { delete p.parentProjectId; delete p.membershipRevision; delete p.revision; if (p.kind !== 'chat') p.cwd = f.root; }
+    writeFileSync(registryPath, JSON.stringify(registry));
+    const oldSnapshot = join(f.root, 'schema-one'); await backupProjectSpaces(f.stateDir, oldSnapshot, true);
+    expect(readFileSync(join(oldSnapshot, 'artifacts', 'notes-wal'), 'utf8')).toBe('Keep me');
+    const upgraded = new SessionManager(f.options); managers.push(upgraded);
+    expect(upgraded.chat(f.chat.id)).toMatchObject({ id: f.chat.id, cwd: f.chat.cwd, lastSessionId: f.chat.lastSessionId });
+    expect(upgraded.chat(f.chat.id).parentProjectId).toBeUndefined();
+    expect(upgraded.files().list(f.chat.id)[0]).toMatchObject({ id: file.id, ownerKind: 'chat', latestVersionId: file.latestVersionId });
+    expect(readFileSync(upgraded.files().version(f.chat.id, { fileId: file.id, versionId: file.latestVersionId }).path, 'utf8')).toBe('Legacy original');
+    await expect(upgraded.files().commit(f.chat.id, file.id, { checkoutToken: checkout.token, expectedBaseVersionId: file.latestVersionId, operationId: 'legacy-stale-0001' })).rejects.toThrow();
+    const later = upgraded.memory().create({ projectId: f.chat.id, title: 'Later write', content: 'Retain across rollback', status: 'confirmed' });
+    const newSnapshot = join(f.root, 'schema-two'); await backupProjectSpaces(f.stateDir, newSnapshot, true);
+    upgraded.onModuleDestroy(); upgraded.memory().close();
+    renameSync(f.stateDir, join(f.root, 'preserved-upgraded-state')); restoreProjectSpaces(oldSnapshot, f.stateDir);
+    const restored = new DatabaseSync(join(f.stateDir, 'chat-files.sqlite'), { readOnly: true });
+    expect(restored.prepare('PRAGMA user_version').get()!.user_version).toBe(1);
+    expect(restored.prepare('SELECT id,latestVersionId FROM files').get()).toMatchObject({ id: file.id, latestVersionId: file.latestVersionId }); restored.close();
+    const retained = new DatabaseSync(join(newSnapshot, 'memory.sqlite'), { readOnly: true });
+    expect(retained.prepare('SELECT id FROM memory_entries WHERE id=?').get(later.id)).toBeDefined(); retained.close();
+  });
   it('backs up WAL writes and retained originals, then restores all new data at the original state path', async () => {
     const f = fixture(), path = join(f.chat.cwd, 'proposal.txt'); writeFileSync(path, 'Exact original bytes');
     const [file] = await f.m.files().upload(f.chat.id, 'backup-upload-0001', [{ path, name: 'proposal.txt' }]);
