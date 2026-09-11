@@ -4,10 +4,11 @@ const { backup, DatabaseSync } = createRequire(import.meta.url)('node:sqlite') a
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { ProjectRegistry } from './projects.js';
+import { ProjectSpaceRegistry } from './project-space-registry.js';
 
-const JSON_FILES = ['projects.json','state.json','accounts.json','queues.json','autopilot.json','cron.json','questions.json','artifacts.json','conversation-routing.json','routing-history.json','provider-handoffs.json','project-handoffs.json','chat-requirements.json','message-receipts.json'];
+const JSON_FILES = ['projects.json','project-spaces.json','project-space-migration.json','state.json','accounts.json','queues.json','autopilot.json','cron.json','questions.json','artifacts.json','conversation-routing.json','routing-history.json','provider-handoffs.json','project-handoffs.json','chat-requirements.json','message-receipts.json'];
 const DATABASES = ['chat-files.sqlite','memory.sqlite'];
-const DIRECTORIES = ['artifacts','chats','project-files'];
+const DIRECTORIES = ['artifacts','chats','project-files','memory-extractions'];
 interface SnapshotFile { path: string; hash?: string; link?: string; bytes?: number }
 interface Snapshot { schemaVersion: 1; createdAt: string; source: string; files: SnapshotFile[]; databases: string[] }
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
@@ -87,7 +88,13 @@ export function restoreProjectSpaces(snapshotPath: string, output: string): Snap
  * to discard history or infer memberships from directory names. */
 export function projectSpacesRecoveryReport(state: string) {
   const registry = ProjectRegistry.load(join(state, 'projects.json')), projects = registry.list(), ids = new Set(projects.map(p => p.id));
+  const spaces = new ProjectSpaceRegistry(state, () => projects).snapshot();
+  const ownerIds = new Set([...ids, ...spaces.spaces.map(s => s.id)]);
   const issues: { store: string; id: string; reason: string }[] = [];
+  for (const binding of Object.values(spaces.bindings)) {
+    const ref = binding.target, target = projects.find(p => p.id === ref.projectId);
+    if (!target || (ref.kind === 'work-conversation' && !target.conversations?.some(c => c.sessionId === ref.sessionId))) issues.push({ store: 'spaces', id: ref.projectId, reason: 'Membership execution unavailable' });
+  }
   const counts = { files: 0, versions: 0, memories: 0, queues: 0, artifacts: 0 };
   const checkSession = (pid: string, sid?: string) => ids.has(pid) && (!sid || projects.find(p => p.id === pid)?.conversations?.some(c => c.sessionId === sid));
   const readJSON = (name: string, fallback: any) => existsSync(join(state, name)) ? JSON.parse(readFileSync(join(state, name), 'utf8')) : fallback;
@@ -98,7 +105,7 @@ export function projectSpacesRecoveryReport(state: string) {
       counts.files = Number(catalog.prepare('SELECT count(*) n FROM files').get()!.n); counts.versions = Number(catalog.prepare('SELECT count(*) n FROM versions').get()!.n);
       for (const row of catalog.prepare('PRAGMA foreign_key_check').all()) issues.push({ store: 'files', id: String(row.rowid), reason: 'Broken database reference' });
       for (const row of catalog.prepare('SELECT id,chatId,latestVersionId FROM files').all()) {
-        if (!ids.has(String(row.chatId))) issues.push({ store: 'files', id: String(row.id), reason: 'Owner unavailable' });
+        if (!ownerIds.has(String(row.chatId))) issues.push({ store: 'files', id: String(row.id), reason: 'Owner unavailable' });
         if (!catalog.prepare('SELECT id FROM versions WHERE id=? AND fileId=?').get(row.latestVersionId!, row.id!)) issues.push({ store: 'files', id: String(row.id), reason: 'Latest version unavailable' });
       }
       for (const v of catalog.prepare('SELECT id,blob,hash FROM versions').all()) {
@@ -120,5 +127,5 @@ export function projectSpacesRecoveryReport(state: string) {
     }
   } finally { memory?.close(); }
   for (const row of readJSON('artifacts.json', [])) { counts.artifacts++; if (!ids.has(row.projectId)) issues.push({ store: 'artifacts', id: row.id, reason: 'Source Project unavailable' }); }
-  return { registry: registry.migrateSpaces(), counts, issues, ready: !issues.length && !registry.migrateSpaces().invalidParents.length };
+  return { registry: registry.migrateSpaces(), spaces: { count: spaces.spaces.length, revision: spaces.revision, pendingOperations: spaces.operations.filter(o => o.state === 'pending').map(o => o.id) }, counts, issues, ready: !issues.length && !registry.migrateSpaces().invalidParents.length };
 }

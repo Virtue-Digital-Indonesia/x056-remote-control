@@ -28,11 +28,21 @@ Baseline checks passed before runtime edits: 866 tests across 79 files in 169.34
 | Stage | State |
 | --- | --- |
 | 0. Baseline and dependency audit | Complete; 866 baseline tests and typecheck passed |
-| 1. Contracts and migration | In progress |
-| 2. Membership and dispatch | Pending |
+| 1. Contracts and migration | Complete foundation; 23 focused checks and typecheck passed |
+| 2. Membership and dispatch | Next |
 | 3. Integration UI | Pending |
 | 4. Memory scope and sharing | Pending |
 | 5. File sources | Pending |
 | 6. Release preparation | Pending |
 
 No new production migration or deployment is authorized by this implementation request. Use isolated state for write tests. Continue until the requested implementation and local acceptance are complete; retain any remaining live-provider checks explicitly.
+
+## Stage 1 evidence
+
+The separate registry implements whole Work associations, individual overrides, explicit Standalone, reference links, per-conversation generations, and durable mutation receipts. Preview hashes include execution topology, so a new conversation invalidates stale review. Archive resolves effective primary members only.
+
+Migration reports distinguish legacy production from first-build state. Reviewed mappings preserve original execution records and file/note/source identities. The registry retains ownership overrides for the later memory and file integration stages. Ambiguous notes require explicit ownership choices. Archived and empty first-build Projects have fixtures.
+
+The recovery inventory now includes the Space registry, migration record, and retained extraction directory. Snapshot restoration preserves mapping receipts and extraction bytes. The new context resolver path separates `spaceId` from the original Work execution; runtime integration follows in Stage 2.
+
+Validation: 23 tests passed across the new registry/migration fixtures and existing recovery/memory tests. Typecheck passed. No production state changed.
