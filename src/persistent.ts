@@ -163,6 +163,16 @@ export class PersistentTurns {
 
   workingAccounts(): {sessionId:string;configDir:string}[] {return [...this.live.values()].filter(e=>this.working(e)&&e.opts).map(e=>({sessionId:e.sessionId,configDir:e.opts!.configDir}));}
 
+  /** Reload provider configuration on the next turn without interrupting work. */
+  retireIdleSession(sessionId: string): boolean {
+    let pending = false;
+    for (const entry of [...this.live.values()].filter(e => e.sessionId === sessionId)) {
+      if (this.working(entry)) pending = true;
+      else this.destroy(entry);
+    }
+    return !pending;
+  }
+
   /**
    * Write a user message into a conversation's live process WITHOUT waiting for
    * its turn to end. Verified against CLI 2.1.258: a second user line on stdin

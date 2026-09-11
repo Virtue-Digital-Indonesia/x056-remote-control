@@ -1,4 +1,7 @@
 import { MemoryController } from './memory.controller.js';
+import { ChatsController } from './chats.controller.js';
+import { FilesController } from './files.controller.js';
+import { ChatCapabilities } from './chat-capabilities.js';
 import { TitlesController } from './titles.controller.js';
 import type { TitleGenerator } from './title-generator.js';
 import { WorkspaceController } from './workspace.controller.js';
@@ -43,6 +46,7 @@ function buildMcpWiring(cfg: GatewayConfig): TurnOptions['mcp'] {
 }
 
 export interface GatewayConfig {
+  chatEnabled?: boolean;
   titleGenerator?: TitleGenerator;
   token: string;
   stateDir: string;
@@ -60,6 +64,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // Declared before the manager so the onAccountAdded hook can reach it.
   let provisioner: AccountProvisioner;
   const manager = new SessionManager({
+    chatEnabled: cfg.chatEnabled,
     titleGenerator: cfg.titleGenerator,
     stateDir: cfg.stateDir,
     workspaceRoot: cfg.workspaceRoot,
@@ -110,6 +115,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
     claudePath: cfg.claudePath,
     accounts: McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json')),
   });
+  manager.setChatCapabilities(new ChatCapabilities(cfg.stateDir, () => AccountRegistry.load(join(cfg.stateDir, 'accounts.json')).list(), plugins, mcpServers, cfg.claudePath));
 
   // Scheduled prompts. Delivery goes through the same path a cross-conversation
   // send uses, so a job firing at a conversation that is mid-turn queues behind
@@ -137,7 +143,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   );
 
   @Module({
-    controllers: [MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController],
+    controllers: [FilesController, ChatsController, MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController],
     providers: [
       { provide: SessionManager, useValue: manager },
       { provide: PUSH_SERVICE, useValue: push },

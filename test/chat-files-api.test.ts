@@ -1,0 +1,42 @@
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { INestApplication } from '@nestjs/common';
+import { createApp } from '../server/main.js';
+import { SessionManager } from '../server/manager.js';
+
+const TOKEN = 'chat-test-token-01234567890123456789';
+let app: INestApplication, base: string;
+const headers = { Authorization: `Bearer ${TOKEN}` };
+const json = (path: string, body?: unknown) => fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+beforeAll(async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rc-chat-api-'));
+  mkdirSync(join(dir, 'workspace'));
+  app = await createApp({ token: TOKEN, stateDir: join(dir, 'state'), workspaceRoot: join(dir, 'workspace'), chatEnabled: true });
+  await app.listen(0); base = await app.getUrl();
+});
+afterAll(async () => { await app?.close(); });
+describe('Chat files HTTP', () => {
+  it('streams upload/download with authentication, range requests, Unicode names, and idempotency', async () => {
+    const chat = await (await json('/api/chats', { requestId: 'api-chat-0001' })).json();
+    const form = () => { const f = new FormData(); f.append('files', new Blob(['Proposal bytes']), '提案.txt'); return f; };
+    const upload = () => fetch(base + '/api/chats/' + chat.id + '/files', { method: 'POST', headers: { ...headers, 'x-upload-id': 'api-upload-0001' }, body: form() });
+    const first = await upload(); expect(first.status).toBe(201);
+    const { files } = await first.json(); expect(files[0].name).toBe('提案.txt');
+    expect((await (await upload()).json()).files[0].id).toBe(files[0].id);
+    const url = `/api/chats/${chat.id}/files/${files[0].id}/versions/${files[0].latestVersionId}/download`;
+    expect((await fetch(base + url)).status).toBe(401);
+    const full = await json(url); expect(await full.text()).toBe('Proposal bytes');
+    expect(full.headers.get('content-disposition')).toContain(encodeURIComponent('提案.txt'));
+    const range = await fetch(base + url, { headers: { ...headers, Range: 'bytes=0-3' } });
+    expect(range.status).toBe(206); expect(await range.text()).toBe('Prop');
+    const other = await (await json('/api/chats', { requestId: 'api-chat-0002' })).json();
+    expect((await json(url.replace(chat.id, other.id))).status).toBe(404);
+    const queued = { projectId: chat.id, sessionId: chat.lastSessionId, requestId: 'api-queue-message-0001', paused: true, fileRefs: [{ fileId: files[0].id, versionId: files[0].latestVersionId }] };
+    const sent = await json('/api/queue', queued); expect(sent.status, await sent.clone().text()).toBe(200);
+    const repeat = await json('/api/queue', queued); expect(repeat.status).toBe(200);
+    const items = app.get(SessionManager).queues()[chat.id]; expect(items).toHaveLength(1); expect(items[0].fileRefs).toEqual(queued.fileRefs);
+    expect(items[0].text).toBe('Use the attached files.');
+  });
+});

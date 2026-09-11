@@ -79,6 +79,18 @@ export class ArtifactStore {
   list(): Artifact[] {
     return this.all().filter((x) => !x.removed);
   }
+  /** Internal file-catalog bridge. The catalog has already validated and synced
+   * the blob; public add() continues to require an allowed source path. */
+  registerRetained(input: Pick<Artifact, 'projectId' | 'sessionId' | 'title' | 'mime' | 'size'> & { file: string }): Artifact {
+    if (!/^[a-f0-9]{64}\.[a-z0-9]{1,12}$/.test(input.file)) throw new Error('Invalid retained blob');
+    const path = join(this.state, 'artifacts', input.file);
+    if (realpathSync(path) !== join(realpathSync(this.state), 'artifacts', input.file) || !statSync(path).isFile() || statSync(path).size !== input.size) throw new Error('Retained blob is missing or damaged');
+    const all = this.all();
+    const previous = all.find(a => a.projectId === input.projectId && a.sessionId === input.sessionId && a.file === input.file && a.title === input.title);
+    if (previous) return this.reuse(previous, 'manual', all);
+    const item: Artifact = { ...input, id: randomUUID(), at: new Date().toISOString(), source: 'manual', kind: input.mime?.startsWith('image/') ? 'image' : 'file' };
+    all.unshift(item); writeState(this.file, all); return item;
+  }
   private reuse(item: Artifact, source: Artifact['source'], all: Artifact[]): Artifact {
     if (item.removed && source === 'manual') {
       delete item.removed;

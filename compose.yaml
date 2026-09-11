@@ -26,6 +26,7 @@ services:
       # so file mode does not help.
       X056_WORKSPACE_ROOT: ${X056_WORKSPACE_ROOT:?set it in .env — the default was one instance's whole repo tree, including its .env and X056_TOKEN}
       X056_STATE_DIR: /app/state
+      X056_CHAT_ENABLED: ${X056_CHAT_ENABLED:-0}
       # Panel HTML is bind-mount live-served (UI edits appear on refresh, no rebuild).
       X056_PANEL_PATH: ${X056_PANEL_PATH:?set it in .env — point it at THIS checkout, or /app/server/public/panel.html to serve the baked copy}
       PORT: "4056"

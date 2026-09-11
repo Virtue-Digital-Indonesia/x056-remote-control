@@ -1,4 +1,5 @@
 import { findMessageReply } from './message-reply.js';
+import type { FileReference } from './file-store.js';
 import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { SessionTimerReader } from './session-timers.js';
 import type { Project } from './projects.js';
@@ -91,6 +92,7 @@ function saveAttachment(stateDir: string, dataUrl: string, name?: string): { pat
 interface Attachment { name?: string; data: string } // data = base64 data URL
 
 interface SendBody {
+  fileRefs?: FileReference[];
   account?: string;
   useReserve?: boolean;
   requestId?: string;
@@ -111,7 +113,7 @@ interface SendBody {
 
 /** True if the body carries at least one attachment (new or legacy). */
 function hasAttachments(body: SendBody): boolean {
-  return !!(body?.attachments?.length || body?.images?.length || body?.image);
+  return !!(body?.fileRefs?.length || body?.attachments?.length || body?.images?.length || body?.image);
 }
 
 // NB: this project runs under tsx (esbuild), which does not implement
@@ -226,6 +228,9 @@ export class ApiController {
    *  can Read any file (text, code, PDFs, images, …), so every attachment — not
    *  just images — is saved and handed over by path. */
   private composePrompt(body: SendBody): { prompt: string; opts: TurnRunOptions } {
+    if (body.projectId && this.manager.listProjects().projects.find(p => p.id === body.projectId)?.kind === 'chat' && (body.attachments?.length || body.images?.length || body.image)) throw new BadRequestException('Upload Chat files first, then send their saved version references');
+    if (body.fileRefs !== undefined && (!Array.isArray(body.fileRefs) || !body.projectId || !body.sessionId)) throw new BadRequestException('File references require a Chat conversation');
+    if (body.fileRefs?.length) this.manager.files().references(body.projectId!, body.sessionId!, body.fileRefs, body.requestId);
     if(body.account!==undefined&&typeof body.account!=='string')throw new BadRequestException('Invalid account');
     if(body.useReserve!==undefined&&typeof body.useReserve!=='boolean')throw new BadRequestException('Invalid reserve preference');
     let prompt = body.prompt ?? '';
@@ -250,7 +255,7 @@ export class ApiController {
     // it into the command's arguments and break the invocation.
     const isSlashCommand = (body.prompt ?? '').trimStart().startsWith('/');
     if (body.interactive !== false && !isSlashCommand) prompt = withAskInstructions(prompt);
-    return { prompt, opts: { model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve } };
+    return { prompt, opts: { fileRefs: body.fileRefs, requestId: body.requestId, model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve } };
   }
 
   @Post('sessions')
@@ -268,7 +273,7 @@ export class ApiController {
 
   @Post('sessions/current/messages')
   continueSession(@Body() body: SendBody): {sessionId:string}|DeliveryReceipt {
-    if(body.requestId)return this.deliveryOnce(body,()=>{try{return this.continueSession({...body,requestId:undefined});}catch(e){if(e instanceof ConflictException)return {...this.enqueueInternal(hasAttachments(body)?{...body,prompt:this.composePrompt(body).prompt}:body),sessionId:body.sessionId};throw e;}});
+    if(body.requestId)return this.deliveryOnce(body,()=>{try{return this.continueSession({...body,requestId:undefined});}catch(e){if(e instanceof ConflictException)return {...this.enqueueInternal(body),sessionId:body.sessionId};throw e;}});
     if (!body?.prompt && !hasAttachments(body)) throw new BadRequestException('prompt or attachment required');
     try {
       const { prompt, opts } = this.composePrompt(body);
@@ -898,7 +903,7 @@ export class ApiController {
   @HttpCode(200)
   addMcpServer(@Body() body: { provider?: string; server?: McpServerSpec }) {
     const { provider, server } = this.validateMcpBody(body);
-    return this.mcpServers.add(provider, server);
+    return this.mcpServers.add(provider, server).finally(() => this.manager.refreshChatCapabilities());
   }
 
   /** Neither CLI has an edit; the manager does remove-then-add. */
@@ -906,7 +911,7 @@ export class ApiController {
   @HttpCode(200)
   updateMcpServer(@Body() body: { provider?: string; server?: McpServerSpec }) {
     const { provider, server } = this.validateMcpBody(body);
-    return this.mcpServers.update(provider, server);
+    return this.mcpServers.update(provider, server).finally(() => this.manager.refreshChatCapabilities());
   }
 
   @Post('mcp/servers/remove')
@@ -915,7 +920,7 @@ export class ApiController {
     const provider = body?.provider === 'codex' ? 'codex' : 'claude';
     const name = (body?.name ?? '').trim();
     if (!name) throw new BadRequestException('name required');
-    return this.mcpServers.remove(provider, name);
+    return this.mcpServers.remove(provider, name).finally(() => this.manager.refreshChatCapabilities());
   }
 
   /** Reject a half-specified server here rather than letting the CLI write a
@@ -957,35 +962,35 @@ export class ApiController {
   @HttpCode(200)
   async installPlugin(@Body() body: { plugin?: string; provider?: string }) {
     if (!body?.plugin) throw new BadRequestException('plugin required (name@marketplace)');
-    return this.plugins.install(body.plugin.trim(), body.provider === 'codex' ? 'codex' : 'claude');
+    return this.plugins.install(body.plugin.trim(), body.provider === 'codex' ? 'codex' : 'claude').finally(() => this.manager.refreshChatCapabilities());
   }
 
   @Post('plugins/uninstall')
   @HttpCode(200)
   async uninstallPlugin(@Body() body: { plugin?: string; provider?: string }) {
     if (!body?.plugin) throw new BadRequestException('plugin required');
-    return this.plugins.uninstall(body.plugin.trim(), body.provider === 'codex' ? 'codex' : 'claude');
+    return this.plugins.uninstall(body.plugin.trim(), body.provider === 'codex' ? 'codex' : 'claude').finally(() => this.manager.refreshChatCapabilities());
   }
 
   @Post('plugins/enabled')
   @HttpCode(200)
   async setPluginEnabled(@Body() body: { plugin?: string; enabled?: boolean; provider?: string }) {
     if (!body?.plugin) throw new BadRequestException('plugin required');
-    return this.plugins.setEnabled(body.plugin.trim(), !!body.enabled, body.provider === 'codex' ? 'codex' : 'claude');
+    return this.plugins.setEnabled(body.plugin.trim(), !!body.enabled, body.provider === 'codex' ? 'codex' : 'claude').finally(() => this.manager.refreshChatCapabilities());
   }
 
   @Post('plugins/marketplace/add')
   @HttpCode(200)
   async addMarketplace(@Body() body: { source?: string; provider?: string }) {
     if (!body?.source) throw new BadRequestException('source required (URL, path, or owner/repo)');
-    return this.plugins.addMarketplace(body.source.trim(), body.provider === 'codex' ? 'codex' : 'claude');
+    return this.plugins.addMarketplace(body.source.trim(), body.provider === 'codex' ? 'codex' : 'claude').finally(() => this.manager.refreshChatCapabilities());
   }
 
   @Post('plugins/marketplace/remove')
   @HttpCode(200)
   async removeMarketplace(@Body() body: { name?: string; provider?: string }) {
     if (!body?.name) throw new BadRequestException('name required');
-    return this.plugins.removeMarketplace(body.name.trim(), body.provider === 'codex' ? 'codex' : 'claude');
+    return this.plugins.removeMarketplace(body.name.trim(), body.provider === 'codex' ? 'codex' : 'claude').finally(() => this.manager.refreshChatCapabilities());
   }
 
   @Get('sessions/current/history')
@@ -1555,14 +1560,15 @@ export class ApiController {
   }
   private enqueueInternal(body:SendBody):{queued:boolean;id:string;sessionId?:string} {
     if (!body?.projectId) throw new BadRequestException('projectId required');
-    if (!body?.prompt) throw new BadRequestException('prompt required');
+    if (!body?.prompt && !hasAttachments(body)) throw new BadRequestException('prompt or attachment required');
     try {
       if (body.sessionId) {
         this.manager.clearSelfQueueStreak(body.sessionId);
         this.manager.clearRelayChain(body.sessionId);
       }
       if(body.sessionId&&!this.manager.listConversations(body.projectId).some(c=>c.sessionId===body.sessionId))throw new BadRequestException('Conversation not found');
-      const item = this.manager.enqueue(body.projectId, { text: body.prompt, model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId });
+      const prompt = body.attachments?.length || body.images?.length || body.image ? this.composePrompt(body).prompt : body.prompt ?? '';
+      const item = this.manager.enqueue(body.projectId, { text: prompt, fileRefs: body.fileRefs, model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId });
       return { queued: true, id: item.id, sessionId:item.sessionId };
     } catch (err) {
       throw new BadRequestException((err as Error).message);

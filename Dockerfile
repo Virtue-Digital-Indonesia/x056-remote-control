@@ -48,6 +48,12 @@ ENV PATH="${BUN_INSTALL}/bin:${PATH}"
 RUN curl -fsSL https://bun.sh/install | bash \
  && chmod -R a+rX "${BUN_INSTALL}"
 RUN useradd -m -u 1001 efran
+COPY skills/rc-documents/requirements.txt /tmp/rc-documents-requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libreoffice-writer=4:7.4.7-1+deb12u14 poppler-utils=22.12.0-2+deb12u3 fonts-liberation \
+ && python3 -m venv /opt/rc-documents \
+ && /opt/rc-documents/bin/pip install --no-cache-dir -r /tmp/rc-documents-requirements.txt \
+ && rm -rf /var/lib/apt/lists/* /tmp/rc-documents-requirements.txt
 USER efran
 WORKDIR /app
 COPY --chown=efran:efran package.json package-lock.json ./

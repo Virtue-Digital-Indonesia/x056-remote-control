@@ -1,4 +1,7 @@
 import { withMessageSender, type MessageSender } from '../src/message-sender.js';
+import { FileStore, type FileReference } from './file-store.js';
+import { DOCUMENT_SKILL } from './documents.js';
+import type { ChatCapabilities } from './chat-capabilities.js';
 import { toolImagePaths } from '../src/artifact-references.js';
 import { ConversationTitles, temporaryTitle } from './conversation-titles.js';
 import type { TitleGenerator } from './title-generator.js';
@@ -9,7 +12,7 @@ import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { AccountAnalytics } from '../src/account-analytics.js';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { AccountRegistry, type RoutingStrategy, type AccountRouteContext } from '../src/accounts.js';
@@ -53,6 +56,7 @@ export class RelayLimitError extends Error {
 }
 
 export interface SessionManagerOptions {
+  chatEnabled?: boolean;
   titleGenerator?: TitleGenerator;
   stateDir: string;
   workspaceRoot: string;
@@ -93,6 +97,8 @@ interface PendingLogin {
 
 /** Per-turn overrides chosen in the UI. */
 export interface TurnRunOptions {
+  fileRefs?: FileReference[];
+  requestId?: string;
   sender?: MessageSender;
   model?: string;
   effort?: string;
@@ -102,6 +108,7 @@ export interface TurnRunOptions {
 
 /** A follow-up message queued to send when the current turn completes. */
 export interface QueueItem {
+  fileRefs?: FileReference[];
   sender?: MessageSender;
   account?: string;
   useReserve?: boolean;
@@ -256,6 +263,32 @@ function defaultLoginSpawn(configDir: string, claudePath?: string): ChildProcess
 }
 
 export class SessionManager {
+  private capabilityService?: ChatCapabilities;
+  private readonly chatToolsChanged = new Set<string>();
+  refreshChatCapabilities(): void {
+    this.capabilityService?.invalidate();
+    for (const p of this.projects().list().filter(p => p.kind === 'chat')) this.chatToolsChanged.add(p.id);
+  }
+  setChatCapabilities(service: ChatCapabilities): void { this.capabilityService = service; }
+  chatCapabilities(): ChatCapabilities {
+    if (!this.capabilityService) throw new Error('Chat tool discovery is unavailable');
+    return this.capabilityService;
+  }
+  private fileStore?: FileStore;
+  files(): FileStore {
+    if (!this.chatsEnabled()) throw new Error('Chat is disabled');
+    if (!this.fileStore) {
+      this.fileStore = new FileStore(this.opts.stateDir, id => this.chat(id), (id, data) =>
+        this.emit('chat_files', { projectId: id, sessionId: this.projects().get(id)?.lastSessionId, ...data }));
+      for (const p of this.projects().list().filter(p => p.kind === 'chat')) this.fileStore.fence(p.id);
+    }
+    return this.fileStore;
+  }
+  onModuleDestroy(): void {
+    for (const run of this.runs.values()) run.control?.abort();
+    for (const pool of this.pools()) pool.shutdown();
+    this.fileStore?.close(); this.titleWorker?.close();
+  }
   private titleWorker?: ConversationTitles;
   titles(): ConversationTitles {
     return this.titleWorker ??= new ConversationTitles(this.opts.stateDir, {
@@ -360,6 +393,7 @@ export class SessionManager {
     this.loadPendingQuestions();
     this.detectOrphans();
     this.resumeAutopilots();
+    if (this.chatsEnabled()) this.files();
     if (opts.manageProcessSignals) {
       const onTerm = () => {
         this.titleWorker?.close();
@@ -641,20 +675,22 @@ export class SessionManager {
   clearSelfQueueStreak(sessionId: string): void { this.selfQueueStreak.delete(sessionId); }
 
 
-  enqueue(pid: string, item: { text: string; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
+  enqueue(pid: string, item: { text: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
-    const text = (item.text ?? '').trim();
+    const text = (item.text ?? '').trim() || (item.fileRefs?.length ? 'Use the attached files.' : '');
     if (!text) throw new Error('empty message');
     // Bind the item to a conversation: the one the panel named, else the
     // project's current one. Draining resumes THIS session, so a follow-up
     // queued in "Handoff" can never be misrouted into "Main".
     const sessionId = item.sessionId ?? proj.lastSessionId ?? this.loadState().lastSessionId;
+    if (proj.kind === 'chat' && proj.archivedAt) throw new Error('Chat is archived');
+    if (item.fileRefs?.length) this.files().references(pid, sessionId!, item.fileRefs, item.requestId);
     if (item.notBefore !== undefined && (!Number.isFinite(item.notBefore) || item.notBefore<0)) throw new Error('Invalid scheduled time');
     if (item.afterSessionId && !this.listProjects().projects.some(p=>p.conversations?.some(c=>c.sessionId===item.afterSessionId))) throw new Error('Dependency conversation not found');
     if (item.afterSessionId && item.afterSessionId === sessionId) throw new Error('A queue item cannot wait for its own conversation');
     const map = this.loadQueues();
-    const q: QueueItem = { id: randomUUID(), text, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
+    const q: QueueItem = { id: randomUUID(), text, fileRefs: item.fileRefs, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
     (map[pid] ??= []).push(q);
     this.saveQueues(map);
     this.emitQueue(pid, map);
@@ -712,7 +748,7 @@ export class SessionManager {
       try {this.saveQueues(current);} catch {return;} // Never send before the recovery marker is durable.
       if(item.requestId)this.emit('message_delivery',{requestId:item.requestId,sessionId,projectId:pid,status:'uncertain'});
       try {
-        this.continueSession(pid, sessionId, item.text, { sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve });
+        this.continueSession(pid, sessionId, item.text, { fileRefs: item.fileRefs, requestId: item.requestId, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve });
       } catch(e) {
         item.dispatching=false;item.paused=true;item.error=(e as Error).message;
         try {this.saveQueues(current);this.emitQueue(pid,current);} catch {/* Keep the durable recovery marker. */}
@@ -1256,6 +1292,63 @@ export class SessionManager {
     return proj;
   }
 
+  chatsEnabled(): boolean { return this.opts.chatEnabled ?? process.env.X056_CHAT_ENABLED === '1'; }
+
+  chat(id: string): Project {
+    if (!this.chatsEnabled()) throw new Error('Chat is disabled');
+    const p = this.projects().get(id);
+    if (!p || p.kind !== 'chat') throw new Error('unknown Chat');
+    this.resolveCwd(p.cwd, p.id);
+    return p;
+  }
+
+  createChat(input: { requestId: string; name?: string; provider?: ProviderId; model?: string; effort?: string; account?: string }): Project {
+    if (!this.chatsEnabled()) throw new Error('Chat is disabled');
+    if (typeof input.requestId !== 'string' || !/^[\w-]{8,128}$/.test(input.requestId)) throw new Error('A stable requestId is required');
+    const provider = input.provider ?? 'claude';
+    if (provider !== 'claude' && provider !== 'codex') throw new Error('Invalid provider');
+    if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 300)) throw new Error('Invalid Chat name');
+    for (const field of ['model', 'effort', 'account'] as const) if (input[field] !== undefined && typeof input[field] !== 'string') throw new Error(`Invalid ${field}`);
+    const fingerprint = createHash('sha256').update(JSON.stringify([input.name, provider, input.model, input.effort, input.account])).digest('hex');
+    const reg = this.projects();
+    const previous = reg.list().find(p => p.kind === 'chat' && p.creationRequestId === input.requestId);
+    if (previous) {
+      if (previous.creationFingerprint !== fingerprint) throw new Error('requestId was already used for another Chat');
+      return this.chat(previous.id);
+    }
+    if (input.account && this.registry().get(input.account).provider !== provider) throw new Error('Account belongs to another provider');
+    const id = randomUUID(), sessionId = randomUUID(), name = input.name?.trim() || 'New chat';
+    const cwd = join(resolve(this.opts.stateDir), 'chats', id, 'work');
+    mkdirSync(cwd, { recursive: true });
+    // Both providers discover the same maintained document skill from the Chat CWD.
+    for (const folder of ['.agents/skills', '.claude/skills']) {
+      const skills = join(cwd, folder); mkdirSync(skills, { recursive: true });
+      symlinkSync(DOCUMENT_SKILL, join(skills, 'rc-documents'), 'dir');
+    }
+    const project = reg.createChat({ id, kind: 'chat', name, cwd, provider, creationRequestId: input.requestId, creationFingerprint: fingerprint,
+      lastSessionId: sessionId, model: input.model, effort: input.effort,
+      conversations: [{ sessionId, title: name, titleOrigin: input.name ? 'manual' : 'temporary', titleRevision: 1, createdAt: Date.now(), provider, model: input.model, effort: input.effort }] });
+    if (input.account) new RoutingState(this.opts.stateDir).set(id, sessionId, { lockedAccount: input.account });
+    this.emit('projects', { id, kind: 'chat' });
+    return project;
+  }
+
+  updateChat(id: string, patch: { name?: string; archived?: boolean }): Project {
+    const p = this.chat(id), reg = this.projects();
+    if (patch.archived !== undefined) {
+      if (typeof patch.archived !== 'boolean') throw new Error('Invalid archive state');
+      if (this.projectBusy(id) || (patch.archived && (this.queues()[id]?.length || this.hasAutopilot(p.lastSessionId!)))) throw new Error('Stop Chat and clear pending work before archiving');
+      reg.archiveChat(id, patch.archived);
+    }
+    if (patch.name !== undefined) { reg.renameConversation(id, p.lastSessionId!, patch.name); reg.rename(id, patch.name); }
+    this.emit('projects', { id, kind: 'chat' });
+    this.emitConversations(id);
+    return this.chat(id);
+  }
+  setChatReferences(id: string, references: NonNullable<Project['references']>): void {
+    this.chat(id); this.projects().setChatReferences(id, references); this.emit('projects', { id, kind: 'chat' });
+  }
+
   /** The adapter a turn runs on. Keyed by the CONVERSATION, not the project: a
    *  conversation is bound to the provider it was created with (its transcript is
    *  that CLI's format), so changing a project's provider must never re-point an
@@ -1308,6 +1401,7 @@ export class SessionManager {
   resumeExisting(projectId: string, sessionId: string): void {
     const proj = this.projects().get(projectId);
     if (!proj) throw new Error(`unknown project ${projectId}`);
+    if (proj.kind === 'chat') throw new Error('A Chat keeps its original conversation');
     if (this.sessionBusy(sessionId)) throw new BusyError();
     const accounts = this.registry().list();
     if (accounts.length === 0) throw new Error('no accounts configured');
@@ -1424,9 +1518,16 @@ export class SessionManager {
     }
   }
 
-  private resolveCwd(cwd: string): string {
+  private resolveCwd(cwd: string, projectId?: string): string {
     const root = realpathSync(this.opts.workspaceRoot);
     const target = realpathSync(resolve(cwd));
+    const project = projectId ? this.projects().get(projectId) : undefined;
+    if (project?.kind === 'chat') {
+      if (!this.chatsEnabled()) throw new Error('Chat is disabled');
+      const expected = join(realpathSync(this.opts.stateDir), 'chats', project.id, 'work');
+      if (resolve(cwd) !== expected || target !== expected) throw new Error('Invalid Chat working directory');
+      return target;
+    }
     if (target !== root && !target.startsWith(root + sep)) {
       throw new Error(`cwd outside workspace root: ${cwd}`);
     }
@@ -1439,7 +1540,11 @@ export class SessionManager {
     // A brand-new conversation always gets a fresh sessionId, so it can start
     // even while OTHER conversations in the same project are running.
     const proj = this.projects().get(pid);
-    const dir = this.resolveCwd(cwd ?? proj?.cwd ?? this.opts.workspaceRoot);
+    if (proj?.kind === 'chat') {
+      if (cwd && resolve(cwd) !== proj.cwd) throw new Error('Chat working directory cannot be changed');
+      return this.continueSession(pid, proj.lastSessionId!, prompt, opts);
+    }
+    const dir = this.resolveCwd(cwd ?? proj?.cwd ?? this.opts.workspaceRoot, pid);
     const sessionId = randomUUID();
     // Register the new session as its own conversation (prompt-derived title),
     // grouped under the project, and make it current.
@@ -1464,8 +1569,10 @@ export class SessionManager {
   continueSession(pid: string, sessionId: string, prompt: string, opts?: TurnRunOptions): string {
     if (this.sessionBusy(sessionId)) throw new BusyError();
     const proj = this.projects().get(pid);
-    const dir = this.resolveCwd(proj?.cwd ?? this.loadState().cwd ?? this.opts.workspaceRoot);
-    this.launch(pid, sessionId, prompt, dir, true, opts);
+    if (proj?.kind === 'chat' && (proj.archivedAt || proj.lastSessionId !== sessionId)) throw new Error('Chat is archived or conversation does not match');
+    const dir = this.resolveCwd(proj?.cwd ?? this.loadState().cwd ?? this.opts.workspaceRoot, pid);
+    const resume = proj?.kind !== 'chat' || !!this.projects().providerSessionId(pid, sessionId);
+    this.launch(pid, sessionId, prompt, dir, resume, opts);
     return sessionId;
   }
 
@@ -1727,6 +1834,17 @@ export class SessionManager {
   }
 
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
+    if (this.chatToolsChanged.has(pid)) {
+      const retired = this.pools().map(pool => pool.retireIdleSession(sessionId));
+      if (retired.every(Boolean)) this.chatToolsChanged.delete(pid);
+    }
+    const references = this.projects().get(pid)?.references;
+    if (references?.length && !prompt.trimStart().startsWith('/')) prompt += '\n\n[Referenced conversations. Use read_conversation to inspect their messages and send_message for approved communication:\n' + references.map(r => `projectId=${r.projectId}, sessionId=${r.sessionId}`).join('\n') + '\n]';
+    if (runOpts?.fileRefs?.length) {
+      const paths = this.files().references(pid, sessionId, runOpts.fileRefs, runOpts.requestId);
+      prompt += `\n\n[Attached saved files. Read these paths; use checkout_chat_file before editing and commit_chat_file to save a new version. Keep originals intact.\n${paths}\n]`;
+    }
+    if (this.projects().get(pid)?.kind === 'chat') this.files().fence(pid);
     this.titleWorker?.preempt();
     // Any new turn for this conversation supersedes its unanswered question
     // (answering one IS a new turn), so the card never outlives its moment.
@@ -1773,7 +1891,10 @@ export class SessionManager {
       const log = new EmittingLog(join(this.opts.stateDir, 'events.jsonl'), (k, d) => {
         // Track which account this turn is on (updated on start + each failover),
         // so a targeted force-switch can tell "same account" from "different".
-        if (k === 'supervisor' && d && d.type === 'turn_started' && typeof d.account === 'string') { run.account = d.account; run.waiting=false; this.emitAccounts(); }
+        if (k === 'supervisor' && d && d.type === 'turn_started' && typeof d.account === 'string') {
+          if (run.account && run.account !== d.account && reg.get(pid)?.kind === 'chat') this.files().fence(pid);
+          run.account = d.account; run.waiting=false; this.emitAccounts();
+        }
         if(k==='supervisor'&&typeof d.type==='string'&&['routing_decision','routing_wait','turn_started','turn_completed','turn_failed','failover','limit_detected','auth_required','api_overloaded_retry','forced_switch','waiting_for_reset'].includes(d.type)){
           if(d.type==='routing_wait'){run.account=undefined;run.waiting=true;this.emitAccounts();}
           try{routingState.record({projectId:pid,sessionId,kind:d.type,provider:adapter.id,account:typeof d.account==='string'?d.account:typeof d.selected==='string'?d.selected:undefined,model:run.actualModel||model,detail:d});}catch{}
@@ -1803,6 +1924,7 @@ export class SessionManager {
       if(memoryRecord)emit('memory_context',memoryRecord);
       if(memoryWarning)emit('memory_warning',{message:memoryWarning});
       void runFn({
+        accountEligibility: reg.get(pid)?.kind === 'chat' && this.capabilityService ? () => this.capabilityService!.blocked(this.chat(pid)) : undefined,
         registry: this.registry(),
         accountLoads: () => this.accountLoads(sessionId),
         routing: route,
@@ -1997,6 +2119,7 @@ export class SessionManager {
    *  Conservatively blocked while the project has any turn running. */
   setCurrent(sessionId: string, cwd: string): void {
     const pid = this.projects().currentId();
+    if (pid && this.projects().get(pid)?.kind === 'chat') throw new Error('A Chat keeps its original conversation');
     if (pid && this.projectBusy(pid)) throw new BusyError();
     const dir = this.resolveCwd(cwd);
     const configDirs = this.registry().list().map((a) => a.configDir);
@@ -2113,6 +2236,7 @@ export class SessionManager {
     const project = this.projects().get(pid),
       source = this.listConversations(pid).find((c) => c.sessionId === sourceSid);
     if (!project || !source) throw new Error('Source conversation not found');
+    if (project.kind === 'chat') throw new Error('Chat provider handoff is not available yet');
     if (this.adapterFor(pid, sourceSid).id === target) throw new Error('Choose another provider');
     if (
       !this.registry()

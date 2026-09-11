@@ -838,6 +838,8 @@
 </script>
 <link rel="stylesheet" href="/control-room.css" />
 <script src="/control-room.js"></script>
+<link rel="stylesheet" href="/rc-chat.css" />
+<script src="/rc-chat.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 4v16h17M8 16v-5m5 5V7m5 9v-3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="i-pin" viewBox="0 0 24 24"><path d="m16 3 5 5-4 1-4 5v4l-3-3-6 6 6-6-3-3h4l5-4Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol><symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2V11.5a9.5 9.5 0 0 1 19 0Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol><symbol id="i-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol><symbol id="i-left" viewBox="0 0 24 24"><path d="m12 5-7 7 7 7m-7-7h15"/></symbol><symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></symbol>
@@ -3963,7 +3965,7 @@
       lv.histRows = rows.length;
       lv.histLoading = false;
       var hasMsgs = Array.isArray(rows) && rows.length > 0;
-      addSys(hasMsgs ? (rows.length + ' earlier messages') : 'no messages yet — say hello, or use the resume button for an existing session');
+      if(hasMsgs||projCache[currentProjectId]?.kind!=='chat') addSys(hasMsgs ? (rows.length + ' earlier messages') : 'no messages yet — say hello, or use the resume button for an existing session');
       // Merge historical messages with the durable activity/subagent log by
       // timestamp, so a tool call renders between the two messages it actually
       // happened between — appending the whole log after all messages (the
@@ -4159,9 +4161,9 @@
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     // A reconnect may have missed the 'question' event entirely (the gap, or a
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
-    es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); };
+    es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -4878,6 +4880,9 @@
   function filesKeyFor(pid, sid) { return 'x056_draft_' + viewKey(pid, sid); }
   function restoreAttachments() {
     var k = draftKey();
+    if (k && !pendingFilesByConv[k] && projCache[currentProjectId]?.kind === 'chat') {
+      try { pendingFilesByConv[k] = JSON.parse(localStorage.getItem('x056_chat_attachments_'+currentProjectId+'::'+lastSessionId) || '[]').filter(function(f){return f.fileId&&f.versionId;}); } catch(e) {}
+    }
     pendingFiles = k ? (pendingFilesByConv[k] = pendingFilesByConv[k] || []) : [];
     renderAttachments();
   }
@@ -4885,6 +4890,7 @@
   // The chip row re-renders (fresh indices) on add/remove so the × buttons stay
   // correct after a splice. Images preview as thumbnails; other files show a name chip.
   function renderAttachments() {
+    if (projCache[currentProjectId]?.kind === 'chat') try { localStorage.setItem('x056_chat_attachments_'+currentProjectId+'::'+lastSessionId, JSON.stringify(pendingFiles.filter(function(f){return f.fileId;}))); } catch(e) {}
     attachRow.textContent = '';
     if (!pendingFiles.length) { attachRow.classList.remove('show'); return; }
     pendingFiles.forEach(function (f, i) {
@@ -4905,6 +4911,7 @@
   function addFile(f) {
     if (!f) return;
     if (f.size > MAX_ATTACH_BYTES) { addSys('“' + (f.name || 'file') + '” is over 50MB — not attached', 'banner'); return; }
+    if (projCache[currentProjectId]?.kind === 'chat') { if(rcChat)rcChat.upload(f); return; }
     var r = new FileReader();
     r.onload = function () { pendingFiles.push({ name: f.name || (/^image\//.test(f.type) ? 'pasted-image.png' : 'file'), type: f.type || '', url: r.result }); renderAttachments(); };
     r.readAsDataURL(f);
@@ -5243,8 +5250,14 @@
   function loadDeliveries(){deliveryDatabase().then(function(db){var request=db.transaction('messages').objectStore('messages').getAll();request.onsuccess=function(){request.result.forEach(function(row){deliveryRecords.set(row.id,row);});renderDelivery();refreshDeliveries();};}).catch(function(){});}
   window.addEventListener('online',refreshDeliveries);setInterval(refreshDeliveries,10000);
 
+  function addFilePayload(body, files) {
+    var refs=files.filter(function(f){return f.fileId;}), legacy=files.filter(function(f){return !f.fileId;});
+    if(refs.length)body.fileRefs=refs.map(function(f){return {fileId:f.fileId,versionId:f.versionId};});
+    if(legacy.length)body.attachments=legacy.map(function(f){return {name:f.name,data:f.url};});
+  }
   async function send() {
     if(deliveryPreparing||steerInFlight)return;
+    if (window.rcChat?.uploading(currentProjectId)) { addSys('Wait for uploads to finish, or cancel them.', 'banner'); return; }
     var text = composerMarkdown(promptEl.value).trim(); if (!text && !pendingFiles.length) return;
     if (handleCodexPanelCommand(text)) return;
     // Busy is now per-CONVERSATION: only THIS conversation's own running turn
@@ -5252,20 +5265,19 @@
     // no longer blocks this one — send to an idle conversation and it starts
     // immediately, in parallel.
     var busy = !pendingNew && isSessionRunning(currentProjectId, lastSessionId);
-    // This conversation is running → queue the follow-up (sent when it finishes)
-    // instead of erroring. Files can't be queued (they need a live upload).
+    // Queue immutable references together with the message while the turn runs.
     if (busy) {
-      if (!text) { addSys('type a message to queue — files can’t be queued', 'banner'); return; }
-      if (pendingFiles.length) addSys('files left attached — queued the text only', 'banner');
       var queuedPid=currentProjectId,queuedSid=lastSessionId,queuedDraft=promptEl.value;
+      var queuedBody=queueBody(text), queuedFiles=pendingFiles.slice();
+      addFilePayload(queuedBody, queuedFiles);
       deliveryPreparing=true;
-      try {var queued=await prepareDelivery('/api/queue',queueBody(text));if(currentProjectId===queuedPid&&lastSessionId===queuedSid&&promptEl.value===queuedDraft){promptEl.value='';autogrow();saveDraft();}var response=await sendDelivery(queued);if(!response.ok)addSys('Message was not queued. Open Message delivery to retry or edit it.','banner');}
+      try {var queued=await prepareDelivery('/api/queue',queuedBody);if(currentProjectId===queuedPid&&lastSessionId===queuedSid&&promptEl.value===queuedDraft){promptEl.value='';autogrow();saveDraft();clearAttachments();}var response=await sendDelivery(queued);if(!response.ok)addSys('Message was not queued. Open Message delivery to retry or edit it.','banner');}
       catch(e){addSys(e.message,'banner');}finally{deliveryPreparing=false;}
       return;
     }
     var files = pendingFiles.slice();
     var body = { prompt: text }; if((pendingNew||!lastSessionId)&&composerAccounts[composerAccountKey()])body.account=composerAccounts[composerAccountKey()]; var m = effectiveModel(); if (m) body.model = m; if (effortEl.value) body.effort = effortEl.value;
-    if (files.length) body.attachments = files.map(function (f) { return { name: f.name, data: f.url }; });
+    addFilePayload(body, files);
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
     if (!useNew) body.sessionId=lastSessionId;
@@ -5524,7 +5536,16 @@
   $('passkeyBtn').addEventListener('click', function () { loadPasskeys(); openPop(passkeyPop); });
   $('passkeyAddBtn').addEventListener('click', registerPasskey);
 
-  controlRoom = window.createControlRoom({
+  var rcEngine = {
+    uploadBinary: function (path, file, id, progress, signal) {
+      return new Promise(function(resolve,reject){
+        var xhr=new XMLHttpRequest();xhr.open('POST',path);if(token)xhr.setRequestHeader('Authorization','Bearer '+token);xhr.setRequestHeader('x-upload-id',id);
+        xhr.upload.onprogress=function(e){progress(e.lengthComputable?Math.round(e.loaded/e.total*100):0);};
+        xhr.onload=function(){try{var data=JSON.parse(xhr.responseText);if(xhr.status>=200&&xhr.status<300)resolve(data);else reject(new Error(data.message||'Upload failed'));}catch(e){reject(e);}};
+        xhr.onerror=function(){reject(new Error('Upload interrupted. Retry with the same file.'));};xhr.onabort=function(){reject(new Error('Upload cancelled'));};
+        signal.addEventListener('abort',function(){xhr.abort();},{once:true});var form=new FormData();form.append('files',file,file.name||'pasted-image.png');xhr.send(form);
+      });
+    },
     api: api, nav: setNav, closePops: closeAllPops, pollAccounts: pollAccounts,
     defaultModelOptions: function (provider) {
       return provider === 'claude' ? CLAUDE_MODEL_OPTS.filter(function(m) { return m.value; }).map(function(m) { return { value:m.value, label:m.label, efforts:CLAUDE_EFFORT_OPTS }; }) : (providerModels.codex || []).map(function(m) { return { value:m.slug, label:m.label, efforts:[{value:'',label:'Provider default'}].concat((m.efforts || []).map(function(e) { return { value:e,label:EFFORT_LABELS[e] || e }; })) }; });
@@ -5569,13 +5590,24 @@
     },
     dismissQuestion: dismissQuestion,
     newConversation: function (pid) { if (pid && projCache[pid]) newConversation(pid); else if (currentProjectId) newConversation(currentProjectId); else $('addProjectBtn').click(); },
-    manageAccount: function () { controlRoom.showAccounts(); }
-  });
+    manageAccount: function () { controlRoom.showAccounts(); },
+    insertPrompt: function (text) { promptEl.value = text; autogrow(); saveDraft(); promptEl.focus(); },
+    attachSaved: function (pid, sid, file) {
+      var key = filesKeyFor(pid,sid), list = pendingFilesByConv[key] || (pendingFilesByConv[key] = []);
+      if (!list.some(function(f){return f.fileId===file.fileId && f.versionId===file.versionId;})) list.push(file);
+      try { localStorage.setItem('x056_chat_attachments_'+pid+'::'+sid, JSON.stringify(list.filter(function(f){return f.fileId;}))); } catch(e) {}
+      if (currentProjectId===pid && lastSessionId===sid) { pendingFiles=list; renderAttachments(); }
+    }
+  };
+  controlRoom = window.createControlRoom(rcEngine);
+  // Static assets can update before the gateway swaps to their matching build.
+  var rcChat = typeof window.createRCChat === 'function' ? window.createRCChat(rcEngine, controlRoom) : null;
+  window.rcChat = rcChat;
   modelEl.addEventListener('change', saveConversationPick);
   effortEl.addEventListener('change', saveConversationPick);
 
   // Boot only once authenticated — by the fallback token OR a passkey session cookie.
-  ensureAuth().then(function (ok) { if (ok) {boot();loadDeliveries();} else showGate(); });
+  ensureAuth().then(function (ok) { if (ok) {boot();loadDeliveries();if(rcChat)rcChat.init();} else showGate(); });
 })();
 </script>
 </body>

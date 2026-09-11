@@ -39,7 +39,7 @@ beforeAll(async () => {
       { sessionId: 'c', title: 'Codex', provider: 'codex', createdAt: 1, model: '', effort: '' },
     ] },
   ] }));
-  app = await createApp({ token, stateDir: dir, workspaceRoot: dir });
+  app = await createApp({ token, stateDir: dir, workspaceRoot: dir, chatEnabled: true });
   await app.listen(0, '127.0.0.1');
   base = await app.getUrl();
   manager = app.get(SessionManager);
@@ -51,8 +51,8 @@ afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir
 
 describe('all advertised output contracts', () => {
   it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(34);
-    expect(validators.size).toBe(34);
+    expect(TOOLS).toHaveLength(39);
+    expect(validators.size).toBe(39);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
       expect(ajv.validateSchema(tool.outputSchema)).toBe(true);
@@ -212,7 +212,7 @@ describe('all advertised output contracts', () => {
     const { stdout } = await promisify(execFile)('node', ['scripts/verify-mcp-output.mjs', base], {
       env: { ...process.env, X056_TOKEN: token },
     });
-    expect(JSON.parse(stdout)).toMatchObject({ actions: 34, schemasCompiled: 34 });
+    expect(JSON.parse(stdout)).toMatchObject({ actions: 39, schemasCompiled: 39 });
     expect(send).not.toHaveBeenCalled();
     expect(snapshot()).toEqual(before);
   });
@@ -287,6 +287,19 @@ describe('all advertised output contracts', () => {
     expect(api).not.toHaveBeenCalled();
     expect(TOOLS.find(t => t.name === 'get_activity')!.annotations.readOnlyHint).toBe(true);
     expect(TOOLS.find(t => t.name === 'stop_conversation')!.annotations.destructiveHint).toBe(true);
+  });
+
+  it('checks Chat file tool contracts against saved bytes', async () => {
+    const chat = manager.createChat({ requestId: 'mcp-chat-contract-001' });
+    const path = join(chat.cwd, 'proposal.txt'); writeFileSync(path, 'original');
+    const listed = (await tool('list_chat_files', { chatId: chat.id })).data.data;
+    const file = (await tool('register_chat_file', { chatId: chat.id, path, name: 'proposal.txt', epoch: listed.epoch, operationId: 'mcp-register-001' })).data.data;
+    const checkout = (await tool('checkout_chat_file', { chatId: chat.id, fileId: file.id, versionId: file.latestVersionId })).data.data;
+    writeFileSync(checkout.path, 'revised');
+    const saved = (await tool('commit_chat_file', { chatId: chat.id, fileId: file.id, expectedBaseVersionId: file.latestVersionId, checkoutToken: checkout.token, operationId: 'mcp-save-001' })).data.data;
+    expect(saved.versions).toHaveLength(2);
+    expect(saved.versions[1].downloadPath).toContain(saved.latestVersionId);
+    expect((await tool('preview_chat_file', { chatId: chat.id, fileId: file.id, versionId: saved.latestVersionId })).data.data.state).toBe('unsupported');
   });
 
   it('covers every advertised action', () => { expect([...covered].sort()).toEqual(TOOLS.map(t => t.name).sort()); });

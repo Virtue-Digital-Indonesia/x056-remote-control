@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 // Several suites spawn real child processes (npx tsx CLI, fake-claude) or use
 // real timers (gateway, parallel-project). Running test files concurrently
@@ -7,6 +7,7 @@ import { defineConfig } from 'vitest/config';
 // run sequentially. Slower wall-time, but reliable — and this gates deploys.
 export default defineConfig({
   test: {
+    exclude: [...configDefaults.exclude, '**/.deploy/**'],
     fileParallelism: false,
     testTimeout: 30_000,
     hookTimeout: 30_000,

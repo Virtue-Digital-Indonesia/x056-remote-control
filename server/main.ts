@@ -66,6 +66,8 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   serveStatic('/manifest.webmanifest', 'manifest.webmanifest', 'application/manifest+json');
   serveStatic('/control-room.css', 'control-room.css', 'text/css', { 'Cache-Control': 'no-cache' });
   serveStatic('/control-room.js', 'control-room.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
+  serveStatic('/rc-chat.js', 'rc-chat.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
+  serveStatic('/rc-chat.css', 'rc-chat.css', 'text/css', { 'Cache-Control': 'no-cache' });
   serveStatic('/webauthn.js', 'webauthn.js', 'application/javascript'); // vendored @simplewebauthn/browser bundle
   serveStatic('/icon-16.png', 'icon-16.png', 'image/png');
   serveStatic('/icon-32.png', 'icon-32.png', 'image/png');

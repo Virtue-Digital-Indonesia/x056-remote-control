@@ -36,7 +36,7 @@ export interface Account {
 
 export const ROUTING_STRATEGIES = ['sticky', 'priority', 'round-robin', 'least-busy', 'wait'] as const;
 export type RoutingStrategy = typeof ROUTING_STRATEGIES[number];
-export interface AccountRouteContext { lockedAccount?: string; preferredAccount?: string; useReserve?: boolean; model?: string }
+export interface AccountRouteContext { lockedAccount?: string; preferredAccount?: string; useReserve?: boolean; model?: string; capabilityBlocks?: Record<string, string[]> }
 export interface RouteCandidate { name: string; eligible: boolean; reasons: string[]; load: number; maxConcurrent: number; reservePercent: number; quotaAt?: number; usedPercent?: number }
 export interface RoutingPolicy { strategy: RoutingStrategy; order: string[] }
 
@@ -245,6 +245,7 @@ export class AccountRegistry {
         reading = readings[name];
       if (fixed && name !== fixed) reasons.push('Conversation/account policy excludes this account');
       if (a.paused) reasons.push('Account is paused');
+      reasons.push(...(context.capabilityBlocks?.[name] ?? []));
       if (state.kind === 'unauthenticated' || getAdapter(provider).hasCredentials?.(a.configDir) === false)
         reasons.push('Sign-in required');
       if (state.kind === 'limited') reasons.push('Usage limit has not reset');

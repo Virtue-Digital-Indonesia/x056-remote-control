@@ -25,6 +25,7 @@ export interface SessionResult {
 }
 
 export interface RunSessionOptions {
+  accountEligibility?: () => Promise<Record<string, string[]>>;
   registry: AccountRegistry;
   analytics?: AccountAnalytics;
   accountLoads?: () => Record<string, number>;
@@ -112,6 +113,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   let waitSignature = '';
   let waitingUntil = 0;
   let forceSwitchRequested = false;
+  let checkingEligibility = false;
   let forceBench = true; // whether the account being left is benched on the pending forced switch
   let currentHandle: TurnHandle | undefined;
   const onSigusr1 = () => {
@@ -129,7 +131,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   opts.control?.({
     forceSwitch: (o) => {
       if(o?.account) requestedAccount=o.account;
-      forceSwitchRequested = !wakeWait;
+      forceSwitchRequested = !wakeWait && !checkingEligibility;
       wakeWait?.();
       if (o && o.bench === false) forceBench = false;
     },
@@ -142,12 +144,16 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   try {
     for (;;) {
       if (aborted) return { status: 'failed', failovers: failoverTimes.length, reason: 'Stopped by user.', providerSessionId: cliSessionId };
+      checkingEligibility = true;
+      const capabilityBlocks = opts.accountEligibility ? await opts.accountEligibility() : undefined;
+      checkingEligibility = false;
+      if (aborted) return { status: 'failed', failovers: failoverTimes.length, reason: 'Stopped by user.', providerSessionId: cliSessionId };
       const destination = requestedAccount || retryAccount;
-      const context = { ...opts.routing, ...(destination ? { preferredAccount: destination, lockedAccount: opts.routing?.lockedAccount || destination } : {}) };
+      const context = { ...opts.routing, ...(capabilityBlocks ? { capabilityBlocks } : {}), ...(destination ? { preferredAccount: destination, lockedAccount: opts.routing?.lockedAccount || destination } : {}) };
       const loads=opts.accountLoads?.()||{};
       const route=registry.explain(now(),adapter.id,loads,context);
       const account=registry.pickActive(now(),adapter.id,loads,context);
-      if(!account&&(context.lockedAccount||route.candidates.some(c=>c.reasons.some(r=>/Concurrent-task|reserved/.test(r))))){
+      if(!account&&(context.lockedAccount||route.candidates.some(c=>c.reasons.some(r=>/Concurrent-task|reserved|Required tool/.test(r))))){
         const signature=JSON.stringify(route);
         if(signature!==waitSignature){waitSignature=signature;log.append({type:'routing_wait',sessionId,...route});}
         await new Promise<void>(resolve=>{const timer=setTimeout(()=>{wakeWait=undefined;resolve();},2000);wakeWait=()=>{clearTimeout(timer);wakeWait=undefined;resolve();};});

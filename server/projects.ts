@@ -32,6 +32,12 @@ export interface Conversation {
 /** A workspace the panel can switch between. Holds N conversations grouped under
  *  it; `lastSessionId` is the currently-active one (what turns/history operate on). */
 export interface Project {
+  /** Legacy records are ordinary projects. Chats own one prepared conversation. */
+  kind?: 'project' | 'chat';
+  creationRequestId?: string;
+  creationFingerprint?: string;
+  archivedAt?: number;
+  references?: { projectId: string; sessionId: string }[];
   id: string;
   name: string;
   cwd: string;
@@ -99,6 +105,28 @@ export class ProjectRegistry {
     return { ...proj };
   }
 
+  createChat(project: Project): Project {
+    if (project.kind !== 'chat' || project.conversations?.length !== 1 || project.lastSessionId !== project.conversations[0].sessionId)
+      throw new Error('A Chat must have exactly one conversation');
+    if (this.get(project.id)) throw new Error('Chat already exists');
+    this.data.projects.push(structuredClone(project));
+    this.save();
+    return structuredClone(project);
+  }
+
+  archiveChat(id: string, archived: boolean): void {
+    const p = this.data.projects.find(p => p.id === id && p.kind === 'chat');
+    if (!p) throw new Error('unknown Chat');
+    p.archivedAt = archived ? Date.now() : undefined;
+    this.save();
+  }
+  setChatReferences(id: string, references: NonNullable<Project['references']>): void {
+    const p = this.data.projects.find(p => p.id === id && p.kind === 'chat');
+    if (!p) throw new Error('unknown Chat');
+    if (!Array.isArray(references) || references.length > 30 || references.some(r => !r || !this.data.projects.some(p => p.id === r.projectId && p.conversations?.some(c => c.sessionId === r.sessionId)))) throw new Error('Invalid conversation reference');
+    p.references = references; this.save();
+  }
+
   select(id: string): void {
     if (!this.data.projects.some((p) => p.id === id)) throw new Error(`unknown project ${id}`);
     this.data.current = id;
@@ -113,6 +141,7 @@ export class ProjectRegistry {
   }
 
   remove(id: string): void {
+    if (this.get(id)?.kind === 'chat') throw new Error('Archive Chats to retain their files');
     this.data.projects = this.data.projects.filter((p) => p.id !== id);
     if (this.data.current === id) this.data.current = this.data.projects[0]?.id ?? null;
     this.save();
@@ -138,6 +167,7 @@ export class ProjectRegistry {
   setLastSession(id: string, sessionId: string, title?: string, provider?: ProviderId): void {
     const p = this.data.projects.find((x) => x.id === id);
     if (!p) return;
+    if (p.kind === 'chat' && p.lastSessionId !== sessionId) throw new Error('A Chat has one conversation');
     p.lastSessionId = sessionId;
     p.conversations = p.conversations ?? [];
     if (!p.conversations.some((c) => c.sessionId === sessionId)) {
@@ -151,6 +181,7 @@ export class ProjectRegistry {
   addConversation(id: string, sessionId: string, title: string, provider?: ProviderId, titleOrigin?: Conversation['titleOrigin']): void {
     const p = this.data.projects.find((x) => x.id === id);
     if (!p) return;
+    if (p.kind === 'chat' && p.lastSessionId !== sessionId) throw new Error('A Chat has one conversation');
     p.conversations = p.conversations ?? [];
     if (!p.conversations.some((c) => c.sessionId === sessionId)) {
       // Stamp the provider now — this conversation is bound to it for life.
@@ -186,6 +217,7 @@ export class ProjectRegistry {
   setProvider(id: string, provider: ProviderId): void {
     const p = this.data.projects.find((x) => x.id === id);
     if (!p) throw new Error(`unknown project ${id}`);
+    if (p.kind === 'chat' && p.provider !== provider) throw new Error('Create a new Chat to use another provider');
     p.provider = provider;
     this.save();
   }
@@ -249,6 +281,7 @@ export class ProjectRegistry {
   removeConversation(projectId: string, sessionId: string): void {
     const p = this.data.projects.find((x) => x.id === projectId);
     if (!p || !p.conversations) return;
+    if (p.kind === 'chat') throw new Error('Archive Chats to retain their conversation and files');
     p.conversations = p.conversations.filter((c) => c.sessionId !== sessionId);
     if (p.lastSessionId === sessionId) p.lastSessionId = p.conversations[p.conversations.length - 1]?.sessionId;
     this.save();

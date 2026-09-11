@@ -69,7 +69,7 @@ const sendResult = { oneOf: [
 const schemas = {
   ...WORKSPACE_SCHEMAS,
   read_reply: object({ messageId: str, found: bool, messages: array(message), truncated: bool }),
-  list_projects: object({ projects: array(object({ id: str, name: str, cwd: str, provider, current: bool })) }),
+  list_projects: object({ projects: array(object({ id: str, name: str, cwd: str, provider, current: bool, kind: choices('project','chat') }, ['id','name','cwd','provider','current'])) }),
   list_conversations: object({ conversations: array(object({ sessionId: str, title: str, provider, model: str,
     effort: str, createdAt: str, current: bool }, ['sessionId', 'title', 'provider', 'current'])) }),
   read_conversation: object({ messages: array(message) }),
