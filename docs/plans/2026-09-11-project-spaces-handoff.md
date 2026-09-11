@@ -1,5 +1,7 @@
 # Project spaces: build handoff
 
+**Later planning update:** the first build is recorded at `492dc57` on `feature/project-spaces`. Read the [Project integration and file memory blueprint](2026-09-11-project-integration-memory-blueprint.md) for the revised design. It covers whole Work projects, individual conversations, cross-project memory, and uploaded sources. Efran requested planning only for this revision. The original handoff below is historical.
+
 Prepared 11 September 2026 for compaction. Repository: `/home/efran/remote-development/x056-remote-control`.
 
 The RC Chat release is complete. The Project / Chat / Work / Files / Memory implementation is planned but has not started. The latest request prepares this handoff; it does not start implementation or request another deployment.
