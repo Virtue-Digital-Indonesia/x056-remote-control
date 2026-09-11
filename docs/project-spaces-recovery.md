@@ -40,6 +40,8 @@ The manifest covers these records:
 
 Provider credential directories, external Work repositories, and provider transcript stores are outside this snapshot. Preserve them through the existing host backup process. Symlinks are copied as links. The command does not make a public export or print record contents.
 
+For an authorized idle release, pin `.deploy/revision` and create `.deploy/idle-only`, `.deploy/backup-project-spaces`, and `.deploy/requested`. Remove any old `.deploy/force` marker. The host actuator builds first and waits for turns, background providers, and workflows to finish. It then stops the idle gateway and takes the offline snapshot before swapping. A failed snapshot restarts the previous container and leaves the request pending. `.deploy/last-backup` records the successful snapshot directory. Keep the environment backup separately so it retains the settings from before feature activation.
+
 ## Rollback after new writes
 
 Prefer disabling `X056_PROJECT_SPACES_ENABLED` with the current compatible build. Shared records remain stored. Standalone Chat and existing Work identities remain available. Inherited memory, document retrieval, and Space write access stop until the feature is enabled again. Retained queues, autopilots, approvals, and schedules require context review. The Planner keeps queue review available while disabled. Remove unavailable attachments or references before resuming.

@@ -375,7 +375,7 @@ const MEMORY_TOOLS = [
   ],
   [
     'memory_propose',
-    'Propose durable knowledge for human review. Use concise facts, decisions or procedures with source references. This does not confirm the note or inject it automatically.',
+    'Save durable facts, decisions or procedures automatically as memory proposals, with source references. No approval is needed to save. Keep conversation and Work knowledge local; use scope space and spaceId for knowledge intended for the owning Project bank. memory_context returns the current scope. Human review is still required before automatic context inclusion.',
     {
       title: { type: 'string' },
       content: { type: 'string' },

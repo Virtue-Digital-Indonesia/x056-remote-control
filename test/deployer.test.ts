@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const source = readFileSync(new URL('../scripts/deployer.sh', import.meta.url), 'utf8');
@@ -44,5 +46,64 @@ describe('idle-only release gate', () => {
   it('retains the default gate for other releases', () => {
     expect(gate('{"running":true}', { idleOnly: false })).toBe('busy');
     expect(gate('{"running":false}', { idleOnly: false })).toBe('idle');
+  });
+});
+
+describe('offline Project release snapshot', () => {
+  const functions = source.slice(source.indexOf('PREVIOUS_CONTAINER=""'), source.indexOf('\n{\n  echo "=== tick'));
+  function snapshot(options: { enabled?: boolean; idle?: boolean; busy?: boolean; fail?: boolean } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'deploy-backup-'));
+    mkdirSync(join(dir, '.deploy', 'backups'), { recursive: true });
+    if (options.enabled !== false) writeFileSync(join(dir, '.deploy', 'backup-project-spaces'), '');
+    try {
+      const output = execFileSync('bash', ['-c', `
+        docker() {
+          printf 'DOCKER %s\\n' "$*" >> "$DIR/actions"
+          case "$*" in
+            *' ps -q x056') printf previous-container ;;
+            *' config --format json') printf '%s' '{"name":"fixture","services":{"x056":{}}}' ;;
+            'inspect '*) printf previous-image ;;
+            'run '*) [ "$FAIL_BACKUP" != 1 ] ;;
+          esac
+        }
+        git() { printf release-revision; }
+        live_workflows() { :; }
+        busy() { [ "$IS_BUSY" = 1 ]; }
+        ${functions}
+        if backup_project_spaces; then
+          echo READY_TO_SWAP
+          PREVIOUS_CONTAINER=""
+        else
+          echo NOT_SWAPPING
+        fi
+      `], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: {
+        ...process.env, DIR: dir, IDLE_ONLY: options.idle === false ? '0' : '1',
+        IS_BUSY: options.busy ? '1' : '0', FAIL_BACKUP: options.fail ? '1' : '0',
+      } });
+      let actions = '';
+      try { actions = readFileSync(join(dir, 'actions'), 'utf8'); } catch { /* No Docker for a normal request. */ }
+      return { output, actions };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+  it('leaves normal releases unchanged and requires idle-only for an offline backup', () => {
+    const normal = snapshot({ enabled: false });
+    expect(normal.output).toContain('READY_TO_SWAP'); expect(normal.actions).toBe('');
+    expect(snapshot({ idle: false }).output).toContain('NOT_SWAPPING');
+  });
+  it('rechecks activity before stopping any writers', () => {
+    const busy = snapshot({ busy: true });
+    expect(busy.output).toContain('activity changed before backup');
+    expect(busy.output).not.toContain('READY_TO_SWAP');
+    expect(busy.actions).not.toContain('DOCKER stop');
+  });
+  it('requires a completed offline snapshot before proceeding', () => {
+    const success = snapshot();
+    expect(success.output).toContain('offline Project snapshot saved:');
+    expect(success.actions).toContain('DOCKER stop --time 30 previous-container');
+    expect(success.actions).toContain('--entrypoint node fixture-x056 --import tsx scripts/project-spaces-recovery.ts backup /app/state /release-backup/state --offline');
+    expect(success.actions).not.toContain('DOCKER start');
+    const failed = snapshot({ fail: true });
+    expect(failed.output).toContain('NOT_SWAPPING');
+    expect(failed.actions).toContain('DOCKER start previous-container');
   });
 });

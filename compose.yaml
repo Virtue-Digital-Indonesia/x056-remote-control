@@ -27,6 +27,7 @@ services:
       X056_WORKSPACE_ROOT: ${X056_WORKSPACE_ROOT:?set it in .env — the default was one instance's whole repo tree, including its .env and X056_TOKEN}
       X056_STATE_DIR: /app/state
       X056_CHAT_ENABLED: ${X056_CHAT_ENABLED:-0}
+      X056_PROJECT_SPACES_ENABLED: ${X056_PROJECT_SPACES_ENABLED:-0}
       # Serve panel and assets from this image so workspace edits cannot break it.
       # Override only for an isolated development instance.
       X056_PANEL_PATH: ${X056_PANEL_PATH:-/app/server/public/panel.html}

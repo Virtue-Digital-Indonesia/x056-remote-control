@@ -120,6 +120,45 @@ if runs:
 ' 2>/dev/null || echo "workflow check FAILED (python error)"
 }
 
+# Schema releases opt in to an offline snapshot immediately before the swap.
+# The helper runs only the recovery CLI from the new image, never a second server.
+PREVIOUS_CONTAINER=""
+resume_previous() {
+  if [ -n "$PREVIOUS_CONTAINER" ]; then
+    docker start "$PREVIOUS_CONTAINER" >/dev/null || echo "previous container could not restart — inspect host Docker"
+  fi
+}
+backup_project_spaces() {
+  [ -f "$DIR/.deploy/backup-project-spaces" ] || return 0
+  [ "$IDLE_ONLY" = 1 ] || { echo "Project backup requires an idle-only request"; return 1; }
+  local container image backup_dir
+  container=$(docker compose --project-directory "$DIR" ps -q x056)
+  [ -n "$container" ] || { echo "No running gateway to snapshot"; return 1; }
+  image=$(docker compose --project-directory "$DIR" config --format json | python3 -c \
+    'import json,sys; c=json.load(sys.stdin); print(c["services"]["x056"].get("image") or c["name"]+"-x056")') || return 1
+  [ -n "$image" ] || return 1
+  # Check again immediately before stopping writers; build and inspection may be slow.
+  if [ -n "$(live_workflows)" ] || busy; then
+    echo "activity changed before backup — idle-only release stays pending"
+    return 1
+  fi
+  backup_dir="$DIR/.deploy/backups/project-spaces-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -m 700 "$backup_dir" || return 1
+  git -C "$DIR" rev-parse HEAD > "$backup_dir/revision" || return 1
+  docker inspect "$container" --format '{{.Image}}' > "$backup_dir/previous-image" || return 1
+  PREVIOUS_CONTAINER="$container"
+  docker stop --time 30 "$container" || return 1
+  docker run --rm --network none --volumes-from "$container" \
+    --mount "type=bind,src=$backup_dir,dst=/release-backup" \
+    --entrypoint node "$image" --import tsx scripts/project-spaces-recovery.ts \
+    backup /app/state /release-backup/state --offline || return 1
+  printf '%s\n' "$backup_dir" > "$DIR/.deploy/last-backup"
+  echo "offline Project snapshot saved: $backup_dir"
+}
+trap resume_previous EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 {
   echo "=== tick $(date -Is) commit $(git -C "$DIR" rev-parse --short HEAD) ==="
   # 1. Build ahead of time — safe while a turn runs; only creates a new image.
@@ -162,11 +201,21 @@ if runs:
     echo "pinned release changed during build — NOT swapping"
     exit 0
   fi
+  if ! backup_project_spaces; then
+    echo "backup not completed — release remains pending"
+    exit 0
+  fi
+  if ! release_unchanged; then
+    echo "pinned release changed during backup — NOT swapping"
+    exit 0
+  fi
   # Idle-only updates target this gateway; never recreate its Docker sidecar.
   swap_args=(up -d)
   if [ "$IDLE_ONLY" = 1 ]; then swap_args+=(--no-deps x056); fi
   if docker compose --project-directory "$DIR" "${swap_args[@]}"; then
+    PREVIOUS_CONTAINER=""
     rm -f "$FLAG" "$FORCE"
+    rm -f "$DIR/.deploy/backup-project-spaces"
     rm -f "$DIR/.deploy/idle-only"
     rm -f "$DIR/.deploy/revision"
     printf '{"status":"ok","commit":"%s","ts":"%s"}\n' "$(git -C "$DIR" rev-parse --short HEAD)" "$(date -Is)" > "$STATUS"
