@@ -4100,7 +4100,7 @@
   var booted = false;
   function boot() {
     if (booted) return; booted = true; // only after auth is established
-    loadProjects().then(function () {
+    var projectsReady = loadProjects().then(function () {
       if (currentProjectId) syncPicker(currentProjectId);
       // Cold-opened from a notification tap (service worker openWindow): jump to it.
       try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) switchProject(projCache[want]); } catch (e) {}
@@ -4115,7 +4115,7 @@
     // AI is actively waiting on, so a missed SSE event must not leave it
     // invisible until the next reconnect. Re-hydrate on a short interval.
     setInterval(loadMcpApprovals, 15000);
-    pollSnapshot().then(function () {
+    var snapshotReady = pollSnapshot().then(function () {
       restoreDraft();
       restoreAttachments();
       // loadAutopilot()/loadQueue() above fire in parallel with this poll, and
@@ -4152,6 +4152,7 @@
       return loadQuestions().then(loadHistory);
     });
     connect();
+    Promise.all([projectsReady, snapshotReady]).then(function () { loadDeliveries(); if (rcChat) rcChat.init(); });
   }
 
   // ---- SSE ----
@@ -5607,7 +5608,7 @@
   effortEl.addEventListener('change', saveConversationPick);
 
   // Boot only once authenticated — by the fallback token OR a passkey session cookie.
-  ensureAuth().then(function (ok) { if (ok) {boot();loadDeliveries();if(rcChat)rcChat.init();} else showGate(); });
+  ensureAuth().then(function (ok) { if (ok) boot(); else showGate(); });
 })();
 </script>
 </body>

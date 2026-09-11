@@ -31,7 +31,8 @@ const headers = { Authorization: 'Bearer browser-fixture-token-0123456789', 'Con
     await page.locator('#file').setInputFiles({name:'proposal.txt',mimeType:'text/plain',buffer:Buffer.from('Original proposal')});
     await page.locator('.rc-chat-file').filter({hasText:'proposal.txt'}).waitFor();
     await page.waitForFunction(()=>document.querySelectorAll('#attachRow .chip').length===1);
-    await page.reload();await page.locator('#crChatTab').click();
+    assert.match(new URL(page.url()).pathname, /^\/chat\/.+/);
+    await page.reload();await page.waitForSelector('body.rc-chat-active');
     await page.waitForFunction(()=>document.querySelectorAll('#attachRow .chip').length===1);
     await page.locator('#prompt').fill('Read the proposal.');await page.locator('#sendBtn').click();
     await page.waitForFunction(()=>document.querySelector('#busy .spin'));

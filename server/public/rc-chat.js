@@ -4,29 +4,40 @@ window.createRCChat = function (engine, room) {
   const $ = id => document.getElementById(id), esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
   let enabled = false, mounted = false, active = '', selectedFile = '', selectedVersion = '', tab = 'files', files = [], sequence = 0, previewTimer, objectURLs = [], showArchived = false, showRemoved = false;
   const jobs = new Map();
+  let routing = false, routeQueue = Promise.resolve();
+  const chatPath = id => '/chat' + (id ? '/' + encodeURIComponent(id) : '');
+  const inChat = () => /^\/chat(?:\/|$)/.test(location.pathname);
+  const icon = name => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ({edit:'<path d="m16 3 5 5-12 12-6 1 1-6Z M14 5l5 5"/>',archive:'<path d="M4 9h16v12H4z M3 3h18v6H3z M9 13h6"/>',controls:'<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',link:'<path d="m9 15 6-6 M8 16l-1 1a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0 M16 8l1-1a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0"/>',chevron:'<path d="m9 5 7 7-7 7"/>',chat:'<path d="M21 11a9 9 0 0 1-9 9H4l-3 2 2-6A9 9 0 1 1 21 11Z"/>'}[name] || '') + '</svg>';
   const current = () => engine.state().projects.find(p => p.id === engine.state().projectId && p.kind === 'chat');
   const request = async (url, body) => { const response = await engine.api(url, body === undefined ? undefined : { method: 'POST', body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Request failed'); return data; };
   const base = id => '/api/chats/' + encodeURIComponent(id);
   const versionURL = (file, version) => `${base(active)}/files/${encodeURIComponent(file.id)}/versions/${encodeURIComponent(version.id)}`;
-  function dialog(title, body) {
-    const d = document.createElement('dialog'); d.className = 'cr-dialog rc-chat-dialog';
-    d.innerHTML = `<header><h2>${esc(title)}</h2><button type="button" aria-label="Close">×</button></header>${body}`;
-    d.querySelector('header button').onclick = () => d.close(); d.onclose = () => d.remove(); document.body.append(d); d.showModal(); return d;
+  function dialog(title, body, className = '') {
+    const d = document.createElement('dialog'); d.className = 'cr-dialog rc-chat-dialog ' + className;
+    const titleId = 'rcDialog-' + crypto.randomUUID(); d.setAttribute('aria-labelledby', titleId);
+    d.innerHTML = `<header><h2 id="${titleId}">${esc(title)}</h2><button class="cr-icon" type="button" aria-label="Close">×</button></header>${body}`;
+    d.querySelector('header button').onclick = () => d.close();
+    d.addEventListener('click', event => { const r = d.getBoundingClientRect(); if (event.target === d && (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom)) d.close(); });
+    d.onclose = () => d.remove(); document.body.append(d); d.showModal(); return d;
   }
   function notify(error) { room.notify(error instanceof Error ? error.message : error); }
   function mount() {
     if (mounted) return; mounted = true;
-    const button = document.createElement('button'); button.id = 'crChatTab'; button.textContent = 'Chat'; $('crBoardTab').after(button); button.onclick = enter;
+    const button = document.createElement('a'); button.id = 'crChatTab'; button.textContent = 'Chat'; button.href = '/chat'; button.dataset.chatLink = ''; $('crBoardTab').after(button);
     const nav = document.createElement('aside'); nav.id = 'rcChatNav'; nav.setAttribute('aria-label','Chats');
-    nav.innerHTML = `<button class="rc-chat-home" id="rcChatHome">x0 <span>Remote Control</span></button><button class="cr-primary" id="rcChatNew">+ New chat</button><input id="rcChatSearch" type="search" placeholder="Search chats" aria-label="Search chats"><div class="rc-chat-list" id="rcChatList"></div><button class="cr-secondary" id="rcChatArchives">Archived chats</button><button class="cr-secondary" id="rcChatAccounts">Accounts</button><button class="cr-secondary" id="rcChatControl">Control room</button>`;
+    nav.innerHTML = `<a class="rc-chat-home" id="rcChatHome" href="/chat" data-chat-link>x0 <span>Chat</span></a><button class="cr-primary" id="rcChatNew">+ New chat</button><input id="rcChatSearch" type="search" placeholder="Search chats" aria-label="Search chats"><div class="rc-chat-list" id="rcChatList"></div><button class="cr-secondary" id="rcChatArchives">Archived chats</button><button class="cr-secondary" id="rcChatAccounts">Accounts</button><a class="cr-secondary" id="rcChatControl" href="/" data-chat-link>Control room</a>`;
     $('conversationSurface').prepend(nav);
+    const welcome = document.createElement('section'); welcome.id = 'rcChatWelcome';
+    welcome.innerHTML = `<button class="cr-secondary" id="rcChatWelcomeMenu">Chats</button><div class="rc-chat-welcome-copy">${icon('chat')}<h1>What are we working on?</h1><p>Start a conversation, bring your files, and pick up where you left off.</p><button class="cr-primary" id="rcChatWelcomeNew">New chat</button></div>`;
+    $('conversationSurface').append(welcome);
     const panel = document.createElement('aside'); panel.id = 'rcChatInspector'; panel.setAttribute('aria-label', 'Chat files and references');
     panel.innerHTML = `<header><strong>Workspace</strong><button class="cr-icon" id="rcChatPanelClose" aria-label="Close file panel">×</button></header><div class="rc-chat-tabs"><button data-chat-tab="files" aria-pressed="true">Files</button><button data-chat-tab="preview">Preview</button><button data-chat-tab="references">References</button></div><div id="rcChatUploads" role="status"></div><div id="rcChatPanelBody"></div>`;
     $('conversationSurface').append(panel);
     const tools = document.createElement('div'); tools.id = 'rcChatControls';
     tools.innerHTML = `<button class="cr-secondary" id="rcChatMenu">Chats</button><span id="rcChatProvider"></span><button class="cr-secondary" id="rcChatTools">Tools</button><button class="cr-secondary" id="rcChatReference">@ Reference</button><button class="cr-secondary" id="rcChatFiles">Files</button><button class="cr-icon" id="rcChatMore" aria-label="Chat actions">•••</button>`;
     document.querySelector('.composer-wrap').prepend(tools);
-    $('rcChatNew').onclick = newChat; $('rcChatHome').onclick = $('rcChatControl').onclick = leave;
+    $('rcChatNew').onclick = $('rcChatWelcomeNew').onclick = newChat;
+    $('rcChatWelcomeMenu').onclick = () => document.body.classList.toggle('rc-chat-nav-open');
     $('rcChatAccounts').onclick = () => { leave(); room.showAccounts(); };
     $('rcChatSearch').oninput = renderChats;
     $('rcChatArchives').onclick = () => { showArchived = !showArchived; $('rcChatArchives').textContent = showArchived ? 'Active chats' : 'Archived chats'; renderChats(); };
@@ -36,29 +47,59 @@ window.createRCChat = function (engine, room) {
     $('rcChatTools').onclick = toolsDialog; $('rcChatReference').onclick = referencePicker; $('rcChatMore').onclick = chatActions;
     panel.querySelectorAll('[data-chat-tab]').forEach(button => button.onclick = () => { tab = button.dataset.chatTab; renderPanel(); });
   }
-  async function enter() {
-    await engine.reloadProjects();
-    const chat = current() || engine.state().projects.find(p => p.kind === 'chat' && !p.archivedAt);
-    if (chat) await open(chat); else newChat();
+  function navigate(path, replace = false) {
+    if (location.pathname !== path) window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
+    return applyRoute();
   }
-  async function open(chat) {
-    try {
-      await engine.select(chat.id, chat.lastSessionId); document.body.classList.add('rc-chat-active');
-      room.openChat(); sync(); document.body.classList.remove('rc-chat-nav-open');
-    } catch (error) { notify(error); }
+  function applyRoute() {
+    routeQueue = routeQueue.then(async () => {
+      routing = true;
+      try {
+        document.querySelectorAll('.rc-chat-dialog[open]').forEach(d => d.close());
+        if (!inChat()) { leave(false); return; }
+        const path = location.pathname;
+        await engine.reloadProjects();
+        if (location.pathname !== path) return;
+        const id = decodeURIComponent(location.pathname.split('/')[2] || '');
+        const chat = engine.state().projects.find(p => p.kind === 'chat' && p.id === id);
+        document.body.classList.add('rc-chat-active');
+        document.body.classList.toggle('rc-chat-home-view', !chat);
+        document.body.classList.remove('rc-chat-nav-open', 'rc-chat-panel-open');
+        if (chat) {
+          showArchived = !!chat.archivedAt;
+          await engine.select(chat.id, chat.lastSessionId);
+          if (location.pathname !== path) return;
+          room.openChat(); sync();
+        } else {
+          active = ''; cleanupPreview(); room.openChat(); renderChats();
+          $('rcChatWelcome').querySelector('h1').textContent = id ? 'Chat unavailable' : 'What are we working on?';
+          $('rcChatWelcome').querySelector('p').textContent = id ? 'Choose another chat from the sidebar or start a new one.' : 'Start a conversation, bring your files, and pick up where you left off.';
+        }
+        $('crChatTab').setAttribute('aria-current', 'page');
+      } catch (error) { notify(error); }
+      finally { routing = false; }
+    });
+    return routeQueue;
   }
-  function leave() { document.body.classList.remove('rc-chat-active','rc-chat-nav-open','rc-chat-panel-open'); room.closeChat(); }
+  function open(chat) { return navigate(chatPath(chat.id)); }
+  function leave(updateURL = true) {
+    if (updateURL && inChat()) window.history.pushState({}, '', '/');
+    document.body.classList.remove('rc-chat-active','rc-chat-home-view','rc-chat-nav-open','rc-chat-panel-open');
+    $('crChatTab')?.removeAttribute('aria-current'); cleanupPreview(); room.showBoard();
+  }
   function renderChats() {
     const query = $('rcChatSearch').value.toLowerCase(), state = engine.state();
     const chats = state.projects.filter(p => p.kind === 'chat' && !!p.archivedAt === showArchived && (p.name + ' ' + p.conversations?.[0]?.title).toLowerCase().includes(query));
     chats.sort((a,b) => (b.conversations?.[0]?.lastMessageAt || b.conversations?.[0]?.createdAt || 0) - (a.conversations?.[0]?.lastMessageAt || a.conversations?.[0]?.createdAt || 0));
-    $('rcChatList').innerHTML = chats.map(p => `<button class="rc-chat-item ${p.id === active ? 'selected' : ''}" data-chat="${esc(p.id)}"><strong>${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small></button>`).join('') || '<p class="rc-chat-empty">No chats yet.</p>';
-    $('rcChatList').querySelectorAll('[data-chat]').forEach(button => button.onclick = () => open(chats.find(p => p.id === button.dataset.chat)));
+    $('rcChatArchives').textContent = showArchived ? 'Active chats' : 'Archived chats';
+    $('rcChatList').innerHTML = chats.map(p => `<a class="rc-chat-item ${p.id === active ? 'selected' : ''}" href="${chatPath(p.id)}" data-chat-link data-chat="${esc(p.id)}" ${p.id === active ? 'aria-current="page"' : ''}><strong>${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small></a>`).join('') || '<p class="rc-chat-empty">No chats found.</p>';
   }
   function sync() {
     if (!mounted) return;
+    if (!inChat()) { if (!routing && current() && room.isOpen()) navigate(chatPath(current().id)); return; }
+    if (document.body.classList.contains('rc-chat-home-view')) { renderChats(); return; }
     const chat = current();
-    if (!chat) { document.body.classList.remove('rc-chat-active'); active = ''; return; }
+    if (!chat) { document.body.classList.remove('rc-chat-active'); active = ''; if (!routing) window.history.pushState({}, '', '/'); return; }
     if (room.isOpen()) document.body.classList.add('rc-chat-active');
     $('rcChatProvider').textContent = chat.provider === 'codex' ? 'Codex' : 'Claude';
     if (active !== chat.id) { active = chat.id; selectedFile = ''; selectedVersion = ''; files = []; loadFiles(); }
@@ -81,10 +122,11 @@ window.createRCChat = function (engine, room) {
   }
   async function chatActions() {
     const chat = current(); if (!chat) return;
-    const d = dialog('Chat actions', `<div class="workspace-form"><button data-rename>Rename</button><button data-archive>${chat.archivedAt ? 'Restore' : 'Archive'}</button><button data-controls>Conversation controls</button></div>`);
+    const d = dialog('Chat actions', `<p class="rc-chat-action-title">${esc(chat.conversations?.[0]?.title || chat.name)}</p><div class="rc-chat-action-list"><button data-rename>${icon('edit')}<span><strong>Rename chat</strong><small>Give this conversation a name</small></span></button><button data-copy>${icon('link')}<span><strong>Copy link</strong><small>Open this chat on another device</small></span></button><button data-controls>${icon('controls')}<span><strong>Conversation controls</strong><small>Manage this conversation</small></span>${icon('chevron')}</button><button data-archive>${icon('archive')}<span><strong>${chat.archivedAt ? 'Restore chat' : 'Archive chat'}</strong><small>${chat.archivedAt ? 'Move back to your active chats' : 'Keep the conversation and its files'}</small></span></button></div>`, 'rc-chat-actions-dialog');
+    d.querySelector('[data-copy]').onclick = async () => { try { await navigator.clipboard.writeText(location.origin + chatPath(chat.id)); d.close(); notify('Chat link copied.'); } catch (e) { notify(e); } };
     d.querySelector('[data-controls]').onclick = () => { d.close(); room.conversationMenu($('rcChatMore')); };
     d.querySelector('[data-rename]').onclick = async () => { d.close(); const name = await engine.prompt({ title:'Rename chat', value:chat.conversations?.[0]?.title || chat.name }); if (name) try { await request(base(chat.id), { name }); await engine.reloadProjects(); sync(); } catch (e) { notify(e); } };
-    d.querySelector('[data-archive]').onclick = async () => { try { await request(base(chat.id), { archived:!chat.archivedAt }); d.close(); await engine.reloadProjects(); sync(); if (!chat.archivedAt) leave(); } catch (e) { notify(e); } };
+    d.querySelector('[data-archive]').onclick = async () => { try { await request(base(chat.id), { archived:!chat.archivedAt }); d.close(); await engine.reloadProjects(); if (!chat.archivedAt) await navigate('/chat'); else { showArchived = false; sync(); } } catch (e) { notify(e); } };
   }
   async function upload(file) {
     const chat = current(); if (!chat) return;
@@ -162,16 +204,79 @@ window.createRCChat = function (engine, room) {
     }catch(error){if(serial===sequence)$('rcChatPreviewContent').textContent=error.message;}
   }
   async function toolsDialog() {
-    const id=active,d=dialog('Tools',`<div class="rc-chat-tools"><div class="rc-chat-tabs"><button data-kind="plugin">Plugins</button><button data-kind="mcp">MCP</button><button data-kind="skill">Skills</button></div><label>Account<select id="rcToolsAccount"></select></label><input id="rcToolsSearch" type="search" placeholder="Search tools" aria-label="Search tools"><div id="rcToolsList" role="status">Checking available tools…</div><footer><button data-refresh>Refresh</button><button data-manage>Manage connections</button></footer></div>`);let kind='plugin',inventory,requirements=[];
-    async function load(force=false){try{inventory=await request(base(id)+'/capabilities'+(force?'?refresh=1':''));if(!d.open)return;requirements=inventory.requirements;$('rcToolsAccount').innerHTML=inventory.accounts.map(a=>`<option value="${esc(a.account)}">${esc(a.account)}</option>`).join('');const s=engine.state();$('rcToolsAccount').value=s.composerAccount||s.runningAccount||inventory.accounts[0]?.account||'';render();}catch(e){if(d.open)$('rcToolsList').textContent=e.message;}}
-    function render(){const account=inventory?.accounts.find(a=>a.account===$('rcToolsAccount').value),query=$('rcToolsSearch').value.toLowerCase();$('rcToolsList').innerHTML=(account?.errors||[]).map(e=>`<p>${esc(e)}</p>`).join('')+(account?.capabilities||[]).filter(c=>c.kind===kind&&c.name.toLowerCase().includes(query)).map(c=>`<article class="rc-chat-capability" data-key="${esc(c.key)}"><strong>${esc(c.name)}</strong><small>${esc(c.state.replaceAll('-',' '))}${requirements.some(r=>r.key===c.key&&r.fingerprint&&r.fingerprint!==c.fingerprint)?' · Account version differs':''}</small><p>${esc(c.description||'')}</p><label><input type="checkbox" ${requirements.some(r=>r.key===c.key)?'checked':''}>Required for this task</label>${c.invocation?'<button data-invoke '+(c.state==='ready'?'':'disabled')+'>Use skill</button>':''}</article>`).join('');if(!$('rcToolsList').textContent.trim())$('rcToolsList').textContent='No tools available in this category.';
-      $('rcToolsList').querySelectorAll('[data-key]').forEach(row=>{const c=account.capabilities.find(c=>c.key===row.dataset.key);row.querySelector('input').onchange=async event=>{const before=requirements;requirements=requirements.filter(r=>r.key!==c.key);if(event.target.checked)requirements.push({key:c.key,fingerprint:c.fingerprint});try{await request(base(id)+'/capabilities',{requirements});}catch(e){requirements=before;notify(e);render();}};const use=row.querySelector('[data-invoke]');if(use)use.onclick=async()=>{try{if(!requirements.some(r=>r.key===c.key)){requirements.push({key:c.key,fingerprint:c.fingerprint});await request(base(id)+'/capabilities',{requirements});}engine.insertPrompt(c.invocation+' ');d.close();}catch(e){notify(e);}};});}
-    d.querySelectorAll('[data-kind]').forEach(b=>b.onclick=()=>{kind=b.dataset.kind;render();});$('rcToolsAccount').onchange=render;$('rcToolsSearch').oninput=render;d.querySelector('[data-refresh]').onclick=()=>load(true);d.querySelector('[data-manage]').onclick=()=>{d.close();room.showSettings('connections');};load();
+    const id = active;
+    const d = dialog('Tools', `<div class="rc-chat-tools"><div class="rc-tools-toolbar"><label>Account<select id="rcToolsAccount" disabled><option>Loading accounts…</option></select></label><input id="rcToolsSearch" type="search" placeholder="Search tools" aria-label="Search tools"></div><div class="rc-chat-tabs" role="group" aria-label="Tool category"><button data-kind="plugin" aria-pressed="true">Plugins <span></span></button><button data-kind="mcp" aria-pressed="false">MCP <span></span></button><button data-kind="skill" aria-pressed="false">Skills <span></span></button></div><p class="rc-tools-help">Required tools stay with this chat when you switch accounts.</p><div id="rcToolsList" aria-busy="true"><p class="rc-chat-empty" role="status">Checking available tools…</p></div><footer><span id="rcToolsRequired" role="status"></span><button class="cr-secondary" data-refresh>Refresh</button><button class="cr-secondary" data-manage>Manage connections</button></footer></div>`, 'rc-chat-tools-dialog');
+    let kind = 'plugin', inventory, requirements = [], saving = false;
+    const accountSelect = d.querySelector('#rcToolsAccount'), list = d.querySelector('#rcToolsList'), search = d.querySelector('#rcToolsSearch');
+    const accountLabel = name => { const a = engine.state().accounts.find(a => a.name === name); return a?.label || a?.displayName || name; };
+    async function load(force = false) {
+      const selected = accountSelect.value;
+      d.querySelector('[data-refresh]').disabled = true; list.setAttribute('aria-busy', 'true');
+      try {
+        inventory = await request(base(id) + '/capabilities' + (force ? '?refresh=1' : ''));
+        if (!d.open) return;
+        requirements = inventory.requirements;
+        accountSelect.innerHTML = inventory.accounts.map(a => `<option value="${esc(a.account)}">${esc(accountLabel(a.account))}</option>`).join('');
+        const state = engine.state(), preferred = [selected, state.composerAccount, state.runningAccount].find(name => inventory.accounts.some(a => a.account === name));
+        accountSelect.value = preferred || inventory.accounts[0]?.account || '';
+        accountSelect.disabled = !inventory.accounts.length; render();
+      } catch (e) { if (d.open) list.innerHTML = `<p class="rc-tools-error" role="alert">${esc(e.message)}</p>`; }
+      finally { list.setAttribute('aria-busy', 'false'); d.querySelector('[data-refresh]').disabled = false; }
+    }
+    function render() {
+      const account = inventory?.accounts.find(a => a.account === accountSelect.value), capabilities = account?.capabilities || [], query = search.value.trim().toLowerCase();
+      d.querySelectorAll('[data-kind]').forEach(b => { b.setAttribute('aria-pressed', String(b.dataset.kind === kind)); b.querySelector('span').textContent = capabilities.filter(c => c.kind === b.dataset.kind).length; });
+      d.querySelector('#rcToolsRequired').textContent = requirements.length + ' required';
+      const visible = capabilities.filter(c => c.kind === kind && (c.name + ' ' + (c.description || '')).toLowerCase().includes(query));
+      const states = { ready:'Ready', installed:'Installed', 'authorization-needed':'Sign in needed', unavailable:'Unavailable', 'refresh-needed':'Refresh needed' };
+      list.innerHTML = (account?.errors || []).map(e => `<p class="rc-tools-error" role="status">${esc(e)}</p>`).join('') + visible.map(c => {
+        const required = requirements.find(r => r.key === c.key), mismatch = required?.fingerprint && required.fingerprint !== c.fingerprint;
+        return `<article class="rc-chat-capability" data-key="${esc(c.key)}"><div class="rc-capability-heading"><strong>${esc(c.name)}</strong><span class="rc-tool-state ${c.state === 'ready' ? 'ready' : ''}">${esc(states[c.state] || c.state.replaceAll('-', ' '))}</span></div>${c.description ? `<p>${esc(c.description)}</p>` : ''}${mismatch ? '<p class="rc-tools-error">This account has a different version.</p>' : ''}<div class="rc-capability-actions"><label><input type="checkbox" ${required ? 'checked' : ''} ${saving ? 'disabled' : ''}>Required for this chat</label>${c.invocation ? `<button class="cr-secondary" data-invoke ${c.state !== 'ready' || saving ? 'disabled' : ''}>Use skill</button>` : ''}</div></article>`;
+      }).join('') + (!visible.length ? `<div class="rc-chat-empty" role="status"><strong>${query ? 'No matching tools' : 'No ' + ({plugin:'plugins',mcp:'MCP servers',skill:'skills'}[kind]) + ' available'}</strong><p>${query ? 'Try another name or category.' : 'Choose another account or manage its connections.'}</p></div>` : '');
+      list.querySelectorAll('[data-key]').forEach(row => {
+        const capability = capabilities.find(c => c.key === row.dataset.key);
+        async function save(required, invoke = false) {
+          if (saving) return; saving = true;
+          const before = requirements;
+          requirements = requirements.filter(r => r.key !== capability.key);
+          if (required) requirements.push({key:capability.key, fingerprint:capability.fingerprint});
+          d.querySelector('[data-refresh]').disabled = true; render();
+          try {
+            await request(base(id) + '/capabilities', {requirements});
+            if (invoke && d.open) { engine.insertPrompt(capability.invocation + ' '); d.close(); }
+          } catch (e) { requirements = before; notify(e); }
+          finally { saving = false; if (d.open) { render(); d.querySelector('[data-refresh]').disabled = false; } }
+        }
+        row.querySelector('input').onchange = event => save(event.target.checked);
+        const use = row.querySelector('[data-invoke]'); if (use) use.onclick = () => save(true, true);
+      });
+    }
+    d.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => { kind = b.dataset.kind; render(); });
+    accountSelect.onchange = render; search.oninput = render;
+    d.querySelector('[data-refresh]').onclick = () => load(true);
+    d.querySelector('[data-manage]').onclick = () => { d.close(); room.showSettings('connections'); };
+    load();
   }
   function referencePicker() {
-    const id=active,chat=current(),d=dialog('Reference a conversation','<div class="workspace-form"><input type="search" placeholder="Search projects and conversations" aria-label="Search references"><div class="rc-chat-reference-list"></div></div>');
-    function render(){const query=d.querySelector('input').value.toLowerCase(),rows=engine.state().projects.filter(p=>p.id!==id).flatMap(p=>(p.conversations||[]).map(c=>({p,c}))).filter(({p,c})=>(p.name+' '+c.title).toLowerCase().includes(query));const host=d.querySelector('.rc-chat-reference-list');host.innerHTML=rows.map(({p,c},i)=>`<button data-index="${i}"><strong>${esc(c.title)}</strong><small>${esc(p.name)}</small></button>`).join('');host.querySelectorAll('button').forEach(button=>button.onclick=async()=>{const {p,c}=rows[Number(button.dataset.index)],references=chat.references||[];if(!references.some(r=>r.projectId===p.id&&r.sessionId===c.sessionId))references.push({projectId:p.id,sessionId:c.sessionId});try{await request(base(id)+'/references',{references});await engine.reloadProjects();d.close();tab='references';renderPanel();document.body.classList.add('rc-chat-panel-open');}catch(e){notify(e);}});}
-    d.querySelector('input').oninput=render;render();
+    const id = active, chat = current(); if (!chat) return;
+    const d = dialog('Reference a conversation', '<div class="rc-reference-picker"><input type="search" placeholder="Search projects and conversations" aria-label="Search references"><div class="rc-chat-reference-list"></div></div>', 'rc-chat-reference-dialog');
+    function render() {
+      const query = d.querySelector('input').value.trim().toLowerCase(), references = chat.references || [], host = d.querySelector('.rc-chat-reference-list');
+      const sources = engine.state().projects.filter(p => p.id !== id), matching = p => (p.conversations || []).filter(c => (p.name + ' ' + c.title).toLowerCase().includes(query)).map(c => ({p,c}));
+      const groups = sources.filter(p => p.kind !== 'chat').map(p => ({id:p.id, name:p.name, rows:matching(p)})).sort((a,b) => a.name.localeCompare(b.name));
+      groups.push({id:'chats', name:'Chats', rows:sources.filter(p => p.kind === 'chat').flatMap(matching)});
+      host.innerHTML = groups.filter(g => g.rows.length).map(group => `<section class="rc-reference-group" data-project="${esc(group.id)}"><h3>${esc(group.name)}<span>${group.rows.length}</span></h3>${group.rows.map(({p,c}) => {
+        const added = references.some(r => r.projectId === p.id && r.sessionId === c.sessionId);
+        return `<button data-project-id="${esc(p.id)}" data-session-id="${esc(c.sessionId)}" ${added ? 'disabled' : ''}>${icon('chat')}<strong>${esc(c.title || 'Untitled conversation')}</strong><span>${added ? 'Added' : 'Add'}</span></button>`;
+      }).join('')}</section>`).join('') || '<p class="rc-chat-empty" role="status">No conversations match your search.</p>';
+      host.querySelectorAll('button:not(:disabled)').forEach(button => button.onclick = async () => {
+        const next = [...references, {projectId:button.dataset.projectId, sessionId:button.dataset.sessionId}];
+        host.querySelectorAll('button').forEach(b => b.disabled = true);
+        try { await request(base(id) + '/references', {references:next}); await engine.reloadProjects(); d.close(); tab = 'references'; renderPanel(); document.body.classList.add('rc-chat-panel-open'); }
+        catch (e) { notify(e); render(); }
+      });
+    }
+    d.querySelector('input').oninput = render; render();
   }
   function renderReferences() {
     const refs=current()?.references||[];
@@ -182,8 +287,14 @@ window.createRCChat = function (engine, room) {
       row.querySelector('[data-remove]').onclick=async()=>{try{await request(base(active)+'/references',{references:refs.filter(r=>r!==ref)});await engine.reloadProjects();renderReferences();}catch(e){notify(e);}};});
   }
   document.addEventListener('x056:state',sync);
+  document.addEventListener('click', event => {
+    const link = event.target.closest('a[data-chat-link]');
+    if (!enabled || !link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault(); navigate(new URL(link.href).pathname);
+  });
+  window.addEventListener('popstate', () => { if (enabled) applyRoute(); });
   document.addEventListener('x056:reconnected',()=>{if(enabled)loadFiles();});
-  document.addEventListener('x056:mode',event=>{if(event.detail.mode==='closed')document.body.classList.remove('rc-chat-active');else setTimeout(sync,0);});
+  document.addEventListener('x056:mode',event=>{if(event.detail.mode==='closed'){document.body.classList.remove('rc-chat-active','rc-chat-home-view');if(!routing&&inChat())window.history.pushState({},'', '/');}else setTimeout(sync,0);});
   document.addEventListener('x056:event',event=>{const {kind,data}=event.detail;if(kind==='chat_files'&&data.projectId===active)loadFiles();if(kind==='projects')engine.reloadProjects().then(sync);else if(kind==='conversation')setTimeout(sync,100);});
-  return { init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();sync();}}catch{}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
+  return { init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat())await applyRoute();else sync();}}catch(error){if(inChat())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
 };
