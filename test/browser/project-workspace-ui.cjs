@@ -63,7 +63,7 @@ const out='/tmp/project-workspace-ui';mkdirSync(out,{recursive:true});
   await page.locator('#crAccountsTab').click();await page.waitForURL(base+'/accounts');await page.goBack();await page.locator('#prompt').waitFor();
   check('Draft retained across navigation',await page.locator('#prompt').inputValue()==='Keep this unsent proposal draft.');await page.reload();await page.locator('#prompt').waitFor();check('Draft retained across reload',await page.locator('#prompt').inputValue()==='Keep this unsent proposal draft.');
   await page.locator('.workspace-project-children a').filter({hasText:'Work'}).click();await page.locator('[data-work-project]').waitFor();await shot('work-desktop');
-  await go(workPath);await page.locator('#prompt').fill('Keep this Work draft.');await page.locator('#rcProjectContext').waitFor();check('Work keeps parent navigation',await page.locator('.workspace-project-children [aria-current=page]').innerText()==='Work\n3');
+  await go(workPath);await page.locator('#prompt').fill('Keep this Work draft.');await page.locator('#chatTools').waitFor();check('Work keeps parent navigation',await page.locator('.workspace-project-children [aria-current=page]').innerText()==='Work\n3');
   await go(projectPath+'/files');await page.locator('[data-project-file]').waitFor();await page.locator('.rc-space-file-menu').click();
   check('File menu in top layer',await page.locator('#workspaceFileMenu').evaluate(e=>e.matches(':popover-open')));
   await page.getByRole('menuitem',{name:'Versions',exact:true}).click();await page.locator('.rc-space-dialog [data-preview]').click();await page.getByText('Retain the original hotel requirements.',{exact:true}).waitFor();await page.keyboard.press('Escape');

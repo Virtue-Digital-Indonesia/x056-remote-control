@@ -30,8 +30,6 @@ window.createProjectSpaces = function (engine, room, chat) {
     $('crBoardTab').insertAdjacentHTML('beforebegin', link('/projects', icon('folder') + '<span>Projects</span>', 'rc-project-nav-link'));
     document.querySelector('.rc-project-nav-link').id = 'crSpacesTab';$('crSpacesTab').hidden=!enabled;
     const panel = document.createElement('section'); panel.id = 'rcProjectPage'; panel.className = 'cr-page'; panel.hidden = true; $('crWorkspace').append(panel);
-    const context = document.createElement('div'); context.id = 'rcProjectContext'; context.hidden = true;
-    document.querySelector('.composer-wrap').prepend(context);
     $('crBoardTab').innerHTML = icon('menu') + '<span>Work</span>';
     const work = document.createElement('a'); for (const attr of $('crBoardTab').attributes) work.setAttribute(attr.name, attr.value);
     work.href = '/work'; work.dataset.spaceLink = ''; work.innerHTML = $('crBoardTab').innerHTML; $('crBoardTab').replaceWith(work);
@@ -427,32 +425,30 @@ window.createProjectSpaces = function (engine, room, chat) {
     }catch(e){d.querySelector('[role=status]').textContent=e.message;}
   }
   let linksIdentity='';
+  // The conversation menu is built when it opens, so the links are fetched with the
+  // rest of the conversation context and kept for it.
+  let handoffLinks=[];
   async function updateHandoffLinks(pid,sid) {
-    const identity=pid+'::'+sid;if(linksIdentity===identity)return;linksIdentity=identity;
+    const identity=pid+'::'+sid;if(linksIdentity===identity)return;linksIdentity=identity;handoffLinks=[];
     try{const ops=await request('/api/project-spaces/handoffs?'+new URLSearchParams({projectId:pid,sessionId:sid}));if(linksIdentity!==identity)return;
-      const host=$('rcProjectHandoffLinks');if(!host)return;
-      queueMicrotask(()=>{const bar=$('rcProjectContext');if(bar&&engine.state().sessionId)bar.hidden=contextEmpty();});
-      host.innerHTML=ops.slice(-6).map(op=>{const other=op.target?.projectId===pid&&op.target?.sessionId===sid?{projectId:op.input.sourceProjectId,sessionId:op.input.sourceSessionId}:op.target;const p=engine.state().projects.find(p=>p.id===other?.projectId);return p?link(conversationPath(p,other.sessionId),'Linked '+(p.kind==='chat'?'Chat':'Work'),'cr-secondary'):'';}).join('');
+      handoffLinks=ops.slice(-6).map(op=>{const other=op.target?.projectId===pid&&op.target?.sessionId===sid?{projectId:op.input.sourceProjectId,sessionId:op.input.sourceSessionId}:op.target;const p=engine.state().projects.find(p=>p.id===other?.projectId);return p?{label:'Open linked '+(p.kind==='chat'?'Chat':'Work')+': '+p.name,path:conversationPath(p,other.sessionId)}:null;}).filter(Boolean);
     }catch{linksIdentity='';}
   }
   let contextSignature='';
+  // Everything the old context bar carried has a home of its own now: the Project in
+  // the breadcrumb, its files and membership on the Project page, memory and the
+  // handoffs in the conversation menu, and Tools in the conversation topbar.
   function updateContext() {
     if (!enabled || !mounted) return;
     const state = engine.state(), p = state.projects.find(p => p.id === state.projectId), parentId = scopeOf(p,state.sessionId);
-    const parent = projects.find(p => p.id === parentId), host = $('rcProjectContext');
-    host.hidden = !state.sessionId || !p || !room.isOpen();
-    if (host.hidden) {contextSignature='';return;}
+    const parent = projects.find(p => p.id === parentId), tools = $('chatTools');
+    const live = !!state.sessionId && !!p && room.isOpen();
+    if (tools) tools.hidden = !live || p?.kind === 'chat';
+    if (!live) {contextSignature='';return;}
     const signature=JSON.stringify([p.id,p.name,parent?.id,parent?.name,parent?.workspaceConfigured,p.conversations?.find(c=>c.sessionId===state.sessionId)?.membershipRevision,state.sessionId]);if(signature===contextSignature)return;contextSignature=signature;
-    // Everything else this bar used to carry has its own home: the Project in the
-    // breadcrumb, its files and membership on the Project page, memory and the
-    // handoffs in the conversation menu. Tools has nowhere else to live.
-    host.innerHTML = p.kind!=='chat' ? '<button class="cr-secondary" data-tools>Tools</button>' : '';
-    if(host.querySelector('[data-tools]'))host.querySelector('[data-tools]').onclick=()=>chat.tools(p.id);
-    const links=document.createElement('span');links.id='rcProjectHandoffLinks';host.append(links);linksIdentity='';
-    host.hidden=contextEmpty();updateHandoffLinks(p.id,state.sessionId);
+    if (tools) tools.onclick = () => chat.tools(p.id);
+    linksIdentity=''; updateHandoffLinks(p.id,state.sessionId);
   }
-  // A bar holding nothing would still take its margin out of the transcript.
-  function contextEmpty(){const host=$('rcProjectContext');return !host.querySelector('button')&&!$('rcProjectHandoffLinks')?.innerHTML;}
   document.addEventListener('click', event => {
     if (!mounted || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const a = event.target.closest('a[data-space-link]'); if (!a) return;
@@ -478,6 +474,7 @@ window.createProjectSpaces = function (engine, room, chat) {
       const items=[{label:isChat?'Continue in Work':'Discuss in Chat',icon:isChat?'terminal':'chat',disabled:isChat&&!parent?.workspaceConfigured,run:()=>handoff(isChat?'work':'chat')}];
       if(isChat)items.push({label:'Start a fresh linked Chat',icon:'compose',run:()=>handoff('chat',true)});
       items.push({label:'Change Project',icon:'folder',run:()=>membershipDialog(source,undefined,isChat?undefined:sid)});
+      for(const l of handoffLinks)items.push({label:l.label,icon:'chat',run:()=>navigate(l.path)});
       return items;
     },
     enabled: () => enabled, list:()=>projects, scopeOf, handles, navigate, leave:()=>{generation++;leave();}, newWork:pid=>{const execution=engine.state().projects.find(p=>p.id===pid);if(execution?.cwd)newConversation(projects.find(p=>p.id===execution.workSpaceId),'work',pid);}, createFromWork:pid=>createProject(pid), newProject:()=>createProject(), membershipDialog, conversationPath, reviewQueue, resumeAutopilot, shareChatFile, importArtifact,
