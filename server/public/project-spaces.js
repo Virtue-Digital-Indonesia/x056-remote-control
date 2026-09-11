@@ -338,9 +338,9 @@ window.createProjectSpaces = function (engine, room, chat) {
     try{const context=await request('/api/project-spaces/context/'+encodeURIComponent(item.projectId)+'/'+encodeURIComponent(item.sessionId));if(!context.spaceId)throw new Error('Add this conversation to a Project first');await request(base(context.spaceId)+'/files/import-artifact',{executionId:item.projectId,sessionId:item.sessionId,artifactId:item.id,operationId:crypto.randomUUID()});room.notify('Output saved to Project Files.');}catch(e){room.notify(e.message);}
   }
   async function editBrief(p) {
-    try{const found=await request('/api/memory/search?'+new URLSearchParams({projectId:p.id,tag:'project-brief',scope:'project',access:'library',limit:100}));
+    try{const found=await request('/api/memory/search?'+new URLSearchParams({spaceId:p.id,tag:'project-brief',scope:'space',access:'library',limit:100}));
       const entry=found.items.find(e=>e.projectId===p.id&&e.status==='confirmed');
-      room.editMemory(entry||{title:p.name+' brief',projectId:p.id,scope:'project',kind:'context',status:'confirmed',pinned:true,tags:['project-brief']},()=>route());
+      room.editMemory(entry||{title:p.name+' brief',spaceId:p.id,scope:'space',kind:'context',status:'confirmed',pinned:true,tags:['project-brief']},()=>route());
     }catch(e){room.notify(e.message);}
   }
   async function handoff(mode, fresh = false) {

@@ -3,7 +3,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { dirname, join } from 'node:path';
 import type { SessionManager } from './manager.js';
 import type { FileReference } from './file-store.js';
-import type { MemoryEntry } from './memory-store.js';
+import type { MemoryContext,MemoryEntry } from './memory-store.js';
 import type { ModeDefaults } from './projects.js';
 import { ProjectConflict } from './projects.js';
 import { withAskInstructions } from '../src/question.js';
@@ -25,6 +25,7 @@ export interface ProjectHandoffInput {
 export interface ProjectHandoff {
   id: string; hash: string; at: number; input: ProjectHandoffInput; parentProjectId?: string;
   workProjectId?: string; membershipRevision: number; choices: ModeDefaults; memories: MemoryEntry[];
+  memorySnapshot?:MemoryContext;
   target?: { projectId: string; sessionId: string }; fileRefs?: FileReference[];
   status: 'prepared' | 'queued' | 'accepted' | 'cancelled' | 'uncertain';
 }
@@ -85,8 +86,10 @@ export class ProjectHandoffs {
       if (input.fileRefs?.length) m.files().references(source.id, input.sourceSessionId, input.fileRefs);
       op = { id: input.requestId, hash, at: Date.now(), input: structuredClone(input), parentProjectId: parentId,
         workProjectId, membershipRevision: context.membershipRevision, choices, memories, status: 'prepared' };
+      op.memorySnapshot={scope:context,enabled:true,text:'',estimatedTokens:0,budget:2400,skipped:[],items:memories.map(e=>({id:e.id,revision:e.revision,title:e.title,reason:'Reviewed handoff',estimatedTokens:0,sources:e.sources})),grants:memories.flatMap(e=>{const g=m.memory().access.eligible({kind:'entry',id:e.id},source.id,input.sourceSessionId);return g?[{id:g.id,revision:g.revision,subject:{kind:'entry' as const,id:e.id}}]:[]})};
       this.save(op);
     }
+    if(op.memorySnapshot)m.memory().validateSnapshot(source.id,input.sourceSessionId,op.choices.provider!,op.memorySnapshot);
     if (op.parentProjectId !== parentId || op.membershipRevision !== context.membershipRevision) throw new ProjectConflict('Source membership changed; review a new handoff');
     if (!op.target) {
       const requestId = 'handoff-' + op.id;
@@ -126,6 +129,12 @@ export class ProjectHandoffs {
     });
     op.status = receipt.status === 'processing' || receipt.status === 'failed' ? 'uncertain' : receipt.status;
     this.save(op); return op;
+  }
+  validateMemory(requestId:string,pid:string,sid:string):void {
+    const op=this.all()[requestId];if(!op||!op.memories.length)return;
+    if(op.target?.projectId!==pid||op.target.sessionId!==sid)throw new ProjectConflict('Handoff target changed; review a continuation');
+    if(!op.memorySnapshot)throw new ProjectConflict('This handoff predates memory access review; review a new handoff');
+    this.manager.memory().validateSnapshot(op.input.sourceProjectId,op.input.sourceSessionId,op.choices.provider!,op.memorySnapshot);
   }
   private refresh(op: ProjectHandoff): ProjectHandoff {
     const receipt = this.manager.deliveries().get(op.id);

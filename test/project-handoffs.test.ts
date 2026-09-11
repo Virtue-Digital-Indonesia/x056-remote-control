@@ -46,6 +46,16 @@ describe('Project Chat and Work handoffs', () => {
     expect(() => f.m.projectHandoffs().run({ ...f.input, brief: 'Another task' })).toThrow('already used');
   });
 
+  it('keeps a queued handoff when its source grant is revoked before dispatch', async()=>{
+    const f=fixture(),other=f.m.createProject('Other',f.root),note=f.m.memory().create({projectId:other.id,status:'confirmed',title:'Shared evidence',content:'Selected evidence'});
+    const grant=f.m.memory().access.setGrant({operationId:'handoff-grant-001',subject:{kind:'entry',id:note.id},expectedVersion:'1',recipient:{kind:'space',id:f.p.id},expectedRevision:0,active:true});
+    const op=f.m.projectHandoffs().run({...f.input,memories:[{id:note.id,revision:1}]});
+    f.m.memory().access.setGrant({operationId:'handoff-revoke-001',subject:grant.subject,expectedVersion:'1',recipient:grant.recipient,expectedRevision:1,active:false});
+    await new Promise(r=>setTimeout(r,550));
+    const retained=f.m.queues()[op.target!.projectId].find(q=>q.requestId===op.id);
+    expect(retained).toMatchObject({paused:true,dispatching:false});expect(retained?.error).toContain('Memory access changed');expect(retained?.text).toContain('Selected evidence');expect(f.calls).toHaveLength(0);
+  });
+
   it('recovers after target creation without creating another target', () => {
     const f = fixture(), enqueue = vi.spyOn(f.m, 'enqueue').mockImplementationOnce(() => { throw new Error('Interrupted before enqueue'); });
     expect(() => f.m.projectHandoffs().run(f.input)).toThrow('Interrupted');

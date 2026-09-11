@@ -6,7 +6,7 @@ import { toolImagePaths } from '../src/artifact-references.js';
 import { ConversationTitles, temporaryTitle } from './conversation-titles.js';
 import type { TitleGenerator } from './title-generator.js';
 import { withMemoryContext } from '../src/memory-context.js';
-import { MemoryStore } from './memory-store.js';
+import { MemoryStore, MemoryReferenceConflict, type MemoryContext } from './memory-store.js';
 import { ProjectContextResolver } from './project-context.js';
 import { ProjectSpaceRegistry, executionKey, type ExecutionRef, type MembershipChange, type SpaceOperation, type ProjectSpace } from './project-space-registry.js';
 import { inspectSpaceMigration, applySpaceMigration, type SpaceMigrationPlan } from './project-space-migration.js';
@@ -1457,12 +1457,14 @@ export class SessionManager {
     const p = this.spaces().create(input);
     this.emit('projects', { id: p.id }); return p;
   }
+  memoryRequestId(pid:string,sid:string):string|undefined { const run=this.runs.get(sid);return run?.projectId===pid?run.requestId:undefined; }
   projectSpacesMigration() { return { ...inspectSpaceMigration(this.opts.stateDir), recovery: projectSpacesRecoveryReport(this.opts.stateDir) }; }
   applyProjectSpacesMigration(input: SpaceMigrationPlan) {
     if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
     const active = this.listProjects().projects.flatMap(p => [...p.runningSessionIds, ...p.backgroundSessionIds]);
     if (active.length) throw new ProjectConflict('Finish active work before migrating Project ownership');
     const result = applySpaceMigration(this.opts.stateDir, input);
+    this.memory().applyOwnershipMappings();
     this.legacySpaceReviewRequired = inspectSpaceMigration(this.opts.stateDir).requiresReview;
     this.reconcileProjectOperations(); this.emit('projects', {}); return result;
   }
@@ -2254,20 +2256,25 @@ export class SessionManager {
     for(const name of [route.lockedAccount,route.preferredAccount])if(name&&this.registry().get(name).provider!==adapter.id)throw new Error('Account belongs to another provider');
     if(route.lockedAccount&&route.preferredAccount&&route.lockedAccount!==route.preferredAccount)throw new Error('Unlock this conversation before choosing a different account');
     const pendingChoice=routingState.get(pid,sessionId);
+    const memoryRequestId=runOpts?.requestId||randomUUID();
+    this.projectHandoffs().validateMemory(memoryRequestId,pid,sessionId);
+    let memorySnapshot:MemoryContext|undefined;
     let memoryRecord: ReturnType<MemoryStore['recordContext']> | undefined;
     let turnPrompt = prompt,
       memoryWarning = '';
     try {
-      const context = this.memory().context(pid, sessionId, adapter.id, cleanMemorySource(prompt));
+      const context = this.memory().context(pid, sessionId, adapter.id, cleanMemorySource(prompt), memoryRequestId);
+      memorySnapshot=context;
       memoryRecord = this.memory().recordContext(pid, sessionId, adapter.id, context);
       turnPrompt = withMemoryContext(prompt, context.text);
     } catch (error) {
+      if(error instanceof MemoryReferenceConflict)throw error;
       memoryWarning = 'Shared memory was unavailable for this turn: ' + (error as Error).message;
     }
     const sender = runOpts?.sender && !prompt.trimStart().startsWith('/') ? { ...runOpts.sender, messageId: runOpts.sender.messageId || randomUUID() } : undefined;
     turnPrompt = withMessageSender(turnPrompt, sender);
     const sourcePrompt=prompt;
-    const run: ActiveRun = { sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: runOpts?.requestId };
+    const run: ActiveRun = { sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId };
     this.runs.set(sessionId, run);
     // Every event from this run carries its projectId AND sessionId so the panel
     // can route it to the right conversation — a project can have several
@@ -2316,8 +2323,17 @@ export class SessionManager {
       if(memoryRecord)emit('memory_context',memoryRecord);
       if(memoryWarning)emit('memory_warning',{message:memoryWarning});
       void runFn({
-        accountEligibility: (this.capabilityService || this.requiredProjectTools(pid, sessionId).length) && (reg.get(pid)?.kind === 'chat' || this.projectSpacesEnabled())
-          ? () => this.chatCapabilities().blocked({ ...this.assertExecutionAllowed(pid, sessionId), provider: adapter.id }, this.requiredProjectTools(pid, sessionId), this.projectSpacesEnabled(), sessionId) : undefined,
+        accountEligibility: async () => {
+          this.assertExecutionAllowed(pid,sessionId);
+          this.projectHandoffs().validateMemory(memoryRequestId,pid,sessionId);
+          if(memorySnapshot)this.memory().validateSnapshot(pid,sessionId,adapter.id,memorySnapshot);
+          if((this.capabilityService||this.requiredProjectTools(pid,sessionId).length)&&(reg.get(pid)?.kind==='chat'||this.projectSpacesEnabled())){
+            const blocked=await this.chatCapabilities().blocked({...this.assertExecutionAllowed(pid,sessionId),provider:adapter.id},this.requiredProjectTools(pid,sessionId),this.projectSpacesEnabled(),sessionId);
+            if(memorySnapshot)this.memory().validateSnapshot(pid,sessionId,adapter.id,memorySnapshot);
+            return blocked;
+          }
+          return {};
+        },
         registry: this.registry(),
         accountLoads: () => this.accountLoads(sessionId),
         routing: route,
@@ -2372,7 +2388,8 @@ export class SessionManager {
             if (
               memoryRecord &&
               this.memory().settings().autoCapture &&
-              !this.memory().settings().excludedProjects.includes(pid)
+              !this.memory().settings().excludedProjects.includes(pid)&&
+              !this.memory().settings().excludedSpaces.includes(this.projectContext().resolve(pid,sessionId).spaceId||'')
             ) {
               const title = this.listConversations(pid).find((c) => c.sessionId === sessionId)?.title || 'Conversation';
               for (const [role, raw] of [
@@ -2432,6 +2449,7 @@ export class SessionManager {
           if (!drained) this.maybeAutopilot(pid, sessionId, res);
         })
         .catch((err: unknown) => {
+          if(err instanceof MemoryReferenceConflict)this.pauseAutopilot(sessionId,(err as Error).message);
           if (this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
           this.projects().recordOutcome(pid, sessionId, {status:'failed', at:new Date().toISOString(), reason:(err as Error).message});
           emit('session_error', { sessionId, message: (err as Error).message });

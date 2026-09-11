@@ -84,7 +84,9 @@ describe('all advertised output contracts', () => {
   it('exercises queue edits, cancellation, self limits and stop only in the fixture', async () => {
     expect((await tool('list_queued')).data.messages).toEqual([]);
     const first = manager.enqueue('p', { text: 'first', sender: { kind: 'autopilot' }, sessionId: 's', paused: true, model: '', effort: '', notBefore: Date.now() + 86400000 });
-    const second = manager.enqueue('p', { text: 'second', sessionId: 'unavailable', paused: true });
+    // A retained legacy queue can outlive its removed execution; new enqueue rejects this target.
+    const second={id:'legacy-orphan-queue',text:'second',sessionId:'unavailable',paused:true,at:Date.now()};
+    writeFileSync(join(dir,'queues.json'),JSON.stringify({p:[...manager.queues().p,second]}));
     const rows = (await tool('list_queued')).data.messages;
     expect(rows.find((r: any) => r.id === second.id).provider).toBeNull();
     expect((await tool('list_queued', { projectId: 'p', sessionId: 's' })).data.messages).toHaveLength(1);

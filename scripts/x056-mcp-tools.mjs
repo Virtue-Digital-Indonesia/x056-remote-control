@@ -378,9 +378,11 @@ const MEMORY_TOOLS = [
       title: { type: 'string' },
       content: { type: 'string' },
       kind: { type: 'string', enum: ['fact', 'decision', 'preference', 'procedure', 'knowledge', 'context'] },
-      scope: { type: 'string', enum: ['conversation', 'project', 'shared', 'global'] },
+      scope: { type: 'string', enum: ['conversation', 'project', 'space', 'shared', 'global'] },
       projectId: { type: 'string' },
       sessionId: { type: 'string' },
+      spaceId:{type:'string'},
+      sources:{type:'array',maxItems:20,items:{type:'object',properties:{id:{type:'string'},label:{type:'string'}},required:['id','label'],additionalProperties:false}},
       sharedProjectIds: { type: 'array', items: { type: 'string' } },
       tags: { type: 'array', items: { type: 'string' } },
     },
@@ -459,9 +461,10 @@ export async function callToolResult(api, name, args) {
     let path,body;
     if(name==='memory_search'){const query=new URLSearchParams({query:args.query||'',status:'confirmed',...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{}),limit:String(Math.min(100,args.limit||20)),...(args.kind?{kind:args.kind}:{}),...(!args.crossProject&&pid?{projectId:pid,sessionId:sid||'',access:'context'}:{})});path='/api/memory/search?'+query;}
     else if(name==='memory_read')path='/api/memory/entry?'+new URLSearchParams({id:args.id,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})});
-    else if(name==='memory_context')path='/api/memory/context?'+new URLSearchParams({projectId:pid,sessionId:sid||'',query:args.query||''});
-    else if(name==='memory_link'){path='/api/memory/link';body={from:args.from,to:args.to,kind:args.kind};}
-    else {path='/api/memory/propose';const {id,revision,...entry}=args;body={id,revision,entry:name==='memory_update'?entry:{...entry,projectId:pid,sessionId:sid,sources:[{label:'Agent proposal',projectId:pid,sessionId:sid}]}};}
+    else if(name==='memory_context')path='/api/memory/context?'+new URLSearchParams({projectId:pid,sessionId:sid||'',query:args.query||'',...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})});
+    else if(name==='memory_link'){path='/api/memory/link';body={from:args.from,to:args.to,kind:args.kind,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})};}
+    else {path='/api/memory/propose';const {id,revision,...entry}=args;body={id,revision,entry:name==='memory_update'?entry:{...entry,projectId:entry.spaceId?undefined:pid,sessionId:entry.spaceId?undefined:sid,sources:entry.sources||[{label:'Agent proposal',projectId:pid,sessionId:sid}]}};}
+    if(body&&['memory_propose','memory_update'].includes(name)&&SELF.projectId&&SELF.sessionId)Object.assign(body,{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId});
     const data = await api(path,body?{method:'POST',body:JSON.stringify(body)}:undefined);
     const structured = name === 'memory_link' ? { relationships: data }
       : name === 'memory_propose' || name === 'memory_update' ? { entry: data } : data;

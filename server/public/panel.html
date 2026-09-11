@@ -5244,9 +5244,17 @@
     renderDelivery();
   }
 
+  function memoryDraftRequest(pid,sid){
+    if(!pid||!sid)return '';
+    var key='x056_memory_draft_'+viewKey(pid,sid),id=localStorage.getItem(key);
+    if(!id){id=crypto.randomUUID();localStorage.setItem(key,id);}return id;
+  }
   async function prepareDelivery(path,body){
     var probe=await api('/api/messages/status?requestId=capability-check');if(!probe.ok)throw new Error('Message delivery is updating. Refresh the panel shortly; your draft has been kept.');
-    body.requestId=crypto.randomUUID();return saveDelivery({id:body.requestId,path:path,body:body,at:Date.now(),status:'sending',sessionId:body.sessionId||null});
+    body.requestId=body.sessionId?memoryDraftRequest(body.projectId,body.sessionId):crypto.randomUUID();
+    var saved=await saveDelivery({id:body.requestId,path:path,body:body,at:Date.now(),status:'sending',sessionId:body.sessionId||null});
+    if(body.sessionId)localStorage.removeItem('x056_memory_draft_'+viewKey(body.projectId,body.sessionId));
+    return saved;
   }
   async function sendDelivery(row){
     row.status='sending';row.error='';await saveDelivery(row);
@@ -5600,6 +5608,7 @@
     dismissQuestion: dismissQuestion,
     newConversation: function (pid) { if (pid && projCache[pid]) newConversation(pid); else if (currentProjectId) newConversation(currentProjectId); else $('addProjectBtn').click(); },
     manageAccount: function () { controlRoom.showAccounts(); },
+    memoryDraftRequest:memoryDraftRequest,
     insertPrompt: function (text) { promptEl.value = text; autogrow(); saveDraft(); promptEl.focus(); },
     attachSaved: function (pid, sid, file) {
       var key = filesKeyFor(pid,sid), list = pendingFilesByConv[key] || (pendingFilesByConv[key] = []);

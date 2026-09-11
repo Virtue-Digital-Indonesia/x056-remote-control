@@ -1285,18 +1285,21 @@ window.createControlRoom = function (engine) {
     memoryTimer;
   workspace.insertAdjacentHTML(
     'beforeend',
-    `<div id="crMemory" class="cr-page" hidden><div class="cr-heading"><div><div class="cr-eyebrow">SHARED KNOWLEDGE</div><h1>Memory</h1><p>Decisions and context that travel with your work.</p></div><div class="workspace-actions"><button id="memoryMore" class="cr-icon" aria-label="Memory tools">${ic('more')}</button><button id="memoryImport" class="cr-secondary">Import sources</button><button id="memoryNew" class="cr-primary">${ic('plus')} New memory</button></div></div><div id="memoryStats" class="memory-stats"></div><div class="cr-tabs memory-tabs" role="group" aria-label="Memory view"><button data-memory-tab="knowledge" class="selected">Knowledge</button><button data-memory-tab="inbox">Review inbox <span id="memoryInboxCount"></span></button><button data-memory-tab="sources">Sources</button><button data-memory-tab="activity">Context history</button></div><div class="memory-filters"><label class="cr-search">${ic('search')}<input id="memorySearch" type="search" placeholder="Search knowledge and decisions" aria-label="Search memory"></label><select id="memoryProject" aria-label="Memory project"></select><select id="memoryKind" aria-label="Memory type"><option value="">All types</option>${memoryKinds.map((k) => `<option>${k}</option>`).join('')}</select><select id="memoryProvider" aria-label="Memory provider"><option value="">Both providers</option><option value="codex">ChatGPT / Codex</option><option value="claude">Claude</option></select><button id="memoryFilters" class="cr-secondary">Filters</button></div><div id="memoryExtra" class="memory-filters" hidden><select id="memoryConversation" aria-label="Memory conversation"><option value="">All conversations</option></select><select id="memoryStatus" aria-label="Memory status"><option value="confirmed">Confirmed</option><option value="archived">Archived</option><option value="deleted">Trash</option><option value="superseded">Superseded</option></select><select id="memoryScope" aria-label="Memory sharing scope"><option value="">All scopes</option><option value="conversation">Conversation</option><option value="project">Project</option><option value="shared">Shared projects</option><option value="global">Workspace</option></select><input id="memoryTag" type="search" placeholder="Filter by tag" aria-label="Memory tag"><label class="workspace-check"><input type="checkbox" id="memoryExcluded">Excluded sources</label></div><div id="memoryBulk" class="workspace-bulk" hidden><strong></strong><button data-memory-bulk="confirmed">Confirm</button><button data-memory-bulk="archived">Archive</button><button data-memory-bulk="deleted">Move to trash</button><button data-memory-merge>Merge</button><button data-memory-clear>Clear</button></div><p id="memoryNotice" class="cr-note"></p><div id="memoryItems" aria-live="polite"></div><div id="memoryPages" class="memory-pagination"></div></div>`,
+    `<div id="crMemory" class="cr-page" hidden><div class="cr-heading"><div><div class="cr-eyebrow">SHARED KNOWLEDGE</div><h1>Memory</h1><p>Decisions and context that travel with your work.</p></div><div class="workspace-actions"><button id="memoryMore" class="cr-icon" aria-label="Memory tools">${ic('more')}</button><button id="memoryImport" class="cr-secondary">Import sources</button><button id="memoryNew" class="cr-primary">${ic('plus')} New memory</button></div></div><div id="memoryStats" class="memory-stats"></div><div class="cr-tabs memory-tabs" role="group" aria-label="Memory view"><button data-memory-tab="knowledge" class="selected">Knowledge</button><button data-memory-tab="inbox">Review inbox <span id="memoryInboxCount"></span></button><button data-memory-tab="sources">Sources</button><button data-memory-tab="activity">Context history</button></div><div class="memory-filters"><label class="cr-search">${ic('search')}<input id="memorySearch" type="search" placeholder="Search knowledge and decisions" aria-label="Search memory"></label><select id="memoryProject" aria-label="Memory project"></select><select id="memoryKind" aria-label="Memory type"><option value="">All types</option>${memoryKinds.map((k) => `<option>${k}</option>`).join('')}</select><select id="memoryProvider" aria-label="Memory provider"><option value="">Both providers</option><option value="codex">ChatGPT / Codex</option><option value="claude">Claude</option></select><button id="memoryFilters" class="cr-secondary">Filters</button></div><div id="memoryExtra" class="memory-filters" hidden><select id="memoryConversation" aria-label="Memory conversation"><option value="">All conversations</option></select><select id="memoryStatus" aria-label="Memory status"><option value="confirmed">Confirmed</option><option value="archived">Archived</option><option value="deleted">Trash</option><option value="superseded">Superseded</option></select><select id="memoryScope" aria-label="Memory sharing scope"><option value="">All scopes</option><option value="conversation">Conversation</option><option value="project">Work / Chat</option><option value="space">Primary Project</option><option value="shared">Shared projects</option><option value="global">Workspace</option></select><input id="memoryTag" type="search" placeholder="Filter by tag" aria-label="Memory tag"><label class="workspace-check"><input type="checkbox" id="memoryExcluded">Excluded sources</label></div><div id="memoryBulk" class="workspace-bulk" hidden><strong></strong><button data-memory-bulk="confirmed">Confirm</button><button data-memory-bulk="archived">Archive</button><button data-memory-bulk="deleted">Move to trash</button><button data-memory-merge>Merge</button><button data-memory-clear>Clear</button></div><p id="memoryNotice" class="cr-note"></p><div id="memoryItems" aria-live="polite"></div><div id="memoryPages" class="memory-pagination"></div></div>`,
   );
   primaryNav.insertAdjacentHTML(
     'beforeend',
     `<button id="crMemoryTab">${ic('snippet')}<span>Memory</span></button>`,
   );
-  const memoryProjectName = (id) => engine.state().projects.find((p) => p.id === id)?.name || 'Workspace';
+  const memorySpaces=()=>window.rcProjectSpaces?.enabled()?window.rcProjectSpaces.list():[];
+  const memoryOwner=(id)=>id?.startsWith('space_')?{spaceId:id}:{projectId:id};
+  const memoryProjectName = (id) => memorySpaces().find(p=>p.id===id)?.name||engine.state().projects.find((p) => p.id === id)?.name || 'Workspace';
   const memoryDate = (value) => (value ? new Date(value).toLocaleString() : '');
   const memoryRequestApi = (path, body) => workspaceRequest('memory/' + path, body);
   function memoryOptions(selected = '', all = true) {
     return (
       (all ? '<option value="">All projects</option>' : '') +
+      memorySpaces().map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>Project · ${esc(p.name)}</option>`).join('')+
       engine
         .state()
         .projects.map(
@@ -1322,7 +1325,7 @@ window.createControlRoom = function (engine) {
   function memoryQuery() {
     const q = {
       query: $('memorySearch').value,
-      projectId: $('memoryProject').value,
+      ...memoryOwner($('memoryProject').value),
       sessionId: $('memoryConversation').value,
       provider: $('memoryProvider').value,
       kind: $('memoryKind').value,
@@ -1407,7 +1410,7 @@ window.createControlRoom = function (engine) {
       rows
         .map(
           (e) =>
-            `<article class="memory-row"><input type="checkbox" data-memory-select="${esc(e.id)}" aria-label="Select ${esc(e.title)}"><button class="memory-row-main" data-memory-open="${esc(e.id)}"><span class="memory-row-top"><strong>${esc(e.title)}</strong>${e.pinned ? ic('pin') : ''}<span class="memory-kind">${esc(e.kind)}</span></span><span class="memory-excerpt">${esc(e.summary || e.content.slice(0, 200))}</span><span class="memory-meta">${esc(memoryProjectName(e.projectId))} · ${esc(e.scope === 'global' ? 'Workspace' : e.scope)} · ${esc(e.providers.map(providerName).join(' + '))} · v${e.revision}${e.tags.length ? ' · ' + esc(e.tags.map((t) => '#' + t).join(' ')) : ''}</span>${e.staleReason || e.expired ? `<span class="memory-warning">${esc(e.staleReason || 'Expired')}</span>` : ''}</button><span class="memory-row-end"><time title="${esc(memoryDate(e.updatedAt))}">${esc(relativeDate(new Date(e.updatedAt).toISOString()))}</time>${e.status === 'proposed' ? `<button class="cr-secondary" data-memory-confirm="${esc(e.id)}">Review</button>` : ''}</span></article>`,
+            `<article class="memory-row"><input type="checkbox" data-memory-select="${esc(e.id)}" aria-label="Select ${esc(e.title)}"><button class="memory-row-main" data-memory-open="${esc(e.id)}"><span class="memory-row-top"><strong>${esc(e.title)}</strong>${e.pinned ? ic('pin') : ''}<span class="memory-kind">${esc(e.kind)}</span></span><span class="memory-excerpt">${esc(e.summary || e.content.slice(0, 200))}</span><span class="memory-meta">${esc(memoryProjectName(e.spaceId||e.projectId))} · ${esc(e.scope === 'global' ? 'Workspace' : e.scope)} · ${esc(e.providers.map(providerName).join(' + '))} · v${e.revision}${e.tags.length ? ' · ' + esc(e.tags.map((t) => '#' + t).join(' ')) : ''}</span>${e.staleReason || e.expired ? `<span class="memory-warning">${esc(e.staleReason || 'Expired')}</span>` : ''}</button><span class="memory-row-end"><time title="${esc(memoryDate(e.updatedAt))}">${esc(relativeDate(new Date(e.updatedAt).toISOString()))}</time>${e.status === 'proposed' ? `<button class="cr-secondary" data-memory-confirm="${esc(e.id)}">Review</button>` : ''}</span></article>`,
         )
         .join('') ||
       memoryEmpty(memoryTab === 'inbox' ? 'Nothing waiting for review' : 'No memories in this view')
@@ -1418,7 +1421,7 @@ window.createControlRoom = function (engine) {
       rows
         .map(
           (s) =>
-            `<article class="memory-row"><span class="memory-source-icon">${ic(s.kind === 'conversation' ? 'chat' : 'file')}</span><button class="memory-row-main" data-memory-source="${esc(s.id)}"><span class="memory-row-top"><strong>${esc(s.title)}</strong><span class="memory-kind">${esc(s.kind)}</span></span><span class="memory-excerpt">${esc(s.content.slice(0, 180))}</span><span class="memory-meta">${esc(memoryProjectName(s.projectId))} · ${esc(memoryDate(s.at))}${s.excluded ? ' · Excluded' : ''}</span></button></article>`,
+            `<article class="memory-row"><span class="memory-source-icon">${ic(s.kind === 'conversation' ? 'chat' : 'file')}</span><button class="memory-row-main" data-memory-source="${esc(s.id)}"><span class="memory-row-top"><strong>${esc(s.title)}</strong><span class="memory-kind">${esc(s.kind)}</span></span><span class="memory-excerpt">${esc(s.content.slice(0, 180))}</span><span class="memory-meta">${esc(memoryProjectName(s.spaceId||s.projectId))} · ${esc(memoryDate(s.at))}${s.excluded ? ' · Excluded' : ''}</span></button></article>`,
         )
         .join('') || memoryEmpty('No sources in this view')
     );
@@ -1548,7 +1551,9 @@ window.createControlRoom = function (engine) {
         const e = data.entry;
         d.querySelector('h2').textContent = e.title;
         const body = d.querySelector('.memory-detail');
-        body.innerHTML = `<div class="memory-detail-meta"><span class="memory-kind">${esc(e.status)}</span><span>${esc(e.kind)} · v${e.revision} · ${esc(memoryProjectName(e.projectId))}</span></div><div class="memory-content">${esc(e.content)}</div><div class="memory-detail-actions"><button class="cr-primary" data-edit>${e.status === 'proposed' ? 'Review & confirm' : 'Edit memory'}</button><button class="cr-secondary" data-more>More</button></div><dl class="memory-properties"><dt>Available in</dt><dd>${esc(e.scope === 'global' ? 'Entire workspace' : e.scope === 'shared' ? [e.projectId, ...e.sharedProjectIds].map(memoryProjectName).join(', ') : e.scope === 'conversation' ? 'This conversation' : memoryProjectName(e.projectId))}</dd><dt>Providers</dt><dd>${esc(e.providers.map(providerName).join(', '))}</dd><dt>Updated</dt><dd>${esc(memoryDate(e.updatedAt))} by ${esc(e.actor)}</dd>${e.expiresAt ? `<dt>Expires</dt><dd>${esc(memoryDate(e.expiresAt))}</dd>` : ''}</dl><h3>Sources <small>${data.sources.length}</small></h3><div class="memory-evidence">${data.sources.map((s) => (s.current ? `<button class="memory-context-row" data-memory-source="${esc(s.id)}"><span>${esc(s.label)}${s.hash !== s.current.hash ? ' <em>Source changed</em>' : ''}${s.current.excluded ? ' <em>Excluded</em>' : ''}</span><small>${esc(memoryDate(s.at))}</small></button>${s.original && s.hash !== s.current.hash ? `<button class="cr-text-button" data-original="${esc(s.id)}" data-source-hash="${esc(s.hash)}">View original source version</button>` : ''}` : `<div class="memory-meta">${esc(s.label)}${s.ref ? ' · ' + esc(s.ref) : ''}</div>`)).join('') || '<p class="cr-note">Manual note. No source attached.</p>'}</div><div class="memory-section-title"><h3>Relationships</h3><button class="cr-text-button" data-link>Link memory</button></div>${data.related.map((r) => `<div class="memory-related"><button class="cr-text-button" data-related="${esc(r.entry.id)}">${esc(r.entry.title)}</button><small>${esc(r.kind.replace('_', ' '))}</small><button class="cr-icon" data-unlink="${esc(r.id)}" aria-label="Remove relationship">${ic('x')}</button></div>`).join('') || '<p class="cr-note">No linked memories.</p>'}<details class="memory-revisions"><summary>Version history · ${data.revisions.length}</summary>${data.revisions.map((v) => `<details><summary>v${v.revision} · ${esc(v.status)} · ${esc(memoryDate(v.updatedAt))}</summary><div class="memory-content">${esc(v.content)}</div>${v.revision !== e.revision ? `<button class="cr-secondary" data-restore="${v.revision}">Restore as proposal</button>` : ''}</details>`).join('')}</details>`;
+        body.innerHTML = `<div class="memory-detail-meta"><span class="memory-kind">${esc(e.status)}</span><span>${esc(e.kind)} · v${e.revision} · ${esc(memoryProjectName(e.spaceId||e.projectId))}</span></div><div class="memory-content">${esc(e.content)}</div><div class="memory-detail-actions"><button class="cr-primary" data-edit>${e.status === 'proposed' ? 'Review & confirm' : 'Edit memory'}</button><button class="cr-secondary" data-memory-share>Share with Projects</button><button class="cr-secondary" data-memory-use>Use in a conversation</button><button class="cr-secondary" data-more>More</button></div><dl class="memory-properties"><dt>Available in</dt><dd>${esc(e.scope === 'global' ? 'Entire workspace' : e.scope === 'shared' ? [e.projectId, ...e.sharedProjectIds].map(memoryProjectName).join(', ') : e.scope === 'conversation' ? 'This conversation' : memoryProjectName(e.spaceId||e.projectId))}</dd><dt>Providers</dt><dd>${esc(e.providers.map(providerName).join(', '))}</dd><dt>Updated</dt><dd>${esc(memoryDate(e.updatedAt))} by ${esc(e.actor)}</dd>${e.expiresAt ? `<dt>Expires</dt><dd>${esc(memoryDate(e.expiresAt))}</dd>` : ''}</dl><h3>Sources <small>${data.sources.length}</small></h3><div class="memory-evidence">${data.sources.map((s) => (s.current ? `<button class="memory-context-row" data-memory-source="${esc(s.id)}"><span>${esc(s.label)}${s.hash !== s.current.hash ? ' <em>Source changed</em>' : ''}${s.current.excluded ? ' <em>Excluded</em>' : ''}</span><small>${esc(memoryDate(s.at))}</small></button>${s.original && s.hash !== s.current.hash ? `<button class="cr-text-button" data-original="${esc(s.id)}" data-source-hash="${esc(s.hash)}">View original source version</button>` : ''}` : `<div class="memory-meta">${esc(s.label)}${s.ref ? ' · ' + esc(s.ref) : ''}</div>`)).join('') || '<p class="cr-note">Manual note. No source attached.</p>'}</div><div class="memory-section-title"><h3>Relationships</h3><button class="cr-text-button" data-link>Link memory</button></div>${data.related.map((r) => `<div class="memory-related"><button class="cr-text-button" data-related="${esc(r.entry.id)}">${esc(r.entry.title)}</button><small>${esc(r.kind.replace('_', ' '))}</small><button class="cr-icon" data-unlink="${esc(r.id)}" aria-label="Remove relationship">${ic('x')}</button></div>`).join('') || '<p class="cr-note">No linked memories.</p>'}<details class="memory-revisions"><summary>Version history · ${data.revisions.length}</summary>${data.revisions.map((v) => `<details><summary>v${v.revision} · ${esc(v.status)} · ${esc(memoryDate(v.updatedAt))}</summary><div class="memory-content">${esc(v.content)}</div>${v.revision !== e.revision ? `<button class="cr-secondary" data-restore="${v.revision}">Restore as proposal</button>` : ''}</details>`).join('')}</details>`;
+        body.querySelector('[data-memory-share]').onclick=()=>shareMemory({kind:'entry',id:e.id,version:String(e.revision),title:e.title,owner:memoryOwner(e.spaceId||e.projectId)});
+        body.querySelector('[data-memory-use]').onclick=()=>referenceMemory(undefined,{kind:'entry',id:e.id,version:String(e.revision)});
         body.querySelector('[data-edit]').onclick = () =>
           editMemory(e, () => {
             load();
@@ -1637,7 +1642,7 @@ window.createControlRoom = function (engine) {
   }
   function editMemory(entry = {}, after = loadMemory) {
     const pid =
-        entry.projectId ||
+        entry.spaceId || entry.projectId ||
         $('memoryProject').value ||
         engine.state().projectId ||
         engine.state().projects[0]?.id ||
@@ -1646,14 +1651,15 @@ window.createControlRoom = function (engine) {
     const d = workspaceDialog(
       entry.id ? 'Edit memory' : 'New memory',
       `<form class="workspace-form memory-editor"><label>Title<input name="title" required maxlength="180" value="${esc(entry.title || '')}" placeholder="A clear, specific fact or decision"></label><label>Knowledge<textarea name="content" rows="7" required maxlength="64000" placeholder="What should future conversations remember?">${esc(entry.content || '')}</textarea></label><div class="memory-form-grid"><label>Type<select name="kind">${memoryKinds.map((k) => `<option ${k === (entry.kind || 'knowledge') ? 'selected' : ''}>${k}</option>`).join('')}</select></label><label>Owning project<select name="projectId">${memoryOptions(pid, false)}</select></label><label>Sharing<select name="scope">${[
-        ['project', 'This project'],
+        ['space','Primary Project'],
+        ['project', 'This Work project or Chat'],
         ['conversation', 'This conversation'],
         ['shared', 'Selected projects'],
         ['global', 'Entire workspace'],
       ]
         .map(
           ([v, l]) =>
-            `<option value="${v}" ${v === (entry.scope || 'project') ? 'selected' : ''}>${l}</option>`,
+            `<option value="${v}" ${v === (entry.scope || (pid.startsWith('space_')?'space':'project')) ? 'selected' : ''}>${l}</option>`,
         )
         .join(
           '',
@@ -1670,6 +1676,10 @@ window.createControlRoom = function (engine) {
     d.classList.add('memory-editor-dialog');
     const f = d.querySelector('form');
     function fields() {
+      const isSpace=f.elements.projectId.value.startsWith('space_');
+      if(isSpace&&!['space','shared','global'].includes(f.elements.scope.value))f.elements.scope.value='space';
+      if(!isSpace&&f.elements.scope.value==='space')f.elements.scope.value='project';
+      f.elements.projectId.disabled=!!entry.id;
       d.querySelector('[data-conversation-field]').hidden = f.elements.scope.value !== 'conversation';
       d.querySelector('[data-shared-field]').hidden = f.elements.scope.value !== 'shared';
       const chosen = f.elements.sessionId.value || entry.sessionId || engine.state().sessionId;
@@ -1704,7 +1714,7 @@ window.createControlRoom = function (engine) {
           content: f.elements.content.value,
           kind: f.elements.kind.value,
           status: f.elements.status.value,
-          projectId: f.elements.projectId.value,
+          ...memoryOwner(f.elements.projectId.value),
           scope: f.elements.scope.value,
           sessionId: f.elements.scope.value === 'conversation' ? f.elements.sessionId.value : '',
           sharedProjectIds: [...f.querySelectorAll('[name=sharedProjectIds]:checked')].map((x) => x.value),
@@ -1755,7 +1765,9 @@ window.createControlRoom = function (engine) {
       if (!d.open) return;
       d.querySelector('h2').textContent = s.title;
       d.querySelector('[data-source-body]').innerHTML =
-        `<p class="memory-meta">${esc(s.kind)} · ${esc(memoryProjectName(s.projectId))} · ${esc(memoryDate(s.at))}</p><div class="memory-content memory-source-content">${esc(s.content)}</div>${s.ref ? `<p class="memory-source-ref">${esc(s.ref)}</p>` : ''}<div class="workspace-actions"><button class="cr-primary" data-promote ${s.excluded ? 'disabled' : ''}>Create memory</button><button class="cr-secondary" data-exclude>${s.excluded ? 'Restore source' : 'Exclude source'}</button>${s.sessionId ? '<button class="cr-text-button" data-origin>Open source conversation</button>' : ''}</div><p class="cr-note">Excluding a source also prevents memories based on it from being injected.</p>`;
+        `<p class="memory-meta">${esc(s.kind)} · ${esc(memoryProjectName(s.spaceId||s.projectId))} · ${esc(memoryDate(s.at))}</p><div class="memory-content memory-source-content">${esc(s.content)}</div>${s.ref ? `<p class="memory-source-ref">${esc(s.ref)}</p>` : ''}<div class="workspace-actions"><button class="cr-primary" data-promote ${s.excluded ? 'disabled' : ''}>Create memory</button><button class="cr-secondary" data-source-share>Share with Projects</button><button class="cr-secondary" data-source-use>Use in a conversation</button><button class="cr-secondary" data-exclude>${s.excluded ? 'Restore source' : 'Exclude source'}</button>${s.sessionId ? '<button class="cr-text-button" data-origin>Open source conversation</button>' : ''}</div><p class="cr-note">Excluding a source also prevents memories based on it from being injected.</p>`;
+      d.querySelector('[data-source-share]').onclick=()=>shareMemory({kind:'source',id:s.id,version:s.versionId||s.hash,title:s.title,owner:memoryOwner(s.spaceId||s.projectId)});
+      d.querySelector('[data-source-use]').onclick=()=>referenceMemory(undefined,{kind:'source',id:s.id,version:s.versionId||s.hash});
       d.querySelector('[data-promote]').onclick = async () => {
         try {
           const result = await memoryRequestApi('source/promote', { id });
@@ -1866,7 +1878,7 @@ window.createControlRoom = function (engine) {
           f.querySelector('[role=status]').textContent =
             `Importing ${i + 1} of ${projects.length}: ${memoryProjectName(projectId)}…`;
           const rows = await memoryRequestApi('ingest', {
-            projectId,
+            ...memoryOwner(projectId),
             conversations: f.elements.conversations.checked,
             legacy: f.elements.legacy.checked,
             artifacts: f.elements.artifacts.checked,
@@ -1955,7 +1967,7 @@ window.createControlRoom = function (engine) {
           )
           .join(
             '',
-          )}</fieldset><p class="cr-note">Changes apply to future turns. Context already sent to a provider remains in that conversation’s history.</p><p role="alert"></p><footer><button class="cr-primary">Save settings</button></footer></form>`;
+          )}</fieldset><fieldset class="memory-share"><legend>Exclude Project spaces</legend>${memorySpaces().map(p=>`<label class="workspace-check"><input name="excludedSpaces" type="checkbox" value="${esc(p.id)}" ${s.excludedSpaces?.includes(p.id)?'checked':''}>${esc(p.name)}</label>`).join('')}</fieldset><p class="cr-note">Changes apply to future turns. Context already sent to a provider remains in that conversation’s history.</p><p role="alert"></p><footer><button class="cr-primary">Save settings</button></footer></form>`;
       d.querySelector('form').onsubmit = async (e) => {
         e.preventDefault();
         const f = e.target;
@@ -1968,6 +1980,7 @@ window.createControlRoom = function (engine) {
             maxEntries: Number(f.elements.maxEntries.value),
             providers: [...f.querySelectorAll('[name=providers]:checked')].map((x) => x.value),
             excludedProjects: [...f.querySelectorAll('[name=excludedProjects]:checked')].map((x) => x.value),
+            excludedSpaces:[...f.querySelectorAll('[name=excludedSpaces]:checked')].map(x=>x.value),
           });
           d.close();
           loadMemory();
@@ -1979,6 +1992,24 @@ window.createControlRoom = function (engine) {
       d.querySelector('[data-settings]').textContent = err.message;
     }
   }
+  async function shareMemory(subject){
+    const d=workspaceDialog('Share memory',`<form class="workspace-form"><p><strong>${esc(subject.title)}</strong> · ${esc(memoryProjectName(subject.owner.spaceId||subject.owner.projectId))} · version ${esc(subject.version)}</p><p class="cr-note">Share cited reading. Files and repository editing keep their separate permissions. Revoking access blocks future reads; context already sent to a provider cannot be recalled.</p><div data-grants>Loading…</div><label>Recipient<select name="recipient">${memoryOptions('',false)}</select></label><p role="alert"></p><footer><button class="cr-primary">Share</button></footer></form>`);
+    const f=d.querySelector('form');let grants=[];
+    async function load(){try{grants=await memoryRequestApi('grants?'+new URLSearchParams({kind:subject.kind,id:subject.id}));if(!d.open)return;d.querySelector('[data-grants]').innerHTML=grants.filter(g=>g.active).map(g=>`<div class="memory-context-item"><span>${esc(memoryProjectName(g.recipient.id))} · read · v${g.revision}</span><button type="button" class="cr-secondary" data-revoke="${esc(g.id)}">Revoke</button></div>`).join('')||'<p class="cr-note">No active grants.</p>';d.querySelectorAll('[data-revoke]').forEach(b=>b.onclick=()=>save(grants.find(g=>g.id===b.dataset.revoke).recipient,false));}catch(e){f.querySelector('[role=alert]').textContent=e.message;}}
+    async function save(recipient,active){try{const old=grants.find(g=>g.recipient.kind===recipient.kind&&g.recipient.id===recipient.id);await memoryRequestApi('grants',{operationId:crypto.randomUUID(),subject:{kind:subject.kind,id:subject.id},expectedVersion:subject.version,recipient,expectedRevision:old?.revision||0,active});await load();}catch(e){f.querySelector('[role=alert]').textContent=e.message;}}
+    f.onsubmit=e=>{e.preventDefault();const id=f.elements.recipient.value;save({kind:id.startsWith('space_')?'space':'execution',id},true);};load();
+  }
+  async function referenceMemory(target,initial,after=()=>{}){
+    const current=target||engine.state();
+    const d=workspaceDialog('Memory for the next message',`<div class="workspace-form"><label>Conversation<select data-target>${conversationOptions(current.projectId+'::'+current.sessionId)}</select></label><p class="cr-note">Selections pin an exact revision to the next message, including its queue and account retries. Changing selections or grants requires review before resending.</p><div data-selected></div><label>Search other Projects<input type="search" data-query placeholder="Search notes and sources"></label><div data-results></div><label class="workspace-check"><input type="checkbox" data-read>Allow reading the selected reference for this turn</label><label class="workspace-check"><input type="checkbox" data-cross>Allow this reference when automatic cross-project retrieval is off</label><p role="alert"></p><footer><button class="cr-secondary" data-done>Done</button></footer></div>`);
+    let refs,results=[],serial=0;const selected=()=>{const [projectId,sessionId]=d.querySelector('[data-target]').value.split('::');return {projectId,sessionId,requestId:engine.memoryDraftRequest(projectId,sessionId)};};
+    const error=e=>{d.querySelector('[role=alert]').textContent=e.message;};
+    async function save(selections){try{refs=await memoryRequestApi('references',{...selected(),operationId:crypto.randomUUID(),expectedRevision:refs.revision,selections});await load();after();}catch(e){error(e);}}
+    async function load(){try{const who=selected();refs=await memoryRequestApi('references?'+new URLSearchParams(who));if(!d.open)return;d.querySelector('[data-selected]').innerHTML='<h3>Selected references</h3>'+ (await Promise.all(refs.selections.map(async r=>{let title=r.id;try{const item=await memoryRequestApi((r.kind==='entry'?'entry':'source')+'?id='+encodeURIComponent(r.id));title=(item.entry||item).title;}catch{}return `<div class="memory-context-item"><span>${esc(title)} · ${esc(r.kind)} · v${esc(r.version)}</span><button class="cr-icon" data-remove="${esc(r.id)}" aria-label="Remove reference">${ic('x')}</button></div>`;}))).join('')||'<p>No selected references.</p>';d.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>save(refs.selections.filter(r=>r.id!==b.dataset.remove)));}catch(e){error(e);}}
+    async function search(){const seq=++serial;try{const query=d.querySelector('[data-query]').value;const [notes,sources]=await Promise.all([memoryRequestApi('search?'+new URLSearchParams({query,status:'confirmed',limit:30})),memoryRequestApi('sources?'+new URLSearchParams({query,limit:30}))]);if(seq!==serial||!d.open)return;results=[...notes.items.map(e=>({kind:'entry',id:e.id,version:String(e.revision),title:e.title,owner:e.spaceId||e.projectId})),...sources.items.map(s=>({kind:'source',id:s.id,version:s.versionId||s.hash,title:s.title,owner:s.spaceId||s.projectId}))];d.querySelector('[data-results]').innerHTML=results.map((r,i)=>`<div class="memory-context-item"><span>${esc(r.title)}<small>${esc(memoryProjectName(r.owner))} · ${esc(r.kind)}</small></span><button class="cr-secondary" data-use="${i}">Use</button></div>`).join('')||'<p>No matches.</p>';d.querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>add(results[Number(b.dataset.use)]));}catch(e){error(e);}}
+    function add(r){if(refs.selections.some(x=>x.kind===r.kind&&x.id===r.id))return;save([...refs.selections,{kind:r.kind,id:r.id,version:r.version,allowReadForTurn:d.querySelector('[data-read]').checked,allowCrossProjectForTurn:d.querySelector('[data-cross]').checked}]);}
+    d.querySelector('[data-query]').oninput=search;d.querySelector('[data-target]').onchange=()=>load();d.querySelector('[data-done]').onclick=()=>{d.close();after();};await load();await search();if(initial){try{const found=await memoryRequestApi((initial.kind==='entry'?'entry':'source')+'?id='+encodeURIComponent(initial.id));d.querySelector('[data-query]').value=(found.entry||found).title;await search();}catch(e){error(e);}}
+  }
   async function showMemoryContext(target = engine.state()) {
     if (!target.sessionId) {
       toast('Open a conversation first.');
@@ -1986,15 +2017,16 @@ window.createControlRoom = function (engine) {
     }
     const d = workspaceDialog(
       'Conversation memory',
-      `<div class="memory-context-controls"><label class="cr-search">${ic('search')}<input data-context-query type="search" aria-label="Preview context for a prompt" placeholder="Preview memory for a prompt" value="${esc(engine.promptText?.() || '')}"></label><button class="cr-secondary" data-context-refresh>Preview</button></div><div data-context-body>Loading…</div>`,
+      `<div class="memory-context-controls"><label class="cr-search">${ic('search')}<input data-context-query type="search" aria-label="Preview context for a prompt" placeholder="Preview memory for a prompt" value="${esc(engine.promptText?.() || '')}"></label><button class="cr-secondary" data-context-refresh>Preview</button><button class="cr-secondary" data-turn-references>Search other Projects</button></div><div data-context-body>Loading…</div>`,
     );
     d.classList.add('memory-detail-dialog');
+    d.querySelector('[data-turn-references]').onclick=()=>referenceMemory(target,undefined,load);
     let request = 0;
     async function load() {
       const seq = ++request;
       try {
         const query = d.querySelector('[data-context-query]').value,
-          params = new URLSearchParams({ projectId: target.projectId, sessionId: target.sessionId, query }),
+          params = new URLSearchParams({ projectId: target.projectId, sessionId: target.sessionId, query,requestId:engine.memoryDraftRequest(target.projectId,target.sessionId) }),
           data = await memoryRequestApi('context?' + params),
           available = await memoryRequestApi(
             'search?' +
@@ -2472,5 +2504,5 @@ window.createControlRoom = function (engine) {
   setInterval(()=>{if(document.hidden)return;loadConversationMeta();if(section==='planner')loadPlanner();},5000);setTimeout(loadConversationMeta,1000);
 
   setMode('closed'); projectNav(false); refresh();
-  return { memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory');$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
+  return { memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory');$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
 };

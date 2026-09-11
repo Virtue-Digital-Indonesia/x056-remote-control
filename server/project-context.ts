@@ -1,4 +1,5 @@
 import type { Project } from './projects.js';
+import type { MemoryOwner } from './memory-access.js';
 import type { ProjectSpaceRegistry } from './project-space-registry.js';
 
 export interface ProjectContext {
@@ -31,6 +32,19 @@ export class ProjectContextResolver {
       ? records.find(p => p.id === target.parentProjectId && p.kind !== 'chat' && !p.parentProjectId && !p.archivedAt) : undefined;
     return { executionProjectId: target.id, sessionId, parentProjectId: parent?.id,
       membershipRevision: target.membershipRevision ?? 0, inherited: !!parent };
+  }
+  spacesEnabled(): boolean { return this.enabled(); }
+  validateMemoryOwner(owner: MemoryOwner): void {
+    if (owner.kind === 'space') { if (!this.spaces) throw new Error('Project spaces unavailable'); this.spaces.get(owner.id, true); }
+    else if (!this.records().some(p=>p.id===owner.id)) throw new Error('Execution project not found');
+  }
+  memoryOwners() { return this.spaces?.snapshot().ownerOverrides; }
+  recipients(projectId: string, sessionId?: string): MemoryOwner[] {
+    const scope = this.resolve(projectId,sessionId);
+    return [{kind:'execution',id:projectId},...(scope.parentProjectId?[{kind:'execution' as const,id:scope.parentProjectId}]:[]),...(scope.spaceId?[{kind:'space' as const,id:scope.spaceId}]:[])];
+  }
+  memberOf(projectId: string, sessionId: string, spaceId: string): boolean {
+    try { return this.resolve(projectId,sessionId).spaceId===spaceId; } catch { return false; }
   }
   sourceProjects(projectId: string): string[] {
     if (this.spaces) return [projectId]; // Exact Space member source filtering is separate from execution scope.

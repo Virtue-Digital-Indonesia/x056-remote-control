@@ -17,19 +17,19 @@ const provider = choices('claude', 'codex');
 const nullableProvider = { anyOf: [provider, { type: 'null' }] };
 const ref = (name) => ({ $ref: `#/$defs/${name}` });
 
-const sourceRef = object({ id: str, hash: str, label: str, projectId: str,
+const sourceRef = object({ spaceId:str,versionId:str,grantId:str,grantRevision:integer,id: str, hash: str, label: str, projectId: str,
   sessionId: str, provider: str, ref: str, at: num }, ['label']);
 const entry = object({
   id: str, revision: integer, title: str, content: str, summary: str,
   kind: choices('fact', 'decision', 'preference', 'procedure', 'knowledge', 'context'),
   status: choices('proposed', 'confirmed', 'archived', 'deleted', 'superseded'),
-  scope: choices('conversation', 'project', 'shared', 'global'),
-  projectId: str, sessionId: str, sharedProjectIds: array(str), providers: array(provider),
+  scope: choices('conversation', 'project','space', 'shared', 'global'),
+  spaceId:str,projectId: str, sessionId: str, sharedProjectIds: array(str), providers: array(provider),
   tags: array(str), pinned: bool, expiresAt: num, createdAt: num, updatedAt: num,
   actor: str, sources: array(ref('sourceRef')), supersededBy: str,
 }, ['id', 'revision', 'title', 'content', 'summary', 'kind', 'status', 'scope',
   'sharedProjectIds', 'providers', 'tags', 'pinned', 'createdAt', 'updatedAt', 'actor', 'sources']);
-const source = object({ id: str, key: str, kind: choices('conversation', 'artifact', 'legacy', 'document'),
+const source = object({ spaceId:str,versionId:str,id: str, key: str, kind: choices('conversation', 'artifact', 'legacy', 'document'),
   title: str, content: str, projectId: str, sessionId: str, provider: str, ref: str,
   at: num, hash: str, excluded: bool,
 }, ['id', 'key', 'kind', 'title', 'content', 'projectId', 'at', 'hash', 'excluded']);
@@ -37,7 +37,8 @@ const relationship = object({ id: str, from_id: str, to_id: str,
   kind: choices('related', 'supports', 'contradicts', 'depends_on'), at: num, entry: ref('entry'),
 }, ['id', 'from_id', 'to_id', 'kind', 'at']);
 const contextFields = {
-  scope: object({ executionProjectId: str, sessionId: str, parentProjectId: str, membershipRevision: integer, inherited: bool }, ['executionProjectId', 'membershipRevision', 'inherited']),
+  requestId:str,referencesRevision:integer,grants:array(object({id:str,revision:integer,subject:object({kind:choices('entry','source'),id:str})})),
+  scope: object({ spaceId:str,workProjectId:str,spaceArchived:bool,executionProjectId: str, sessionId: str, parentProjectId: str, membershipRevision: integer, inherited: bool }, ['executionProjectId', 'membershipRevision', 'inherited']),
   estimatedTokens: integer, budget: num,
   items: array(object({ id: str, revision: integer, title: str, reason: str, estimatedTokens: integer, sources: array(sourceRef) }, ['id', 'revision', 'title', 'reason', 'estimatedTokens'])),
   skipped: array(object({ id: str, reason: str })), enabled: bool,
@@ -89,7 +90,7 @@ const schemas = {
   memory_search: object({ items: array(object({ ...entry.properties, staleReason: str, expired: bool, score: num, reason: str },
     [...entry.required, 'expired', 'score', 'reason'])), total: integer, limit: num, offset: num, truncated: bool }),
   memory_read: object({ entry: ref('entry'), revisions: array(ref('entry')), related: array(ref('relationship')),
-    sources: array(object({ ...sourceRef.properties, current: ref('source'), original: ref('source') }, sourceRef.required)) }),
+    sources: array(object({ ...sourceRef.properties,unavailable:str, current: ref('source'), original: ref('source') }, sourceRef.required)) }),
   memory_propose: object({ entry: ref('entry') }),
   memory_update: object({ entry: ref('entry') }),
   memory_link: object({ relationships: array(ref('relationship')) }),

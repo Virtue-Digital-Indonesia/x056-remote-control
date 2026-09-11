@@ -89,15 +89,17 @@ describe('Project memory inheritance', () => {
     const manager = new SessionManager({ stateDir, workspaceRoot, chatEnabled: true, projectSpacesEnabled: true,
       runSessionFn: async o => { calls.push(o); await new Promise<void>(r => { finish = r; }); return { status: 'completed', failovers: 1 }; } }); managers.push(manager);
     const parent = manager.createProjectSpace({ requestId: 'memory-parent-001', name: 'Proposal' }), chat = manager.createChat({ requestId: 'memory-chat-001' });
-    ProjectRegistry.load(join(stateDir, 'projects.json')).moveChat(chat.id, parent.id, 0, 'memory-move-001');
+    manager.setProjectAutomationPauser(()=>{});
+    manager.moveProjectChat(chat.id,{parentProjectId:parent.id,expectedRevision:manager.projectContext().resolve(chat.id,chat.lastSessionId).membershipRevision,operationId:'memory-move-001'});
     const store = manager.memory(); stores.push(store);
-    const approved = store.create({ title: 'Approved brief', content: 'Keep document originals.', kind: 'context', tags: ['project-brief'], projectId: parent.id, status: 'confirmed', pinned: true });
+    const approved = store.create({ title: 'Approved brief', content: 'Keep document originals.', kind: 'context', tags: ['project-brief'], scope:'space',spaceId:parent.id, status: 'confirmed', pinned: true });
     const other = manager.createProject('Unrelated');
     const privateNote = store.create({ title: 'Private decision', content: 'Unrelated information', projectId: other.id, status: 'confirmed', pinned: true });
     const controller = new MemoryController(manager, stateDir);
     const q = { callerProjectId: chat.id, callerSessionId: chat.lastSessionId!, projectId: other.id };
     expect(controller.search(q).items.map(e => e.id)).toEqual([approved.id]);
     expect(() => controller.entry(privateNote.id, undefined, undefined, undefined, chat.id, chat.lastSessionId)).toThrow('scope');
+    const grant=controller.share({operationId:'review-memory-share-001',subject:{kind:'entry',id:privateNote.id},expectedVersion:'1',recipient:{kind:'space',id:parent.id},expectedRevision:0,active:true});
     const preview = controller.context(chat.id, chat.lastSessionId!, 'proposal');
     expect(preview.preview).toBe(true);
     manager.continueSession(chat.id, chat.lastSessionId!, 'proposal');
@@ -106,6 +108,9 @@ describe('Project memory inheritance', () => {
     calls[0].log.append({ type: 'turn_started', account: 'b' });
     expect(calls[0].prompt).toContain('Keep document originals.');
     expect(calls[0].prompt).not.toContain('Changed after dispatch.');
+    await expect(calls[0].accountEligibility!()).resolves.toEqual({});
+    controller.share({operationId:'review-memory-revoke-001',subject:grant.subject,expectedVersion:'1',recipient:grant.recipient,expectedRevision:grant.revision,active:false});
+    await expect(calls[0].accountEligibility!()).rejects.toThrow('Memory access changed');
     expect(store.contextHistory(chat.id, chat.lastSessionId)[0].items).toEqual(preview.items);
     finish(); await new Promise(r => setTimeout(r, 20));
   });

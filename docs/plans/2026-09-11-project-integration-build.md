@@ -31,8 +31,8 @@ Baseline checks passed before runtime edits: 866 tests across 79 files in 169.34
 | 1. Contracts and migration | Complete foundation; 23 focused checks and typecheck passed |
 | 2. Membership and dispatch | Complete; focused dispatch, file, recovery, and MCP checks passed |
 | 3. Integration UI | Complete; two browser workflows, 24 focused tests, and typecheck passed |
-| 4. Memory scope and sharing | Next |
-| 5. File sources | Pending |
+| 4. Memory scope and sharing | Complete; scope, grant, reference, handoff, MCP, and browser checks passed |
+| 5. File sources | Next |
 | 6. Release preparation | Pending |
 
 No new production migration or deployment is authorized by this implementation request. Use isolated state for write tests. Continue until the requested implementation and local acceptance are complete; retain any remaining live-provider checks explicitly.
@@ -70,3 +70,17 @@ Two isolated browser workflows passed. They cover membership precedence, referen
 The checks found a missing overview route and a view-close action that changed its URL. Both are fixed. A final focused run passed 24 tests, including requirement changes during asynchronous tool discovery. Typecheck and script syntax checks passed.
 
 The original memory and cost browser checks will be extended after their Stage 4 and Stage 6 integration. No production panel, state, or deployment changed.
+
+## Stage 4 evidence
+
+Memory now distinguishes Space ownership from original Work, Chat, and conversation scopes. Association inherits Space notes without promoting repository notes or sibling transcripts. The operator's Space source view filters exact member conversations. Agent reads require their own eligibility check.
+
+Typed grants support reviewed sharing and revocation. A note grant exposes its approved text without granting the whole source document. Reads retain version and grant metadata. Derived proposals retain source grant dependencies. Imported grants remain inactive until review.
+
+Selected references bind exact revisions and deliberate retrieval exceptions to the next message's request ID. Draft refresh, queueing, and account retries retain that ID. Dispatch and failover validate the snapshot against current membership, references, exclusions, and grants. A revoked handoff dependency keeps its queued text for review.
+
+The Memory UI now supports Space owners, sharing recipients, revoke actions, source sharing, and searching other Projects for message references. Existing settings and exclusions still apply. A selected reference cannot override an unconfirmed note or excluded source.
+
+Validation covered 84 tests across seven focused files, including both providers, MCP output contracts, handoffs, and exact-session dispatch. Typecheck and script syntax checks passed. The isolated browser workflow passed sharing, revocation, deliberate turn exceptions, mobile layout, draft refresh, and message binding. No JavaScript errors occurred.
+
+Document passage indexing and source uploads follow in Stage 5. No production panel, state, or deployment changed.
