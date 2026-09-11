@@ -40,7 +40,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   function restoreMemory() { const memory = $('crMemory'); $('rcProjectBrief')?.remove(); if($('memoryProject'))$('memoryProject').disabled=false; if (memory && memory.parentNode !== $('crWorkspace')) $('crWorkspace').append(memory); }
   function leave() {
     restoreMemory(); document.body.classList.remove('rc-spaces-view'); $('rcProjectPage').hidden = true;
-    $('crSpacesTab').removeAttribute('aria-current');if($('crBreadcrumb'))$('crBreadcrumb').innerHTML='Workspace <span>/ Work</span>';
+    $('crSpacesTab').removeAttribute('aria-current');if($('crBreadcrumb'))$('crBreadcrumb').innerHTML='Workspace<span class="crumb-sep">/</span><span>Work</span>';
   }
   async function navigate(url, replace = false) {
     if (location.pathname !== url) history[replace ? 'replaceState' : 'pushState']({}, '', url);
@@ -77,7 +77,7 @@ window.createProjectSpaces = function (engine, room, chat) {
       $('crSpacesTab').setAttribute('aria-current', 'page'); $('crBoardTab').removeAttribute('aria-current');
       $('rcProjectPage').innerHTML = '<p class="cr-empty" role="status">Loading Project…</p>';
       await load(); if (generation !== version || location.pathname !== url) return;
-      activeId = segments[1] || ''; activeTab = segments[2] || 'overview';if($('crBreadcrumb'))$('crBreadcrumb').innerHTML=link('/projects','Projects')+' <span>/ '+esc(projects.find(p=>p.id===activeId)?.name||'All projects')+'</span>';room.refresh();
+      activeId = segments[1] || ''; activeTab = segments[2] || 'overview';if($('crBreadcrumb'))$('crBreadcrumb').innerHTML=link('/projects','Projects')+'<span class="crumb-sep">/</span><span>'+esc(projects.find(p=>p.id===activeId)?.name||'All projects')+'</span>';room.refresh();
       if (!activeId) renderList();
       else {
         let project = projects.find(p => p.id === activeId);
@@ -125,7 +125,7 @@ window.createProjectSpaces = function (engine, room, chat) {
       $('rcProjectBrief').onclick=()=>editBrief(p);
       document.body.classList.add('rc-spaces-view'); $('rcProjectPage').hidden = false;
       $('crMemoryTab').removeAttribute('aria-current'); $('crSpacesTab').setAttribute('aria-current', 'page');
-      $('crBreadcrumb').innerHTML=link('/projects','Projects')+' <span>/ '+esc(p.name)+'</span>';
+      $('crBreadcrumb').innerHTML=link('/projects','Projects')+'<span class="crumb-sep">/</span><span>'+esc(p.name)+'</span>';
     }
     if (activeTab === 'settings') renderSettings(p);
   }
@@ -431,6 +431,7 @@ window.createProjectSpaces = function (engine, room, chat) {
     const identity=pid+'::'+sid;if(linksIdentity===identity)return;linksIdentity=identity;
     try{const ops=await request('/api/project-spaces/handoffs?'+new URLSearchParams({projectId:pid,sessionId:sid}));if(linksIdentity!==identity)return;
       const host=$('rcProjectHandoffLinks');if(!host)return;
+      queueMicrotask(()=>{const bar=$('rcProjectContext');if(bar&&engine.state().sessionId)bar.hidden=contextEmpty();});
       host.innerHTML=ops.slice(-6).map(op=>{const other=op.target?.projectId===pid&&op.target?.sessionId===sid?{projectId:op.input.sourceProjectId,sessionId:op.input.sourceSessionId}:op.target;const p=engine.state().projects.find(p=>p.id===other?.projectId);return p?link(conversationPath(p,other.sessionId),'Linked '+(p.kind==='chat'?'Chat':'Work'),'cr-secondary'):'';}).join('');
     }catch{linksIdentity='';}
   }
@@ -442,14 +443,16 @@ window.createProjectSpaces = function (engine, room, chat) {
     host.hidden = !state.sessionId || !p || !room.isOpen();
     if (host.hidden) {contextSignature='';return;}
     const signature=JSON.stringify([p.id,p.name,parent?.id,parent?.name,parent?.workspaceConfigured,p.conversations?.find(c=>c.sessionId===state.sessionId)?.membershipRevision,state.sessionId]);if(signature===contextSignature)return;contextSignature=signature;
-    host.innerHTML = `${parent ? link(path(parent.id), icon('folder') + esc(parent.name), 'rc-space-parent') : '<span>Standalone '+(p.kind==='chat'?'Chat':'Work')+'</span>'}${parent ? link(path(parent.id, 'files'), 'Project files', 'cr-secondary') : ''}${p.kind!=='chat'?'<button class="cr-secondary" data-tools>Tools</button>':''}<button class="cr-secondary" data-context>${parent ? 'Using project memory' : 'Memory context'}</button><button class="cr-secondary" data-membership>Change Project</button>`;
-    host.querySelector('[data-context]').onclick = () => room.memoryContext({ projectId: p.id, sessionId: state.sessionId });
+    // Everything else this bar used to carry has its own home: the Project in the
+    // breadcrumb, its files and membership on the Project page, memory and the
+    // handoffs in the conversation menu. Tools has nowhere else to live.
+    host.innerHTML = p.kind!=='chat' ? '<button class="cr-secondary" data-tools>Tools</button>' : '';
     if(host.querySelector('[data-tools]'))host.querySelector('[data-tools]').onclick=()=>chat.tools(p.id);
-    const handoffButton=document.createElement('button');handoffButton.className='cr-secondary';handoffButton.textContent=p.kind==='chat'?'Continue in Work':'Discuss in Chat';handoffButton.disabled=p.kind==='chat'&&!parent?.workspaceConfigured;handoffButton.title=handoffButton.disabled?'Add this Chat to a Project with a Work workspace':'';handoffButton.onclick=()=>handoff(p.kind==='chat'?'work':'chat');host.append(handoffButton);
-    if(p.kind==='chat'){const fresh=document.createElement('button');fresh.className='cr-secondary';fresh.textContent='Fresh linked Chat';fresh.onclick=()=>handoff('chat',true);host.append(fresh);}
-    const links=document.createElement('span');links.id='rcProjectHandoffLinks';host.append(links);linksIdentity='';updateHandoffLinks(p.id,state.sessionId);
-    const move = host.querySelector('[data-membership]'); if (move) move.onclick = () => membershipDialog(p);
+    const links=document.createElement('span');links.id='rcProjectHandoffLinks';host.append(links);linksIdentity='';
+    host.hidden=contextEmpty();updateHandoffLinks(p.id,state.sessionId);
   }
+  // A bar holding nothing would still take its margin out of the transcript.
+  function contextEmpty(){const host=$('rcProjectContext');return !host.querySelector('button')&&!$('rcProjectHandoffLinks')?.innerHTML;}
   document.addEventListener('click', event => {
     if (!mounted || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const a = event.target.closest('a[data-space-link]'); if (!a) return;
@@ -466,6 +469,17 @@ window.createProjectSpaces = function (engine, room, chat) {
   document.addEventListener('x056:event',event=>{if(enabled&&event.detail.kind==='projects')load().then(()=>{updateContext();room.refresh();}).catch(e=>room.notify(e.message));});
   document.addEventListener('x056:mode', () => setTimeout(updateContext, 0));
   return {
+    // The conversation context bar is gone; these belong with the other
+    // conversation-level actions, in the conversation menu.
+    conversationItems:()=>{
+      const state=engine.state(),source=state.projects.find(p=>p.id===state.projectId),sid=state.sessionId;
+      if(!enabled||!source||!sid)return [];
+      const parent=projects.find(p=>p.id===scopeOf(source,sid)),isChat=source.kind==='chat';
+      const items=[{label:isChat?'Continue in Work':'Discuss in Chat',icon:isChat?'terminal':'chat',disabled:isChat&&!parent?.workspaceConfigured,run:()=>handoff(isChat?'work':'chat')}];
+      if(isChat)items.push({label:'Start a fresh linked Chat',icon:'compose',run:()=>handoff('chat',true)});
+      items.push({label:'Change Project',icon:'folder',run:()=>membershipDialog(source,undefined,isChat?undefined:sid)});
+      return items;
+    },
     enabled: () => enabled, list:()=>projects, scopeOf, handles, navigate, leave:()=>{generation++;leave();}, newWork:pid=>{const execution=engine.state().projects.find(p=>p.id===pid);if(execution?.cwd)newConversation(projects.find(p=>p.id===execution.workSpaceId),'work',pid);}, createFromWork:pid=>createProject(pid), newProject:()=>createProject(), membershipDialog, conversationPath, reviewQueue, resumeAutopilot, shareChatFile, importArtifact,
     openConversation: (pid, sid) => { const p = engine.state().projects.find(p => p.id === pid); if (p) return navigate(conversationPath(p, sid)); },
     init: async () => { try { const data = await load(); enabled = data.enabled; mount(); await route(); updateContext(); } catch (error) { room.notify(error.message); } },

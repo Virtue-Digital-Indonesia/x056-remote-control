@@ -13,6 +13,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   for(const [url,name] of settingsSections)if(url!=='/settings')labels[url]='Settings / '+name;
   const settingsRoute=p=>settingsSections.some(([url])=>url===p);
   const sectionOf=p=>(settingsSections.find(([url])=>url===p)||settingsSections[0])[2];
+  const SEP='<span class="crumb-sep">/</span>';
   const link=(url,text,cls='')=>`<a href="${esc(url)}" data-workspace-link class="${cls}">${text}</a>`;
   let mounted=false,navSignature='',navContext='',renderTimer,routeSerial=0,activeRoute='',returnPath='/home';
   const handles=p=>Object.hasOwn(globals,canonical(p));
@@ -41,7 +42,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     document.querySelectorAll('[data-global-destination]').forEach(a=>{const href=a.getAttribute('href'),selected=href===pathname||(pathname==='/'&&href==='/home')||(['/activity','/accounts'].includes(href)&&pathname.startsWith(href+'/'));if(selected)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
     const p=projects.find(p=>p.id===current.id);
     const name=p?.name||labels[pathname]||(pathname==='/projects'?'All Projects':pathname.startsWith('/chat')?'Chat':pathname.startsWith('/work')?'Work':'Workspace');
-    $('crBreadcrumb').innerHTML=link('/home','Workspace')+` <span>/</span> `+(p?link('/projects/'+encodeURIComponent(p.id)+'/overview',esc(name))+` <span>/ ${esc(current.tab[0].toUpperCase()+current.tab.slice(1))}</span>`:`<span>${esc(name)}</span>`);
+    $('crBreadcrumb').innerHTML=link('/home','Workspace')+SEP+(p?link('/projects/'+encodeURIComponent(p.id)+'/overview',esc(name))+SEP+`<span>${esc(current.tab[0].toUpperCase()+current.tab.slice(1))}</span>`:`<span>${esc(name)}</span>`);
     if(document.body.dataset.chatMode==='page')$('controlRoom').inert=false;
     const drawerOpen=innerWidth<=850&&$('controlRoom').classList.contains('projects-open');
     document.querySelectorAll('#crWorkspace>.cr-page').forEach(n=>n.inert=document.body.dataset.chatMode==='page'||drawerOpen);

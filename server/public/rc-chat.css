@@ -1,6 +1,6 @@
 #rcChatNav,#rcChatInspector,#rcChatControls{display:none}
 body.rc-chat-active #conversationSurface{inset:0;width:100%;max-width:none;height:100dvh;display:grid!important;grid-template-columns:240px minmax(320px,1fr) 350px;border:0;border-radius:0;transform:none;box-shadow:none;z-index:60}
-body.rc-chat-active #focusNav,body.rc-chat-active #conversationStage,body.rc-chat-active #chatMax,body.rc-chat-active #chatClose{display:none!important}
+body.rc-chat-active #focusNav,body.rc-chat-active #conversationStage,body.rc-chat-active #chatClose{display:none!important}
 body.rc-chat-active #rcChatNav,body.rc-chat-active #rcChatInspector{display:flex;flex-direction:column;min-width:0;background:var(--bg,#f7f8f7);padding:18px;gap:14px;overflow:hidden}
 body.rc-chat-active #rcChatNav{border-right:1px solid var(--line,#dedfdb)}
 body.rc-chat-active #rcChatInspector{border-left:1px solid var(--line,#dedfdb);padding:0;gap:0}

@@ -25,7 +25,7 @@ window.createControlRoom = function (engine) {
   [content, content.querySelector('.topbar'), content.querySelector('.composer-wrap')].forEach(node => workflowResize.observe(node));
   main.insertAdjacentHTML('afterbegin', `<nav id="focusNav" aria-label="Focus navigation"><button class="cr-logo" id="focusHome" title="Back to Control room">x0</button>${iconButton('focusBack','left','Back to Control room')}${iconButton('focusSearch','search','Search conversations')}${iconButton('focusNew','compose','New conversation')}<span class="sp"></span>${iconButton('focusAccounts','user','Accounts')}${iconButton('focusSettings','gear','Display settings')}</nav>`);
   // The existing toolbar actions remain wired; less-used actions live in More.
-  main.querySelector('.topbar').insertAdjacentHTML('beforeend', `<button class="cr-secondary" id="chatActivity">${ic('sparkles')}<span>Activity</span><small id="chatActivityCount"></small></button>${iconButton('chatResults','file','Conversation results')}${iconButton('chatRefresh','refresh','Refresh conversation')}${iconButton('chatMax','expand','Maximize conversation')}${iconButton('chatClose','x','Close conversation')}`);
+  main.querySelector('.topbar').insertAdjacentHTML('beforeend', `<button class="cr-secondary" id="chatActivity">${ic('sparkles')}<span>Activity</span><small id="chatActivityCount"></small></button>${iconButton('chatResults','file','Conversation results')}${iconButton('chatRefresh','refresh','Refresh conversation')}${iconButton('chatClose','x','Close conversation')}`);
   const shell = document.createElement('section'); shell.id = 'controlRoom'; shell.setAttribute('aria-label', 'Control room');
   shell.innerHTML = `<header class="cr-top"><button class="cr-logo" id="crHome">x0<span>x056</span></button><nav aria-label="Main navigation"><button id="crBoardTab" aria-current="page">Control room</button><button id="crAccountsTab">Accounts</button></nav><span class="sp"></span><span id="crConnection" class="cr-connection">Connecting</span>${iconButton('crProjects','folder','Projects')}${iconButton('crTheme','moon','Change theme')}${iconButton('crSettings','gear','Display settings')}${iconButton('crNotifications','bell','Notifications')}</header>
   <div id="crBoard" class="cr-page"><div class="cr-heading"><div><div class="cr-eyebrow">CONVERSATIONS</div><h1 id="crScopeTitle">All projects</h1><p id="crScopeSubtitle">Conversations across your workspace</p></div><div class="cr-actions">${iconButton('crScopeActions','more','Project actions')}<button id="crSelectToggle" class="cr-secondary">Select</button><button class="cr-primary" id="crNew">${ic('plus')} New conversation</button></div></div><div id="crStats" class="cr-stats"></div><div class="cr-tools"><div class="cr-tabs" role="group" aria-label="Conversation filter"><button data-filter="all" class="selected">All conversations</button><button data-filter="question">Needs input</button><button data-filter="active">Running</button><button data-filter="unread">Unread</button><button data-filter="draft">Draft</button><button data-filter="archived">Archived</button></div><label class="cr-search">${ic('search')}<input id="crSearch" type="search" placeholder="Search conversations…" aria-label="Search conversations" /></label><select id="crProjectFilter" aria-label="Filter by project"><option value="">All projects</option></select></div><div id="crBulkBar" class="workspace-bulk" hidden><strong>0 selected</strong><button id="crBulkAll">Select all matches</button><button id="crBulkClear">Clear</button><button data-bulk="archive">Archive</button><button data-bulk="restore">Restore</button><button data-bulk="tag">Tags</button><button data-bulk="titles">Suggest titles</button><button data-bulk="pin">Pin</button><button data-bulk="unpin">Unpin</button><button data-bulk="read">Mark read</button><button data-bulk="unread">Mark unread</button></div><div id="crBoardError" role="status"></div><div class="cr-board" id="crLanes"></div></div>
@@ -44,18 +44,18 @@ window.createControlRoom = function (engine) {
   primaryNav.insertAdjacentHTML('beforeend', '<button id="crAutomationsTab">'+ic('alarm')+'<span>Automations</span></button>');
   primaryNav.insertAdjacentHTML('beforeend','<button id="crArtifactsTab">'+ic('file')+'<span>Artifacts</span></button><button id="crPlannerTab">'+ic('menu')+'<span>Queue planner</span></button>');
   $('crProjectNav').insertAdjacentHTML('beforeend','<button id="sidebarSettings" class="cr-project-manage">'+ic('gear')+'Settings</button>');
-  $('crHome').insertAdjacentHTML('afterend','<span id="crBreadcrumb">Workspace <span>/ Control room</span></span>');
+  $('crHome').insertAdjacentHTML('afterend','<span id="crBreadcrumb">Workspace<span class="crumb-sep">/</span><span>Control room</span></span>');
   const projectVeil = document.createElement('div'); projectVeil.id='crProjectVeil'; projectVeil.hidden=true; shell.append(projectVeil);
   // Account selection stays next to the composer, in every presentation mode.
   content.querySelector('.composer').insertAdjacentHTML('beforeend', '<div class="composer-footer"><button id="sendAccountChip" class="send-account-chip" aria-haspopup="dialog"></button></div>');
   if($('deliveryStrip'))content.querySelector('.composer-footer').append($('deliveryStrip'));
   const sendAccounts = document.createElement('dialog'); sendAccounts.id='sendAccountPicker'; sendAccounts.className='cr-dialog';sendAccounts.setAttribute('aria-label','Choose an account'); document.body.append(sendAccounts);
-  const veil = document.createElement('div'); veil.id = 'chatVeil'; veil.hidden = true; document.body.append(veil);
+
   const preferences = document.createElement('dialog'); preferences.id = 'displayPreferences'; preferences.className = 'cr-dialog'; preferences.setAttribute('aria-label','Settings');
-  preferences.innerHTML = `<form method="dialog"><header><h2>Make yourself at home</h2><button class="cr-icon" aria-label="Close settings" value="close">${ic('x')}</button></header><p>Choose how conversations open on this device.</p><fieldset><legend>Open conversations in</legend><div class="cr-options"><label><input type="radio" name="open" value="side"><span>${ic('menu')}<strong>Side panel</strong><small>Keep the Control room in view</small></span></label><label><input type="radio" name="open" value="max"><span>${ic('expand')}<strong>Maximized</strong><small>Give the conversation more space</small></span></label></div></fieldset><fieldset><legend>When maximized</legend><div class="cr-options"><label><input type="radio" name="maximize" value="page"><span>${ic('expand')}<strong>Full page</strong><small>Fill the app with Focus mode</small></span></label><label><input type="radio" name="maximize" value="modal"><span>${ic('snippet')}<strong>Large modal</strong><small>A centered chat without a sidebar</small></span></label></div></fieldset><footer><small>Saved automatically on this device.</small><button class="cr-primary">Done</button></footer></form>`;
+  preferences.innerHTML = '';
   document.body.append(preferences);
-  let prefs = { open: 'max', maximize: 'modal' };
-  try { const saved = JSON.parse(localStorage.getItem('x056_display_preferences') || localStorage.getItem('x056_draft_chat_preferences_v1') || '{}'); if (['side','max','maximized'].includes(saved.open)) prefs.open = saved.open === 'maximized' ? 'max' : saved.open; if (['page','modal'].includes(saved.maximize)) prefs.maximize = saved.maximize; } catch {}
+
+
   let conversationLabelOrder = 'conversation';
   try { if (localStorage.getItem('x056_conversation_label_order') === 'project') conversationLabelOrder = 'project'; } catch {}
   document.body.dataset.conversationLabelOrder = conversationLabelOrder;
@@ -311,17 +311,13 @@ window.createControlRoom = function (engine) {
     document.dispatchEvent(new CustomEvent('x056:mode',{detail:{mode:next}}));
     document.body.dataset.chatMode = mode;
     main.hidden = mode === 'closed';
-    veil.hidden = mode !== 'modal';
-    shell.inert = mode === 'modal' || mode === 'page' && !document.body.classList.contains('rc-workspace-ready');
-    main.setAttribute('role', mode === 'modal' ? 'dialog' : 'region');
+    shell.inert = mode === 'page' && !document.body.classList.contains('rc-workspace-ready');
+    main.setAttribute('role', 'region');
     main.setAttribute('aria-label', 'Conversation');
-    if (mode === 'modal') main.setAttribute('aria-modal','true'); else main.removeAttribute('aria-modal');
-    $('chatMax').title = $('chatMax').ariaLabel = mode === 'side' ? 'Open large modal' : mode === 'modal' ? 'Open full screen' : 'Return to large modal';
     if (mode !== 'closed') restorePosition();
-    if(mode==='modal')main.setAttribute('aria-owns','conversationStage');else main.removeAttribute('aria-owns');
     renderStage();
   }
-  function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode(prefs.open === 'side' ? 'side' : prefs.maximize); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
+  function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode('page'); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
   function close(preserveRoute=false) { if(!preserveRoute&&window.rcProjectSpaces?.enabled() && /^\/work\/.+/.test(location.pathname)) history.pushState({}, '', '/work'); engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
   function pageFor(name) { return $('cr'+({board:'Board',accounts:'Accounts',automations:'Automations',artifacts:'Artifacts',planner:'Planner',memory:'Memory'}[name])); }
   function showSection(next,preserveRoute=false) {
@@ -329,7 +325,7 @@ window.createControlRoom = function (engine) {
     close(preserveRoute); engine.nav(false); section = next; projectNav(false);
     ['board','accounts','automations','artifacts','planner','memory'].forEach(name=>pageFor(name).hidden=name!==next);
     ['Board','Accounts','Automations','Artifacts','Planner','Memory'].forEach(name=>$('cr'+name+'Tab').setAttribute('aria-current',next===name.toLowerCase()?'page':'false'));
-    $('crBreadcrumb').innerHTML='Workspace <span>/ '+({board:'Control room',accounts:'Dashboard',automations:'Automations',artifacts:'Artifact library',planner:'Queue planner',memory:'Memory'}[next])+'</span>';
+    $('crBreadcrumb').innerHTML='Workspace<span class="crumb-sep">/</span><span>'+({board:'Control room',accounts:'Dashboard',automations:'Automations',artifacts:'Artifact library',planner:'Queue planner',memory:'Memory'}[next])+'</span>';
     if(next==='accounts') { renderAccountsPage(); renderProjectCosts(); loadProjectCosts(); loadAnalytics(); engine.pollAccounts(); }
     else if(next==='automations') { $('cronBtn').click(); loadAutomationAutopilots(); }
     else if(next==='artifacts'){$('artifactProject').innerHTML=workspaceProjectOptions();loadArtifacts();}
@@ -340,7 +336,7 @@ window.createControlRoom = function (engine) {
     if(!preserveRoute)window.rcWorkspace?.sectionChanged(next);
   }
   function settings(tab='general') { engine.closePops(); if(window.rcWorkspace?.ready()&&window.rcWorkspace.openSettings){window.rcWorkspace.openSettings(tab);return;} settingsTab(tab,preferences); if(!preferences.open) preferences.showModal(); }
-  document.addEventListener('change', e => { if (!['open','maximize'].includes(e.target.name) || !generalFields.some(f => f.contains(e.target))) return; prefs[e.target.name] = e.target.value; try { localStorage.setItem('x056_display_preferences', JSON.stringify(prefs)); } catch { toast('This browser could not save display settings.'); } if (['page','modal'].includes(mode)) setMode(prefs.maximize); });
+
   const on = (id, fn) => $(id).addEventListener('click', fn);
   ['crSettings','sidebarSettings','focusSettings'].forEach(id => on(id, () => settings()));
   on('crTheme', e=>themeMenu(e.currentTarget));
@@ -361,8 +357,8 @@ window.createControlRoom = function (engine) {
     catch(err){toast('Could not refresh. '+err.message);}
     finally{button.disabled=false;button.removeAttribute('aria-busy');}
   });
-  on('chatClose', close); on('chatMax', () => setMode(mode === 'side' ? 'modal' : mode === 'modal' ? 'page' : 'modal'));
-  veil.addEventListener('click', close);
+  on('chatClose', close);
+
   $('acctChip').addEventListener('click', e => { e.stopImmediatePropagation(); engine.closePops(); showSection('accounts'); }, true);
   $('crSearch').addEventListener('input', () => {recentLimit=10;renderBoard();});
   $('crProjectFilter').addEventListener('change', () => selectProjectScope($('crProjectFilter').value));
@@ -376,7 +372,6 @@ window.createControlRoom = function (engine) {
       else if(!e.shiftKey&&(document.activeElement===last||!nodes.includes(document.activeElement))){e.preventDefault();first.focus();}
     }
     if (e.key === 'Escape' && mode !== 'closed') { e.preventDefault(); close(); }
-    if (e.key === 'Tab' && mode === 'modal') { const nodes = [...main.querySelectorAll('button,input,textarea,select,[tabindex="0"],a[href]'),...stage.querySelectorAll('button')].filter(n => n.offsetParent && !n.disabled && !n.hidden); const first = nodes[0], last = nodes[nodes.length-1]; if (e.shiftKey && (document.activeElement === first || (!main.contains(document.activeElement)&&!stage.contains(document.activeElement)))) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
   });
   function updateTitle() {
     const state=engine.state(),project=state.projects.find(p=>p.id===state.projectId),conversation=project?.conversations?.find(c=>c.sessionId===state.sessionId);
@@ -869,8 +864,6 @@ window.createControlRoom = function (engine) {
     utility.querySelector('button').onclick=closeUtility;utility.querySelector('.utility-body').append(el);el.hidden=false;el.classList.add('integrated-pop');
     if(!utility.open)utility.showModal();
   }
-  const oldPreferenceForm=preferences.querySelector('form');
-  const generalFields=[...oldPreferenceForm.querySelectorAll('fieldset')];
   settingsHost=preferences;
   // Settings borrows real controls (the plugin, MCP and passkey pops, the display
   // fieldsets). Send them home before a surface is rewritten, so the dialog and the
@@ -895,15 +888,13 @@ window.createControlRoom = function (engine) {
     }
     const body=$('settingsBody');
     if(tab==='general'){
-      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Conversation labels</h3>${segmented('conversationLabelOrder',[['conversation','Conversation first'],['project','Project first']],conversationLabelOrder,'Conversation label order')}<p>Choose which name leads in conversation lists and details. Saved on this device.</p></section><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats'],['smart','Smart']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><section class="stage-settings recent-settings"><h3>Control room recents</h3><div class="setting-row"><label for="recentActivityWindow"><strong>Activity window</strong><small>Use the latest message or newly created time</small></label><select id="recentActivityWindow"><option value="1">Past day</option><option value="7">Past 7 days</option><option value="30">Past 30 days</option><option value="0">Any time</option></select></div><div class="setting-row"><label for="recentMaximum"><strong>Maximum conversations</strong><small>Search still finds older conversations</small></label><select id="recentMaximum"><option value="10">10</option><option value="20">20</option><option value="50">50</option></select></div></section><div id="displayFields"></div><div class="setting-row"><span><strong>Conversation titles</strong><small>Automatic naming and saved title suggestions</small></span><button class="cr-secondary" id="settingsTitles">Manage</button></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
+      body.innerHTML=`<h3>Appearance</h3><div class="theme-choices">${[['system','auto','Follow device'],['light','sun','Light'],['dark','moon','Dark']].map(([v,i,t])=>`<button data-theme-choice="${v}" aria-pressed="${engine.theme()===v}">${ic(i)}<span>${t}</span></button>`).join('')}</div><section class="stage-settings"><h3>Conversation labels</h3>${segmented('conversationLabelOrder',[['conversation','Conversation first'],['project','Project first']],conversationLabelOrder,'Conversation label order')}<p>Choose which name leads in conversation lists and details. Saved on this device.</p></section><section class="stage-settings"><h3>Desktop conversation switcher</h3>${segmented('stageMode',[['pinned','Pinned only'],['recent','Recent chats'],['smart','Smart']],stageMode,'Conversation switcher mode')}<p id="stageModeHelp"></p></section><section class="stage-settings recent-settings"><h3>Control room recents</h3><div class="setting-row"><label for="recentActivityWindow"><strong>Activity window</strong><small>Use the latest message or newly created time</small></label><select id="recentActivityWindow"><option value="1">Past day</option><option value="7">Past 7 days</option><option value="30">Past 30 days</option><option value="0">Any time</option></select></div><div class="setting-row"><label for="recentMaximum"><strong>Maximum conversations</strong><small>Search still finds older conversations</small></label><select id="recentMaximum"><option value="10">10</option><option value="20">20</option><option value="50">50</option></select></div></section><div class="setting-row"><span><strong>Conversation titles</strong><small>Automatic naming and saved title suggestions</small></span><button class="cr-secondary" id="settingsTitles">Manage</button></div><div class="setting-row"><span><strong>Notifications</strong><small>Messages and requests that need your attention</small></span><button class="cr-secondary" id="settingsNotify">Manage</button></div><div class="setting-row"><span><strong>Keyboard shortcuts</strong><small>Navigate and send messages from your keyboard</small></span><button class="cr-secondary" id="settingsShortcuts">View shortcuts</button></div>`;
       const stageHelp=()=>{$('stageModeHelp').textContent=stageMode==='pinned'?'Only chats you pin appear in the bubbles. The separate running indicator stays visible.':stageMode==='smart'?'Pinned chats, then requests for input, unread replies, running work, and your last few chats. Up to 8 chats, plus any extra pins. Dismiss any chat to remove it.':'Recent and running chats appear in the bubbles. The separate running indicator is hidden on desktop.';};stageHelp();wireSegment('conversationLabelOrder',setConversationLabelOrder);wireSegment('stageMode',value=>{setStageMode(value);stageHelp();});
       $('stageMode').before(Object.assign(document.createElement('div'),{className:'setting-row stage-visibility',innerHTML:'<label for="stageVisible"><strong>Floating conversation switcher</strong><small>Show conversation bubbles on this device.</small></label><input type="checkbox" role="switch" class="setting-switch" id="stageVisible" '+(stageHidden?'':'checked')+'>'}));
       $('stageMode').querySelectorAll('button').forEach(b=>b.disabled=stageHidden);
       $('stageVisible').onchange=e=>setStageHidden(!e.target.checked);
-      for(const field of generalFields)$('displayFields').append(field);
       $('recentActivityWindow').value=String(recentPreferences.days);$('recentMaximum').value=String(recentPreferences.max);
       for(const id of ['recentActivityWindow','recentMaximum'])$(id).onchange=()=>{recentPreferences={days:Number($('recentActivityWindow').value),max:Number($('recentMaximum').value)};recentLimit=Math.min(10,recentPreferences.max);try{localStorage.setItem('x056_recent_preferences',JSON.stringify(recentPreferences));}catch{toast('This browser could not save recent settings.');}renderBoard();};
-      for(const name of ['open','maximize'])settingsHost.querySelector(`input[name="${name}"][value="${prefs[name]}"]`).checked=true;
       body.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{engine.setTheme(b.dataset.themeChoice);syncTheme();body.querySelectorAll('[data-theme-choice]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));});
       on('settingsTitles',showTitleSettings);on('settingsNotify',e=>notificationMenu(e.currentTarget));on('settingsShortcuts',()=>$('shortcutsBtn').click());
     } else if(tab==='models') {
@@ -1019,7 +1010,7 @@ window.createControlRoom = function (engine) {
   function themeMenu(anchor){openMenu(anchor,[['system','auto','Follow device theme'],['light','sun','Light'],['dark','moon','Dark']].map(([value,icon,label])=>({label,icon,checked:engine.theme()===value,run:()=>{engine.setTheme(value);syncTheme();}})));}
   function notificationMenu(anchor){const s=engine.state(),count=Object.keys(s.notifications).length;openMenu(anchor,[{label:'Unread conversations'+(count?' · '+count:''),icon:'bell',run:()=>{if(preferences.open)preferences.close();boardFilter='unread';shell.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('selected',b.dataset.filter==='unread'));showSection('board');}},{label:'Message approvals'+($('mcpApprovalsBadge').textContent?' · '+$('mcpApprovalsBadge').textContent:''),icon:'sparkles',run:()=>$('mcpApprovalsBtn').click()},{label:'Browser notifications',icon:'bell',run:()=>$('notifyBtn').click()}]);}
   function activityMenu(anchor){openMenu(anchor,[{label:'Usage & subagents',icon:'sparkles',run:()=>$('subagentsBtn').click()},{label:'Workflow runs',icon:'fanout',disabled:$('wfBtn').hidden,run:()=>$('wfBtn').click()},{label:'Message approvals',icon:'bell',run:()=>$('mcpApprovalsBtn').click()}]);}
-  function conversationMenu(anchor){const s=engine.state(),isChat=s.projects.find(p=>p.id===s.projectId)?.kind==='chat';openMenu(anchor,[{label:isStagePinned(s.projectId,s.sessionId)?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{const pinned=!isStagePinned(s.projectId,s.sessionId);pinStage(s.projectId,s.sessionId,pinned);toast(pinned?'Conversation pinned.':'Conversation unpinned.');}},{label:'Rename conversation',icon:'compose',disabled:!s.sessionId,run:engine.renameConversation},{label:'Suggest another title',icon:'sparkles',disabled:!s.sessionId,run:()=>showTitleSuggestions([{projectId:s.projectId,sessionId:s.sessionId}])},{label:'Resume a session',icon:'history',disabled:isChat,run:()=>$('resumeBtn').click()},{label:'Conversation results',icon:'file',disabled:!s.sessionId,run:()=>showResults()},{label:'Routing & accounts',icon:'repeat',disabled:!s.sessionId,run:()=>showRouting(s)},{label:'Continue with another provider',icon:'repeat',disabled:!s.sessionId||isChat,run:()=>showHandoff(s)},{label:'Conversation memory',icon:'snippet',run:()=>showMemoryContext()},{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'x',disabled:isChat||!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
+  function conversationMenu(anchor){const s=engine.state(),isChat=s.projects.find(p=>p.id===s.projectId)?.kind==='chat';openMenu(anchor,[{label:isStagePinned(s.projectId,s.sessionId)?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{const pinned=!isStagePinned(s.projectId,s.sessionId);pinStage(s.projectId,s.sessionId,pinned);toast(pinned?'Conversation pinned.':'Conversation unpinned.');}},{label:'Rename conversation',icon:'compose',disabled:!s.sessionId,run:engine.renameConversation},{label:'Suggest another title',icon:'sparkles',disabled:!s.sessionId,run:()=>showTitleSuggestions([{projectId:s.projectId,sessionId:s.sessionId}])},{label:'Resume a session',icon:'history',disabled:isChat,run:()=>$('resumeBtn').click()},{label:'Conversation results',icon:'file',disabled:!s.sessionId,run:()=>showResults()},{label:'Routing & accounts',icon:'repeat',disabled:!s.sessionId,run:()=>showRouting(s)},{label:'Continue with another provider',icon:'repeat',disabled:!s.sessionId||isChat,run:()=>showHandoff(s)},{label:'Conversation memory',icon:'snippet',run:()=>showMemoryContext()},...(window.rcProjectSpaces?.conversationItems?.()||[]),{label:'Message delivery',icon:'chat',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'x',disabled:isChat||!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
   const runningLabel=document.createElement('div');runningLabel.id='runningAccountLabel';runningLabel.hidden=true;content.querySelector('.composer').before(runningLabel);
   $('autopilotBtn').insertAdjacentHTML('beforeend','<span>Autopilot</span>');
   const syncActivity=()=>{$('chatActivityCount').textContent=$('subagentsBadge').textContent||'';};
@@ -2172,7 +2163,7 @@ window.createControlRoom = function (engine) {
     }
     const d = workspaceDialog(
       'Conversation memory',
-      `<div class="memory-context-controls"><label class="cr-search">${ic('search')}<input data-context-query type="search" aria-label="Preview context for a prompt" placeholder="Preview memory for a prompt" value="${esc(engine.promptText?.() || '')}"></label><button class="cr-secondary" data-context-refresh>Preview</button><button class="cr-secondary" data-turn-references>Search other Projects</button></div><div data-context-body>Loading…</div>`,
+      `<div class="memory-context-controls"><label class="cr-search">${ic('search')}<input data-context-query type="search" aria-label="Preview context for a prompt" placeholder="Preview memory for a prompt" value="${esc(engine.promptText?.() || '')}"></label><button class="cr-secondary" data-turn-references>Search other Projects</button></div><div data-context-body>Loading…</div>`,
     );
     d.classList.add('memory-detail-dialog');
     d.querySelector('[data-turn-references]').onclick=()=>referenceMemory(target,undefined,load);
@@ -2192,7 +2183,11 @@ window.createControlRoom = function (engine) {
         if (seq !== request || !d.open) return;
         const prefs = data.preferences,
           body = d.querySelector('[data-context-body]');
-        body.innerHTML = `<div class="memory-context-summary"><span><strong>${data.items.length} notes · ${(data.passages||[]).length} passages</strong> · ~${data.estimatedTokens} / ${data.budget} tokens</span><label class="workspace-check"><input type="checkbox" data-enabled ${prefs.enabled !== false ? 'checked' : ''}>Use memory here</label></div>${!data.enabled ? '<p class="cr-note">Retrieval is disabled for this conversation, project, provider, or slash command.</p>' : ''}<p class="cr-note">Preview for the next turn. Pins respect sharing, provider settings, exclusions, and the context budget.</p><h3>Included</h3>${data.items.map((i) => `<div class="memory-context-item"><button class="memory-row-main" data-memory-open="${esc(i.id)}"><strong>${esc(i.title)}</strong><small>v${i.revision} · ${esc(i.reason)}</small></button><button class="cr-icon" data-exclude="${esc(i.id)}" title="Exclude from this conversation" aria-label="Exclude ${esc(i.title)}">${ic('x')}</button></div>`).join('')}${memoryPassageRows(data.passages)}${!data.items.length&&!data.passages?.length?'<p class="cr-note">No matching notes or source passages.</p>':''}<details><summary>Choose context · ${available.total} eligible memories</summary>${available.items.map((e) => `<div class="memory-context-item"><span>${esc(e.title)}</span><label class="workspace-check"><input type="checkbox" data-pin="${esc(e.id)}" ${prefs.pinnedIds?.includes(e.id) ? 'checked' : ''}>Pin</label><label class="workspace-check"><input type="checkbox" data-allow="${esc(e.id)}" ${!prefs.excludedIds?.includes(e.id) ? 'checked' : ''}>Allow</label></div>`).join('')}</details>${data.skipped.length ? `<details><summary>${data.skipped.length} skipped</summary>${data.skipped.map((i) => `<p class="memory-meta">${esc(available.items.find((e) => e.id === i.id)?.title || i.id.slice(0, 8))} · ${esc(i.reason)}</p>`).join('')}</details>` : ''}<details><summary>Recent turns</summary>${memoryActivity(data.history.slice(0, 10))}</details>`;
+        const plural=(n,word)=>n+' '+word+(n===1?'':'s');
+        const pinButton=(id,title,pinned)=>`<button class="cr-icon memory-pin" data-pin="${esc(id)}" aria-pressed="${pinned?'true':'false'}" aria-label="${pinned?'Unpin':'Always include'} ${esc(title)}" title="${pinned?'Stop always including this here':'Always include this here'}">${ic('pin')}</button>`;
+        const row=(id,title,meta,pinned,included,offerPin)=>`<div class="memory-context-item"><button class="memory-row-main" data-memory-open="${esc(id)}"><strong>${esc(title)}</strong>${meta?`<small>${esc(meta)}</small>`:''}</button>${offerPin||pinned?pinButton(id,title,pinned):''}<label class="memory-switch"><span class="sr-only">Include ${esc(title)}</span><input type="checkbox" role="switch" class="setting-switch" data-allow="${esc(id)}" ${included?'checked':''}></label></div>`;
+        const eligible=available.items.filter(e=>!data.items.some(i=>i.id===e.id));
+        body.innerHTML = `<div class="memory-context-summary"><span>${plural(data.items.length,'note')}${(data.passages||[]).length?' · '+plural(data.passages.length,'passage'):''} · ~${data.estimatedTokens} of ${data.budget} tokens</span><label class="memory-switch"><span>Use memory here</span><input type="checkbox" role="switch" class="setting-switch" data-enabled ${prefs.enabled !== false ? 'checked' : ''}></label></div>${!data.enabled ? '<p class="cr-note">Retrieval is off for this conversation, project, provider, or slash command.</p>' : ''}<p class="cr-note">A preview of what the next turn will see. Pins still respect sharing, provider settings, and the token budget.</p><h3>In the next turn</h3>${data.items.map((i) => row(i.id,i.title,'v'+i.revision+' · '+i.reason,prefs.pinnedIds?.includes(i.id),true,false)).join('')}${memoryPassageRows(data.passages)}${!data.items.length&&!data.passages?.length?'<p class="cr-note">Nothing matches yet. Pin a memory below to always include it.</p>':''}${eligible.length?`<details><summary>Add another memory · ${eligible.length} available</summary>${eligible.map((e) => row(e.id,e.title,'',prefs.pinnedIds?.includes(e.id),!prefs.excludedIds?.includes(e.id),true)).join('')}</details>`:''}${data.skipped.length ? `<details><summary>${plural(data.skipped.length,'skipped memory').replace('memorys','memories')}</summary>${data.skipped.map((i) => `<p class="memory-meta">${esc(available.items.find((e) => e.id === i.id)?.title || i.id.slice(0, 8))} · ${esc(i.reason)}</p>`).join('')}</details>` : ''}<details><summary>Recent turns</summary>${memoryActivity(data.history.slice(0, 10))}</details>`;
         bindMemoryCitations(body);
         async function save(patch) {
           try {
@@ -2207,24 +2202,16 @@ window.createControlRoom = function (engine) {
           }
         }
         body.querySelector('[data-enabled]').onchange = (e) => save({ enabled: e.target.checked });
-        body
-          .querySelectorAll('[data-exclude]')
-          .forEach(
-            (b) =>
-              (b.onclick = () =>
-                save({ excludedIds: [...new Set([...(prefs.excludedIds || []), b.dataset.exclude])] })),
-          );
-        body
-          .querySelectorAll('[data-pin]')
-          .forEach(
-            (b) =>
-              (b.onchange = () =>
-                save({
-                  pinnedIds: b.checked
-                    ? [...new Set([...(prefs.pinnedIds || []), b.dataset.pin])]
-                    : (prefs.pinnedIds || []).filter((id) => id !== b.dataset.pin),
-                })),
-          );
+        body.querySelectorAll('[data-pin]').forEach((b) => {
+          b.onclick = () => {
+            const on = b.getAttribute('aria-pressed') !== 'true';
+            save({
+              pinnedIds: on
+                ? [...new Set([...(prefs.pinnedIds || []), b.dataset.pin])]
+                : (prefs.pinnedIds || []).filter((id) => id !== b.dataset.pin),
+            });
+          };
+        });
         body
           .querySelectorAll('[data-allow]')
           .forEach(
@@ -2243,13 +2230,20 @@ window.createControlRoom = function (engine) {
         if (seq === request && d.open) d.querySelector('[data-context-body]').textContent = err.message;
       }
     }
-    d.querySelector('[data-context-refresh]').onclick = load;
+    // The preview follows the prompt as it is typed, so there is no button to press.
+    let previewTimer;
+    d.querySelector('[data-context-query]').oninput = () => {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(load, 350);
+    };
     d.querySelector('[data-context-query]').onkeydown = (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
+        clearTimeout(previewTimer);
         load();
       }
     };
+    d.addEventListener('close', () => clearTimeout(previewTimer));
     load();
   }
   async function saveArtifactMemory(item) {
