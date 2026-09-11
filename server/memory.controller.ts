@@ -75,6 +75,7 @@ export class MemoryController {
     return this.call(() => {
       const entry = this.store().get(id);
       if (!entry) throw new Error('Memory not found');
+      const contextQuery = callerPid && callerSid ? { projectId: callerPid, sessionId: callerSid, provider: this.manager.historyContext(callerPid, callerSid).adapter.id, access: 'context' as const } : undefined;
       if (callerPid && callerSid) {
         this.validateProject(callerPid, callerSid);
         const caller = this.manager.historyContext(callerPid, callerSid).adapter.id;
@@ -88,8 +89,8 @@ export class MemoryController {
         throw new Error('Memory is outside this conversation’s context scope');
       return {
         entry,
-        revisions: this.store().revisions(id),
-        related: this.store().related(id),
+        revisions: this.store().revisions(id).filter(e => !contextQuery || !this.store().contextProblem(e, contextQuery)),
+        related: this.store().related(id).filter(link => !contextQuery || (link.entry && !this.store().contextProblem(link.entry, contextQuery))),
         sources: entry.sources.map((ref) => ({
           ...ref,
           current: ref.id ? this.store().source(ref.id) : undefined,

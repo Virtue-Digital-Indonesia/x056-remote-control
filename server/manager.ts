@@ -21,7 +21,7 @@ import { shareCodexSessions } from './codex-sessions.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { getAdapter } from '../src/adapters/registry.js';
-import { ProjectRegistry, requireWorkspace, requireWork, type RunnableProject, type Project, type Conversation } from './projects.js';
+import { ProjectRegistry, ProjectConflict, validateModeDefaults, requireWorkspace, requireWork, type ModeDefaults, type RunnableProject, type Project, type Conversation } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import { PersistentTurns } from '../src/persistent.js';
@@ -110,6 +110,7 @@ export interface TurnRunOptions {
 
 /** A follow-up message queued to send when the current turn completes. */
 export interface QueueItem {
+  contextReview?: { operationId: string; membershipRevision: number; reason: string };
   fileRefs?: FileReference[];
   sender?: MessageSender;
   account?: string;
@@ -270,12 +271,18 @@ export class SessionManager {
   private readonly chatToolsChanged = new Set<string>();
   refreshChatCapabilities(): void {
     this.capabilityService?.invalidate();
-    for (const p of this.projects().list().filter(p => p.kind === 'chat')) this.chatToolsChanged.add(p.id);
+    for (const p of this.projects().list().filter(p => p.kind === 'chat' || this.projectSpacesEnabled())) this.chatToolsChanged.add(p.id);
   }
   setChatCapabilities(service: ChatCapabilities): void { this.capabilityService = service; }
   chatCapabilities(): ChatCapabilities {
     if (!this.capabilityService) throw new Error('Chat tool discovery is unavailable');
     return this.capabilityService;
+  }
+  requiredProjectTools(pid: string): NonNullable<Project['requiredTools']> {
+    if (!this.projectSpacesEnabled()) return [];
+    const p = this.projects().get(pid); if (!p) throw new Error('Project not found');
+    const parent = p.parentProjectId ? this.projects().parent(p.parentProjectId) : undefined;
+    return [...(p.requiredTools || []), ...(parent?.requiredTools || [])];
   }
   private fileStore?: FileStore;
   files(): FileStore {
@@ -309,6 +316,9 @@ export class SessionManager {
     return { projectId, sessionId, cwd: p.cwd, membershipRevision: scope.membershipRevision };
   }
   onModuleDestroy(): void {
+    for (const timer of this.queueTimers.values()) clearTimeout(timer);
+    for (const timer of this.autopilotTimers.values()) clearTimeout(timer);
+    this.queueTimers.clear(); this.autopilotTimers.clear();
     for (const run of this.runs.values()) run.control?.abort();
     for (const pool of this.pools()) pool.shutdown();
     this.fileStore?.close(); this.titleWorker?.close();
@@ -417,8 +427,9 @@ export class SessionManager {
     this.shareCodexSessionStores();
     this.loadPendingQuestions();
     this.detectOrphans();
-    this.resumeAutopilots();
     if (this.chatsEnabled() || this.projectSpacesEnabled()) this.files();
+    if (this.projectSpacesEnabled()) this.reconcileProjectOperations();
+    this.resumeAutopilots();
     if (opts.manageProcessSignals) {
       const onTerm = () => {
         this.titleWorker?.close();
@@ -518,12 +529,12 @@ export class SessionManager {
   // carrying its projectId so the loop can resume that exact session. A project
   // can have several conversations, only some on autopilot — arming one must not
   // arm the others.
-  private loadAutopilot(): Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string }> {
+  private loadAutopilot(): Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string }> {
     try {
       const m = JSON.parse(readFileSync(this.autopilotFile, 'utf8')) as Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId?: string }>;
       // Migrate legacy project-keyed entries (no projectId field) to session-keyed:
       // the key WAS the projectId, so resume the project's current conversation.
-      const out: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string }> = {};
+      const out: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string }> = {};
       for (const [key, v] of Object.entries(m)) {
         if (v.projectId) { out[key] = v as typeof out[string]; continue; }
         const proj = this.projects().get(key); // legacy key = projectId
@@ -535,7 +546,7 @@ export class SessionManager {
       return {};
     }
   }
-  private saveAutopilot(map: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string }>): void {
+  private saveAutopilot(map: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string }>): void {
     const tmp = `${this.autopilotFile}.tmp`;
     writeFileSync(tmp, JSON.stringify(map, null, 2));
     renameSync(tmp, this.autopilotFile);
@@ -550,6 +561,7 @@ export class SessionManager {
   setAutopilot(projectId: string, sessionId: string, opts: { count: number; prompt?: string; stopPhrase?: string }): void {
     if (!this.projects().get(projectId)) throw new Error(`unknown project ${projectId}`);
     if (!sessionId) throw new Error('no conversation selected');
+    if (this.projectSpacesEnabled() && !this.assertExecutionAllowed(projectId).conversations?.some(c => c.sessionId === sessionId)) throw new Error('Conversation unavailable');
     const map = this.loadAutopilot();
     map[sessionId] = {
       remaining: Math.max(1, Math.min(500, Math.floor(opts.count))),
@@ -569,6 +581,23 @@ export class SessionManager {
     if (t) { clearTimeout(t); this.autopilotTimers.delete(sessionId); }
     this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'stopped' });
   }
+  private pauseAutopilot(sessionId: string, reason: string): void {
+    const map = this.loadAutopilot(), ap = map[sessionId];
+    if (!ap) return;
+    ap.paused = true; ap.pauseReason = reason; this.saveAutopilot(map);
+    const timer = this.autopilotTimers.get(sessionId); if (timer) { clearTimeout(timer); this.autopilotTimers.delete(sessionId); }
+    this.emit('autopilot', { projectId: ap.projectId, sessionId, active: false, remaining: ap.remaining, reason });
+  }
+  resumeProjectAutopilot(projectId: string, sessionId: string, expectedMembershipRevision: number): void {
+    const p = this.assertExecutionAllowed(projectId), map = this.loadAutopilot(), ap = map[sessionId];
+    if (!ap || ap.projectId !== projectId || !p.conversations?.some(c => c.sessionId === sessionId)) throw new Error('Autopilot unavailable');
+    if ((p.membershipRevision ?? 0) !== expectedMembershipRevision) throw new ProjectConflict('Project membership changed; review again');
+    if (this.loadQueues()[projectId]?.some(q => q.sessionId === sessionId && q.contextReview)) throw new ProjectConflict('Review queued messages first');
+    ap.paused = false; delete ap.pauseReason; this.saveAutopilot(map);
+    this.emit('autopilot', { projectId, sessionId, active: true, remaining: ap.remaining });
+    // The operator reviewed the retained prompt; scheduling preserves its count.
+    if (!this.sessionBusy(sessionId)) this.scheduleAutopilot(sessionId, ap.prompt);
+  }
 
   /** Stop autopilot for every conversation of a project (used when it's removed). */
   private stopAutopilotForProject(projectId: string): void {
@@ -577,10 +606,10 @@ export class SessionManager {
     }
   }
 
-  autopilotStatus(): Record<string, { remaining: number; projectId: string }> {
+  autopilotStatus(): Record<string, { remaining: number; projectId: string; paused?: boolean; pauseReason?: string }> {
     const map = this.loadAutopilot();
-    const out: Record<string, { remaining: number; projectId: string }> = {};
-    for (const [sid, v] of Object.entries(map)) out[sid] = { remaining: v.remaining, projectId: v.projectId };
+    const out: Record<string, { remaining: number; projectId: string; paused?: boolean; pauseReason?: string }> = {};
+    for (const [sid, v] of Object.entries(map)) out[sid] = { remaining: v.remaining, projectId: v.projectId, ...(v.paused ? { paused: true, pauseReason: v.pauseReason } : {}) };
     return out;
   }
 
@@ -589,7 +618,7 @@ export class SessionManager {
   private maybeAutopilot(pid: string, sessionId: string, res: SessionResult): void {
     const map = this.loadAutopilot();
     const ap = map[sessionId];
-    if (!ap) return;
+    if (!ap || ap.paused) return;
     // Only continue on a clean completion; park/error pauses (state kept so the
     // user or a later trigger can resume) but stops the auto-loop.
     if (res.status !== 'completed') {
@@ -620,7 +649,7 @@ export class SessionManager {
     const t = setTimeout(() => {
       this.autopilotTimers.delete(sessionId);
       const ap = this.loadAutopilot()[sessionId];
-      if (!ap) return; // stopped meanwhile
+      if (!ap || ap.paused) return; // stopped meanwhile
       if (this.sessionBusy(sessionId)) return; // this conversation is running; skip this tick
       try {
         this.continueSession(ap.projectId, sessionId, prompt, { sender: { kind: 'autopilot' } });
@@ -638,10 +667,11 @@ export class SessionManager {
     const map = this.loadAutopilot();
     let stagger = 1000;
     for (const [sessionId, ap] of Object.entries(map)) {
+      if (ap.paused) continue;
       if (ap.remaining <= 0) continue;
       const t = setTimeout(() => {
         this.autopilotTimers.delete(sessionId);
-        if (!this.loadAutopilot()[sessionId] || this.sessionBusy(sessionId)) return;
+        if (!this.loadAutopilot()[sessionId] || this.loadAutopilot()[sessionId].paused || this.sessionBusy(sessionId)) return;
         try { this.continueSession(ap.projectId, sessionId, ap.prompt, { sender: { kind: 'autopilot' } }); } catch { this.stopAutopilot(sessionId); }
       }, stagger);
       this.autopilotTimers.set(sessionId, t);
@@ -703,6 +733,7 @@ export class SessionManager {
   enqueue(pid: string, item: { text: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
+    if (this.projectSpacesEnabled()) this.assertExecutionAllowed(pid);
     const text = (item.text ?? '').trim() || (item.fileRefs?.length ? 'Use the attached files.' : '');
     if (!text) throw new Error('empty message');
     // Bind the item to a conversation: the one the panel named, else the
@@ -732,6 +763,7 @@ export class SessionManager {
     const map = this.loadQueues();
     const it = (map[pid] ?? []).find((x) => x.id === id);
     if (!it) throw new Error('Queued message no longer exists');
+    if (patch.paused === false && it.contextReview) throw new Error('Review this message’s changed Project context before resuming');
     if (patch.notBefore !== undefined && (!Number.isFinite(patch.notBefore)||patch.notBefore<0)) throw new Error('Invalid scheduled time');
     if (patch.afterSessionId && !this.listProjects().projects.some(p=>p.conversations?.some(c=>c.sessionId===patch.afterSessionId))) throw new Error('Dependency conversation not found');
     if (patch.afterSessionId && patch.afterSessionId===it.sessionId) throw new Error('A queue item cannot wait for itself');
@@ -792,7 +824,7 @@ export class SessionManager {
     this.queueTimers.set(sessionId, t);
     return true;
   }
-  private queueReady(item:QueueItem):boolean { return !item.dispatching && !item.paused && (!item.notBefore || item.notBefore<=Date.now()) && (!item.afterSessionId || !this.sessionBusy(item.afterSessionId)&&!this.queueTimers.has(item.afterSessionId)); }
+  private queueReady(item:QueueItem):boolean { return !item.contextReview && !item.dispatching && !item.paused && (!item.notBefore || item.notBefore<=Date.now()) && (!item.afterSessionId || !this.sessionBusy(item.afterSessionId)&&!this.queueTimers.has(item.afterSessionId)); }
   tickQueuePlanner():void {for(const [pid,items] of Object.entries(this.loadQueues()))for(const sid of new Set(items.map(x=>x.sessionId).filter((x):x is string=>!!x)))if(!this.sessionBusy(sid))this.maybeDrainQueue(pid,sid);}
   reorderQueue(pid:string, ids:string[]):void {const all=this.loadQueues(),items=all[pid]||[];if(new Set(ids).size!==ids.length||ids.length!==items.length||ids.some(id=>!items.some(x=>x.id===id)))throw new Error('Queue changed; refresh and try again');all[pid]=ids.map(id=>items.find(x=>x.id===id)!);this.saveQueues(all);this.emitQueue(pid,all);}
   private readonly queueTimers = new Map<string, ReturnType<typeof setTimeout>>(); // keyed by sessionId
@@ -1256,11 +1288,12 @@ export class SessionManager {
     if (!project) throw new Error('unknown project');
     const conversation = project.conversations?.find(c => c.sessionId === sessionId);
     if (sessionId && !conversation) throw new Error('unknown conversation for that project');
-    const provider = sessionId ? this.projects().conversationProvider(projectId, sessionId) : project.provider ?? 'claude';
+    const defaults = !sessionId && this.projectSpacesEnabled() && project.kind !== 'chat' ? project.defaults?.work : undefined;
+    const provider = sessionId ? this.projects().conversationProvider(projectId, sessionId) : defaults?.provider ?? project.provider ?? 'claude';
     const fitsModel = (value?: string) => !value || (provider === 'codex' ? /^(gpt-|codex-)/i.test(value) : !/^(gpt-|codex-)/i.test(value));
     const fitsEffort = (value?: string) => !value || (provider === 'codex' ? value !== 'ultracode' : value !== 'ultra');
-    const model = [opts.model, conversation?.model, project.model].find(value => value !== undefined && fitsModel(value)) ?? '';
-    const effort = [opts.effort, conversation?.effort, project.effort].find(value => value !== undefined && fitsEffort(value)) ?? '';
+    const model = [opts.model, conversation?.model, defaults?.model, project.model].find(value => value !== undefined && fitsModel(value)) ?? '';
+    const effort = [opts.effort, conversation?.effort, defaults?.effort, project.effort].find(value => value !== undefined && fitsEffort(value)) ?? '';
     return { model, effort };
   }
 
@@ -1355,10 +1388,116 @@ export class SessionManager {
 
   createProjectSpace(input: Parameters<ProjectRegistry['createSpace']>[0]): Project {
     if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    this.validateProjectDefaults(input.defaults);
     const p = this.projects().createSpace({ ...input, cwd: input.cwd === undefined ? undefined : this.resolveCwd(input.cwd) });
     this.emit('projects', { id: p.id }); return p;
   }
   projectSpacesMigration() { return this.projects().migrateSpaces(); }
+
+  private validateProjectDefaults(defaults: Project['defaults']): void {
+    validateModeDefaults(defaults);
+    for (const choice of Object.values(defaults || {})) {
+      const provider = choice.provider || 'claude';
+      if (choice.account && this.registry().get(choice.account).provider !== provider) throw new Error('Default account belongs to another provider');
+      if (choice.model && (provider === 'codex') !== /^(gpt-|codex-)/i.test(choice.model)) throw new Error('Default model belongs to another provider');
+    }
+  }
+  updateProjectSpace(id: string, input: { expectedRevision: number; name?: string; cwd?: string; defaults?: Project['defaults']; requiredTools?: Project['requiredTools'] }): Project {
+    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    const current = this.projects().parent(id, true);
+    this.validateProjectDefaults(input.defaults);
+    const patch: Partial<Project> = {};
+    for (const key of ['name', 'defaults', 'requiredTools'] as const) if (input[key] !== undefined) Object.assign(patch, { [key]: input[key] });
+    if (input.requiredTools !== undefined && (!Array.isArray(input.requiredTools) || input.requiredTools.length > 40 || input.requiredTools.some(r => !r || typeof r.key !== 'string' || !/^(skill|plugin|mcp):.{1,240}$/.test(r.key) || (r.fingerprint !== undefined && typeof r.fingerprint !== 'string')))) throw new Error('Invalid required tools');
+    if (input.cwd !== undefined) {
+      const cwd = this.resolveCwd(input.cwd);
+      if (cwd !== current.cwd && (current.conversations?.length || this.projectBusy(id) || this.backgroundSessionsForProject(id).length)) throw new Error('Existing Work conversations retain their workspace; create another Project to use a different directory');
+      patch.cwd = cwd;
+    }
+    const result = this.projects().updateSpace(id, input.expectedRevision, patch);
+    this.refreshChatCapabilities(); this.emit('projects', { id }); return result;
+  }
+
+  prepareProjectWork(id: string, input: { requestId: string; name?: string; provider?: ProviderId; model?: string; effort?: string; account?: string }) {
+    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    const p = requireWork(this.assertExecutionAllowed(id));
+    if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 300)) throw new Error('Invalid conversation name');
+    const defaults = { ...p.defaults?.work, ...input }, provider = defaults.provider || p.provider || 'claude';
+    this.validateProjectDefaults({ work: { provider, model: defaults.model, effort: defaults.effort, account: defaults.account } });
+    const fingerprint = createHash('sha256').update(JSON.stringify([input.name, input.provider, input.model, input.effort, input.account])).digest('hex');
+    const previous = p.conversations?.find(c => c.creationRequestId === input.requestId);
+    const c = this.projects().prepareWork(id, { ...defaults, provider, fingerprint });
+    if (!previous && defaults.account) new RoutingState(this.opts.stateDir).set(id, c.sessionId, { lockedAccount: defaults.account });
+    this.emitConversations(id); this.emit('projects', { id }); return { projectId: id, sessionId: c.sessionId };
+  }
+
+  private automationPauser?: (executionIds: string[], reason: string) => void;
+  setProjectAutomationPauser(pause: (ids: string[], reason: string) => void): void {
+    this.automationPauser = pause; if (this.projectSpacesEnabled()) this.reconcileProjectOperations();
+  }
+  private pauseProjectExecution(id: string, operationId: string, reason: string): void {
+    const p = this.projects().get(id); if (!p) return;
+    const map = this.loadQueues();
+    for (const item of map[id] || []) {
+      item.paused = true;
+      item.contextReview = { operationId, membershipRevision: p.membershipRevision ?? 0, reason };
+    }
+    this.saveQueues(map); this.emitQueue(id, map);
+    for (const c of p.conversations || []) {
+      const timer = this.queueTimers.get(c.sessionId); if (timer) { clearTimeout(timer); this.queueTimers.delete(c.sessionId); }
+      this.pauseAutopilot(c.sessionId, reason);
+      this.files().fenceExecution(id, c.sessionId);
+    }
+  }
+  private reconcileProjectOperations(): void {
+    for (const op of this.projects().pendingMembershipOperations()) {
+      this.pauseProjectExecution(op.chatId, op.id, 'Project membership changed');
+      this.automationPauser?.([op.chatId], 'Project membership changed; review before resuming');
+      if (this.automationPauser) this.projects().completeMembershipOperation(op.id);
+    }
+    for (const op of this.projects().pendingArchiveOperations()) {
+      // Restore changes visibility only. It never resumes paused work.
+      if (op.archived) {
+        for (const id of op.executionIds) this.pauseProjectExecution(id, op.id, 'Project archived');
+        this.automationPauser?.(op.executionIds, 'Project archived; review before resuming');
+      }
+      if (this.automationPauser || !op.archived) this.projects().completeArchiveOperation(op.id);
+    }
+  }
+  moveProjectChat(id: string, input: { parentProjectId: string | null; expectedRevision: number; operationId: string }) {
+    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    this.chat(id);
+    const busy = [...this.runningSessionsForProject(id), ...this.backgroundSessionsForProject(id)];
+    if (busy.length) throw new ProjectConflict('Finish active Chat work before moving: ' + busy.join(', '));
+    const op = this.projects().moveChat(id, input.parentProjectId, input.expectedRevision, input.operationId);
+    if (op.state === 'pending') this.reconcileProjectOperations();
+    this.emit('projects', { id }); return this.chat(id);
+  }
+  archiveProjectSpace(id: string, input: { expectedRevision: number; operationId: string; archived: boolean }) {
+    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    const executions = this.projects().list().filter(p => p.id === id || p.parentProjectId === id);
+    const busy = executions.flatMap(p => [...this.runningSessionsForProject(p.id), ...this.backgroundSessionsForProject(p.id)]);
+    if (busy.length) throw new ProjectConflict('Finish active Project work before archiving: ' + busy.join(', '));
+    this.projects().archiveSpace(id, input.expectedRevision, input.operationId, input.archived);
+    this.reconcileProjectOperations(); this.emit('projects', { id }); return this.projects().parent(id, true);
+  }
+  reviewProjectQueue(id: string, queueId: string, expectedMembershipRevision: number, review?: { expectedText: string; text: string; fileRefs: FileReference[] }): void {
+    if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+    const p = this.assertExecutionAllowed(id), map = this.loadQueues(), item = map[id]?.find(q => q.id === queueId);
+    if (!item) throw new Error('Queued message no longer exists');
+    if ((p.membershipRevision ?? 0) !== expectedMembershipRevision) throw new ProjectConflict('Project membership changed; review the current context');
+    if (item.dispatching) throw new ProjectConflict('Delivery is uncertain; reconcile delivery before resuming');
+    if (!p.conversations?.some(c => c.sessionId === item.sessionId)) throw new ProjectConflict('Conversation unavailable');
+    if (review) {
+      if (review.expectedText !== item.text) throw new ProjectConflict('Queued message changed; review again');
+      if (typeof review.text !== 'string' || !review.text.trim() || review.text.length > 100000 || !Array.isArray(review.fileRefs)) throw new Error('Invalid reviewed message');
+      item.text = review.text.trim(); item.fileRefs = review.fileRefs;
+    }
+    if (item.fileRefs?.length) this.files().references(id, item.sessionId!, item.fileRefs, item.requestId);
+    item.contextReview = undefined; item.paused = false; item.error = undefined;
+    this.saveQueues(map); this.emitQueue(id, map);
+    if (item.sessionId) this.maybeDrainQueue(id, item.sessionId);
+  }
 
   chat(id: string): RunnableProject {
     if (!this.chatsEnabled()) throw new Error('Chat is disabled');
@@ -1367,14 +1506,21 @@ export class SessionManager {
     return this.executionProject(p.id);
   }
 
-  createChat(input: { requestId: string; name?: string; provider?: ProviderId; model?: string; effort?: string; account?: string }): RunnableProject {
+  createChat(input: { requestId: string; name?: string; provider?: ProviderId; model?: string; effort?: string; account?: string; parentProjectId?: string }): RunnableProject {
     if (!this.chatsEnabled()) throw new Error('Chat is disabled');
     if (typeof input.requestId !== 'string' || !/^[\w-]{8,128}$/.test(input.requestId)) throw new Error('A stable requestId is required');
+    if (input.parentProjectId !== undefined && (typeof input.parentProjectId !== 'string' || !input.parentProjectId)) throw new Error('Invalid parent Project');
+    const rawFingerprint = [input.name, input.provider ?? 'claude', input.model, input.effort, input.account, ...(input.parentProjectId ? [input.parentProjectId] : [])];
+    if (input.parentProjectId) {
+      if (!this.projectSpacesEnabled()) throw new Error('Project spaces are disabled');
+      const parent = this.projects().parent(input.parentProjectId);
+      input = { ...parent.defaults?.chat, ...input };
+    }
     const provider = input.provider ?? 'claude';
     if (provider !== 'claude' && provider !== 'codex') throw new Error('Invalid provider');
     if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 300)) throw new Error('Invalid Chat name');
     for (const field of ['model', 'effort', 'account'] as const) if (input[field] !== undefined && typeof input[field] !== 'string') throw new Error(`Invalid ${field}`);
-    const fingerprint = createHash('sha256').update(JSON.stringify([input.name, provider, input.model, input.effort, input.account])).digest('hex');
+    const fingerprint = createHash('sha256').update(JSON.stringify(rawFingerprint)).digest('hex');
     const reg = this.projects();
     const previous = reg.list().find(p => p.kind === 'chat' && p.creationRequestId === input.requestId);
     if (previous) {
@@ -1391,6 +1537,7 @@ export class SessionManager {
       symlinkSync(DOCUMENT_SKILL, join(skills, 'rc-documents'), 'dir');
     }
     const project = reg.createChat({ id, kind: 'chat', name, cwd, provider, creationRequestId: input.requestId, creationFingerprint: fingerprint,
+      ...(input.parentProjectId ? { parentProjectId: input.parentProjectId, membershipRevision: 0 } : {}),
       lastSessionId: sessionId, model: input.model, effort: input.effort,
       conversations: [{ sessionId, title: name, titleOrigin: input.name ? 'manual' : 'temporary', titleRevision: 1, createdAt: Date.now(), provider, model: input.model, effort: input.effort }] });
     if (input.account) new RoutingState(this.opts.stateDir).set(id, sessionId, { lockedAccount: input.account });
@@ -1547,6 +1694,7 @@ export class SessionManager {
     if (this.projectBusy(id)) throw new BusyError();
     const reg = this.projects();
     if (!reg.get(id)) throw new Error(`unknown project ${id}`);
+    if (reg.list().some(p => p.parentProjectId === id)) throw new Error('Project has member Chats; archive it to preserve their context');
     this.stopAutopilotForProject(id);
     const qmap = this.loadQueues();
     if (qmap[id]) { delete qmap[id]; this.saveQueues(qmap); }
@@ -1610,6 +1758,12 @@ export class SessionManager {
       return this.continueSession(pid, proj.lastSessionId!, prompt, opts);
     }
     const dir = this.resolveCwd(cwd ?? proj.cwd, pid);
+    if (this.projectSpacesEnabled()) {
+      if (dir !== proj.cwd) throw new Error('Work uses its configured Project workspace');
+      const input = Object.fromEntries(Object.entries({ requestId: randomUUID(), name: titleFromPrompt(prompt), model: opts?.model, effort: opts?.effort, account: opts?.account }).filter(([, value]) => value !== undefined)) as Parameters<SessionManager['prepareProjectWork']>[1];
+      const target = this.prepareProjectWork(pid, input);
+      return this.continueSession(pid, target.sessionId, prompt, opts);
+    }
     const sessionId = randomUUID();
     // Register the new session as its own conversation (prompt-derived title),
     // grouped under the project, and make it current.
@@ -1637,7 +1791,8 @@ export class SessionManager {
     if (proj?.kind === 'chat' && (proj.archivedAt || proj.lastSessionId !== sessionId)) throw new Error('Chat is archived or conversation does not match');
     if (!proj.conversations?.some(c => c.sessionId === sessionId)) throw new Error('Unknown conversation for this project');
     const dir = proj.cwd;
-    const resume = proj?.kind !== 'chat' || !!this.projects().providerSessionId(pid, sessionId);
+    const prepared = proj.kind === 'chat' || !!proj.conversations?.find(c => c.sessionId === sessionId)?.prepared;
+    const resume = !prepared || !!this.projects().providerSessionId(pid, sessionId);
     this.launch(pid, sessionId, prompt, dir, resume, opts);
     return sessionId;
   }
@@ -2001,7 +2156,8 @@ export class SessionManager {
       if(memoryRecord)emit('memory_context',memoryRecord);
       if(memoryWarning)emit('memory_warning',{message:memoryWarning});
       void runFn({
-        accountEligibility: reg.get(pid)?.kind === 'chat' && this.capabilityService ? () => this.capabilityService!.blocked(this.chat(pid)) : undefined,
+        accountEligibility: (this.capabilityService || this.requiredProjectTools(pid).length) && (reg.get(pid)?.kind === 'chat' || this.projectSpacesEnabled())
+          ? () => this.chatCapabilities().blocked({ ...this.assertExecutionAllowed(pid), provider: adapter.id }, this.requiredProjectTools(pid), this.projectSpacesEnabled()) : undefined,
         registry: this.registry(),
         accountLoads: () => this.accountLoads(sessionId),
         routing: route,

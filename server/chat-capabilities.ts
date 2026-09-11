@@ -73,19 +73,20 @@ export class ChatCapabilities {
   setRequirements(chatId: string, requirements: CapabilityRequirement[]): void {
     if (!Array.isArray(requirements) || requirements.length > 40 || requirements.some(r => !r || typeof r.key !== 'string' || !/^(skill|plugin|mcp):.{1,240}$/.test(r.key) || (r.fingerprint !== undefined && typeof r.fingerprint !== 'string'))) throw new Error('Invalid tool requirements');
     const all = readState<Record<string, CapabilityRequirement[]>>(join(this.state, 'chat-requirements.json'), {});
-    all[chatId] = requirements; writeState(join(this.state, 'chat-requirements.json'), all); this.cache.delete(chatId);
+    all[chatId] = requirements; writeState(join(this.state, 'chat-requirements.json'), all); this.invalidate();
   }
   async inventory(chat: Project, force = false): Promise<AccountCapabilities[]> {
     if (!chat.cwd) throw new Error('Configure the execution workspace before discovering tools');
-    const cached = this.cache.get(chat.id);
+    const cacheKey = JSON.stringify([chat.id, chat.cwd, chat.provider]);
+    const cached = this.cache.get(cacheKey);
     if (!force && cached && cached.at > Date.now() - 30_000) return cached.promise;
     const promise = Promise.all(this.accounts().filter(a => a.provider === chat.provider).map(a =>
       (this.collectOverride ? this.collectOverride(a, chat) : this.collect(a, chat)).catch(() => ({ account: a.name, capabilities: [], errors: ['Capability discovery unavailable. Refresh after checking this account.'] }))));
-    this.cache.set(chat.id, { at: Date.now(), promise }); return promise;
+    this.cache.set(cacheKey, { at: Date.now(), promise }); return promise;
   }
-  async blocked(chat: Project): Promise<Record<string, string[]>> {
-    const required = this.requirements(chat.id); if (!required.length) return {};
-    const inventory = await this.inventory(chat), blocked: Record<string, string[]> = {};
+  async blocked(chat: Project, inherited: CapabilityRequirement[] = [], force = false): Promise<Record<string, string[]>> {
+    const required = [...this.requirements(chat.id), ...inherited]; if (!required.length) return {};
+    const inventory = await this.inventory(chat, force), blocked: Record<string, string[]> = {};
     for (const account of inventory) {
       const reasons: string[] = [];
       for (const req of required) {

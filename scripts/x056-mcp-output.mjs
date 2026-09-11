@@ -52,6 +52,7 @@ const jobFields = {
 const jobRequired = ['id', 'schedule', 'tz', 'projectId', 'prompt', 'enabled', 'createdAt', 'runCount'];
 const targetFields = { provider: nullableProvider, projectName: str, conversationTitle: str, source: literal('gateway') };
 const queueItem = object({
+  contextReview: object({ operationId: str, membershipRevision: integer, reason: str }),
   sender: messageSender, projectId: str, id: str, text: str, at: num, sessionId: str, model: str, effort: str,
   account: str, useReserve: bool, dispatching: bool, error: str, notBefore: num,
   afterSessionId: str, paused: bool, requestId: str, ...targetFields,

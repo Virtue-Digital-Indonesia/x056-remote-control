@@ -39,7 +39,7 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
     res.json(version.current());
   });
   express.get('/healthz', (_req, res) => res.json({ ok: true }));
-  express.get(['/', '/chat', '/chat/:chatId'], (_req, res) => {
+  express.get(['/', '/chat', '/chat/:chatId', '/projects', '/projects/:projectId', '/projects/:projectId/:tab', '/work', '/work/:projectId/:sessionId'], (_req, res) => {
     try {
       res.setHeader('Cache-Control','no-cache');
       res.type('html').send(version.html(readFileSync(panelPath, 'utf8')));
@@ -68,6 +68,8 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   serveStatic('/control-room.js', 'control-room.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
   serveStatic('/rc-chat.js', 'rc-chat.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
   serveStatic('/rc-chat.css', 'rc-chat.css', 'text/css', { 'Cache-Control': 'no-cache' });
+  serveStatic('/project-spaces.js', 'project-spaces.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
+  serveStatic('/project-spaces.css', 'project-spaces.css', 'text/css', { 'Cache-Control': 'no-cache' });
   serveStatic('/webauthn.js', 'webauthn.js', 'application/javascript'); // vendored @simplewebauthn/browser bundle
   serveStatic('/icon-16.png', 'icon-16.png', 'image/png');
   serveStatic('/icon-32.png', 'icon-32.png', 'image/png');

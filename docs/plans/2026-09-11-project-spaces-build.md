@@ -9,10 +9,10 @@ Efran authorized implementation after reading the handoff. The feature remains d
 | Stage | State | Evidence and remaining work |
 | --- | --- | --- |
 | Contracts and migration | Foundation implemented | Optional workspace, validated execution targets, aggregate API, atomic registry writes, revisions, membership receipts, additive migration report. Release backup rehearsal remains. |
-| Memory scope | Foundation implemented | Parent inheritance, local isolation, shared eligibility for dispatch and MCP, dispatch audit with membership and source revisions. Project brief and membership UI remain. |
-| Project files | Foundation implemented | Shared ownership, independent lineage, retained Work output import, execution leases, and compatibility endpoints. Files UI and broader recovery rehearsal remain. |
-| Project views | Pending | Real routes, project tabs, preserved drafts, desktop and mobile checks. |
-| Membership and defaults | Pending | Complete receipt reconciliation, queue review, settings, archive behavior, effective tool requirements. |
+| Memory scope | Foundation implemented | Parent inheritance, local isolation, shared eligibility for dispatch and MCP, dispatch audit with membership and source revisions. Project brief review and membership UI are connected. |
+| Project files | Foundation implemented | Shared ownership, independent lineage, retained Work output import, execution leases, and compatibility endpoints. Project Files UI is connected; broader recovery rehearsal remains. |
+| Project views | Implemented, integration checks continuing | Real Project and Work routes, project tabs, Chat parent filter, file versions and attachment drafts. Desktop, mobile, refresh and direct sign-in passed in an isolated browser. |
+| Membership and defaults | Implemented, integration checks continuing | Durable membership/archive receipts reconcile before dispatch. Queues, scheduled jobs and autopilots pause without losing content. Settings apply separate mode defaults and verify inherited tools in the execution directory. Five focused tests passed. |
 | Handoffs and integrations | Pending | Durable delivery, MCP contracts, exact links, activity and cost aggregation. |
 | Release | Pending | All acceptance gates, backup and rollback rehearsal, browser and document checks. |
 
@@ -41,3 +41,13 @@ The full plan's 18 acceptance gates remain the release requirements. No live pro
 ## Resume
 
 Read this record and `2026-09-11-project-chat-work-memory.md`. Continue in stage order. Preserve unrelated untracked design directories. Use isolated state for write tests.
+
+## Project views and membership checkpoint
+
+The isolated browser passed Project creation, upload and preview, member Chat creation, exact-version attachments, draft restoration, context inspection, Work workspace setup, prepared Work creation, direct Work links, mobile layout, and signing in to a Work link. No browser JavaScript errors were reported.
+
+Additional controls now cover reviewing paused messages, removing inaccessible attachments during review, resuming retained autopilots, sharing selected private Chat versions into Project Files, importing retained Work outputs, reviewing a pinned Project brief, and filtering all Chat by parent. These additions still need their expanded browser acceptance checks. Project tool discovery uses the actual Work conversation provider and workspace.
+
+Five membership tests cover retained queues and scheduled jobs, interrupted-operation recovery, background work guards, archive/restore behavior, separate defaults, idempotent Work preparation, and tool availability by execution directory. Typecheck and syntax checks pass. The shared document and memory tests remain part of the final release run.
+
+Handoffs, cost aggregation, backup and rollback rehearsal, and the complete acceptance matrix remain unfinished. Production is unchanged.

@@ -28,7 +28,7 @@ export class ChatsController {
   async capabilities(@Param('id') id: string, @Query('refresh') refresh?: string) {
     const chat = this.get(id), service = this.manager.chatCapabilities();
     if (refresh === '1') this.manager.refreshChatCapabilities();
-    return { accounts: await service.inventory(chat, refresh === '1'), requirements: service.requirements(id) };
+    return { accounts: await service.inventory(chat, refresh === '1'), requirements: service.requirements(id), projectRequirements: this.manager.requiredProjectTools(id) };
   }
 
   @Post(':id/capabilities')

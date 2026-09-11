@@ -127,6 +127,9 @@ export function buildModule(cfg: GatewayConfig): unknown {
     stateDir: cfg.stateDir,
     deliver: (projectId, sessionId, prompt) => manager.deliverMcpMessage(projectId, sessionId, prompt, { sender: { kind: 'automation' } }),
   });
+  manager.setProjectAutomationPauser((ids, reason) => {
+    for (const job of cron.list()) if (ids.includes(job.projectId) && job.enabled) cron.pauseForContext(job.id, reason);
+  });
   cron.start();
 
   // Claude Design's browser login, per account. Must outlive a turn: the

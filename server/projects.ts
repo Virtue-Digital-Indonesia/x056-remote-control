@@ -23,9 +23,13 @@ export interface MembershipOperation {
   id: string; chatId: string; parentProjectId: string | null; expectedRevision: number;
   membershipRevision: number; state: 'pending' | 'complete';
 }
+export interface ArchiveOperation { id: string; projectId: string; expectedRevision: number; archived: boolean; executionIds: string[]; state: 'pending' | 'complete' }
 
 /** One conversation (a resumable session) within a project. */
 export interface Conversation {
+  creationRequestId?: string;
+  creationFingerprint?: string;
+  prepared?: boolean;
   sessionId: string;
   title: string;
   /** Missing on legacy titles: never assume an older title was automatic. */
@@ -101,6 +105,7 @@ export interface SpacesMigrationReport {
 }
 
 interface ProjectsFile {
+  archiveOperations?: ArchiveOperation[];
   spacesVersion?: number;
   membershipOperations?: MembershipOperation[];
   current: string | null;
@@ -444,6 +449,38 @@ export class ProjectRegistry {
   completeMembershipOperation(id: string): void {
     const op = this.data.membershipOperations?.find(o => o.id === id);
     if (op && op.state !== 'complete') { op.state = 'complete'; this.save(); }
+  }
+  archiveSpace(id: string, expectedRevision: number, operationId: string, archived: boolean): ArchiveOperation {
+    if (typeof operationId !== 'string' || !/^[\w:-]{8,160}$/.test(operationId) || typeof archived !== 'boolean') throw new Error('Invalid archive operation');
+    const old = this.data.archiveOperations?.find(o => o.id === operationId);
+    if (old) {
+      if (old.projectId !== id || old.expectedRevision !== expectedRevision || old.archived !== archived) throw new ProjectConflict('operationId was used for another archive change');
+      return structuredClone(old);
+    }
+    const p = this.parent(id, true);
+    if (!Number.isInteger(expectedRevision) || (p.revision ?? 0) !== expectedRevision) throw new ProjectConflict('Project changed; refresh before archiving');
+    const record = this.data.projects.find(p => p.id === id)!;
+    record.archivedAt = archived ? Date.now() : undefined; record.revision = expectedRevision + 1;
+    const op: ArchiveOperation = { id: operationId, projectId: id, expectedRevision, archived,
+      executionIds: [id, ...this.data.projects.filter(p => p.parentProjectId === id).map(p => p.id)], state: 'pending' };
+    (this.data.archiveOperations ??= []).push(op); this.save(); return structuredClone(op);
+  }
+  pendingArchiveOperations(): ArchiveOperation[] { return structuredClone((this.data.archiveOperations ?? []).filter(o => o.state === 'pending')); }
+  completeArchiveOperation(id: string): void {
+    const op = this.data.archiveOperations?.find(o => o.id === id);
+    if (op && op.state !== 'complete') { op.state = 'complete'; this.save(); }
+  }
+  prepareWork(id: string, input: { requestId: string; name?: string; provider: ProviderId; model?: string; effort?: string; fingerprint: string }): Conversation {
+    requireWork(this.parent(id));
+    if (typeof input.requestId !== 'string' || !/^[\w-]{8,128}$/.test(input.requestId)) throw new Error('A stable requestId is required');
+    const p = this.data.projects.find(p => p.id === id)!;
+    const old = p.conversations?.find(c => c.creationRequestId === input.requestId);
+    if (old) { if (old.creationFingerprint !== input.fingerprint) throw new ProjectConflict('requestId was used for another conversation'); return structuredClone(old); }
+    const c: Conversation = { sessionId: randomUUID(), title: input.name?.trim() || 'New work', titleOrigin: input.name ? 'manual' : 'temporary', titleRevision: 1,
+      createdAt: Date.now(), provider: input.provider, model: input.model ?? '', effort: input.effort ?? '', prepared: true,
+      creationRequestId: input.requestId, creationFingerprint: input.fingerprint };
+    (p.conversations ??= []).push(c); p.lastSessionId = c.sessionId;
+    this.save(); return structuredClone(c);
   }
 
   /** Additive only: never infer membership or alter directories/session identities. */

@@ -204,6 +204,10 @@ export class CronScheduler {
     this.save();
     return { ...job };
   }
+  pauseForContext(id: string, reason: string): void {
+    const job = this.jobs.find(j => j.id === id); if (!job) return;
+    job.enabled = false; job.lastResult = reason; this.save();
+  }
 
   /** Run every job whose schedule matches this minute. Never throws: one bad
    *  job must not stop the others or kill the interval. */
