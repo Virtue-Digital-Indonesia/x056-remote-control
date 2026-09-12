@@ -9,7 +9,12 @@ import { MemoryDocuments, type MemoryPassage, type SourceCitation } from './memo
 import { MemoryAccessStore, MemoryConflict, MemoryReferenceConflict, type MemoryOwner, type MemorySubject, type MemorySelection, type MemoryGrant } from './memory-access.js';
 export { MemoryConflict, MemoryReferenceConflict } from './memory-access.js';
 
-export const MEMORY_KINDS = ['fact', 'decision', 'preference', 'procedure', 'knowledge', 'context'] as const;
+// Three kinds a person chooses between, plus `context`, which only the Project brief
+// uses and no picker offers. Older names still arrive from agents and imports and
+// are folded into `fact`.
+export const MEMORY_KINDS = ['fact', 'decision', 'preference', 'context'] as const;
+export const LEGACY_MEMORY_KINDS: Record<string, MemoryKind> = { knowledge: 'fact', procedure: 'fact' };
+export const normalizeMemoryKind = (kind: unknown): unknown => (typeof kind === 'string' && LEGACY_MEMORY_KINDS[kind]) || kind;
 export const MEMORY_STATES = ['proposed', 'confirmed', 'archived', 'deleted', 'superseded'] as const;
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
 export type MemoryStatus = (typeof MEMORY_STATES)[number];
@@ -168,7 +173,7 @@ export class MemoryStore {
     mkdirSync(stateDir, { recursive: true });
     this.db = new DatabaseSync(join(stateDir, 'memory.sqlite'));
     const version = Number(this.db.prepare('PRAGMA user_version').get()!.user_version);
-    if(version>3){this.db.close();throw new Error('Memory schema requires a newer gateway');}
+    if(version>4){this.db.close();throw new Error('Memory schema requires a newer gateway');}
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS memory_entries(id TEXT PRIMARY KEY, revision INTEGER NOT NULL, status TEXT NOT NULL, kind TEXT NOT NULL, project_id TEXT, scope TEXT NOT NULL, updated_at INTEGER NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS memory_filter ON memory_entries(status,project_id,kind,updated_at);
@@ -181,7 +186,8 @@ export class MemoryStore {
       CREATE TABLE IF NOT EXISTS memory_settings(key TEXT PRIMARY KEY,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_contexts(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,session_id TEXT NOT NULL,at INTEGER NOT NULL,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_owners(subject_kind TEXT NOT NULL,subject_id TEXT NOT NULL,owner_kind TEXT NOT NULL,owner_id TEXT NOT NULL,PRIMARY KEY(subject_kind,subject_id));`);
-    this.db.exec('PRAGMA user_version=3');
+    if (version < 4) this.migrateKinds();
+    this.db.exec('PRAGMA user_version=4');
     this.access = new MemoryAccessStore(this.db, (subject,version)=>this.subjectInfo(subject,version), owner=>this.resolver?.validateMemoryOwner(owner),
       (pid,sid)=>this.resolver?.recipients(pid,sid||undefined)||[{kind:'execution',id:pid}]);
     this.documents=new MemoryDocuments(this.db,this,stateDir);
@@ -190,6 +196,19 @@ export class MemoryStore {
   close() {
     this.documents.close();
     this.db.close();
+  }
+  // Folds the retired kinds into `fact`. `context` stays only where it means the
+  // Project brief; elsewhere it was a catch-all and becomes a fact too.
+  private migrateKinds(): void {
+    const rows = this.db.prepare("SELECT id, kind, data FROM memory_entries WHERE kind IN ('knowledge','procedure','context')").all() as { id: string; kind: string; data: string }[];
+    const write = this.db.prepare('UPDATE memory_entries SET kind=?, data=? WHERE id=?');
+    for (const row of rows) {
+      const entry = JSON.parse(row.data);
+      const brief = row.kind === 'context' && Array.isArray(entry.tags) && entry.tags.includes('project-brief');
+      if (brief) continue;
+      entry.kind = 'fact';
+      write.run('fact', JSON.stringify(entry), row.id);
+    }
   }
   private transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
@@ -243,6 +262,7 @@ export class MemoryStore {
     return source&&current?{sessionId:source.sessionId,owner:this.ownerOf(current),version:source.versionId||source.hash,available:!current.excluded&&!source.excluded}:undefined;
   }
   private validate(raw: Partial<MemoryEntry>): void {
+    raw.kind = normalizeMemoryKind(raw.kind) as MemoryKind;
     if (!MEMORY_KINDS.includes(raw.kind!)) throw new Error('Invalid memory type');
     if (!MEMORY_STATES.includes(raw.status!)) throw new Error('Invalid memory status');
     if (!['conversation', 'project', 'space', 'shared', 'global'].includes(raw.scope!))
@@ -319,7 +339,7 @@ export class MemoryStore {
         title: input.title!,
         content: input.content!,
         summary: input.summary || '',
-        kind: input.kind || 'knowledge',
+        kind: input.kind || 'fact',
         status: input.status || 'proposed',
         scope: input.scope || 'project',
         projectId: input.projectId,
@@ -749,7 +769,7 @@ export class MemoryStore {
         ...patch,
         title: patch.title || s.title.slice(0, 180),
         content: patch.content || s.content.slice(0, 64000),
-        kind: patch.kind || 'knowledge',
+        kind: patch.kind || 'fact',
         projectId: s.projectId||undefined,
         spaceId:s.spaceId,scope:s.spaceId?'space':s.sessionId?'conversation':patch.scope||'project',
         sessionId: s.sessionId,

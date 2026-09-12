@@ -4,7 +4,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   const $=id=>document.getElementById(id);
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const icon=n=>`<svg class="ic" aria-hidden="true"><use href="#i-${n}"/></svg>`;
-  const settingsSections=[['/settings','General','general'],['/settings/models','Models','models'],['/settings/routing','Routing','routing'],['/settings/connections','Connections','connections'],['/settings/security','Security','security']];
+  const settingsSections=[['/settings','General','general'],['/settings/models','Models','models'],['/settings/routing','Routing','routing'],['/settings/memory','Memory','memory'],['/settings/connections','Connections','connections'],['/settings/security','Security','security']];
   const globals={'/':'board','/home':'board','/activity':'board','/activity/queue':'planner','/activity/automations':'automations','/activity/outputs':'artifacts','/accounts':'accounts','/accounts/tools':'connections','/memory':'memory','/settings':'preferences','/work/unassigned':'board'};
   for(const [url] of settingsSections)globals[url]='preferences';
   const aliases={'/dashboard':'/accounts','/queue':'/activity/queue','/automations':'/activity/automations','/artifacts':'/activity/outputs'};

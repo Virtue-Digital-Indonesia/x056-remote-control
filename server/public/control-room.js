@@ -898,8 +898,8 @@ window.createControlRoom = function (engine) {
     if(host&&host!==settingsHost){releaseSettings();settingsHost.innerHTML='';settingsHost=host;settingsHost.classList.add('settings-surface');}
     releaseSettings();
     const inline=settingsHost!==preferences;
-    if(inline)settingsHost.innerHTML=`<h2 class="sr-only">${{general:'General',models:'Model defaults',routing:'Account routing',connections:'Connections',security:'Security'}[tab]||'Settings'}</h2><div id="settingsBody"></div>`;
-    else preferences.innerHTML=`<div class="settings-shell"><nav class="settings-nav" aria-label="Settings"><h2>Settings</h2>${[['general','controls','General'],['models','sparkles','Models'],['routing','route','Routing'],['connections','plug','Connections'],['security','key','Security']].map(([id,icon,label])=>`<button data-settings="${id}" aria-current="${id===tab?'page':'false'}">${ic(icon)}<span>${label}</span></button>`).join('')}</nav><section class="settings-content"><header><h2>${{general:'General',models:'Model defaults',routing:'Account routing',connections:'Connections',security:'Security'}[tab]}</h2><button class="cr-icon" data-close-settings aria-label="Close settings">${ic('x')}</button></header><div id="settingsBody"></div></section></div>`;
+    if(inline)settingsHost.innerHTML=`<h2 class="sr-only">${{general:'General',models:'Model defaults',routing:'Account routing',memory:'Memory',connections:'Connections',security:'Security'}[tab]||'Settings'}</h2><div id="settingsBody"></div>`;
+    else preferences.innerHTML=`<div class="settings-shell"><nav class="settings-nav" aria-label="Settings"><h2>Settings</h2>${[['general','controls','General'],['models','sparkles','Models'],['routing','route','Routing'],['memory','snippet','Memory'],['connections','plug','Connections'],['security','key','Security']].map(([id,icon,label])=>`<button data-settings="${id}" aria-current="${id===tab?'page':'false'}">${ic(icon)}<span>${label}</span></button>`).join('')}</nav><section class="settings-content"><header><h2>${{general:'General',models:'Model defaults',routing:'Account routing',memory:'Memory',connections:'Connections',security:'Security'}[tab]}</h2><button class="cr-icon" data-close-settings aria-label="Close settings">${ic('x')}</button></header><div id="settingsBody"></div></section></div>`;
     if(!inline){
       preferences.querySelector('[data-close-settings]').onclick=()=>preferences.close();
       preferences.querySelectorAll('[data-settings]').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settings));
@@ -930,6 +930,9 @@ window.createControlRoom = function (engine) {
       body.innerHTML=segmented('connectionType',[['plugins','Plugins'],['mcp','MCP servers']],connectionSection,'Connection type')+'<div id="connectionControls"></div>';
       wireSegment('connectionType',v=>{connectionSection=v;settingsTab('connections');});
       mountControl(connectionSection==='plugins'?'pluginsPop':'mcpSrvPop',$('connectionControls'),connectionSection==='plugins'?'pluginsBtn':'mcpSrvBtn');
+    } else if(tab==='memory') {
+      body.innerHTML='<p>What conversations remember between turns. Changes apply to the next turn.</p><div id="memorySettingsBody" role="status">Loading…</div>';
+      renderMemorySettingsPage();
     } else if(tab==='security') {
       body.innerHTML='<h3>Passkeys</h3><p>Use your device to sign in with Face ID, Touch ID, or a security key.</p><div id="securityControls"></div><div class="setting-row"><span><strong>Sign out</strong><small>End your panel session on this browser</small></span><button class="cr-secondary" id="settingsLogout">Sign out</button></div>';
       mountControl('passkeyPop',$('securityControls'),'passkeyBtn');on('settingsLogout',()=>$('tokenBtn').click());
@@ -1353,7 +1356,7 @@ window.createControlRoom = function (engine) {
   });
 
   // Shared memory workspace. Sources and proposals remain distinct from confirmed knowledge.
-  const memoryKinds = ['fact', 'decision', 'preference', 'procedure', 'knowledge', 'context'];
+  const memoryKinds = ['fact', 'decision', 'preference'];
   let memoryTab = 'knowledge',
     memoryOffset = 0,
     memoryRows = [],
@@ -1362,7 +1365,7 @@ window.createControlRoom = function (engine) {
     memoryTimer;
   workspace.insertAdjacentHTML(
     'beforeend',
-    `<div id="crMemory" class="cr-page" hidden><div class="cr-heading"><div><div class="cr-eyebrow">SHARED KNOWLEDGE</div><h1>Memory</h1><p>Decisions and context that travel with your work.</p></div><div class="workspace-actions"><button id="memoryMore" class="cr-icon" aria-label="Memory tools">${ic('more')}</button><button id="memoryImport" class="cr-secondary">Import sources</button><button id="memoryNew" class="cr-primary">${ic('plus')} New memory</button></div></div><div id="memoryStats" class="memory-stats"></div><div class="cr-tabs memory-tabs" role="group" aria-label="Memory view"><button data-memory-tab="knowledge" class="selected">Brief and entries</button><button data-memory-tab="inbox">Review inbox <span id="memoryInboxCount"></span></button><button data-memory-tab="sources">Sources</button><button data-memory-tab="shared">Shared with us</button><button data-memory-tab="activity">Context history</button></div><div class="memory-filters"><label class="cr-search">${ic('search')}<input id="memorySearch" type="search" placeholder="Search knowledge and decisions" aria-label="Search memory"></label><select id="memoryProject" aria-label="Memory project"></select><select id="memoryKind" aria-label="Memory type"><option value="">All types</option>${memoryKinds.map((k) => `<option>${k}</option>`).join('')}</select><select id="memoryProvider" aria-label="Memory provider"><option value="">Both providers</option><option value="codex">ChatGPT / Codex</option><option value="claude">Claude</option></select><button id="memoryFilters" class="cr-secondary">Filters</button></div><div id="memoryExtra" class="memory-filters" hidden><select id="memoryConversation" aria-label="Memory conversation"><option value="">All conversations</option></select><select id="memoryStatus" aria-label="Memory status"><option value="confirmed">Confirmed</option><option value="archived">Archived</option><option value="deleted">Trash</option><option value="superseded">Superseded</option></select><select id="memoryScope" aria-label="Memory sharing scope"><option value="">All scopes</option><option value="conversation">Conversation</option><option value="project">Work / Chat</option><option value="space">Primary Project</option><option value="shared">Shared projects</option><option value="global">Workspace</option></select><input id="memoryTag" type="search" placeholder="Filter by tag" aria-label="Memory tag"><label class="workspace-check"><input type="checkbox" id="memoryExcluded">Excluded sources</label></div><div id="memoryBulk" class="workspace-bulk" hidden><strong></strong><button data-memory-bulk="confirmed">Confirm</button><button data-memory-bulk="archived">Archive</button><button data-memory-bulk="deleted">Move to trash</button><button data-memory-merge>Merge</button><button data-memory-clear>Clear</button></div><p id="memoryNotice" class="cr-note"></p><div id="memoryFileActions" class="workspace-actions" hidden><button id="memoryUploadFiles" class="cr-secondary">Upload files</button><button id="memoryChooseFiles" class="cr-secondary">Choose from Files</button></div><div id="memoryDocumentJobs"></div><div id="memoryItems" aria-live="polite"></div><div id="memoryPages" class="memory-pagination"></div></div>`,
+    `<div id="crMemory" class="cr-page" hidden><div class="cr-heading"><div><div class="cr-eyebrow">SHARED KNOWLEDGE</div><h1>Memory</h1><p>Decisions and context that travel with your work.</p></div><div class="workspace-actions"><button id="memoryMore" class="cr-icon" aria-label="Memory tools">${ic('more')}</button><button id="memoryImport" class="cr-secondary">Import sources</button><button id="memoryNew" class="cr-primary">${ic('plus')} New memory</button></div></div><div id="memoryStats" class="memory-stats"></div><div class="cr-tabs memory-tabs" role="group" aria-label="Memory view"><button data-memory-tab="knowledge" class="selected">Memory</button><button data-memory-tab="inbox">Inbox <span id="memoryInboxCount"></span></button><button data-memory-tab="sources">Sources</button></div><div class="memory-filters"><label class="cr-search">${ic('search')}<input id="memorySearch" type="search" placeholder="Search knowledge and decisions" aria-label="Search memory"></label><select id="memoryProject" aria-label="Memory project"></select><select id="memoryKind" aria-label="Memory type"><option value="">All types</option>${memoryKinds.map((k) => `<option>${k}</option>`).join('')}</select><select id="memoryProvider" aria-label="Memory provider"><option value="">Both providers</option><option value="codex">ChatGPT / Codex</option><option value="claude">Claude</option></select><button id="memorySharedChip" class="cr-secondary memory-chip" aria-pressed="false">${ic('share')}<span>Shared with us</span></button><button id="memoryFilters" class="cr-secondary">Filters</button></div><div id="memoryExtra" class="memory-filters" hidden><select id="memoryConversation" aria-label="Memory conversation"><option value="">All conversations</option></select><select id="memoryStatus" aria-label="Memory status"><option value="confirmed">Confirmed</option><option value="archived">Archived</option><option value="deleted">Trash</option><option value="superseded">Superseded</option></select><select id="memoryScope" aria-label="Memory sharing scope"><option value="">All scopes</option><option value="conversation">Conversation</option><option value="project">Work / Chat</option><option value="space">Primary Project</option><option value="shared">Shared projects</option><option value="global">Workspace</option></select><input id="memoryTag" type="search" placeholder="Filter by tag" aria-label="Memory tag"><label class="workspace-check"><input type="checkbox" id="memoryExcluded">Excluded sources</label></div><div id="memoryBulk" class="workspace-bulk" hidden><strong></strong><button data-memory-bulk="confirmed">Confirm</button><button data-memory-bulk="archived">Archive</button><button data-memory-bulk="deleted">Move to trash</button><button data-memory-merge>Merge</button><button data-memory-clear>Clear</button></div><p id="memoryNotice" class="cr-note"></p><div id="memoryFileActions" class="workspace-actions" hidden><button id="memoryUploadFiles" class="cr-secondary">Upload files</button><button id="memoryChooseFiles" class="cr-secondary">Choose from Files</button></div><div id="memoryDocumentJobs"></div><div id="memoryItems" aria-live="polite"></div><div id="memoryPages" class="memory-pagination"></div></div>`,
   );
   primaryNav.insertAdjacentHTML(
     'beforeend',
@@ -1416,7 +1419,8 @@ window.createControlRoom = function (engine) {
   }
   async function loadMemory() {
     const serial = ++memoryRequest;
-    document.querySelectorAll('[data-memory-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.memoryTab===memoryTab));
+    document.querySelectorAll('[data-memory-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.memoryTab===memoryTab||(memoryTab==='shared'&&b.dataset.memoryTab==='knowledge')));
+    $('memorySharedChip').setAttribute('aria-pressed',String(memoryTab==='shared'));$('memorySharedChip').hidden=!['knowledge','shared'].includes(memoryTab);
     $('memoryFileActions').hidden=memoryTab!=='sources'||!window.rcProjectSpaces?.enabled();
     $('memoryDocumentJobs').innerHTML='';
     $('memoryStatus').hidden=memoryTab!=='knowledge';
@@ -1620,12 +1624,14 @@ window.createControlRoom = function (engine) {
   };
   $('memoryUploadFiles').onclick=()=>memoryFilePicker(true);
   $('memoryChooseFiles').onclick=()=>memoryFilePicker(false);
+  $('memorySharedChip').onclick=()=>{memoryTab=memoryTab==='shared'?'knowledge':'shared';memoryOffset=0;loadMemory();};
   $('memoryNew').onclick = () => editMemory();
   $('memoryImport').onclick = () => importMemorySources();
   $('crMemoryTab').onclick = () => showSection('memory');
   $('memoryMore').onclick = (e) =>
     openMenu(e.currentTarget, [
-      { label: 'Workspace memory settings', icon: 'gear', run: memorySettings },
+      { label: 'Memory settings', icon: 'gear', run: ()=>settings('memory') },
+      { label: 'Context history', icon: 'history', run: ()=>{memoryTab='activity';memoryOffset=0;loadMemory();} },
       { label: 'Add a document', icon: 'file', run: memoryDocument },
       { label: 'Export memory', icon: 'down', run: exportMemory },
       { label: 'Import memory export', icon: 'up', run: importMemoryPackage },
@@ -1737,41 +1743,29 @@ window.createControlRoom = function (engine) {
         engine.state().projectId ||
         engine.state().projects[0]?.id ||
         '',
-      status = entry.status === 'confirmed' ? 'confirmed' : 'proposed';
+      status = entry.id ? (entry.status === 'confirmed' ? 'confirmed' : 'proposed') : (entry.status || 'confirmed'),
+      applies = entry.scope==='conversation'?'conversation':entry.scope==='global'?'global':entry.scope==='shared'?'shared':'here';
     const d = workspaceDialog(
       entry.id ? 'Edit memory' : 'New memory',
-      `<form class="workspace-form memory-editor"><label>Title<input name="title" required maxlength="180" value="${esc(entry.title || '')}" placeholder="A clear, specific fact or decision"></label><label>Knowledge<textarea name="content" rows="7" required maxlength="64000" placeholder="What should future conversations remember?">${esc(entry.content || '')}</textarea></label><div class="memory-form-grid"><label>Type<select name="kind">${memoryKinds.map((k) => `<option ${k === (entry.kind || 'knowledge') ? 'selected' : ''}>${k}</option>`).join('')}</select></label><label>Owning project<select name="projectId">${memoryOptions(pid, false)}</select></label><label>Sharing<select name="scope">${[
-        ['space','Primary Project'],
-        ['project', 'This Work project or Chat'],
-        ['conversation', 'This conversation'],
-        ['shared', 'Selected projects'],
-        ['global', 'Entire workspace'],
-      ]
-        .map(
-          ([v, l]) =>
-            `<option value="${v}" ${v === (entry.scope || (pid.startsWith('space_')?'space':'project')) ? 'selected' : ''}>${l}</option>`,
-        )
-        .join(
-          '',
-        )}</select></label><label>Review status<select name="status"><option value="proposed" ${status === 'proposed' ? 'selected' : ''}>Proposal</option><option value="confirmed" ${status === 'confirmed' ? 'selected' : ''}>Confirmed</option></select></label></div><label data-conversation-field>Conversation<select name="sessionId"></select></label><fieldset class="memory-share" data-shared-field><legend>Share with projects</legend>${engine
+      `<form class="workspace-form memory-editor"><label>Title<input name="title" required maxlength="180" value="${esc(entry.title || '')}" placeholder="One line: the fact, decision or preference"></label><label>Details<textarea name="content" rows="6" required maxlength="64000" placeholder="What should future conversations know, and why?">${esc(entry.content || '')}</textarea></label><label>Applies to<select name="applies">${[['here', pid.startsWith('space_') ? 'This Project' : 'This Work project or Chat'],['conversation','This conversation only'],['global','Everywhere']].map(([v,l])=>`<option value="${v}" ${v===applies?'selected':''}>${l}</option>`).join('')}${entry.scope==='shared'?'<option value="shared" selected>Selected projects</option>':''}</select></label><details class="memory-advanced" ${entry.id&&(entry.scope==='shared'||entry.expiresAt||entry.tags?.length)?'open':''}><summary>More options</summary><div class="memory-form-grid"><label>Type<select name="kind">${[...memoryKinds,...(entry.kind==='context'?['context']:[])].map((k) => `<option ${k === (entry.kind || 'fact') ? 'selected' : ''}>${k}</option>`).join('')}</select></label><label>Owning project<select name="projectId">${memoryOptions(pid, false)}</select></label><label>Review status<select name="status"><option value="confirmed" ${status === 'confirmed' ? 'selected' : ''}>Confirmed</option><option value="proposed" ${status === 'proposed' ? 'selected' : ''}>Needs review</option></select></label></div><label data-conversation-field>Conversation<select name="sessionId"></select></label><label class="workspace-check"><input type="checkbox" name="shareToggle" ${entry.scope==='shared'?'checked':''}>Share with specific projects instead</label><fieldset class="memory-share" data-shared-field><legend>Share with projects</legend>${engine
         .state()
         .projects.map(
           (p) =>
             `<label class="workspace-check"><input name="sharedProjectIds" type="checkbox" value="${esc(p.id)}" ${(entry.sharedProjectIds || []).includes(p.id) ? 'checked' : ''}>${esc(p.name)}</label>`,
         )
-        .join(
-          '',
-        )}</fieldset><details class="memory-advanced"><summary>Tags, providers & context</summary><label>Tags<input name="tags" value="${esc((entry.tags || []).join(', '))}" placeholder="architecture, preferences, deployment"></label><fieldset class="route-provider"><legend>Providers</legend>${['claude', 'codex'].map((p) => `<label><input type="checkbox" name="providers" value="${p}" ${!entry.providers || entry.providers.includes(p) ? 'checked' : ''}>${providerName(p)}</label>`).join('')}</fieldset><label>Expires<input type="date" name="expiresAt" value="${entry.expiresAt ? new Date(entry.expiresAt).toISOString().slice(0, 10) : ''}"></label><label class="workspace-check"><input type="checkbox" name="pinned" ${entry.pinned ? 'checked' : ''}>Always consider for context within its sharing scope</label></details>${entry.sources?.some((s) => s.id) ? '<label class="workspace-check"><input type="checkbox" name="reviewSources">I reviewed the current source versions</label>' : ''}<p role="alert"></p><footer><button type="button" class="cr-secondary" data-cancel>Cancel</button><button class="cr-primary">Save memory</button></footer></form>`,
+        .join('')}</fieldset><label>Tags<input name="tags" value="${esc((entry.tags || []).join(', '))}" placeholder="architecture, deployment"></label><label>Expires<input type="date" name="expiresAt" value="${entry.expiresAt ? new Date(entry.expiresAt).toISOString().slice(0, 10) : ''}"></label><label class="workspace-check"><input type="checkbox" name="pinned" ${entry.pinned ? 'checked' : ''}>Always include, even when it does not match the prompt</label>${['claude','codex'].map((p) => `<input type="checkbox" name="providers" value="${p}" hidden ${!entry.providers || entry.providers.includes(p) ? 'checked' : ''}>`).join('')}</details>${entry.sources?.some((s) => s.id) ? '<label class="workspace-check"><input type="checkbox" name="reviewSources">I reviewed the current source versions</label>' : ''}<p role="alert"></p><footer><button type="button" class="cr-secondary" data-cancel>Cancel</button><button class="cr-primary">Save memory</button></footer></form>`,
     );
     d.classList.add('memory-editor-dialog');
     const f = d.querySelector('form');
+    // The three "Applies to" choices map onto the store's scopes; sharing with
+    // specific projects is the one case that needs its own list.
+    const scopeOf=()=>{const isSpace=f.elements.projectId.value.startsWith('space_'),a=f.elements.applies.value;if(f.elements.shareToggle.checked)return 'shared';if(a==='conversation')return 'conversation';if(a==='global')return 'global';return isSpace?'space':'project';};
     function fields() {
-      const isSpace=f.elements.projectId.value.startsWith('space_');
-      if(isSpace&&!['space','shared','global'].includes(f.elements.scope.value))f.elements.scope.value='space';
-      if(!isSpace&&f.elements.scope.value==='space')f.elements.scope.value='project';
       f.elements.projectId.disabled=!!entry.id;
-      d.querySelector('[data-conversation-field]').hidden = f.elements.scope.value !== 'conversation';
-      d.querySelector('[data-shared-field]').hidden = f.elements.scope.value !== 'shared';
+      const scope=scopeOf();
+      d.querySelector('[data-conversation-field]').hidden = scope !== 'conversation';
+      d.querySelector('[data-shared-field]').hidden = scope !== 'shared';
+      f.elements.applies.disabled = f.elements.shareToggle.checked;
       const chosen = f.elements.sessionId.value || entry.sessionId || engine.state().sessionId;
       f.elements.sessionId.innerHTML = cards()
         .filter((c) => c.p.id === f.elements.projectId.value)
@@ -1782,7 +1776,8 @@ window.createControlRoom = function (engine) {
         .join('');
     }
     fields();
-    f.elements.scope.onchange = fields;
+    f.elements.applies.onchange = fields;
+    f.elements.shareToggle.onchange = fields;
     f.elements.projectId.onchange = fields;
     f.querySelector('[data-cancel]').onclick = () => d.close();
     f.onsubmit = async (event) => {
@@ -1805,8 +1800,8 @@ window.createControlRoom = function (engine) {
           kind: f.elements.kind.value,
           status: f.elements.status.value,
           ...memoryOwner(f.elements.projectId.value),
-          scope: f.elements.scope.value,
-          sessionId: f.elements.scope.value === 'conversation' ? f.elements.sessionId.value : '',
+          scope: scopeOf(),
+          sessionId: scopeOf() === 'conversation' ? f.elements.sessionId.value : '',
           sharedProjectIds: [...f.querySelectorAll('[name=sharedProjectIds]:checked')].map((x) => x.value),
           providers: [...f.querySelectorAll('[name=providers]:checked')].map((x) => x.value),
           tags: f.elements.tags.value
@@ -2046,46 +2041,23 @@ window.createControlRoom = function (engine) {
     };
     input.click();
   }
-  async function memorySettings() {
-    const d = workspaceDialog('Workspace memory settings', '<div data-settings>Loading…</div>');
+  const memoryBudgets=[['small','Small · about 1,200 tokens, 6 memories',1200,6],['normal','Normal · about 2,400 tokens, 12 memories',2400,12],['large','Large · about 4,800 tokens, 24 memories',4800,24]];
+  async function renderMemorySettingsPage() {
+    const host=$('memorySettingsBody');if(!host)return;
     try {
-      const s = await memoryRequestApi('settings');
-      if (!d.open) return;
-      d.classList.add('workspace-form-dialog');
-      d.querySelector('[data-settings]').innerHTML =
-        `<form class="workspace-form"><label class="workspace-check"><input type="checkbox" name="enabled" ${s.enabled ? 'checked' : ''}>Include relevant memory in new turns</label><label class="workspace-check"><input type="checkbox" name="autoCapture" ${s.autoCapture ? 'checked' : ''}>Save completed turn excerpts as sources</label><label class="workspace-check"><input type="checkbox" name="crossProject" ${s.crossProject ? 'checked' : ''}>Retrieve knowledge shared from other projects</label><div class="memory-form-grid"><label>Context token budget<input type="number" name="maxTokens" min="300" max="12000" value="${s.maxTokens}"></label><label>Maximum memories per turn<input type="number" name="maxEntries" min="1" max="40" value="${s.maxEntries}"></label></div><fieldset class="route-provider"><legend>Automatic context for</legend>${['claude', 'codex'].map((p) => `<label><input name="providers" type="checkbox" value="${p}" ${s.providers.includes(p) ? 'checked' : ''}>${providerName(p)}</label>`).join('')}</fieldset><fieldset class="memory-share"><legend>Exclude projects from automatic capture and context</legend>${engine
-          .state()
-          .projects.map(
-            (p) =>
-              `<label class="workspace-check"><input name="excludedProjects" type="checkbox" value="${esc(p.id)}" ${s.excludedProjects.includes(p.id) ? 'checked' : ''}>${esc(p.name)}</label>`,
-          )
-          .join(
-            '',
-          )}</fieldset><fieldset class="memory-share"><legend>Exclude Project spaces</legend>${memorySpaces().map(p=>`<label class="workspace-check"><input name="excludedSpaces" type="checkbox" value="${esc(p.id)}" ${s.excludedSpaces?.includes(p.id)?'checked':''}>${esc(p.name)}</label>`).join('')}</fieldset><p class="cr-note">Changes apply to future turns. Context already sent to a provider remains in that conversation’s history.</p><p role="alert"></p><footer><button class="cr-primary">Save settings</button></footer></form>`;
-      d.querySelector('form').onsubmit = async (e) => {
-        e.preventDefault();
-        const f = e.target;
-        try {
-          await memoryRequestApi('settings', {
-            ...Object.fromEntries(
-              ['enabled', 'autoCapture', 'crossProject'].map((k) => [k, f.elements[k].checked]),
-            ),
-            maxTokens: Number(f.elements.maxTokens.value),
-            maxEntries: Number(f.elements.maxEntries.value),
-            providers: [...f.querySelectorAll('[name=providers]:checked')].map((x) => x.value),
-            excludedProjects: [...f.querySelectorAll('[name=excludedProjects]:checked')].map((x) => x.value),
-            excludedSpaces:[...f.querySelectorAll('[name=excludedSpaces]:checked')].map(x=>x.value),
-          });
-          d.close();
-          loadMemory();
-        } catch (err) {
-          f.querySelector('[role=alert]').textContent = err.message;
-        }
+      const s=await memoryRequestApi('settings');if(!$('memorySettingsBody'))return;
+      const budget=memoryBudgets.find(([,,t])=>t===s.maxTokens)?.[0]||(s.maxTokens<2400?'small':s.maxTokens>2400?'large':'normal');
+      const spaces=memorySpaces(),executions=engine.state().projects.filter(p=>p.kind!=='chat'||!window.rcProjectSpaces?.enabled());
+      host.innerHTML=`<div class="setting-row"><label for="memoryOn"><strong>Use memory in new turns</strong><small>Confirmed memories that match the prompt are added to the context.</small></label><input type="checkbox" role="switch" class="setting-switch" id="memoryOn" ${s.enabled?'checked':''}></div><div class="setting-row"><label for="memoryCapture"><strong>Save turn excerpts as sources</strong><small>Keeps the original text a memory came from, so it can be reviewed later.</small></label><input type="checkbox" role="switch" class="setting-switch" id="memoryCapture" ${s.autoCapture?'checked':''}></div><div class="setting-row"><label for="memoryBudget"><strong>How much to include</strong><small>The most a single turn will carry.</small></label><select id="memoryBudget">${memoryBudgets.map(([v,l])=>`<option value="${v}" ${v===budget?'selected':''}>${l}</option>`).join('')}</select></div><h3>Leave out</h3><p>Memory is never read from or written to anything switched on here.</p><div class="memory-exclusions">${spaces.map(p=>`<label class="memory-switch"><input type="checkbox" role="switch" class="setting-switch" data-exclude-space="${esc(p.id)}" ${s.excludedSpaces?.includes(p.id)?'checked':''}><span>${esc(p.name)}<small>Project</small></span></label>`).join('')}${executions.map(p=>`<label class="memory-switch"><input type="checkbox" role="switch" class="setting-switch" data-exclude-project="${esc(p.id)}" ${s.excludedProjects.includes(p.id)?'checked':''}><span>${esc(p.name)}<small>${p.kind==='chat'?'Chat':'Work'}</small></span></label>`).join('')||'<p class="cr-note">Nothing to leave out yet.</p>'}</div><p id="memorySettingsStatus" role="status" class="cr-note"></p>`;
+      const save=async()=>{
+        const [,,maxTokens,maxEntries]=memoryBudgets.find(([v])=>v===$('memoryBudget').value)||memoryBudgets[1];
+        try{await memoryRequestApi('settings',{enabled:$('memoryOn').checked,autoCapture:$('memoryCapture').checked,crossProject:s.crossProject,maxTokens,maxEntries,providers:s.providers?.length?s.providers:['claude','codex'],excludedProjects:[...host.querySelectorAll('[data-exclude-project]:checked')].map(x=>x.dataset.excludeProject),excludedSpaces:[...host.querySelectorAll('[data-exclude-space]:checked')].map(x=>x.dataset.excludeSpace)});$('memorySettingsStatus').textContent='Saved.';setTimeout(()=>{if($('memorySettingsStatus'))$('memorySettingsStatus').textContent='';},1500);if(section==='memory')loadMemory();}
+        catch(err){$('memorySettingsStatus').textContent=err.message;}
       };
-    } catch (err) {
-      d.querySelector('[data-settings]').textContent = err.message;
-    }
+      host.querySelectorAll('input,select').forEach(el=>el.onchange=save);
+    } catch(err){host.textContent=err.message;}
   }
+
   const memoryFileBase=id=>engine.state().projects.find(p=>p.id===id)?.kind==='chat'?'/api/chats/'+encodeURIComponent(id)+'/files':'/api/project-spaces/'+encodeURIComponent(id)+'/files';
   const memoryLocator=loc=>[loc.heading,loc.kind==='page'?'Page '+loc.page:loc.kind==='table-cell'?'Table '+loc.table+', row '+loc.row+', cell '+loc.cell:loc.kind==='paragraph'?'Paragraph '+loc.paragraph:'Lines '+loc.startLine+(loc.endLine&&loc.endLine!==loc.startLine?'–'+loc.endLine:'')].filter(Boolean).join(' · ');
   const sourceState=state=>({needs_ocr:'Needs OCR',processing:'Processing',partial:'Partial coverage',cancelled:'Cancelled'}[state]||state.charAt(0).toUpperCase()+state.slice(1));
@@ -2690,5 +2662,5 @@ window.createControlRoom = function (engine) {
   setMode('closed'); projectNav(false); refresh();
   return { showPage:next=>showSection(next,true), workspaceRows:()=>cards().map(x=>({...x,url:window.rcProjectSpaces?.conversationPath(x.p,x.c.sessionId)})), setStageHidden,
     projectCost:async(id,force=false)=>{await loadProjectCosts(force);return {row:costRows().find(r=>r.projectId===id),error:costError,ready:!!costSnapshot,pricing:costSnapshot?.pricing};},
-    addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory',true);$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:(projectId)=>{costFilter=projectId||null;renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, mountSettings:(host,tab)=>{if(host)settingsTab(tab,host);else unmountSettings();}, settingsSection:()=>settingSection, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
+    addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings:()=>settings('memory'), showProjectMemory:pid=>{showSection('memory',true);$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:(projectId)=>{costFilter=projectId||null;renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, mountSettings:(host,tab)=>{if(host)settingsTab(tab,host);else unmountSettings();}, settingsSection:()=>settingSection, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
 };

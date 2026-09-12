@@ -379,7 +379,7 @@ const MEMORY_TOOLS = [
     {
       title: { type: 'string' },
       content: { type: 'string' },
-      kind: { type: 'string', enum: ['fact', 'decision', 'preference', 'procedure', 'knowledge', 'context'] },
+      kind: { type: 'string', enum: ['fact', 'decision', 'preference'], description: 'fact (default): something true about the project; decision: a choice and why; preference: how the user wants things done' },
       scope: { type: 'string', enum: ['conversation', 'project', 'space', 'shared', 'global'] },
       projectId: { type: 'string' },
       sessionId: { type: 'string' },
