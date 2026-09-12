@@ -125,7 +125,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8767';
     .locator('.cr-task')
     .filter({ hasText: 'Review accessibility findings' })
     .click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Conversation results', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Results', exact: true }).click();
   await page.locator('dialog[open] .cr-empty').waitFor();
   assert.equal(
     await page.locator('dialog[open] .artifact-card').count(),

@@ -678,7 +678,23 @@
   /* ⌘K command palette */
   .palette { max-width: 520px; padding: 10px; }
   .palette .m-in { margin-top: 0; }
-  .palette-list { max-height: 46vh; overflow-y: auto; margin-top: 8px; }
+  .modal.palette { max-width: 620px; padding: 10px; }
+  .pal-head { display: flex; align-items: center; gap: 10px; padding: 4px 8px 4px 10px; color: var(--faint); }
+  .pal-head .ic.sm { width: 16px; height: 16px; flex: none; }
+  .pal-head .pal-input { margin: 0; border: 0; padding: 8px 0; font-size: 15px; background: transparent; }
+  .pal-head .pal-input:focus { border: 0; }
+  .pal-hint { flex: none; font-size: 10px; color: var(--faint); white-space: nowrap; }
+  .pal-hint kbd { font: inherit; font-size: 9px; border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; margin: 0 2px 0 4px; color: var(--muted); }
+  .palette-list { max-height: 52vh; overflow-y: auto; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); scrollbar-width: thin; }
+  .pal-group { font-size: 10px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--faint); padding: 10px 10px 4px; }
+  .pal-group:first-child { padding-top: 4px; }
+  .pal-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .pal-text strong { font-weight: 550; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pal-text small { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pal-live { font-size: 10px; color: var(--ok); flex: none; }
+  .pal-item .ic.sm { color: var(--muted); flex: none; }
+  .pal-item.sel .ic.sm, .pal-item.sel .pal-text small { color: var(--text); }
+  @media (max-width: 650px) { .pal-hint { display: none; } .modal.palette { max-width: none; } }
   .pal-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; color: var(--text); }
   .pal-item .sub { color: var(--faint); font-size: 12px; }
   .pal-item .kbd { margin-left: auto; }
@@ -3652,7 +3668,7 @@
 
   // ---- in-app modal dialogs (replace native alert/confirm/prompt) ----
   var modalStack = []; // topmost modal handles Esc; others are shielded beneath it
-  function anyModalOpen() { return modalStack.length > 0; }
+  function anyModalOpen() { modalStack = modalStack.filter(function (e) { return e.wrap && e.wrap.open; }); return modalStack.length > 0; }
   function dismissModal(entry, val) {
     var i = modalStack.indexOf(entry); if (i < 0) return; // already closed
     modalStack.splice(i, 1);
@@ -3664,14 +3680,14 @@
   // the value resolved on Esc / backdrop click. Returns a Promise of the value.
   function showModal(cls, onCancel, build) {
     return new Promise(function (resolve) {
-      var wrap = document.createElement('dialog'); wrap.className = 'modal-wrap modern-prompt'; wrap.addEventListener('cancel', function(e) { e.preventDefault(); dismissModal(entry, onCancel); });
+      var wrap = document.createElement('dialog'); wrap.className = 'modal-wrap modern-prompt'; wrap.dataset.noMotion = '1'; wrap.addEventListener('cancel', function(e) { e.preventDefault(); dismissModal(entry, onCancel); });
       var card = document.createElement('div'); card.className = 'modal' + (cls ? ' ' + cls : '');
       var entry = { wrap: wrap, resolve: resolve, onCancel: onCancel };
       wrap.addEventListener('mousedown', function (e) { if (e.target === wrap) dismissModal(entry, onCancel); });
       build(card, function (val) { dismissModal(entry, val); });
       wrap.setAttribute('aria-label', (card.querySelector('h3') || {}).textContent || 'Dialog');
       wrap.appendChild(card); document.body.appendChild(wrap);
-      modalStack.push(entry); wrap.showModal();
+      modalStack.push(entry); wrap.showModal(); if (window.rcMotion) window.rcMotion.dialog(card);
     });
   }
   function uiConfirm(o) {
@@ -3856,49 +3872,80 @@
   function openPalette() {
     if (anyModalOpen() || document.querySelector('dialog[open]')) return;
     showModal('palette', null, function (card, done) {
-      var inp = document.createElement('input'); inp.className = 'm-in'; inp.placeholder = 'Jump to a project or conversation…';
-      var list = document.createElement('div'); list.className = 'palette-list';
-      card.appendChild(inp); card.appendChild(list);
+      var head = document.createElement('div'); head.className = 'pal-head';
+      head.appendChild(icon('search', 'sm'));
+      var inp = document.createElement('input'); inp.className = 'm-in pal-input'; inp.placeholder = 'Jump to a Project, conversation or page…'; inp.setAttribute('aria-label', 'Search');
+      head.appendChild(inp);
+      var hint = document.createElement('span'); hint.className = 'pal-hint'; hint.innerHTML = '<kbd>↑↓</kbd> move <kbd>↵</kbd> open <kbd>esc</kbd> close'; head.appendChild(hint);
+      var list = document.createElement('div'); list.className = 'palette-list'; list.setAttribute('role', 'listbox');
+      card.appendChild(head); card.appendChild(list);
       var rows = [], sel = 0;
+      var spaces = window.rcProjectSpaces && window.rcProjectSpaces.enabled() ? window.rcProjectSpaces : null;
+      var ws = window.rcWorkspace && window.rcWorkspace.ready() ? window.rcWorkspace : null;
+      var pages = ws ? [['/home','Home','home'],['/projects','All Projects','folder'],['/activity','Activity','activity'],['/accounts','Accounts & tools','user'],['/memory','Workspace memory','snippet'],['/settings','Settings','gear']] : [];
+      function matches(text, q) { return !q || text.toLowerCase().indexOf(q) >= 0; }
       function collect(q) {
-        var items = [];
+        var groups = [];
+        // Projects: spaces when enabled, otherwise Work repositories.
+        var projectRows = [];
+        if (spaces) spaces.list().filter(function (p) { return !p.archivedAt && matches(p.name, q); }).forEach(function (p) { projectRows.push({ type: 'space', id: p.id, title: p.name, sub: (p.chats||[]).length + ' Chat · ' + (p.members||[]).filter(function(m){return m.mode==='work';}).length + ' Work', icon: 'folder' }); });
+        else orderedProjects().filter(function (p) { return p.kind !== 'chat' && matches(p.name, q); }).forEach(function (p) { projectRows.push({ type: 'project', pid: p.id, title: p.name, sub: 'Work repository', icon: 'folder', running: !!runningProjects[p.id] }); });
+        // Conversations: split by kind, most recent first.
+        var chats = [], works = [];
         orderedProjects().forEach(function (p) {
-          var parent=window.rcProjectSpaces?.enabled()?window.rcProjectSpaces.list().find(s=>s.id===(p.spaceId||p.workSpaceId)):null;
-          var pn = ((parent?.name||'')+' '+(p.name || '')).toLowerCase();
-          if ((!window.rcProjectSpaces?.enabled()||p.kind!=='chat')&&(!q || pn.indexOf(q) >= 0)) items.push({ type: 'project', pid: p.id, title: p.name, sub: 'project', running: !!runningProjects[p.id] });
+          var parent = spaces ? spaces.list().find(function (s) { return s.id === (p.spaceId || p.workSpaceId); }) : null;
           (p.conversations || []).forEach(function (c) {
-            var primary=window.rcProjectSpaces?.enabled()?window.rcProjectSpaces.list().find(s=>s.id===c.spaceId):null;
-            var ct = ((primary?.name||'')+' '+(c.title || '')).toLowerCase();
-            if (!q || ct.indexOf(q) >= 0 || pn.indexOf(q) >= 0) {
-              var conversationFirst = document.body.dataset.conversationLabelOrder !== 'project';
-              items.push({ type: 'conv', pid: p.id, sid: c.sessionId, title: conversationFirst ? c.title || 'Conversation' : p.name, sub: window.rcProjectSpaces?.enabled()?(primary?.name||p.name)+' · '+(p.kind==='chat'?'Chat':'Work'):conversationFirst ? p.name : c.title || 'Conversation', running: isSessionRunning(p.id, c.sessionId) });
-            }
+            var primary = spaces ? spaces.list().find(function (s) { return s.id === c.spaceId; }) : parent;
+            var hay = (primary ? primary.name + ' ' : '') + p.name + ' ' + (c.title || '');
+            if (!matches(hay, q)) return;
+            var row = { type: 'conv', pid: p.id, sid: c.sessionId, title: c.title || 'Conversation', sub: primary ? primary.name : (p.kind === 'chat' ? 'Standalone' : p.name), icon: p.kind === 'chat' ? 'chat' : 'terminal', running: isSessionRunning(p.id, c.sessionId), at: c.lastActivityAt || c.updatedAt || c.createdAt || 0 };
+            (p.kind === 'chat' ? chats : works).push(row);
           });
         });
-        return items;
+        var byRecent = function (a, b) { return (b.at || 0) - (a.at || 0); };
+        chats.sort(byRecent); works.sort(byRecent);
+        if (projectRows.length) groups.push({ label: 'Projects', rows: projectRows.slice(0, q ? 20 : 6) });
+        if (chats.length) groups.push({ label: 'Chat', rows: chats.slice(0, q ? 30 : 6) });
+        if (works.length) groups.push({ label: 'Work', rows: works.slice(0, q ? 30 : 6) });
+        var pageRows = pages.filter(function (p) { return matches(p[1], q); }).map(function (p) { return { type: 'page', path: p[0], title: p[1], icon: p[2] }; });
+        if (pageRows.length && (q || !groups.length)) groups.push({ label: 'Go to', rows: pageRows });
+        else if (pageRows.length) groups.push({ label: 'Go to', rows: pageRows });
+        return groups;
       }
       function activate(it) {
         done(null);
-        if(window.rcProjectSpaces?.enabled()){if(it.type==='project')window.rcProjectSpaces.navigate('/work/'+encodeURIComponent(it.pid));else window.rcProjectSpaces.openConversation(it.pid,it.sid);return;}
+        if (it.type === 'page') { if (ws) ws.navigate(it.path); return; }
+        if (it.type === 'space') { if (spaces) spaces.navigate('/projects/' + encodeURIComponent(it.id) + '/overview'); return; }
+        if (spaces) { if (it.type === 'project') spaces.navigate('/work/' + encodeURIComponent(it.pid)); else spaces.openConversation(it.pid, it.sid); return; }
         if (it.type === 'project') { if (it.pid !== currentProjectId) switchProject(projCache[it.pid]); }
         else { if (it.pid !== currentProjectId) switchProject(projCache[it.pid]); switchConversation(it.pid, it.sid); }
       }
-      function markSel() { rows.forEach(function (r, i) { r.el.classList.toggle('sel', i === sel); }); if (rows[sel]) rows[sel].el.scrollIntoView({ block: 'nearest' }); }
+      function markSel() { rows.forEach(function (r, i) { r.el.classList.toggle('sel', i === sel); r.el.setAttribute('aria-selected', String(i === sel)); }); if (rows[sel]) rows[sel].el.scrollIntoView({ block: 'nearest' }); }
       function render() {
         list.textContent = ''; rows = [];
-        var items = collect(inp.value.trim().toLowerCase());
-        if (!items.length) { var e = document.createElement('div'); e.className = 'pal-empty'; e.textContent = 'No matching projects or conversations'; list.appendChild(e); return; }
-        if (sel >= items.length) sel = items.length - 1;
-        items.forEach(function (it, i) {
-          var row = document.createElement('div'); row.className = 'pal-item' + (i === sel ? ' sel' : '');
-          if (it.running) { var sp = document.createElement('span'); sp.className = 'rspin'; row.appendChild(sp); }
-          else row.appendChild(icon(it.type === 'project' ? 'folder' : 'compose', 'sm'));
-          var t = document.createElement('span'); t.textContent = it.title; row.appendChild(t);
-          if (it.sub) { var s = document.createElement('span'); s.className = 'sub'; s.textContent = '· ' + it.sub; row.appendChild(s); }
-          row.addEventListener('mousemove', function () { if (sel !== i) { sel = i; markSel(); } });
-          row.addEventListener('click', function () { activate(it); });
-          list.appendChild(row); rows.push({ el: row, item: it });
+        var groups = collect(inp.value.trim().toLowerCase());
+        if (!groups.length) { var e = document.createElement('div'); e.className = 'pal-empty'; e.textContent = 'Nothing matches. Try another word.'; list.appendChild(e); return; }
+        var i = 0;
+        groups.forEach(function (g) {
+          var label = document.createElement('div'); label.className = 'pal-group'; label.textContent = g.label; list.appendChild(label);
+          g.rows.forEach(function (it) {
+            var row = document.createElement('div'); row.className = 'pal-item'; row.setAttribute('role', 'option');
+            if (it.running) { var sp = document.createElement('span'); sp.className = 'rspin'; row.appendChild(sp); }
+            else row.appendChild(icon(it.icon, 'sm'));
+            var text = document.createElement('span'); text.className = 'pal-text';
+            var t = document.createElement('strong'); t.textContent = it.title; text.appendChild(t);
+            if (it.sub) { var s = document.createElement('small'); s.textContent = it.sub; text.appendChild(s); }
+            row.appendChild(text);
+            if (it.running) { var live = document.createElement('span'); live.className = 'pal-live'; live.textContent = 'Running'; row.appendChild(live); }
+            var index = i++;
+            row.addEventListener('mousemove', function () { if (sel !== index) { sel = index; markSel(); } });
+            row.addEventListener('click', function () { activate(it); });
+            list.appendChild(row); rows.push({ el: row, item: it });
+          });
         });
+        if (sel >= rows.length) sel = Math.max(0, rows.length - 1);
+        markSel();
+        if (window.rcMotion) window.rcMotion.list(list, '.pal-item');
       }
       inp.addEventListener('input', function () { sel = 0; render(); });
       inp.addEventListener('keydown', function (e) {

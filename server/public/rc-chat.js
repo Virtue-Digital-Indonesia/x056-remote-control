@@ -108,7 +108,7 @@ window.createRCChat = function (engine, room) {
     renderChats(); renderUploads();
   }
   function newChat() {
-    const d = dialog('New chat', `<form class="workspace-form"><label>Name<input name="name" placeholder="New chat" maxlength="300"></label><div class="rc-chat-form-grid"><label>Provider<select name="provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><label>Account<select name="account"></select></label><label>Model<select name="model"></select></label><label>Effort<select name="effort"></select></label></div><p class="rc-chat-note">Automatic account selection keeps work moving across available accounts.</p><p role="alert"></p><button class="cr-primary">Create chat</button></form>`);
+    const d = dialog('New chat', `<form class="workspace-form"><div class="rc-chat-form-grid"><label>Provider<select name="provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><label>Account<select name="account"></select></label><label>Model<select name="model"></select></label><label>Effort<select name="effort"></select></label></div><p class="rc-chat-note">The chat is named from your first message. Automatic account selection keeps work moving across available accounts.</p><p role="alert"></p><button class="cr-primary">Create chat</button></form>`);
     const form = d.querySelector('form'), f = form.elements, requestId = crypto.randomUUID();
     function choices() {
       f.model.innerHTML = '<option value="">Provider default</option>' + engine.defaultModelOptions(f.provider.value).map(m => `<option value="${esc(m.value)}">${esc(m.label)}</option>`).join('');
@@ -118,7 +118,7 @@ window.createRCChat = function (engine, room) {
     f.provider.onchange = choices; f.model.onchange = efforts; choices();
     form.onsubmit = async event => {
       event.preventDefault(); const button = form.querySelector('button'); button.disabled = true;
-      try { const chat = await request('/api/chats', { requestId, name:f.name.value || undefined, provider:f.provider.value, model:f.model.value, effort:f.effort.value, account:f.account.value || undefined }); await engine.reloadProjects(); await open(chat); d.close(); }
+      try { const chat = await request('/api/chats', { requestId, provider:f.provider.value, model:f.model.value, effort:f.effort.value, account:f.account.value || undefined }); await engine.reloadProjects(); await open(chat); d.close(); }
       catch (error) { form.querySelector('[role=alert]').textContent = error.message; } finally { button.disabled = false; }
     };
   }

@@ -28,7 +28,7 @@ const base=process.argv[2]||'http://127.0.0.1:8774',token='browser-fixture-token
  assert((await api('/api/memory/source/read?'+new URLSearchParams({id:reference.id,versionId:before.activeVersionId}))).items.some(p=>p.text.includes('BrowserReferenceEvidence')));
  await page.keyboard.press('Escape');
  await page.goto(base+'/chat/'+chat.id);await page.locator('#rcChatFiles').waitFor();
- await page.locator('#moreBtn').click();await page.getByRole('menuitem',{name:'Conversation memory'}).click();
+ await page.locator('#moreBtn').click();await page.getByRole('menuitem',{name:'Memory'}).click();
  await page.locator('[data-context-query]').fill('BrowserDocumentEvidence');await page.locator('[data-context-refresh]').click();await page.locator('[data-context-body] [data-cited-source="'+doc.id+'"]').first().waitFor();
  await page.locator('[data-context-body] [data-cited-source="'+doc.id+'"]').first().click();await page.locator('[data-download-citation]').waitFor();assert((await page.locator('[data-original-body]').innerText()).includes('BrowserDocumentEvidence'));await page.keyboard.press('Escape');await page.keyboard.press('Escape');
  await page.goto(base+'/projects/'+a.id+'/memory');await page.locator('[data-memory-tab=sources]').click();await page.locator('[data-memory-document="'+reference.id+'"]').first().click();

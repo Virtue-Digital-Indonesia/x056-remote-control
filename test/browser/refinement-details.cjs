@@ -51,7 +51,7 @@ const base=process.argv[2]||'http://127.0.0.1:8767';
  assert.equal(await page.locator('input[value=backup]').isDisabled(),true);await page.unroute('**/api/accounts/active');
  await page.locator('[data-close]').click();assert.equal(await page.locator('#prompt').inputValue(),'Keep this actual unsent draft.');
  // Rename prompt is a real, keyboard-operable dialog above the conversation.
- await page.locator('#moreBtn').click();await page.getByRole('menuitem',{name:'Rename conversation',exact:true}).click();await page.waitForSelector('dialog.modern-prompt[open]');await page.keyboard.press('Escape');assert.equal(await page.locator('#conversationSurface').isVisible(),true);
+ await page.locator('#moreBtn').click();await page.getByRole('menuitem',{name:'Rename',exact:true}).click();await page.waitForSelector('dialog.modern-prompt[open]');await page.keyboard.press('Escape');assert.equal(await page.locator('#conversationSurface').isVisible(),true);
  await page.locator('#chatClose').click();
  for(const width of [320,390,768,1440]){
   await page.setViewportSize({width,height:900});

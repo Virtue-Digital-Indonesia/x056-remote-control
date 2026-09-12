@@ -300,9 +300,24 @@ window.createControlRoom = function (engine) {
     const node = nodes.find(n => n.getBoundingClientRect().bottom > edge);
     positions.set(key(), { top:scroll.scrollTop, bottom:scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<100, node, signature:node?.textContent, offset:node ? node.getBoundingClientRect().top-edge : 0 });
   }
+  // "Bottom" is an intent, not a number: the transcript keeps growing for a moment
+  // after history lands (markdown, code blocks, images), so the view stays pinned to
+  // the end until it stops changing size.
+  let pinBottom=null;
+  function stickToBottom(){
+    if(pinBottom)pinBottom.disconnect();
+    scroll.scrollTop=scroll.scrollHeight;
+    const started=Date.now();
+    pinBottom=new ResizeObserver(()=>{if(Date.now()-started>1500){pinBottom.disconnect();pinBottom=null;return;}scroll.scrollTop=scroll.scrollHeight;});
+    pinBottom.observe($('chat'));
+    requestAnimationFrame(()=>{scroll.scrollTop=scroll.scrollHeight;});
+  }
+  scroll.addEventListener('wheel',()=>{if(pinBottom){pinBottom.disconnect();pinBottom=null;}},{passive:true});
+  scroll.addEventListener('touchstart',()=>{if(pinBottom){pinBottom.disconnect();pinBottom=null;}},{passive:true});
   function restorePosition() {
     const p = positions.get(key());
-    if (!p || p.bottom) { scroll.scrollTop = scroll.scrollHeight; return; }
+    if (!p || p.bottom) { stickToBottom(); return; }
+    if(pinBottom){pinBottom.disconnect();pinBottom=null;}
     const node = p.node?.isConnected ? p.node : [...$('chat').children].find(n=>n.textContent===p.signature);
     scroll.scrollTop = node ? scroll.scrollTop + node.getBoundingClientRect().top - scroll.getBoundingClientRect().top - p.offset : p.top;
   }
@@ -317,7 +332,7 @@ window.createControlRoom = function (engine) {
     if (mode !== 'closed') restorePosition();
     renderStage();
   }
-  function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode('page'); window.rcMotion?.enter(main); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
+  function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode('page'); window.rcMotion?.fade(main); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
   function close(preserveRoute=false) { if(!preserveRoute&&window.rcProjectSpaces?.enabled() && /^\/work\/.+/.test(location.pathname)) history.pushState({}, '', '/work'); engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
   function pageFor(name) { return $('cr'+({board:'Board',accounts:'Accounts',automations:'Automations',artifacts:'Artifacts',planner:'Planner',memory:'Memory'}[name])); }
   function showSection(next,preserveRoute=false) {
@@ -526,10 +541,13 @@ window.createControlRoom = function (engine) {
     if(markup===costSignature)return;costSignature=markup;$('crProjectCosts').innerHTML=markup;
     $('crCostDetails').onclick=()=>{if(costError){loadProjectCosts(true);return;}renderCostDetails();costDialog.showModal();};
   }
+  let costFilter=null;
+  costDialog.addEventListener('close',()=>{costFilter=null;});
   function renderCostDetails(){
-    const rows=costRows(),max=Math.max(0.01,...rows.map(p=>p.cost.usd));
+    const all=costRows(),rows=costFilter?all.filter(p=>p.projectId===costFilter):all,max=Math.max(0.01,...rows.map(p=>p.cost.usd));
+    const scope=costFilter?rows[0]?.projectName:null;
     const scrollTop=costDialog.querySelector('.cost-breakdown')?.scrollTop||0, expanded=new Set([...costDialog.querySelectorAll('details[open]')].map(d=>d.dataset.project));
-    costDialog.innerHTML=`<header><div><h2>Project cost estimates</h2><p>${window.rcProjectSpaces?.enabled()?'Conversation lifetime usage under current primary membership · References excluded':'All projects · Recorded usage'}</p></div><button class="cr-icon" data-cost-close aria-label="Close cost breakdown">${ic('x')}</button></header><div class="cost-breakdown">${rows.map(p=>`<details class="cost-project" data-project="${esc(p.projectId)}" ${expanded.has(p.projectId)?'open':''}><summary><span><strong>${esc(p.projectName)}</strong><small>${p.conversations} conversations · ${p.agentCount} agents${p.partial?' · Updating':''}${p.missing?' · Missing transcripts':''}${p.unstarted?' · '+p.unstarted+' not started':''}</small></span><strong>≈ ${money(p.cost.usd)}<small>≈ ${rupiah(p.cost.usd)}</small></strong></summary><div class="cost-bar" role="img" aria-label="${esc(p.projectName)}: ${money(p.cost.usd)}"><i style="width:${p.cost.usd/max*100}%"></i></div><p class="cost-agent-note">Includes ${money(p.agentUsd)} (≈ ${rupiah(p.agentUsd)}) from subagents${p.cost.unpriced.length?' · Unpriced: '+esc(p.cost.unpriced.join(', ')):''}</p><div class="cost-conversations">${(costSnapshot?.conversations||[]).filter(c=>p.conversationKeys?p.conversationKeys.includes(JSON.stringify([c.projectId,c.sessionId])):(p.projectIds||[p.projectId]).includes(c.projectId)).sort((a,b)=>b.cost.usd-a.cost.usd).map(c=>`<div><span>${esc(c.title)}<small>${compact(c.usage.input+c.usage.output+c.usage.cacheRead+c.usage.cacheWrite)} tokens${c.partial?' · Scanning':''}${c.missing?' · No transcript':''}${c.unstarted?' · Not started':''}${c.cost.unpriced.length?' · Unpriced usage':''}</small></span><strong>${(c.missing||c.unstarted)&&!c.size?'—':'≈ '+money(c.cost.usd)+'<small>≈ '+rupiah(c.cost.usd)+'</small>'}</strong></div>`).join('')}</div></details>`).join('')||'<p class="cr-empty">No project usage recorded yet.</p>'}</div><footer class="cost-footer"><p><a href="${fxReference.source}" target="_blank" rel="noopener">Bank Indonesia JISDOR</a>: 1 USD = ${rupiah(1)} · ${fxReference.date}. IDR amounts are estimates at this reference rate.<br>${esc(costSnapshot?.pricing?.basis||'Estimates use recorded tokens at standard API rates.')}<br>Rates checked ${esc(costSnapshot?.pricing?.date||'—')}. <a href="https://developers.openai.com/api/docs/models" target="_blank" rel="noopener">OpenAI rates</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener">Claude rates</a></p><button class="cr-secondary" data-cost-refresh ${costBusy?'disabled':''}>Refresh</button></footer>`;
+    costDialog.innerHTML=`<header><div><h2>${scope?esc(scope)+' · cost breakdown':'Project cost estimates'}</h2><p>${scope?'This Project\u2019s Chat and Work conversations · Recorded lifetime usage':window.rcProjectSpaces?.enabled()?'Conversation lifetime usage under current primary membership · References excluded':'All projects · Recorded usage'}</p></div><button class="cr-icon" data-cost-close aria-label="Close cost breakdown">${ic('x')}</button></header><div class="cost-breakdown">${rows.map(p=>`<details class="cost-project" data-project="${esc(p.projectId)}" ${expanded.has(p.projectId)?'open':''}><summary><span><strong>${esc(p.projectName)}</strong><small>${p.conversations} conversations · ${p.agentCount} agents${p.partial?' · Updating':''}${p.missing?' · Missing transcripts':''}${p.unstarted?' · '+p.unstarted+' not started':''}</small></span><strong>≈ ${money(p.cost.usd)}<small>≈ ${rupiah(p.cost.usd)}</small></strong></summary><div class="cost-bar" role="img" aria-label="${esc(p.projectName)}: ${money(p.cost.usd)}"><i style="width:${p.cost.usd/max*100}%"></i></div><p class="cost-agent-note">Includes ${money(p.agentUsd)} (≈ ${rupiah(p.agentUsd)}) from subagents${p.cost.unpriced.length?' · Unpriced: '+esc(p.cost.unpriced.join(', ')):''}</p><div class="cost-conversations">${(costSnapshot?.conversations||[]).filter(c=>p.conversationKeys?p.conversationKeys.includes(JSON.stringify([c.projectId,c.sessionId])):(p.projectIds||[p.projectId]).includes(c.projectId)).sort((a,b)=>b.cost.usd-a.cost.usd).map(c=>`<div><span>${esc(c.title)}<small>${compact(c.usage.input+c.usage.output+c.usage.cacheRead+c.usage.cacheWrite)} tokens${c.partial?' · Scanning':''}${c.missing?' · No transcript':''}${c.unstarted?' · Not started':''}${c.cost.unpriced.length?' · Unpriced usage':''}</small></span><strong>${(c.missing||c.unstarted)&&!c.size?'—':'≈ '+money(c.cost.usd)+'<small>≈ '+rupiah(c.cost.usd)+'</small>'}</strong></div>`).join('')}</div></details>`).join('')||'<p class="cr-empty">No project usage recorded yet.</p>'}</div><footer class="cost-footer"><p><a href="${fxReference.source}" target="_blank" rel="noopener">Bank Indonesia JISDOR</a>: 1 USD = ${rupiah(1)} · ${fxReference.date}. IDR amounts are estimates at this reference rate.<br>${esc(costSnapshot?.pricing?.basis||'Estimates use recorded tokens at standard API rates.')}<br>Rates checked ${esc(costSnapshot?.pricing?.date||'—')}. <a href="https://developers.openai.com/api/docs/models" target="_blank" rel="noopener">OpenAI rates</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener">Claude rates</a></p><button class="cr-secondary" data-cost-refresh ${costBusy?'disabled':''}>Refresh</button></footer>`;
     costDialog.querySelector('.cost-breakdown').scrollTop=scrollTop;
     costDialog.querySelector('[data-cost-close]').onclick=()=>costDialog.close();
     costDialog.querySelector('[data-cost-refresh]').onclick=()=>loadProjectCosts(true);
@@ -955,7 +973,7 @@ window.createControlRoom = function (engine) {
     if(menu.matches(':popover-open'))menu.hidePopover();
     menu.setAttribute('popover',point?'manual':'auto');
     menuAnchor=anchor; (anchor.closest('dialog')||document.body).append(menu);
-    menu.innerHTML=items.map((it,i)=>`<button role="menuitem" data-menu-item="${i}" ${it.disabled?'disabled':''}>${ic(it.icon)}<span>${esc(it.label)}</span>${it.checked?ic('check'):''}</button>`).join('');
+    menu.innerHTML=items.map((it,i)=>it.heading?`<div class="menu-heading" role="presentation">${esc(it.heading)}</div>`:`<button role="menuitem" data-menu-item="${i}" ${it.disabled?'disabled':''} ${it.danger?'class="danger"':''}>${ic(it.icon)}<span>${esc(it.label)}</span>${it.checked?ic('check'):''}</button>`).join('');
     menu.querySelectorAll('button').forEach(b=>b.onclick=()=>{menu.hidePopover();items[Number(b.dataset.menuItem)].run();});
     // Measure in the top layer, then choose a side that leaves the trigger clear.
     const rect=anchor.getBoundingClientRect(),below=innerHeight-rect.bottom-15,above=rect.top-15;
@@ -1010,7 +1028,23 @@ window.createControlRoom = function (engine) {
   function themeMenu(anchor){openMenu(anchor,[['system','auto','Follow device theme'],['light','sun','Light'],['dark','moon','Dark']].map(([value,icon,label])=>({label,icon,checked:engine.theme()===value,run:()=>{engine.setTheme(value);syncTheme();}})));}
   function notificationMenu(anchor){const s=engine.state(),count=Object.keys(s.notifications).length;openMenu(anchor,[{label:'Unread conversations'+(count?' · '+count:''),icon:'bell',run:()=>{if(preferences.open)preferences.close();boardFilter='unread';shell.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('selected',b.dataset.filter==='unread'));showSection('board');}},{label:'Message approvals'+($('mcpApprovalsBadge').textContent?' · '+$('mcpApprovalsBadge').textContent:''),icon:'inbox',run:()=>$('mcpApprovalsBtn').click()},{label:'Browser notifications',icon:'bell',run:()=>$('notifyBtn').click()}]);}
   function activityMenu(anchor){openMenu(anchor,[{label:'Usage & subagents',icon:'users',run:()=>$('subagentsBtn').click()},{label:'Workflow runs',icon:'fanout',disabled:$('wfBtn').hidden,run:()=>$('wfBtn').click()},{label:'Message approvals',icon:'inbox',run:()=>$('mcpApprovalsBtn').click()}]);}
-  function conversationMenu(anchor){const s=engine.state(),isChat=s.projects.find(p=>p.id===s.projectId)?.kind==='chat';openMenu(anchor,[{label:isStagePinned(s.projectId,s.sessionId)?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{const pinned=!isStagePinned(s.projectId,s.sessionId);pinStage(s.projectId,s.sessionId,pinned);toast(pinned?'Conversation pinned.':'Conversation unpinned.');}},{label:'Rename conversation',icon:'edit',disabled:!s.sessionId,run:engine.renameConversation},{label:'Suggest another title',icon:'sparkles',disabled:!s.sessionId,run:()=>showTitleSuggestions([{projectId:s.projectId,sessionId:s.sessionId}])},{label:'Resume a session',icon:'history',disabled:isChat,run:()=>$('resumeBtn').click()},{label:'Conversation results',icon:'results',disabled:!s.sessionId,run:()=>showResults()},{label:'Routing & accounts',icon:'route',disabled:!s.sessionId,run:()=>showRouting(s)},{label:'Continue with another provider',icon:'switch',disabled:!s.sessionId||isChat,run:()=>showHandoff(s)},{label:'Conversation memory',icon:'snippet',run:()=>showMemoryContext()},...(window.rcProjectSpaces?.conversationItems?.()||[]),{label:'Message delivery',icon:'send',run:engine.showDelivery},{label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},{label:'Remove from panel',icon:'trash',disabled:isChat||!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
+  function conversationMenu(anchor){const s=engine.state(),isChat=s.projects.find(p=>p.id===s.projectId)?.kind==='chat',pinned=isStagePinned(s.projectId,s.sessionId);openMenu(anchor,[
+    {heading:'Conversation'},
+    {label:pinned?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{pinStage(s.projectId,s.sessionId,!pinned);toast(!pinned?'Conversation pinned.':'Conversation unpinned.');}},
+    {label:'Rename',icon:'edit',disabled:!s.sessionId,run:engine.renameConversation},
+    {label:'Suggest a title',icon:'sparkles',disabled:!s.sessionId,run:()=>showTitleSuggestions([{projectId:s.projectId,sessionId:s.sessionId}])},
+    {label:'Results',icon:'results',disabled:!s.sessionId,run:()=>showResults()},
+    {label:'Memory',icon:'snippet',run:()=>showMemoryContext()},
+    {heading:'Project'},
+    ...(window.rcProjectSpaces?.conversationItems?.()||[]),
+    {heading:'Run'},
+    {label:'Routing & accounts',icon:'route',disabled:!s.sessionId,run:()=>showRouting(s)},
+    {label:'Continue with another provider',icon:'switch',disabled:!s.sessionId||isChat,run:()=>showHandoff(s)},
+    {label:'Resume a session',icon:'history',disabled:isChat,run:()=>$('resumeBtn').click()},
+    {label:'Message delivery',icon:'send',run:engine.showDelivery},
+    {heading:'More'},
+    {label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},
+    {label:'Remove from panel',icon:'trash',danger:true,disabled:isChat||!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
   const runningLabel=document.createElement('div');runningLabel.id='runningAccountLabel';runningLabel.hidden=true;content.querySelector('.composer').before(runningLabel);
   $('autopilotBtn').insertAdjacentHTML('beforeend','<span>Autopilot</span>');
   const syncActivity=()=>{$('chatActivityCount').textContent=$('subagentsBadge').textContent||'';};
@@ -2656,5 +2690,5 @@ window.createControlRoom = function (engine) {
   setMode('closed'); projectNav(false); refresh();
   return { showPage:next=>showSection(next,true), workspaceRows:()=>cards().map(x=>({...x,url:window.rcProjectSpaces?.conversationPath(x.p,x.c.sessionId)})), setStageHidden,
     projectCost:async(id,force=false)=>{await loadProjectCosts(force);return {row:costRows().find(r=>r.projectId===id),error:costError,ready:!!costSnapshot,pricing:costSnapshot?.pricing};},
-    addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory',true);$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:()=>{renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, mountSettings:(host,tab)=>{if(host)settingsTab(tab,host);else unmountSettings();}, settingsSection:()=>settingSection, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
+    addFileToMemory:(ownerId,file,versionId)=>memoryFilePicker(false,{ownerId,file,versionId}),memoryContext:showMemoryContext, editMemory, memorySettings, showProjectMemory:pid=>{showSection('memory',true);$('memoryProject').innerHTML=memoryOptions(pid);$('memoryProject').value=pid;memoryConversations();loadMemory();}, openChat:()=>{setMode('page');open();}, closeChat:close, showBoard:()=>showSection('board',true), selectWorkScope:selectProjectScope, notify:toast, renderRuns, showCosts:(projectId)=>{costFilter=projectId||null;renderCostDetails();costDialog.showModal();loadProjectCosts(true);}, showSettings:settings, mountSettings:(host,tab)=>{if(host)settingsTab(tab,host);else unmountSettings();}, settingsSection:()=>settingSection, conversationMenu, openUtility, closeUtility, error:message=>{ $('crBoardError').textContent=message; }, open, refresh, event, rememberPosition, restorePosition, isOpen:()=>mode!=='closed', beforeSwitch:rememberPosition, afterHistory:restorePosition, showAccounts:()=>showSection('accounts') };
 };

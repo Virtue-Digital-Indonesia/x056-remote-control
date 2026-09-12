@@ -88,7 +88,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8767';
   await page.locator('#crBoardTab').click();
   await page.locator('.cr-task').filter({ hasText: p.conversations[0].title }).first().click();
   await page.locator('#moreBtn').click();
-  await page.getByRole('menuitem', { name: 'Conversation memory', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Memory', exact: true }).click();
   await page.locator('[data-context-body]').filter({ hasText: 'Use memory here' }).waitFor();
   await page.locator('[data-enabled]').uncheck();
   await page.waitForFunction(() =>

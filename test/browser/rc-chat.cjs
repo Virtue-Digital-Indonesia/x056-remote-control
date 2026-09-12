@@ -24,14 +24,13 @@ const headers = { Authorization: 'Bearer browser-fixture-token-0123456789', 'Con
     await page.goto(base);await page.locator('#crChatTab').click();
     await page.waitForTimeout(400);if(!await page.locator('.rc-chat-dialog').count())await page.locator('#rcChatNew').click();
     await page.locator('.rc-chat-dialog select[name=provider]').selectOption('claude');
-    await page.locator('.rc-chat-dialog input[name=name]').fill(label);
     await page.locator('.rc-chat-dialog button.cr-primary').click();
     await page.locator('.rc-chat-dialog').waitFor({state:'hidden'});
     await page.waitForSelector('body.rc-chat-active');
     await page.locator('#file').setInputFiles({name:'proposal.txt',mimeType:'text/plain',buffer:Buffer.from('Original proposal')});
     await page.locator('.rc-chat-file').filter({hasText:'proposal.txt'}).waitFor();
     await page.waitForFunction(()=>document.querySelectorAll('#attachRow .chip').length===1);
-    assert.match(new URL(page.url()).pathname, /^\/chat\/.+/);
+    assert.match(new URL(page.url()).pathname, /^\/chat\/.+/);const chatId=new URL(page.url()).pathname.split('/')[2];
     await page.reload();await page.waitForSelector('body.rc-chat-active');
     await page.waitForFunction(()=>document.querySelectorAll('#attachRow .chip').length===1);
     await page.locator('#prompt').fill('Read the proposal.');await page.locator('#sendBtn').click();
@@ -44,7 +43,7 @@ const headers = { Authorization: 'Bearer browser-fixture-token-0123456789', 'Con
     await page.locator('#rcChatPreviewContent pre').filter({hasText:'Original proposal'}).waitFor();
     await page.screenshot({path:'/tmp/rc-chat-implemented-desktop.png'});
     const projects=(await (await context.request.get(base+'/api/chats',{headers})).json()).chats;
-    const chat=projects.find(c=>c.name===label);assert(chat.cwd.includes('/.deploy/chat-browser/'),'Use isolated fixture');
+    const chat=projects.find(c=>c.id===chatId);assert(chat.cwd.includes('/.deploy/chat-browser/'),'Use isolated fixture');
     const files=(await (await context.request.get(base+'/api/chats/'+chat.id+'/files',{headers})).json()).files;
     const file=files.find(f=>f.name==='proposal.txt');
     const checkout=await (await context.request.post(base+`/api/chats/${chat.id}/files/${file.id}/checkout`,{headers,data:{versionId:file.latestVersionId}})).json();

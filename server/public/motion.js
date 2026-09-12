@@ -19,6 +19,13 @@ window.rcMotion = (function () {
     g.killTweensOf(el);
     g.fromTo(el, { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.22, ease, clearProps: clear });
   }
+  // A surface that scrolls must not be translated: clearing the transform afterwards
+  // recreates the scroller and drops its position to the top. Fade only.
+  function fade(el) {
+    if (!on() || !el || el.hidden) return;
+    g.killTweensOf(el);
+    g.fromTo(el, { opacity: 0 }, { opacity: 1, duration: 0.2, ease, clearProps: 'opacity' });
+  }
   // The breadcrumb's parts, after its text changed.
   function crumbs(el) {
     if (!on() || !el || !el.children.length) return;
@@ -83,5 +90,5 @@ window.rcMotion = (function () {
   }
   window.addEventListener('resize', () => { if (marker && marker.isConnected) placeMarker(); });
 
-  return { on, enter, crumbs, list, dialog, popover, marker: placeMarker };
+  return { on, enter, fade, crumbs, list, dialog, popover, marker: placeMarker };
 })();

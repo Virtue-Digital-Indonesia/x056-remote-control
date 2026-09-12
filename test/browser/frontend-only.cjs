@@ -68,7 +68,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8782';
     assert.equal(await page.locator('#chatProjectName').innerText(), p.name);
     assert.equal(await page.locator('#projTitle').innerText(), c.title);
     if (await page.locator('#chatResults').isVisible()) await page.locator('#chatResults').click();
-    else { await page.locator('#moreBtn').click(); await page.getByRole('menuitem', { name:'Conversation results', exact:true }).click(); }
+    else { await page.locator('#moreBtn').click(); await page.getByRole('menuitem', { name:'Results',exact:true }).click(); }
     await page.locator('.results-dialog .artifact-card').first().waitFor();
     assert.equal(await page.locator('.results-dialog [data-source], .results-dialog [data-memory-artifact]').count(), 0);
     await page.locator('[data-result-kind=test]').click();
@@ -120,7 +120,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8782';
     assert.equal(await page.locator('#chatProjectName').innerText(), p.name);
     assert.equal(await page.locator('#projTitle').innerText(), c.title);
     if (await page.locator('#chatResults').isVisible()) await page.locator('#chatResults').click();
-    else { await page.locator('#moreBtn').click(); await page.getByRole('menuitem', { name:'Conversation results', exact:true }).click(); }
+    else { await page.locator('#moreBtn').click(); await page.getByRole('menuitem', { name:'Results',exact:true }).click(); }
     await page.locator('.results-dialog .artifact-card').first().waitFor();
     assert(await page.locator('.results-dialog').evaluate(e => e.scrollWidth <= e.clientWidth));
     await page.screenshot({ path: '/tmp/frontend-mobile.png' });
