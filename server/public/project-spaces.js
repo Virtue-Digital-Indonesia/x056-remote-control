@@ -8,8 +8,9 @@ window.createProjectSpaces = function (engine, room, chat) {
   const conversationPath = (p, sid) => p.kind === 'chat' ? '/chat/' + encodeURIComponent(p.id) : '/work/' + encodeURIComponent(p.id) + '/' + encodeURIComponent(sid);
   const handles = pathname => /^\/(projects|work)(\/|$)/.test(pathname) || !!window.rcWorkspace?.handles(pathname);
   let registryRevision = 0, topology = '';
-  let enabled = false, mounted = false, projects = [], activeId = '', activeTab = '', generation = 0, navigating = false;
+  let enabled = false, mounted = false, projects = [], activeId = '', activeTab = '', generation = 0, navigating = false, renderedPath = location.pathname;
   const uploads = new Map();
+  const viewStates = new Map();
   const request = async (url, body) => {
     const response = await engine.api(url, body === undefined ? undefined : { method: 'POST', body: JSON.stringify(body) });
     const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Request failed'); return data;
@@ -40,8 +41,30 @@ window.createProjectSpaces = function (engine, room, chat) {
     restoreMemory(); document.body.classList.remove('rc-spaces-view'); $('rcProjectPage').hidden = true;
     $('crSpacesTab').removeAttribute('aria-current');if($('crBreadcrumb')&&!window.rcWorkspace?.ready())$('crBreadcrumb').innerHTML='Workspace<span class="crumb-sep">/</span><span>Work</span>';
   }
+  function conversationRoute(url) {
+    const parts = url.split('/').filter(Boolean);
+    return (parts[0] === 'chat' && parts.length === 2) || (parts[0] === 'work' && parts.length === 3);
+  }
+  function saveViewState(url = renderedPath) {
+    if (!url || !document.body.classList.contains('rc-spaces-view')) return;
+    const focused=document.activeElement?.closest('#rcProjectPage a[href]'),state = { scroll: $('rcProjectPage')?.scrollTop || 0, focusedHref:focused?.getAttribute('href')||'' };
+    if ($('rcSpaceSearch')) { state.query = $('rcSpaceSearch').value; state.archived = $('rcSpaceArchives').checked; }
+    if ($('rcSpaceConversationSearch')) state.query = $('rcSpaceConversationSearch').value;
+    viewStates.set(url, state);
+  }
+  function restoreViewState(url, render) {
+    const state = viewStates.get(url); if (!state) return;
+    if ($('rcSpaceSearch')) { $('rcSpaceSearch').value = state.query || ''; $('rcSpaceArchives').checked = !!state.archived; }
+    if ($('rcSpaceConversationSearch')) $('rcSpaceConversationSearch').value = state.query || '';
+    render?.();
+    requestAnimationFrame(() => { if ($('rcProjectPage')) $('rcProjectPage').scrollTop = state.scroll || 0;if(state.focusedHref)$('rcProjectPage')?.querySelector('a[href="'+CSS.escape(state.focusedHref)+'"]')?.focus({preventScroll:true}); });
+  }
   async function navigate(url, replace = false) {
-    if (location.pathname !== url) history[replace ? 'replaceState' : 'pushState']({}, '', url);
+    saveViewState();
+    if (location.pathname !== url) {
+      const state = conversationRoute(url) ? { returnTo: location.pathname } : {};
+      history[replace ? 'replaceState' : 'pushState'](state, '', url);
+    }
     if (url.startsWith('/chat')) { generation++;leave(); return chat?.navigate(url); }
     return route();
   }
@@ -86,6 +109,7 @@ window.createProjectSpaces = function (engine, room, chat) {
         if (segments.length === 2) history.replaceState({}, '', path(activeId));
         await renderProject(project);
       }
+      renderedPath = url;
       $('rcProjectPage').querySelector('h1')?.focus({ preventScroll: true });
     } catch (error) {
       room.showBoard(); document.body.classList.add('rc-spaces-view'); $('rcProjectPage').hidden = false;
@@ -100,7 +124,7 @@ window.createProjectSpaces = function (engine, room, chat) {
       const query = $('rcSpaceSearch').value.toLowerCase(), archived = $('rcSpaceArchives').checked;
       $('rcSpaceList').innerHTML = projects.filter(p => !!p.archivedAt === archived && p.name.toLowerCase().includes(query)).map(p => link(path(p.id), `${icon('folder')}<h2>${esc(p.name)}</h2><p>${p.chats.length} Chat · ${(p.members || []).filter(m=>m.mode==='work').length} Work</p><small>${p.activity.running || p.activity.background ? `${p.activity.running} running · ${p.activity.background} background` : p.workspaceConfigured ? 'Work workspace ready' : 'Chat and files ready'}</small>`, 'rc-space-card')).join('') || '<p class="cr-empty">No projects found.</p>';
     };
-    $('rcSpaceSearch').oninput = $('rcSpaceArchives').onchange = render; $('rcSpaceNew').onclick = createProject; render();
+    $('rcSpaceSearch').oninput = $('rcSpaceArchives').onchange = render; $('rcSpaceNew').onclick = createProject; render(); restoreViewState('/projects', render);
     window.rcMotion?.enter($('rcProjectPage')); window.rcMotion?.list($('rcSpaceList'));
   }
   function createProject(workProjectId) {
@@ -202,7 +226,7 @@ window.createProjectSpaces = function (engine, room, chat) {
       $('rcSpaceConversations').querySelectorAll('[data-membership-project]').forEach(b=>b.onclick=()=>membershipDialog(engine.state().projects.find(x=>x.id===b.dataset.membershipProject),undefined,b.dataset.membershipSession));
       $('rcSpaceConversations').querySelectorAll('[data-whole-work]').forEach(b=>b.onclick=()=>reviewMembership({kind:'work-project',projectId:b.dataset.wholeWork},p.id));
     };
-    $('rcSpaceConversationSearch').oninput=render; $('rcSpaceNewConversation').onclick=()=>newConversation(p,mode);
+    $('rcSpaceConversationSearch').oninput=render; $('rcSpaceNewConversation').onclick=()=>newConversation(p,mode); restoreViewState(path(p.id, mode), render);
     if($('rcSpaceAddWork'))$('rcSpaceAddWork').onclick=()=>addWorkProject(p);
     render(); renderReferences(p);
   }
@@ -253,25 +277,37 @@ window.createProjectSpaces = function (engine, room, chat) {
   async function renderFiles(p) {
     const body = $('rcProjectBody'), data = await request(base(p.id) + '/files');
     if (activeId !== p.id || activeTab !== 'files') return;
-    body.innerHTML = `<div class="rc-space-toolbar"><h2>Project files</h2><button class="cr-primary" id="rcSpaceUpload" ${p.archivedAt ? 'disabled' : ''}>Upload files</button><input id="rcSpaceUploadInput" type="file" multiple hidden></div><p class="rc-space-note">Saved versions stay available across Chat, Work, and account changes.</p><div id="rcSpaceUploadStatus" role="status"></div><div class="rc-space-files">${data.files.map(file => `<article data-project-file="${esc(file.id)}" class="rc-space-file ${file.removed ? 'removed' : ''}">${icon('file')}<div><strong>${esc(file.name)}</strong><small>${file.versions.length} saved version${file.versions.length === 1 ? '' : 's'}${file.sourceFileId ? ' · Shared from Chat' : file.sourceArtifactId ? ' · Work output' : ' · Project upload'}${file.removed ? ' · Removed' : ''}${file.memorySources?.length?' · Used by '+file.memorySources.length+' memory sources; retained after removal':''}</small></div><button data-versions class="cr-secondary">Versions</button><button data-memory-file class="cr-secondary">Add to memory</button><button data-attach class="cr-secondary" ${file.removed || p.archivedAt ? 'disabled' : ''}>Use in conversation</button><button data-remove class="cr-icon" aria-label="${file.removed ? 'Restore' : 'Remove'} ${esc(file.name)}">${icon(file.removed ? 'history' : 'x')}</button></article>`).join('') || '<p class="cr-empty">Upload a document or add a saved Chat or Work output.</p>'}</div>`;
+    body.innerHTML = `<div class="rc-space-toolbar"><h2>Project files</h2><button class="cr-secondary" id="rcSpaceAddFile" ${p.archivedAt ? 'disabled' : ''}>Add from Chat or Work</button><button class="cr-primary" id="rcSpaceUpload" ${p.archivedAt ? 'disabled' : ''}>Upload files</button><input id="rcSpaceUploadInput" type="file" multiple hidden></div><p class="rc-space-note">Saved versions stay available across Chat, Work, and account changes.</p><div id="rcSpaceUploadStatus" role="status"></div><div class="rc-space-files">${data.files.map(file => `<article data-project-file="${esc(file.id)}" class="rc-space-file ${file.removed ? 'removed' : ''}">${icon('file')}<div><strong>${esc(file.name)}</strong><small>${file.versions.length} saved version${file.versions.length === 1 ? '' : 's'}${file.sourceFileId ? ' · Shared from Chat' : file.sourceArtifactId ? ' · Work output' : ' · Project upload'}${file.removed ? ' · Removed' : ''}${file.memorySources?.length?' · Used by '+file.memorySources.length+' memory sources; retained after removal':''}</small></div><button data-download-latest class="cr-secondary" ${file.removed ? 'disabled' : ''}>Download</button><button data-attach class="cr-secondary" ${file.removed || p.archivedAt ? 'disabled' : ''}>Use in conversation</button><button data-versions class="cr-secondary">Versions</button><button data-memory-file class="cr-secondary">Add to memory</button><button data-remove class="cr-icon" aria-label="${file.removed ? 'Restore' : 'Remove'} ${esc(file.name)}">${icon(file.removed ? 'history' : 'x')}</button></article>`).join('') || '<p class="cr-empty">Upload a document or add a saved Chat or Work output.</p>'}</div>`;
     $('rcSpaceUpload').onclick = () => $('rcSpaceUploadInput').click();
+    $('rcSpaceAddFile').onclick=()=>addExistingFile(p);
     $('rcSpaceUploadInput').onchange = () => upload(p, [...$('rcSpaceUploadInput').files]);
     body.querySelectorAll('[data-project-file]').forEach(row => {
       const file = data.files.find(f => f.id === row.dataset.projectFile);
       row.querySelector('[data-memory-file]').onclick=()=>room.addFileToMemory(p.id,file,file.latestVersionId);
       row.querySelector('[data-versions]').onclick = () => versionsDialog(p, file);
       row.querySelector('[data-attach]').onclick = () => attachDialog(p, file, file.latestVersionId);
+      row.querySelector('[data-download-latest]').onclick = action(async()=>{const response=await engine.api(base(p.id)+'/files/'+file.id+'/versions/'+file.latestVersionId+'/download');if(!response.ok)throw new Error('File unavailable');const object=URL.createObjectURL(await response.blob()),a=document.createElement('a');a.href=object;a.download=file.name;a.click();setTimeout(()=>URL.revokeObjectURL(object),5000);});
       row.querySelector('[data-remove]').onclick = action(async () => { await request(base(p.id) + '/files/' + file.id, { removed: !file.removed }); await renderFiles(p); });
       if(window.rcWorkspace){
-        const actions=[...row.querySelectorAll('button')];
+        const actions=[...row.querySelectorAll('button')].filter(button=>!button.matches('[data-attach],[data-download-latest]'));
         const group=document.createElement('div');group.className='workspace-file-actions';actions.forEach(b=>group.append(b));row.append(group);
         const more=document.createElement('button');more.className='cr-icon rc-space-file-menu';more.setAttribute('aria-label','Actions for '+file.name);more.setAttribute('aria-haspopup','menu');more.innerHTML=icon('more');row.append(more);
         more.onclick=()=>showFileMenu(more,actions);
         row.querySelector('strong').parentElement.insertAdjacentHTML('beforeend',`<small>${Math.ceil((file.versions.find(v=>v.id===file.latestVersionId)?.bytes||0)/1024)} KiB${file.memorySources?.length?' · Memory source':''}</small>`);
-        row.querySelector('strong').tabIndex=0;row.querySelector('strong').setAttribute('role','button');row.querySelector('strong').onclick=()=>versionsDialog(p,file);row.querySelector('strong').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();versionsDialog(p,file);}};
+        row.querySelector('strong').tabIndex=0;row.querySelector('strong').setAttribute('role','button');row.querySelector('strong').setAttribute('aria-label','Preview latest version of '+file.name);row.querySelector('strong').onclick=()=>versionsDialog(p,file,true);row.querySelector('strong').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();versionsDialog(p,file,true);}};
       }
     });
     renderUploads();
+  }
+  async function addExistingFile(p){
+    const d=dialog('Add from Chat or Work','<div class="rc-space-version-list"><p class="rc-space-note">Loading saved Chat files…</p></div>'),host=d.querySelector('.rc-space-version-list');
+    try{
+      const chats=engine.state().projects.filter(project=>project.kind==='chat'&&scopeOf(project,project.lastSessionId)===p.id),sets=await Promise.all(chats.map(project=>request('/api/chats/'+encodeURIComponent(project.id)+'/files').then(data=>({project,files:data.files||[]}))));if(!d.open)return;
+      const choices=sets.flatMap(set=>set.files.filter(file=>!file.removed).map(file=>({project:set.project,file}))),operationIds=new Map();
+      host.innerHTML='<button class="cr-secondary" data-work-output>Browse Work outputs</button>'+choices.map((choice,index)=>`<article><strong>${esc(choice.file.name)}</strong><small>${esc(choice.project.conversations?.[0]?.title||choice.project.name)} · Chat file</small><div><button class="cr-primary" data-chat-file="${index}">Add latest version</button></div></article>`).join('')+(choices.length?'':'<p class="rc-space-note">No saved Chat files are available in this Project.</p>');
+      host.querySelector('[data-work-output]').onclick=()=>{d.close();window.rcWorkspace?.navigate('/activity/outputs');};
+      host.querySelectorAll('[data-chat-file]').forEach(button=>button.onclick=action(async()=>{const {project,file}=choices[Number(button.dataset.chatFile)],operationId=operationIds.get(file.id)||crypto.randomUUID();operationIds.set(file.id,operationId);await request(base(p.id)+'/files/copy',{sourceOwnerId:project.id,fileId:file.id,versionId:file.latestVersionId,operationId});d.close();await renderFiles(p);}));
+    }catch(error){host.innerHTML='<p role="alert">'+esc(error.message)+'</p>';}
   }
   function renderUploads() {
     const node = $('rcSpaceUploadStatus'); if (!node) return;
@@ -311,7 +347,7 @@ window.createProjectSpaces = function (engine, room, chat) {
     if(source&&sid)return link(conversationPath(source,sid),'Source '+(source.kind==='chat'?'Chat':'Work'),'cr-secondary');
     return (version.sourceProjectId||file.sourceOwnerId)?'<small>Source conversation unavailable</small>':'';
   }
-  function versionsDialog(p, file) {
+  function versionsDialog(p, file, previewLatest = false) {
     const d = dialog(file.name, `<div class="rc-space-version-list">${[...file.versions].reverse().map((v, i) => `<article data-version="${esc(v.id)}"><strong>${i === 0 ? 'Latest version' : 'Earlier version'}</strong><small>${esc(new Date(v.createdAt).toLocaleString())} · ${Math.ceil(v.bytes / 1024)} KiB</small><div>${fileSourceLink(file,v)}<button data-download class="cr-secondary">Download</button><button data-memory-version class="cr-secondary">Add to memory</button><button data-preview class="cr-secondary">Preview</button><button data-attach class="cr-secondary">Attach</button><button data-restore class="cr-secondary" ${p.archivedAt ? 'disabled' : ''}>Restore as new version</button></div></article>`).join('')}</div><div id="rcSpacePreview" role="status"></div>`);
     const urls = []; d.addEventListener('close', () => urls.forEach(URL.revokeObjectURL));
     const fetchBlob = async url => { const response = await engine.api(url); if (!response.ok) throw new Error('File unavailable'); const blob = await response.blob(), object = URL.createObjectURL(blob); urls.push(object); return { blob, object }; };
@@ -335,6 +371,7 @@ window.createProjectSpaces = function (engine, room, chat) {
         host.querySelector('[data-prev]').onclick=action(async()=>{page--;await render();});host.querySelector('[data-next]').onclick=action(async()=>{page++;await render();});await render();
       });
     });
+    if (previewLatest) d.querySelector('[data-version] [data-preview]')?.click();
   }
   function attachDialog(p, file, versionId) {
     const rows = memberRows(p);
@@ -460,7 +497,7 @@ window.createProjectSpaces = function (engine, room, chat) {
     if (tools) tools.hidden = !live || p?.kind === 'chat';
     if (!live) {contextSignature='';return;}
     const signature=JSON.stringify([p.id,p.name,parent?.id,parent?.name,parent?.workspaceConfigured,p.conversations?.find(c=>c.sessionId===state.sessionId)?.membershipRevision,state.sessionId]);if(signature===contextSignature)return;contextSignature=signature;
-    if (tools) tools.onclick = () => chat.tools(p.id);
+    if (tools) tools.onclick = () => chat.tools({projectId:p.id,sessionId:state.sessionId});
     linksIdentity=''; updateHandoffLinks(p.id,state.sessionId);
   }
   document.addEventListener('click', event => {
@@ -492,6 +529,8 @@ window.createProjectSpaces = function (engine, room, chat) {
       return items;
     },
     enabled: () => enabled, list:()=>projects, scopeOf, handles, navigate, leave:()=>{generation++;leave();}, newWork:pid=>{const execution=engine.state().projects.find(p=>p.id===pid);if(execution?.cwd)newConversation(projects.find(p=>p.id===execution.workSpaceId),'work',pid);}, createFromWork:pid=>createProject(pid), newProject:()=>createProject(), membershipDialog, conversationPath, reviewQueue, resumeAutopilot, shareChatFile, importArtifact,
+    openFile:async(spaceId,fileId)=>{const p=projects.find(project=>project.id===spaceId);if(!p)return;const data=await request(`/api/project-spaces/${encodeURIComponent(spaceId)}/files`),file=(data.files||[]).find(item=>item.id===fileId&&!item.removed);if(file)versionsDialog(p,file,true);},
+    returnForConversation:(pid,sid)=>{const execution=engine.state().projects.find(p=>p.id===pid),spaceId=scopeOf(execution,sid);return spaceId?path(spaceId,execution?.kind==='chat'?'chat':'work'):execution?.kind==='chat'?'/chat':'/work';},
     openConversation: (pid, sid) => { const p = engine.state().projects.find(p => p.id === pid); if (p) return navigate(conversationPath(p, sid)); },
     init: async () => { try { const data = await load(); enabled = data.enabled; mount(); await route(); updateContext(); } catch (error) { room.notify(error.message); } },
   };

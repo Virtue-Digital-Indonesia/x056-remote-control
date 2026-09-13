@@ -49,7 +49,7 @@ const out='/tmp/project-workspace-ui';mkdirSync(out,{recursive:true});
   check('Accounts selected',await page.locator('#crAccountsTab').getAttribute('aria-current')==='page');
   check('Accounts charts and total retained',await page.locator('#accountModels').isVisible()&&await page.locator('#crProjectCosts').isVisible());
   await shot('accounts-desktop');await page.reload();await page.locator('#accountChart svg').waitFor();check('Accounts direct refresh',new URL(page.url()).pathname==='/accounts');
-  await page.locator('#crAccounts .workspace-view-nav a[href="/accounts/tools"]').click();await page.locator('#workspaceToolChoice').waitFor();check('Tools stay under Accounts',await page.locator('#crAccountsTab').getAttribute('aria-current')==='page');await page.locator('#workspaceToolChoice select').selectOption(JSON.stringify([chat.id,chat.lastSessionId]));await page.locator('#workspaceToolChoice button').click();await page.locator('.rc-chat-tools-dialog').waitFor();await page.keyboard.press('Escape');await page.goBack();await page.locator('#accountChart svg').waitFor();
+  await page.locator('#crAccounts .workspace-view-nav a[href="/accounts/tools"]').click();await page.locator('#workspaceToolChoice').waitFor();check('Tools stay under Accounts',await page.locator('#crAccountsTab').getAttribute('aria-current')==='page');await page.locator('#workspaceToolChoice select').selectOption(JSON.stringify([chat.id,chat.lastSessionId]));await page.locator('.rc-chat-tools-dialog').waitFor();await page.keyboard.press('Escape');await page.goBack();await page.locator('#accountChart svg').waitFor();
   await page.locator('#crCostDetails').click();await page.locator('#projectCostDetails [data-project="'+space.id+'"]').waitFor();await page.keyboard.press('Escape');
   await go(chatPath);await page.locator('#rcChatFiles').waitFor();await page.locator('#prompt').fill('Keep this unsent proposal draft.');
   check('Sidebar reachable in Chat',await page.locator('#crAccountsTab').isEnabled());
@@ -67,7 +67,7 @@ const out='/tmp/project-workspace-ui';mkdirSync(out,{recursive:true});
   await go(projectPath+'/files');await page.locator('[data-project-file]').waitFor();await page.locator('.rc-space-file-menu').click();
   check('File menu in top layer',await page.locator('#workspaceFileMenu').evaluate(e=>e.matches(':popover-open')));
   await page.getByRole('menuitem',{name:'Versions',exact:true}).click();await page.locator('.rc-space-dialog [data-preview]').click();await page.getByText('Retain the original hotel requirements.',{exact:true}).waitFor();await page.keyboard.press('Escape');
-  await page.locator('.rc-space-file-menu').click();await page.getByRole('menuitem',{name:'Use in conversation',exact:true}).click();await page.locator('.rc-space-dialog [data-execution]').filter({hasText:'Proposal for hotel operations'}).click();await page.waitForURL(base+chatPath);await page.locator('#prompt').waitFor();
+  await page.locator('[data-project-file] [data-attach]').click();await page.locator('.rc-space-dialog [data-execution]').filter({hasText:'Proposal for hotel operations'}).click();await page.waitForURL(base+chatPath);await page.locator('#prompt').waitFor();
   check('Shared file attaches without losing draft',await page.locator('#prompt').inputValue()==='Keep this unsent proposal draft.');
   const refs=await page.evaluate(({id,sid})=>JSON.parse(localStorage.getItem('x056_chat_attachments_'+id+'::'+sid)||'[]'),{id:chat.id,sid:chat.lastSessionId});check('Exact shared-file owner retained',refs.some(r=>r.ownerId===space.id&&r.versionId));
   await go(projectPath+'/memory');await page.locator('#rcProjectBody #crMemory').waitFor();await shot('memory-desktop');
@@ -113,7 +113,9 @@ const out='/tmp/project-workspace-ui';mkdirSync(out,{recursive:true});
       check(width+'px no content overflow '+path,await page.evaluate(()=>[...document.querySelectorAll('#crWorkspace>.cr-page,#conversationSurface')].filter(e=>e.getClientRects().length&&!e.hidden&&getComputedStyle(e).visibility!=='hidden').every(e=>e.scrollWidth<=e.clientWidth+1)));
     }
     if(width===390){
+      await go('/home');await shot('home-mobile');
       await go(projectPath+'/overview');await page.locator('#rcOverviewCost strong').filter({hasText:'$'}).waitFor();await shot('overview-mobile');
+      await go(projectPath+'/memory');check('Mobile Memory keeps secondary controls collapsed',await page.locator('#memoryKind').isHidden()&&await page.locator('#memoryImport').isHidden()&&await page.locator('#memoryNew').isVisible());await page.locator('#memoryFilters').click();check('Mobile Memory filters remain reachable',await page.locator('#memoryKind').isVisible()&&await page.locator('#memoryExtra').isVisible());await shot('memory-mobile');
       await page.locator('#crProjects').click();await page.locator('#crAccountsTab').click();await page.waitForURL(base+'/accounts');await page.locator('#accountChart svg').waitFor();await shot('accounts-mobile');
       await go(chatPath);await page.locator('#rcChatFiles').click();check('Mobile file inspector fits',await page.locator('#rcChatInspector').evaluate(e=>e.getBoundingClientRect().right<=innerWidth));await page.locator('#rcChatPanelClose').click();
       await page.locator('#crProjects').click();await shot('navigation-mobile');await page.keyboard.press('Escape');check('Mobile drawer closes with Escape',!await page.locator('#controlRoom').evaluate(e=>e.classList.contains('projects-open')));await page.locator('#prompt').fill('Mobile draft retained.');await shot('chat-mobile');

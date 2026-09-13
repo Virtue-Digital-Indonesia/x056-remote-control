@@ -16,6 +16,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   const SEP='<span class="crumb-sep">/</span>';
   const link=(url,text,cls='')=>`<a href="${esc(url)}" data-workspace-link class="${cls}">${text}</a>`;
   let mounted=false,navSignature='',navContext='',renderTimer,routeSerial=0,activeRoute='',returnPath='/home',enteredPage=null;
+  const expandedProjects=new Set();
   const handles=p=>Object.hasOwn(globals,canonical(p));
   function viewNav(host,items,label){
     if(!host)return;let nav=host.querySelector('.workspace-view-nav');
@@ -34,10 +35,11 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   function renderNav() {
     if(!mounted)return;
     const current=context(),query=$('crProjectSearch').value.trim().toLowerCase(),projects=spaces.list().filter(p=>!p.archivedAt);
-    const markup=projects.filter(p=>p.name.toLowerCase().includes(query)).map(p=>sidebarItem('/projects/'+encodeURIComponent(p.id)+'/overview',p.name,'folder',false,current.id===p.id?icon('down'):p.activity?.needsInput?`<small class="attention">${p.activity.needsInput}</small>`:'')+(current.id===p.id?`<div class="workspace-project-children">${[['overview','Overview','layout'],['chat','Chat','chat'],['work','Work','terminal'],['files','Files','file'],['memory','Memory','snippet']].map(([tab,name,ic])=>sidebarItem('/projects/'+encodeURIComponent(p.id)+'/'+tab,name,ic,tab===current.tab,['chat','work'].includes(tab)?`<small>${(p.members||[]).filter(m=>m.mode===tab).length}</small>`:'')).join('')}</div>`:'')).join('')||'<p class="workspace-nav-empty">No matching Projects</p>';
-    if(navSignature!==markup){navSignature=markup;const focused=document.activeElement?.closest('#crProjectLinks a')?.getAttribute('href');$('crProjectLinks').innerHTML=markup;if(focused)[...$('crProjectLinks').querySelectorAll('a')].find(a=>a.getAttribute('href')===focused)?.focus({preventScroll:true});}
     const nextContext=(current.id||'')+'/'+(current.tab||'');
-    if(navContext!==nextContext){navContext=nextContext;const selected=$('crProjectLinks').querySelector('[aria-current=page]');if(selected){const container=$('crProjectLinks'),a=selected.getBoundingClientRect(),b=container.getBoundingClientRect();if(a.bottom>b.bottom)container.scrollTop+=a.bottom-b.bottom+8;else if(a.top<b.top)container.scrollTop-=b.top-a.top+8;}}
+    const contextChanged=navContext!==nextContext;if(contextChanged&&current.id)expandedProjects.add(current.id);navContext=nextContext;
+    const markup=projects.filter(p=>p.name.toLowerCase().includes(query)).map(p=>{const expanded=expandedProjects.has(p.id),children=expanded?`<div class="workspace-project-children">${[['overview','Overview','layout'],['chat','Chat','chat'],['work','Work','terminal'],['files','Files','file'],['memory','Memory','snippet']].map(([tab,name,ic])=>sidebarItem('/projects/'+encodeURIComponent(p.id)+'/'+tab,name,ic,current.id===p.id&&tab===current.tab,['chat','work'].includes(tab)?`<small>${(p.members||[]).filter(m=>m.mode===tab).length}</small>`:'')).join('')}</div>`:'';return `<div class="workspace-project-node${current.id===p.id?' active':''}"><div class="workspace-project-heading">${sidebarItem('/projects/'+encodeURIComponent(p.id)+'/overview',p.name,'folder',false,p.activity?.needsInput?`<small class="attention">${p.activity.needsInput}</small>`:'')}<button class="cr-icon" data-project-toggle="${esc(p.id)}" aria-expanded="${expanded}" aria-label="${expanded?'Collapse':'Expand'} ${esc(p.name)}">${icon('chevron')}</button></div>${children}</div>`;}).join('')||'<p class="workspace-nav-empty">No matching Projects</p>';
+    if(navSignature!==markup){navSignature=markup;const focused=document.activeElement?.closest('#crProjectLinks a')?.getAttribute('href'),toggle=document.activeElement?.closest('[data-project-toggle]')?.dataset.projectToggle;$('crProjectLinks').innerHTML=markup;$('crProjectLinks').querySelectorAll('[data-project-toggle]').forEach(button=>button.onclick=()=>{expandedProjects.has(button.dataset.projectToggle)?expandedProjects.delete(button.dataset.projectToggle):expandedProjects.add(button.dataset.projectToggle);navSignature='';renderNav();requestAnimationFrame(()=>document.querySelector('[data-project-toggle="'+CSS.escape(button.dataset.projectToggle)+'"]')?.focus());});if(focused)[...$('crProjectLinks').querySelectorAll('a')].find(a=>a.getAttribute('href')===focused)?.focus({preventScroll:true});else if(toggle)$('crProjectLinks').querySelector('[data-project-toggle="'+CSS.escape(toggle)+'"]')?.focus({preventScroll:true});}
+    if(contextChanged){const selected=$('crProjectLinks').querySelector('[aria-current=page]');if(selected){const container=$('crProjectLinks'),a=selected.getBoundingClientRect(),b=container.getBoundingClientRect();if(a.bottom>b.bottom)container.scrollTop+=a.bottom-b.bottom+8;else if(a.top<b.top)container.scrollTop-=b.top-a.top+8;}}
     const pathname=location.pathname;
     document.querySelectorAll('[data-global-destination]').forEach(a=>{const href=a.getAttribute('href'),selected=href===pathname||(pathname==='/'&&href==='/home')||(['/activity','/accounts'].includes(href)&&pathname.startsWith(href+'/'));if(selected)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
     const p=projects.find(p=>p.id===current.id);
@@ -52,6 +54,9 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     const activityViews=[['/activity','Conversations'],['/activity/queue','Queued messages'],['/activity/automations','Automations'],['/activity/outputs','Outputs']];
     viewNav($('crBoard'),activity?activityViews:[['/home','Recent'],['/chat','All Chats'],['/work/unassigned','Unassigned Work'],['/work','Work repositories']],'Conversation views');
     $('crBoard').querySelector('.workspace-view-nav').hidden=!home&&!activity&&pathname!=='/work/unassigned';
+    $('crStats').hidden=home;
+    $('crBoard').querySelector('.cr-tabs').hidden=home;
+    $('crSelectToggle').hidden=home;
     for(const id of ['crPlanner','crAutomations','crArtifacts']){viewNav($(id),activityViews,'Activity views');$(id).querySelector('.cr-heading h1').textContent='Activity';}
     const accountViews=[['/accounts','Accounts & usage'],['/accounts/tools','Tools']];
     if($('accountProvider')){viewNav($('crAccounts'),accountViews,'Account views');$('crAccounts').querySelector('.cr-heading h1').textContent='Accounts & tools';$('crAccounts').querySelector('.cr-heading p').textContent='Provider accounts, usage charts, and estimated spend.';}
@@ -97,7 +102,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
       const a=event.target.closest('a[data-workspace-link]');
       const home=event.target.closest('#focusHome,#focusBack,#crHome,#chatClose');
       if(a){event.preventDefault();event.stopImmediatePropagation();a.closest('dialog')?.close();navigate(new URL(a.href).pathname).catch(e=>room.notify(e.message));}
-      else if(home){event.preventDefault();event.stopImmediatePropagation();navigate(home.id==='chatClose'?returnPath:'/home').catch(e=>room.notify(e.message));}
+      else if(home){event.preventDefault();event.stopImmediatePropagation();(home.id==='chatClose'?closeConversation():navigate('/home')).catch(e=>room.notify(e.message));}
     },true);
     document.addEventListener('keydown',event=>{
       if(event.key==='Escape'&&$('controlRoom').classList.contains('projects-open')){event.preventDefault();closeDrawer();$('crProjects').focus();}
@@ -106,8 +111,15 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   }
   function connections() {
     const host=$('workspaceConnections');
-    host.innerHTML='<div class="cr-heading"><div><h1>Accounts & tools</h1><p>Plugins, MCP servers, and skills available to your conversations.</p></div></div><div class="workspace-section-heading"><h2>Conversation tools</h2></div><p class="rc-space-note">Choose a conversation to see the tools available through its provider and account.</p><form id="workspaceToolChoice" class="workspace-form"><label>Conversation<select name="conversation" required><option value="">Choose a conversation</option>'+engine.state().projects.flatMap(p=>(p.conversations||[]).map(c=>'<option value="'+esc(JSON.stringify([p.id,c.sessionId]))+'">'+esc(c.title)+' · '+esc(p.name)+'</option>')).join('')+'</select></label><button class="cr-secondary">Open tools</button></form>';
-    $('workspaceToolChoice').onsubmit=e=>{e.preventDefault();const value=e.target.elements.conversation.value;if(value){const [pid]=JSON.parse(value);chat.tools(pid);}};
+    const projectGroups=spaces.list().filter(p=>!p.archivedAt).map(space=>({id:space.id,name:space.name,items:[]})),outside={name:'Outside Projects',items:[]};
+    for(const project of engine.state().projects)for(const conversation of project.conversations||[]){
+      const item={project,conversation},spaceId=spaces.scopeOf(project,conversation.sessionId),group=projectGroups.find(entry=>entry.id===spaceId);
+      (group||outside).items.push(item);
+    }
+    const options=[...projectGroups,outside].filter(group=>group.items.length).map(group=>'<optgroup label="'+esc(group.name)+'">'+group.items.sort((a,b)=>(a.conversation.title||'').localeCompare(b.conversation.title||'')).map(({project,conversation})=>'<option value="'+esc(JSON.stringify([project.id,conversation.sessionId]))+'">'+esc(conversation.title)+' · '+esc(project.name)+'</option>').join('')+'</optgroup>').join('');
+    host.innerHTML='<div class="cr-heading"><div><h1>Accounts & tools</h1><p>Plugins, MCP servers, and skills available to your conversations.</p></div></div><div class="workspace-section-heading"><h2>Conversation tools</h2></div><p class="rc-space-note">Choose a conversation to open its available tools.</p><form id="workspaceToolChoice" class="workspace-form"><label>Conversation<select name="conversation" required><option value="">Choose a conversation</option>'+options+'</select></label></form>';
+    const select=$('workspaceToolChoice').elements.conversation;try{select.value=localStorage.getItem('x056_tools_conversation')||'';}catch{}
+    select.onchange=e=>{const value=e.target.value;if(value){try{localStorage.setItem('x056_tools_conversation',value);}catch{}const [projectId,sessionId]=JSON.parse(value);chat.tools({projectId,sessionId});}};
   }
   async function navigate(url,replace=false) {
     if(!mounted)return spaces?.navigate(url);
@@ -126,6 +138,12 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     const shown=[...document.querySelectorAll('#crWorkspace>.cr-page')].find(n=>!n.hidden);
     if(shown&&shown!==enteredPage){enteredPage=shown;window.rcMotion?.enter(shown);window.rcMotion?.list(shown);}
   }
+  function closeConversation() {
+    const stateReturn = typeof history.state?.returnTo === 'string' ? history.state.returnTo : '';
+    const fallback = spaces?.returnForConversation?.(engine.state().projectId, engine.state().sessionId) || returnPath || '/home';
+    const destination = stateReturn && stateReturn !== location.pathname ? stateReturn : fallback;
+    return navigate(destination, true);
+  }
   function sectionChanged(next){
     if(!mounted)return;const url={board:'/home',accounts:'/accounts',automations:'/activity/automations',artifacts:'/activity/outputs',planner:'/activity/queue',memory:'/memory'}[next];
     if(url){spaces.leave();if(location.pathname!==url)history.pushState({},'',url);activeRoute=url;renderNav();}
@@ -135,5 +153,5 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   window.addEventListener('resize',sync);
   window.addEventListener('popstate',()=>{if(mounted&&handles(location.pathname)&&activeRoute!==location.pathname)navigate(location.pathname,true);else sync();});
   const openSettings=tab=>navigate((settingsSections.find(([,,key])=>key===tab)||settingsSections[0])[0]).catch(e=>room.notify(e.message));
-  return {ready:()=>mounted,handles,renderNav,context,navigate,sectionChanged,openSettings,init:async()=>{if(!spaces?.enabled())return;mount();if(handles(location.pathname))await navigate(location.pathname,true);else renderNav();room.refresh();}};
+  return {ready:()=>mounted,handles,renderNav,context,navigate,closeConversation,sectionChanged,openSettings,init:async()=>{if(!spaces?.enabled())return;mount();if(handles(location.pathname))await navigate(location.pathname,true);else renderNav();room.refresh();}};
 };

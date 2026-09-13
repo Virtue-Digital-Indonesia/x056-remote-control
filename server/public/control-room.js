@@ -333,7 +333,7 @@ window.createControlRoom = function (engine) {
     renderStage();
   }
   function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode('page'); window.rcMotion?.fade(main); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
-  function close(preserveRoute=false) { if(!preserveRoute&&window.rcProjectSpaces?.enabled() && /^\/work\/.+/.test(location.pathname)) history.pushState({}, '', '/work'); engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
+  function close(preserveRoute=false) { if(!preserveRoute&&window.rcWorkspace?.ready()&&window.rcWorkspace.closeConversation){window.rcWorkspace.closeConversation();return;}if(!preserveRoute&&window.rcProjectSpaces?.enabled() && /^\/work\/.+/.test(location.pathname)) history.replaceState({}, '', '/work'); engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
   function pageFor(name) { return $('cr'+({board:'Board',accounts:'Accounts',automations:'Automations',artifacts:'Artifacts',planner:'Planner',memory:'Memory'}[name])); }
   function showSection(next,preserveRoute=false) {
     sectionScroll[section] = pageFor(section).scrollTop;
@@ -471,6 +471,8 @@ window.createControlRoom = function (engine) {
     const all=cards(),state=engine.state();
     if(selectedProject&&!state.projects.some(p=>p.id===selectedProject)&&state.projects.length)selectedProject='';
     const workspaceView=window.rcWorkspace?.ready() ? location.pathname : '',globalView=['/','/home','/activity'].includes(workspaceView);
+    const homeView=workspaceView==='/'||workspaceView==='/home';
+    if(homeView&&boardFilter!=='all'){boardFilter='all';shell.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('selected',button.dataset.filter==='all'));}
     const scope=all.filter(x=>(globalView||x.p.kind!=='chat')&&(workspaceView!=='/work/unassigned'||!x.c.spaceId)&&(boardFilter==='archived'?conversationMeta[x.k]?.archived:!conversationMeta[x.k]?.archived)&&(showDismissedProjects||!dismissedProjects.includes(x.p.id))&&(!selectedProject||x.p.id===selectedProject)),project=state.projects.find(p=>p.id===selectedProject);
     $('crScopeActions').hidden=!project;
     $('crScopeTitle').textContent=project?.name||'All projects';
@@ -494,8 +496,8 @@ window.createControlRoom = function (engine) {
     const recent=boundedRecents?recentCandidates.filter(x=>x.recentActivity>=cutoff).slice(0,recentPreferences.max):recentCandidates;
     const olderCount=boundedRecents?recentCandidates.length-recent.length:0;
     const dismissedCount=scope.filter(x=>['finished','idle'].includes(x.status)&&recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))).length;
-    bulkCandidates=[...unread,...attention,...active,...drafts,...recent];renderBulk();
-    const groups=[['Unread',unread],['Needs attention',attention],['In progress',active],['Drafts',drafts],['Recent conversations',recent.slice(0,recentLimit)]];
+    const groups=homeView?[['Unread',unread],['Drafts',drafts],['Recent conversations',recent.slice(0,recentLimit)]]:[['Unread',unread],['Needs attention',attention],['In progress',active],['Drafts',drafts],['Recent conversations',recent.slice(0,recentLimit)]];
+    bulkCandidates=groups.flatMap(([,rows])=>rows);renderBulk();
     let html=groups.filter(([,rows])=>rows.length).map(([title,rows])=>`<section class="cr-conversation-group"><header><h2>${title}</h2><span>${title==='Recent conversations'?recent.length:rows.length}</span></header>${rows.map(conversationRow).join('')}</section>`).join('');
     if(!html)html=`<div class="cr-empty">${query?'No conversations match your search.':boardFilter==='question'?'No questions need your input.':boardFilter==='draft'?'No unsent drafts.':'No conversations in this view.'}</div>`;
     if(recent.length>recentLimit)html+=`<button class="cr-load-more" id="crShowMore">Show ${Math.min(20,recent.length-recentLimit)} more conversations <span>${recent.length-recentLimit} remaining</span></button>`;
@@ -1621,6 +1623,7 @@ window.createControlRoom = function (engine) {
     };
   $('memoryFilters').onclick = () => {
     $('memoryExtra').hidden = !$('memoryExtra').hidden;
+    $('crMemory').classList.toggle('memory-filters-open',!$('memoryExtra').hidden);
   };
   $('memoryUploadFiles').onclick=()=>memoryFilePicker(true);
   $('memoryChooseFiles').onclick=()=>memoryFilePicker(false);
@@ -1632,6 +1635,7 @@ window.createControlRoom = function (engine) {
     openMenu(e.currentTarget, [
       { label: 'Memory settings', icon: 'gear', run: ()=>settings('memory') },
       { label: 'Context history', icon: 'history', run: ()=>{memoryTab='activity';memoryOffset=0;loadMemory();} },
+      { label: 'Import sources', icon: 'up', run: importMemorySources },
       { label: 'Add a document', icon: 'file', run: memoryDocument },
       { label: 'Export memory', icon: 'down', run: exportMemory },
       { label: 'Import memory export', icon: 'up', run: importMemoryPackage },
@@ -1736,6 +1740,7 @@ window.createControlRoom = function (engine) {
     }
     load();
   }
+  document.addEventListener('x056:open-memory',event=>{if(event.detail?.id)showMemoryEntry(event.detail.id);});
   function editMemory(entry = {}, after = loadMemory) {
     const pid =
         entry.spaceId || entry.projectId ||

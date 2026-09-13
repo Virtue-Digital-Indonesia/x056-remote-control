@@ -109,6 +109,10 @@ body.rc-chat-home-view #rcChatWelcome{display:flex;flex-direction:column;min-wid
 .rc-reference-group button svg{width:16px;height:16px;flex:none;color:var(--muted)}
 .rc-reference-group button strong{font-size:12px;font-weight:450;line-height:1.5;overflow-wrap:anywhere}
 .rc-reference-group button span{margin-left:auto;flex:none;font-size:10px;color:var(--muted)}
+.rc-reference-group button[aria-pressed=true]{background:var(--surface-2);box-shadow:inset 2px 0 var(--accent)}
+.rc-reference-picker>footer{display:flex;align-items:center;justify-content:flex-end;gap:12px;border-top:1px solid var(--border);padding-top:16px}
+.rc-reference-picker>footer>span{margin-right:auto;color:var(--muted);font-size:11px}
+.rc-chat-new-options{border:1px solid var(--border);border-radius:10px;padding:0 14px}.rc-chat-new-options>summary{cursor:pointer;padding:13px 0;font-size:12px;font-weight:600}.rc-chat-new-options>.rc-chat-form-grid{padding:4px 0 14px}
 @media(max-width:760px){
   body.rc-chat-home-view #conversationSurface{grid-template-columns:minmax(0,1fr)}
   #rcChatWelcomeMenu{display:inline-flex}

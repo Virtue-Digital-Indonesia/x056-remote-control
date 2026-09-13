@@ -88,6 +88,10 @@ window.createRCChat = function (engine, room) {
     document.body.classList.remove('rc-chat-active','rc-chat-home-view','rc-chat-unavailable','rc-chat-nav-open','rc-chat-panel-open');
     $('crChatTab')?.removeAttribute('aria-current'); cleanupPreview(); if (!keepRoom) room.showBoard();
   }
+  function closePanel() {
+    if (!document.body.classList.contains('rc-chat-panel-open')) return false;
+    document.body.classList.remove('rc-chat-panel-open'); $('rcChatFiles')?.focus(); return true;
+  }
   function renderChats() {
     const query = $('rcChatSearch').value.toLowerCase(), state = engine.state();
     const filter = $('rcChatProjectFilter');
@@ -108,17 +112,18 @@ window.createRCChat = function (engine, room) {
     renderChats(); renderUploads();
   }
   function newChat() {
-    const d = dialog('New chat', `<form class="workspace-form"><div class="rc-chat-form-grid"><label>Provider<select name="provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><label>Account<select name="account"></select></label><label>Model<select name="model"></select></label><label>Effort<select name="effort"></select></label></div><p class="rc-chat-note">The chat is named from your first message. Automatic account selection keeps work moving across available accounts.</p><p role="alert"></p><button class="cr-primary">Create chat</button></form>`);
+    const d = dialog('New chat', `<form class="workspace-form"><p class="rc-chat-note">Start with your saved choices. You can change them here or from the composer.</p><details class="rc-chat-new-options"><summary>Provider, model, effort, and account</summary><div class="rc-chat-form-grid"><label>Provider<select name="provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><label>Account<select name="account"></select></label><label>Model<select name="model"></select></label><label>Effort<select name="effort"></select></label></div></details><p class="rc-chat-note">The chat is named from your first message. Automatic account selection keeps work moving across available accounts.</p><p role="alert"></p><button class="cr-primary">Start chat</button></form>`);
     const form = d.querySelector('form'), f = form.elements, requestId = crypto.randomUUID();
+    let saved={};try{saved=JSON.parse(localStorage.getItem('x056_new_chat_choices')||'{}');}catch{}if(saved.provider)f.provider.value=saved.provider;
     function choices() {
       f.model.innerHTML = '<option value="">Provider default</option>' + engine.defaultModelOptions(f.provider.value).map(m => `<option value="${esc(m.value)}">${esc(m.label)}</option>`).join('');
-      f.account.innerHTML = '<option value="">Automatic</option>' + engine.state().accounts.filter(a => a.provider === f.provider.value).map(a => `<option value="${esc(a.name)}">${esc(a.label || a.displayName || a.name)}</option>`).join(''); efforts();
+      f.account.innerHTML = '<option value="">Automatic</option>' + engine.state().accounts.filter(a => a.provider === f.provider.value).map(a => `<option value="${esc(a.name)}">${esc(a.label || a.displayName || a.name)}</option>`).join('');if(saved.provider===f.provider.value){f.model.value=saved.model||'';f.account.value=saved.account||'';}efforts();if(saved.provider===f.provider.value)f.effort.value=saved.effort||'';
     }
     function efforts() { const m = engine.defaultModelOptions(f.provider.value).find(m => m.value === f.model.value); f.effort.innerHTML = (m?.efforts || [{ value:'', label:'Provider default' }]).map(e => `<option value="${esc(e.value)}">${esc(e.label)}</option>`).join(''); }
     f.provider.onchange = choices; f.model.onchange = efforts; choices();
     form.onsubmit = async event => {
       event.preventDefault(); const button = form.querySelector('button'); button.disabled = true;
-      try { const chat = await request('/api/chats', { requestId, provider:f.provider.value, model:f.model.value, effort:f.effort.value, account:f.account.value || undefined }); await engine.reloadProjects(); await open(chat); d.close(); }
+      try { try{localStorage.setItem('x056_new_chat_choices',JSON.stringify({provider:f.provider.value,model:f.model.value,effort:f.effort.value,account:f.account.value}));}catch{}const chat = await request('/api/chats', { requestId, provider:f.provider.value, model:f.model.value, effort:f.effort.value, account:f.account.value || undefined }); await engine.reloadProjects(); await open(chat); d.close(); }
       catch (error) { form.querySelector('[role=alert]').textContent = error.message; } finally { button.disabled = false; }
     };
   }
@@ -208,9 +213,12 @@ window.createRCChat = function (engine, room) {
     }catch(error){if(serial===sequence)$('rcChatPreviewContent').textContent=error.message;}
   }
   async function toolsDialog(target) {
-    const id = typeof target === 'string' ? target : active, work=engine.state().projects.find(p=>p.id===id)?.kind!=='chat';
+    const explicit=target&&typeof target==='object'&&typeof target.projectId==='string';
+    const id = explicit ? target.projectId : typeof target === 'string' ? target : active;
+    const sessionId = explicit ? target.sessionId : engine.state().sessionId;
+    const execution=engine.state().projects.find(p=>p.id===id),conversation=execution?.conversations?.find(c=>c.sessionId===sessionId),work=execution?.kind!=='chat';
     const capabilitiesURL=(work?'/api/project-spaces/'+encodeURIComponent(id):base(id))+'/capabilities';
-    const d = dialog('Tools', `<div class="rc-chat-tools"><div class="rc-tools-toolbar"><label>Account<select id="rcToolsAccount" disabled><option>Loading accounts…</option></select></label><input id="rcToolsSearch" type="search" placeholder="Search tools" aria-label="Search tools"></div><div class="rc-chat-tabs" role="group" aria-label="Tool category"><button data-kind="plugin" aria-pressed="true">Plugins <span></span></button><button data-kind="mcp" aria-pressed="false">MCP <span></span></button><button data-kind="skill" aria-pressed="false">Skills <span></span></button></div><p class="rc-tools-help">Required tools stay with this chat when you switch accounts.</p><div id="rcToolsList" aria-busy="true"><p class="rc-chat-empty" role="status">Checking available tools…</p></div><footer><span id="rcToolsRequired" role="status"></span><button class="cr-secondary" data-refresh>Refresh</button><button class="cr-secondary" data-manage>Manage connections</button></footer></div>`, 'rc-chat-tools-dialog');
+    const d = dialog(conversation ? 'Tools · '+conversation.title : 'Tools', `<div class="rc-chat-tools"><div class="rc-tools-toolbar"><label>Account<select id="rcToolsAccount" disabled><option>Loading accounts…</option></select></label><input id="rcToolsSearch" type="search" placeholder="Search tools" aria-label="Search tools"></div><div class="rc-chat-tabs" role="group" aria-label="Tool category"><button data-kind="plugin" aria-pressed="true">Plugins <span></span></button><button data-kind="mcp" aria-pressed="false">MCP <span></span></button><button data-kind="skill" aria-pressed="false">Skills <span></span></button></div><p class="rc-tools-help">Required tools stay with this chat when you switch accounts.</p><div id="rcToolsList" aria-busy="true"><p class="rc-chat-empty" role="status">Checking available tools…</p></div><footer><span id="rcToolsRequired" role="status"></span><button class="cr-secondary" data-refresh>Refresh</button><button class="cr-secondary" data-manage>Manage connections</button></footer></div>`, 'rc-chat-tools-dialog');
     let kind = 'plugin', inventory, requirements = [], projectRequirements = [], saving = false;
     const accountSelect = d.querySelector('#rcToolsAccount'), list = d.querySelector('#rcToolsList'), search = d.querySelector('#rcToolsSearch');
     const accountLabel = name => { const a = engine.state().accounts.find(a => a.name === name); return a?.label || a?.displayName || name; };
@@ -218,7 +226,7 @@ window.createRCChat = function (engine, room) {
       const selected = accountSelect.value;
       d.querySelector('[data-refresh]').disabled = true; list.setAttribute('aria-busy', 'true');
       try {
-        inventory = await request(capabilitiesURL + '?' + new URLSearchParams({sessionId:engine.state().sessionId,...(force?{refresh:'1'}:{})}));
+        inventory = await request(capabilitiesURL + '?' + new URLSearchParams({...(work?{sessionId}:{}),...(force?{refresh:'1'}:{})}));
         if (!d.open) return;
         requirements = inventory.requirements; projectRequirements = inventory.projectRequirements || [];
         accountSelect.innerHTML = inventory.accounts.map(a => `<option value="${esc(a.account)}">${esc(accountLabel(a.account))}</option>`).join('');
@@ -247,7 +255,7 @@ window.createRCChat = function (engine, room) {
           if (required) requirements.push({key:capability.key, fingerprint:capability.fingerprint});
           d.querySelector('[data-refresh]').disabled = true; render();
           try {
-            await request(capabilitiesURL, {requirements,...(work?{sessionId:engine.state().sessionId}:{})});
+            await request(capabilitiesURL, {requirements,...(work?{sessionId}:{})});
             if (invoke && d.open) { engine.insertPrompt(capability.invocation + ' '); d.close(); }
           } catch (e) { requirements = before; notify(e); }
           finally { saving = false; if (d.open) { render(); d.querySelector('[data-refresh]').disabled = false; } }
@@ -264,7 +272,8 @@ window.createRCChat = function (engine, room) {
   }
   function referencePicker() {
     const id = active, chat = current(); if (!chat) return;
-    const d = dialog('Reference a conversation', '<div class="rc-reference-picker"><input type="search" placeholder="Search projects and conversations" aria-label="Search references"><div class="rc-chat-reference-list"></div></div>', 'rc-chat-reference-dialog');
+    const d = dialog('Reference conversations', '<div class="rc-reference-picker"><input type="search" placeholder="Search projects and conversations" aria-label="Search references"><div class="rc-chat-reference-list"></div><footer><span id="rcReferenceSelection" role="status">Select conversations to reference</span><button class="cr-primary" id="rcReferenceAdd" disabled>Add selected</button></footer></div>', 'rc-chat-reference-dialog');
+    const selected = new Map();
     function render() {
       const query = d.querySelector('input').value.trim().toLowerCase(), references = chat.references || [], host = d.querySelector('.rc-chat-reference-list');
       const sources = engine.state().projects.filter(p => p.id !== id), matching = p => (p.conversations || []).filter(c => (p.name + ' ' + c.title + ' ' + (window.rcProjectSpaces?.list()?.find(s=>s.id===window.rcProjectSpaces.scopeOf(p,c.sessionId))?.name||'')).toLowerCase().includes(query)).map(c => ({p,c}));
@@ -274,15 +283,17 @@ window.createRCChat = function (engine, room) {
       groups.push({id:'chats',name:grouped?'Standalone Chat':'Chats',rows:sources.filter(p=>p.kind==='chat').flatMap(matching).filter(({p,c})=>!grouped||!primary(p,c.sessionId))});
       host.innerHTML = groups.filter(g => g.rows.length).map(group => `<section class="rc-reference-group" data-project="${esc(group.id)}"><h3>${esc(group.name)}<span>${group.rows.length}</span></h3>${group.rows.map(({p,c}) => {
         const added = references.some(r => r.projectId === p.id && r.sessionId === c.sessionId);
-        return `<button data-project-id="${esc(p.id)}" data-session-id="${esc(c.sessionId)}" ${added ? 'disabled' : ''}>${icon('chat')}<strong>${esc(c.title || 'Untitled conversation')}</strong><span>${added ? 'Added' : 'Add'}</span></button>`;
+        const key=p.id+'::'+c.sessionId,chosen=selected.has(key);
+        return `<button data-project-id="${esc(p.id)}" data-session-id="${esc(c.sessionId)}" aria-pressed="${chosen}" ${added ? 'disabled' : ''}>${icon('chat')}<strong>${esc(c.title || 'Untitled conversation')}</strong><span>${added ? 'Added' : chosen ? 'Selected' : 'Select'}</span></button>`;
       }).join('')}</section>`).join('') || '<p class="rc-chat-empty" role="status">No conversations match your search.</p>';
       host.querySelectorAll('button:not(:disabled)').forEach(button => button.onclick = async () => {
-        const next = [...references, {projectId:button.dataset.projectId, sessionId:button.dataset.sessionId}];
-        host.querySelectorAll('button').forEach(b => b.disabled = true);
-        try { await request(base(id) + '/references', {references:next}); await engine.reloadProjects(); d.close(); tab = 'references'; renderPanel(); document.body.classList.add('rc-chat-panel-open'); }
-        catch (e) { notify(e); render(); }
+        const value={projectId:button.dataset.projectId,sessionId:button.dataset.sessionId},key=value.projectId+'::'+value.sessionId;
+        if(selected.has(key))selected.delete(key);else selected.set(key,value);render();
       });
+      d.querySelector('#rcReferenceSelection').textContent=selected.size?selected.size+' selected':'Select conversations to reference';
+      d.querySelector('#rcReferenceAdd').disabled=!selected.size;
     }
+    d.querySelector('#rcReferenceAdd').onclick=async()=>{const button=d.querySelector('#rcReferenceAdd');button.disabled=true;try{await request(base(id)+'/references',{references:[...(chat.references||[]),...selected.values()]});await engine.reloadProjects();d.close();tab='references';renderPanel();document.body.classList.add('rc-chat-panel-open');}catch(e){notify(e);button.disabled=false;}};
     d.querySelector('input').oninput = render; render();
   }
   function renderReferences() {
@@ -303,5 +314,5 @@ window.createRCChat = function (engine, room) {
   document.addEventListener('x056:reconnected',()=>{if(enabled)loadFiles();});
   document.addEventListener('x056:mode',event=>{if(event.detail.mode==='closed'){document.body.classList.remove('rc-chat-active','rc-chat-home-view');if(!routing&&inChat())window.history.pushState({},'', '/');}else setTimeout(sync,0);});
   document.addEventListener('x056:event',event=>{const {kind,data}=event.detail;if(kind==='chat_files'&&data.projectId===active)loadFiles();if(kind==='projects')engine.reloadProjects().then(sync);else if(kind==='conversation')setTimeout(sync,100);});
-  return { navigate, leave, newChat, tools: toolsDialog, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat())await applyRoute();else sync();}}catch(error){if(inChat())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
+  return { navigate, leave, newChat, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat())await applyRoute();else sync();}}catch(error){if(inChat())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
 };
