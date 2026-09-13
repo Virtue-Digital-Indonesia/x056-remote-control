@@ -101,6 +101,8 @@ interface PendingLogin {
   /** Set to an existing account's name when this is a re-login (refreshing that
    *  account's own credentials in place), absent when onboarding a new account. */
   relogin?: string;
+  expectedEmail?: string;
+  originalOauthAccount?: unknown;
 }
 
 /** Per-turn overrides chosen in the UI. */
@@ -1095,9 +1097,12 @@ export class SessionManager {
    *  (an existing account's own dir) — `relogin` tags which one, so cancellation
    *  knows whether the dir is disposable or must be preserved. */
   private spawnPendingLogin(loginId: string, configDir: string, relogin?: string): Promise<{ loginId: string; url: string }> {
+    const expectedEmail=relogin?readAccountIdentity(configDir).email:undefined;
+    let originalOauthAccount: unknown;
+    if(relogin){try{originalOauthAccount=JSON.parse(readFileSync(join(configDir,'.claude.json'),'utf8')).oauthAccount;}catch{}}
     const child = (this.opts.loginSpawnFn ?? defaultLoginSpawn)(configDir, this.opts.claudePath);
     const pending: PendingLogin = {
-      configDir, child, buf: '', relogin,
+      configDir, child, buf: '', relogin, expectedEmail, originalOauthAccount,
       timer: setTimeout(() => this.cancelAccountLogin(loginId), 10 * 60_000), // abandon after 10 min
     };
     this.pendingLogins.set(loginId, pending);
@@ -1136,6 +1141,7 @@ export class SessionManager {
    *  success the same account's credentials are simply refreshed. */
   async startAccountRelogin(name: string): Promise<{ loginId: string; url: string }> {
     const acct = this.registry().get(name); // throws if unknown
+    if([...this.pendingLogins.values()].some(p=>p.configDir===acct.configDir))throw new Error('A sign-in is already in progress for this account; finish or cancel it first');
     // submitAccountLoginCode's "did the login finish?" check is "does
     // .credentials.json exist now that didn't before" — true for onboarding's
     // brand-new empty dir, but for a relogin the account's OWN (broken)
@@ -1201,16 +1207,21 @@ export class SessionManager {
     const reg = this.registry();
 
     if (pending.relogin) {
-      // Re-authenticating an existing account: refuse if the code just logged
-      // into a DIFFERENT Anthropic account than the one being fixed (a mixup
-      // would otherwise silently rename what "this account" means going forward).
-      if (identity.email) {
-        for (const a of reg.list()) {
-          if (a.name !== pending.relogin && readAccountIdentity(a.configDir).email === identity.email) {
-            this.restoreReloginBackup(configDir); // revert — don't leave a mismatched identity active under this name
-            throw new Error(`that's ${identity.email}, already added here as a different account — log in with the account this one was originally connected to`);
-          }
-        }
+      const normalize=(email?:string)=>email?.trim().toLowerCase();
+      const expected=normalize(pending.expectedEmail),actual=normalize(identity.email);
+      // A reconnect checks its own original identity. Duplicate legacy entries
+      // must not reject a successful refresh of that same identity.
+      const mismatch=expected ? actual!==expected : actual&&reg.list().some(a=>a.name!==pending.relogin&&normalize(readAccountIdentity(a.configDir).email)===actual);
+      if(mismatch){
+        rmSync(join(configDir,'.credentials.json'),{force:true});
+        this.restoreReloginBackup(configDir);
+        // The CLI also updates oauthAccount; restore it so a rejected attempt
+        // cannot become the expected identity for the next reconnect.
+        const file=join(configDir,'.claude.json');
+        let config: Record<string,unknown>={};try{config=JSON.parse(readFileSync(file,'utf8'));}catch{}
+        if(pending.originalOauthAccount===undefined)delete config.oauthAccount;else config.oauthAccount=pending.originalOauthAccount;
+        writeState(file,config);
+        throw new Error(expected?'Signed in with a different account. Reconnect using '+pending.expectedEmail+'.':'That identity is already added as a different account. Reconnect with the original account.');
       }
       try { rmSync(this.reloginBackupPath(configDir), { force: true }); } catch { /* best effort */ }
       reg.markOk(pending.relogin);

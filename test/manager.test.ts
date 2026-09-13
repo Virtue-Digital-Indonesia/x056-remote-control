@@ -853,6 +853,27 @@ describe('SessionManager account management', () => {
     expect(events.some((e) => e.kind === 'accounts')).toBe(true);
   });
 
+  it('reconnects its original identity even if another saved entry has the same email', async () => {
+    const {mgr,sd,cfgA,dir}=acctFixture('same@example.com');
+    const identity={oauthAccount:{emailAddress:'Same@Example.com'}};
+    writeFileSync(join(cfgA,'.claude.json'),JSON.stringify(identity));
+    const cfgB=join(dir,'cfg-b');mkdirSync(cfgB,{recursive:true});writeFileSync(join(cfgB,'.claude.json'),JSON.stringify(identity));
+    const {loginId}=await mgr.startAccountRelogin('a');
+    await expect(mgr.startAccountRelogin('a')).rejects.toThrow('already in progress');
+    expect((await mgr.submitAccountLoginCode(loginId,'CODE')).name).toBe('a');
+    expect(AccountRegistry.load(join(sd,'accounts.json')).list()).toHaveLength(2);
+    mgr.onModuleDestroy();
+  });
+  it('rejects a different unregistered identity and restores identity metadata and credentials', async () => {
+    const {mgr,cfgA}=acctFixture('wrong@example.com');
+    writeFileSync(join(cfgA,'.claude.json'),JSON.stringify({oauthAccount:{emailAddress:'original@example.com'}}));
+    writeFileSync(join(cfgA,'.credentials.json'),'original-credentials');
+    const {loginId}=await mgr.startAccountRelogin('a');
+    await expect(mgr.submitAccountLoginCode(loginId,'CODE')).rejects.toThrow('different account');
+    expect(JSON.parse(readFileSync(join(cfgA,'.claude.json'),'utf8')).oauthAccount.emailAddress).toBe('original@example.com');
+    expect(readFileSync(join(cfgA,'.credentials.json'),'utf8')).toBe('original-credentials');
+    mgr.onModuleDestroy();
+  });
   it('relogin of an unknown account name is rejected', async () => {
     const { mgr } = acctFixture();
     await expect(mgr.startAccountRelogin('ghost')).rejects.toThrow(/unknown account/);
