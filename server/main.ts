@@ -1,3 +1,4 @@
+import { FrontendReleases } from './frontend-releases.js';
 import { VersionInfo } from './version.js';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
@@ -34,18 +35,23 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   // Serve all panel assets from the same release directory.
   const publicDir = dirname(panelPath);
   const version = new VersionInfo(publicDir);
+  const frontend = new FrontendReleases(cfg.stateDir,version.backend.source);
   express.get('/api/version', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json(version.current());
+    const active=frontend.current();res.json(active?{backend:version.backend,ui:{revision:active.revision.slice(0,7),fingerprint:active.id,dirty:false}}:version.current());
   });
   express.get('/healthz', (_req, res) => res.json({ ok: true }));
   express.get(['/', '/home', '/dashboard', '/activity', '/activity/queue', '/activity/automations', '/activity/outputs', '/accounts', '/accounts/tools', '/automations', '/artifacts', '/queue', '/memory', '/settings', '/settings/:section', '/chat', '/chat/:chatId', '/projects', '/projects/:projectId', '/projects/:projectId/:tab', '/work', '/work/:projectId', '/work/:projectId/:sessionId'], (_req, res) => {
     try {
       res.setHeader('Cache-Control','no-cache');
-      res.type('html').send(version.html(readFileSync(panelPath, 'utf8')));
+      const active=frontend.current();
+      res.type('html').send(active?frontend.html(active,version.backend):version.html(readFileSync(panelPath, 'utf8')));
     } catch {
       res.status(500).send('panel unavailable');
     }
+  });
+  express.get('/ui-releases/:release/:file', (req,res)=>{
+    try{const body=frontend.asset(req.params.release,req.params.file);res.setHeader('Cache-Control','public, max-age=31536000, immutable');res.setHeader('X-Content-Type-Options','nosniff');res.type(req.params.file).send(body);}catch{res.status(404).send('Frontend asset unavailable');}
   });
   // Served without auth: the browser fetches these before/without the token.
   const serveStatic = (urlPath: string, file: string, type: string, headers?: Record<string, string>) => {

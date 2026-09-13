@@ -1,0 +1,37 @@
+import 'reflect-metadata';
+import {createRequire} from 'node:module';
+const {chromium}=createRequire(import.meta.url)('/usr/local/lib/node_modules/playwright');
+import {it,expect} from 'vitest';
+import {mkdtempSync,mkdirSync,cpSync,writeFileSync,readFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {createApp} from '../server/main.js';
+import {FrontendReleases} from '../server/frontend-releases.js';
+import {AccountRegistry} from '../src/accounts.js';
+import {SessionManager} from '../server/manager.js';
+it('serves independent frontend versions while the same gateway and active run survive',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'ui-http-')),stateDir=join(root,'state'),workspaceRoot=join(root,'workspace'),snapshot=join(root,'snapshot');mkdirSync(workspaceRoot);mkdirSync(snapshot);
+ for(const path of ['server','src','scripts','package.json','package-lock.json'])cpSync(resolve(path),join(snapshot,path),{recursive:true});
+ mkdirSync(stateDir);AccountRegistry.init(join(stateDir,'accounts.json'),[{name:'a',configDir:join(root,'account')}]);
+ const token='frontend-release-test-token-0123456789';let finish!:()=>void;let browser:any;
+ const app=await createApp({token,stateDir,workspaceRoot,projectSpacesEnabled:false});
+ try{await app.listen(0,'127.0.0.1');const base=await app.getUrl(),headers={Authorization:'Bearer '+token};
+ const before=await(await fetch(base+'/api/version',{headers})).json();
+ const releases=new FrontendReleases(stateDir,before.backend.source);
+ const manager=app.get(SessionManager);Object.assign((manager as unknown as {opts:Record<string,unknown>}).opts,{runSessionFn:async()=>{await new Promise<void>(r=>finish=r);return{status:'completed',finalAccount:'a',failovers:0};}});const work=manager.createProject('Live Work',workspaceRoot),sessionId=manager.start('Continue uninterrupted',undefined,undefined,work.id);
+ for(let n=0;!finish&&n<100;n++)await new Promise(r=>setTimeout(r,10));expect(finish).toBeTypeOf('function');
+ const a=releases.publish(snapshot,'a'.repeat(40),resolve('.'));
+ const html=await(await fetch(base+'/home')).text();expect(html).toContain('/ui-releases/'+a.id+'/workspace.js');
+ browser=await chromium.launch({args:['--no-sandbox']});const context=await browser.newContext();await context.addInitScript((t:string)=>localStorage.setItem('x056_token',t),token);const page=await context.newPage(),errors:string[]=[];page.on('pageerror',(e:Error)=>errors.push(e.message));await page.goto(base+'/home');await page.locator('.cr-task').first().click();await page.locator('#prompt').fill('Keep this draft through publication');
+ const asset='/ui-releases/'+a.id+'/workspace.js',old=await(await fetch(base+asset)).text();
+ writeFileSync(join(snapshot,'server/public/workspace.js'),readFileSync(join(snapshot,'server/public/workspace.js'),'utf8')+'\n// next release');
+ const b=releases.publish(snapshot,'b'.repeat(40),resolve('.'));
+ expect(await page.evaluate(()=>(window as any).X056_RELEASE.ui.fingerprint)).toBe(a.id);expect(await page.locator('#prompt').inputValue()).toBe('Keep this draft through publication');const nextPage=await context.newPage();nextPage.on('pageerror',(e:Error)=>errors.push(e.message));await nextPage.goto(base+'/home');await nextPage.waitForFunction(()=>typeof (window as any).createControlRoom==='function');expect(await nextPage.evaluate(()=>(window as any).X056_RELEASE.ui.fingerprint)).toBe(b.id);expect(errors).toEqual([]);
+ expect((await(await fetch(base+'/api/version',{headers})).json()).backend).toEqual(before.backend);
+ expect(await(await fetch(base+asset)).text()).toBe(old);
+ const next=await fetch(base+'/ui-releases/'+b.id+'/workspace.js');expect(next.headers.get('cache-control')).toContain('immutable');expect(await next.text()).toContain('// next release');
+ expect((await fetch(base+'/ui-releases/'+b.id+'/release.json')).status).toBe(404);
+ expect(manager.listProjects().projects.find(p=>p.id===work.id)?.runningSessionIds).toContain(sessionId);
+ releases.rollback();expect((await(await fetch(base+'/api/version',{headers})).json()).ui.fingerprint).toBe(a.id);
+ }finally{await browser?.close();finish?.();const manager=app.get(SessionManager);for(let n=0;n<100&&manager.listProjects().projects.some(p=>p.running);n++)await new Promise(r=>setTimeout(r,10));await app.close();}
+},60000);

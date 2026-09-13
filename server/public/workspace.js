@@ -111,6 +111,15 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
       if(event.key==='Tab'&&innerWidth<=850&&$('controlRoom').classList.contains('projects-open')){const nodes=[...nav.querySelectorAll('a,button,input')].filter(n=>n.getClientRects().length),first=nodes[0],last=nodes.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}
     });
   }
+  let releasePollBusy=false;
+  async function checkFrontendUpdate(){
+    if(releasePollBusy||document.hidden||!mounted)return;releasePollBusy=true;
+    try{const response=await engine.api('/api/version');if(!response.ok)return;const current=await response.json(),loaded=window.X056_RELEASE?.ui?.fingerprint;
+      if(loaded&&current.ui?.fingerprint!==loaded&&!$('workspaceUpdateNotice')){const notice=document.createElement('span');notice.id='workspaceUpdateNotice';notice.className='workspace-update-notice';notice.setAttribute('role','status');notice.textContent='UI update available';notice.title='Refresh when ready. This tab will keep using its current UI until then.';document.querySelector('.cr-top').append(notice);}
+    }catch{}finally{releasePollBusy=false;}
+  }
+  setInterval(checkFrontendUpdate,30000);
+  document.addEventListener('visibilitychange',checkFrontendUpdate);
   function connections() {
     const host=$('workspaceConnections');
     const projectGroups=spaces.list().filter(p=>!p.archivedAt).map(space=>({id:space.id,name:space.name,items:[]})),outside={name:'Outside Projects',items:[]};

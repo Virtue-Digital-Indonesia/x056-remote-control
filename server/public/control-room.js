@@ -62,7 +62,11 @@ window.createControlRoom = function (engine) {
   document.body.dataset.conversationLabelTemplate = 'dynamic';
   function conversationLabels(project, conversation) {
     const provider=({codex:'Codex',claude:'Claude'})[conversation?(conversation.provider||'claude'):project?.provider]||'Provider unknown';
-    const projectName = (project?.name || 'Project')+' · '+provider, conversationName = conversation?.title || 'Conversation';
+    const spaces=window.rcProjectSpaces,spaceId=conversation?.spaceId||spaces?.scopeOf(project,conversation?.sessionId);
+    const parent=spaces?.list().find(p=>p.id===spaceId);
+    const kind=project?.kind==='chat'?'Chat':'Work';
+    const projectName=(parent?.name||(kind==='Chat'?'Standalone Chat':project?.name||'Unassigned Work'))+' · '+kind+' · '+provider;
+    const conversationName=conversation?.title||'Conversation';
     return conversationLabelOrder === 'project' ? [projectName, conversationName] : [conversationName, projectName];
   }
   function conversationLabelText(project, conversation) { return conversationLabels(project, conversation).join(' · '); }

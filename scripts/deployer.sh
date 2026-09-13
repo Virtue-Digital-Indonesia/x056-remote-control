@@ -4,21 +4,8 @@
 # in the bind-mounted repo; this script (outside the container) performs the
 # one fixed action: build the new image, then swap the container.
 #
-# Split build from swap: BUILD always (it doesn't touch the running container),
-# but prefer to SWAP only when no turn is running so an in-flight turn isn't
-# killed. HOWEVER, with parallel projects there may be no global-idle moment for
-# a long time, which starves the swap forever. So bound the wait: if the request
-# has been pending longer than MAX_DEFER, swap anyway — killed turns are
-# recoverable (orphan-resume cards + autopilot auto-resume on the new container).
-#
-# A live WORKFLOW is different and blocks the swap with NO timeout. A killed turn
-# resumes on the new container; a killed workflow's agents are gone, and someone
-# has to notice and resume it by run id. One swap took out two runs mid-flight
-# and neither conversation knew why it had stopped.
-#
-# This cannot wedge deploys forever: "live" means incomplete AND written to
-# within the last 5 minutes, so a run that dies stops blocking on its own. To
-# override deliberately, `touch .deploy/force` beside the request.
+# Builds may run alongside agents. Swaps wait indefinitely for idle unless an
+# operator explicitly authorizes interruption via .deploy/force.
 set -euo pipefail
 export PATH=/usr/local/bin:/usr/bin:/bin
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,10 +13,9 @@ FLAG="$DIR/.deploy/requested"
 FORCE="$DIR/.deploy/force"
 LOG="$DIR/.deploy/last.log"
 STATUS="$DIR/.deploy/status.json"
-MAX_DEFER=180   # seconds; brief idle-catch window, then swap even if a TURN runs
-# Opt-in for releases that must preserve all live provider processes. A host
-# release runner passes this for its isolated checkout; normal cron is unchanged.
-IDLE_ONLY="${X056_DEPLOY_IDLE_ONLY:-0}"
+# Idle is mandatory unless the operator explicitly supplies a force flag.
+IDLE_ONLY=1
+[ ! -f "$FORCE" ] || IDLE_ONLY=0
 # A durable per-request setting also applies to the regular host cron runner.
 [ ! -f "$DIR/.deploy/idle-only" ] || IDLE_ONLY=1
 
@@ -184,17 +170,13 @@ trap 'exit 143' TERM
     fi
   fi
 
-  # 3. A running TURN only defers briefly: it resumes on the new container.
+  # 3. Only explicit interruption authorization permits swapping during a turn.
   if busy; then
     if [ "$IDLE_ONLY" = 1 ]; then
       echo "built OK; provider activity remains or cannot be checked — idle-only release stays pending"
       exit 0
     fi
-    if [ "$age" -lt "$MAX_DEFER" ]; then
-      echo "built OK; a turn is running — deferring swap (${age}s/${MAX_DEFER}s)"
-      exit 0
-    fi
-    echo "built OK; deploy pending ${age}s (> ${MAX_DEFER}s) — swapping despite active turns; they resume on the new container"
+    echo "explicit .deploy/force authorization — swapping despite active turns"
   fi
 
   if ! release_unchanged; then

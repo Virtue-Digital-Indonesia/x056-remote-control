@@ -173,9 +173,11 @@ npm test          # vitest (serialized)
 npm run typecheck # tsc --noEmit
 ```
 
-The gateway panel and its assets are served from the built image. Set `X056_PANEL_PATH=/app/server/public/panel.html` in production. Use the isolated browser fixture for edits; a workspace path would expose unfinished changes before matching routes are deployed.
+The gateway uses image-baked panel assets by default, with optional validated frontend release bundles. Set `X056_PANEL_PATH=/app/server/public/panel.html` in production. Use the isolated browser fixture for edits; a workspace path would expose unfinished changes before matching routes are deployed.
 
-Gateway releases use the host actuator: commit, pin `.deploy/revision`, and request through `.deploy/requested` under the operator’s deployment authorization. The container’s Docker endpoint is a separate development daemon.
+Backend releases wait for idle and use the host actuator: commit, pin `.deploy/revision`, and request through `.deploy/requested` under the operator’s deployment authorization. The container’s Docker endpoint is a separate development daemon.
+
+Independent frontend publication uses `.deploy/frontend-requested` and leaves agent processes running. See the [frontend release runbook](docs/operations/frontend-releases.md) for bootstrap, publication, and rollback.
 
 Project spaces are disabled by default. `X056_PROJECT_SPACES_ENABLED=1` enables `/projects`, member Chat and Work views, shared files, reviewed memory, and handoffs. See [the implementation record](docs/plans/2026-09-11-project-spaces-build.md) and [recovery runbook](docs/project-spaces-recovery.md).
 
