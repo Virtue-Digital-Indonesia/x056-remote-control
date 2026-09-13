@@ -59,6 +59,17 @@ function firstStr(...vals: unknown[]): string {
   for (const v of vals) if (typeof v === 'string' && v) return v;
   return '';
 }
+/** Summarize orchestration without evaluating provider-authored JavaScript. */
+function commandLabel(command: string): string {
+  const names = [...new Set([...command.matchAll(/\btools\.([A-Za-z_][\w]*)\s*\(/g)].map(m => m[1]))];
+  if (names.length) {
+    const labels: Record<string, string> = { exec_command: 'Running commands', apply_patch: 'Editing files', view_image: 'Viewing images', web__run: 'Searching the web', write_stdin: 'Checking command output' };
+    return names.map(name => labels[name] || 'Using ' + name.replace(/^mcp__/, '').replace(/__/g, ' / ').replace(/_/g, ' ')).join(' · ');
+  }
+  if (/\b(?:await|text\s*\(|Promise\.)/.test(command)) return 'Running tools';
+  return 'Running: ' + command.replace(/\s+/g, ' ').trim();
+}
+
 function truncate(s: string, n = 60): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
@@ -154,8 +165,8 @@ function toActivity(e: RawEvent): ActivityEvent[] {
   const it = asObj(e.item);
   const id = firstStr(it.id, it.call_id);
   const started = t === 'item.started';
-  const row = (tool: string, label: string, status: ActivityEvent['status']): ActivityEvent[] => [
-    { toolUseId: id, parentToolUseId: null, tool, label, status, isSubagent: false },
+  const row = (tool: string, label: string, status: ActivityEvent['status'], detail?: string): ActivityEvent[] => [
+    { toolUseId: id, parentToolUseId: null, tool, label, status, ...(status === 'start' ? { detail: detail || JSON.stringify(it.arguments ?? it.input ?? it.changes ?? it, null, 2) } : {}), isSubagent: false },
   ];
   const failed = it.status === 'failed' || (typeof it.exit_code === 'number' && it.exit_code !== 0) || Boolean(it.error);
 
@@ -163,7 +174,7 @@ function toActivity(e: RawEvent): ActivityEvent[] {
     case 'command_execution': {
       if (started) {
         const cmd = Array.isArray(it.command) ? (it.command as unknown[]).map(String).join(' ') : String(it.command ?? '');
-        return row('Bash', 'Running: ' + truncate(cmd), 'start');
+        return row('Bash', commandLabel(cmd), 'start', cmd);
       }
       return row('', '', failed ? 'error' : 'done');
     }
@@ -387,7 +398,7 @@ function rolloutActionLabel(p: Record<string, unknown>): string {
     case 'exec':
     case 'shell': {
       const cmd = firstStr(args.cmd as string, args.command as string, rawInput);
-      return 'Running: ' + truncate(cmd.replace(/\s+/g, ' ').trim());
+      return commandLabel(cmd);
     }
     case 'apply_patch': {
       // "*** Update File: /abs/path" — show the first file it touches.
@@ -442,7 +453,7 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
       const artifacts = toolImagePaths(p);
       if (label) {
         push({
-          role: 'action', text: label, ...(artifacts.length ? { artifacts } : {}),
+          role: 'action', text: label, detail: firstStr(p.arguments, p.input), ...(artifacts.length ? { artifacts } : {}),
           ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined,
         }, at);
       }

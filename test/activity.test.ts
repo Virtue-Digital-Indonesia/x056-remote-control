@@ -5,7 +5,7 @@ describe('toActivity', () => {
   it('maps a Bash tool_use to a running-start activity', () => {
     const e = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } };
     expect(toActivity(e)).toEqual([
-      { toolUseId: 't1', parentToolUseId: null, tool: 'Bash', label: 'Running: npm test', status: 'start', isSubagent: false },
+      { toolUseId: 't1', parentToolUseId: null, tool: 'Bash', label: 'Running: npm test', detail: JSON.stringify({command:'npm test'}, null, 2), status: 'start', isSubagent: false },
     ]);
   });
 

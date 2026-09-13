@@ -37,7 +37,7 @@ describe('readSessionHistory', () => {
       { role: 'assistant', text: 'first answer' },
       // the tool call is surfaced as an action row so the trail of what the
       // agent DID survives a reload, not just what it said
-      { role: 'action', text: 'Running: ls -la', sub: false },
+      { role: 'action', text: 'Running: ls -la', detail: JSON.stringify({command:'ls -la'}, null, 2), sub: false },
       // a slash command is surfaced too: dropping it left the transcript
       // claiming the user said nothing before whatever the command produced
       { role: 'command', text: '/model', args: undefined },

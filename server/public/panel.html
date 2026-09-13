@@ -2261,7 +2261,25 @@
     var body = document.createElement('div'); body.className = 'body'; body.textContent = text; d.appendChild(body);
     return d;
   }
-  function nodeAct(label, isSub, agentId) { var d = document.createElement('div'); if(agentId)d.dataset.agentId=agentId; d.className = 'act' + (isSub ? ' sub' : ''); d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm')); var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e); return d; }
+  function nodeAct(label, isSub, agentId, detail) {
+    var d = document.createElement('div'); if(agentId)d.dataset.agentId=agentId;
+    d.className = 'act' + (isSub ? ' sub' : '');
+    d.appendChild(icon(isSub ? 'sparkles' : 'terminal', 'sm'));
+    var e = document.createElement('span'); e.className = 'el'; e.textContent = label; d.appendChild(e);
+    d.tabIndex = 0; d.setAttribute('role', 'button'); d.setAttribute('aria-label', 'View action: ' + label); d.title = 'View full action';
+    function open() {
+      if (d.dataset.subBound) return;
+      showModal('action-detail', null, function(card, done) {
+        var h = document.createElement('h3'); h.textContent = label; card.appendChild(h);
+        var pre = document.createElement('pre'); pre.textContent = detail || label; card.appendChild(pre);
+        var actions = document.createElement('div'); actions.className = 'modal-actions';
+        var close = document.createElement('button'); close.className = 'send'; close.textContent = 'Close'; close.autofocus = true; close.onclick = function(){done(null);}; actions.appendChild(close); card.appendChild(actions);
+      });
+    }
+    d.addEventListener('click', open);
+    d.addEventListener('keydown', function(event){if(event.key === 'Enter' || event.key === ' '){event.preventDefault();d.click();}});
+    return d;
+  }
   function addMsg(role, text, imgUrl, ts, sender) { appendNode(currentProjectId, lastSessionId, nodeMsg(role, text, imgUrl, ts, currentProvider(), sender)); }
   function addSys(text, cls) { var node = nodeSys(text, cls); appendNode(currentProjectId, lastSessionId, node); return node; }
   // "live" / "showing cached view" float over the thread instead of being
@@ -2528,8 +2546,8 @@
       // replayed/duplicated 'start' can't inflate it (the "· N running" drift).
       var v = viewOf(pid, sid);
       if (data.status === 'start') {
-        v.label = data.label; appendNode(pid, sid, nodeAct(data.label, data.isSubagent, data.isSubagent ? data.toolUseId : null));
-        v.activityLog.push({ label: data.label, isSubagent: !!data.isSubagent, agentId: data.isSubagent ? data.toolUseId : null, ts: data.ts || new Date().toISOString() });
+        v.label = data.label; appendNode(pid, sid, nodeAct(data.label, data.isSubagent, data.isSubagent ? data.toolUseId : null, data.detail));
+        v.activityLog.push({ label: data.label, detail: data.detail, isSubagent: !!data.isSubagent, agentId: data.isSubagent ? data.toolUseId : null, ts: data.ts || new Date().toISOString() });
         if (v.activityLog.length > ACTIVITY_LOG_CAP) v.activityLog.splice(0, v.activityLog.length - ACTIVITY_LOG_CAP);
         if (data.isSubagent && data.toolUseId) v.subs[data.toolUseId] = 1;
       } else if (data.toolUseId) { delete v.subs[data.toolUseId]; }
@@ -3870,7 +3888,8 @@
   $('searchShortcut').textContent = K_CMD + ' K';
   $('composerHint').textContent = 'Enter to send · ' + K_CMD + '+Enter to steer · Shift+Enter for a new line · Paste or drop files';
   function openPalette() {
-    if (anyModalOpen() || document.querySelector('dialog[open]')) return;
+    var existing = document.querySelector('dialog[open] .palette .pal-input');
+    if (existing) { existing.focus(); return; }
     showModal('palette', null, function (card, done) {
       var head = document.createElement('div'); head.className = 'pal-head';
       head.appendChild(icon('search', 'sm'));
@@ -4064,7 +4083,7 @@
         items.push({ ts: m.ts, idx: i, render: m.role === 'model'
           ? function () { appendNode(pid, sid, nodeModelMark(m.text, m.ts)); }        // model-switch marker from the transcript
           : m.role === 'action'
-            ? function () { appendNode(pid, sid, nodeAct(m.text, m.sub, m.agentId)); }           // tool call replayed from the transcript
+            ? function () { appendNode(pid, sid, nodeAct(m.text, m.sub, m.agentId, m.detail)); }           // tool call replayed from the transcript
             : m.role === 'command'
               ? function () { appendNode(pid, sid, nodeCmd(m.text, m.args, m.ts)); }  // a slash command the user ran
               : m.role === 'notice'
@@ -4078,7 +4097,7 @@
       // Only fall back to it when the transcript gave us none (e.g. a provider
       // whose reader doesn't emit them).
       var base = items.length;
-      if (!transcriptActions) lv.activityLog.forEach(function (a, i) { items.push({ ts: a.ts, idx: base + i, render: function () { appendNode(pid, sid, nodeAct(a.label, a.isSubagent, a.agentId)); } }); });
+      if (!transcriptActions) lv.activityLog.forEach(function (a, i) { items.push({ ts: a.ts, idx: base + i, render: function () { appendNode(pid, sid, nodeAct(a.label, a.isSubagent, a.agentId, a.detail)); } }); });
       items.sort(function (x, y) {
         var tx = x.ts ? Date.parse(x.ts) : NaN, ty = y.ts ? Date.parse(y.ts) : NaN;
         if (!isNaN(tx) && !isNaN(ty)) return tx - ty;
@@ -4165,7 +4184,7 @@
           frag.appendChild(m.role === 'model'
             ? nodeModelMark(m.text, m.ts)
             : m.role === 'action'
-              ? nodeAct(m.text, m.sub, m.agentId)
+              ? nodeAct(m.text, m.sub, m.agentId, m.detail)
               : m.role === 'command'
                 ? nodeCmd(m.text, m.args, m.ts)
                 : m.role === 'notice'
@@ -4456,7 +4475,7 @@
   function renderRowsInto(box, rows, provider) {
     box.textContent = '';
     (rows || []).forEach(function (m) {
-      var n = m.role === 'action' ? nodeAct(m.text, m.sub, m.agentId)
+      var n = m.role === 'action' ? nodeAct(m.text, m.sub, m.agentId, m.detail)
         : m.role === 'command' ? nodeCmd(m.text, m.args, m.ts)
         : m.role === 'notice' ? nodeNotice(m.text)
         : m.role === 'summary' ? nodeSummary(m.text, m.ts)

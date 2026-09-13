@@ -322,3 +322,10 @@ it('preserves different senders of identical messages while deduplicating provid
   expect(rows.map(row=>row.text)).toEqual(['Ready','Ready']);
   expect(rows.map(row=>row.sender?.messageId)).toEqual(['one','two']);
 });
+
+it('keeps complete orchestration input after reload with a readable label', () => {
+  const tid = 'action-detail-reload';
+  const input = 'text(await tools.exec_command({cmd: "' + 'a'.repeat(500) + '"}));';
+  const dir = rolloutDir(tid, [{type:'response_item',payload:{type:'custom_tool_call',name:'exec',input}}]);
+  expect(codexAdapter.readHistory!([dir],tid,100)[0]).toMatchObject({role:'action',text:'Running commands',detail:input});
+});

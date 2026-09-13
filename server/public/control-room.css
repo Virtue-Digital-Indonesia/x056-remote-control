@@ -303,3 +303,14 @@ body[data-conversation-label-template=static][data-conversation-label-order=conv
 .workspace-form>*,.workspace-form label>*{min-width:0}
 .memory-share-dialog .workspace-form p{overflow-wrap:anywhere;margin:0}
 .memory-share-dialog [role=alert]:empty{display:none}
+
+/* Action rows use the message column; full tool input opens in the top layer. */
+.thread .act{width:100%;max-width:100%;box-sizing:border-box;min-width:0;cursor:pointer;border-radius:6px;padding:6px 0}
+.thread .act .el{flex:1;min-width:0;max-width:none}
+.thread .act>.ic{flex:none}
+.thread .act:hover{background:var(--surface-2);color:var(--text)}
+.act[role=button]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.modal.action-detail{width:100%;max-width:800px}
+.action-detail h3{overflow-wrap:anywhere}
+.action-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:60vh;overflow:auto;font-size:12px;line-height:1.6;margin:16px 0 20px}
+dialog.modern-prompt:has(.action-detail){width:min(840px,calc(100vw - 32px))}

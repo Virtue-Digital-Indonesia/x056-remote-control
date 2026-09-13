@@ -16,6 +16,8 @@ export interface ActivityEvent {
   parentToolUseId: string | null;
   tool: string;
   label: string;
+  /** Complete tool input for the action detail reader. */
+  detail?: string;
   status: 'start' | 'done' | 'error';
   isSubagent: boolean;
 }
@@ -46,6 +48,8 @@ export interface HistoryEntry {
   artifacts?: string[];
   role: 'user' | 'assistant' | 'model' | 'action' | 'command' | 'notice' | 'summary';
   text: string;
+  /** Complete tool input for the action detail reader. */
+  detail?: string;
   /** For 'action': the call was a subagent/task spawn (rendered differently). */
   sub?: boolean;
   /** Native child thread id, for opening an activity row directly. */

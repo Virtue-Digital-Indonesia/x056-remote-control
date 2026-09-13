@@ -84,7 +84,7 @@ describe('codexAdapter result + drain-boundary detection', () => {
 describe('codexAdapter.toActivity', () => {
   it('maps a command_execution item start→completed to Bash start + done rows keyed by item id', () => {
     const begin = codexAdapter.toActivity({ type: 'item.started', item: { id: 'i1', type: 'command_execution', command: ['bash', '-lc', 'npm test'] } });
-    expect(begin).toEqual([{ toolUseId: 'i1', parentToolUseId: null, tool: 'Bash', label: 'Running: bash -lc npm test', status: 'start', isSubagent: false }]);
+    expect(begin).toEqual([{ toolUseId: 'i1', parentToolUseId: null, tool: 'Bash', label: 'Running: bash -lc npm test', detail: 'bash -lc npm test', status: 'start', isSubagent: false }]);
     const ok = codexAdapter.toActivity({ type: 'item.completed', item: { id: 'i1', type: 'command_execution', exit_code: 0 } });
     expect(ok[0]).toMatchObject({ toolUseId: 'i1', status: 'done' });
     const bad = codexAdapter.toActivity({ type: 'item.completed', item: { id: 'i1', type: 'command_execution', exit_code: 1 } });
@@ -136,7 +136,7 @@ describe('codexAdapter against the real captured authed stream', () => {
     expect(codexAdapter.assistantText?.(stream[5])).toEqual(['DONE']);
     // command_execution: string command → start row, then done on exit_code 0
     expect(codexAdapter.toActivity(stream[3])).toEqual([
-      { toolUseId: 'item_1', parentToolUseId: null, tool: 'Bash', label: "Running: /bin/sh -lc 'echo x056-probe-ok'", status: 'start', isSubagent: false },
+      { toolUseId: 'item_1', parentToolUseId: null, tool: 'Bash', label: "Running: /bin/sh -lc 'echo x056-probe-ok'", detail: "/bin/sh -lc 'echo x056-probe-ok'", status: 'start', isSubagent: false },
     ]);
     expect(codexAdapter.toActivity(stream[4])[0]).toMatchObject({ toolUseId: 'item_1', status: 'done' });
     // turn.completed is the terminal success; no rate_limits present → no warning
@@ -348,4 +348,14 @@ describe('codex hasCredentials', () => {
   it('true for a ChatGPT login (tokens)', () => { expect(codexAdapter.hasCredentials!(home({ tokens: { access_token: 'x' } }))).toBe(true); });
   it('true for an API-key login', () => { expect(codexAdapter.hasCredentials!(home({ OPENAI_API_KEY: 'sk-x' }))).toBe(true); });
   it('false when the file exists but holds nothing usable', () => { expect(codexAdapter.hasCredentials!(home({ tokens: {} }))).toBe(false); });
+});
+
+
+describe('orchestrated action summaries', () => {
+  it('keeps full input while hiding JavaScript wrappers in the label', () => {
+    const command = 'text(await tools.exec_command({cmd: "rg pattern server"}));\nimage(await tools.view_image({path:"/tmp/test.png"}));';
+    const [row] = codexAdapter.toActivity({type:'item.started',item:{type:'command_execution',id:'wrapped',command}});
+    expect(row.label).toBe('Running commands · Viewing images');
+    expect(row.detail).toBe(command);
+  });
 });

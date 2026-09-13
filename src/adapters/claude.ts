@@ -27,7 +27,7 @@ function truncate(s: string, n = 60): string {
 function labelFor(tool: string, input: Record<string, unknown>): string {
   switch (tool) {
     case 'Bash':
-      return 'Running: ' + truncate(String(input.command ?? input.description ?? ''));
+      return 'Running: ' + String(input.command ?? input.description ?? '').replace(/\s+/g, ' ').trim();
     case 'Edit':
       return 'Editing ' + base(input.file_path);
     case 'Write':
@@ -69,6 +69,7 @@ function toActivity(e: RawEvent): ActivityEvent[] {
           parentToolUseId: parent,
           tool,
           label: labelFor(tool, b.input ?? {}),
+          detail: JSON.stringify(b.input ?? {}, null, 2),
           status: 'start',
           isSubagent: SUBAGENT_TOOLS.has(tool),
         });
@@ -381,7 +382,7 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
         if (b && b.type === 'tool_use' && b.name) {
           const artifacts = toolImagePaths(b as Record<string, unknown>);
           out.push({
-            role: 'action', text: labelFor(b.name, b.input ?? {}),
+            role: 'action', text: labelFor(b.name, b.input ?? {}), detail: JSON.stringify(b.input ?? {}, null, 2),
             ...(artifacts.length ? { artifacts } : {}), sub: SUBAGENT_TOOLS.has(b.name), ts,
           });
           offsets.push(at);
