@@ -17,7 +17,7 @@ import { projectSpacesRecoveryReport } from './project-spaces-recovery.js';
 import { cleanMemorySource } from './memory-sources.js';
 import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { AccountAnalytics } from '../src/account-analytics.js';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -1536,23 +1536,33 @@ export class SessionManager {
     if (!input || typeof input.requestId !== 'string' || !/^[a-zA-Z0-9-]{8,100}$/.test(input.requestId)) throw new Error('Invalid creation request');
     if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 300) throw new Error('Enter a workspace name');
     if (typeof input.folder !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(input.folder)) throw new Error('Use a folder name with letters, numbers, hyphens or underscores');
-    let choices = { ...space.defaults?.work, ...Object.fromEntries(Object.entries(input).filter(([key,v])=>['provider','model','effort','account'].includes(key)&&v!==undefined)) };
-    this.validateProjectDefaults({work:choices});
+    let choices = { provider: 'claude' as ProviderId, model: '', effort: '', account: '', ...space.defaults?.work, ...Object.fromEntries(Object.entries(input).filter(([key,v])=>['provider','model','effort','account'].includes(key)&&v!==undefined)) };
     const root=realpathSync(this.opts.workspaceRoot), cwd=join(root,input.folder);
     const fingerprint=createHash('sha256').update(JSON.stringify([spaceId,input.name,input.folder,input.provider,input.model,input.effort,input.account])).digest('hex');
     const journal=join(this.opts.stateDir,'workspace-creation',input.requestId+'.json');
-    let operation: { fingerprint:string; cwd:string; projectId?:string; initialized?:boolean; choices?:typeof choices; result?:{projectId:string;sessionId:string;cwd:string} };
+    let operation: { fingerprint:string; cwd:string; projectId?:string; initialized?:boolean; directory?:{dev:number;ino:number}; choices?:typeof choices; result?:{projectId:string;sessionId:string;cwd:string} };
     if(existsSync(journal)) { operation=JSON.parse(readFileSync(journal,'utf8'));if(operation.fingerprint!==fingerprint||operation.cwd!==cwd)throw new ProjectConflict('Creation request changed; start again'); }
     else {
+      this.validateProjectDefaults({work:choices});
       // Exclusive mkdir refuses existing directories, files and symlinks. Never adopt or delete them.
       try { mkdirSync(cwd); } catch { throw new ProjectConflict('That folder already exists or cannot be created. Choose another name or add the existing workspace.'); }
-      operation={fingerprint,cwd,choices};writeState(journal,operation);
+      const directory=statSync(cwd);
+      operation={fingerprint,cwd,choices,directory:{dev:directory.dev,ino:directory.ino}};writeState(journal,operation);
     }
     choices=operation.choices || choices;
-    if (operation.result) return operation.result;
-    if(realpathSync(cwd)!==cwd||!statSync(cwd).isDirectory())throw new Error('Workspace directory changed; cannot resume creation');
+    const directory=lstatSync(cwd);
+    if(realpathSync(cwd)!==cwd||!directory.isDirectory()||(operation.directory&&(directory.dev!==operation.directory.dev||directory.ino!==operation.directory.ino)))throw new Error('Workspace directory changed; cannot resume creation');
+    let gitDirectory;
+    try { gitDirectory=lstatSync(join(cwd,'.git')); } catch(error) { if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error; }
+    if (gitDirectory && !gitDirectory.isDirectory()) throw new Error('Git directory changed; cannot resume creation');
+    if (operation.initialized && !gitDirectory) throw new Error('Git directory missing; cannot resume creation');
+    if (operation.result) {
+      const work=this.executionProject(operation.result.projectId);
+      if(work.cwd!==cwd||work.archivedAt||!work.conversations?.some(c=>c.sessionId===operation.result!.sessionId))throw new ProjectConflict('Created Work is no longer available; open the Project to review it');
+      return operation.result;
+    }
+    this.validateProjectDefaults({work:choices});
     if (!operation.initialized) {
-      if (existsSync(join(cwd,'.git')) && realpathSync(join(cwd,'.git')) !== join(cwd,'.git')) throw new Error('Git directory changed; cannot resume creation');
       execFileSync('git',['init','--initial-branch=main','--',cwd],{timeout:10000,stdio:'pipe',env:{PATH:process.env.PATH,HOME:process.env.HOME,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'}});
       operation.initialized=true;writeState(journal,operation);
     }

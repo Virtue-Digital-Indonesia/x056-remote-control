@@ -1,5 +1,5 @@
 import { moveChat } from './project-space-fixture.js';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, existsSync, renameSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -57,6 +57,45 @@ describe('Project spaces contracts and migration', () => {
     const f=fixture(),space=f.manager.createProjectSpace({requestId:'invalid-work-parent',name:'Project'});
     expect(()=>f.manager.createSpaceWorkspace(space.id,{requestId:'invalid-work-create',name:'Invalid',folder:'invalid',provider:'claude',model:'gpt-6-astra'})).toThrow();
     expect(existsSync(join(f.workspaceRoot,'invalid'))).toBe(false);
+  });
+  it('keeps the original defaults across interrupted creation and later retries', () => {
+    const f=fixture(),space=f.manager.createProjectSpace({requestId:'frozen-parent',name:'Frozen'});
+    const input={requestId:'frozen-request',name:'Frozen',folder:'frozen',provider:'claude' as const};
+    const prepare=f.manager.prepareProjectWork.bind(f.manager);
+    f.manager.prepareProjectWork=()=>{throw new Error('Interrupted');};
+    expect(()=>f.manager.createSpaceWorkspace(space.id,input)).toThrow('Interrupted');
+    f.manager.updateProjectSpace(space.id,{expectedRevision:f.manager.spaces().get(space.id).revision,defaults:{work:{provider:'codex',model:'gpt-6-astra'}}});
+    f.manager.prepareProjectWork=prepare;
+    const result=f.manager.createSpaceWorkspace(space.id,input);
+    expect(f.manager.executionProject(result.projectId).conversations?.[0]).toMatchObject({provider:'claude',model:''});
+    expect(f.manager.createSpaceWorkspace(space.id,input)).toEqual(result);
+  });
+  it('does not return a deleted conversation from a completed request', () => {
+    const f=fixture(),space=f.manager.createProjectSpace({requestId:'deleted-parent',name:'Deleted'});
+    const input={requestId:'deleted-request',name:'Deleted',folder:'deleted'};
+    const result=f.manager.createSpaceWorkspace(space.id,input);
+    ProjectRegistry.load(f.file).removeConversation(result.projectId,result.sessionId);
+    expect(()=>f.manager.createSpaceWorkspace(space.id,input)).toThrow('no longer available');
+  });
+  it('refuses a replacement workspace directory on retry', () => {
+    const f=fixture(),space=f.manager.createProjectSpace({requestId:'replaced-parent',name:'Replaced'});
+    const input={requestId:'replaced-request',name:'Replaced',folder:'replaced'};
+    const result=f.manager.createSpaceWorkspace(space.id,input);
+    renameSync(result.cwd,result.cwd+'-original');mkdirSync(result.cwd);
+    expect(()=>f.manager.createSpaceWorkspace(space.id,input)).toThrow('directory changed');
+    expect(existsSync(join(result.cwd,'.git'))).toBe(false);
+  });
+  it.each(['file','symlink','dangling'])('refuses %s Git metadata during recovery', kind => {
+    const f=fixture(),space=f.manager.createProjectSpace({requestId:'metadata-parent',name:'Metadata'});
+    const input={requestId:'metadata-request',name:'Metadata',folder:'metadata'};
+    f.manager.prepareProjectWork=()=>{throw new Error('Interrupted');};
+    expect(()=>f.manager.createSpaceWorkspace(space.id,input)).toThrow('Interrupted');
+    const git=join(f.workspaceRoot,'metadata','.git');rmSync(git,{recursive:true});
+    if(kind==='file')writeFileSync(git,'gitdir: '+f.root);else symlinkSync(kind==='dangling'?join(f.root,'missing'):f.root,git);
+    const journal=join(f.stateDir,'workspace-creation',input.requestId+'.json'),saved=JSON.parse(readFileSync(journal,'utf8'));
+    saved.initialized=false;writeFileSync(journal,JSON.stringify(saved));
+    expect(()=>f.manager.createSpaceWorkspace(space.id,input)).toThrow('Git directory changed');
+    expect(existsSync(join(f.root,'HEAD'))).toBe(false);
   });
   it('migrates legacy records without changing identities, sessions, selections or cwd; rerunning is byte-stable', () => {
     const f = fixture(), work = f.manager.createProject('Work'), chat = f.manager.createChat({ requestId: 'legacy-chat-001' });

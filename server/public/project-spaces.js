@@ -22,8 +22,8 @@ window.createProjectSpaces = function (engine, room, chat) {
     const d = document.createElement('dialog'); d.className = 'cr-dialog rc-space-dialog';
     const label = 'space-dialog-' + crypto.randomUUID(); d.setAttribute('aria-labelledby', label);
     d.innerHTML = `<header><h2 id="${label}">${esc(title)}</h2><button class="cr-icon" type="button" aria-label="Close" title="Close">${icon('x')}</button></header>${body}`;
-    d.querySelector('header button').onclick = () => d.close();
-    d.addEventListener('click', e => { if (e.target === d) { const r = d.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) d.close(); } });
+    d.querySelector('header button').onclick = () => { if(!d.dataset.busy)d.close(); };
+    d.addEventListener('click', e => { if (e.target === d) { const r = d.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) { if(!d.dataset.busy)d.close(); } } });
     d.onclose = () => d.remove(); document.body.append(d); d.showModal(); return d;
   }
   function mount() {
@@ -213,7 +213,7 @@ window.createProjectSpaces = function (engine, room, chat) {
     host.querySelector('[data-cost-retry]')?.addEventListener('click',()=>updateOverviewCost(id,true));host.querySelector('[data-cost-details]')?.addEventListener('click',()=>room.showCosts(id));
   }
   function renderConversations(p, mode) {
-    $('rcProjectBody').innerHTML = `<div class="rc-space-toolbar"><label class="cr-search">${icon('search')}<input id="rcSpaceConversationSearch" type="search" placeholder="Search ${mode}" aria-label="Search ${mode}"></label>${mode==='work'?'<button class="cr-secondary" id="rcSpaceAddWork">Add workspace</button>':''}<button class="cr-primary" id="rcSpaceNewConversation" ${p.archivedAt?'disabled':''}>New ${mode}</button></div>${mode==='work'&&!p.workspaceConfigured?'<div class="cr-empty"><h2>Start your first Work conversation</h2><p>New Work can create the folder and Git repository for you.</p></div>':''}<div class="rc-space-conversations" id="rcSpaceConversations"></div><div id="rcSpaceReferences"></div>`;
+    $('rcProjectBody').innerHTML = `<div class="rc-space-toolbar"><label class="cr-search">${icon('search')}<input id="rcSpaceConversationSearch" type="search" placeholder="Search ${mode}" aria-label="Search ${mode}"></label>${mode==='work'?`<button class="cr-secondary" id="rcSpaceAddWork" ${p.archivedAt?'disabled':''}>Add workspace</button>`:''}<button class="cr-primary" id="rcSpaceNewConversation" ${p.archivedAt?'disabled':''}>New ${mode}</button></div>${mode==='work'&&!p.workspaceConfigured?'<div class="cr-empty"><h2>Start your first Work conversation</h2><p>New Work can create the folder and Git repository for you.</p></div>':''}<div class="rc-space-conversations" id="rcSpaceConversations"></div><div id="rcSpaceReferences"></div>`;
     const row = (execution,c,included=true) => `<div class="rc-space-member ${included?'':'rc-space-exception'}">${link(conversationPath(execution,c.sessionId),`${icon(mode==='chat'?'chat':'terminal')}<span><strong>${esc(c.title)}</strong><small>${esc(c.provider||execution.provider||'claude')}${execution.runningSessionIds.includes(c.sessionId)?' · Running':execution.backgroundSessionIds.includes(c.sessionId)?' · Background':''}${!included?' · Uses Project '+esc(scopeName(c.spaceId)):''}</small></span>${icon('right')}`,'rc-space-conversation')}<button class="cr-icon" data-membership-project="${esc(execution.id)}" data-membership-session="${esc(c.sessionId)}" aria-label="Change Project for ${esc(c.title)}">${icon('move')}</button></div>`;
     const render = () => {
       const q=$('rcSpaceConversationSearch').value.toLowerCase();
@@ -273,10 +273,26 @@ window.createProjectSpaces = function (engine, room, chat) {
     chooser.querySelector('[data-existing]').onclick=()=>{chooser.close();addExistingWorkProject(p);};
   }
   function createWorkspace(p){
-    const slug=name=>name.toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'new-work';
+    const slug=name=>name.toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^[^a-z0-9]+|-+$/g,'').slice(0,80)||'new-work';
     const d=dialog('New Work workspace',`<form class="workspace-form"><label>Workspace name<input name="name" required maxlength="300" value="${esc(p.name)}"></label><label>Folder name<input name="folder" required maxlength="80" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value="${esc(slug(p.name))}"></label><p>RC creates this folder inside the server workspace, initializes Git on main, and opens a new Work conversation. No remote repository is created.</p>${controlsMarkup}<p role="alert"></p><button class="cr-primary">Create workspace and open Work</button></form>`),form=d.querySelector('form'),requestId=crypto.randomUUID();
     controls(form,p.defaults?.work||{});let folderEdited=false;form.elements.folder.oninput=()=>{folderEdited=true;};form.elements.name.oninput=()=>{if(!folderEdited)form.elements.folder.value=slug(form.elements.name.value);};
-    form.onsubmit=async event=>{event.preventDefault();const f=form.elements,button=form.querySelector('.cr-primary');button.disabled=true;try{const result=await request(base(p.id)+'/workspaces',{requestId,name:f.name.value,folder:f.folder.value,provider:f.provider.value,account:f.account.value,model:f.model.value,effort:f.effort.value});await engine.reloadProjects();await load();d.close();await navigate('/work/'+encodeURIComponent(result.projectId)+'/'+encodeURIComponent(result.sessionId));}catch(error){form.querySelector('[role=alert]').textContent=error.message;}finally{button.disabled=false;}};
+    let pending=false,created;
+    d.addEventListener('cancel',event=>{if(pending)event.preventDefault();});
+    form.onsubmit=async event=>{
+      event.preventDefault();if(pending)return;
+      const f=form.elements,button=form.querySelector('.cr-primary');
+      const payload={requestId,name:f.name.value.trim(),folder:f.folder.value,provider:f.provider.value,account:f.account.value,model:f.model.value,effort:f.effort.value};
+      if(!payload.name){form.querySelector('[role=alert]').textContent='Enter a workspace name.';return;}
+      const inputs=[...form.querySelectorAll('input,select')];
+      pending=true;d.dataset.busy='true';form.setAttribute('aria-busy','true');d.querySelector('header button').disabled=true;button.disabled=true;inputs.forEach(input=>input.disabled=true);
+      button.textContent=created?'Opening Work…':'Creating workspace…';form.querySelector('[role=alert]').textContent='';
+      try{
+        created=created||await request(base(p.id)+'/workspaces',payload);
+        await engine.reloadProjects();await load();
+        await navigate('/work/'+encodeURIComponent(created.projectId)+'/'+encodeURIComponent(created.sessionId));d.close();
+      }catch(error){form.querySelector('[role=alert]').textContent=(created?'Workspace created. Retry to open it. ':'')+error.message;}
+      finally{pending=false;delete d.dataset.busy;form.removeAttribute('aria-busy');d.querySelector('header button').disabled=false;button.disabled=false;inputs.forEach(input=>input.disabled=!!created);button.textContent=created?'Open created Work':'Create workspace and open Work';}
+    };
   }
   function addExistingWorkProject(p) {
     const d=dialog('Add Work project',`<form class="workspace-form">${workChoices('')}<p>Select an existing repository, or configure a new Work project below.</p><button type="button" class="cr-secondary" data-existing>Review association</button><hr><label>New Work project name<input name="name" maxlength="300"></label><label>Workspace directory<input name="cwd" placeholder="Full directory under the workspace root"></label><p>The repository and provider sessions stay in this directory.</p><p role="alert"></p><button class="cr-primary">Create Work project and review</button></form>`),form=d.querySelector('form');
