@@ -82,6 +82,8 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     if(mounted)return;mounted=true;document.body.classList.add('rc-workspace-ready');
     const nav=$('crProjectNav'),primary=nav.querySelector('.cr-primary-nav');
     nav.insertAdjacentHTML('afterbegin',link('/home','<b>x0</b><span>Remote Control</span>','workspace-brand')+'<button id="workspaceSearch" class="workspace-search">'+icon('search')+' Search anything <kbd>⌘ K</kbd></button>');
+    nav.insertAdjacentHTML('afterbegin','<button id="workspaceNavClose" class="cr-icon" aria-label="Close workspace navigation">'+icon('x')+'</button>');
+    $('workspaceNavClose').onclick=()=>{closeDrawer();$('crProjects').focus();};
     $('workspaceSearch').onclick=()=>$('searchChatsBtn').click();
     const destinations=[['crHomeTab','/home','Home','home'],['crSpacesTab','/projects','All Projects','folder'],['workspaceActivity','/activity','Activity','activity'],['crAccountsTab','/accounts','Accounts & tools','user'],['crMemoryTab','/memory','Workspace memory','snippet'],['sidebarSettings','/settings','Settings','gear']];
     const bottom=document.createElement('nav');bottom.className='cr-primary-nav workspace-global-nav';bottom.setAttribute('aria-label','Workspace tools');nav.append(bottom);

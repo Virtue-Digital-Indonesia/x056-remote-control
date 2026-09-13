@@ -149,3 +149,6 @@ body.rc-workspace-ready :is(a,button):focus-visible{outline:2px solid var(--acce
 
 /* The brief is edited in place on the Overview. */
 #rcBriefEditor{display:grid;gap:10px;margin:6px 0 10px}#rcBriefEditor textarea{width:100%;box-sizing:border-box;border:1px solid var(--border-strong);border-radius:9px;padding:10px 12px;font:inherit;font-size:12px;line-height:1.6;background:var(--bg);color:var(--text);resize:vertical}#rcBriefEditor footer{display:flex;justify-content:flex-end;gap:8px}#rcBriefEditor [role=alert]{color:var(--err);font-size:11px;margin:0}#rcBriefEditor [role=alert]:empty{display:none}#rcOverviewBrief{white-space:pre-wrap}
+
+#workspaceNavClose{display:none}
+@media(max-width:850px){#workspaceNavClose{display:inline-flex;position:absolute;right:8px;top:10px;width:40px;height:40px;z-index:1}.workspace-brand{padding-right:40px}}

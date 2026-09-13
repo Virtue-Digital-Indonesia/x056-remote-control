@@ -214,7 +214,8 @@ window.createControlRoom = function (engine) {
   $('stageAdd').onclick=openStagePicker;
   $('stagePrevious').onclick=()=>{stagePage=Math.max(0,stagePage-1);renderStage();};
   $('stageNext').onclick=()=>{stagePage++;renderStage();};
-  window.addEventListener('resize',()=>{renderStage();if(innerWidth<=850){stageExpanded=false;stageOpen(false);}});
+  let stageViewportWidth=innerWidth;
+  window.addEventListener('resize',()=>{if(innerWidth===stageViewportWidth)return;stageViewportWidth=innerWidth;renderStage();if(innerWidth<=850){stageExpanded=false;stageOpen(false);}});
   window.addEventListener('storage',e=>{
     if(e.key==='x056_stage_hidden'){setStageHidden(e.newValue==='true',false);return;}
     if(e.key==='x056_stage_mode'){stageMode=['recent','smart'].includes(e.newValue)?e.newValue:'pinned';document.body.dataset.stageMode=stageMode;stagePage=0;renderStage();return;}
@@ -421,14 +422,15 @@ window.createControlRoom = function (engine) {
   function stateDot(status) { return `<i class="cr-state-dot" data-chat-state="${esc(status)}" aria-hidden="true"></i>`; }
   function projectNav(open) {
     const narrow=innerWidth<=850;
-    if ($('rcProjectPage')) $('rcProjectPage').inert = open && narrow;
-    pageFor(section).inert=open&&narrow;
+    document.querySelectorAll('#crWorkspace>.cr-page').forEach(page=>page.inert=open&&narrow||document.body.dataset.chatMode==='page');
+    $('conversationSurface').inert=open&&narrow;
     $('crProjectNav').inert=!open&&narrow;
     $('crProjects').setAttribute('aria-expanded',String(open||!narrow));
     shell.classList.toggle('projects-open',open);projectVeil.hidden=!open||!narrow;
     if(open) $('crProjectSearch').focus();
   }
-  window.addEventListener('resize',()=>projectNav(false));
+  let projectNavWidth=innerWidth;
+  window.addEventListener('resize',()=>{if(innerWidth===projectNavWidth)return;projectNavWidth=innerWidth;projectNav(false);});
   function selectProjectScope(id) {
     if(section!=='board') showSection('board');
     selectedProject=id;recentLimit=10;try{localStorage.setItem('x056_project_scope',id);}catch{}
@@ -473,7 +475,7 @@ window.createControlRoom = function (engine) {
     const workspaceView=window.rcWorkspace?.ready() ? location.pathname : '',globalView=['/','/home','/activity'].includes(workspaceView);
     const homeView=workspaceView==='/'||workspaceView==='/home';
     if(homeView&&boardFilter!=='all'){boardFilter='all';shell.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('selected',button.dataset.filter==='all'));}
-    const scope=all.filter(x=>(globalView||x.p.kind!=='chat')&&(workspaceView!=='/work/unassigned'||!x.c.spaceId)&&(boardFilter==='archived'?conversationMeta[x.k]?.archived:!conversationMeta[x.k]?.archived)&&(showDismissedProjects||!dismissedProjects.includes(x.p.id))&&(!selectedProject||x.p.id===selectedProject)),project=state.projects.find(p=>p.id===selectedProject);
+    const scope=all.filter(x=>(globalView||x.p.kind!=='chat')&&(workspaceView!=='/work/unassigned'||!x.c.spaceId)&&(boardFilter==='archived'?conversationMeta[x.k]?.archived:!conversationMeta[x.k]?.archived)&&(showDismissedProjects||!dismissedProjects.includes(x.p.id)||globalView&&['running','background','question'].includes(x.status))&&(globalView||!selectedProject||x.p.id===selectedProject)),project=globalView?undefined:state.projects.find(p=>p.id===selectedProject);
     $('crScopeActions').hidden=!project;
     $('crScopeTitle').textContent=project?.name||'All projects';
     $('crScopeSubtitle').textContent=scope.length+' conversations'+(project?'':' across '+state.projects.filter(p=>p.kind!=='chat'&&(showDismissedProjects||!dismissedProjects.includes(p.id))).length+' projects');
@@ -496,7 +498,7 @@ window.createControlRoom = function (engine) {
     const recent=boundedRecents?recentCandidates.filter(x=>x.recentActivity>=cutoff).slice(0,recentPreferences.max):recentCandidates;
     const olderCount=boundedRecents?recentCandidates.length-recent.length:0;
     const dismissedCount=scope.filter(x=>['finished','idle'].includes(x.status)&&recentDismissed.includes(stageKey(x.p.id,x.c.sessionId))).length;
-    const groups=homeView?[['Unread',unread],['Drafts',drafts],['Recent conversations',recent.slice(0,recentLimit)]]:[['Unread',unread],['Needs attention',attention],['In progress',active],['Drafts',drafts],['Recent conversations',recent.slice(0,recentLimit)]];
+    const groups=[['Unread',unread],['Needs attention',attention],['In progress',active],['Drafts',drafts],['Recent conversations',recent.slice(0,recentLimit)]];
     bulkCandidates=groups.flatMap(([,rows])=>rows);renderBulk();
     let html=groups.filter(([,rows])=>rows.length).map(([title,rows])=>`<section class="cr-conversation-group"><header><h2>${title}</h2><span>${title==='Recent conversations'?recent.length:rows.length}</span></header>${rows.map(conversationRow).join('')}</section>`).join('');
     if(!html)html=`<div class="cr-empty">${query?'No conversations match your search.':boardFilter==='question'?'No questions need your input.':boardFilter==='draft'?'No unsent drafts.':'No conversations in this view.'}</div>`;
