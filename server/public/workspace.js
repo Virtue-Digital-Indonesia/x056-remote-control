@@ -81,7 +81,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   function mount() {
     if(mounted)return;mounted=true;document.body.classList.add('rc-workspace-ready');
     const nav=$('crProjectNav'),primary=nav.querySelector('.cr-primary-nav');
-    nav.insertAdjacentHTML('afterbegin',link('/home','<b>x0</b><span>Remote Control</span>','workspace-brand')+'<button id="workspaceSearch" class="workspace-search">'+icon('search')+' Search anything <kbd>⌘ K</kbd></button>');
+    nav.insertAdjacentHTML('afterbegin',link('/home','<svg class="workspace-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="9" fill="currentColor"/><path d="m9 10 6 6-6 6m9 0h6" fill="none" stroke="var(--bg)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Remote Control</span>','workspace-brand')+'<button id="workspaceSearch" class="workspace-search">'+icon('search')+' Search anything <kbd>⌘ K</kbd></button>');
     nav.insertAdjacentHTML('afterbegin','<button id="workspaceNavClose" class="cr-icon" aria-label="Close workspace navigation">'+icon('x')+'</button>');
     $('workspaceNavClose').onclick=()=>{closeDrawer();$('crProjects').focus();};
     $('workspaceSearch').onclick=()=>$('searchChatsBtn').click();
@@ -92,7 +92,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     // repository a second time in the Project sidebar.
     for(const id of ['crBoardTab','crChatTab','crManageProjects','crAutomationsTab','crArtifactsTab','crPlannerTab','crSettings'])$(id).hidden=true;
     nav.querySelector('header span').textContent='PROJECTS';
-    $('crProjects').setAttribute('aria-label','Open workspace navigation');$('crProjects').setAttribute('aria-controls','crProjectNav');
+    $('crProjects').innerHTML=icon('folder')+'<span>Projects</span>';$('crProjects').setAttribute('aria-label','Choose Project');$('crProjects').setAttribute('aria-controls','crProjectNav');
     $('crProjects').addEventListener('click',renderNav);$('crProjectVeil').addEventListener('click',renderNav);
     $('crHome').hidden=true;
     $('crWorkspace').insertAdjacentHTML('beforeend','<section id="workspaceConnections" class="cr-page" hidden></section><section id="workspacePreferences" class="cr-page" hidden></section>');

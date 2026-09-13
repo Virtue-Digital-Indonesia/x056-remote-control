@@ -61,7 +61,8 @@ window.createControlRoom = function (engine) {
   document.body.dataset.conversationLabelOrder = conversationLabelOrder;
   document.body.dataset.conversationLabelTemplate = 'dynamic';
   function conversationLabels(project, conversation) {
-    const projectName = project?.name || 'Project', conversationName = conversation?.title || 'Conversation';
+    const provider=({codex:'Codex',claude:'Claude'})[conversation?.provider||project?.provider]||'Provider unknown';
+    const projectName = (project?.name || 'Project')+' · '+provider, conversationName = conversation?.title || 'Conversation';
     return conversationLabelOrder === 'project' ? [projectName, conversationName] : [conversationName, projectName];
   }
   function conversationLabelText(project, conversation) { return conversationLabels(project, conversation).join(' · '); }
@@ -95,11 +96,12 @@ window.createControlRoom = function (engine) {
   document.body.append(stage);
   let stagePins=[],stageRecent=[],recentDismissed=[],stageDismissed=[],stageMode='pinned',showDismissedRecents=false,stageSignature='',stageCloseTimer,stageExpanded=false,stagePage=0,stageMotion=0,stageAnimations=[];
   try{const saved=JSON.parse(localStorage.getItem('x056_stage_pins')||'[]');if(Array.isArray(saved))stagePins=[...new Set(saved.filter(x=>typeof x==='string'))];}catch{}
-  try{stageMode=['recent','smart'].includes(localStorage.getItem('x056_stage_mode'))?localStorage.getItem('x056_stage_mode'):'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v],['x056_stage_dismissed',v=>stageDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
+  try{stageMode=localStorage.getItem('x056_stage_mode')===null?'recent':['recent','smart'].includes(localStorage.getItem('x056_stage_mode'))?localStorage.getItem('x056_stage_mode'):'pinned';for(const [key,set] of [['x056_stage_recent',v=>stageRecent=v],['x056_recent_dismissed',v=>recentDismissed=v],['x056_stage_dismissed',v=>stageDismissed=v]]){const value=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(value))set(value.filter(x=>typeof x==='string'));}}catch{}
   document.body.dataset.stageMode=stageMode;
   let stageHidden=false;
   try{stageHidden=localStorage.getItem('x056_stage_hidden')==='true';}catch{}
   document.body.dataset.stageHidden=String(stageHidden);
+  const stageRestore=document.createElement('button');stageRestore.id='stageRestore';stageRestore.className='cr-secondary';stageRestore.innerHTML=ic('chat')+'<span>Conversations</span>';stageRestore.onclick=()=>setStageHidden(false);document.body.append(stageRestore);
   stage.insertAdjacentHTML('afterbegin','<button id="stageHide" class="cr-icon" aria-label="Hide conversation switcher" title="Hide switcher">'+ic('x')+'</button>');
   function setStageHidden(hidden,save=true){
     stageHidden=hidden;document.body.dataset.stageHidden=String(hidden);stageExpanded=false;stageOpen(false);
@@ -177,7 +179,7 @@ window.createControlRoom = function (engine) {
     if(value){shelf.hidden=false;shelf.inert=false;renderStage();}else shelf.inert=true;
     stage.dataset.expanded=String(value);$('stageToggle').setAttribute('aria-expanded',String(value));updateStageToggle();
     const finish=()=>{if(generation===stageMotion&&!value)shelf.hidden=true;};
-    if(matchMedia('(prefers-reduced-motion: reduce)').matches){finish();return;}
+    if(matchMedia('(prefers-reduced-motion: reduce)').matches||matchMedia('(hover: none)').matches){finish();return;}
     const origin=$('stageToggle').getBoundingClientRect(),targets=[...shelf.querySelectorAll('.stage-item,.stage-add,.stage-page')].filter(el=>!el.hidden);
     stageAnimations=targets.map((el,index)=>{
       const rect=el.getBoundingClientRect(),fold={transform:`translate(${origin.x+origin.width/2-rect.x-rect.width/2}px,${origin.y+origin.height/2-rect.y-rect.height/2}px) scale(.85)`,opacity:0};
@@ -195,6 +197,7 @@ window.createControlRoom = function (engine) {
   $('stageToggle').onclick=()=>{
     const candidates=stageCandidates(),byId=new Map(candidates.map(x=>[stageKey(x.p.id,x.c.sessionId),x]));
     if(!candidates.length){openStagePicker();return;}
+    if(matchMedia('(hover: none)').matches){stageExpanded=stage.dataset.expanded!=='true';stageOpen(stageExpanded);return;}
     const now=Date.now(),state=engine.state(),current=stageKey(state.projectId,state.sessionId);
     if(now-stageCycleAt>1500||!stageCycle.length){
       stageCycle=[...new Set([...stageRecent,...byId.keys()])].filter(id=>byId.has(id));
@@ -223,6 +226,8 @@ window.createControlRoom = function (engine) {
     try{const value=JSON.parse(e.newValue||'[]');if(Array.isArray(value)){assign[e.key]([...new Set(value.filter(x=>typeof x==='string'))]);renderStage();refresh();}}catch{}
   });
   function renderStage(){
+    const composer=document.querySelector('.focus-main .composer-wrap');
+    if(innerWidth<=850&&composer&&document.body.dataset.chatMode==='page'){const top=composer.getBoundingClientRect().top;document.body.style.setProperty('--mobile-stage-bottom',Math.max(16,innerHeight-top+12)+'px');}
     const all=cards(),s=engine.state(),byId=new Map(all.map(x=>[stageKey(x.p.id,x.c.sessionId),x]));
     const pinned=stageCandidates(all).sort((a,b)=>compareProjects(a,b)||b.time-a.time||a.k.localeCompare(b.k)),pageSize=Math.max(1,Math.min(7,Math.floor((innerHeight-230)/58)));
     stagePage=Math.min(stagePage,Math.max(0,Math.ceil(pinned.length/pageSize)-1));
@@ -233,7 +238,7 @@ window.createControlRoom = function (engine) {
     const lead=pinned.find(x=>x.k===stageRecent[0])||pinned[0];
     caption.hidden=!lead;
     if(lead){const [primary,secondary]=conversationLabels(lead.p,lead.c);caption.innerHTML=`<strong>${esc(primary)}</strong><small>${esc(secondary)}</small>`;}
-    $('stageToggle').setAttribute('aria-label',pinned.length?(stageMode==='pinned'?'Pinned conversations':stageMode==='smart'?'Smart conversations':'Recent conversations')+' ('+pinned.length+') · Click to switch, hover to browse':'Pin a conversation');
+    $('stageToggle').setAttribute('aria-label',pinned.length?(stageMode==='pinned'?'Pinned conversations':stageMode==='smart'?'Smart conversations':'Recent conversations')+' ('+pinned.length+') · '+(matchMedia('(hover: none)').matches?'Tap to browse':'Click to switch, hover to browse'):'Pin a conversation');
     stage.setAttribute('aria-label',stageMode==='pinned'?'Pinned conversations':stageMode==='smart'?'Smart conversations':'Recent conversations');
     stage.dataset.count=String(pinned.length);stage.dataset.unread=String(pinned.some(x=>x.unread));const visibleIds=new Set(pinned.map(x=>x.k));document.body.dataset.stageCoversRuns=String(stageMode==='recent'||stageMode==='smart'&&all.filter(x=>['running','background'].includes(x.status)).every(x=>visibleIds.has(x.k)));updateStageToggle();
     $('stagePrevious').setAttribute('aria-label','Previous conversations');$('stageNext').setAttribute('aria-label','More conversations');
@@ -642,7 +647,7 @@ window.createControlRoom = function (engine) {
     sendAccounts.querySelector('[data-send-next]').onclick=()=>choose(false);
     const switchButton=sendAccounts.querySelector('[data-switch-turn]');if(switchButton)switchButton.onclick=()=>choose(true);
   }
-  function refresh() { document.dispatchEvent(new CustomEvent('x056:state')); clearTimeout(renderTimer); renderTimer = setTimeout(() => { renderBoard(); if (section === 'accounts') renderAccountRows(); }, 60); }
+  function refresh() { const count=cards().filter(x=>x.unread||x.status==='question').length;$('crNotifications').setAttribute('aria-label','Notifications'+(count?' ('+count+' unread)':''));$('crNotifications').dataset.unread=count?String(count):'';document.dispatchEvent(new CustomEvent('x056:state')); clearTimeout(renderTimer); renderTimer = setTimeout(() => { renderBoard(); if (section === 'accounts') renderAccountRows(); }, 60); }
   document.addEventListener('x056:draft-changed',refresh);
   async function json(url, body) { const res = await engine.api(url, body === undefined ? undefined : { method:'POST', body:JSON.stringify(body) }); const data = await res.json(); if (!res.ok) throw new Error(data.message || 'Request failed'); return data; }
   function event(kind, data) {
@@ -1033,7 +1038,14 @@ window.createControlRoom = function (engine) {
   $('crScopeActions').onclick=e=>projectMenu(e.currentTarget,selectedProject);
   $('projTitle').onclick=()=>engine.renameConversation();
   function themeMenu(anchor){openMenu(anchor,[['system','auto','Follow device theme'],['light','sun','Light'],['dark','moon','Dark']].map(([value,icon,label])=>({label,icon,checked:engine.theme()===value,run:()=>{engine.setTheme(value);syncTheme();}})));}
-  function notificationMenu(anchor){const s=engine.state(),count=Object.keys(s.notifications).length;openMenu(anchor,[{label:'Unread conversations'+(count?' · '+count:''),icon:'bell',run:()=>{if(preferences.open)preferences.close();boardFilter='unread';shell.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('selected',b.dataset.filter==='unread'));showSection('board');}},{label:'Message approvals'+($('mcpApprovalsBadge').textContent?' · '+$('mcpApprovalsBadge').textContent:''),icon:'inbox',run:()=>$('mcpApprovalsBtn').click()},{label:'Browser notifications',icon:'bell',run:()=>$('notifyBtn').click()}]);}
+  function notificationMenu(anchor){
+    const entries=cards().filter(x=>x.unread||x.status==='question').sort((a,b)=>(b.status==='question')-(a.status==='question')||b.time-a.time);
+    const d=document.createElement('dialog');d.className='cr-dialog rc-notification-dialog';d.setAttribute('aria-label','Notifications');
+    d.innerHTML='<header><h2>Notifications</h2><button class="cr-icon" aria-label="Close notifications">'+ic('x')+'</button></header><div class="rc-notification-list">'+(entries.map((x,i)=>'<button class="rc-notification-item" data-notification="'+i+'"><strong>'+esc(x.c.title||'Conversation')+'</strong><small>'+esc(conversationLabels(x.p,x.c)[1])+'</small><span>'+esc(x.status==='question'?'Needs your answer':x.status==='failed'?'Failed':x.status==='parked'?'Paused':x.status==='finished'?'Finished':'New activity')+'</span></button>').join('')||'<p>No unread conversation updates.</p>')+'</div><footer><button class="cr-secondary" data-approvals>Message approvals</button><button class="cr-secondary" data-browser>Browser notifications</button></footer>';
+    d.querySelector('header button').onclick=()=>d.close();d.onclose=()=>{d.remove();anchor?.focus();};
+    d.querySelectorAll('[data-notification]').forEach(b=>b.onclick=()=>{const x=entries[Number(b.dataset.notification)];d.close();openConversation({dataset:{project:x.p.id,session:x.c.sessionId}});});
+    d.querySelector('[data-approvals]').onclick=()=>{d.close();$('mcpApprovalsBtn').click();};d.querySelector('[data-browser]').onclick=()=>$('notifyBtn').click();document.body.append(d);d.showModal();
+  }
   function activityMenu(anchor){openMenu(anchor,[{label:'Usage & subagents',icon:'users',run:()=>$('subagentsBtn').click()},{label:'Workflow runs',icon:'fanout',disabled:$('wfBtn').hidden,run:()=>$('wfBtn').click()},{label:'Message approvals',icon:'inbox',run:()=>$('mcpApprovalsBtn').click()}]);}
   function conversationMenu(anchor){const s=engine.state(),isChat=s.projects.find(p=>p.id===s.projectId)?.kind==='chat',pinned=isStagePinned(s.projectId,s.sessionId);openMenu(anchor,[
     {heading:'Conversation'},

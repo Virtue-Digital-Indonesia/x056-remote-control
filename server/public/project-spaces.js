@@ -170,7 +170,7 @@ window.createProjectSpaces = function (engine, room, chat) {
   }
   function overviewConversation(x){
     const status={running:'Running',background:'Background',question:'Needs input',failed:'Failed',parked:'Paused',finished:'Ready to continue',idle:'Ready to continue'}[x.status]||'Ready to continue';
-    return link(conversationPath(x.p,x.c.sessionId),`${icon(x.p.kind==='chat'?'chat':'terminal')}<span><strong>${esc(x.c.title)}</strong><small>${x.p.kind==='chat'?'Chat':'Work · '+esc(x.p.name)}</small></span><small>${status}</small>`,'workspace-overview-row');
+    return link(conversationPath(x.p,x.c.sessionId),`${icon(x.p.kind==='chat'?'chat':'terminal')}<span><strong>${esc(x.c.title)}</strong><small>${x.p.kind==='chat'?'Chat':'Work · '+esc(x.p.name)} · ${esc(({codex:'Codex',claude:'Claude'})[x.c.provider||x.p.provider]||'Provider unknown')}</small></span><small>${status}</small>`,'workspace-overview-row');
   }
   async function renderOverview(p){
     const host=$('rcProjectBody'),serial=generation,rows=overviewRows(p),resume=rows[0];
