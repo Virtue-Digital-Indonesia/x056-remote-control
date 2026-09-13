@@ -1341,7 +1341,7 @@ export class SessionManager {
         const running = this.runningSessionsForProject(p.id);
         const background = this.backgroundSessionsForProject(p.id);
         const runningAccounts = Object.fromEntries([...this.runs.values()].filter(r => r.projectId === p.id && r.account).map(r => [r.sessionId, r.account!]));
-        const conversations = (p.conversations || []).map(c => ({ ...c, ...(spaceView ? spaceView.resolve(p.id, c.sessionId) : {}) }));
+        const conversations = (p.conversations || []).map(c => ({ ...c, provider: reg.conversationProvider(p.id, c.sessionId), ...(spaceView ? spaceView.resolve(p.id, c.sessionId) : {}) }));
         return { ...p, conversations, spaceId: p.kind === 'chat' ? conversations[0]?.spaceId : undefined, workSpaceId: p.kind !== 'chat' ? spaceView?.defaultForWork(p.id) : undefined,
           running: running.length > 0, runningSessionIds: running, runningAccounts, backgroundSessionIds: background };
       }),

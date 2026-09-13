@@ -61,7 +61,7 @@ window.createControlRoom = function (engine) {
   document.body.dataset.conversationLabelOrder = conversationLabelOrder;
   document.body.dataset.conversationLabelTemplate = 'dynamic';
   function conversationLabels(project, conversation) {
-    const provider=({codex:'Codex',claude:'Claude'})[conversation?.provider||project?.provider]||'Provider unknown';
+    const provider=({codex:'Codex',claude:'Claude'})[conversation?(conversation.provider||'claude'):project?.provider]||'Provider unknown';
     const projectName = (project?.name || 'Project')+' · '+provider, conversationName = conversation?.title || 'Conversation';
     return conversationLabelOrder === 'project' ? [projectName, conversationName] : [conversationName, projectName];
   }

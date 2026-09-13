@@ -23,6 +23,14 @@ function fixture(enabled = true) {
 }
 
 describe('Project spaces contracts and migration', () => {
+  it('reports the execution provider for legacy conversations without changing stored identities', () => {
+    const f=fixture(),p=f.manager.createProject('Mixed providers');
+    const reg=ProjectRegistry.load(f.file);reg.addConversation(p.id,'legacy-claude','Main','claude');reg.addConversation(p.id,'new-codex','New','codex');reg.setProvider(p.id,'codex');
+    const data=JSON.parse(readFileSync(f.file,'utf8'));delete data.projects.find((x:{id:string})=>x.id===p.id).conversations[0].provider;writeFileSync(f.file,JSON.stringify(data));
+    const before=readFileSync(f.file,'utf8'),view=f.manager.listProjects().projects.find(x=>x.id===p.id)!;
+    expect(view.provider).toBe('codex');expect(view.conversations.map(c=>c.provider)).toEqual(['claude','codex']);
+    expect(readFileSync(f.file,'utf8')).toBe(before);
+  });
   it('creates a Git workspace and first Work once, including after restart', () => {
     const f=fixture(),space=f.manager.createProjectSpace({requestId:'new-work-parent',name:'Fresh project'});
     const input={requestId:'new-work-request',name:'Fresh work',folder:'fresh-work',provider:'claude' as const};
