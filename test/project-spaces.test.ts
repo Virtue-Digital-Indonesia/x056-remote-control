@@ -1,5 +1,6 @@
 import { moveChat } from './project-space-fixture.js';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -22,6 +23,41 @@ function fixture(enabled = true) {
 }
 
 describe('Project spaces contracts and migration', () => {
+  it('creates a Git workspace and first Work once, including after restart', () => {
+    const f=fixture(),space=f.manager.createProjectSpace({requestId:'new-work-parent',name:'Fresh project'});
+    const input={requestId:'new-work-request',name:'Fresh work',folder:'fresh-work',provider:'claude' as const};
+    const created=f.manager.createSpaceWorkspace(space.id,input);
+    expect(execFileSync('git',['-C',created.cwd,'symbolic-ref','HEAD'],{encoding:'utf8'}).trim()).toBe('refs/heads/main');
+    expect(f.manager.projectContext().resolve(created.projectId,created.sessionId).spaceId).toBe(space.id);
+    expect(f.manager.createSpaceWorkspace(space.id,input)).toEqual(created);
+    const restarted=new SessionManager(f.opts);managers.push(restarted);restarted.setProjectAutomationPauser(()=>{});
+    expect(restarted.createSpaceWorkspace(space.id,input)).toEqual(created);
+    expect(restarted.executionProject(created.projectId).conversations).toHaveLength(1);
+    expect(f.calls).toHaveLength(0);
+    expect(()=>restarted.createSpaceWorkspace(space.id,{...input,folder:'different'})).toThrow('changed');
+  });
+  it('rejects traversal, existing folders and symlinks without touching their contents', () => {
+    const f=fixture(),space=f.manager.createProjectSpace({requestId:'safe-work-parent',name:'Project'});
+    mkdirSync(join(f.workspaceRoot,'existing'));writeFileSync(join(f.workspaceRoot,'existing','keep'),'preserved');symlinkSync(f.root,join(f.workspaceRoot,'linked'));
+    for(const folder of ['../escape','/tmp/escape','nested/path','.git','existing','linked'])expect(()=>f.manager.createSpaceWorkspace(space.id,{requestId:'safe-'+folder.replace(/[^a-z]/g,'x'),name:'New',folder})).toThrow();
+    expect(readFileSync(join(f.workspaceRoot,'existing','keep'),'utf8')).toBe('preserved');
+  });
+  it('resumes a partial creation without a duplicate repository or conversation', () => {
+    const f=fixture(),space=f.manager.createProjectSpace({requestId:'resume-work-parent',name:'Project'});
+    const input={requestId:'resume-work-create',name:'Recoverable',folder:'recoverable',provider:'claude' as const};
+    const prepare=f.manager.prepareProjectWork.bind(f.manager);
+    f.manager.prepareProjectWork=()=>{throw new Error('Interrupted');};
+    expect(()=>f.manager.createSpaceWorkspace(space.id,input)).toThrow('Interrupted');
+    f.manager.prepareProjectWork=prepare;
+    const result=f.manager.createSpaceWorkspace(space.id,input);
+    expect(ProjectRegistry.load(f.file).list().filter(p=>p.cwd===result.cwd)).toHaveLength(1);
+    expect(f.manager.executionProject(result.projectId).conversations).toHaveLength(1);
+  });
+  it('rejects invalid provider preferences before creating a folder', () => {
+    const f=fixture(),space=f.manager.createProjectSpace({requestId:'invalid-work-parent',name:'Project'});
+    expect(()=>f.manager.createSpaceWorkspace(space.id,{requestId:'invalid-work-create',name:'Invalid',folder:'invalid',provider:'claude',model:'gpt-6-astra'})).toThrow();
+    expect(existsSync(join(f.workspaceRoot,'invalid'))).toBe(false);
+  });
   it('migrates legacy records without changing identities, sessions, selections or cwd; rerunning is byte-stable', () => {
     const f = fixture(), work = f.manager.createProject('Work'), chat = f.manager.createChat({ requestId: 'legacy-chat-001' });
     let reg = ProjectRegistry.load(f.file);

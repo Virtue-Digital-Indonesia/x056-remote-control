@@ -48,6 +48,9 @@ export class ProjectSpacesController {
   @Post(':id/work') work(@Param('id') id: string, @Body() body: Parameters<SessionManager['prepareSpaceWork']>[1]) {
     return this.write(() => this.manager.prepareSpaceWork(id, body));
   }
+  @Post(':id/workspaces') createWorkspace(@Param('id') id: string, @Body() body: Parameters<SessionManager['createSpaceWorkspace']>[1]) {
+    return this.write(() => this.manager.createSpaceWorkspace(id, body));
+  }
   @Get(':id/capabilities') async capabilities(@Param('id') id: string, @Query('sessionId') sid: string, @Query('refresh') refresh?: string) {
     this.enabled();
     const context = this.manager.historyContext(id, sid), project = this.manager.executionProject(id), service = this.manager.chatCapabilities();
