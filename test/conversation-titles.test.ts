@@ -197,6 +197,32 @@ describe('conversation naming', () => {
     ).toEqual(['Original a', 'A later manual edit']);
     expect(f.projects().conversations(f.p.id)[0].titleOrigin).toBeUndefined();
   });
+  it('builds suggestions from the latest messages in chronological order', async () => {
+    const f = fixture(),
+      target = f.add('latest');
+    f.options.history = () => [
+      { role: 'user' as const, text: 'Design the obsolete billing screen.' },
+      { role: 'assistant' as const, text: 'The obsolete billing draft is ready.' },
+      { role: 'user' as const, text: 'Replace its old payment table.' },
+      { role: 'assistant' as const, text: 'I am switching to account onboarding.' },
+      { role: 'user' as const, text: 'Fix adding Claude accounts.' },
+      { role: 'assistant' as const, text: 'The directory collision is identified.' },
+      { role: 'user' as const, text: 'Also sort accounts by provider.' },
+      { role: 'assistant' as const, text: 'The account list is now grouped.' },
+    ];
+    f.worker.suggest([target]);
+    f.advance();
+    await f.worker.tick();
+    const context = JSON.parse(f.call.mock.calls[0][0].prompt);
+    expect(context.messages.map((message: { text: string }) => message.text)).toEqual([
+      'I am switching to account onboarding.',
+      'Fix adding Claude accounts.',
+      'The directory collision is identified.',
+      'Also sort accounts by provider.',
+      'The account list is now grouped.',
+    ]);
+    expect(f.call.mock.calls[0][0].prompt).not.toContain('obsolete billing');
+  });
   it('rejects a stale preview even if the title text was changed and changed back', async () => {
     const f = fixture(),
       t = f.add('chat'),

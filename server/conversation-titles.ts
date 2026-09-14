@@ -205,10 +205,10 @@ export class ConversationTitles {
         text: cleanMemorySource(x.text).slice(0, x.role === 'user' ? 2200 : 1500),
       }))
       .filter((x) => x.text);
-    const selected =
-      mode === 'automatic'
-        ? excerpts.slice(0, 2)
-        : [...excerpts.slice(0, 3), ...excerpts.slice(3).slice(-2)];
+    // Titles should describe what the conversation is about now. Keep the
+    // selected tail in chronological order so the model can follow the newest
+    // request and response without anchoring on an obsolete opening topic.
+    const selected = excerpts.slice(mode === 'automatic' ? -2 : -5);
     const sufficient = selected.some((x) => x.role === 'user' && meaningful(x.text));
     const job: TitleJob = {
       ...target,
