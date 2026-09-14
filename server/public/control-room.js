@@ -1680,7 +1680,7 @@ window.createControlRoom = function (engine) {
           editMemory(e, () => {
             load();
             loadMemory();
-          });
+          }, e.status === 'proposed');
         body.querySelector('[data-more]').onclick = (event) =>
           openMenu(event.currentTarget, [
             ...(window.rcProjectSpaces?.enabled()&&engine.state().projects.find(p=>p.id===e.projectId)?.parentProjectId?[{label:'Share with Project',icon:'share',run:()=>{const parentId=engine.state().projects.find(p=>p.id===e.projectId).parentProjectId;editMemory({...e,id:undefined,revision:undefined,projectId:parentId,sessionId:undefined,scope:'project',sources:[...e.sources,{label:e.title+' v'+e.revision,projectId:e.projectId,ref:'memory:'+e.id+':'+e.revision}]},loadMemory);}}]:[]),
@@ -1763,14 +1763,14 @@ window.createControlRoom = function (engine) {
     load();
   }
   document.addEventListener('x056:open-memory',event=>{if(event.detail?.id)showMemoryEntry(event.detail.id);});
-  function editMemory(entry = {}, after = loadMemory) {
+  function editMemory(entry = {}, after = loadMemory, reviewing = false) {
     const pid =
         entry.spaceId || entry.projectId ||
         $('memoryProject').value ||
         engine.state().projectId ||
         engine.state().projects[0]?.id ||
         '',
-      status = entry.id ? (entry.status === 'confirmed' ? 'confirmed' : 'proposed') : (entry.status || 'confirmed'),
+      status = reviewing ? 'confirmed' : entry.id ? (entry.status === 'confirmed' ? 'confirmed' : 'proposed') : (entry.status || 'confirmed'),
       applies = entry.scope==='conversation'?'conversation':entry.scope==='global'?'global':entry.scope==='shared'?'shared':'here';
     const d = workspaceDialog(
       entry.id ? 'Edit memory' : 'New memory',
@@ -1784,6 +1784,12 @@ window.createControlRoom = function (engine) {
     );
     d.classList.add('memory-editor-dialog');
     const f = d.querySelector('form');
+    if (reviewing) {
+      d.querySelector('h2').textContent = 'Review memory';
+      const updateLabel = () => { f.querySelector('button.cr-primary').textContent = f.elements.status.value === 'confirmed' ? 'Confirm memory' : 'Save for later review'; };
+      f.elements.status.onchange = updateLabel;
+      updateLabel();
+    }
     // The three "Applies to" choices map onto the store's scopes; sharing with
     // specific projects is the one case that needs its own list.
     const scopeOf=()=>{const isSpace=f.elements.projectId.value.startsWith('space_'),a=f.elements.applies.value;if(f.elements.shareToggle.checked)return 'shared';if(a==='conversation')return 'conversation';if(a==='global')return 'global';return isSpace?'space':'project';};

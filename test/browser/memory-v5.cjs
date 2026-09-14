@@ -44,7 +44,8 @@ const base = process.argv[2] || 'http://127.0.0.1:8767';
   await page.locator('[data-memory-tab=inbox]').click();
   await page.locator('[data-memory-open="' + candidate.id + '"]').click();
   await page.locator('[data-edit]').click();
-  await page.locator('.memory-editor [name=status]').selectOption('confirmed');
+  assert.equal(await page.locator('.memory-editor [name=status]').inputValue(), 'confirmed');
+  assert.equal(await page.locator('.memory-editor button.cr-primary').textContent(), 'Confirm memory');
   await page
     .locator('.memory-editor [name=content]')
     .fill('Use consistent spacing and preserve compact conversation controls.');
@@ -52,6 +53,14 @@ const base = process.argv[2] || 'http://127.0.0.1:8767';
   await page.waitForFunction(() => !document.querySelector('.memory-editor'));
   await page.locator('.memory-detail').filter({ hasText: 'Version history · 2' }).waitFor();
   await page.keyboard.press('Escape');
+  await page.locator('[data-memory-open="' + candidate.id + '"]').waitFor({ state: 'detached' });
+  assert.equal((await api('memory/entry?id=' + candidate.id)).entry.status, 'confirmed');
+  if (process.env.X056_TEST_MEMORY_REVIEW_ONLY === '1') {
+    assert.deepEqual(errors, []);
+    await browser.close();
+    console.log('PASS: review defaults to confirmation, persists, and leaves the inbox');
+    return;
+  }
   await page.locator('[data-memory-tab=knowledge]').click();
   await page.locator('#memorySearch').fill('compact');
   await page.waitForFunction(
