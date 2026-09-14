@@ -826,9 +826,13 @@ window.createControlRoom = function (engine) {
     return `<div class="cr-quota"><div><span class="quota-label">${esc(label)}</span><strong>${p}%</strong></div><div class="cr-track ${p>=90?'high':''}" role="meter" aria-label="${esc(label)} used" aria-valuenow="${p}" aria-valuemin="0" aria-valuemax="100"><i style="width:${p}%"></i></div><small>${date&&!isNaN(date)?'Resets '+esc(date.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})):'Reset time not reported'}</small></div>`;
   }
   function quota(a) {return quotaWindows(a).all.map(w=>quotaCell(a,w,w.label)).join('')+quotaFreshness(a);}
+  function accountsByProvider(accounts) {
+    const providerOrder={codex:0,claude:1};
+    return [...accounts].sort((a,b)=>(providerOrder[a.provider]??99)-(providerOrder[b.provider]??99)||accountName(a).localeCompare(accountName(b),undefined,{numeric:true,sensitivity:'base'})||a.name.localeCompare(b.name));
+  }
   function renderAccountRows() {
     if(!$('accountRows'))return;
-    const list=selectedAccounts();$('accountCount').textContent=list.length;
+    const list=accountsByProvider(selectedAccounts());$('accountCount').textContent=list.length;
     const html=`<div class="cr-account-table"><div class="cr-account-head"><span>Account</span><span>Availability</span><span>5-hour window</span><span>7-day window</span><span>Other limits</span><span class="sr-only">Actions</span></div>${list.map(a=>{
       const w=quotaWindows(a);
       return `<article class="cr-account-row"><div><button class="cr-identity identity-button" data-manage="${esc(a.name)}">${identity(a)}</button>${quotaFreshness(a)}</div><div class="account-availability"><span class="cr-account-state ${available(a)?'ready':a.paused?'paused':'limited'}">${esc(accountStatus(a))}</span>${a.nextUp&&available(a)?'<small class="next-badge">Next message</small>':''}</div>${quotaCell(a,w.five,'5-hour window')}${quotaCell(a,w.seven,'7-day window')}<div class="other-quotas">${w.other.length?quotaCell(a,w.other[0],w.other[0].label)+(w.other.length>1?`<button class="cr-text-button" data-manage="${esc(a.name)}">+${w.other.length-1} more limits</button>`:''):quotaCell(a,null,'Other limits')}</div><button class="cr-icon" data-account-menu="${esc(a.name)}" aria-label="Manage ${esc(accountName(a))}">${ic('more')}</button></article>`;
