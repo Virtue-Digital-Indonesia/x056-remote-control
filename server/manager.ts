@@ -971,8 +971,18 @@ export class SessionManager {
 
   private nextAccountName(): string {
     const reg = this.registry();
-    for (let i = 0; i < 26; i++) { const n = String.fromCharCode(97 + i); if (!reg.has(n)) return n; }
-    return `acct-${randomUUID().slice(0, 8)}`;
+    // A previous interrupted onboarding can leave a fully populated permanent
+    // directory behind before accounts.json is updated. Never overwrite or
+    // merge that directory: reserve names against both durable sources and let
+    // the new login take the next free slot.
+    for (let i = 0; i < 26; i++) {
+      const name = String.fromCharCode(97 + i);
+      if (!reg.has(name) && !existsSync(join(this.accountsDir, name))) return name;
+    }
+    while (true) {
+      const name = `acct-${randomUUID().slice(0, 8)}`;
+      if (!reg.has(name) && !existsSync(join(this.accountsDir, name))) return name;
+    }
   }
 
   /** Register an EXISTING, already-authenticated Codex account by its CODEX_HOME

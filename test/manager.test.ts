@@ -821,6 +821,19 @@ describe('SessionManager account management', () => {
     expect(events.some((e) => e.kind === 'accounts')).toBe(true);
   });
 
+  it('skips an orphaned account directory left by an interrupted onboarding', async () => {
+    const { mgr, sd } = acctFixture('dana@example.com', 'Dana');
+    const orphan = join(sd, 'accounts', 'c');
+    mkdirSync(orphan, { recursive: true });
+    writeFileSync(join(orphan, '.credentials.json'), 'preserve me');
+    const { loginId } = await mgr.startAccountLogin();
+    const res = await mgr.submitAccountLoginCode(loginId, 'THE-CODE');
+    expect(res.name).toBe('d');
+    expect(readFileSync(join(orphan, '.credentials.json'), 'utf8')).toBe('preserve me');
+    expect(existsSync(join(sd, 'accounts', 'd', '.credentials.json'))).toBe(true);
+    expect(mgr.accountsInfo().map((a) => a.name)).toEqual(['a', 'b', 'd']);
+  });
+
   it('refuses to onboard a duplicate account (same email) and cleans up the pending dir', async () => {
     const { mgr } = acctFixture('dupe@example.com', 'Dupe');
     const first = await mgr.startAccountLogin();
@@ -1091,5 +1104,17 @@ describe('Codex onboarding inherits account setup', () => {
     (mgr as unknown as {pendingCodexLogins:Map<string,unknown>}).pendingCodexLogins.set('fixture',{configDir:home,child:{kill(){}},buf:''});
     const result=mgr.codexLoginStatus('fixture');expect(result.done).toBe(true);
     expect(added).toEqual([{name:result.account!.name,configDir:join(state,'accounts',result.account!.name),provider:'codex'}]);
+  });
+  it('does not claim an orphaned permanent directory after device sign-in', () => {
+    const root=mkdtempSync(join(tmpdir(),'x056-codex-orphan-')),state=join(root,'state'),home=join(state,'accounts','codex-pending-test');
+    mkdirSync(home,{recursive:true});mkdirSync(join(state,'accounts','a'),{recursive:true});AccountRegistry.init(join(state,'accounts.json'),[]);
+    writeFileSync(join(state,'accounts','a','keep'),'preserve me');
+    writeFileSync(join(home,'auth.json'),JSON.stringify({tokens:{id_token:'x.'+Buffer.from(JSON.stringify({email:'device@example.test'})).toString('base64url')+'.x'}}));
+    const mgr=new SessionManager({stateDir:state,workspaceRoot:root});
+    (mgr as unknown as {pendingCodexLogins:Map<string,unknown>}).pendingCodexLogins.set('fixture',{configDir:home,child:{kill(){}},buf:''});
+    const result=mgr.codexLoginStatus('fixture');
+    expect(result.account?.name).toBe('b');
+    expect(readFileSync(join(state,'accounts','a','keep'),'utf8')).toBe('preserve me');
+    expect(existsSync(join(state,'accounts','b','auth.json'))).toBe(true);
   });
 });
