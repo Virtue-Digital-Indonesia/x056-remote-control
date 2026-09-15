@@ -58,9 +58,9 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
     },
     notify: (method: string, params: unknown) => out({ method, params }),
     item: (phase: 'started' | 'completed', item: Record<string, unknown>) =>
-      out({ method: `item/${phase}`, params: { threadId: 't', turnId: `turn_${turnSeq}`, item } }),
+      out({ method: `item/${phase}`, params: { threadId: sent('turn/start').at(-1)?.params.threadId ?? 'thr_new', turnId: `turn_${turnSeq}`, item } }),
     complete: (status = 'completed', error?: string) =>
-      out({ method: 'turn/completed', params: { threadId: 't', turn: { id: `turn_${turnSeq}`, status, ...(error ? { error: { message: error } } : {}) } } }),
+      out({ method: 'turn/completed', params: { threadId: sent('turn/start').at(-1)?.params.threadId ?? 'thr_new', turn: { id: `turn_${turnSeq}`, status, ...(error ? { error: { message: error } } : {}) } } }),
   };
 }
 
@@ -82,6 +82,24 @@ const turn = (over: Partial<TurnOptions> = {}): TurnOptions => ({
 const collect = () => { const ev: RawEvent[] = []; return { ev, onEvent: (e: RawEvent) => { ev.push(e); } }; };
 
 describe('codex persistent: handshake', () => {
+  it('isolates child messages, tools, errors and completion from the parent turn', async () => {
+    const { p, spawned } = pool({ threadId: 'parent' });
+    const c = collect(), h = p.startTurn(turn({ onEvent: c.onEvent })), f = spawned[0];
+    const before = c.ev.length;
+    for (const [method, params] of [
+      ['item/completed', { item: { type: 'agentMessage', text: 'child-only answer' } }],
+      ['item/started', { item: { type: 'commandExecution', id: 'child-tool', command: 'secret-child-command' } }],
+      ['turn/started', { turn: { id: 'child-turn' } }],
+      ['error', { error: { message: 'child failure' } }],
+      ['turn/completed', { turn: { id: 'child-turn', status: 'completed' } }],
+    ] as const) f.notify(method, { threadId: 'child', ...params });
+    expect(c.ev).toHaveLength(before);
+    f.item('completed', { type: 'agentMessage', text: 'parent answer' });
+    expect(c.ev.some(e => (e.item as { text?: string })?.text === 'parent answer')).toBe(true);
+    f.complete();
+    expect(await h.done).toMatchObject({ code: 0 });
+    p.shutdown();
+  });
   it('spawns app-server under CODEX_HOME, opens a thread, and only then sends the prompt', async () => {
     const { p, spawned } = pool({ threadId: 'thr_abc' });
     const c = collect();

@@ -258,6 +258,12 @@ export class CodexTransport implements Transport {
     // ---- notifications -----------------------------------------------------
     const method = typeof m.method === 'string' ? m.method : '';
     const p = (m.params ?? {}) as Record<string, unknown>;
+    // app-server multiplexes child threads on the same connection. Only the
+    // owning thread may write into this turn or complete it. Child transcripts
+    // are read separately by the subagent history endpoint.
+    const notificationThread = p.threadId ?? p.thread_id;
+    if (typeof notificationThread === 'string' && x.threadId && notificationThread !== x.threadId)
+      return { events: [], turnEnded: false };
     switch (method) {
       case 'item/started':
         return { events: [{ type: 'item.started', item: mapItem(p.item) }], turnEnded: false };

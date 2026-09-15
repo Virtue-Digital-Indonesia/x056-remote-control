@@ -4516,6 +4516,7 @@
     btn.hidden = subMetas.length === 0 && !subSelf;
     badge.textContent = subMetas.length ? String(subMetas.length) : '';
     var running = subMetas.filter(function (m) { return m.status === 'running'; }).length;
+    badge.dataset.running = running ? String(running) : '';
     btn.title = 'cost' + (subMetas.length ? ' & ' + subMetas.length + ' subagent(s)' + (running ? ', ' + running + ' running' : '') : '')
       + (subSelf && subSelf.cost ? ' · ' + costLabel(subSelf.cost) : '');
     // Chat rows that name a subagent become links once the list can resolve them.
@@ -4858,8 +4859,9 @@
   // count, the list and any open shell all move on their own.
   setInterval(function () {
     var shellOpen = Object.keys(subShells).length > 0;
-    if (!active && !shellOpen && $('subPop').hidden) return;
-    if (active || shellOpen || !$('subPop').hidden) refreshSubagents();
+    var agentsRunning = subMetas.some(function(m){return m.status === 'running';});
+    if (!active && !agentsRunning && !shellOpen && $('subPop').hidden) return;
+    refreshSubagents();
     // Scanning every conversation is driven by ITS OWN modal now — opening the
     // subagent popover should not start 400ms of reading behind it.
     for (var id in subShells) subShells[id]();
