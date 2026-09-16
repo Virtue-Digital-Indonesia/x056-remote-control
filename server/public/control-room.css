@@ -29,6 +29,29 @@ body[data-chat-mode=page] #conversationSurface{inset:0;width:100%;border:0;box-s
 #wfIsland .wf-head .t { font-size:12px; font-weight:550; color:var(--text); }
 #wfSummary { font-size:10px; white-space:nowrap; }
 #wfCloseBtn { width:28px; height:28px; border-radius:50%; }
+#conversationSurface .topbar #chatAgents { display:inline-flex; align-items:center; gap:6px; height:32px; min-height:32px; padding:6px 8px; border:0; border-radius:8px; background:transparent; color:var(--muted); font:inherit; font-size:11px; white-space:nowrap; }
+#conversationSurface .topbar #chatAgents:hover,#conversationSurface .topbar #chatAgents[aria-expanded=true] { background:var(--surface-2); color:var(--text); }
+#chatAgents .ic { width:15px; height:15px; }
+#chatAgents small { font-size:10px; font-variant-numeric:tabular-nums; }
+#chatAgents.has-running>.ic,#chatAgents.has-running>small { color:var(--bgwork); }
+#wfIsland .wf-agent-group { flex:none; padding:0 0 4px; }
+#wfIsland .wf-agent-group+.wf-run { border-top:1px solid var(--border); padding-top:4px; }
+#wfIsland .wf-agent-row { display:flex; align-items:center; gap:10px; width:100%; padding:11px 10px; border:0; border-radius:12px; background:transparent; color:var(--text); text-align:left; font:inherit; }
+#wfIsland .wf-agent-row:hover,#wfIsland .wf-agents-more:hover { background:var(--surface-2); }
+#wfIsland .wf-agent-row:focus-visible,#wfIsland .wf-agents-more:focus-visible,#chatAgents:focus-visible { outline:2px solid var(--link); outline-offset:-2px; }
+.wf-agent-copy { flex:1; min-width:0; }
+.wf-agent-copy strong { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; font-size:12px; line-height:1.5; font-weight:550; }
+.wf-agent-copy small { display:block; margin-top:3px; color:var(--muted); font-size:10.5px; line-height:1.5; }
+.wf-agent-state { display:grid; place-items:center; flex:none; width:18px; height:18px; color:var(--muted); }
+.wf-agent-state .ic { width:15px; height:15px; }
+.wf-agent-state.running { box-sizing:border-box; width:16px; height:16px; margin:1px; border:2px solid var(--border-strong); border-top-color:var(--bgwork); border-radius:50%; animation:spin 1s linear infinite; }
+.wf-agent-state.running .ic { display:none; }
+.wf-agent-state.done { color:var(--ok); }
+.wf-agent-state.failed { color:var(--err); }
+.wf-agent-row>.ic { flex:none; width:13px; height:13px; color:var(--faint); }
+#wfIsland .wf-agents-more { width:100%; padding:10px; border:0; border-radius:8px; background:transparent; color:var(--muted); font:inherit; font-size:11px; text-align:left; }
+@media(max-width:650px) { #chatAgents>span { display:none; } }
+@media(prefers-reduced-motion:reduce) { .wf-agent-state.running { animation:none; } }
 #wfIsland .wf-body { flex:0 1 auto; min-height:0; padding:0 8px 8px; gap:0; overscroll-behavior:contain; }
 #wfIsland .wf-run { flex:none; border:0; border-radius:0; background:transparent; }
 #wfIsland .wf-run+.wf-run { border-top:1px solid var(--border); }

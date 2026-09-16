@@ -1074,9 +1074,9 @@ window.createControlRoom = function (engine) {
     {label:'Remove from panel',icon:'trash',danger:true,disabled:isChat||!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
   const runningLabel=document.createElement('div');runningLabel.id='runningAccountLabel';runningLabel.hidden=true;content.querySelector('.composer').before(runningLabel);
   $('autopilotBtn').insertAdjacentHTML('beforeend','<span>Autopilot</span>');
-  $('chatActivity').insertAdjacentHTML('beforebegin',`<button class="cr-secondary" id="chatAgents" hidden>${ic('users')}<span>Agents</span><small></small></button>`);
-  on('chatAgents',()=>$('subagentsBtn').click());
-  const syncActivity=()=>{const badge=$('subagentsBadge'),count=badge.textContent||'';const agents=$('chatAgents');agents.hidden=!count;agents.querySelector('small').textContent=badge.dataset.running?count+' · '+badge.dataset.running+' running':count;$('chatActivityCount').textContent='';};
+  $('chatActivity').insertAdjacentHTML('beforebegin',`<button id="chatAgents" aria-controls="wfIsland" aria-expanded="false" hidden>${ic('fanout')}<span>Agents</span><small></small></button>`);
+  on('chatAgents',()=>$('wfBtn').click());
+  const syncActivity=()=>{const badge=$('subagentsBadge'),count=badge.textContent||'';const agents=$('chatAgents');agents.hidden=!count;agents.querySelector('small').textContent=count;agents.classList.toggle('has-running',!!badge.dataset.running);agents.title=count+' agent'+(count==='1'?'':'s')+(badge.dataset.running?' · '+badge.dataset.running+' running':'');$('chatActivityCount').textContent='';};
   new MutationObserver(syncActivity).observe($('subagentsBadge'),{attributes:true,childList:true,subtree:true,characterData:true});
   new MutationObserver(syncTheme).observe($('themeBtn'),{childList:true,subtree:true});syncTheme();
 

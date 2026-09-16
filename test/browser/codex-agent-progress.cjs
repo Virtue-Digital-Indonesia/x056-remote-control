@@ -16,13 +16,13 @@ const { chromium } = require('/usr/local/lib/node_modules/playwright');
     await page.goto(process.argv[2]||'http://127.0.0.1:8798');
     await page.locator('.cr-task').filter({hasText:'Build the new homepage'}).click();
     await page.locator('#chatAgents').waitFor();
-    assert.match(await page.locator('#chatAgents').innerText(),/1 · 1 running/);
+    assert.match(await page.locator('#chatAgents').getAttribute('title'),/1 agent · 1 running/);
+    await page.locator('#wfIsland .wf-agent-row').waitFor();
     // Child polling must continue with the parent's turn idle and reader closed.
     const before=polls;
     await page.waitForTimeout(5500);
     assert.ok(polls>before);
-    await page.locator('#chatAgents').click();
-    await page.locator('[data-agent=child]').click();
+    await page.locator('#wfIsland [data-agent=child]').click();
     await page.locator('.agent-reader-scroll').filter({hasText:message}).waitFor();
     message='Latest child progress is visible';
     await page.locator('.agent-reader-scroll').filter({hasText:message}).waitFor({timeout:10000});

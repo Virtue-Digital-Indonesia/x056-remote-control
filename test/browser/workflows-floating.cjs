@@ -9,7 +9,6 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
     const errors=[]; page.on('pageerror', e=>errors.push(e.message));
     await page.addInitScript(() => {
       localStorage.setItem('x056_token','browser-fixture-token-0123456789');
-      localStorage.setItem('x056_display_preferences',JSON.stringify({open:'max',maximize:'modal'}));
     });
     const run = {runId:'audit',name:'cutover-audit-sweep',description:'Verify the cutover and review deployment health.',phases:[{title:'Audit'},{title:'Verify'}],started:12,finished:2,updatedAt:Date.now()};
     const old = {...run,runId:'older',name:'Earlier review',finished:12,updatedAt:Date.now()-3600000};
@@ -45,11 +44,11 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
     await page.locator('.agent-reader').waitFor();
     await page.keyboard.press('Escape'); assert.ok(await island.isVisible());
     await page.keyboard.press('Escape'); assert.ok(await island.isHidden());
-    assert.equal(await page.locator('body').getAttribute('data-chat-mode'),'modal');
+    assert.equal(await page.locator('body').getAttribute('data-chat-mode'),'page');
     async function reopen() {await page.locator('#chatActivity').click();await page.getByRole('menuitem',{name:'Workflow runs'}).click();await island.waitFor();}
     await reopen(); await page.locator('#prompt').click(); assert.ok(await island.isHidden());
     await reopen();
-    await page.locator('#chatMax').click(); await reopen(); await fits();
+    await fits();
     await page.emulateMedia({colorScheme:'light'});
     await page.screenshot({path:'/tmp/workflows-floating-light.png'});
     // A long list scrolls inside the card; the composer stays usable.
