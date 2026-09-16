@@ -2334,6 +2334,11 @@
   function markConvBg(pid, sid) {
     if (pid !== currentProjectId) return;
     var row = projListEl.querySelector('.conv[data-sid="' + sid + '"]');
+    if (row && !isSessionBackground(pid, sid)) {
+      row.classList.remove('bgwork');
+      if (!isSessionRunning(pid, sid)) { row.classList.remove('running'); row.title = ''; }
+      return;
+    }
     if (!row || row.classList.contains('running')) return;
     row.classList.add('running', 'bgwork');
     row.title = 'working in the background (no turn)';
@@ -2519,6 +2524,19 @@
     var mine = !data.projectId || data.projectId === currentProjectId;
     var sid = data.sessionId;
     var mineConvo = mine && (!sid || sid === lastSessionId);
+    if (kind === 'background_state') {
+      var bg = bgSessionIds[pid] = bgSessionIds[pid] || {};
+      if (data.active) bg[sid] = true; else delete bg[sid];
+      var bv = viewOf(pid, sid);
+      bv.label = !data.active ? '' : data.agents ? data.agents + (data.agents === 1 ? ' agent running' : ' agents running') : isSessionRunning(pid, sid) ? (bv.label || 'Working') : 'Working in the background';
+      markConvBg(pid, sid); markRunning(); renderStrip();
+      if (mineConvo) { lastLabel = bv.label; renderBusy(); renderAccountChip(); }
+      return;
+    }
+    if (kind === 'conversation_settled') {
+      if (!mineConvo || (controlRoom && !controlRoom.isOpen())) setConvNotif(pid, sid, 'done');
+      return;
+    }
     if (kind === 'turn_state') {
       var v = viewOf(pid, sid);
       v.active = !!data.active;
@@ -2552,11 +2570,8 @@
         if (data.isSubagent && data.toolUseId) v.subs[data.toolUseId] = 1;
       } else if (data.toolUseId) { delete v.subs[data.toolUseId]; }
       v.subCount = Object.keys(v.subs).length;
-      // Activity for a conversation with no turn IS background work. Mark it now
-      // rather than waiting up to 20s for the next project poll — the whole point
-      // is that the user sees it working the moment it works. The poll stays
-      // authoritative for clearing it.
-      if (!isSessionRunning(pid, sid)) { (bgSessionIds[pid] = bgSessionIds[pid] || {})[sid] = true; markConvBg(pid, sid); }
+      // Provider lifecycle events own background status. A completed tool or
+      // subagent message is not evidence that the parent started another turn.
       if (mineConvo) { lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; renderBusy(); }
       renderStrip();
     }
@@ -2583,7 +2598,7 @@
         + (data.status !== 'completed' && data.reason ? ' · ' + data.reason : '');
       appendNode(pid, sid, nodeSys(doneLine, data.status === 'failed' ? 'banner err' : ''));
       if (mineConvo) { active = false; renderBusy(); }
-      if (!mineConvo || (controlRoom && !controlRoom.isOpen())) setConvNotif(pid, sid, data.status === 'completed' ? 'done' : 'failed'); // bell on a convo you're not watching
+      if (!data.completionPending && (!mineConvo || (controlRoom && !controlRoom.isOpen()))) setConvNotif(pid, sid, data.status === 'completed' ? 'done' : 'failed');
       pollAccounts(); renderStrip();
     }
     else if (kind === 'session_error') {
@@ -4292,7 +4307,7 @@
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }

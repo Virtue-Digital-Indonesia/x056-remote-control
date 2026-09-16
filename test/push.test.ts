@@ -77,6 +77,17 @@ describe('PushService', () => {
     expect(sent.length).toBe(1); // no new pushes
   });
 
+  it('defers intermediate completions until the whole conversation settles', async () => {
+    const { p } = svc(); p.add(sub('https://push/a'));
+    await p.notify('session_done', { projectId: 'p', sessionId: 's', status: 'completed', completionPending: true });
+    await p.notify('background_state', { projectId: 'p', sessionId: 's', active: true, agents: 1 });
+    await p.notify('background_state', { projectId: 'p', sessionId: 's', active: false, agents: 0 });
+    expect(sent).toHaveLength(0);
+    await p.notify('conversation_settled', { projectId: 'p', sessionId: 's', status: 'completed', completionPending: false });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toMatchObject({ title: 'Proj finished', sessionId: 's' });
+  });
+
   it('does nothing when there are no subscribers', async () => {
     const { p } = svc();
     await p.notify('question', { projectId: 'p1', question: 'Proceed?' });

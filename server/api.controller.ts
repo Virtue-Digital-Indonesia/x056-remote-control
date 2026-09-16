@@ -646,7 +646,8 @@ export class ApiController {
           const file = files.get(s.agentId);
           const usageStats = file ? this.stats.statsFor(file, 256 * 1024) : null;
           const fresh = s.updatedAt != null && Date.now() - s.updatedAt < LIVE_SUBAGENT_MS;
-          const status = st?.done ? 'done' : st?.status === 'stopped' || st?.status === 'failed' ? st.status : running && (st?.status === 'running' || fresh) ? 'running' : 'unknown';
+          const live = this.manager.subagentRunning(sessionId, s.agentId);
+          const status = live === true ? 'running' : st?.done ? 'done' : st?.status === 'stopped' || st?.status === 'failed' ? st.status : live === undefined && running && (st?.status === 'running' || fresh) ? 'running' : 'unknown';
           return {
             ...s, status,
             startedAt: st?.startedAt ?? s.startedAt,

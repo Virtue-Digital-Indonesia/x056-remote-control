@@ -14,7 +14,7 @@ export interface StoredSub {
   at: number;
 }
 
-const NOTIFY_KINDS = new Set(['question', 'session_done', 'turn_orphaned', 'autopilot']);
+const NOTIFY_KINDS = new Set(['question', 'session_done', 'conversation_settled', 'turn_orphaned', 'autopilot']);
 
 export class PushService {
   private vapid: { publicKey: string; privateKey: string };
@@ -94,7 +94,8 @@ export class PushService {
     if (kind === 'question') {
       title = `${project} needs you`;
       body = typeof data.question === 'string' ? String(data.question).slice(0, 140) : 'Claude asked a question';
-    } else if (kind === 'session_done') {
+    } else if (kind === 'session_done' || kind === 'conversation_settled') {
+      if (data.completionPending) return;
       const sid = typeof data.sessionId === 'string' ? data.sessionId : '';
       if (sid && this.isAutopilot(sid)) return; // mid-autopilot step, not a real stop
       const status = typeof data.status === 'string' ? data.status : 'done';

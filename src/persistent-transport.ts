@@ -119,6 +119,7 @@ export class ClaudeTransport implements Transport {
     try { e = JSON.parse(line) as RawEvent; } catch { return { events: [], turnEnded: false }; }
     // A control_response answers our interrupt; protocol, not session content.
     if (e.type === 'control_response') return { events: [], turnEnded: false };
+    if (e.type === 'result' && e.parent_tool_use_id) return { events: [], turnEnded: false };
     return { events: [e], turnEnded: e.type === 'result' };
   }
 }

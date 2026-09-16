@@ -51,6 +51,8 @@ export interface TurnOptions {
    * calls this — its process is gone by then.
    */
   onIdleEvent?: (e: RawEvent) => void;
+  /** Lifecycle only; never enters transcript/classification. */
+  onProviderActivity?: (state: { active: boolean; parentActive: boolean; agents: number; tasks: number }) => void;
 }
 
 /**

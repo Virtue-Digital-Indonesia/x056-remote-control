@@ -659,7 +659,7 @@ window.createControlRoom = function (engine) {
     if(kind==='memory_warning'&&data.projectId===engine.state().projectId&&data.sessionId===engine.state().sessionId)toast(data.message);
     if(section==='memory'&&['memory_context','session_done'].includes(kind)&&!memorySelection.size)loadMemory();
     if(kind==='assistant_text'&&data.projectId&&data.sessionId)messageActivity.set(data.projectId+'::'+data.sessionId,Date.parse(data.ts)||Date.now());
-    if (['session_done','session_error','turn_orphaned'].includes(kind)) outcomes.set(data.projectId + '::' + data.sessionId, { status:kind === 'session_done' ? data.status : 'failed', reason:data.reason || data.message, ts:data.ts || Date.now() });
+    if (['session_done','conversation_settled','session_error','turn_orphaned'].includes(kind) && !data.completionPending) outcomes.set(data.projectId + '::' + data.sessionId, { status:['session_done','conversation_settled'].includes(kind) ? data.status : 'failed', reason:data.reason || data.message, ts:data.ts || Date.now() });
     if (kind === 'session_started') outcomes.delete(data.projectId + '::' + data.sessionId);
     refresh();
     if(section==='automations'&&['autopilot','queue','session_started','session_done','session_error','project_removed'].includes(kind))loadAutomationAutopilots();

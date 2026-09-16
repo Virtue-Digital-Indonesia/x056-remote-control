@@ -1,4 +1,5 @@
 import { withMessageSender, type MessageSender } from '../src/message-sender.js';
+import { CompletionGate } from './completion-gate.js';
 import { FileStore, type FileReference } from './file-store.js';
 import { DOCUMENT_SKILL } from './documents.js';
 import type { ChatCapabilities } from './chat-capabilities.js';
@@ -352,6 +353,7 @@ export class SessionManager {
   private readonly queueChecks = new Set<string>();
   onModuleDestroy(): void {
     this.destroyed = true;
+    this.completions.close();
     for (const timer of this.queueTimers.values()) clearTimeout(timer);
     for (const timer of this.autopilotTimers.values()) clearTimeout(timer);
     this.queueTimers.clear(); this.autopilotTimers.clear();
@@ -398,6 +400,10 @@ export class SessionManager {
   // key is the session, not the project. Helpers below answer the project-level
   // questions (is any conversation in this project running?).
   private runs = new Map<string, ActiveRun>();
+  private readonly completions = new CompletionGate(
+    sid => this.sessionBusy(sid) || this.pools().some(p => p.activeSessions().some(s => s.sessionId === sid)),
+    data => this.emit('conversation_settled', data),
+  );
   /**
    * One long-lived CLI process per Claude conversation, so background work —
    * background shells, backgrounded agents, the Workflow tool — survives the
@@ -1989,6 +1995,19 @@ export class SessionManager {
   }
 
   private emit(kind: string, data: Record<string, unknown>): void {
+    const sid = typeof data.sessionId === 'string' ? data.sessionId : '';
+    if (sid) {
+      if (['session_started', 'session_error', 'turn_orphaned', 'question'].includes(kind)) this.completions.cancel(sid);
+      if (['background_state', 'assistant_text', 'activity'].includes(kind)) this.completions.touch(sid);
+      if (kind === 'session_done') {
+        if (data.status === 'completed') {
+          data = { ...data, completionPending: true };
+          // Questions have their own notification. Autopilot owns its terminal
+          // notification; neither should also produce a delayed finished ping.
+          if (!this.pendingQuestions.has(sid) && !this.loadAutopilot()[sid]) this.completions.queue(sid, data);
+        } else this.completions.cancel(sid);
+      }
+    }
     const e: GatewayEvent = { seq: ++this.seq, ts: new Date().toISOString(), kind, data };
     this.buffer.push(e);
     if (this.buffer.length > BUFFER_MAX) this.buffer.splice(0, this.buffer.length - BUFFER_MAX);
@@ -2484,6 +2503,7 @@ export class SessionManager {
         startTurnFn: (adapter.id === 'claude' ? this.persistent : adapter.id === 'codex' ? this.persistentCodex : null)
           ? (o) => (adapter.id === 'claude' ? this.persistent! : this.persistentCodex!).startTurn({
             ...o,
+            onProviderActivity: () => emit('background_state', this.providerActivity(sessionId)),
             // Work that happens AFTER a turn ends — a background task finishing
             // wakes the model — still belongs to this conversation and must
             // reach its view. Without this it was written only to the CLI's own
@@ -2905,8 +2925,10 @@ export class SessionManager {
    *  going. The panel drives every busy indicator off `runs`, so without this a
    *  conversation that is plainly working -- streaming tool calls into the view
    *  -- renders as idle, with no spinner and no way to stop it. */
-  backgroundSessions(): { projectId: string; sessionId: string }[] {
-    const working = this.pools().flatMap((p) => p.workingSessions());
+  backgroundSessions(safety = true): { projectId: string; sessionId: string }[] {
+    // Deployment, routing and destructive operations keep the conservative
+    // grace. Only the display uses provider lifecycle evidence.
+    const working = this.pools().flatMap<{ sessionId: string; busy: boolean }>((p) => safety ? p.workingSessions() : p.activeSessions());
     if (!working.length) return [];
     const bg = new Set(working.filter((w) => !w.busy).map((w) => w.sessionId));
     if (!bg.size) return [];
@@ -2920,8 +2942,23 @@ export class SessionManager {
     return out;
   }
 
+  subagentRunning(sessionId: string, agentId: string): boolean | undefined {
+    const states = this.pools().map(p => p.agentRunning(sessionId, agentId));
+    return states.includes(true) ? true : states.includes(false) ? false : undefined;
+  }
+
+  private providerActivity(sessionId: string) {
+    // A model/account switch can leave more than one process for a conversation.
+    // One process becoming idle must not hide work retained by another.
+    const states = this.pools().flatMap(p => p.activeSessions()).filter(s => s.sessionId === sessionId);
+    return {
+      active: states.some(s => s.active), parentActive: states.some(s => s.parentActive),
+      agents: states.reduce((n, s) => n + (s.agents || 0), 0), tasks: states.reduce((n, s) => n + (s.tasks || 0), 0),
+    };
+  }
+
   private backgroundSessionsForProject(pid: string): string[] {
-    return this.backgroundSessions().filter((b) => b.projectId === pid).map((b) => b.sessionId);
+    return this.backgroundSessions(false).filter((b) => b.projectId === pid).map((b) => b.sessionId);
   }
 
   /**

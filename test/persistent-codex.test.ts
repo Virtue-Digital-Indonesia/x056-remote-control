@@ -82,6 +82,35 @@ const turn = (over: Partial<TurnOptions> = {}): TurnOptions => ({
 const collect = () => { const ev: RawEvent[] = []; return { ev, onEvent: (e: RawEvent) => { ev.push(e); } }; };
 
 describe('codex persistent: handshake', () => {
+  it('separates displayed work from process grace and tracks descendants without forwarding their text', async () => {
+    let time = 1000;
+    const { p, spawned } = pool({ threadId: 'parent', now: () => time, workingGraceMs: 100 });
+    const events: RawEvent[] = [], states: unknown[] = [];
+    const h = p.startTurn(turn({ onEvent: e => events.push(e), onIdleEvent: e => events.push(e), onProviderActivity: s => states.push(s) }));
+    const f = spawned[0];
+    f.item('completed', { type: 'subAgentActivity', kind: 'started', agentThreadId: 'child' });
+    f.complete(); await h.done;
+    time += 200000;
+    expect(p.activeSessions()).toMatchObject([{ busy: false, parentActive: false, agents: 1 }]);
+    expect(p.workingSessions()).toHaveLength(1); // quiet child must not be evicted
+    f.notify('item/completed', { threadId: 'child', item: { type: 'agentMessage', text: 'child private output' } });
+    expect(JSON.stringify(events)).not.toContain('child private output');
+    f.notify('turn/completed', { threadId: 'child', turn: { status: 'completed' } });
+    expect(p.activeSessions()).toEqual([]);
+    expect(states.at(-1)).toMatchObject({ active: false, agents: 0 });
+    expect(p.workingSessions()).toHaveLength(1); // safety grace remains
+    f.notify('account/rateLimits/updated', {});
+    expect(p.activeSessions()).toEqual([]);
+    f.notify('turn/started', { threadId: 'parent', turn: { id: 'automatic' } });
+    expect(p.activeSessions()).toMatchObject([{ parentActive: true }]);
+    f.complete(); expect(p.activeSessions()).toEqual([]);
+    expect(p.injectMessage('x056-conv', 'One more check')).toBe(true);
+    expect(p.activeSessions()).toHaveLength(1);
+    f.complete();
+    expect(states.at(-1)).toMatchObject({ active: false }); // pending steer must publish its completion
+    p.shutdown();
+  });
+
   it('isolates child messages, tools, errors and completion from the parent turn', async () => {
     const { p, spawned } = pool({ threadId: 'parent' });
     const c = collect(), h = p.startTurn(turn({ onEvent: c.onEvent })), f = spawned[0];

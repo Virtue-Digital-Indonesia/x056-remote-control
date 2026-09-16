@@ -78,6 +78,7 @@ describe('one process across many turns', () => {
     // The whole point: the turn is over, the process is not.
     expect(spawned[0].cli.killed).toBe(false);
     expect(p.stats()).toEqual({ sessions: 1, busy: 0, working: 1 });
+    expect(p.activeSessions()).toEqual([]); // retained process is not active work
   });
 
   it('streams events to the turn in flight, and only that turn', async () => {
@@ -367,7 +368,12 @@ describe('work that outlives a turn is reportable', () => {
     const w = p.workingSessions();
     expect(w).toEqual([{ sessionId: 's1', busy: false, lastOutput: t }]);
 
-    // Once it goes quiet past the grace, it stops counting as working.
+    // Silence is not completion: a real continuation may be waiting on a tool.
+    t += 120_000;
+    expect(p.activeSessions()).toHaveLength(1);
+    spawned[0].cli.result('background complete');
+    expect(p.activeSessions()).toEqual([]);
+    // Process safety still observes the grace after an explicit completion.
     t += 120_000;
     expect(p.workingSessions()).toEqual([]);
   });

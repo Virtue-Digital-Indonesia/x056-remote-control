@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import type { RawEvent } from './types.js';
 import type { TurnExit, TurnHandle, TurnOptions } from './turn.js';
 import { ClaudeTransport, type Transport, type TransportState } from './persistent-transport.js';
+import { ProviderActivity } from './provider-activity.js';
 
 /**
  * Persistent CLI sessions: one long-lived process per conversation, fed a
@@ -36,7 +37,7 @@ export interface PersistentOptions {
   idleTtlMs?: number;
   /** Live processes to keep at once; the least recently active is evicted first. */
   maxSessions?: number;
-  /** How long after its last output a session still counts as working. */
+  /** Safety grace after output, for eviction/routing/deployment; not UI status. */
   workingGraceMs?: number;
   now?: () => number;
   /** Injected in tests. */
@@ -61,6 +62,8 @@ interface Live {
    * mid-task 0.6s after its last write.
    */
   lastOutput: number;
+  activity: ProviderActivity;
+  activityKey?: string;
   /** Results owed to steers that started their OWN turn (injected while no
    *  gateway turn was in flight). The CLI answers stdin messages in order, so
    *  the next N results belong to those steers, not to any gateway turn. */
@@ -134,7 +137,7 @@ export class PersistentTurns {
   }
 
   /**
-   * Is this process doing something?
+   * Must this process be protected from eviction or restart?
    *
    * NOT the same as "a turn is in flight". After `result` the entry is not busy,
    * but a background task can wake the model and it keeps working — and killing
@@ -143,15 +146,31 @@ export class PersistentTurns {
    * while a tool runs.
    */
   private working(e: Live): boolean {
-    return e.busy || (this.now() - e.lastOutput) < this.workingGraceMs;
+    return e.busy || e.activity.snapshot().active || (this.now() - e.lastOutput) < this.workingGraceMs;
   }
 
-  /** Live sessions, for the panel and for tests. */
+  /** Actual provider work; output grace remains exclusively a safety guard. */
+  activeSessions() {
+    return [...this.live.values()].filter(e => e.busy || e.activity.snapshot().active)
+      .map(e => ({ sessionId: e.sessionId, busy: e.busy, ...e.activity.snapshot() }));
+  }
+
+  agentRunning(sessionId: string, agentId: string): boolean | undefined {
+    const states = [...this.live.values()].filter(e => e.sessionId === sessionId).map(e => e.activity.agentRunning(agentId));
+    return states.includes(true) ? true : states.includes(false) ? false : undefined;
+  }
+
+  private publishActivity(entry: Live): void {
+    const activity = entry.activity.snapshot();
+    const key = JSON.stringify(activity);
+    if (key === entry.activityKey) return;
+    entry.activityKey = key;
+    try { entry.opts?.onProviderActivity?.(activity); } catch { /* isolate UI sinks */ }
+  }
+
   /**
-   * Conversations whose process is producing output. `busy` separates a gateway
-   * turn from work that outlived one: after `result` a finishing background task
-   * wakes the model and it keeps going, with no run behind it. Without this the
-   * panel calls a visibly working conversation idle -- no spinner, no stop.
+   * Conservatively protected sessions. `busy` separates a gateway turn from
+   * retained provider activity. Use activeSessions() for displayed work.
    */
   workingSessions(): { sessionId: string; busy: boolean; lastOutput: number }[] {
     const out: { sessionId: string; busy: boolean; lastOutput: number }[] = [];
@@ -215,7 +234,7 @@ export class PersistentTurns {
     // own, which would otherwise settle whatever gateway turn came next:
     // `runSession` would return the steer's text as that turn's answer and
     // drain the queue into a process that had not started on it.
-    if (!target.busy) target.pendingSteers++;
+    if (!target.busy) { target.pendingSteers++; target.activity.start(); this.publishActivity(target); }
     return true;
   }
 
@@ -274,7 +293,7 @@ export class PersistentTurns {
 
     // Looked up by the gateway's conversation id (steer, interrupt, "working"),
     // which for Codex is not what the CLI was handed after the first turn.
-    const entry: Live = { key, child, sessionId: o.conversationId ?? o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false };
+    const entry: Live = { key, child, sessionId: o.conversationId ?? o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), activity: new ProviderActivity(), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false };
     child.stdout?.on('data', (d: Buffer) => this.onData(entry, d));
     child.on('error', (err) => this.settle(entry, { code: null, signal: null, spawnError: err.message }));
     child.on('close', (code, signal) => this.settle(entry, { code, signal }));
@@ -301,6 +320,8 @@ export class PersistentTurns {
     for (const line of lines) {
       if (!line.trim().startsWith('{')) continue;
       const { events, turnEnded, readyNow } = this.transport.ingest(entry.st, line);
+      entry.activity.observe(this.transport.id, line, entry.st.ext.threadId);
+      if (turnEnded) entry.activity.endTurn();
       // The handshake finished: send the prompt runOn had to hold back.
       if (readyNow && entry.pendingPrompt !== undefined) {
         const prompt = entry.pendingPrompt; entry.pendingPrompt = undefined;
@@ -331,7 +352,7 @@ export class PersistentTurns {
         entry.lastUsed = this.now();
         // stdin is FIFO, so results come back in the order the messages went
         // in: the first ones belong to the steers that were injected first.
-        if (entry.pendingSteers > 0) { entry.pendingSteers--; continue; }
+        if (entry.pendingSteers > 0) { entry.pendingSteers--; this.publishActivity(entry); continue; }
         this.settleTurn(entry, { code: 0, signal: null });
         // A turn that ended before the process was ever ready is a failed
         // handshake (Codex could not open its thread). The process is alive
@@ -340,6 +361,7 @@ export class PersistentTurns {
         // ready that would never come. Seen live, five minutes of "working".
         if (!entry.st.ext.ready) this.destroy(entry);
       }
+      this.publishActivity(entry);
     }
   }
 
@@ -356,6 +378,8 @@ export class PersistentTurns {
   private settle(entry: Live, exit: TurnExit): void {
     if (entry.exited) return;
     entry.exited = true;
+    entry.activity.stop();
+    this.publishActivity(entry);
     this.live.delete(entry.key);
     this.settleTurn(entry, exit);
   }
@@ -374,6 +398,7 @@ export class PersistentTurns {
     if (o.onIdleEvent) entry.idleSink = o.onIdleEvent;
     const done = new Promise<TurnExit>((resolve) => { entry.finish = resolve; });
     entry.opts = o;
+    entry.activity.start();
 
     if (entry.early.length) {
       const held = entry.early; entry.early = [];
