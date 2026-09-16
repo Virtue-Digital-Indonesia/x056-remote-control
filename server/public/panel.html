@@ -4688,13 +4688,13 @@
     badge.hidden = live === 0;
     badge.textContent = String(live);
     $('wfSummary').textContent = live + liveAgents ? (live + liveAgents) + ' running' : '';
-    $('wfTitle').textContent = subMetas.length ? (wfRuns.length ? 'Agents & workflows' : 'Agents') : 'Workflows';
+    $('wfTitle').textContent = liveAgents ? (wfRuns.length ? 'Agents & workflows' : 'Agents') : 'Workflows';
     $('wfCloseBtn').setAttribute('aria-label','Close '+$('wfTitle').textContent.toLowerCase());
     $('wfCloseBtn').title = $('wfCloseBtn').getAttribute('aria-label');
     // As a column it could sit open harmlessly; floating over the chat it
     // cannot, so it opens on its own only when something is actually MOVING.
     // A finished run stays one click away on the topbar button.
-    var show = (wfRuns.length > 0 || subMetas.length > 0) && !wfHidden && (wfShown || live > 0 || liveAgents > 0);
+    var show = (wfRuns.length > 0 || liveAgents > 0) && !wfHidden && (wfShown || live > 0 || liveAgents > 0);
     island.hidden = !show;
     if ($('chatAgents')) $('chatAgents').setAttribute('aria-expanded',String(show));
     if (!show) return;
@@ -4705,7 +4705,7 @@
     renderFloatingAgents(body);
     var shownRuns = wfHideOld ? wfRuns.filter(wfIsCurrent) : wfRuns;
     var hiddenRuns = wfRuns.length - shownRuns.length;
-    if (!shownRuns.length && !subMetas.length) {
+    if (!shownRuns.length && !liveAgents) {
       var e = document.createElement('div'); e.className = 'wf-empty';
       e.textContent = wfRuns.length
         ? 'Nothing running. ' + wfRuns.length + ' older run' + (wfRuns.length === 1 ? '' : 's') + ' hidden.'
@@ -4808,10 +4808,9 @@
   }
 
   function renderFloatingAgents(body) {
-    if (!subMetas.length) return;
+    var agents=subMetas.filter(function(m){return m.status==='running';}).sort(function(a,b){return (b.startedAt||0)-(a.startedAt||0);});
+    if (!agents.length) return;
     var group=document.createElement('div');group.className='wf-agent-group';
-    var rank={running:0,failed:1,unknown:2,stopped:3,done:4};
-    var agents=subMetas.slice().sort(function(a,b){return (rank[a.status]??2)-(rank[b.status]??2)||(b.startedAt||0)-(a.startedAt||0);});
     agents.slice(0,wfAgentLimit).forEach(function(m){
       var row=document.createElement('button');row.type='button';row.className='wf-agent-row';row.dataset.agent=m.agentId;row.dataset.wfFocus='agent:'+m.agentId;
       var state=document.createElement('span');state.className='wf-agent-state '+(m.status||'unknown');state.setAttribute('aria-hidden','true');state.appendChild(icon(m.status==='done'?'check':m.status==='failed'?'x':'sparkles','sm'));row.appendChild(state);
