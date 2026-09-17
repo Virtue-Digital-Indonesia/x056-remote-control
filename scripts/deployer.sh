@@ -149,7 +149,17 @@ trap 'exit 143' TERM
   echo "=== tick $(date -Is) commit $(git -C "$DIR" rev-parse --short HEAD) ==="
   # 1. Build ahead of time — safe while a turn runs; only creates a new image.
   export X056_BUILD_REVISION="$(git -C "$DIR" rev-parse HEAD)"
-  if ! docker compose --project-directory "$DIR" build; then
+  # The host's resolver flaps between an upstream and a VPN nameserver, and
+  # BuildKit's registry metadata lookup is the one step that notices: three
+  # releases in a row died on "failed to resolve source metadata" while the
+  # daemon itself could pull. That lookup is worth a few more tries.
+  build_ok=0
+  for attempt in 1 2 3 4; do
+    if docker compose --project-directory "$DIR" build; then build_ok=1; break; fi
+    echo "build attempt $attempt failed; retrying in 20s"
+    sleep 20
+  done
+  if [ "$build_ok" != 1 ]; then
     rm -f "$FLAG" "$FORCE"
     printf '{"status":"build_failed","ts":"%s"}\n' "$(date -Is)" > "$STATUS"
     echo "build FAILED — flag cleared"
