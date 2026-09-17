@@ -398,6 +398,14 @@ CLI writes each subagent a complete transcript of its own:
   and the WHOLE first line: a real `session_meta` is ~14KB of base_instructions,
   and an 8KB read silently skipped every child until a live check caught it.
   Cost is null on purpose: tokens are recorded, GPT prices are not in the table.
+  **Those reads are incremental, and must stay so.** The panel polls the list
+  every 5s while a turn runs; a UAT thread with 39 children (359MB of rollouts)
+  once cost 41 store scans and a full re-read of every child PER POLL, all
+  synchronous, and the gateway's event loop stayed blocked longer than the
+  poll interval -- every request hung, verified with a CPU profile. Now a
+  session_meta is read once per file for the life of the process, the store is
+  scanned once per request (memo cleared on `setImmediate`), and
+  `subagentStatus` folds only the bytes appended since its last call.
 
 ## Workflow runs have their own island (`src/adapters/workflows.ts`)
 

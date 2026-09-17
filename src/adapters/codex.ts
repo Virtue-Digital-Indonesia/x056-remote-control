@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import type { Usage } from '../quota.js';
 import type { SubagentMeta } from './subagents.js';
+import { StringDecoder } from 'node:string_decoder';
 import type { SubagentOutcome } from '../provider.js';
 import { DEFAULT_CONTINUE_PROMPT } from '../provider.js';
 import { stripAsk, stripAskInstructions } from '../question.js';
@@ -674,8 +675,42 @@ interface RolloutHead {
   startedAt?: number;
 }
 
-/** First line of every rollout under the config dirs -- one readdir, one line each. */
+// A rollout's first line is its session_meta, written once and never changed,
+// so it is read ONCE per file for the life of the process. Without this, and
+// the per-request memo below, one poll of the sub-agent list scanned the store
+// 2 + N times (controller, listSubagents, then subagentStatus per child): 41
+// scans of 126 files for a thread with 39 children, on the main thread.
+const headByFile = new Map<string, RolloutHead>();
+const HEAD_CACHE_MAX = 20_000;
+
+// Every caller inside one request handler runs synchronously, so a memo that
+// lives until the event loop turns serves the whole request from one readdir
+// and can never hand a LATER request a stale listing.
+let headsMemo: { key: string; heads: RolloutHead[] } | null = null;
+
+function parseHead(file: string): RolloutHead | null {
+  const line = firstLine(file);
+  if (!line) return null;
+  let meta: Record<string, unknown>;
+  try { meta = asObj((JSON.parse(line) as Record<string, unknown>).payload); } catch { return null; }
+  const id = firstStr(meta.id, meta.session_id);
+  if (!id) return null;
+  const spawn = asObj(asObj(asObj(meta.source).subagent).thread_spawn);
+  const parent = firstStr(meta.parent_thread_id, spawn.parent_thread_id) || undefined;
+  const ts = typeof meta.timestamp === 'string' ? Date.parse(meta.timestamp) : NaN;
+  return {
+    file, id, parent,
+    depth: typeof spawn.depth === 'number' ? spawn.depth : parent ? 1 : 0,
+    nickname: firstStr(spawn.agent_nickname, meta.agent_nickname) || undefined,
+    role: firstStr(spawn.agent_role) || undefined,
+    startedAt: Number.isFinite(ts) ? ts : undefined,
+  };
+}
+
+/** First line of every rollout under the config dirs -- one readdir per request, each line read once ever. */
 export function rolloutHeads(configDirs: string[]): RolloutHead[] {
+  const key = configDirs.join('\0');
+  if (headsMemo && headsMemo.key === key) return headsMemo.heads;
   const out: RolloutHead[] = [];
   const directories = new Set<string>(), ids = new Set<string>();
   for (const configDir of configDirs) {
@@ -691,25 +726,23 @@ export function rolloutHeads(configDirs: string[]): RolloutHead[] {
       if (!name.startsWith('rollout-') && !/[\\/]rollout-/.test(name)) continue;
       if (!name.endsWith('.jsonl')) continue;
       const file = join(sessions, name);
-      const line = firstLine(file);
-      if (!line) continue;
-      let meta: Record<string, unknown>;
-      try { meta = asObj((JSON.parse(line) as Record<string, unknown>).payload); } catch { continue; }
-      const id = firstStr(meta.id, meta.session_id);
-      if (!id || ids.has(id)) continue;
-      ids.add(id);
-      const spawn = asObj(asObj(asObj(meta.source).subagent).thread_spawn);
-      const parent = firstStr(meta.parent_thread_id, spawn.parent_thread_id) || undefined;
-      const ts = typeof meta.timestamp === 'string' ? Date.parse(meta.timestamp) : NaN;
-      out.push({
-        file, id, parent,
-        depth: typeof spawn.depth === 'number' ? spawn.depth : parent ? 1 : 0,
-        nickname: firstStr(spawn.agent_nickname, meta.agent_nickname) || undefined,
-        role: firstStr(spawn.agent_role) || undefined,
-        startedAt: Number.isFinite(ts) ? ts : undefined,
-      });
+      let head = headByFile.get(file);
+      if (!head) {
+        // A file whose first line is not yet whole (or unparseable) is simply
+        // retried next request; only a good head is remembered.
+        const parsed = parseHead(file);
+        if (!parsed) continue;
+        if (headByFile.size >= HEAD_CACHE_MAX) headByFile.clear();
+        headByFile.set(file, parsed);
+        head = parsed;
+      }
+      if (ids.has(head.id)) continue;
+      ids.add(head.id);
+      out.push(head);
     }
   }
+  headsMemo = { key, heads: out };
+  setImmediate(() => { headsMemo = null; });
   return out;
 }
 
@@ -760,38 +793,76 @@ function listSubagents(configDirs: string[], providerSessionId: string): Subagen
   return rows;
 }
 
-/** Scan a child's rollout for its outcome. Reads the whole file: a child is small. */
+// A child's outcome is folded from its rollout line by line, and a rollout
+// only ever grows -- so the fold is kept per file with the byte offset it
+// reached, and a poll reads just what was appended since. "A child is small"
+// was the old assumption; a real UAT thread had 39 children totalling 359MB,
+// re-read in full on every 5-second poll.
+interface OutcomeScan { offset: number; tail: string; decoder: StringDecoder; out: SubagentOutcome }
+const outcomeByFile = new Map<string, OutcomeScan>();
+const OUTCOME_CACHE_MAX = 5_000;
+
+function foldOutcomeLine(out: SubagentOutcome, line: string): void {
+  if (!line.startsWith('{')) return;
+  let d: Record<string, unknown>;
+  try { d = JSON.parse(line) as Record<string, unknown>; } catch { return; }
+  const p = asObj(d.payload);
+  if (d.type === 'event_msg' && p.type === 'task_started') {
+    out.done = false; out.status = 'running'; out.result = undefined; out.endedAt = undefined;
+    const ts = Date.parse(String(d.timestamp ?? ''));
+    if (Number.isFinite(ts)) out.startedAt = ts;
+  } else if (d.type === 'event_msg' && (p.type === 'turn_aborted' || p.type === 'task_failed')) {
+    out.done = false; out.status = p.type === 'task_failed' ? 'failed' : 'stopped';
+  } else if (d.type === 'event_msg' && p.type === 'task_complete') {
+    out.done = true; out.status = 'done';
+    out.result = firstStr(p.last_agent_message) || undefined;
+    const s = p.started_at, c = p.completed_at;
+    if (typeof s === 'number') out.startedAt = s * 1000;
+    if (typeof c === 'number') out.endedAt = c * 1000;
+  } else if (d.type === 'event_msg' && p.type === 'token_count') {
+    const t = asObj(asObj(p.info).total_token_usage);
+    if (typeof t.input_tokens === 'number') {
+      out.usage = { input: t.input_tokens, output: Number(t.output_tokens ?? 0), cached: Number(t.cached_input_tokens ?? 0) };
+    }
+  }
+}
+
+/** Scan a child's rollout for its outcome, resuming from where the last scan stopped. */
 function subagentStatus(configDirs: string[], providerSessionId: string, agentId: string): SubagentOutcome | null {
   const head = rolloutHeads(configDirs).find((h) => h.id === agentId && h.parent === providerSessionId);
   if (!head) return null;
-  let raw: string;
-  try { raw = readFileSync(head.file, 'utf8'); } catch { return null; }
-  const out: SubagentOutcome = { done: false, startedAt: head.startedAt, usage: null };
-  for (const line of raw.split('\n')) {
-    if (!line.startsWith('{')) continue;
-    let d: Record<string, unknown>;
-    try { d = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-    const p = asObj(d.payload);
-    if (d.type === 'event_msg' && p.type === 'task_started') {
-      out.done = false; out.status = 'running'; out.result = undefined; out.endedAt = undefined;
-      const ts = Date.parse(String(d.timestamp ?? ''));
-      if (Number.isFinite(ts)) out.startedAt = ts;
-    } else if (d.type === 'event_msg' && (p.type === 'turn_aborted' || p.type === 'task_failed')) {
-      out.done = false; out.status = p.type === 'task_failed' ? 'failed' : 'stopped';
-    } else if (d.type === 'event_msg' && p.type === 'task_complete') {
-      out.done = true; out.status = 'done';
-      out.result = firstStr(p.last_agent_message) || undefined;
-      const s = p.started_at, c = p.completed_at;
-      if (typeof s === 'number') out.startedAt = s * 1000;
-      if (typeof c === 'number') out.endedAt = c * 1000;
-    } else if (d.type === 'event_msg' && p.type === 'token_count') {
-      const t = asObj(asObj(p.info).total_token_usage);
-      if (typeof t.input_tokens === 'number') {
-        out.usage = { input: t.input_tokens, output: Number(t.output_tokens ?? 0), cached: Number(t.cached_input_tokens ?? 0) };
-      }
-    }
+  let size: number;
+  try { size = statSync(head.file).size; } catch { return null; }
+  let scan = outcomeByFile.get(head.file);
+  // A file shorter than where we stopped was replaced, not appended to: start over.
+  if (!scan || size < scan.offset) {
+    scan = { offset: 0, tail: '', decoder: new StringDecoder('utf8'), out: { done: false, startedAt: head.startedAt, usage: null } };
+    if (outcomeByFile.size >= OUTCOME_CACHE_MAX) outcomeByFile.clear();
+    outcomeByFile.set(head.file, scan);
   }
-  return out;
+  if (size > scan.offset) {
+    let fd: number | null = null;
+    try {
+      fd = openSync(head.file, 'r');
+      const chunk = Buffer.alloc(256 * 1024);
+      let pos = scan.offset;
+      while (pos < size) {
+        const n = readSync(fd, chunk, 0, Math.min(chunk.length, size - pos), pos);
+        if (n <= 0) break;
+        pos += n;
+        // Stateful: a multi-byte character cut by the chunk (or poll) boundary
+        // is finished by the next write, never emitted as garbage.
+        const text = scan.tail + scan.decoder.write(chunk.subarray(0, n));
+        const lines = text.split('\n');
+        // The last piece has no newline yet: keep it for the next read (or poll).
+        scan.tail = lines.pop() ?? '';
+        for (const line of lines) foldOutcomeLine(scan.out, line);
+      }
+      scan.offset = pos;
+    } catch { return null; }
+    finally { if (fd !== null) { try { closeSync(fd); } catch { /* ignore */ } } }
+  }
+  return { ...scan.out, usage: scan.out.usage ? { ...scan.out.usage } : scan.out.usage };
 }
 
 /** Page a child's transcript. The id is matched against the parent's children
