@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { quotaLimit, type QuotaReading } from './account-availability.js';
+import { quotaLimit, creditsCover, type QuotaReading } from './account-availability.js';
 import type { ProviderId } from './provider.js';
 import { getAdapter } from './adapters/registry.js';
 
@@ -37,8 +37,10 @@ export interface Account {
 export const ROUTING_STRATEGIES = ['sticky', 'priority', 'round-robin', 'least-busy', 'wait'] as const;
 export type RoutingStrategy = typeof ROUTING_STRATEGIES[number];
 export interface AccountRouteContext { lockedAccount?: string; preferredAccount?: string; useReserve?: boolean; model?: string; capabilityBlocks?: Record<string, string[]> }
-export interface RouteCandidate { name: string; eligible: boolean; reasons: string[]; load: number; maxConcurrent: number; reservePercent: number; quotaAt?: number; usedPercent?: number }
-export interface RoutingPolicy { strategy: RoutingStrategy; order: string[] }
+export interface RouteCandidate { name: string; eligible: boolean; reasons: string[]; load: number; maxConcurrent: number; reservePercent: number; quotaAt?: number; usedPercent?: number; onCredits?: boolean }
+/** `allowCredits` is off until a person turns it on: with it off, a used-up plan
+ *  window blocks the account even when the provider would sell more. */
+export interface RoutingPolicy { strategy: RoutingStrategy; order: string[]; allowCredits: boolean }
 
 interface RegistryFile {
   // One "next up" pointer PER provider — a Claude session and a Codex session
@@ -163,7 +165,7 @@ export class AccountRegistry {
       const cache = JSON.parse(readFileSync(join(dirname(this.file), 'quota-cache.json'), 'utf8')) as Record<string, QuotaReading>;
       const reading = cache[a.name];
       if (reading && a.quotaOverrideAt && reading.at <= a.quotaOverrideAt) return null;
-      return quotaLimit(a.provider, reading, now);
+      return quotaLimit(a.provider, reading, now, this.routingPolicy(a.provider).allowCredits);
     } catch { return null; }
   }
 
@@ -188,7 +190,12 @@ export class AccountRegistry {
     const saved = this.data.routing?.[provider];
     const names = this.ofProvider(provider).map(a => a.name);
     const order = [...new Set([...(saved?.order || []), ...names])].filter(n => names.includes(n));
-    return { strategy: saved?.strategy || 'sticky', order };
+    return { strategy: saved?.strategy || 'sticky', order, allowCredits: saved?.allowCredits === true };
+  }
+  setAllowCredits(provider: ProviderId, on: boolean): void {
+    const current = this.routingPolicy(provider);
+    (this.data.routing ??= {})[provider] = { strategy: current.strategy, order: [...current.order], allowCredits: on === true };
+    this.save();
   }
 
   setRouting(provider: ProviderId, strategy: RoutingStrategy, order: string[]): void {
@@ -197,7 +204,7 @@ export class AccountRegistry {
     if (order.length !== names.length || new Set(order).size !== names.length || order.some(n => !names.includes(n))) {
       throw new Error('Priority order must include every account for this provider exactly once');
     }
-    (this.data.routing ??= {})[provider] = { strategy, order: [...order] };
+    (this.data.routing ??= {})[provider] = { strategy, order: [...order], allowCredits: this.data.routing?.[provider]?.allowCredits === true };
     (this.data.autoSwitch ??= {})[provider] = strategy !== 'wait';
     this.save();
   }
@@ -270,9 +277,11 @@ export class AccountRegistry {
           : [];
       });
       const usedPercent = usage.length ? Math.max(...usage) : undefined;
+      const onCredits = usedPercent !== undefined && usedPercent >= 100 && policy.allowCredits && creditsCover(provider, quota);
       if (
         usedPercent !== undefined &&
         usedPercent >= 100 &&
+        !onCredits &&
         !(a.quotaOverrideAt && reading.at <= a.quotaOverrideAt)
       )
         reasons.push('Applicable quota window is exhausted');
@@ -292,6 +301,7 @@ export class AccountRegistry {
         reservePercent: a.reservePercent || 0,
         quotaAt: reading?.at,
         usedPercent,
+        ...(onCredits ? { onCredits: true } : {}),
       };
     });
     const selected = candidates.find((x) => x.eligible)?.name || null;

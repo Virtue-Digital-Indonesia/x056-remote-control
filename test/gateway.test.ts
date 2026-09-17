@@ -375,6 +375,12 @@ describe('account dashboard API', () => {
     expect((await set(false)).status).toBe(200);
     expect(await (await fetch(base+'/api/accounts/routing',{headers:auth})).json()).toMatchObject({autoSwitch:{claude:false,codex:true}});
     await set(true);
+    // Extra credits: off until switched on, per provider, and a boolean only.
+    expect(await (await fetch(base+'/api/accounts/routing',{headers:auth})).json()).toMatchObject({policies:{claude:{allowCredits:false},codex:{allowCredits:false}}});
+    expect((await fetch(base+'/api/accounts/routing',{method:'POST',headers:auth,body:JSON.stringify({provider:'codex',allowCredits:'yes'})})).status).toBe(400);
+    const credits=await (await fetch(base+'/api/accounts/routing',{method:'POST',headers:auth,body:JSON.stringify({provider:'codex',allowCredits:true})})).json() as {policies:{codex:{allowCredits:boolean};claude:{allowCredits:boolean}}};
+    expect(credits.policies.codex.allowCredits).toBe(true);expect(credits.policies.claude.allowCredits).toBe(false);
+    await fetch(base+'/api/accounts/routing',{method:'POST',headers:auth,body:JSON.stringify({provider:'codex',allowCredits:false})});
   });
   it('validates routing policies atomically and reports the selected policy', async () => {
     const get=async()=> (await fetch(base+'/api/accounts/routing',{headers:auth})).json();

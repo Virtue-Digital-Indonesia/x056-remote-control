@@ -282,6 +282,6 @@ describe('provider routing policies', () => {
     const reg=fleet();reg.setRouting('claude','wait',['a','b','c']);reg.markLimited('a',100);
     expect(reg.pickActive(1)).toBeNull();expect(reg.pickActive(101)?.name).toBe('a');
     for(const order of [['a','a','c'],['a','b'],['a','b','g']]) expect(()=>reg.setRouting('claude','priority',order)).toThrow();
-    expect(reg.routingPolicy('claude')).toEqual({strategy:'wait',order:['a','b','c']});
+    expect(reg.routingPolicy('claude')).toEqual({strategy:'wait',order:['a','b','c'],allowCredits:false});
   });
 });

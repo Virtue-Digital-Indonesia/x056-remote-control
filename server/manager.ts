@@ -2853,8 +2853,9 @@ export class SessionManager {
     return sid;
   }
 
-  setAccountRouting(provider: ProviderId, enabled?: boolean, strategy?: RoutingStrategy, order?: string[]): void {
+  setAccountRouting(provider: ProviderId, enabled?: boolean, strategy?: RoutingStrategy, order?: string[], allowCredits?: boolean): void {
     const reg = this.registry();
+    if (allowCredits !== undefined) reg.setAllowCredits(provider, allowCredits);
     if (strategy !== undefined || order !== undefined) {
       const current = reg.routingPolicy(provider);
       reg.setRouting(provider, strategy ?? current.strategy, order ?? current.order);

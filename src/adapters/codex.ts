@@ -599,7 +599,16 @@ function fetchUsage(configDir: string): Promise<Usage> {
         });
       }
       if (!windows.length) return finish(new Error('no rate-limit windows in app-server response'));
-      finish(null, { windows });
+      // `credits` sits beside the windows: {hasCredits, unlimited, balance}. With
+      // credits the backend keeps serving after the window is used up, so the
+      // gateway must know whether that is on offer before it calls the account
+      // exhausted. `spendControlReached` means an admin cap stops it regardless.
+      const c = asObj(rl2.credits);
+      const credits = 'hasCredits' in c
+        ? { available: c.hasCredits === true && rl2.spendControlReached !== true, unlimited: c.unlimited === true, balance: typeof c.balance === 'number' ? c.balance : null }
+        : undefined;
+      const limitReachedType = typeof rl2.rateLimitReachedType === 'string' ? rl2.rateLimitReachedType : null;
+      finish(null, { windows, ...(credits ? { credits } : {}), limitReachedType });
     });
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'x056', title: 'x056', version: '1.0' } } }) + '\n');
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: {} }) + '\n');

@@ -20,6 +20,12 @@ export interface Usage {
    *  weekly window). When present the panel renders THESE gauges; fiveHour/
    *  sevenDay stay for Claude (and for old panels during a deploy overlap). */
   windows?: { label: string; utilization: number; resetsAt?: string }[];
+  /** Paid usage the provider will serve once the plan window is used up: ChatGPT
+   *  credits (reported beside the rate limits by the app server) or Claude's
+   *  extra usage. Absent when the provider did not say. */
+  credits?: { available: boolean; unlimited?: boolean; balance?: number | null };
+  /** The provider's own word for why it stopped serving, when it stopped. */
+  limitReachedType?: string | null;
 }
 
 export class TokenExpiredError extends Error {
@@ -51,6 +57,9 @@ interface UsageBody {
     resets_at?: string;
     scope?: { model?: { id?: string | null; display_name?: string | null } | null } | null;
   }[];
+  /** Extra usage billing, when the account has claimed it. Shape not pinned
+   *  down by Anthropic; read defensively. */
+  extra_usage?: { enabled?: boolean; status?: string } | null;
 }
 
 export async function fetchUsage(configDir: string, fetchFn: typeof fetch = fetch): Promise<Usage> {
@@ -84,9 +93,14 @@ export async function fetchUsage(configDir: string, fetchFn: typeof fetch = fetc
   const weeklyScoped = (body.limits ?? [])
     .filter((l) => l.kind === 'weekly_scoped' && l.scope?.model?.display_name)
     .map((l) => ({ label: l.scope!.model!.display_name as string, utilization: l.percent, resetsAt: l.resets_at }));
+  const extra = body.extra_usage;
+  const credits = extra && typeof extra === 'object'
+    ? { available: extra.enabled === true || ['enabled', 'active', 'claimed'].includes(String(extra.status || '')) }
+    : undefined;
   return {
     fiveHour: { utilization: body.five_hour.utilization, resetsAt: body.five_hour.resets_at },
     sevenDay: { utilization: body.seven_day.utilization, resetsAt: body.seven_day.resets_at },
     ...(weeklyScoped.length ? { weeklyScoped } : {}),
+    ...(credits ? { credits } : {}),
   };
 }

@@ -750,8 +750,11 @@ window.createControlRoom = function (engine) {
     } catch(e) {if(version!==requestVersion)return;analytics=null;analyticsError=e.message;renderAnalytics();}
   }
   function selectedAccounts() { return engine.state().accounts.filter(a=>!accountProvider||a.provider===accountProvider); }
+  const creditsCover=a=>{const q=a.quota||{};if(q.limitReachedType&&/depleted|spend_control/.test(q.limitReachedType))return false;if(q.credits)return q.credits.available===true;return a.provider==='claude';};
+  const creditsAllowed=a=>!!routing?.policies?.[a.provider]?.allowCredits;
   function accountQuotaLimited(a) {
     if(a.quotaOverrideAt&&a.quotaAt<=a.quotaOverrideAt)return false;
+    if(creditsAllowed(a)&&creditsCover(a))return false;
     const q=a.quota,windows=a.provider==='codex'?(q?.windows||[]):[q?.fiveHour,q?.sevenDay];
     return windows.some(w=>{
       if(!w||!Number.isFinite(w.utilization)||w.utilization<(a.provider==='codex'?1:100))return false;
@@ -811,6 +814,13 @@ window.createControlRoom = function (engine) {
     const slices=entries.map(([m,n],i)=>{const fraction=n/tokens*100;const circle=`<circle cx="60" cy="60" r="46" pathLength="100" fill="none" stroke="${colors[i%colors.length]}" stroke-width="13" stroke-dasharray="${fraction} ${100-fraction}" stroke-dashoffset="${-offset}"><title>${esc(m)}: ${n.toLocaleString()} tokens</title></circle>`;offset+=fraction;return circle;}).join('');
     $('accountModels').innerHTML=`<div class="model-chart"><div class="model-donut"><svg viewBox="0 0 120 120" role="img" aria-label="${tokens.toLocaleString()} reported tokens by model">${slices}</svg><div><strong>${compact(tokens)}</strong><small>tokens</small></div></div><div class="model-legend">${entries.map(([m,n],i)=>`<div title="${esc(m)}: ${n.toLocaleString()} tokens"><i style="background:${colors[i%colors.length]}"></i><span>${esc(m)}</span><strong>${n/tokens<.01?'&lt;1':Math.round(n/tokens*100)}%</strong></div>`).join('')}</div></div>`;
   }
+  function creditBadge(a){
+    const c=a.quota?.credits;if(!c)return '';
+    const used=quotaWindows(a).all.some(w=>w.utilization*(a.provider==='codex'?100:1)>=100);
+    if(!c.available)return '<small class="credit-badge off">No credits</small>';
+    if(used&&creditsAllowed(a))return '<small class="credit-badge on">On credits</small>';
+    return `<small class="credit-badge">${c.unlimited?'Unlimited credits':'Credits available'}${creditsAllowed(a)?'':' · switch off'}</small>`;
+  }
   function quotaWindows(a) {
     const q=a.quota;
     const windows=(q?.windows?.length?q.windows:q?[{...q.fiveHour,label:'5-hour'},{...q.sevenDay,label:'7-day'},...(q.weeklyScoped||[])]:[]).filter(w=>Number.isFinite(w.utilization));
@@ -835,7 +845,7 @@ window.createControlRoom = function (engine) {
     const list=accountsByProvider(selectedAccounts());$('accountCount').textContent=list.length;
     const html=`<div class="cr-account-table"><div class="cr-account-head"><span>Account</span><span>Availability</span><span>5-hour window</span><span>7-day window</span><span>Other limits</span><span class="sr-only">Actions</span></div>${list.map(a=>{
       const w=quotaWindows(a);
-      return `<article class="cr-account-row"><div><button class="cr-identity identity-button" data-manage="${esc(a.name)}">${identity(a)}</button>${quotaFreshness(a)}</div><div class="account-availability"><span class="cr-account-state ${available(a)?'ready':a.paused?'paused':'limited'}">${esc(accountStatus(a))}</span>${a.nextUp&&available(a)?'<small class="next-badge">Next message</small>':''}</div>${quotaCell(a,w.five,'5-hour window')}${quotaCell(a,w.seven,'7-day window')}<div class="other-quotas">${w.other.length?quotaCell(a,w.other[0],w.other[0].label)+(w.other.length>1?`<button class="cr-text-button" data-manage="${esc(a.name)}">+${w.other.length-1} more limits</button>`:''):quotaCell(a,null,'Other limits')}</div><button class="cr-icon" data-account-menu="${esc(a.name)}" aria-label="Manage ${esc(accountName(a))}">${ic('more')}</button></article>`;
+      return `<article class="cr-account-row"><div><button class="cr-identity identity-button" data-manage="${esc(a.name)}">${identity(a)}</button>${quotaFreshness(a)}</div><div class="account-availability"><span class="cr-account-state ${available(a)?'ready':a.paused?'paused':'limited'}">${esc(accountStatus(a))}</span>${a.nextUp&&available(a)?'<small class="next-badge">Next message</small>':''}${creditBadge(a)}</div>${quotaCell(a,w.five,'5-hour window')}${quotaCell(a,w.seven,'7-day window')}<div class="other-quotas">${w.other.length?quotaCell(a,w.other[0],w.other[0].label)+(w.other.length>1?`<button class="cr-text-button" data-manage="${esc(a.name)}">+${w.other.length-1} more limits</button>`:''):quotaCell(a,null,'Other limits')}</div><button class="cr-icon" data-account-menu="${esc(a.name)}" aria-label="Manage ${esc(accountName(a))}">${ic('more')}</button></article>`;
     }).join('')||'<div class="cr-empty">No accounts connected. Add an account to get started.</div>'}</div>`;
     if(html!==accountSignature){
       accountSignature=html;$('accountRows').innerHTML=html;
@@ -852,6 +862,22 @@ window.createControlRoom = function (engine) {
     if(!$('accountRouting'))return;
     $('accountRouting').innerHTML=`<div class="routing-summary">${ic('repeat')}<span>Account routing${routing?' · '+[...new Set(selectedAccounts().map(a=>a.provider))].map(p=>providerName(p)+': '+(strategyLabels[routing.policies?.[p]?.strategy]||'Stay on current')).join(' · '):''}</span><button class="cr-text-button" id="manageRouting">Manage routing</button></div>`;
     on('manageRouting',()=>settings('routing'));
+    $('accountRouting').insertAdjacentHTML('beforeend',creditSwitches('accounts'));
+    wireCreditSwitches($('accountRouting'));
+  }
+  // One switch per provider, off until a person turns it on. Off means a used-up
+  // plan stops or moves the work; on means it continues on paid usage.
+  function creditSwitches(where){
+    const copy={codex:'ChatGPT credits bought for the workspace. Turns keep running on them once the plan window is used up.',claude:'Extra usage on the claude.ai account. The account must have claimed it; if not, the turn fails over as before.'};
+    return `<section class="credit-switches ${where}"><header><h3>${ic('zap')} Extra credits</h3><p>Off: when a plan window is used up the work waits or moves to another account. On: it continues on paid usage until that runs out too.</p></header>${['codex','claude'].map(p=>`<label class="memory-switch credit-switch" data-credit-provider="${p}"><input type="checkbox" role="switch" class="setting-switch" data-allow-credits="${p}" ${routing?.policies?.[p]?.allowCredits?'checked':''}><span><strong>${providerName(p)}</strong><small>${copy[p]}</small></span></label>`).join('')}</section>`;
+  }
+  function wireCreditSwitches(host){
+    host.querySelectorAll('[data-allow-credits]').forEach(input=>input.onchange=async()=>{
+      const provider=input.dataset.allowCredits,on=input.checked;input.disabled=true;
+      try{routing=await json('/api/accounts/routing',{provider,allowCredits:on});await engine.pollAccounts();renderRouting();renderAccountRows();toast(on?providerName(provider)+' will continue on extra credits.':providerName(provider)+' stops at the plan limit.');}
+      catch(err){input.checked=!on;toast(err.message);}
+      finally{input.disabled=false;}
+    });
   }
   function accountDetail(a) {
     if(!a)return;
@@ -965,8 +991,9 @@ window.createControlRoom = function (engine) {
     host.innerHTML=['codex','claude'].map(provider=>{
       const accounts=engine.state().accounts.filter(a=>a.provider===provider),saved=policy.policies?.[provider]||{strategy:policy.autoSwitch[provider]?'sticky':'wait',order:accounts.map(a=>a.name)};
       const order=[...new Set([...saved.order,...accounts.map(a=>a.name)])].filter(n=>accounts.some(a=>a.name===n));
-      return `<form class="routing-policy" data-provider="${provider}"><header><h3>${providerName(provider)}</h3><span>${accounts.length} accounts</span></header><label class="routing-strategy-label">Load balancing<select data-strategy aria-label="${providerName(provider)} load balancing">${Object.entries(strategyLabels).map(([k,v])=>`<option value="${k}" ${k===saved.strategy?'selected':''}>${v}</option>`).join('')}</select></label><p data-strategy-help>${strategyHelp[saved.strategy]}</p><ol class="routing-order">${order.map((name,i)=>{const a=accounts.find(a=>a.name===name);return `<li data-account="${esc(name)}"><span class="routing-rank">${i+1}</span><span class="cr-identity">${identity(a)}</span><small>${policy.loads?.[name]||0} active</small><button type="button" class="cr-icon" data-move="-1" aria-label="Move ${esc(accountName(a))} up" ${i===0?'disabled':''}>${ic('up')}</button><button type="button" class="cr-icon" data-move="1" aria-label="Move ${esc(accountName(a))} down" ${i===order.length-1?'disabled':''}>${ic('down')}</button></li>`;}).join('')}</ol><footer><span data-save-status role="status"></span><button class="cr-primary" ${accounts.length?'':'disabled'}>Save routing</button></footer></form>`;
+      return `<form class="routing-policy" data-provider="${provider}"><header><h3>${providerName(provider)}</h3><span>${accounts.length} accounts</span></header><div class="setting-row"><label for="allowCredits-${provider}"><strong>Use extra credits when the plan is used up</strong><small>${provider==='codex'?'Continues on ChatGPT credits bought for the workspace.':'Continues on claude.ai extra usage, if the account has claimed it.'} Off by default.</small></label><input type="checkbox" role="switch" class="setting-switch" id="allowCredits-${provider}" data-allow-credits="${provider}" ${policy.policies?.[provider]?.allowCredits?'checked':''}></div><label class="routing-strategy-label">Load balancing<select data-strategy aria-label="${providerName(provider)} load balancing">${Object.entries(strategyLabels).map(([k,v])=>`<option value="${k}" ${k===saved.strategy?'selected':''}>${v}</option>`).join('')}</select></label><p data-strategy-help>${strategyHelp[saved.strategy]}</p><ol class="routing-order">${order.map((name,i)=>{const a=accounts.find(a=>a.name===name);return `<li data-account="${esc(name)}"><span class="routing-rank">${i+1}</span><span class="cr-identity">${identity(a)}</span><small>${policy.loads?.[name]||0} active</small><button type="button" class="cr-icon" data-move="-1" aria-label="Move ${esc(accountName(a))} up" ${i===0?'disabled':''}>${ic('up')}</button><button type="button" class="cr-icon" data-move="1" aria-label="Move ${esc(accountName(a))} down" ${i===order.length-1?'disabled':''}>${ic('down')}</button></li>`;}).join('')}</ol><footer><span data-save-status role="status"></span><button class="cr-primary" ${accounts.length?'':'disabled'}>Save routing</button></footer></form>`;
     }).join('');
+    wireCreditSwitches(host);
     host.querySelectorAll('form').forEach(form=>{
       const select=form.querySelector('[data-strategy]'),status=form.querySelector('[data-save-status]');
       select.onchange=()=>{form.querySelector('[data-strategy-help]').textContent=strategyHelp[select.value];status.textContent='Unsaved changes';};

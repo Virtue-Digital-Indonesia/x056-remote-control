@@ -1265,14 +1265,15 @@ export class ApiController {
 
   @Post('accounts/routing')
   @HttpCode(200)
-  setAccountRouting(@Body() body: { provider?: string; enabled?: boolean; strategy?: RoutingStrategy; order?: string[] }) {
+  setAccountRouting(@Body() body: { provider?: string; enabled?: boolean; strategy?: RoutingStrategy; order?: string[]; allowCredits?: boolean }) {
     if (!body || !['claude', 'codex'].includes(body.provider || '')) throw new BadRequestException('Unknown provider');
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new BadRequestException('enabled must be boolean');
+    if (body.allowCredits !== undefined && typeof body.allowCredits !== 'boolean') throw new BadRequestException('allowCredits must be boolean');
     if (body.strategy !== undefined && !ROUTING_STRATEGIES.includes(body.strategy)) throw new BadRequestException('Unknown routing strategy');
     if (body.order !== undefined && (!Array.isArray(body.order) || body.order.some(n => typeof n !== 'string'))) throw new BadRequestException('order must be an account list');
-    if (body.enabled === undefined && body.strategy === undefined && body.order === undefined) throw new BadRequestException('Routing preference required');
+    if (body.enabled === undefined && body.strategy === undefined && body.order === undefined && body.allowCredits === undefined) throw new BadRequestException('Routing preference required');
     if (body.enabled !== undefined && (body.strategy !== undefined || body.order !== undefined)) throw new BadRequestException('Send a policy or an automatic-switch setting, not both');
-    try { this.manager.setAccountRouting(body.provider as ProviderId, body.enabled, body.strategy, body.order); }
+    try { this.manager.setAccountRouting(body.provider as ProviderId, body.enabled, body.strategy, body.order, body.allowCredits); }
     catch (err) { throw new BadRequestException((err as Error).message); }
     return this.manager.accountRouting();
   }

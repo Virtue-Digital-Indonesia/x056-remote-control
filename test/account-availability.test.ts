@@ -20,6 +20,30 @@ describe('quota-aware account availability', () => {
     expect(quotaLimit('codex',{at:(now-301)*1000,quota:{windows:[{utilization:1}]}},now)).toBeNull();
     expect(quotaLimit('codex',reading({windows:[null,{utilization:NaN}]}),now)).toBeNull();
   });
+  it('lets a used-up window through only when credits are allowed and on offer', () => {
+    const exhausted={windows:[{utilization:1,resetsAt:now+500}],credits:{available:true,unlimited:false,balance:null}};
+    expect(quotaLimit('codex',reading(exhausted),now)).toEqual({kind:'limited',until:now+500});
+    expect(quotaLimit('codex',reading(exhausted),now,true)).toBeNull();
+    expect(quotaLimit('codex',reading({...exhausted,credits:{available:false}}),now,true)).toEqual({kind:'limited',until:now+500});
+    expect(quotaLimit('codex',reading({...exhausted,limitReachedType:'workspace_member_credits_depleted'}),now,true)).toEqual({kind:'limited',until:now+500});
+    // Claude reports no credit signal; the switch alone lets the CLI decide.
+    expect(quotaLimit('claude',reading({fiveHour:{utilization:100,resetsAt:now+100}}),now,true)).toBeNull();
+    expect(quotaLimit('claude',reading({fiveHour:{utilization:100,resetsAt:now+100},credits:{available:false}}),now,true)).toEqual({kind:'limited',until:now+100});
+    const dir=mkdtempSync(join(tmpdir(),'x056-credits-'));
+    const registry=AccountRegistry.init(join(dir,'accounts.json'),[{name:'a',configDir:dir,provider:'codex'},{name:'b',configDir:dir,provider:'codex'}]);
+    registry.markOk('a');registry.markOk('b');registry.setRouting('codex','priority',['a','b']);
+    writeFileSync(join(dir,'quota-cache.json'),JSON.stringify({a:reading(exhausted)}));
+    expect(registry.routingPolicy('codex').allowCredits).toBe(false);
+    expect(registry.peekActive(now,'codex')?.name).toBe('b');
+    registry.setAllowCredits('codex',true);
+    expect(registry.routingPolicy('codex').allowCredits).toBe(true);
+    expect(registry.peekActive(now,'codex')?.name).toBe('a');
+    expect(registry.explain(now,'codex').candidates.find(c=>c.name==='a')).toMatchObject({eligible:true,onCredits:true});
+    registry.setRouting('codex','sticky',['a','b']);
+    expect(registry.routingPolicy('codex').allowCredits).toBe(true); // a strategy change keeps the switch
+    registry.setAllowCredits('codex',false);
+    expect(registry.peekActive(now,'codex')?.name).toBe('b');
+  });
   it('excludes quota-exhausted accounts across routing strategies and resumes after reset', () => {
     const dir=mkdtempSync(join(tmpdir(),'x056-availability-'));
     const registry=AccountRegistry.init(join(dir,'accounts.json'),[{name:'a',configDir:dir,provider:'codex'},{name:'b',configDir:dir,provider:'codex'}]);
