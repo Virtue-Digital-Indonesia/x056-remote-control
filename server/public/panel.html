@@ -347,6 +347,13 @@
      and the multiline prompt all change that height). */
   #jumpBtn { position: absolute; left: 50%; transform: translateX(-50%); bottom: 128px; z-index: 30; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; display: grid; place-items: center; box-shadow: 0 2px 10px rgba(0,0,0,.25); }
   #jumpBtn[hidden] { display: none; }
+  @media (max-width: 650px) {
+    .apbar { padding: 6px 10px; font-size: 11px; gap: 8px; border-radius: 9px; }
+    .apbar .ic.sm { width: 13px; height: 13px; }
+    .apbar button { padding: 3px 9px; font-size: 11px; }
+    #autopilotBar { margin-bottom: 5px; }
+    #jumpBtn { bottom: 12px; width: 30px; height: 30px; }
+  }
   #jumpBtn:hover { border-color: var(--accent); color: var(--accent); }
   .composer { max-width: 780px; margin: 0 auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 18px; box-shadow: var(--composer-shadow); overflow: hidden; }
   .composer:focus-within { border-color: var(--accent); }
@@ -2865,7 +2872,7 @@
     var sid = lastSessionId;
     var d = document.createElement('div'); d.className = 'apbar';
     d.appendChild(icon('repeat', 'sm'));
-    var l = document.createElement('span'); l.className = 'lbl'; l.textContent = 'Autopilot on — gateway will keep this conversation going (' + rem + ' step' + (rem === 1 ? '' : 's') + ' left, or until the task says done)'; d.appendChild(l);
+    var l = document.createElement('span'); l.className = 'lbl'; var steps = rem + ' step' + (rem === 1 ? '' : 's') + ' left'; var long = 'Autopilot on — gateway will keep this conversation going (' + steps + ', or until the task says done)'; l.textContent = innerWidth <= 650 ? 'Autopilot · ' + steps : long; l.title = long; d.appendChild(l);
     var stop = document.createElement('button'); stop.textContent = 'Stop'; stop.addEventListener('click', function () { api('/api/autopilot/stop', { method: 'POST', body: JSON.stringify({ sessionId: sid }) }).catch(function () {}); }); d.appendChild(stop);
     bar.appendChild(d);
   }

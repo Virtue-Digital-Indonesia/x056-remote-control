@@ -338,3 +338,30 @@ body[data-conversation-label-template=static][data-conversation-label-order=conv
 .action-detail h3{overflow-wrap:anywhere}
 .action-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:60vh;overflow:auto;font-size:12px;line-height:1.6;margin:16px 0 20px}
 dialog.modern-prompt:has(.action-detail){width:min(840px,calc(100vw - 32px))}
+/* Phones: the conversation takes the whole screen; its hamburger opens the Project
+   drawer; the topbar is one row of icons; the composer keeps its controls on one
+   row each so the transcript gets the height back. */
+@media(max-width:650px){
+  body.rc-workspace-ready[data-chat-mode=page] #conversationSurface{inset:0;height:100dvh}
+  body.rc-workspace-ready .focus-main .topbar #menuBtn{display:inline-grid!important;order:-3;width:34px;height:34px;flex:none;color:var(--text)}
+  body.rc-workspace-ready .focus-main>.topbar{min-height:52px;height:auto;padding:8px 8px 6px;flex-wrap:nowrap;gap:2px;align-items:center}
+  body.rc-workspace-ready .focus-main .topbar .project-heading{order:-2;flex:1 1 auto;min-width:0}
+  body.rc-workspace-ready .focus-main .topbar #chatActivity span,body.rc-workspace-ready .focus-main .topbar #autopilotBtn span{display:none}
+  body.rc-workspace-ready .focus-main .topbar #chatActivity,body.rc-workspace-ready .focus-main .topbar #autopilotBtn{padding:6px;min-height:32px;width:32px;justify-content:center;gap:0}
+  body.rc-workspace-ready .focus-main .topbar #chatActivity small{position:absolute;top:2px;right:2px;font-size:9px}
+  body.rc-workspace-ready .focus-main .topbar #chatActivity{position:relative}
+  body.rc-workspace-ready .focus-main .topbar .cr-icon{width:32px;height:32px}
+  #conversationSurface .topbar #chatClose{order:9}
+  body.rc-workspace-ready .focus-main .thread{padding:16px 14px 20px}
+  body.rc-workspace-ready .focus-main .composer-wrap{padding:6px 10px 10px}
+  body.rc-workspace-ready .focus-main .composer{padding:8px 10px 8px;border-radius:14px}
+  body.rc-workspace-ready .focus-main #prompt{min-height:38px}
+  body.rc-workspace-ready .focus-main .selects{flex-wrap:nowrap;width:100%;gap:5px;margin-bottom:4px;align-items:center}
+  body.rc-workspace-ready .focus-main .select{flex:1 1 0;min-width:0}
+  body.rc-workspace-ready .focus-main .select select{max-width:none;width:100%;font-size:11px;padding:5px 18px 5px 8px}
+  body.rc-workspace-ready .send-account-chip{min-height:26px;padding:6px 2px 0;margin-top:6px;font-size:11px}
+  body.rc-workspace-ready #runningAccountLabel{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:0 0 4px}
+  body.rc-workspace-ready .focus-main .bar{gap:2px;row-gap:0}
+  body.rc-workspace-ready .focus-main .composer-footer{margin-top:0}
+  body.rc-workspace-ready .send-account-chip{min-height:24px;padding:5px 2px 0;margin-top:4px;font-size:11px}
+}

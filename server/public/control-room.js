@@ -383,6 +383,9 @@ window.createControlRoom = function (engine) {
     finally{button.disabled=false;button.removeAttribute('aria-busy');}
   });
   on('chatClose', close);
+  // On a phone the conversation covers the workspace, so its own hamburger has to
+  // reach the Project drawer. The legacy handler behind it opens the old nav.
+  $('menuBtn').addEventListener('click', e => { if (window.rcWorkspace?.ready()) { e.stopImmediatePropagation(); e.preventDefault(); $('crProjects').click(); } }, true);
 
   $('acctChip').addEventListener('click', e => { e.stopImmediatePropagation(); engine.closePops(); showSection('accounts'); }, true);
   $('crSearch').addEventListener('input', () => {recentLimit=10;renderBoard();});
