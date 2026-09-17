@@ -815,11 +815,12 @@ window.createControlRoom = function (engine) {
     $('accountModels').innerHTML=`<div class="model-chart"><div class="model-donut"><svg viewBox="0 0 120 120" role="img" aria-label="${tokens.toLocaleString()} reported tokens by model">${slices}</svg><div><strong>${compact(tokens)}</strong><small>tokens</small></div></div><div class="model-legend">${entries.map(([m,n],i)=>`<div title="${esc(m)}: ${n.toLocaleString()} tokens"><i style="background:${colors[i%colors.length]}"></i><span>${esc(m)}</span><strong>${n/tokens<.01?'&lt;1':Math.round(n/tokens*100)}%</strong></div>`).join('')}</div></div>`;
   }
   function creditBadge(a){
-    const c=a.quota?.credits;if(!c)return '';
+    const c=a.quota?.credits;if(!c||a.paused||a.state?.kind==='unauthenticated')return '';
     const used=quotaWindows(a).all.some(w=>w.utilization*(a.provider==='codex'?100:1)>=100);
-    if(!c.available)return '<small class="credit-badge off">No credits</small>';
-    if(used&&creditsAllowed(a))return '<small class="credit-badge on">On credits</small>';
-    return `<small class="credit-badge">${c.unlimited?'Unlimited credits':'Credits available'}${creditsAllowed(a)?'':' · switch off'}</small>`;
+    if(used&&c.available&&creditsAllowed(a))return '<span class="credit-badge on">On credits</span>';
+    if(used&&c.available)return '<span class="credit-badge">Credits · switch off</span>';
+    if(used&&!c.available)return '<span class="credit-badge off">No credits left</span>';
+    return c.unlimited?'<span class="credit-badge">Unlimited credits</span>':'';
   }
   function quotaWindows(a) {
     const q=a.quota;
@@ -845,7 +846,7 @@ window.createControlRoom = function (engine) {
     const list=accountsByProvider(selectedAccounts());$('accountCount').textContent=list.length;
     const html=`<div class="cr-account-table"><div class="cr-account-head"><span>Account</span><span>Availability</span><span>5-hour window</span><span>7-day window</span><span>Other limits</span><span class="sr-only">Actions</span></div>${list.map(a=>{
       const w=quotaWindows(a);
-      return `<article class="cr-account-row"><div><button class="cr-identity identity-button" data-manage="${esc(a.name)}">${identity(a)}</button>${quotaFreshness(a)}</div><div class="account-availability"><span class="cr-account-state ${available(a)?'ready':a.paused?'paused':'limited'}">${esc(accountStatus(a))}</span>${a.nextUp&&available(a)?'<small class="next-badge">Next message</small>':''}${creditBadge(a)}</div>${quotaCell(a,w.five,'5-hour window')}${quotaCell(a,w.seven,'7-day window')}<div class="other-quotas">${w.other.length?quotaCell(a,w.other[0],w.other[0].label)+(w.other.length>1?`<button class="cr-text-button" data-manage="${esc(a.name)}">+${w.other.length-1} more limits</button>`:''):quotaCell(a,null,'Other limits')}</div><button class="cr-icon" data-account-menu="${esc(a.name)}" aria-label="Manage ${esc(accountName(a))}">${ic('more')}</button></article>`;
+      return `<article class="cr-account-row"><div><button class="cr-identity identity-button" data-manage="${esc(a.name)}">${identity(a)}</button>${quotaFreshness(a)}</div><div class="account-availability"><span class="cr-account-state ${available(a)?'ready':a.paused?'paused':a.state?.kind==='ok'||a.state?.kind==='limited'||a.state?.kind==='unauthenticated'||accountQuotaLimited(a)?'limited':'unknown'}">${esc(accountStatus(a))}</span>${creditBadge(a)}${a.nextUp&&available(a)?'<small class="next-badge">Next message</small>':''}</div>${quotaCell(a,w.five,'5-hour window')}${quotaCell(a,w.seven,'7-day window')}<div class="other-quotas">${w.other.length?quotaCell(a,w.other[0],w.other[0].label)+(w.other.length>1?`<button class="cr-text-button" data-manage="${esc(a.name)}">+${w.other.length-1} more limits</button>`:''):quotaCell(a,null,'Other limits')}</div><button class="cr-icon" data-account-menu="${esc(a.name)}" aria-label="Manage ${esc(accountName(a))}">${ic('more')}</button></article>`;
     }).join('')||'<div class="cr-empty">No accounts connected. Add an account to get started.</div>'}</div>`;
     if(html!==accountSignature){
       accountSignature=html;$('accountRows').innerHTML=html;
