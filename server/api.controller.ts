@@ -470,6 +470,14 @@ export class ApiController {
     return { ok: true };
   }
 
+  @Post('conversations/outcome/dismiss')
+  @HttpCode(200)
+  dismissOutcome(@Body() body: { projectId?: string; sessionId?: string }): { ok: boolean; cleared: boolean } {
+    if (!body?.projectId || !body?.sessionId) throw new BadRequestException('projectId and sessionId required');
+    try { return { ok: true, cleared: this.manager.dismissOutcome(body.projectId, body.sessionId) }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
   @Post('conversations/remove')
   @HttpCode(200)
   removeConversation(@Body() body: { projectId?: string; sessionId?: string }): { ok: boolean } {

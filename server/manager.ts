@@ -1425,6 +1425,13 @@ export class SessionManager {
   }
 
   /** Forget a conversation; refuses if it's the one currently running a turn. */
+  /** Clears a conversation's last outcome (a failed turn, for instance) so lists
+   *  stop flagging it. Nothing about the conversation or its history changes. */
+  dismissOutcome(projectId: string, sessionId: string): boolean {
+    const cleared = this.projects().clearOutcome(projectId, sessionId);
+    this.emitConversations(projectId);
+    return cleared;
+  }
   removeConversation(projectId: string, sessionId: string): void {
     if (this.sessionBusy(sessionId)) throw new BusyError();
     this.assertRemovalAllowed(projectId, sessionId);

@@ -376,6 +376,8 @@ describe('account dashboard API', () => {
     expect(await (await fetch(base+'/api/accounts/routing',{headers:auth})).json()).toMatchObject({autoSwitch:{claude:false,codex:true}});
     await set(true);
     // Extra credits: off until switched on, per provider, and a boolean only.
+    expect((await fetch(base+'/api/conversations/outcome/dismiss',{method:'POST',headers:auth,body:JSON.stringify({projectId:'x'})})).status).toBe(400);
+    expect((await fetch(base+'/api/conversations/outcome/dismiss',{method:'POST',headers:auth,body:JSON.stringify({projectId:'x',sessionId:'y'})})).status).toBe(400);
     expect(await (await fetch(base+'/api/accounts/routing',{headers:auth})).json()).toMatchObject({policies:{claude:{allowCredits:false},codex:{allowCredits:false}}});
     expect((await fetch(base+'/api/accounts/routing',{method:'POST',headers:auth,body:JSON.stringify({provider:'codex',allowCredits:'yes'})})).status).toBe(400);
     const credits=await (await fetch(base+'/api/accounts/routing',{method:'POST',headers:auth,body:JSON.stringify({provider:'codex',allowCredits:true})})).json() as {policies:{codex:{allowCredits:boolean};claude:{allowCredits:boolean}}};

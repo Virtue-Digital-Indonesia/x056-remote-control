@@ -254,6 +254,13 @@ export class ProjectRegistry {
     const c = this.data.projects.find(p => p.id === projectId)?.conversations?.find(c => c.sessionId === sessionId);
     if (c) { c.lastOutcome = outcome; this.save(); }
   }
+  /** A person has seen the outcome; the conversation itself stays. */
+  clearOutcome(projectId: string, sessionId: string): boolean {
+    const c = this.data.projects.find(p => p.id === projectId)?.conversations?.find(c => c.sessionId === sessionId);
+    if (!c) throw new Error('Conversation not found');
+    if (!c.lastOutcome) return false;
+    delete c.lastOutcome; this.save(); return true;
+  }
 
   /** The provider a specific conversation runs on (what its transcript is in).
    *  An EXISTING conversation with no stamped provider predates multi-provider
