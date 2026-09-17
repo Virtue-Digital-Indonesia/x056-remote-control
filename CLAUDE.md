@@ -315,6 +315,22 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   exist (their rollouts are moved in first; a name already present is the
   same thread and is never overwritten) and again at onboarding, before the
   first turn.
+- **A NEW Codex account's first start indexes the whole shared store, and a
+  gateway timeout mid-index wedges the account.** codex 0.153 runs a one-time
+  "state db backfill" the first time a CODEX_HOME starts; with `sessions/`
+  linked to the shared store that is every rollout on the gateway (1.6 GB, 127
+  files on 2026-09-17). The gateway's spawn timeouts (15 s for the usage probe,
+  30 s for a turn) killed it part-way, which left `backfill_state.status =
+  'running'` in the account's `state_5.sqlite` with no process behind it; every
+  later start waited 30 s for that phantom and exited 1, so each turn on the
+  account failed after exactly 30 s with `error: null` and the panel showed
+  "Not checked · Usage temporarily unavailable". Seen live on account `j`.
+  Onboarding now runs `codex migrate-rollouts --apply` for the new home,
+  detached, before the account is routable, so the index completes outside any
+  turn's timeout. Manual repair for a wedged home: pause the account, move its
+  `*.sqlite*` files aside (they hold nothing for an account with no turns), run
+  `CODEX_HOME=<dir> codex migrate-rollouts --apply`, confirm `codex app-server`
+  answers `initialize` within a second, unpause.
 - **A thread whose first turn died has an id but no history, and used to wedge
   the conversation.** `thread/start` assigns the id at once but writes no
   rollout until a turn runs, so a 401, a limit or a swap on the first turn

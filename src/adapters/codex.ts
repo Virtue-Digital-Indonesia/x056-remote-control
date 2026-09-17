@@ -560,8 +560,17 @@ function fetchUsage(configDir: string): Promise<Usage> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn('codex', ['app-server'], {
       env: { ...process.env, CODEX_HOME: configDir },
-      stdio: ['pipe', 'pipe', 'ignore'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+    // The last thing the app server said on stderr is the reason it did not answer:
+    // a fresh home indexing the shared store ("state db backfill is running") looks
+    // exactly like a hang from here, and the panel needs to say which it was.
+    let stderrTail = '';
+    child.stderr?.on('data', (chunk: Buffer) => { stderrTail = (stderrTail + chunk.toString()).slice(-600); });
+    const why = (): string => {
+      const line = stderrTail.split('\n').map((l) => l.replace(/\x1b\[[0-9;]*m/g, '').trim()).filter((l) => l && !/bubblewrap/i.test(l)).pop();
+      return line ? ` (${line.slice(0, 200)})` : '';
+    };
     let settled = false;
     const finish = (err: Error | null, usage?: Usage) => {
       if (settled) return;
@@ -570,9 +579,9 @@ function fetchUsage(configDir: string): Promise<Usage> {
       try { child.kill(); } catch { /* already gone */ }
       if (err) reject(err); else resolvePromise(usage as Usage);
     };
-    const deadline = setTimeout(() => finish(new Error('codex app-server timed out')), 15_000);
+    const deadline = setTimeout(() => finish(new Error('codex app-server timed out' + why())), 15_000);
     child.on('error', (e) => finish(e));
-    child.on('exit', () => finish(new Error('codex app-server exited before answering')));
+    child.on('exit', () => finish(new Error('codex app-server exited before answering' + why())));
     const windowLabel = (mins: unknown): string => {
       const m = typeof mins === 'number' ? mins : 0;
       if (m === 300) return '5-hour';

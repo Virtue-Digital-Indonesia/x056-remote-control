@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
 
 /**
  * One rollout store for every Codex account.
@@ -87,4 +88,33 @@ function mergeInto(from: string, to: string): { moved: number; skipped: number }
     }
   }
   return { moved, skipped };
+}
+
+/**
+ * Runs Codex's one-time index of the shared store for a NEW home, outside any
+ * turn's timeout. The first `codex app-server` in a fresh CODEX_HOME performs a
+ * "state db backfill" over everything under `sessions/`, which after linking is
+ * the whole gateway store (1.6 GB on 2026-09-17). The gateway's spawn timeouts
+ * killed that part-way and left `backfill_state = running` with no process
+ * behind it; every later start waited 30 s for the phantom and exited 1, so the
+ * account failed every turn after exactly 30 s. `codex migrate-rollouts --apply`
+ * is the CLI's own way to complete that index; it is fire-and-forget here and
+ * only logged, so onboarding never blocks on it and a missing binary is harmless.
+ */
+export function prepareCodexHome(configDir: string, codexPath = 'codex'): void {
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(codexPath, ['migrate-rollouts', '--apply', '--max-mib-per-second', '64'], {
+      env: { ...process.env, CODEX_HOME: configDir },
+      stdio: 'ignore',
+      detached: true,
+    });
+  } catch (err) {
+    console.warn(`[codex-sessions] ${configDir}: could not start the rollout index (${(err as Error).message})`);
+    return;
+  }
+  const started = Date.now();
+  child.on('error', (err) => console.warn(`[codex-sessions] ${configDir}: rollout index failed to start (${err.message})`));
+  child.on('exit', (code) => console.log(`[codex-sessions] ${configDir}: rollout index ${code === 0 ? 'complete' : 'exited ' + code} after ${Math.round((Date.now() - started) / 1000)}s`));
+  child.unref();
 }

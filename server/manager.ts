@@ -24,7 +24,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { AccountRegistry, type RoutingStrategy, type AccountRouteContext } from '../src/accounts.js';
-import { shareCodexSessions } from './codex-sessions.js';
+import { shareCodexSessions, prepareCodexHome } from './codex-sessions.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { getAdapter } from '../src/adapters/registry.js';
@@ -1091,6 +1091,8 @@ export class SessionManager {
     // Before the first turn, so even that one's thread lands in the shared store.
     const shared = shareCodexSessions(this.opts.stateDir, { name, configDir: dir });
     if (shared.error) console.warn(`[codex-sessions] ${name}: ${shared.error}`);
+    // The linked store is large; let Codex index it now, not inside the first turn.
+    prepareCodexHome(dir);
     reg.add(name, dir, 'codex');
     try { this.opts.onAccountAdded?.({ name, configDir: dir, provider: 'codex' }); } catch { /* never block onboarding */ }
     this.emitAccounts();
