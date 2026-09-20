@@ -37,11 +37,11 @@ window.createRCChat = function (engine, room) {
     tools.innerHTML = `<button class="cr-secondary" id="rcChatMenu">Chats</button><span id="rcChatProvider"></span><button class="cr-secondary" id="rcChatTools">Tools</button><button class="cr-secondary" id="rcChatReference">@ Reference</button><button class="cr-secondary" id="rcChatFiles">Files</button><button class="cr-icon" id="rcChatMore" aria-label="Chat actions">•••</button>`;
     document.querySelector('.composer-wrap').prepend(tools);
     $('rcChatNew').onclick = $('rcChatWelcomeNew').onclick = newChat;
-    $('rcChatWelcomeMenu').onclick = () => document.body.classList.toggle('rc-chat-nav-open');
+    $('rcChatWelcomeMenu').onclick = () => window.rcWorkspace?.ready() ? $('crProjects').click() : document.body.classList.toggle('rc-chat-nav-open');
     $('rcChatAccounts').onclick = () => { leave(); room.showAccounts(); };
     $('rcChatSearch').oninput = renderChats;
     $('rcChatArchives').onclick = () => { showArchived = !showArchived; $('rcChatArchives').textContent = showArchived ? 'Active chats' : 'Archived chats'; renderChats(); };
-    $('rcChatMenu').onclick = () => document.body.classList.toggle('rc-chat-nav-open');
+    $('rcChatMenu').onclick = () => window.rcWorkspace?.ready() ? $('crProjects').click() : document.body.classList.toggle('rc-chat-nav-open');
     $('rcChatFiles').onclick = () => { document.body.classList.add('rc-chat-panel-open'); tab = 'files'; renderPanel(); };
     $('rcChatPanelClose').onclick = () => document.body.classList.remove('rc-chat-panel-open');
     $('rcChatTools').onclick = toolsDialog; $('rcChatReference').onclick = referencePicker; $('rcChatMore').onclick = chatActions;
@@ -149,7 +149,7 @@ window.createRCChat = function (engine, room) {
     renderUploads();
   }
   function attach(chatId, sessionId, file, version) {
-    engine.attachSaved(chatId, sessionId, { fileId:file.id, versionId:version.id, name:file.name, type:'application/octet-stream', url:`${base(chatId)}/files/${file.id}/versions/${version.id}/download` });
+    engine.attachSaved(chatId, sessionId, { fileId:file.id, versionId:version.id, name:file.name, type:version.mime || 'application/octet-stream', url:`${base(chatId)}/files/${file.id}/versions/${version.id}/content` });
   }
   function renderUploads() {
     if (!mounted) return;

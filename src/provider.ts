@@ -33,6 +33,8 @@ export interface AccountIdentity {
  *  that the main turn's model changed (text = the model id), derived from the
  *  transcript rather than stored separately. */
 export interface HistoryEntry {
+  messageId?: string;
+  attachments?: { name: string; type: string; url: string }[];
   sender?: import('./message-sender.js').MessageSender;
   /** 'action' = a tool call reconstructed from the transcript, so the trail of
    *  what the agent DID survives a reload (the live activity rows only ever
@@ -46,7 +48,7 @@ export interface HistoryEntry {
    *  turn, so rendering it as one made a 15k-token block look like something
    *  the user typed. */
   artifacts?: string[];
-  role: 'user' | 'assistant' | 'model' | 'action' | 'command' | 'notice' | 'summary';
+  role: 'error' | 'user' | 'assistant' | 'model' | 'action' | 'command' | 'notice' | 'summary';
   text: string;
   /** Complete tool input for the action detail reader. */
   detail?: string;

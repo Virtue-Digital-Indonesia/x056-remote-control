@@ -46,10 +46,14 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     const name=p?.name||labels[pathname]||(pathname==='/projects'?'All Projects':pathname.startsWith('/chat')?'Chat':pathname.startsWith('/work')?'Work':'Workspace');
     const crumbs=link('/home','Workspace')+SEP+(p?link('/projects/'+encodeURIComponent(p.id)+'/overview',esc(name))+SEP+`<span>${esc(current.tab[0].toUpperCase()+current.tab.slice(1))}</span>`:`<span>${esc(name)}</span>`);
     if($('crBreadcrumb').dataset.crumbs!==crumbs){$('crBreadcrumb').innerHTML=crumbs;$('crBreadcrumb').dataset.crumbs=crumbs;window.rcMotion?.crumbs($('crBreadcrumb'));}
-    if(document.body.dataset.chatMode==='page')$('controlRoom').inert=false;
+    $('controlRoom').inert=false;
     const drawerOpen=innerWidth<=850&&$('controlRoom').classList.contains('projects-open');
     document.querySelectorAll('#crWorkspace>.cr-page').forEach(n=>n.inert=document.body.dataset.chatMode==='page'||drawerOpen);
-    if(document.body.dataset.chatMode==='page')$('conversationSurface').inert=drawerOpen;else $('conversationSurface').inert=false;
+    $('conversationSurface').inert=drawerOpen;
+    $('crProjectNav').inert=innerWidth<=850&&!drawerOpen;
+    $('menuBtn').setAttribute('aria-expanded',String(drawerOpen));
+    $('menuBtn').setAttribute('aria-controls','crProjectNav');
+    $('menuBtn').setAttribute('aria-label','Open workspace navigation');
     const isGlobal=handles(pathname),home=['/','/home'].includes(pathname),activity=pathname==='/activity'||pathname.startsWith('/activity/');
     const activityViews=[['/activity','Conversations'],['/activity/queue','Queued messages'],['/activity/automations','Automations'],['/activity/outputs','Outputs']];
     viewNav($('crBoard'),activity?activityViews:[['/home','Recent'],['/chat','All Chats'],['/work/unassigned','Unassigned Work'],['/work','Work repositories']],'Conversation views');
@@ -72,18 +76,20 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     if($('rcChatControl'))$('rcChatControl').textContent='Home';
     window.rcMotion?.marker();
   }
+  function focusNavigation(){(document.body.dataset.chatMode==='page'&&innerWidth<=850?$('menuBtn'):$('crProjects')).focus();}
   function closeDrawer(){
     $('controlRoom').classList.remove('projects-open');$('crProjectVeil').hidden=true;$('crProjects').setAttribute('aria-expanded','false');
     $('crProjectNav').inert=innerWidth<=850;
     document.querySelectorAll('#crWorkspace>.cr-page').forEach(n=>n.inert=false);
     $('conversationSurface').inert=false;
+    $('menuBtn').setAttribute('aria-expanded','false');
   }
   function mount() {
     if(mounted)return;mounted=true;document.body.classList.add('rc-workspace-ready');
     const nav=$('crProjectNav'),primary=nav.querySelector('.cr-primary-nav');
     nav.insertAdjacentHTML('afterbegin',link('/home','<svg class="workspace-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="9" fill="currentColor"/><path d="m9 10 6 6-6 6m9 0h6" fill="none" stroke="var(--bg)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Remote Control</span>','workspace-brand')+'<button id="workspaceSearch" class="workspace-search">'+icon('search')+' Search anything <kbd>⌘ K</kbd></button>');
     nav.insertAdjacentHTML('afterbegin','<button id="workspaceNavClose" class="cr-icon" aria-label="Close workspace navigation">'+icon('x')+'</button>');
-    $('workspaceNavClose').onclick=()=>{closeDrawer();$('crProjects').focus();};
+    $('workspaceNavClose').onclick=()=>{closeDrawer();focusNavigation();};
     $('workspaceSearch').onclick=()=>$('searchChatsBtn').click();
     const destinations=[['crHomeTab','/home','Home','home'],['crSpacesTab','/projects','All Projects','folder'],['workspaceActivity','/activity','Activity','activity'],['crAccountsTab','/accounts','Accounts & tools','user'],['crMemoryTab','/memory','Workspace memory','snippet'],['sidebarSettings','/settings','Settings','gear']];
     const bottom=document.createElement('nav');bottom.className='cr-primary-nav workspace-global-nav';bottom.setAttribute('aria-label','Workspace tools');nav.append(bottom);
@@ -107,9 +113,9 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
       else if(home){event.preventDefault();event.stopImmediatePropagation();(home.id==='chatClose'?closeConversation():navigate('/home')).catch(e=>room.notify(e.message));}
     },true);
     document.addEventListener('keydown',event=>{
-      if(event.key==='Escape'&&$('controlRoom').classList.contains('projects-open')){event.preventDefault();closeDrawer();$('crProjects').focus();}
+      if(event.key==='Escape'&&!event.defaultPrevented&&!document.querySelector('dialog[open],:popover-open')&&$('controlRoom').classList.contains('projects-open')){event.preventDefault();event.stopImmediatePropagation();closeDrawer();focusNavigation();}
       if(event.key==='Tab'&&innerWidth<=850&&$('controlRoom').classList.contains('projects-open')){const nodes=[...nav.querySelectorAll('a,button,input')].filter(n=>n.getClientRects().length),first=nodes[0],last=nodes.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}
-    });
+    },true);
   }
   let releasePollBusy=false;
   async function checkFrontendUpdate(){

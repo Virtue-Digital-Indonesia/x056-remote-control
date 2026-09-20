@@ -12,7 +12,7 @@ import { PROJECT_FILE_TOOLS, callProjectFileTool } from './x056-mcp-project-file
 
 import { OUTPUT_SCHEMAS } from './x056-mcp-output.mjs';
 
-export const SERVER_INFO = { name: 'x056', version: '2.2.0' };
+export const SERVER_INFO = { name: 'x056', version: '2.3.0' };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -375,7 +375,7 @@ const MEMORY_TOOLS = [
   ],
   [
     'memory_propose',
-    'Save durable facts, decisions or procedures automatically as memory proposals, with source references. No approval is needed to save. Keep conversation and Work knowledge local; use scope space and spaceId for knowledge intended for the owning Project bank. memory_context returns the current scope. Human review is still required before automatic context inclusion.',
+    'Save durable facts, decisions or procedures automatically as memory proposals, with source references. No approval is needed to save. Keep conversation and Work knowledge local; use scope space and spaceId for knowledge intended for the owning Project bank. memory_context returns the current scope. Search existing memory first. Identical notes are reused; same-title corrections must use memory_update. New conversation facts/decisions can be auto-approved only when the operator enables that setting; shared notes and corrections require review.',
     {
       title: { type: 'string' },
       content: { type: 'string' },
@@ -432,8 +432,8 @@ for (const tool of CHAT_TOOLS) OUTPUT_SCHEMAS[tool.name] = CHAT_OUTPUT;
 for (const tool of TOOLS) {
   if (!OUTPUT_SCHEMAS[tool.name]) throw new Error(`missing output schema: ${tool.name}`);
   tool.outputSchema = OUTPUT_SCHEMAS[tool.name];
-  const readOnly = /^(list_|read_|search_|get_|code_|wiki_)/.test(tool.name) || ['memory_search', 'memory_read', 'memory_context','memory_source_search','memory_source_read'].includes(tool.name);
-  tool.annotations = { readOnlyHint: readOnly, destructiveHint: ['stop_conversation', 'cancel_queued', 'cancel_scheduled', 'edit_queued', 'pause_scheduled', 'memory_update'].includes(tool.name), idempotentHint: readOnly, openWorldHint: ['send_message', 'message_self', 'schedule_task'].includes(tool.name) };
+  const readOnly = /^(list_|read_|search_|get_|code_|wiki_)/.test(tool.name) || ['chat_status', 'memory_search', 'memory_read', 'memory_context','memory_source_search','memory_source_read'].includes(tool.name);
+  tool.annotations = { readOnlyHint: readOnly, destructiveHint: ['stop_chat', 'update_chat', 'stop_conversation', 'cancel_queued', 'cancel_scheduled', 'edit_queued', 'pause_scheduled', 'memory_update'].includes(tool.name), idempotentHint: readOnly, openWorldHint: ['send_chat_message', 'send_message', 'message_self', 'schedule_task'].includes(tool.name) };
 
 }
 
@@ -456,7 +456,7 @@ export async function callToolResult(api, name, args) {
   if (!validate) throw new Error(`unknown tool: ${name}`);
   if (!validate(args)) throw new Error('Invalid tool arguments: ' + inputValidator.errorsText(validate.errors));
   if (WORKSPACE_TOOLS.some(tool => tool.name === name)) return callWorkspaceTool(api, name, args);
-  if (CHAT_TOOLS.some(tool => tool.name === name)) return callChatTool(api, name, args, SELF);
+  if (CHAT_TOOLS.some(tool => tool.name === name)) return callChatTool(api, name, args, SELF, callToolResult);
   if (PROJECT_FILE_TOOLS.some(tool => tool.name === name)) return callProjectFileTool(api, name, args, SELF);
   if(MEMORY_TOOLS.some(t=>t[0]===name)){
     const pid=args.projectId||SELF.projectId,sid=args.sessionId||(pid===SELF.projectId?SELF.sessionId:'');
@@ -468,6 +468,13 @@ export async function callToolResult(api, name, args) {
     else if(name==='memory_link'){path='/api/memory/link';body={from:args.from,to:args.to,kind:args.kind,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})};}
     else {path='/api/memory/propose';const {id,revision,...entry}=args;body={id,revision,entry:name==='memory_update'?entry:{...entry,projectId:entry.spaceId?undefined:pid,sessionId:entry.spaceId?undefined:sid,sources:entry.sources||[{label:'Agent proposal',projectId:pid,sessionId:sid}]}};}
     if(body&&['memory_propose','memory_update'].includes(name)&&SELF.projectId&&SELF.sessionId)Object.assign(body,{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId});
+    if (name === 'memory_propose') {
+      const query = new URLSearchParams({ query: args.title, limit: '20', ...(SELF.projectId && SELF.sessionId ? { callerProjectId: SELF.projectId, callerSessionId: SELF.sessionId } : { projectId: pid || '', sessionId: sid || '' }) });
+      const known = await api('/api/memory/search?' + query);
+      const normalize = text => String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const conflict = (known.entries || known.items || []).find(e => normalize(e.title) === normalize(args.title) && e.scope === (args.scope || 'project') && (args.spaceId ? e.spaceId === args.spaceId : e.projectId === pid) && normalize(e.content) !== normalize(args.content));
+      if (conflict) throw new Error('Related memory already exists: ' + conflict.id + ' (revision ' + conflict.revision + '). Read it with memory_read and use memory_update for a correction. Use a distinct title if this is a separate fact.');
+    }
     const data = await api(path,body?{method:'POST',body:JSON.stringify(body)}:undefined);
     const structured = name === 'memory_link' ? { relationships: data }
       : name === 'memory_propose' || name === 'memory_update' ? { entry: data } : data;

@@ -1,7 +1,7 @@
 # MCP output contracts
 
-The 45 advertised actions now declare output schemas and return matching `structuredContent` over HTTP and stdio.
-MCP server version is `2.2.0`.
+The 54 advertised actions now declare output schemas and return matching `structuredContent` over HTTP and stdio.
+MCP server version is `2.3.0`.
 Text blocks remain available alongside structured results.
 Both representations come from one handler execution.
 
@@ -17,6 +17,9 @@ Only referenced memory definitions appear in each schema.
 | `list_artifacts` | Filtered artifact page with authenticated download paths |
 | `register_artifact` | Registered artifact metadata |
 | `read_artifact` | Metadata, bounded text or an additional MCP image content block |
+| `list_chats`, `create_chat`, `update_chat` | `data` with Chat records; creation reuses a stable request ID |
+| `read_chat`, `send_chat_message`, `stop_chat` | `data` wrapping the matching conversation result; sending retains operator approval |
+| `chat_status` | `data` with Chat identity, preferences and current activity |
 | `list_projects` | Execution records with optional parent Project and membership revision; workspace may be null |
 | `list_conversations` | `conversations` array, with optional model, effort and creation time |
 | `read_conversation` | `messages` array of user and assistant rows |

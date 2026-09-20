@@ -2114,10 +2114,12 @@
     // action" line.
     var key = viewKey(pid, sessionId);
     if (!views[key]) views[key] = { frag: document.createDocumentFragment(), label: '', subs: {}, subCount: 0, active: false, loaded: false, activityLog: [] };
+    views[key].lastUsed = Date.now();
     return views[key];
   }
   function forgetView(pid, sessionId) {
     var k = viewKey(pid, sessionId);
+    if(imageObserver&&views[k])views[k].frag.querySelectorAll('img[data-image-url]').forEach(function(im){imageObserver.unobserve(im);});
     delete views[k]; delete activeModel[k]; delete activeEffort[k]; delete activeAccount[k];
   }
   function forgetProjectViews(pid) {
@@ -2129,10 +2131,12 @@
   // A node belongs in the live thread only if it's for the project AND
   // conversation currently being viewed; otherwise it's stashed in that OTHER
   // conversation's own cache so it doesn't bleed into what's on screen.
+  var historyBatch = null;
   function appendNode(pid, sessionId, node) {
+    if (historyBatch) { historyBatch.appendChild(node); return; }
     if (!pid || (pid === currentProjectId && (!sessionId || sessionId === lastSessionId))) {
       var stick = atBottom(); chatEl.appendChild(node); if (stick) down(); updateJump();
-    } else viewOf(pid, sessionId).frag.appendChild(node);
+    } else { var cached = viewOf(pid, sessionId); cached.frag.appendChild(node); while(cached.frag.childNodes.length>160){var removed=cached.frag.firstChild;if(imageObserver&&removed.querySelectorAll)removed.querySelectorAll('img[data-image-url]').forEach(function(im){imageObserver.unobserve(im);});removed.remove();cached.loaded=false;} }
   }
 
   function clockTime(iso) {
@@ -2172,8 +2176,18 @@
   function fallbackCopy(txt) {
     try { var ta = document.createElement('textarea'); ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); } catch (e) {}
   }
+  // Fetch only visible saved images, using the same authenticated API as chat.
+  var imageObserver = window.IntersectionObserver && new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) { if(entry.isIntersecting) { imageObserver.unobserve(entry.target); loadMessageImage(entry.target); } });
+  }, { rootMargin: '250px' });
+  function loadMessageImage(im) {
+    var url=im.dataset.imageUrl; if(!url)return; delete im.dataset.imageUrl;
+    api(url).then(function(r) { if(!r.ok)throw new Error('Image unavailable'); return r.blob(); }).then(function(blob) {
+      var src=URL.createObjectURL(blob); im.onload=im.onerror=function(){URL.revokeObjectURL(src);}; im.src=src;
+    }).catch(function(){ im.alt='Image unavailable · '+im.alt; im.classList.add('unavailable'); });
+  }
   function nodeMsg(role, text, atts, ts, provider, sender) {
-    var wrap = document.createElement('div'); wrap.className = 'msg ' + role;
+    var wrap = document.createElement('div'); wrap.className = 'msg ' + role; wrap._messageText = text; if(ts)wrap.dataset.messageTs=ts;
     var lab = document.createElement('div'); lab.className = 'role';
     lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
     if (role === 'user' && sender && ['conversation','automation','autopilot','mcp'].indexOf(sender.kind) >= 0) {
@@ -2198,7 +2212,13 @@
       var isStr = typeof a === 'string';
       var url = isStr ? a : a.url, type = isStr ? '' : (a.type || ''), name = isStr ? '' : (a.name || '');
       var isImage = type.indexOf('image/') === 0 || (isStr && /^data:image\//.test(url || ''));
-      if (isImage) { var im = document.createElement('img'); im.className = 'att'; im.src = url; content.appendChild(im); }
+      if (isImage) {
+        var im = document.createElement('img'); im.className = 'att'; im.alt = name || 'Attached image'; im.loading='lazy'; im.decoding='async';
+        im.style.minHeight='80px';
+        if (/^\/api\//.test(url || '')) { im.dataset.imageUrl=url; if(imageObserver)imageObserver.observe(im);else loadMessageImage(im); }
+        else if (/^(data:image\/|blob:)/.test(url || '')) im.src=url;
+        content.appendChild(im);
+      }
       else {
         var chip = document.createElement('a'); chip.className = 'filechip'; chip.href = url; chip.download = name || 'file'; chip.target = '_blank'; chip.rel = 'noopener';
         chip.appendChild(icon('file', 'sm'));
@@ -2583,10 +2603,10 @@
       renderStrip();
     }
     else if (kind === 'session_started') {
-      if (data.sender && data.sender.messageId && typeof data.displayPrompt === 'string') {
+      if ((data.messageId || data.sender?.messageId) && typeof data.displayPrompt === 'string' && !data.displayPrompt.trimStart().startsWith('/')) {
         var host = mineConvo ? chatEl : viewOf(pid, sid).frag;
-        var shown = Array.prototype.some.call(host.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === data.sender.messageId; });
-        if (!shown) appendNode(pid, sid, nodeMsg('user', data.displayPrompt, null, data.ts, providerFor(pid, sid), data.sender));
+        var shown = Array.prototype.some.call(host.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === (data.messageId || data.sender.messageId); });
+        if (!shown) { var message = nodeMsg('user', data.displayPrompt, data.attachments, data.ts, providerFor(pid, sid), data.sender); message.dataset.messageSourceId = data.messageId || data.sender.messageId; appendNode(pid, sid, message); }
       }
       clearQuestion(pid, sid);
       var v = viewOf(pid, sid);
@@ -2608,6 +2628,7 @@
       if (!data.completionPending && (!mineConvo || (controlRoom && !controlRoom.isOpen()))) setConvNotif(pid, sid, data.status === 'completed' ? 'done' : 'failed');
       pollAccounts(); renderStrip();
     }
+    else if (kind === 'message_rejected') { appendNode(pid, sid, nodeSys('Message not sent: ' + data.message, 'banner err')); }
     else if (kind === 'session_error') {
       appendNode(pid, sid, nodeSys('error: ' + data.message, 'banner err'));
       if (mineConvo) { active = false; renderBusy(); }
@@ -4102,11 +4123,15 @@
   function loadHistory(reportErrors) {
     var pid = currentProjectId, sid = lastSessionId;
     if (!pid || !sid) return Promise.resolve();
+    var requestView = viewOf(pid, sid), request = requestView.historyRequest = (requestView.historyRequest || 0) + 1;
+    var previousNodes = new Set(chatEl.childNodes);
     var url = '/api/conversations/history-page?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid) + '&limit=80';
     return api(url).then(function (r) { if(!r.ok)throw new Error('History request failed ('+r.status+').'); return r.json(); }).then(function (page) {
-      if (currentProjectId !== pid || lastSessionId !== sid) return; // user switched project OR conversation while loading
+      if (currentProjectId !== pid || lastSessionId !== sid || requestView.historyRequest !== request) return; // discard obsolete requests
       var rows = (page && page.rows) || [];
-      chatEl.textContent = ''; // replace cached view with the fresh transcript
+      var liveNodes = Array.from(chatEl.childNodes).filter(function(n) { return !previousNodes.has(n); });
+      historyBatch = document.createDocumentFragment();
+      try {
       var lv = viewOf(pid, sid); lv.loaded = true;
       // Remember where this page starts so scrolling up can fetch what precedes it.
       lv.histCursor = page ? page.cursor : 0;
@@ -4133,7 +4158,7 @@
                 ? function () { appendNode(pid, sid, nodeNotice(m.text)); }           // compacted / cleared divider
                 : m.role === 'summary'
                   ? function () { appendNode(pid, sid, nodeSummary(m.text, m.ts)); }  // post-compaction recap
-                  : function () { addMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, m.sender); } });
+                  : function () { var n = m.role === 'error' ? nodeSys('error: ' + m.text, 'banner err') : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, m.attachments, m.ts, providerFor(pid,sid), m.sender); if(m.messageId)n.dataset.messageSourceId=m.messageId; appendNode(pid,sid,n); } });
       });
       // The transcript now carries the action trail itself, so replaying the
       // in-memory log on top would double every row from this browser session.
@@ -4147,6 +4172,20 @@
         return x.idx - y.idx; // no timestamp on one side: fall back to messages-then-activity order
       });
       items.forEach(function (it) { it.render(); });
+      var rendered = historyBatch;
+      } finally { historyBatch = null; }
+      liveNodes.forEach(function(n) {
+        var id = n.dataset && n.dataset.messageSourceId;
+        var duplicate = id && Array.from(rendered.querySelectorAll('[data-message-source-id]')).some(function(r) { return r.dataset.messageSourceId === id; });
+        if (!duplicate && !id && n.classList && n.classList.contains('msg')) duplicate = Array.from(rendered.querySelectorAll('.msg')).some(function(r) { return r._messageText === n._messageText && r.className === n.className && Math.abs(Date.parse(r.dataset.messageTs || '')-Date.parse(n.dataset.messageTs || ''))<120000; });
+        if (!duplicate) rendered.appendChild(n);
+      });
+      if(imageObserver)Array.from(chatEl.querySelectorAll('img[data-image-url]')).forEach(function(im){imageObserver.unobserve(im);});
+      chatEl.replaceChildren(rendered);
+      // Keep activity state, but bound detached transcript DOM across projects.
+      Object.keys(views).filter(function(k){return k!==viewKey(pid,sid)&&views[k].frag.childNodes.length;}).sort(function(a,b){return (views[b].lastUsed||0)-(views[a].lastUsed||0);}).slice(6).forEach(function(k){
+        var v=views[k];if(imageObserver)v.frag.querySelectorAll('img[data-image-url]').forEach(function(im){imageObserver.unobserve(im);});v.frag.replaceChildren();v.loaded=false;
+      });
       // "live" just marks the handoff point from replayed history to the real SSE
       // stream — useful for a moment, clutter if it lingers, so fade it out. It's
       // the overlay pill (not an inline entry), so this also supersedes any
@@ -4226,6 +4265,7 @@
         rows.forEach(function (m) {
           frag.appendChild(m.role === 'model'
             ? nodeModelMark(m.text, m.ts)
+            : m.role === 'error' ? nodeSys('error: '+m.text, 'banner err')
             : m.role === 'action'
               ? nodeAct(m.text, m.sub, m.agentId, m.detail)
               : m.role === 'command'
@@ -4234,7 +4274,7 @@
                   ? nodeNotice(m.text)
                   : m.role === 'summary'
                     ? nodeSummary(m.text, m.ts)
-                    : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, providerFor(pid, sid), m.sender));
+                    : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, m.attachments, m.ts, providerFor(pid, sid), m.sender));
         });
         chatEl.insertBefore(frag, chatEl.firstChild);
         scroller.scrollTop = scroller.scrollHeight - fromBottom;
@@ -4314,7 +4354,7 @@
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -4517,7 +4557,7 @@
   /** Render history rows into any container, reusing the chat's own builders so
    *  a subagent's tool calls and messages look identical to the main thread. */
   function renderRowsInto(box, rows, provider) {
-    box.textContent = '';
+    var fragment=document.createDocumentFragment();
     (rows || []).forEach(function (m) {
       var n = m.role === 'action' ? nodeAct(m.text, m.sub, m.agentId, m.detail)
         : m.role === 'command' ? nodeCmd(m.text, m.args, m.ts)
@@ -4525,8 +4565,9 @@
         : m.role === 'summary' ? nodeSummary(m.text, m.ts)
         : m.role === 'model' ? nodeModelMark(m.text, m.ts)
         : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, provider || 'claude', m.sender);
-      box.appendChild(n);
+      fragment.appendChild(n);
     });
+    box.replaceChildren(fragment);
   }
 
   $('allUsageBtn').addEventListener('click', function () { closeAllPops(); controlRoom.showCosts(); });
@@ -5478,7 +5519,7 @@
     if (slash) {
       appendNode(myProject, myConvoSession, nodeCmd(slash[0], (text || '').slice(slash[0].length).trim(), new Date().toISOString()));
     } else {
-      var echo=nodeMsg('user',label,files,new Date().toISOString(),providerFor(myProject,myConvoSession));var deliveryLabel=document.createElement('small');deliveryLabel.className='message-delivery';deliveryLabel.dataset.deliveryId=ticket.id;deliveryLabel.textContent='Sending…';echo.appendChild(deliveryLabel);appendNode(myProject,myConvoSession,echo);
+      var echo=nodeMsg('user',label,files,new Date().toISOString(),providerFor(myProject,myConvoSession));echo.dataset.messageSourceId=ticket.id;var deliveryLabel=document.createElement('small');deliveryLabel.className='message-delivery';deliveryLabel.dataset.deliveryId=ticket.id;deliveryLabel.textContent='Sending…';echo.appendChild(deliveryLabel);appendNode(myProject,myConvoSession,echo);
     }
     // Capture the compose context so a slow response can't misapply to a blank
     // composer the user has since moved on to.

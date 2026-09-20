@@ -52,7 +52,7 @@ afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir
 
 describe('all advertised output contracts', () => {
   it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(47);
+    expect(TOOLS).toHaveLength(54);
     expect(validators.size).toBe(TOOLS.length);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
@@ -337,6 +337,21 @@ describe('all advertised output contracts', () => {
     const hits=validateResult('memory_source_search',await self.callToolResult(api,'memory_source_search',{query:'SourcePassageContract'}));expect(hits.items[0].citation.file.versionId).toBe(file.latestVersionId);
     const response=validateResult('memory_source_read',await self.callToolResult(api,'memory_source_read',{id:doc.id}));expect(response.items[0].citation.file.versionId).toBe(file.latestVersionId);
     const preview=validateResult('memory_context',await self.callToolResult(api,'memory_context',{query:'SourcePassageContract'}));expect(preview.passages.some((p:any)=>p.sourceId===doc.id)).toBe(true);
+  });
+
+  it('manages Chat through both transports and retains the send approval gate', async () => {
+    const chat=(await tool('create_chat',{requestId:'chat-mcp-lifecycle-0001',name:'MCP Chat',provider:'claude'})).data.data;
+    expect((await tool('create_chat',{requestId:'chat-mcp-lifecycle-0001',name:'MCP Chat',provider:'claude'})).data.data.id).toBe(chat.id);
+    expect((await tool('list_chats')).data.data.chats.some((p:any)=>p.id===chat.id)).toBe(true);
+    expect((await tool('read_chat',{chatId:chat.id})).data.data.messages).toEqual([]);
+    expect((await tool('update_chat',{chatId:chat.id,name:'Renamed Chat'})).data.data.name).toBe('Renamed Chat');
+    expect((await tool('chat_status',{chatId:chat.id})).data.data.id).toBe(chat.id);
+    expect((await tool('stop_chat',{chatId:chat.id})).data.data).toMatchObject({stopped:false});
+    const send=tool('send_chat_message',{chatId:chat.id,message:'Needs approval',model:'opus',effort:'high'});
+    await vi.waitFor(()=>expect(manager.listMcpApprovals().some((p:any)=>p.projectId===chat.id)).toBe(true));
+    const approval=manager.listMcpApprovals().find((p:any)=>p.projectId===chat.id)!;
+    manager.decideMcpApproval(approval.id,false);
+    expect((await send).data.data.delivery.status).toBe('denied');
   });
 
   it('covers every advertised action', () => { expect([...covered].sort()).toEqual(TOOLS.map(t => t.name).sort()); });

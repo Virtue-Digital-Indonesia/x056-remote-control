@@ -262,3 +262,15 @@ describe('release identity', () => {
     );
   });
 });
+
+it('reuses exact agent proposals within an owner without widening scope or creating reviews', () => {
+  const input={title:'Fact',content:'Use the stable endpoint.',projectId:'p1',scope:'conversation' as const,sessionId:'s1'};
+  const original=store.propose(input);
+  expect(store.propose({...input,title:'Same fact'}).id).toBe(original.id);
+  const approved=store.update(original.id,1,{status:'confirmed'});
+  expect(store.propose(input)).toEqual(approved);
+  expect(store.propose({...input,sessionId:'s2'}).id).not.toBe(original.id);
+  expect(store.propose({...input,scope:'global'}).id).not.toBe(original.id);
+  expect(store.settings().autoApproveConversationNotes).toBe(false);
+  expect(store.propose({...input,content:'A separate local fact'},true).status).toBe('confirmed');
+});

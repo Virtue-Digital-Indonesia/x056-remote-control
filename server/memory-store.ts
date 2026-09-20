@@ -95,6 +95,7 @@ export interface MemoryQuery {
 export interface MemorySettings {
   enabled: boolean;
   autoCapture: boolean;
+  autoApproveConversationNotes: boolean;
   crossProject: boolean;
   maxTokens: number;
   maxEntries: number;
@@ -123,6 +124,7 @@ export interface MemoryContext {
 const defaults: MemorySettings = {
   enabled: true,
   autoCapture: true,
+  autoApproveConversationNotes: false,
   crossProject: true,
   maxTokens: 2400,
   maxEntries: 12,
@@ -331,6 +333,28 @@ export class MemoryStore {
       .prepare('INSERT INTO memory_fts VALUES(?,?,?,?)')
       .run(entry.id, entry.title, entry.content, entry.tags.join(' '));
   }
+  /** Repeated agent proposals must not fill the inbox with the same fact. Scope,
+   * provider availability and ownership must match; no widening via dedup. */
+  propose(input: Partial<MemoryEntry>, autoApprove = false): MemoryEntry {
+    input = { ...input, kind: input.kind || 'fact', status: 'proposed', scope: input.scope || 'project',
+      summary: input.summary || '', providers: input.providers || ['claude','codex'],
+      tags: input.tags || [], sharedProjectIds: input.sharedProjectIds || [], pinned: input.pinned ?? false, sources: input.sources || [] };
+    this.validate(input);
+    autoApprove = autoApprove && input.scope === 'conversation' && ['fact','decision'].includes(input.kind!);
+    const signature = (e: Partial<MemoryEntry>) => JSON.stringify([
+      e.scope || 'project', e.projectId || '', e.spaceId || '',
+      e.scope === 'conversation' ? e.sessionId || '' : '',
+      e.kind || 'fact', [...(e.providers || ['claude','codex'])].sort(),
+      [...(e.sharedProjectIds || [])].sort(), e.expiresAt || null,
+      e.content?.replace(/\r\n/g, '\n').trim(),
+    ]);
+    const wanted = signature(input);
+    const candidates = this.db.prepare("SELECT data FROM memory_entries WHERE status IN ('proposed','confirmed') AND scope=? AND kind=? AND trim(replace(json_extract(data,'$.content'),char(13)||char(10),char(10)))=?")
+      .all(input.scope!, input.kind!, input.content!.replace(/\r\n/g, '\n').trim());
+    const same = candidates.map(row => this.projectEntry(this.decode<MemoryEntry>(row))).find(e => e && signature(e) === wanted);
+    if (same) return same;
+    return this.create({ ...input, status: autoApprove ? 'confirmed' : 'proposed' }, autoApprove ? 'agent · automatic conversation note' : 'agent proposal');
+  }
   create(input: Partial<MemoryEntry>, actor = 'operator'): MemoryEntry {
     const now = Date.now(),
       entry: MemoryEntry = {
@@ -432,7 +456,7 @@ export class MemoryStore {
   }
   setSettings(patch: Partial<MemorySettings>) {
     const s = { ...this.settings(), ...patch };
-    for (const k of ['enabled', 'autoCapture', 'crossProject'] as const)
+    for (const k of ['enabled', 'autoCapture', 'autoApproveConversationNotes', 'crossProject'] as const)
       if (typeof s[k] !== 'boolean') throw new Error('Invalid setting');
     if (
       !Number.isInteger(s.maxTokens) ||

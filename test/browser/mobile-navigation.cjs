@@ -18,7 +18,7 @@ const base=process.argv[2]||'http://127.0.0.1:8797';
  await page.locator('#crProjectSearch').fill('');
  await page.locator('#crProjectNav a[href="/activity"]').click();await page.waitForURL(base+'/activity');
  assert(!(await page.locator('#crBoard').evaluate(n=>n.inert)));await active.first().click();await page.locator('#prompt').waitFor();
- await page.locator('#crProjects').click();assert(await page.locator('#conversationSurface').evaluate(n=>n.inert));
+ await page.locator('#menuBtn').click();assert(await page.locator('#conversationSurface').evaluate(n=>n.inert));
  await page.setViewportSize({width:390,height:700});assert(await page.locator('#controlRoom').evaluate(n=>n.classList.contains('projects-open')));
  await page.locator('#workspaceNavClose').click();assert(!(await page.locator('#conversationSurface').evaluate(n=>n.inert)));
  await page.locator('#prompt').fill('Mobile draft retained');await page.goBack();await page.waitForURL(base+'/activity');

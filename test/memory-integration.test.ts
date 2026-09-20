@@ -217,3 +217,17 @@ describe('provider launch memory', () => {
     mgr.memory().close();
   });
 });
+
+it('auto-approves only opt-in local facts; shared notes and corrections retain review', async () => {
+  await api('settings',{autoApproveConversationNotes:true});
+  const entry={title:'Local finding',content:'This task uses the short fixture.',projectId:pid,sessionId:sid,scope:'conversation',kind:'fact'};
+  try {
+    const noCaller=await api('propose',{entry:{...entry,title:'No caller',content:'Not bound to a caller'}});
+    expect(noCaller.data.status).toBe('proposed');
+    const own=await api('propose',{entry,callerProjectId:pid,callerSessionId:sid});
+    expect(own.status).toBe(200);expect(own.data.status).toBe('confirmed');
+    const duplicate=await api('propose',{entry,callerProjectId:pid,callerSessionId:sid});expect(duplicate.data.id).toBe(own.data.id);
+    const shared=await api('propose',{entry:{...entry,scope:'global'},callerProjectId:pid,callerSessionId:sid});expect(shared.data.status).toBe('proposed');
+    const correction=await api('propose',{id:own.data.id,revision:own.data.revision,entry:{content:'Corrected finding.'},callerProjectId:pid,callerSessionId:sid});expect(correction.data.status).toBe('proposed');
+  } finally { await api('settings',{autoApproveConversationNotes:false}); }
+});

@@ -165,3 +165,5 @@ body[data-stage-hidden=true] #stageRestore{display:flex}
 /* Phones: the conversation covers the workspace bar too; its hamburger opens the
    Project drawer, so nothing above it is needed. */
 @media(max-width:650px){body.rc-workspace-ready[data-chat-mode=page] #conversationSurface{inset:0;height:100dvh}body.rc-workspace-ready[data-chat-mode=page] .cr-top{visibility:hidden}}
+
+@media(max-width:850px){body.rc-workspace-ready[data-chat-mode=page] #menuBtn{display:inline-flex!important;flex:none;min-width:40px;min-height:40px}}

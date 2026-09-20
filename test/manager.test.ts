@@ -1118,3 +1118,19 @@ describe('Codex onboarding inherits account setup', () => {
     expect(existsSync(join(state,'accounts','b','auth.json'))).toBe(true);
   });
 });
+
+it('broadcasts and retains queued human prompts with stable delivery IDs and failures', async () => {
+  const {mgr,stateDir}=fixture(FAILED,{delayMs:80}),events:GatewayEvent[]=[];
+  mgr.subscribe(e=>events.push(e));
+  const pid=mgr.listProjects().current!;
+  const sid=mgr.start('First human message',undefined,{requestId:'first-human-message-001'},pid);
+  mgr.enqueue(pid,{text:'Queued human message',sessionId:sid,requestId:'queued-human-message-001'});
+  await waitFor(()=>events.filter(e=>e.kind==='session_done').length===2,3000);
+  const starts=events.filter(e=>e.kind==='session_started');
+  expect(starts.map(e=>e.data.displayPrompt)).toEqual(['First human message','Queued human message']);
+  expect(starts[1].data.messageId).toBe('queued-human-message-001');
+  const {ConversationJournal}=await import('../server/conversation-journal.js');
+  const rows=new ConversationJournal(stateDir).merge(pid,sid,[],true);
+  expect(rows.filter(r=>r.role==='user')).toHaveLength(2);expect(rows.filter(r=>r.role==='error')).toHaveLength(2);
+  mgr.onModuleDestroy();
+});

@@ -1,3 +1,5 @@
+import { messageImages, uploadImage } from './message-images.js';
+import { ConversationJournal } from './conversation-journal.js';
 import { findMessageReply } from './message-reply.js';
 import type { FileReference } from './file-store.js';
 import { RoutingState, type ConversationRoute } from './routing-state.js';
@@ -169,7 +171,16 @@ export class ApiController {
     this.deliveries=manager.deliveries();
   }
 
-  private deliveryOnce(body:SendBody,action:()=>{sessionId?:string;id?:string;queued?:boolean;steered?:boolean}){try{return this.deliveries.run(body,action);}catch(e){if(e instanceof BadRequestException||e instanceof ConflictException)throw e;throw new BadRequestException((e as Error).message);}}
+  private deliveryOnce(body: SendBody, action: () => { sessionId?: string; id?: string; queued?: boolean; steered?: boolean }) {
+    try { return this.deliveries.run(body, action); }
+    catch (error) {
+      try {
+        if (body.projectId && body.sessionId) this.manager.reportDeliveryError(body.projectId, body.sessionId, (error as Error).message, body.requestId);
+      } catch (logError) { console.warn('Could not record rejected delivery', logError); }
+      if (error instanceof BadRequestException || error instanceof ConflictException) throw error;
+      throw new BadRequestException((error as Error).message);
+    }
+  }
   private quotaCacheFile(): string {
     return join(this.stateDir, 'quota-cache.json');
   }
@@ -530,7 +541,7 @@ export class ApiController {
     const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 100;
     try {
       const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
-      return adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [];
+      return this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [], true)).slice(-n);
     } catch {
       if (strict === 'true') throw new BadRequestException('Conversation history unavailable');
       return [];
@@ -600,6 +611,23 @@ export class ApiController {
     return this.manager.haltConversation(body.projectId, body.sessionId, body.dropQueued !== false);
   }
 
+  @Get('conversations/upload-image')
+  conversationUploadImage(@Query('upload') upload: string, @Query('name') name: string, @Res() res: Response) {
+    try {
+      const image = uploadImage(this.stateDir, upload, name);
+      res.setHeader('Content-Type', image.type);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.sendFile(image.path);
+    } catch { throw new BadRequestException('Image is unavailable'); }
+  }
+  private historyImages(rows: HistoryEntry[]): HistoryEntry[] {
+    return rows.map(row => row.role !== 'user' ? row : { ...row, attachments: messageImages(row.text, owner => {
+      let chat = false;
+      try { chat = this.manager.fileOwner(owner).kind === 'chat'; } catch {}
+      return '/api/' + (chat ? 'chats/' : 'project-spaces/') + encodeURIComponent(owner);
+    }) });
+  }
   /** A page of older history for scroll-back. Paging is by opaque cursor (a byte
    *  offset into the transcript), so scrolling far back never requires reading
    *  the whole file — these grow past 350MB and would otherwise blow up. */
@@ -615,10 +643,13 @@ export class ApiController {
     const cur = Number.isFinite(Number(before)) && Number(before) >= 0 ? Number(before) : undefined;
     try {
       const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
-      if (adapter.readHistoryPage) return adapter.readHistoryPage(configDirs, providerSessionId, n, cur);
+      if (adapter.readHistoryPage) {
+        const page = adapter.readHistoryPage(configDirs, providerSessionId, n, cur);
+        return { ...page, rows: this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, page.rows, cur === undefined)) };
+      }
       // Provider without pagination: serve the newest page and report no more.
       const rows = adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [];
-      return { rows, cursor: 0, done: true };
+      return { rows: this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, rows, true)), cursor: 0, done: true };
     } catch {
       return { rows: [], cursor: 0, done: true };
     }
@@ -655,7 +686,7 @@ export class ApiController {
           const usageStats = file ? this.stats.statsFor(file, 256 * 1024) : null;
           const fresh = s.updatedAt != null && Date.now() - s.updatedAt < LIVE_SUBAGENT_MS;
           const live = this.manager.subagentRunning(sessionId, s.agentId);
-          const status = live === true ? 'running' : st?.done ? 'done' : st?.status === 'stopped' || st?.status === 'failed' ? st.status : live === undefined && running && (st?.status === 'running' || fresh) ? 'running' : 'unknown';
+          const status = live === true ? 'running' : st?.done ? 'done' : st?.status === 'stopped' || st?.status === 'failed' ? st.status : live === undefined && running && fresh && st?.status === 'running' ? 'running' : 'unknown';
           return {
             ...s, status,
             startedAt: st?.startedAt ?? s.startedAt,

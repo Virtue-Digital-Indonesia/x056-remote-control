@@ -98,7 +98,7 @@ export class McpHttpController {
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions:
-          'Read and drive the conversations running on this x056 gateway: list_projects and list_conversations to find one, '
+          'For Chat, use list_chats, create_chat, read_chat and send_chat_message. Chat sends retain the same approval gate. For Work, use list_projects and list_conversations to find one, '
           + 'read_conversation for its history, send_message to talk to it. send_message requires the human operator to approve '
           + 'it in the panel before anything is delivered.',
       });

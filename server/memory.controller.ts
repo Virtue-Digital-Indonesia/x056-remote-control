@@ -129,9 +129,16 @@ export class MemoryController {
         for(const ref of body.entry.sources||[]){if(!ref.id)continue;const pinned=this.store().access.references(body.callerProjectId,body.callerSessionId,q.requestId)?.selections.find(r=>r.kind==='source'&&r.id===ref.id);const version=ref.versionId||pinned?.version;const source=version?this.store().sourceVersion(ref.id,version):this.store().source(ref.id);if(!source)throw new Error('Source unavailable');const reason=this.store().sourceContextProblem(source,q);if(reason)throw new Error(reason);const grant=this.store().access.eligible({kind:'source',id:ref.id},body.callerProjectId,body.callerSessionId);ref.grantId=grant?.id;ref.grantRevision=grant?.revision;ref.hash=source.hash;ref.versionId=source.versionId;ref.spaceId=source.spaceId;}
       }
       const entry = { ...body.entry, status: 'proposed' as const };
+      const settings = this.store().settings();
+      const localNote = entry.scope === 'conversation' && !!body.callerProjectId && !!body.callerSessionId &&
+        entry.projectId === body.callerProjectId && entry.sessionId === body.callerSessionId &&
+        !entry.spaceId && !entry.sharedProjectIds?.length;
+      const autoApprove = settings.autoApproveConversationNotes && localNote &&
+        !settings.excludedProjects.includes(body.callerProjectId!) &&
+        !settings.excludedSpaces.includes(this.manager.projectContext().resolve(body.callerProjectId!, body.callerSessionId).spaceId || '');
       return body.id
         ? this.store().update(body.id, body.revision!, entry, 'agent proposal')
-        : this.store().create(entry, 'agent proposal');
+        : this.store().propose(entry, !!autoApprove);
     });
   }
   @Post('bulk') @HttpCode(200) bulk(
