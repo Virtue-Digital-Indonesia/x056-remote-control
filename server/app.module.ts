@@ -92,7 +92,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   const push = new PushService(
     cfg.stateDir,
     (pid) => manager.projectName(pid) ?? 'a project',
-    (sessionId) => manager.hasAutopilot(sessionId),
+    (sessionId) => { const ap = manager.autopilotStatus()[sessionId]; return !!ap && !ap.paused; },
     (pid, sid) => manager.conversationUrl(pid, sid),
   );
   manager.subscribe((e) => { push.notify(e.kind, e.data).catch(() => {}); });

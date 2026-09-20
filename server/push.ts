@@ -14,11 +14,12 @@ export interface StoredSub {
   at: number;
 }
 
-const NOTIFY_KINDS = new Set(['question', 'session_done', 'conversation_settled', 'turn_orphaned', 'autopilot']);
+const NOTIFY_KINDS = new Set(['question', 'session_done', 'session_error', 'conversation_settled', 'turn_orphaned', 'autopilot']);
 
 export class PushService {
   private vapid: { publicKey: string; privateKey: string };
   private subs: StoredSub[] = [];
+  private delivered = new Set<string>();
 
   constructor(
     private readonly stateDir: string,
@@ -87,19 +88,20 @@ export class PushService {
    *  Autopilot projects emit session_done every step, so those are suppressed —
    *  the user is pinged only when autopilot as a whole finishes/stops. */
   async notify(kind: string, data: Record<string, unknown>): Promise<void> {
-    if (!NOTIFY_KINDS.has(kind) || this.subs.length === 0) return;
+    if (!NOTIFY_KINDS.has(kind) || this.subs.length === 0 || data.notificationSuppressed) return;
+    if (['stopped', 'cancelled', 'canceled'].includes(String(data.status)) || data.reason === 'Stopped by user.') return;
     const pid = typeof data.projectId === 'string' ? data.projectId : '';
     const project = pid ? this.nameOf(pid) : 'a project';
     let title = '', body = '';
     if (kind === 'question') {
       title = `${project} needs you`;
-      body = typeof data.question === 'string' ? String(data.question).slice(0, 140) : 'Claude asked a question';
-    } else if (kind === 'session_done' || kind === 'conversation_settled') {
+      body = typeof data.question === 'string' ? String(data.question).slice(0, 140) : 'The assistant asked a question';
+    } else if (kind === 'session_done' || kind === 'session_error' || kind === 'conversation_settled') {
       if (data.completionPending) return;
       const sid = typeof data.sessionId === 'string' ? data.sessionId : '';
       if (sid && this.isAutopilot(sid)) return; // mid-autopilot step, not a real stop
-      const status = typeof data.status === 'string' ? data.status : 'done';
-      title = status === 'completed' ? `${project} finished` : `${project} stopped`;
+      const status = kind === 'session_error' ? 'failed' : typeof data.status === 'string' ? data.status : 'done';
+      title = status === 'completed' ? `${project} finished` : status === 'failed' ? `${project} failed` : `${project} is waiting`;
       body = status === 'completed' ? 'The turn completed — tap to continue.' : `Turn ${status}.`;
     } else if (kind === 'turn_orphaned') {
       title = `${project} was interrupted`;
@@ -108,16 +110,25 @@ export class PushService {
       // Only the terminal states; 'stopped' is a deliberate user action, skip it.
       if (data.active !== false) return;
       const reason = typeof data.reason === 'string' ? data.reason : '';
-      if (!reason || reason === 'stopped') return;
+      if (!reason || ['stopped', 'cancelled', 'canceled'].includes(reason)) return;
       title = reason === 'done' ? `${project} autopilot done` : `${project} autopilot stopped`;
       body = reason === 'done' ? 'The task reported complete.' : `Autopilot ${reason}.`;
     }
     if (!title) return;
     const sessionId = typeof data.sessionId === 'string' ? data.sessionId : '';
-    await this.sendToAll({ title, body, projectId: pid, sessionId, ...(this.linkOf ? { url: this.linkOf(pid, sessionId) } : {}) });
+    // Stable per-turn IDs dedupe terminal replays without muting the next turn.
+    const turnId = data.notificationId || data.requestId || data.at;
+    const group = ['session_done', 'session_error', 'conversation_settled', 'autopilot'].includes(kind) ? 'terminal' : kind;
+    const notificationId = turnId ? [pid, sessionId, turnId, group].join(':') : undefined;
+    if (notificationId) {
+      if (this.delivered.has(notificationId)) return;
+      this.delivered.add(notificationId);
+      if (this.delivered.size > 1000) this.delivered.delete(this.delivered.values().next().value!);
+    }
+    await this.sendToAll({ title, body, projectId: pid, sessionId, notificationId, ...(this.linkOf ? { url: this.linkOf(pid, sessionId) } : {}) });
   }
 
-  private async sendToAll(payload: { title: string; body: string; projectId: string; sessionId?: string; url?: string }): Promise<void> {
+  private async sendToAll(payload: { title: string; body: string; projectId: string; sessionId?: string; notificationId?: string; url?: string }): Promise<void> {
     const json = JSON.stringify(payload);
     const dead: string[] = [];
     await Promise.all(this.subs.map(async (s) => {

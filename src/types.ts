@@ -1,7 +1,7 @@
 export type RawEvent = Record<string, unknown>;
 
 export interface Verdict {
-  kind: 'limited' | 'transient' | 'warning' | 'ok' | 'irrelevant' | 'auth_required';
+  kind: 'limited' | 'transient' | 'warning' | 'ok' | 'irrelevant' | 'auth_required' | 'cancelled';
   // An ABSOLUTE reset time (unix seconds) when the provider reports one directly
   // (Anthropic's rate_limit_event does). Prefer this when present.
   resetsAt?: number;

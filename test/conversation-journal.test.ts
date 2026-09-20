@@ -37,3 +37,11 @@ it('refuses upload traversal, symlinks, and non-image files', () => {
   expect(uploadImage(dir,id,'safe.png').type).toBe('image/png');
   for(const name of ['../secret.png','link.png','secret.txt'])expect(()=>uploadImage(dir,id,name)).toThrow();
 });
+
+it('keeps stopped turns as neutral notices after reload', () => {
+  const dir = temp(), journal = new ConversationJournal(dir);
+  const data = { projectId:'p', sessionId:'s', requestId:'turn', status:'stopped', reason:'Stopped by user.' };
+  journal.record('session_done', data, new Date().toISOString());
+  journal.record('session_done', data, new Date().toISOString());
+  expect(new ConversationJournal(dir).merge('p','s',[],true)).toMatchObject([{ role:'notice', text:'Stopped by user.' }]);
+});

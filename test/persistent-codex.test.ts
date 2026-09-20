@@ -472,3 +472,15 @@ it('refreshes gateway instructions when resuming existing Codex threads', () => 
   const {p,spawned}=pool();const h=p.startTurn(turn({mode:'resume',appendSystemPrompt:'Use native subagent tools.'}));
   expect(spawned[0].sent('thread/resume')[0].params.developerInstructions).toBe('Use native subagent tools.');h.kill();
 });
+
+it.each(['interrupted', 'cancelled', 'canceled'])('surfaces %s as cancellation, not provider failure', async (status) => {
+  const { p, spawned } = pool();
+  const events: Record<string, unknown>[] = [];
+  try {
+    const h = p.startTurn(turn({ sessionId:'cancel-test', onEvent:e => events.push(e) }));
+    spawned[0].complete(status);
+    await h.done;
+    expect(events.some(e => e.type === 'turn.cancelled')).toBe(true);
+    expect(events.some(e => e.type === 'error' || e.type === 'turn.failed')).toBe(false);
+  } finally { p.shutdown(); }
+});

@@ -167,7 +167,7 @@ describe('waiting runs', () => {
       startTurnFn: start,
     });
     control!.abort();
-    expect((await work).status).toBe('failed');
+    expect((await work).status).toBe('stopped');
     expect(start).not.toHaveBeenCalled();
   });
 });

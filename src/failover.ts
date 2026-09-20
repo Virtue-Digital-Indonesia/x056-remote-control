@@ -12,7 +12,7 @@ import type { RawEvent, Verdict } from './types.js';
 export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
 
 export interface SessionResult {
-  status: 'completed' | 'parked' | 'failed';
+  status: 'completed' | 'parked' | 'failed' | 'stopped';
   finalAccount?: string;
   parkedUntil?: number;
   failovers: number;
@@ -143,11 +143,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
 
   try {
     for (;;) {
-      if (aborted) return { status: 'failed', failovers: failoverTimes.length, reason: 'Stopped by user.', providerSessionId: cliSessionId };
+      if (aborted) return { status: 'stopped', failovers: failoverTimes.length, reason: 'Stopped by user.', providerSessionId: cliSessionId };
       checkingEligibility = true;
       const capabilityBlocks = opts.accountEligibility ? await opts.accountEligibility() : undefined;
       checkingEligibility = false;
-      if (aborted) return { status: 'failed', failovers: failoverTimes.length, reason: 'Stopped by user.', providerSessionId: cliSessionId };
+      if (aborted) return { status: 'stopped', failovers: failoverTimes.length, reason: 'Stopped by user.', providerSessionId: cliSessionId };
       const destination = requestedAccount || retryAccount;
       const context = { ...opts.routing, ...(capabilityBlocks ? { capabilityBlocks } : {}), ...(destination ? { preferredAccount: destination, lockedAccount: opts.routing?.lockedAccount || destination } : {}) };
       const loads=opts.accountLoads?.()||{};
@@ -190,6 +190,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         forced: false,
         resultText: undefined as string | undefined,
         resultOk: false,
+        cancelled: false,
         drainTimer: null as NodeJS.Timeout | null,
         graceTimer: null as NodeJS.Timeout | null,
         killRequested: false,
@@ -231,6 +232,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         const captured = adapter.captureSessionId?.(e);
         if (captured) cliSessionId = captured;
         const v = adapter.classify(e);
+        if (v.kind === 'cancelled') state.cancelled = true;
         if (v.kind === 'limited' && !state.limited && !state.authRequired && !state.forced) {
           state.limited = v;
           log.append({ type: 'limit_detected', sessionId, account: account.name, source: v.source, resetsAt: v.resetsAt ?? null });
@@ -328,10 +330,16 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       }, 100);
 
       const exit = await handle.done;
-      try { metrics?.finish(state.limited || state.forced || state.authRequired ? 'interrupted' : state.resultOk ? 'completed' : 'failed'); } catch { /* preserve turn outcome if storage fails */ }
+      const stopped = aborted || (state.cancelled && !state.limited && !state.forced && !state.authRequired);
+      try { metrics?.finish(stopped || state.limited || state.forced || state.authRequired ? 'interrupted' : state.resultOk ? 'completed' : 'failed'); } catch { /* preserve turn outcome if storage fails */ }
       clearInterval(drainWatch);
       if (state.drainTimer) clearTimeout(state.drainTimer);
       if (state.graceTimer) clearTimeout(state.graceTimer);
+
+      if (stopped) {
+        log.append({ type: 'turn_stopped', sessionId, account: account.name });
+        return { status: 'stopped', finalAccount: account.name, failovers: failoverTimes.length, reason: aborted ? 'Stopped by user.' : 'Turn cancelled.', providerSessionId: cliSessionId };
+      }
 
       if (!state.limited && !state.forced && !state.authRequired) {
         if (state.resultOk) {

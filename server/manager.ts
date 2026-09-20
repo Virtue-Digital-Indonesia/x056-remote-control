@@ -232,6 +232,8 @@ interface PersistedState {
 }
 
 interface ActiveRun {
+  stopRequested?: boolean;
+  suppressCompletion?: boolean;
   sessionId: string;
   projectId: string;
   cwd: string;
@@ -619,20 +621,26 @@ export class SessionManager {
       projectId,
     };
     this.saveAutopilot(map);
+    const run = this.runs.get(sessionId);
+    if (run) run.suppressCompletion = true;
+    this.completions.cancel(sessionId);
     this.emit('autopilot', { projectId, sessionId, active: true, remaining: map[sessionId].remaining });
   }
 
   stopAutopilot(sessionId: string): void {
     const map = this.loadAutopilot();
     const pid = map[sessionId]?.projectId;
+    this.completions.cancel(sessionId);
+    const run = this.runs.get(sessionId);
+    if (run && pid) run.suppressCompletion = true;
     if (map[sessionId]) { delete map[sessionId]; this.saveAutopilot(map); }
     const t = this.autopilotTimers.get(sessionId);
     if (t) { clearTimeout(t); this.autopilotTimers.delete(sessionId); }
-    this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'stopped' });
+    if (pid || t) this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'stopped' });
   }
   private pauseAutopilot(sessionId: string, reason: string): void {
     const map = this.loadAutopilot(), ap = map[sessionId];
-    if (!ap) return;
+    if (!ap || ap.paused) return;
     ap.paused = true; ap.pauseReason = reason; this.saveAutopilot(map);
     const timer = this.autopilotTimers.get(sessionId); if (timer) { clearTimeout(timer); this.autopilotTimers.delete(sessionId); }
     this.emit('autopilot', { projectId: ap.projectId, sessionId, active: false, remaining: ap.remaining, reason });
@@ -671,7 +679,7 @@ export class SessionManager {
     // Only continue on a clean completion; park/error pauses (state kept so the
     // user or a later trigger can resume) but stops the auto-loop.
     if (res.status !== 'completed') {
-      this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: ap.remaining, reason: res.status });
+      this.pauseAutopilot(sessionId, res.status);
       return;
     }
     if (typeof res.resultText === 'string' && res.resultText.includes(ap.stopPhrase)) {
@@ -2013,14 +2021,21 @@ export class SessionManager {
   private emit(kind: string, data: Record<string, unknown>): void {
     const sid = typeof data.sessionId === 'string' ? data.sessionId : '';
     if (sid) {
+      const run = this.runs.get(sid);
+      if (['question', 'session_done', 'session_error', 'autopilot'].includes(kind)) {
+        const notificationId = data.requestId || run?.requestId;
+        data = { ...data, ...(notificationId ? { notificationId } : {}) };
+      }
+      if (kind === 'session_done' && (data.status === 'stopped' || run?.stopRequested || (data.status === 'completed' && run?.suppressCompletion))) data = { ...data, notificationSuppressed: true };
       if (['session_started', 'session_error', 'turn_orphaned', 'question'].includes(kind)) this.completions.cancel(sid);
       if (['background_state', 'assistant_text', 'activity'].includes(kind)) this.completions.touch(sid);
       if (kind === 'session_done') {
+        const ap = this.loadAutopilot()[sid];
         if (data.status === 'completed') {
           data = { ...data, completionPending: true };
           // Questions have their own notification. Autopilot owns its terminal
           // notification; neither should also produce a delayed finished ping.
-          if (!this.pendingQuestions.has(sid) && !this.loadAutopilot()[sid]) this.completions.queue(sid, data);
+          if (!data.notificationSuppressed && !this.pendingQuestions.has(sid) && (!ap || ap.paused)) this.completions.queue(sid, data);
         } else this.completions.cancel(sid);
       }
     }
@@ -2439,13 +2454,15 @@ export class SessionManager {
     const sender = runOpts?.sender && !prompt.trimStart().startsWith('/') ? { ...runOpts.sender, messageId: runOpts.sender.messageId || randomUUID() } : undefined;
     turnPrompt = withMessageSender(turnPrompt, sender);
     const sourcePrompt=prompt;
-    const run: ActiveRun = { sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId };
+    const autopilot = this.loadAutopilot()[sessionId];
+    // Keep the turn's notification ownership even if autopilot is disabled later.
+    const run: ActiveRun = { sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId, suppressCompletion: sender?.kind === 'autopilot' || (!!autopilot && !autopilot.paused) };
     this.runs.set(sessionId, run);
     // Every event from this run carries its projectId AND sessionId so the panel
     // can route it to the right conversation — a project can have several
     // conversations running at once, and each conversation's activity/messages
     // must land only in its own view, not whatever's currently on screen.
-    const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { sessionId, ...data, projectId: pid });
+    const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { sessionId, requestId: memoryRequestId, ...data, projectId: pid });
     try {
       const runFn = this.opts.runSessionFn ?? runSession;
       let fileAccount: string | undefined;
@@ -2550,6 +2567,7 @@ export class SessionManager {
       })
         .then((res) => {
           if (this.destroyed) return;
+          if (run.stopRequested) res = { ...res, status: 'stopped', reason: 'Stopped by user.', resultText: undefined };
           if (res.status !== 'completed' && this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
           this.lastResults.set(pid, res);
           try {
@@ -2594,11 +2612,13 @@ export class SessionManager {
           // autopilot is just "keep going". Draining on a FAILED/parked turn too,
           // because autopilot deliberately pauses there and nothing else would
           // ever pick the item up: it would sit in the queue forever.
-          const drained = this.maybeDrainQueue(pid, sessionId);
+          // An explicit cancellation holds queued follow-ups for the operator.
+          const drained = res.status !== 'stopped' && this.maybeDrainQueue(pid, sessionId);
           // If the model ended its turn asking the user something, surface it as
           // an answerable card (only when not on autopilot/queue, which drive it).
-          const onAutopilot = !!this.loadAutopilot()[sessionId];
-          const q = onAutopilot || drained ? null : parseQuestion(res.resultText ?? '');
+          const currentAutopilot = this.loadAutopilot()[sessionId];
+          const onAutopilot = !!currentAutopilot && !currentAutopilot.paused;
+          const q = res.status !== 'completed' || run.suppressCompletion || onAutopilot || drained ? null : parseQuestion(res.resultText ?? '');
           if (q) {
             // Persist alongside the event so the card can be rehydrated after a
             // refresh/reconnect/swap — the turn is over and waiting on a human.
@@ -2618,10 +2638,19 @@ export class SessionManager {
         })
         .catch((err: unknown) => {
           if (this.destroyed) return;
+          if (run.stopRequested) {
+            const stopped: SessionResult = { status: 'stopped', failovers: 0, reason: 'Stopped by user.' };
+            this.lastResults.set(pid, stopped);
+            if (this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
+            this.projects().recordOutcome(pid, sessionId, { status: 'stopped', at: new Date().toISOString(), reason: stopped.reason });
+            emit('session_done', { ...stopped });
+            return;
+          }
           if(err instanceof MemoryReferenceConflict)this.pauseAutopilot(sessionId,(err as Error).message);
           if (this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
           this.projects().recordOutcome(pid, sessionId, {status:'failed', at:new Date().toISOString(), reason:(err as Error).message});
           emit('session_error', { sessionId, message: (err as Error).message });
+          this.pauseAutopilot(sessionId, 'failed');
         })
         .finally(() => {
           if (this.destroyed) return;
@@ -3023,17 +3052,16 @@ export class SessionManager {
     const run = sessionId
       ? this.runs.get(sessionId)
       : (() => { const pid = projectId ?? this.projects().currentId(); return pid ? [...this.runs.values()].find((r) => r.projectId === pid) : undefined; })();
+    const targetSession = run?.sessionId || sessionId;
+    if (targetSession) this.stopAutopilot(targetSession);
     if (!run?.control) {
       // No turn, but the process may still be working: a background task woke
       // the model after `result`. Interrupt rather than kill, so the session
       // stays usable for the next message.
-      if (sessionId && this.pools().some((p) => p.interruptSession(sessionId))) {
-        this.stopAutopilot(sessionId);
-        return true;
-      }
+      if (sessionId && this.pools().some((p) => p.interruptSession(sessionId))) return true;
       return false;
     }
-    this.stopAutopilot(run.sessionId); // stop THIS conversation's autopilot, not the project's
+    run.stopRequested = true;
     run.control.abort();
     return true;
   }

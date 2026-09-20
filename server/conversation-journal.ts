@@ -17,6 +17,8 @@ export class ConversationJournal {
       row = { role: 'user', text: data.displayPrompt, ts, messageId: String(data.messageId || ''), sender: data.sender as HistoryEntry['sender'] };
     } else if (kind === 'session_error' || kind === 'message_rejected' || (kind === 'session_done' && data.status === 'failed')) {
       row = { role: 'error', messageId: data.requestId ? 'error:' + data.requestId : undefined, text: String(data.message || data.reason || 'Turn failed'), ts };
+    } else if (kind === 'session_done' && data.status === 'stopped') {
+      row = { role: 'notice', messageId: data.requestId ? 'stopped:' + data.requestId : undefined, text: String(data.reason || 'Turn stopped.'), ts };
     } else return;
     const file = this.path(String(data.projectId), String(data.sessionId));
     const rows = readState<HistoryEntry[]>(file, []);

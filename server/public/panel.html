@@ -2561,7 +2561,7 @@
       return;
     }
     if (kind === 'conversation_settled') {
-      if (!mineConvo || (controlRoom && !controlRoom.isOpen())) setConvNotif(pid, sid, 'done');
+      if (!data.notificationSuppressed && (!mineConvo || (controlRoom && !controlRoom.isOpen()))) setConvNotif(pid, sid, 'done');
       return;
     }
     if (kind === 'turn_state') {
@@ -2625,7 +2625,8 @@
         + (data.status !== 'completed' && data.reason ? ' · ' + data.reason : '');
       appendNode(pid, sid, nodeSys(doneLine, data.status === 'failed' ? 'banner err' : ''));
       if (mineConvo) { active = false; renderBusy(); }
-      if (!data.completionPending && (!mineConvo || (controlRoom && !controlRoom.isOpen()))) setConvNotif(pid, sid, data.status === 'completed' ? 'done' : 'failed');
+      if (data.status === 'stopped') clearConvNotif(pid, sid);
+      if (!data.notificationSuppressed && ['completed','failed','parked'].includes(data.status) && !data.completionPending && (!mineConvo || (controlRoom && !controlRoom.isOpen()))) setConvNotif(pid, sid, data.status === 'completed' ? 'done' : 'failed');
       pollAccounts(); renderStrip();
     }
     else if (kind === 'message_rejected') { appendNode(pid, sid, nodeSys('Message not sent: ' + data.message, 'banner err')); }
@@ -2645,14 +2646,14 @@
       if (sid) pendingQ[sid] = { projectId: pid, sessionId: sid, question: data.question, options: data.options, at: qAt };
       showQuestion(pid, data);
       if (mineConvo && (!controlRoom || controlRoom.isOpen())) markQuestionSeen(pid, sid, qAt); // you're looking at it
-      else { setConvNotif(pid, sid, 'question'); notify('Claude has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80)); }
+      else { setConvNotif(pid, sid, 'question'); notify('Assistant has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80), data); }
     }
     else if (kind === 'autopilot') {
       // Autopilot is per-conversation now — keyed by the run's sessionId, not
       // the project. The bar shows only for the conversation actually on screen.
       if (sid) { if (data.active) apState[sid] = data.remaining; else delete apState[sid]; }
       if (mineConvo) renderAutopilot();
-      if (!data.active && data.reason === 'done' && !mineConvo) notify('Autopilot done', (projCache[pid] ? projCache[pid].name : 'a project') + ' finished its task');
+      if (!data.active && data.reason === 'done' && !mineConvo) notify('Autopilot done', (projCache[pid] ? projCache[pid].name : 'a project') + ' finished its task', data);
     }
     else if (kind === 'queue') {
       queueState[pid] = Array.isArray(data.items) ? data.items : [];
@@ -2660,7 +2661,7 @@
     }
     else if (kind === 'turn_orphaned') {
       var pname = projCache[pid] ? projCache[pid].name : (data.projectName || 'a project');
-      notify('Turn interrupted', pname + ' stopped mid-turn — resume it in the panel');
+      notify('Turn interrupted', pname + ' stopped mid-turn — resume it in the panel', data);
       appendNode(pid, sid, nodeOrphan(pid, data));
     }
     else if (kind === 'project_selected') { /* another tab switched; ignore */ }
@@ -3036,13 +3037,26 @@
   function loadQueue() { return api('/api/queue').then(function (r) { return r.json(); }).then(function (m) { queueState = m || {}; renderQueue(); }).catch(function () {}); }
 
   // ---- browser notifications ----
-  var notifyAsked = false;
-  function notify(title, body) {
-    try {
-      if (!('Notification' in window)) return;
-      if (Notification.permission === 'granted') { new Notification(title, { body: body }); return; }
-      if (Notification.permission !== 'denied' && !notifyAsked) { notifyAsked = true; Notification.requestPermission().then(function (p) { if (p === 'granted') new Notification(title, { body: body }); }); }
-    } catch (e) {}
+  var localNotificationIds = new Set();
+  function notify(title, body, data) {
+    // Web Push owns delivery when registered. The open page is only a fallback.
+    data = data || {};
+    if (data.notificationSuppressed) return;
+    var id = data.notificationId || data.requestId || data.at;
+    var key = id ? [data.projectId, data.sessionId, id, title].join(':') : '';
+    if (key && localNotificationIds.has(key)) return;
+    if (key) { localNotificationIds.add(key); if (localNotificationIds.size > 500) localNotificationIds.delete(localNotificationIds.values().next().value); }
+    function show() {
+      try {
+        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        // Never request permission in response to a task event.
+        new Notification(title, { body: body, tag: key || undefined, renotify: false });
+      } catch (e) {}
+    }
+    Promise.resolve(swReady).then(function (reg) {
+      if (reg && reg.pushManager) return reg.pushManager.getSubscription().then(function (sub) { if (!sub) show(); });
+      show();
+    }).catch(show);
   }
 
   // ---- Web Push (installed home-screen app buzzes even while closed) ----
@@ -3064,7 +3078,7 @@
   function registerSW() {
     if (!pushSupported()) return Promise.resolve(null);
     return navigator.serviceWorker.register('/sw.js')
-      .then(function (r) { swReg = r; markBell(); if (Notification.permission === 'granted') postSubscription(r).catch(function () {}); return r; })
+      .then(function (r) { swReg = r; markBell(); return (Notification.permission === 'granted' ? postSubscription(r).catch(function () {}) : Promise.resolve()).then(function () { return r; }); })
       .catch(function () { return null; });
   }
   // Subscribe with the server's VAPID key (reusing any existing subscription) and
@@ -3090,7 +3104,7 @@
     }).catch(function () { addSys('could not enable notifications', 'banner'); });
   }
   $('notifyBtn').addEventListener('click', enablePush);
-  registerSW(); // register on boot; silently re-subscribes if already granted
+  var swReady = registerSW(); // register on boot; silently re-subscribes if already granted
   // Notification tap (from the service worker) → open that project.
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', function (e) {

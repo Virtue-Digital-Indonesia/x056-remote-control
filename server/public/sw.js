@@ -12,8 +12,8 @@ self.addEventListener('push', function (event) {
     body: data.body || '',
     icon: '/icon-192.png?v=31f56a235316',
     badge: '/icon-192.png?v=31f56a235316',
-    tag: 'x056-' + (data.projectId || 'general'),
-    renotify: true,
+    tag: 'x056-' + (data.notificationId || data.sessionId || data.projectId || 'general'),
+    renotify: false,
     data: { projectId: data.projectId || '', sessionId: data.sessionId || '', url: data.url || '' },
   }));
 });

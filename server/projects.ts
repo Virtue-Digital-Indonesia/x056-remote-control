@@ -45,7 +45,7 @@ export interface Conversation {
   /** Last selected model/effort for this conversation. Empty means provider default. */
   model?: string;
   effort?: string;
-  lastOutcome?: { status: 'completed' | 'failed' | 'parked'; at: string; reason?: string };
+  lastOutcome?: { status: 'completed' | 'failed' | 'parked' | 'stopped'; at: string; reason?: string };
   /** Which agent CLI this conversation runs on. Stamped when it's created (from
    *  the project's provider) and then FIXED: its transcript is that provider's
    *  own format, so it can't be resumed by the other one. Absent on

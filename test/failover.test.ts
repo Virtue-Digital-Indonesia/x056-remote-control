@@ -510,7 +510,7 @@ describe('load balancing during retries and waiting', () => {
     const {registry,log}=fixtures();registry.setRouting('claude','wait',['a','b']);registry.markLimited('a',5000);
     let control:RunControl|undefined,calls=0;
     const promise=runSession({...base,registry,log,now:()=>1000,control:c=>{control=c;},startTurnFn:()=>{calls++;throw Error('Must not start');}});
-    control!.abort();expect(await promise).toMatchObject({status:'failed',reason:'Stopped by user.'});expect(calls).toBe(0);
+    control!.abort();expect(await promise).toMatchObject({status:'stopped',reason:'Stopped by user.'});expect(calls).toBe(0);
   });
 });
 
@@ -528,4 +528,39 @@ it('honors a newly applied account lock while a targeted switch is draining', as
   routing.lockedAccount = 'a';
   expect(await work).toMatchObject({ status: 'completed', finalAccount: 'a' });
   expect(recorded.map(r => r.configDir)).toEqual(['/cfg/a', '/cfg/a']);
+});
+
+
+describe('deliberate cancellation outcomes', () => {
+  it.each([false, true])('records an active Stop as interrupted, even if success raced it (%s)', async (resultFirst) => {
+    const { registry, log } = fixtures();
+    let control!: RunControl;
+    const outcomes: string[] = [];
+    const analytics = { begin: () => ({ observe: () => {}, finish: (outcome: string) => outcomes.push(outcome) }) };
+    const result = await runSession({ ...base, registry, log, analytics: analytics as never,
+      control: c => { control = c; },
+      startTurnFn: opts => {
+        if (resultFirst) opts.onEvent(SUCCESS);
+        control.abort();
+        return { kill: () => {}, interrupt: () => {}, done: Promise.resolve({ code: null, signal: 'SIGKILL' }) };
+      },
+    });
+    expect(result).toMatchObject({ status: 'stopped', reason: 'Stopped by user.' });
+    expect(outcomes).toEqual(['interrupted']);
+  });
+  it('treats an unsolicited process crash as failure', async () => {
+    const { registry, log } = fixtures();
+    const result = await runSession({ ...base, registry, log, startTurnFn: () => ({
+      kill: () => {}, interrupt: () => {}, done: Promise.resolve({ code: null, signal: 'SIGKILL' }),
+    }) });
+    expect(result).toMatchObject({ status: 'failed', reason: 'signal SIGKILL' });
+  });
+  it('recognizes a provider cancellation without counting a failure', async () => {
+    const { registry, log } = fixtures();
+    registry.add('codex', '/cfg/codex', 'codex');
+    const result = await runSession({ ...base, registry, log, adapter: codexAdapter,
+      startTurnFn: scriptTurns([[{ type: 'turn.cancelled', status: 'interrupted' }]], []),
+    });
+    expect(result.status).toBe('stopped');
+  });
 });

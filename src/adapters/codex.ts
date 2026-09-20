@@ -117,6 +117,10 @@ function usedPercent(e: RawEvent): number | undefined {
 export function classifyCodexEvent(e: RawEvent): Verdict {
   const t = evType(e);
 
+  if (t === 'turn.cancelled' || ((t === 'turn.failed' || t === 'thread.failed') && ['interrupted', 'cancelled', 'canceled'].includes(String(asObj(e.error).status)))) {
+    return { kind: 'cancelled', source: 'codex_turn_cancelled' };
+  }
+
   // The one authoritative terminal-failure event carries the real reason.
   if (t === 'turn.failed' || t === 'thread.failed') {
     const err = asObj(e.error);
@@ -231,6 +235,7 @@ export function captureSessionId(e: RawEvent): string {
 /** The message on a failure event: `turn.failed`/`thread.failed {error:{message}}`
  *  or a bare `error {message}` (the persistent transport emits the pair). */
 export function failureText(e: RawEvent): string | undefined {
+  if (classifyCodexEvent(e).kind === 'cancelled') return undefined;
   const t = evType(e);
   if (t === 'turn.failed' || t === 'thread.failed') {
     const err = asObj(e.error);

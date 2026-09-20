@@ -94,3 +94,25 @@ describe('PushService', () => {
     expect(sent.length).toBe(0);
   });
 });
+
+
+describe('notification noise control', () => {
+  beforeEach(() => { sent.length = 0; });
+  it('silences stopped/cancelled turns and completion from a disabled autopilot', async () => {
+    const { p } = svc(); p.add(sub('https://push/a'));
+    for (const status of ['stopped', 'cancelled', 'canceled']) await p.notify('session_done', { status });
+    await p.notify('session_done', { status: 'failed', reason: 'Stopped by user.' });
+    await p.notify('conversation_settled', { status: 'completed', notificationSuppressed: true });
+    expect(sent).toHaveLength(0);
+  });
+  it('dedupes a terminal event per turn, including concurrent delivery, without muting future turns', async () => {
+    const { p } = svc(); p.add(sub('https://push/a'));
+    const data = { projectId: 'p', sessionId: 's', notificationId: 'turn1', status: 'completed' };
+    await Promise.all([p.notify('conversation_settled', data), p.notify('session_done', data)]);
+    expect(sent).toHaveLength(1);
+    await p.notify('conversation_settled', { ...data, notificationId: 'turn2' });
+    await p.notify('session_error', { ...data, notificationId: 'turn3', message: 'Connection lost' });
+    expect(sent).toHaveLength(3);
+    expect(sent[2].payload).toMatchObject({ title: 'Proj failed' });
+  });
+});

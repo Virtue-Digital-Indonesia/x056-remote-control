@@ -280,6 +280,7 @@ export class CodexTransport implements Transport {
         const status = String(t.status ?? 'completed');
         x.turnId = undefined;
         if (status === 'completed') return { events: [{ type: 'turn.completed' }], turnEnded: true };
+        if (['interrupted', 'cancelled', 'canceled'].includes(status)) return { events: [{ type: 'turn.cancelled', status }], turnEnded: true };
         const te = (t.error ?? {}) as Record<string, unknown>;
         const message = String(te.message ?? (status === 'interrupted' ? 'turn interrupted' : 'turn failed'));
         // exec --json emits `error` then `turn.failed`; keep both so classify()
