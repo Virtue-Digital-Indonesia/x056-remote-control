@@ -1614,8 +1614,9 @@ export class ApiController {
         this.manager.clearRelayChain(body.sessionId);
       }
       if(body.sessionId&&!this.manager.listConversations(body.projectId).some(c=>c.sessionId===body.sessionId))throw new BadRequestException('Conversation not found');
-      const prompt = body.attachments?.length || body.images?.length || body.image ? this.composePrompt(body).prompt : body.prompt ?? '';
-      const item = this.manager.enqueue(body.projectId, { text: prompt, fileRefs: body.fileRefs, model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId });
+      const attachmentPrompt = hasAttachments(body) ? this.composePrompt({ ...body, prompt: '', interactive: false }).prompt : undefined;
+      const prompt = body.prompt ?? '';
+      const item = this.manager.enqueue(body.projectId, { text: prompt, attachmentPrompt, fileRefs: body.fileRefs, model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId });
       return { queued: true, id: item.id, sessionId:item.sessionId };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
@@ -1630,6 +1631,11 @@ export class ApiController {
   @Post('steer')
   @HttpCode(200)
   steer(@Body() body: SendBody): {steered:boolean;queued:boolean;id?:string}|DeliveryReceipt {
+    // Steering cannot carry attachment references. Keep the entire message together.
+    if (hasAttachments(body)) {
+      const queue = () => ({ ...this.enqueueInternal(body), steered: false });
+      return body.requestId ? this.deliveryOnce(body, queue) : queue();
+    }
     if(body.requestId)return this.deliveryOnce(body,()=>{if(body.projectId&&body.sessionId&&body.prompt&&this.manager.steerSession(body.projectId,body.sessionId,body.prompt))return {steered:true,queued:false,sessionId:body.sessionId};return {...this.enqueueInternal(body),steered:false};});
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.sessionId) throw new BadRequestException('sessionId required');

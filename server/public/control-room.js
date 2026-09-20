@@ -2715,10 +2715,57 @@ window.createControlRoom = function (engine) {
     if(!reasons.length){const target=cards().find(x=>x.c.sessionId===item.sessionId),queue=Object.values(queues).find(rows=>rows.some(x=>x.id===item.id))||[],head=queue.find(x=>x.sessionId===item.sessionId);reasons.push(head&&head.id!==item.id?'Waiting for earlier message':target&&['running','background'].includes(target.status)?'Waiting for current turn':'Ready to send');}
     return reasons.join(' · ');
   }
-  function renderPlanner(){const pid=$('plannerProject').value;const rows=Object.entries(plannerRows).filter(([p])=>!pid||pid===p).flatMap(([projectId,items])=>items.map((item,index)=>({projectId,item,index})));$('plannerItems').innerHTML=rows.map(({projectId,item,index})=>{const project=engine.state().projects.find(p=>p.id===projectId),conversation=cards().find(x=>x.c.sessionId===item.sessionId)?.c,[primary,secondary]=conversationLabels(project,conversation);return `<article class="planner-item" draggable="true" data-queue="${esc(item.id)}" data-project="${esc(projectId)}"><span class="planner-order" title="Drag to reorder">${index+1}</span><div class="planner-copy"><strong>${esc(primary)}</strong><small class="planner-conversation">${esc(secondary)}</small><p>${esc(item.text)}</p><small>${esc(queueReason(item))}</small></div><div class="planner-actions"><button class="cr-icon" data-move="-1" aria-label="Move up">${ic('up')}</button><button class="cr-icon" data-move="1" aria-label="Move down">${ic('down')}</button><button class="cr-secondary" data-edit>Edit</button><button class="cr-secondary" data-pause>${item.contextReview?'Review and resume':item.paused||item.dispatching?'Resume':'Pause'}</button><button class="cr-icon" data-remove aria-label="Remove queued message">${ic('x')}</button></div></article>`;}).join('')||'<div class="cr-empty">No messages waiting. Plan a message to get started.</div>';
+  function renderPlanner(){const pid=$('plannerProject').value;const rows=Object.entries(plannerRows).filter(([p])=>!pid||pid===p).flatMap(([projectId,items])=>items.map((item,index)=>({projectId,item,index})));$('plannerItems').innerHTML=rows.map(({projectId,item,index})=>{const project=engine.state().projects.find(p=>p.id===projectId),conversation=cards().find(x=>x.c.sessionId===item.sessionId)?.c,[primary,secondary]=conversationLabels(project,conversation);return `<article class="planner-item" draggable="true" data-queue="${esc(item.id)}" data-project="${esc(projectId)}"><span class="planner-order" title="Drag to reorder">${index+1}</span><div class="planner-copy"><strong>${esc(primary)}</strong><small class="planner-conversation">${esc(secondary)}</small><p>${esc(item.text)}</p><small>${esc([engine.queueFileLabel(item),queueReason(item)].filter(Boolean).join(' · '))}</small></div><div class="planner-actions"><button class="cr-icon" data-move="-1" aria-label="Move up">${ic('up')}</button><button class="cr-icon" data-move="1" aria-label="Move down">${ic('down')}</button><button class="cr-secondary" data-edit>Edit</button><button class="cr-secondary" data-pause>${item.contextReview?'Review and resume':item.paused||item.dispatching?'Resume':'Pause'}</button><button class="cr-icon" data-remove aria-label="Remove queued message">${ic('x')}</button></div></article>`;}).join('')||'<div class="cr-empty">No messages waiting. Plan a message to get started.</div>';
     $('plannerItems').querySelectorAll('[data-queue]').forEach(el=>{const p=el.dataset.project,id=el.dataset.queue,item=plannerRows[p].find(x=>x.id===id);el.querySelector('[data-edit]').onclick=()=>editPlannedMessage(p,item);el.querySelector('[data-pause]').onclick=()=>item.contextReview?window.rcProjectSpaces.reviewQueue(p,item,loadPlanner):workspaceRequest('queue/edit',{projectId:p,id,paused:item.dispatching?false:!item.paused}).then(loadPlanner).catch(e=>toast(e.message));el.querySelector('[data-remove]').onclick=()=>workspaceRequest('queue/remove',{projectId:p,id}).then(loadPlanner).catch(e=>toast(e.message));el.querySelectorAll('[data-move]').forEach(b=>b.onclick=()=>movePlanned(p,id,Number(b.dataset.move)));el.ondragstart=e=>e.dataTransfer.setData('text/plain',JSON.stringify({projectId:p,id}));el.ondragover=e=>e.preventDefault();el.ondrop=e=>{e.preventDefault();try{const moved=JSON.parse(e.dataTransfer.getData('text/plain'));if(moved.projectId!==p)return;const items=plannerRows[p],from=items.findIndex(x=>x.id===moved.id),to=items.findIndex(x=>x.id===id);movePlanned(p,moved.id,to-from);}catch{}};});}
   async function movePlanned(pid,id,delta){const ids=plannerRows[pid].map(x=>x.id),from=ids.indexOf(id),to=Math.max(0,Math.min(ids.length-1,from+delta));ids.splice(from,1);ids.splice(to,0,id);try{await workspaceRequest('queue/reorder',{projectId:pid,ids});await loadPlanner();}catch(e){toast(e.message);loadPlanner();}}
-  function editPlannedMessage(pid,item){const current=item?pid+'::'+item.sessionId:key(),d=workspaceDialog(item?'Edit planned message':'Plan a message',`<form class="workspace-form"><label>Conversation<select name="conversation" ${item?'disabled':''}>${conversationOptions(current)}</select></label><label>Message<textarea name="prompt" rows="5" required>${esc(item?.text||'')}</textarea></label><label>Start no earlier than<input name="time" type="datetime-local"></label><label>Wait until this conversation is idle<select name="after"><option value="">No dependency</option>${conversationOptions()}</select></label><label class="workspace-check"><input type="checkbox" name="paused" ${item?.paused?'checked':''}>Keep paused until I resume it</label><p role="alert"></p><footer><button class="cr-primary">${item?'Save changes':'Add to queue'}</button></footer></form>`);const f=d.querySelector('form');if(item?.notBefore){const date=new Date(item.notBefore);f.elements.time.value=new Date(date-date.getTimezoneOffset()*60000).toISOString().slice(0,16);}if(item?.afterSessionId){const dep=cards().find(x=>x.c.sessionId===item.afterSessionId);f.elements.after.value=dep?.k||'';}f.onsubmit=async e=>{e.preventDefault();const [projectId,sessionId]=f.elements.conversation.value.split('::'),afterSessionId=f.elements.after.value.split('::')[1]||'';f.querySelector('button').disabled=true;try{await workspaceRequest(item?'queue/edit':'queue',{projectId,sessionId,id:item?.id,prompt:f.elements.prompt.value,notBefore:f.elements.time.value?new Date(f.elements.time.value).getTime():0,afterSessionId,paused:f.elements.paused.checked,...(!item?{requestId:crypto.randomUUID()}:{})});d.close();loadPlanner();}catch(err){f.querySelector('[role=alert]').textContent=err.message;f.querySelector('button').disabled=false;}};}
+  function editPlannedMessage(pid,item) {
+    const current=item?pid+'::'+item.sessionId:key();
+    const d=workspaceDialog(item?'Edit planned message':'Plan a message',`<form class="workspace-form"><label>Conversation<select name="conversation" ${item?'disabled':''}>${conversationOptions(current)}</select></label><label>Message<textarea name="prompt" rows="5" placeholder="Add instructions, or queue files on their own">${esc(item?.text||'')}</textarea></label>${item?`<small>${esc(engine.queueFileLabel(item))}</small>`:'<label>Attach files<input type="file" name="files" multiple></label><div data-files></div>'}<label>Start no earlier than<input name="time" type="datetime-local"></label><label>Wait until this conversation is idle<select name="after"><option value="">No dependency</option>${conversationOptions()}</select></label><label class="workspace-check"><input type="checkbox" name="paused" ${item?.paused?'checked':''}>Keep paused until I resume it</label><p role="alert"></p><footer><button class="cr-primary" type="submit">${item?'Save changes':'Add to queue'}</button></footer></form>`);
+    const f=d.querySelector('form'), submit=f.querySelector('[type=submit]'), alert=f.querySelector('[role=alert]');
+    const files=[], controller=new AbortController(), requestId=crypto.randomUUID();
+    let sending=false;
+    d.addEventListener('close',()=>controller.abort(),{once:true});
+    function renderFiles(){
+      f.querySelector('[data-files]').innerHTML=files.map((entry,i)=>`<div class="workspace-actions"><span>${esc(entry.file.name)}</span><button type="button" class="cr-icon" data-remove-file="${i}" aria-label="Remove ${esc(entry.file.name)}" ${sending?'disabled':''}>${ic('x')}</button></div>`).join('');
+      f.querySelectorAll('[data-remove-file]').forEach(b=>b.onclick=()=>{files.splice(Number(b.dataset.removeFile),1);renderFiles();});
+    }
+    if(!item)f.elements.files.onchange=()=>{
+      for(const file of f.elements.files.files){
+        if(file.size>50*1024*1024){alert.textContent=file.name+' exceeds 50 MB.';continue;}
+        if(files.length>=20){alert.textContent='Attach up to 20 files per message.';break;}
+        files.push({file,id:crypto.randomUUID(),saved:{}});
+      }
+      f.elements.files.value='';renderFiles();
+    };
+    if(item?.notBefore){const date=new Date(item.notBefore);f.elements.time.value=new Date(date-date.getTimezoneOffset()*60000).toISOString().slice(0,16);}
+    if(item?.afterSessionId){const dep=cards().find(x=>x.c.sessionId===item.afterSessionId);f.elements.after.value=dep?.k||'';}
+    f.onsubmit=async e=>{
+      e.preventDefault();if(sending)return;
+      if(!f.elements.prompt.value.trim()&&!files.length&&!item?.fileRefs?.length&&!item?.attachmentPrompt){alert.textContent='Add a message or attach a file.';return;}
+      const [projectId,sessionId]=f.elements.conversation.value.split('::'),afterSessionId=f.elements.after.value.split('::')[1]||'';
+      const body={projectId,sessionId,id:item?.id,prompt:f.elements.prompt.value,notBefore:f.elements.time.value?new Date(f.elements.time.value).getTime():0,afterSessionId,paused:f.elements.paused.checked,...(!item?{requestId}:{})};
+      sending=true;submit.disabled=true;f.elements.conversation.disabled=true;if(!item){f.elements.files.disabled=true;renderFiles();}
+      try {
+        const chat=engine.state().projects.find(p=>p.id===projectId)?.kind==='chat';
+        for(const entry of files){
+          alert.textContent='Preparing '+entry.file.name+'…';
+          if(chat){
+            if(!entry.saved[projectId]){
+              const uploaded=await engine.uploadBinary('/api/chats/'+encodeURIComponent(projectId)+'/files',entry.file,entry.id,progress=>{alert.textContent='Uploading '+entry.file.name+' · '+progress+'%';},controller.signal);
+              entry.saved[projectId]=uploaded.files.map(file=>({fileId:file.id,versionId:file.latestVersionId}));
+            }
+            (body.fileRefs??=[]).push(...entry.saved[projectId]);
+          }else{
+            entry.data??=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Could not read '+entry.file.name));reader.readAsDataURL(entry.file);});
+            (body.attachments??=[]).push({name:entry.file.name,data:entry.data});
+          }
+        }
+        if(!d.open)return;
+        await workspaceRequest(item?'queue/edit':'queue',body);d.close();loadPlanner();
+      }catch(err){alert.textContent=err.message;}
+      finally{sending=false;submit.disabled=false;f.elements.conversation.disabled=!!item;if(!item){f.elements.files.disabled=false;renderFiles();}}
+    };
+  }
   function workspaceProjectOptions(){return '<option value="">All projects</option>'+engine.state().projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');}
   on('chatResults',()=>showResults());on('crArtifactsTab',()=>showSection('artifacts'));on('crPlannerTab',()=>showSection('planner'));
   on('artifactAdd',()=>addArtifact(null,null,loadArtifacts));on('artifactRefresh',loadArtifacts);on('plannerAdd',()=>editPlannedMessage());on('plannerRefresh',loadPlanner);

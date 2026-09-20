@@ -2355,7 +2355,7 @@
     if (pendingNew || !currentProjectId || !lastSessionId) return false;
     return isSessionRunning(currentProjectId, lastSessionId) || isSessionBackground(currentProjectId, lastSessionId);
   }
-  function syncSteerBtn() { var b = $('steerBtn'); if (b) b.hidden = !canSteer(); }
+  function syncSteerBtn() { var b = $('steerBtn'); if (b) { b.hidden = !canSteer(); b.title = pendingFiles?.length ? 'Queue message and files after this turn' : 'Steer the running turn'; b.setAttribute('aria-label',pendingFiles?.length ? 'Queue message and files' : 'Steer'); } }
   /** Put the amber spinner on an existing sidebar row without re-rendering the
    *  whole list (the 20s project poll rebuilds it authoritatively anyway). */
   function markConvBg(pid, sid) {
@@ -2912,6 +2912,11 @@
 
   // ---- prompt queue (messages lined up to send when the current turn finishes) ----
   var queueState = {}; // pid -> [{id,text,model,effort,at}]
+  function queueFileLabel(item) {
+    var count=(item.fileRefs||[]).length, blocks=String((item.text||'')+(item.attachmentPrompt||'')).match(/\[The user attached[^\]]*\]/g)||[];
+    blocks.forEach(function(block){var m=/The user attached (\d+) files/.exec(block);count+=m?Number(m[1]):1;});
+    return count ? count + (count===1?' file attached':' files attached') : '';
+  }
   function renderQueue() {
     var bar = $('queueBar'); bar.textContent = '';
     // Show only THIS conversation's queued follow-ups — items for a sibling
@@ -2926,6 +2931,7 @@
       var row = document.createElement('div'); row.className = 'qitem';
       var n = document.createElement('span'); n.className = 'qn'; n.textContent = String(i + 1); row.appendChild(n);
       var t = document.createElement('span'); t.className = 'qtxt'; t.textContent = it.text; t.title = it.text; row.appendChild(t);
+      var fileLabel=queueFileLabel(it); if(fileLabel){var badge=document.createElement('span');badge.className='qmeta';badge.textContent=fileLabel;row.appendChild(badge);}
       if (it.model) { var mm = document.createElement('span'); mm.className = 'qmeta'; mm.textContent = modelLabel(it.model); row.appendChild(mm); }
       var ed = document.createElement('button'); ed.title = 'edit'; ed.appendChild(icon('compose', 'sm'));
       ed.addEventListener('click', function () { editQueueItem(currentProjectId, it); }); row.appendChild(ed);
@@ -3027,7 +3033,7 @@
   function editQueueItem(pid, it) {
     uiPrompt({ title: 'Edit queued message', value: it.text, okText: 'Save', multiline: true }).then(function (next) {
       if (next === null) return; // cancelled
-      if (!next.trim()) { removeQueueItem(pid, it.id); return; }
+      if (!next.trim() && !queueFileLabel(it)) { removeQueueItem(pid, it.id); return; }
       var q = queueState[pid] || []; for (var i = 0; i < q.length; i++) { if (q[i].id === it.id) { q[i].text = next.trim(); break; } }
       renderQueue();
       api('/api/queue/edit', { method: 'POST', body: JSON.stringify({ projectId: pid, id: it.id, prompt: next }) })
@@ -5110,7 +5116,7 @@
   // storage quota and breaking drafts/settings too. `pendingFiles` always points
   // at the array for whichever conversation is currently viewed; restoreAttachments()
   // repoints it on every switch so attaching a file never leaks into another chat.
-  var pendingFilesByConv = {};
+  var pendingFilesByConv = {}, readingFilesByConv = {};
   function filesKeyFor(pid, sid) { return 'x056_draft_' + viewKey(pid, sid); }
   function restoreAttachments() {
     var k = draftKey();
@@ -5124,6 +5130,7 @@
   // The chip row re-renders (fresh indices) on add/remove so the × buttons stay
   // correct after a splice. Images preview as thumbnails; other files show a name chip.
   function renderAttachments() {
+    syncSteerBtn();
     if (currentProjectId && lastSessionId) try { localStorage.setItem('x056_chat_attachments_'+currentProjectId+'::'+lastSessionId, JSON.stringify(pendingFiles.filter(function(f){return f.fileId;}))); } catch(e) {}
     attachRow.textContent = '';
     if (!pendingFiles.length) { attachRow.classList.remove('show'); return; }
@@ -5140,14 +5147,23 @@
   }
   // Truncate IN PLACE (not reassign) so the array still stored in
   // pendingFilesByConv for this conversation is the same, now-empty, object.
+  function consumeAttachments(files, destination) {
+    files.forEach(function(file){var i=destination.indexOf(file);if(i>=0)destination.splice(i,1);});
+    var savedKey=Object.keys(pendingFilesByConv).find(function(k){return pendingFilesByConv[k]===destination;});
+    if(savedKey)try{localStorage.setItem('x056_chat_attachments_'+savedKey.slice('x056_draft_'.length),JSON.stringify(destination.filter(function(f){return f.fileId;})));}catch(e){}
+    if(destination===pendingFiles)renderAttachments();
+  }
   function clearAttachments() { pendingFiles.length = 0; renderAttachments(); }
   var MAX_ATTACH_BYTES = 50 * 1024 * 1024;
   function addFile(f) {
     if (!f) return;
     if (f.size > MAX_ATTACH_BYTES) { addSys('“' + (f.name || 'file') + '” is over 50MB — not attached', 'banner'); return; }
     if (projCache[currentProjectId]?.kind === 'chat') { if(rcChat)rcChat.upload(f); return; }
-    var r = new FileReader();
-    r.onload = function () { pendingFiles.push({ name: f.name || (/^image\//.test(f.type) ? 'pasted-image.png' : 'file'), type: f.type || '', url: r.result }); renderAttachments(); };
+    var r = new FileReader(), destination=pendingFiles, destinationKey=draftKey();
+    readingFilesByConv[destinationKey]=(readingFilesByConv[destinationKey]||0)+1;
+    r.onload = function () { destination.push({ name: f.name || (/^image\//.test(f.type) ? 'pasted-image.png' : 'file'), type: f.type || '', url: r.result }); if(pendingFiles===destination)renderAttachments(); };
+    r.onerror = function () { if(pendingFiles===destination)addSys('Could not read '+f.name+'. Attach it again.', 'banner'); };
+    r.onloadend = function () { readingFilesByConv[destinationKey]--; };
     r.readAsDataURL(f);
   }
   fileEl.addEventListener('change', function () { for (var i = 0; i < fileEl.files.length; i++) addFile(fileEl.files[i]); fileEl.value = ''; });
@@ -5194,6 +5210,7 @@
    *  message is never lost -- the response says which happened. */
   var steerInFlight = false;
   async function steer() {
+    if (pendingFiles.length || readingFilesByConv[draftKey()] || window.rcChat?.uploading(currentProjectId)) { send(); return; }
     if (currentProvider() === 'codex' && /^\//.test(promptEl.value.trim())) { uiAlert({title:'Run command',message:'Use Send for slash commands. Commands wait until the current turn finishes.'}); return; }
     var text = composerMarkdown(promptEl.value).trim();
     // No text but files attached is a plain send, not a steer -- refusing it
@@ -5499,7 +5516,7 @@
   }
   async function send() {
     if(deliveryPreparing||steerInFlight)return;
-    if (window.rcChat?.uploading(currentProjectId)) { addSys('Wait for uploads to finish, or cancel them.', 'banner'); return; }
+    if (readingFilesByConv[draftKey()] || window.rcChat?.uploading(currentProjectId)) { addSys('Wait for uploads to finish, or cancel them.', 'banner'); return; }
     var text = composerMarkdown(promptEl.value).trim(); if (!text && !pendingFiles.length) return;
     if (handleCodexPanelCommand(text)) return;
     // Busy is now per-CONVERSATION: only THIS conversation's own running turn
@@ -5510,14 +5527,14 @@
     // Queue immutable references together with the message while the turn runs.
     if (busy) {
       var queuedPid=currentProjectId,queuedSid=lastSessionId,queuedDraft=promptEl.value;
-      var queuedBody=queueBody(text), queuedFiles=pendingFiles.slice();
+      var queuedBody=queueBody(text), queuedFiles=pendingFiles.slice(), queuedFileList=pendingFiles;
       addFilePayload(queuedBody, queuedFiles);
       deliveryPreparing=true;
-      try {var queued=await prepareDelivery('/api/queue',queuedBody);if(currentProjectId===queuedPid&&lastSessionId===queuedSid&&promptEl.value===queuedDraft){promptEl.value='';autogrow();saveDraft();clearAttachments();}var response=await sendDelivery(queued);if(!response.ok)addSys('Message was not queued. Open Message delivery to retry or edit it.','banner');}
+      try {var queued=await prepareDelivery('/api/queue',queuedBody);if(currentProjectId===queuedPid&&lastSessionId===queuedSid&&promptEl.value===queuedDraft){promptEl.value='';autogrow();saveDraft();}consumeAttachments(queuedFiles,queuedFileList);var response=await sendDelivery(queued);if(!response.ok)addSys('Message was not queued. Open Message delivery to retry or edit it.','banner');}
       catch(e){addSys(e.message,'banner');}finally{deliveryPreparing=false;}
       return;
     }
-    var files = pendingFiles.slice();
+    var files = pendingFiles.slice(), sentFileList=pendingFiles;
     var body = { prompt: text }; if((pendingNew||!lastSessionId)&&composerAccounts[composerAccountKey()])body.account=composerAccounts[composerAccountKey()]; var m = effectiveModel(); if (m) body.model = m; if (effortEl.value) body.effort = effortEl.value;
     addFilePayload(body, files);
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
@@ -5546,7 +5563,8 @@
       return useNew ? (blankSeq === myBlank && !lastSessionId) : (lastSessionId === myConvoSession);
     }
     // Optimistically clear the composer (the text/files are now sent).
-    if(stillSameComposer()&&promptEl.value===draftSnapshot){promptEl.value = ''; autogrow(); saveDraft(); clearAttachments();}
+    if(stillSameComposer()&&promptEl.value===draftSnapshot){promptEl.value = ''; autogrow(); saveDraft();}
+    consumeAttachments(files,sentFileList);
     sendDelivery(ticket).then(function (r) {
       if (!r.ok) { addSys('Message was not sent. Open Message delivery to retry or edit it.', 'banner'); return; }
       return r.json().then(function (j) {
@@ -5789,6 +5807,7 @@
         signal.addEventListener('abort',function(){xhr.abort();},{once:true});var form=new FormData();form.append('files',file,file.name||'pasted-image.png');xhr.send(form);
       });
     },
+    queueFileLabel: queueFileLabel,
     api: api, nav: setNav, closePops: closeAllPops, pollAccounts: pollAccounts,
     defaultModelOptions: function (provider) {
       return provider === 'claude' ? CLAUDE_MODEL_OPTS.filter(function(m) { return m.value; }).map(function(m) { return { value:m.value, label:m.label, efforts:CLAUDE_EFFORT_OPTS }; }) : (providerModels.codex || []).map(function(m) { return { value:m.slug, label:m.label, efforts:[{value:'',label:'Provider default'}].concat((m.efforts || []).map(function(e) { return { value:e,label:EFFORT_LABELS[e] || e }; })) }; });

@@ -1,19 +1,21 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
 import { createApp } from '../server/main.js';
+import { ProjectRegistry } from '../server/projects.js';
 import { SessionManager } from '../server/manager.js';
 
 const TOKEN = 'chat-test-token-01234567890123456789';
-let app: INestApplication, base: string;
+let app: INestApplication, base: string, stateDir: string;
 const headers = { Authorization: `Bearer ${TOKEN}` };
 const json = (path: string, body?: unknown) => fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
 beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rc-chat-api-'));
   mkdirSync(join(dir, 'workspace'));
-  app = await createApp({ token: TOKEN, stateDir: join(dir, 'state'), workspaceRoot: join(dir, 'workspace'), chatEnabled: true });
+  stateDir=join(dir,'state');
+  app = await createApp({ token: TOKEN, stateDir, workspaceRoot: join(dir, 'workspace'), chatEnabled: true });
   await app.listen(0); base = await app.getUrl();
 });
 afterAll(async () => { await app?.close(); });
@@ -38,6 +40,15 @@ describe('Chat files HTTP', () => {
     const repeat = await json('/api/queue', queued); expect(repeat.status).toBe(200);
     const items = app.get(SessionManager).queues()[chat.id]; expect(items).toHaveLength(1); expect(items[0].fileRefs).toEqual(queued.fileRefs);
     expect(items[0].text).toBe('Use the attached files.');
+    const steer=vi.spyOn(app.get(SessionManager),'steerSession').mockReturnValue(true);
+    try {
+      const attachedSteer={...queued,requestId:'api-steer-files-0001',prompt:'Read this with the attachment'};
+      const response=await json('/api/steer',attachedSteer);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({queued:true,steered:false});
+      expect(steer).not.toHaveBeenCalled();
+      expect(app.get(SessionManager).queues()[chat.id].at(-1)).toMatchObject({text:attachedSteer.prompt,fileRefs:queued.fileRefs});
+    } finally {steer.mockRestore();}
     const dispatch=vi.spyOn(app.get(SessionManager),'continueSession').mockReturnValue(chat.lastSessionId);
     try {
       const message={...queued,requestId:'api-direct-message-0001',paused:false,prompt:'Read this version'};
@@ -47,4 +58,33 @@ describe('Chat files HTTP', () => {
       expect(dispatch.mock.calls[0][3]).toMatchObject({requestId:message.requestId,fileRefs:queued.fileRefs});
     } finally { dispatch.mockRestore(); }
   });
+});
+
+it('queues Work attachments with no message and keeps them across text edits', async () => {
+  const manager=app.get(SessionManager), project=manager.createProject('Queued Work files');
+  const sid='work-queue-session';ProjectRegistry.load(join(stateDir,'projects.json')).addConversation(project.id,sid,'Queue attachments','claude');
+  const body={projectId:project.id,sessionId:sid,requestId:'work-queued-file-0001',paused:true,attachments:[{name:'notes.txt',data:'data:text/plain;base64,'+Buffer.from('Queued document').toString('base64')}]};
+  const response=await json('/api/queue',body);expect(response.status,await response.clone().text()).toBe(200);
+  const queued=manager.queues()[project.id][0];expect(queued.attachmentPrompt).toContain('notes.txt');
+  expect(queued.text).toBe('Use the attached files.');
+  expect((await json('/api/queue/edit',{projectId:project.id,id:queued.id,prompt:'Updated instructions'})).status).toBe(200);
+  expect(manager.queues()[project.id][0]).toMatchObject({text:'Updated instructions',attachmentPrompt:queued.attachmentPrompt});
+  const steer=vi.spyOn(manager,'steerSession');
+  try {
+    const result=await json('/api/steer',{...body,requestId:'work-steer-file-0002',prompt:'Read together'});
+    expect(result.status).toBe(200);expect(steer).not.toHaveBeenCalled();
+    expect(manager.queues()[project.id][1].text).toContain('Read together');
+    expect(manager.queues()[project.id][1].attachmentPrompt).toContain('notes.txt');
+  } finally {steer.mockRestore();}
+  const dispatch=vi.spyOn(manager,'continueSession').mockReturnValue(sid);
+  try {
+    manager.editQueueItem(project.id,queued.id,{paused:false});
+    (manager as any).maybeDrainQueue(project.id,sid);
+    await vi.waitFor(()=>expect(dispatch).toHaveBeenCalledTimes(1));
+    const prompt=dispatch.mock.calls[0][2];
+    expect(prompt).toContain('Updated instructions');
+    expect(prompt).toContain('notes.txt');
+    const path=prompt.match(/Read tool at: ([^\]]+)/)![1];
+    expect(readFileSync(path,'utf8')).toBe('Queued document');
+  } finally {dispatch.mockRestore();}
 });

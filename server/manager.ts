@@ -121,6 +121,8 @@ export interface TurnRunOptions {
 
 /** A follow-up message queued to send when the current turn completes. */
 export interface QueueItem {
+  /** Durable uploaded-file instructions, kept separate when the message is edited. */
+  attachmentPrompt?: string;
   contextReview?: { operationId: string; membershipRevision: number; reason: string };
   fileRefs?: FileReference[];
   sender?: MessageSender;
@@ -785,10 +787,10 @@ export class SessionManager {
   clearSelfQueueStreak(sessionId: string): void { this.selfQueueStreak.delete(sessionId); }
 
 
-  enqueue(pid: string, item: { text: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
+  enqueue(pid: string, item: { text: string; attachmentPrompt?: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
-    const text = (item.text ?? '').trim() || (item.fileRefs?.length ? 'Use the attached files.' : '');
+    const text = (item.text ?? '').trim() || (item.fileRefs?.length || item.attachmentPrompt ? 'Use the attached files.' : '');
     if (!text) throw new Error('empty message');
     // Bind the item to a conversation: the one the panel named, else the
     // project's current one. Draining resumes THIS session, so a follow-up
@@ -801,7 +803,7 @@ export class SessionManager {
     if (item.afterSessionId && !this.listProjects().projects.some(p=>p.conversations?.some(c=>c.sessionId===item.afterSessionId))) throw new Error('Dependency conversation not found');
     if (item.afterSessionId && item.afterSessionId === sessionId) throw new Error('A queue item cannot wait for its own conversation');
     const map = this.loadQueues();
-    const q: QueueItem = { id: randomUUID(), text, fileRefs: item.fileRefs, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
+    const q: QueueItem = { id: randomUUID(), text, attachmentPrompt: item.attachmentPrompt, fileRefs: item.fileRefs, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
     (map[pid] ??= []).push(q);
     this.saveQueues(map);
     this.emitQueue(pid, map);
@@ -825,7 +827,7 @@ export class SessionManager {
     if (patch.notBefore !== undefined) it.notBefore=patch.notBefore||undefined;
     if (patch.afterSessionId !== undefined) it.afterSessionId=patch.afterSessionId||undefined;
     if (patch.paused !== undefined) {it.paused=!!patch.paused;if(!patch.paused){it.dispatching=false;it.error=undefined;}}
-    if (typeof patch.text === 'string' && patch.text.trim()) it.text = patch.text.trim();
+    if (typeof patch.text === 'string' && (patch.text.trim() || it.fileRefs?.length || it.attachmentPrompt)) it.text = patch.text.trim() || 'Use the attached files.';
     if (patch.model !== undefined) it.model = patch.model || undefined;
     if (patch.effort !== undefined) it.effort = patch.effort || undefined;
     this.saveQueues(map);
@@ -882,7 +884,7 @@ export class SessionManager {
       try {this.saveQueues(current);} catch {return;} // Never send before the recovery marker is durable.
       if(item.requestId)this.emit('message_delivery',{requestId:item.requestId,sessionId,projectId:pid,status:'uncertain'});
       try {
-        this.continueSession(pid, sessionId, item.text, { fileRefs: item.fileRefs, requestId: item.requestId, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve });
+        this.continueSession(pid, sessionId, item.text + (item.attachmentPrompt || ''), { fileRefs: item.fileRefs, requestId: item.requestId, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve });
       } catch(e) {
         if (e instanceof BusyError) {
           item.dispatching=false;
