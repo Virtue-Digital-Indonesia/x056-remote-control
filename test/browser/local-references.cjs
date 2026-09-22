@@ -18,11 +18,19 @@ fs.writeFileSync(reference, 'id,status\n1,ok\n');
     const response = await route.fetch(), data = await response.json();
     data.rows.push({
       role: 'assistant',
-      text: 'Review [Exact results](' + reference + ':2), [documentation](https://example.test/docs), and [unsafe](javascript:alert(1)).',
+      text: 'Review [Exact results](' + reference + ':2), [documentation](https://example.test/docs), and [unsafe](javascript:alert(1)). [Relative template](' + retained + ') [Absolute template](' + base + retained + ').',
       ts: new Date().toISOString(),
     });
     await route.fulfill({ response, json: data });
   });
+  const retained = '/api/chats/chat-fixture/files/file-fixture/versions/version-fixture/download';
+  let retainedRequests = 0, referenceRequests = 0;
+  await page.route('**' + retained, async route => {
+    assert.equal(route.request().headers().authorization, 'Bearer browser-fixture-token-0123456789');
+    retainedRequests++;
+    await route.fulfill({status:200, headers:{'Content-Type':'application/octet-stream','Content-Disposition':"attachment; filename=download; filename*=UTF-8''Template%20Invoice%20Valid.dotx"},body:'retained template bytes'});
+  });
+  page.on('request', r => { if (r.url().includes('/artifact-reference')) referenceRequests++; });
   await page.goto(base);
   await page.waitForSelector('.cr-task');
   await page.locator('.cr-task').filter({ hasText: 'Build the new homepage' }).click();
@@ -36,6 +44,16 @@ fs.writeFileSync(reference, 'id,status\n1,ok\n');
   const download = page.waitForEvent('download');
   await ref.click();
   assert.equal((await download).suggestedFilename(), 'x056-local-reference.csv');
+  const localRequests = referenceRequests;
+  for (const label of ['Relative template', 'Absolute template']) {
+    const received = page.waitForEvent('download');
+    await page.locator('.content .local-ref').filter({hasText:label}).click();
+    const file = await received;
+    assert.equal(file.suggestedFilename(), 'Template Invoice Valid.dotx');
+    assert.equal(fs.readFileSync(await file.path(), 'utf8'), 'retained template bytes');
+  }
+  assert.equal(retainedRequests, 2);
+  assert.equal(referenceRequests, localRequests, 'API links must not be resolved as filesystem paths');
   const projects = await (await context.request.get(base + '/api/projects', { headers: { Authorization: 'Bearer browser-fixture-token-0123456789' } })).json();
   const project = projects.projects.find((item) => item.name === 'Website refresh');
   const conversation = project.conversations.find((item) => item.title === 'Build the new homepage');
