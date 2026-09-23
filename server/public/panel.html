@@ -1276,7 +1276,7 @@
    * Only ids the picker itself ever wrote are mapped. Remapping anything else
    * would rewrite a model someone pinned deliberately through the API.
    */
-  var LEGACY_MODEL_IDS = { 'claude-opus-5': 'opus' };
+  var LEGACY_MODEL_IDS = { 'claude-opus-5': 'opus', 'gpt-5.6-sol': 'gpt-6-sol', 'gpt-5.6-luna': 'gpt-6-luna' };
   function canonModel(m) { return LEGACY_MODEL_IDS[m] || m || ''; }
   // The model actually sent for a turn: an explicit pick, else this provider's
   // Auto default (AUTO_MODEL). Resolved at SEND time rather than by pre-selecting
@@ -1292,6 +1292,7 @@
   function setModelOptions(opts, value) {
     modelEl.textContent = '';
     opts.forEach(function (o) { var e = document.createElement('option'); e.value = o.value; e.textContent = o.label; modelEl.appendChild(e); });
+    value = canonModel(value);
     modelEl.value = value;
     if (modelEl.value !== value) modelEl.value = ''; // stale/unknown model → Auto
   }

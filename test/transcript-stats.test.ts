@@ -295,3 +295,8 @@ describe('Codex cumulative token accounting', () => {
     expect(estimateCost(u)).toEqual({usd:61.25,unpriced:[]});
   });
 });
+
+it('prices GPT-6 replacements without changing retired models historical rates', () => {
+  const byModel = Object.fromEntries(['gpt-6-sol','gpt-6-luna','gpt-5.6-sol','gpt-5.6-luna'].map(model => [model, { input:1e6, output:1e6, cacheRead:0, cacheWrite:0 }]));
+  expect(estimateCost({input:4e6,output:4e6,cacheRead:0,cacheWrite:0,messages:4,byModel})).toEqual({usd:38,unpriced:[]});
+});

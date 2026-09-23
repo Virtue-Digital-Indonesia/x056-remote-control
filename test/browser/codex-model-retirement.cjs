@@ -1,0 +1,5 @@
+const fs=require('fs'),assert=require('assert/strict'),{chromium}=require('/usr/local/lib/node_modules/playwright');
+(async()=>{const html=fs.readFileSync('server/public/panel.html','utf8');const b=await chromium.launch({args:['--no-sandbox']});try{const p=await b.newPage();await p.setContent('<select id="model"></select>');const aliases=html.slice(html.indexOf('  var LEGACY_MODEL_IDS'),html.indexOf('  // The model actually sent'));
+const options=html.slice(html.indexOf('  function setModelOptions'),html.indexOf('  // What "Auto model"'));
+await p.addScriptTag({content:'var modelEl=document.getElementById("model");\n'+aliases+options});
+for(const tier of ['sol','luna']){const value=await p.evaluate(t=>{setModelOptions([{value:'',label:'Auto'},{value:'gpt-6-'+t,label:'GPT-6 '+t}], 'gpt-5.6-'+t);return modelEl.value},tier);assert.equal(value,'gpt-6-'+tier);}console.log('PASS browser picker migrates both saved retired selections');}finally{await b.close();}})().catch(e=>{console.error(e);process.exitCode=1});

@@ -24,34 +24,34 @@ describe('codex listModels across the fleet', () => {
   // keeps a catalog from before gpt-6-astra shipped. Reading the first account
   // alone hid the model while two healthy accounts had it.
   it('offers a model any account has, ordered by the freshest catalog', () => {
-    const stale = home(['gpt-5.6-sol', 'gpt-5.5'], 60 * 60_000);
-    const fresh = home(['gpt-6-astra', 'gpt-5.6-sol']);
+    const stale = home(['gpt-6-sol', 'gpt-5.5'], 60 * 60_000);
+    const fresh = home(['gpt-6-astra', 'gpt-6-sol']);
     const slugs = codexAdapter.listModels!([stale, fresh]).map((m) => m.slug);
-    expect(slugs).toEqual(['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.5']);
+    expect(slugs).toEqual(['gpt-6-astra', 'gpt-6-sol', 'gpt-5.5']);
   });
 
   it('lists each slug once, with the freshest account\'s metadata', () => {
-    const stale = home(['gpt-5.6-sol'], 60 * 60_000);
-    const fresh = home(['gpt-5.6-sol']);
+    const stale = home(['gpt-6-sol'], 60 * 60_000);
+    const fresh = home(['gpt-6-sol']);
     const models = codexAdapter.listModels!([fresh, stale]);
     expect(models).toHaveLength(1);
-    expect(models[0]).toMatchObject({ slug: 'gpt-5.6-sol', label: 'GPT-5.6-SOL', efforts: ['medium'], defaultEffort: 'medium' });
+    expect(models[0]).toMatchObject({ slug: 'gpt-6-sol', label: 'GPT-6-SOL', efforts: ['medium'], defaultEffort: 'medium' });
   });
 
   it('skips hidden entries and accounts with no cache yet', () => {
     const never = mkdtempSync(join(tmpdir(), 'x056-models-empty-'));
     const one = home(['gpt-5.5', 'hidden']);
     expect(codexAdapter.listModels!([never, one]).map((m) => m.slug)).toEqual(['gpt-5.5']);
-    expect(codexAdapter.listModels!([never])).toEqual([]);
+    expect(codexAdapter.listModels!([never]).map(m => m.slug)).toEqual([]);
   });
 });
 
-// API availability does not imply Codex-with-ChatGPT account availability.
-it('never invents GPT-6 Sol/Luna when account catalogs only offer GPT-5.6', () => {
-  const models = codexAdapter.listModels!([home(['gpt-5.6-sol', 'gpt-5.6-luna'])]);
-  expect(models.map(m => m.slug)).toEqual(['gpt-5.6-sol', 'gpt-5.6-luna']);
+it('retired caches cannot reintroduce GPT-5.6 Sol or Luna', () => {
+  const models = codexAdapter.listModels!([home(['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra'])]);
+  expect(models.map(m => m.slug)).toEqual(['gpt-5.6-terra']);
 });
-it('offers GPT-6 Sol/Luna only when advertised by a Codex account catalog', () => {
-  const models = codexAdapter.listModels!([home(['gpt-6-sol', 'gpt-6-luna'])]);
-  expect(models.map(m => m.slug)).toEqual(['gpt-6-sol', 'gpt-6-luna']);
+
+it('uses real replacement entries without inventing models for empty caches', () => {
+  expect(codexAdapter.listModels!([home(['gpt-6-sol', 'gpt-6-luna'])]).map(m => m.slug)).toEqual(['gpt-6-sol', 'gpt-6-luna']);
+  expect(codexAdapter.listModels!([])).toEqual([]);
 });

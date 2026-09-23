@@ -159,10 +159,20 @@ describe('SessionManager', () => {
     expect(calls[1].effort).toBe('high');
   });
 
+  it.each([['gpt-5.6-sol', 'gpt-6-sol'], ['gpt-5.6-luna', 'gpt-6-luna']])('retires %s at dispatch and on saved preference resolution', async (oldModel, model) => {
+    const { mgr, calls } = fixture(COMPLETED);
+    const project = mgr.createProject('Retired models', undefined, 'codex');
+    const sid = mgr.start('start', undefined, { model: oldModel, effort: 'ultra' }, project.id);
+    await waitFor(() => !mgr.snapshot().running);
+    expect(calls[0]).toMatchObject({model, effort:model === 'gpt-6-sol' ? 'ultra' : 'max'});
+    mgr.setConversationRunPrefs(project.id, sid, {model:oldModel, effort:'ultra'});
+    expect(mgr.conversationRunPrefs(project.id, sid)).toEqual({model, effort:model === 'gpt-6-sol' ? 'ultra' : 'max'});
+  });
+
   it.each(['claude', 'codex'] as const)('MCP sends preserve the target %s model across siblings, approval, queues and restart', async (provider) => {
     const { mgr, calls, stateDir, dir } = fixture(COMPLETED, { delayMs: 80 });
     const project = mgr.createProject('Models', undefined, provider);
-    const first = provider === 'codex' ? 'gpt-5.6-sol' : 'fable';
+    const first = provider === 'codex' ? 'gpt-6-sol' : 'fable';
     const second = provider === 'codex' ? 'gpt-6-astra' : 'opus';
     const target = mgr.start('target', undefined, { model:first, effort:'high' }, project.id);
     await waitFor(() => !mgr.snapshot().running);

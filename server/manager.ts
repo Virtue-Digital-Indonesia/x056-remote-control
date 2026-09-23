@@ -1,3 +1,4 @@
+import { currentCodexPrefs } from '../src/codex-model-policy.js';
 import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
 import { withMessageSender, type MessageSender } from '../src/message-sender.js';
@@ -1399,7 +1400,7 @@ export class SessionManager {
     const fitsEffort = (value?: string) => !value || (provider === 'codex' ? value !== 'ultracode' : value !== 'ultra');
     const model = [opts.model, conversation?.model, defaults?.model, project.model].find(value => value !== undefined && fitsModel(value)) ?? '';
     const effort = [opts.effort, conversation?.effort, defaults?.effort, project.effort].find(value => value !== undefined && fitsEffort(value)) ?? '';
-    return { model, effort };
+    return provider === 'codex' ? currentCodexPrefs(model, effort) : { model, effort };
   }
 
   validateConversationRunPrefs(projectId: string, sessionId: string | undefined, prefs: Pick<TurnRunOptions, 'model' | 'effort'>): void {
@@ -1408,14 +1409,19 @@ export class SessionManager {
       if (value !== undefined && (typeof value !== 'string' || value.length > 200 || value.trim() !== value || /[\x00-\x1f]/.test(value))) throw new Error('invalid ' + key);
     }
     const resolved = this.conversationRunPrefs(projectId, sessionId, prefs);
+    const expected = currentCodexPrefs(prefs.model ?? resolved.model ?? '', prefs.effort ?? '');
     for (const key of ['model', 'effort'] as const) {
-      if (prefs[key] !== undefined && prefs[key] !== resolved[key]) throw new Error(key + ' is not compatible with this conversation’s provider');
+      if (prefs[key] !== undefined && expected[key] !== resolved[key]) throw new Error(key + ' is not compatible with this conversation’s provider');
     }
   }
 
   setConversationRunPrefs(projectId: string, sessionId: string, prefs: Pick<TurnRunOptions, 'model' | 'effort'>): void {
     this.validateConversationRunPrefs(projectId, sessionId, prefs);
-    this.projects().setConversationPrefs(projectId, sessionId, prefs);
+    const resolved = this.conversationRunPrefs(projectId, sessionId, prefs);
+    this.projects().setConversationPrefs(projectId, sessionId, {
+      ...(prefs.model !== undefined ? { model: resolved.model } : {}),
+      ...(prefs.effort !== undefined ? { effort: resolved.effort } : {}),
+    });
     this.emitConversations(projectId);
   }
 
