@@ -1,4 +1,3 @@
-import { currentCodexModel } from '../codex-model-policy.js';
 import { readMessageSender } from '../message-sender.js';
 import { toolImagePaths } from '../artifact-references.js';
 import { stripMemoryContext } from '../memory-context.js';
@@ -539,7 +538,7 @@ function listModels(configDirs: string[]): ProviderModel[] {
   const out: ProviderModel[] = [];
   for (const { models } of caches) {
     for (const m of models) {
-      if (!m.slug || currentCodexModel(m.slug) !== m.slug || m.visibility !== 'list' || seen.has(m.slug)) continue;
+      if (!m.slug || m.visibility !== 'list' || seen.has(m.slug)) continue;
       seen.add(m.slug);
       out.push({
         slug: m.slug,
@@ -549,13 +548,6 @@ function listModels(configDirs: string[]): ProviderModel[] {
         defaultEffort: m.default_reasoning_level,
       });
     }
-  }
-  // Launch defaults keep stale account caches from hiding the replacement models.
-  // Fresh account metadata wins whenever the CLI has fetched these entries.
-  for (const name of ['Sol', 'Luna']) {
-    const slug = 'gpt-6-' + name.toLowerCase();
-    if (!seen.has(slug)) out.push({ slug, label: 'GPT-6 ' + name,
-      efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' });
   }
   return out;
 }

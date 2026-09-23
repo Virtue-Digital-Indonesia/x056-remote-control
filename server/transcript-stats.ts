@@ -73,9 +73,6 @@ interface CacheEntry extends TranscriptStats {
 // https://platform.claude.com/docs/en/about-claude/pricing
 export const PRICE_DATE = '2026-09-07';
 const PRICES: Record<string, { in: number; out: number; cached?: number }> = {
-  // GPT-6 Sol/Luna standard rates verified 2026-09-23 against official model pages.
-  'gpt-6-sol': { in: 2, out: 10, cached: 0.2 },
-  'gpt-6-luna': { in: 0.1, out: 0.5, cached: 0.01 },
   'gpt-6-astra': { in: 10, out: 50 },
   'gpt-5.6-sol': { in: 4, out: 20 },
   'gpt-5.6-terra': { in: 2, out: 12 },
