@@ -159,6 +159,19 @@ describe('SessionManager', () => {
     expect(calls[1].effort).toBe('high');
   });
 
+  it('moves a saved Opus 5 pin onto the current Opus alias before running', async () => {
+    const { mgr, calls } = fixture(COMPLETED);
+    const project = mgr.createProject('Opus upgrade', undefined, 'claude');
+    const sid = mgr.start('start', undefined, { model: 'claude-opus-5', effort: 'high' }, project.id);
+    await waitFor(() => !mgr.snapshot().running);
+    expect(calls[0]).toMatchObject({ model: 'opus', effort: 'high' });
+    mgr.setConversationRunPrefs(project.id, sid, { model: 'claude-opus-5' });
+    expect(mgr.conversationRunPrefs(project.id, sid).model).toBe('opus');
+    mgr.continueSession(project.id, sid, 'continue');
+    await waitFor(() => calls.length === 2);
+    expect(calls[1].model).toBe('opus');
+  });
+
   it.each([['gpt-5.6-sol', 'gpt-6-sol'], ['gpt-5.6-luna', 'gpt-6-luna']])('retires %s at dispatch and on saved preference resolution', async (oldModel, model) => {
     const { mgr, calls } = fixture(COMPLETED);
     const project = mgr.createProject('Retired models', undefined, 'codex');

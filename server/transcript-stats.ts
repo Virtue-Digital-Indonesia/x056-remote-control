@@ -83,6 +83,7 @@ const PRICES: Record<string, { in: number; out: number; cached?: number }> = {
   'gpt-5.5': { in: 5, out: 30 },
   'gpt-5.4': { in: 2.5, out: 15 },
   ...Object.fromEntries(['fable-5-1','mythos-5-1','fable-5','mythos-5'].map(m => ['claude-'+m, { in: 10, out: 50, cached: m.endsWith('-1') ? 0.25 : 1 }])),
+  'claude-opus-5-5': { in: 4, out: 20, cached: 0.2 },
   ...Object.fromEntries(['opus-5','opus-4-8','opus-4-7','opus-4-6','opus-4-5'].map(m => ['claude-'+m, { in: 5, out: 25 }])),
   ...Object.fromEntries(['opus-4-1','opus-4'].map(m => ['claude-'+m, { in: 15, out: 75 }])),
   'claude-sonnet-5': { in: 2, out: 10 },

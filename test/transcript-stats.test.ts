@@ -121,11 +121,13 @@ describe('cost estimation', () => {
 
   it('prices output at the model rate', () => {
     expect(estimateCost(usage({ 'claude-opus-5': { output: 1e6 } })).usd).toBeCloseTo(25);
+    expect(estimateCost(usage({ 'claude-opus-5-5': { output: 1e6 } })).usd).toBeCloseTo(20);
     expect(estimateCost(usage({ 'claude-sonnet-5': { output: 1e6 } })).usd).toBeCloseTo(10);
   });
 
   it('charges cache reads at a tenth of input', () => {
     expect(estimateCost(usage({ 'claude-opus-5': { cacheRead: 1e6 } })).usd).toBeCloseTo(0.5);
+    expect(estimateCost(usage({ 'claude-opus-5-5': { cacheRead: 1e6 } })).usd).toBeCloseTo(0.2);
   });
 
   it('names an unpriced model instead of blanking the whole figure', () => {

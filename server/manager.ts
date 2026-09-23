@@ -1,4 +1,5 @@
 import { currentCodexPrefs } from '../src/codex-model-policy.js';
+import { currentClaudeModel } from '../src/claude-model-policy.js';
 import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
 import { withMessageSender, type MessageSender } from '../src/message-sender.js';
@@ -1400,7 +1401,7 @@ export class SessionManager {
     const fitsEffort = (value?: string) => !value || (provider === 'codex' ? value !== 'ultracode' : value !== 'ultra');
     const model = [opts.model, conversation?.model, defaults?.model, project.model].find(value => value !== undefined && fitsModel(value)) ?? '';
     const effort = [opts.effort, conversation?.effort, defaults?.effort, project.effort].find(value => value !== undefined && fitsEffort(value)) ?? '';
-    return provider === 'codex' ? currentCodexPrefs(model, effort) : { model, effort };
+    return provider === 'codex' ? currentCodexPrefs(model, effort) : { model: currentClaudeModel(model), effort };
   }
 
   validateConversationRunPrefs(projectId: string, sessionId: string | undefined, prefs: Pick<TurnRunOptions, 'model' | 'effort'>): void {
@@ -1410,6 +1411,7 @@ export class SessionManager {
     }
     const resolved = this.conversationRunPrefs(projectId, sessionId, prefs);
     const expected = currentCodexPrefs(prefs.model ?? resolved.model ?? '', prefs.effort ?? '');
+    if (prefs.model !== undefined) expected.model = currentClaudeModel(expected.model);
     for (const key of ['model', 'effort'] as const) {
       if (prefs[key] !== undefined && expected[key] !== resolved[key]) throw new Error(key + ' is not compatible with this conversation’s provider');
     }
