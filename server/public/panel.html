@@ -1974,8 +1974,21 @@
   function retainedDownloadPath(target) {
     try {
       var url = new URL(target, location.origin);
-      if (url.origin !== location.origin || url.username || url.password || url.hash || url.search) return null;
-      return /^\/api\/(?:chats|project-spaces)\/[a-zA-Z0-9_-]+\/files\/[a-zA-Z0-9_-]+\/versions\/[a-zA-Z0-9_-]+\/download$/.test(url.pathname) ? url.pathname : null;
+      if (url.origin !== location.origin || url.username || url.password || url.hash) return null;
+      if (/^\/api\/(?:chats|project-spaces)\/[a-zA-Z0-9_-]+\/files\/[a-zA-Z0-9_-]+\/versions\/[a-zA-Z0-9_-]+\/download$/.test(url.pathname)) return url.search ? null : url.pathname;
+      // The gateway's own artifact download. list_artifacts / read_artifact hand
+      // the model this exact URL as `downloadPath`, so it links to it verbatim --
+      // and without this branch the link fell through to artifact-reference,
+      // which read the URL as a file path on disk and answered "The original
+      // file is no longer available." for a file that was sitting right there.
+      // Exactly one query parameter, `id`, and an id-shaped value; anything else
+      // is still not ours to fetch.
+      if (url.pathname === '/api/workspace/artifact-file') {
+        var id = url.searchParams.get('id'), params = 0;
+        url.searchParams.forEach(function () { params++; });
+        return params === 1 && /^[a-zA-Z0-9-]{8,64}$/.test(id || '') ? url.pathname + '?id=' + encodeURIComponent(id) : null;
+      }
+      return null;
     } catch (_) { return null; }
   }
   function downloadLocalReference(button, target, label) {

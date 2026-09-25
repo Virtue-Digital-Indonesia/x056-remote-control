@@ -18,12 +18,20 @@ fs.writeFileSync(reference, 'id,status\n1,ok\n');
     const response = await route.fetch(), data = await response.json();
     data.rows.push({
       role: 'assistant',
-      text: 'Review [Exact results](' + reference + ':2), [documentation](https://example.test/docs), and [unsafe](javascript:alert(1)). [Relative template](' + retained + ') [Absolute template](' + base + retained + ').',
+      text: 'Review [Exact results](' + reference + ':2), [documentation](https://example.test/docs), and [unsafe](javascript:alert(1)). [Relative template](' + retained + ') [Absolute template](' + base + retained + '). [Gateway artifact](' + artifactLink + ') [Artifact with extra query](' + artifactLink + '&x=1).',
       ts: new Date().toISOString(),
     });
     await route.fulfill({ response, json: data });
   });
   const retained = '/api/chats/chat-fixture/files/file-fixture/versions/version-fixture/download';
+  // The URL list_artifacts/read_artifact hand the model as `downloadPath`.
+  const artifactId = '80f664b1-a523-4178-85e0-4c84aa61c445', artifactLink = '/api/workspace/artifact-file?id=' + artifactId;
+  let artifactRequests = 0;
+  await page.route(url => url.pathname === '/api/workspace/artifact-file' && url.searchParams.get('id') === artifactId && [...url.searchParams.keys()].length === 1, async route => {
+    assert.equal(route.request().headers().authorization, 'Bearer browser-fixture-token-0123456789');
+    artifactRequests++;
+    await route.fulfill({status:200, headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','Content-Disposition':"attachment; filename=\"Skripsi v0.23.docx\""},body:'artifact bytes'});
+  });
   let retainedRequests = 0, referenceRequests = 0;
   await page.route('**' + retained, async route => {
     assert.equal(route.request().headers().authorization, 'Bearer browser-fixture-token-0123456789');
@@ -54,6 +62,20 @@ fs.writeFileSync(reference, 'id,status\n1,ok\n');
   }
   assert.equal(retainedRequests, 2);
   assert.equal(referenceRequests, localRequests, 'API links must not be resolved as filesystem paths');
+
+  // Live bug: this link 400'd with "The original file is no longer available."
+  const artifactDownload = page.waitForEvent('download');
+  await page.locator('.content .local-ref').filter({hasText:'Gateway artifact'}).click();
+  const artifactFile = await artifactDownload;
+  assert.equal(artifactFile.suggestedFilename(), 'Skripsi v0.23.docx');
+  assert.equal(fs.readFileSync(await artifactFile.path(), 'utf8'), 'artifact bytes');
+  assert.equal(artifactRequests, 1);
+  assert.equal(referenceRequests, localRequests, 'the artifact download URL must not be resolved as a filesystem path');
+  // A second parameter makes it not ours: it must not be fetched as an artifact.
+  const before = artifactRequests;
+  await page.locator('.content .local-ref').filter({hasText:'Artifact with extra query'}).click();
+  await page.waitForTimeout(400);
+  assert.equal(artifactRequests, before);
   const projects = await (await context.request.get(base + '/api/projects', { headers: { Authorization: 'Bearer browser-fixture-token-0123456789' } })).json();
   const project = projects.projects.find((item) => item.name === 'Website refresh');
   const conversation = project.conversations.find((item) => item.title === 'Build the new homepage');
