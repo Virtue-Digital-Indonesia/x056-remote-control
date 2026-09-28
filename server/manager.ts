@@ -1364,6 +1364,12 @@ export class SessionManager {
   listProjects() {
     const spaceView=this.projectSpacesEnabled()?this.spaces().readView():undefined;
     const reg = this.projects();
+    // Computed once for the whole list, not once per project (see backgroundSessions).
+    const backgroundByProject = new Map<string, string[]>();
+    for (const b of this.backgroundSessions(false)) {
+      const list = backgroundByProject.get(b.projectId);
+      if (list) list.push(b.sessionId); else backgroundByProject.set(b.projectId, [b.sessionId]);
+    }
     return {
       current: reg.currentId(),
       // runningSessionIds tells the panel WHICH conversations are running in each
@@ -1371,7 +1377,7 @@ export class SessionManager {
       // those and reconcile each conversation's busy state independently.
       projects: reg.list().map((p) => {
         const running = this.runningSessionsForProject(p.id);
-        const background = this.backgroundSessionsForProject(p.id);
+        const background = backgroundByProject.get(p.id) ?? [];
         const runningAccounts = Object.fromEntries([...this.runs.values()].filter(r => r.projectId === p.id && r.account).map(r => [r.sessionId, r.account!]));
         const conversations = (p.conversations || []).map(c => ({ ...c, provider: reg.conversationProvider(p.id, c.sessionId), ...(spaceView ? spaceView.resolve(p.id, c.sessionId) : {}) }));
         return { ...p, conversations, spaceId: p.kind === 'chat' ? conversations[0]?.spaceId : undefined, workSpaceId: p.kind !== 'chat' ? spaceView?.defaultForWork(p.id) : undefined,
@@ -2993,8 +2999,14 @@ export class SessionManager {
     const bg = new Set(working.filter((w) => !w.busy).map((w) => w.sessionId));
     if (!bg.size) return [];
     const out: { projectId: string; sessionId: string }[] = [];
-    for (const p of this.projects().list()) {
-      for (const c of this.projects().conversations(p.id)) {
+    // ONE registry read. `this.projects()` re-reads and re-parses projects.json
+    // on every call, and calling it per project here -- inside a function that
+    // listProjects() used to call once per project as well -- cost ~1,100
+    // parses of a 66 KB file per GET /api/projects (1.2 s of the 1.4-2.8 s it
+    // took), all synchronous, while every open panel re-polled it each second.
+    const reg = this.projects();
+    for (const p of reg.list()) {
+      for (const c of reg.conversations(p.id)) {
         // Never report a conversation twice: a live turn already covers it.
         if (bg.has(c.sessionId) && !this.sessionBusy(c.sessionId)) out.push({ projectId: p.id, sessionId: c.sessionId });
       }
@@ -3015,10 +3027,6 @@ export class SessionManager {
       active: states.some(s => s.active), parentActive: states.some(s => s.parentActive),
       agents: states.reduce((n, s) => n + (s.agents || 0), 0), tasks: states.reduce((n, s) => n + (s.tasks || 0), 0),
     };
-  }
-
-  private backgroundSessionsForProject(pid: string): string[] {
-    return this.backgroundSessions(false).filter((b) => b.projectId === pid).map((b) => b.sessionId);
   }
 
   /**
