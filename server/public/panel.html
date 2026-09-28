@@ -2669,7 +2669,11 @@
       // `at` identifies THIS question; older servers only have the envelope's timestamp.
       var qAt = data.at || data.ts;
       if (dismissedQuestions[sid] === qAt) return;
-      if (sid) pendingQ[sid] = { projectId: pid, sessionId: sid, question: data.question, options: data.options, at: qAt };
+      // Keep the WHOLE question, `questions` included. Storing only
+      // question/options meant the conversation re-rendering its card from here
+      // (on load, on switching back to it) turned a multi-question form into the
+      // old single-question card until a page reload refetched /api/questions.
+      if (sid) pendingQ[sid] = Object.assign({}, data, { projectId: pid, sessionId: sid, at: qAt });
       showQuestion(pid, data);
       if (mineConvo && (!controlRoom || controlRoom.isOpen())) markQuestionSeen(pid, sid, qAt); // you're looking at it
       else { setConvNotif(pid, sid, 'question'); notify('Assistant has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80), data); }
@@ -2858,14 +2862,22 @@
     var controls = card.querySelectorAll('button,input');
     controls.forEach(function (b) { b.disabled = true; });
     var error = card.querySelector('.qerror'); if (error) error.remove();
-    api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, prompt: answer }) })
+    // The server echoes an accepted prompt as session_started {messageId,
+    // displayPrompt} and renders it unless a bubble tagged with that id is
+    // already there. This path used to append an UNTAGGED bubble, so every
+    // answer showed twice. The requestId becomes that messageId; tag ours with
+    // it, and skip ours if the echo won the race.
+    var requestId = crypto.randomUUID();
+    api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, prompt: answer, requestId: requestId }) })
       .then(function (r) { return r.json().then(function (result) {
         if (!r.ok) throw new Error(result.message || 'Could not send answer');
         // Only resolve the card after the server accepts the answer.
         if (sid) delete pendingQ[sid];
         try { localStorage.removeItem('x056_question_draft_'+sid+'_'+card.dataset.questionAt); } catch {}
         card.classList.remove('pending'); card.classList.add('answered');
-        appendNode(pid, sid, nodeMsg('user', answer, null, new Date().toISOString(), providerFor(pid, sid)));
+        var host = qContainer(pid, sid);
+        var echoed = Array.prototype.some.call(host.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === requestId; });
+        if (!echoed) { var mine = nodeMsg('user', answer, null, new Date().toISOString(), providerFor(pid, sid)); mine.dataset.messageSourceId = requestId; appendNode(pid, sid, mine); }
       }); }).catch(function (e) {
         controls.forEach(function (b) { b.disabled = false; });
         var message = document.createElement('div'); message.className = 'qerror'; message.setAttribute('role', 'alert'); message.textContent = e.message; card.appendChild(message);
