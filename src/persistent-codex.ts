@@ -1,6 +1,7 @@
 import type { RawEvent } from './types.js';
 import type { TurnOptions } from './turn.js';
 import { hashText, type Ingested, type Transport, type TransportState } from './persistent-transport.js';
+import { codexAppServerArgs } from './codex-marketplace-args.js';
 
 /**
  * Codex over `codex app-server`: JSON-RPC on stdio, one long-lived process per
@@ -106,7 +107,7 @@ export class CodexTransport implements Transport {
   spawnSpec(o: TurnOptions) {
     return {
       bin: o.binPath ?? 'codex',
-      args: ['app-server'],
+      args: codexAppServerArgs(o.configDir),
       env: { ...process.env, CODEX_HOME: o.configDir },
     };
   }

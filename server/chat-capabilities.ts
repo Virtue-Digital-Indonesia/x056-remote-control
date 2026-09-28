@@ -9,6 +9,7 @@ import type { Project } from './projects.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
 import { readState, writeState } from './workspace-store.js';
+import { codexAppServerArgs } from '../src/codex-marketplace-args.js';
 
 export interface ChatCapability { key: string; name: string; kind: 'skill' | 'plugin' | 'mcp'; state: 'ready' | 'installed' | 'authorization-needed' | 'unavailable'; fingerprint?: string; description?: string; invocation?: string; reason?: string }
 export interface CapabilityRequirement { key: string; fingerprint?: string }
@@ -34,7 +35,7 @@ function skillFingerprint(path: string): string {
 /** Read the actual Codex skill resolution for this CWD and this account. No turn
  * is started and credentials stay in the provider's process. */
 async function codexInventory(configDir: string, cwd: string): Promise<{ skills: any[]; servers: any[]; apps: any[]; errors: string[] }> {
-  const child = spawn('codex', ['app-server'], { cwd, env: { ...process.env, CODEX_HOME: configDir }, detached: true, stdio: ['pipe','pipe','ignore'] });
+  const child = spawn('codex', codexAppServerArgs(configDir), { cwd, env: { ...process.env, CODEX_HOME: configDir }, detached: true, stdio: ['pipe','pipe','ignore'] });
   const waiting = new Map<number, { resolve: (data: any) => void; reject: (error: Error) => void }>();
   let id = 0, disconnected = false;
   const rpc = (method: string, params: unknown) => new Promise<any>((resolve, reject) => { if (disconnected) return reject(new Error('Provider discovery ended')); const n = ++id; waiting.set(n, { resolve, reject }); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: n, method, params }) + '\n'); });

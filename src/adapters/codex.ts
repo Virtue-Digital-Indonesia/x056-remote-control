@@ -12,6 +12,7 @@ import { StringDecoder } from 'node:string_decoder';
 import type { SubagentOutcome } from '../provider.js';
 import { DEFAULT_CONTINUE_PROMPT } from '../provider.js';
 import { stripAsk, stripAskInstructions } from '../question.js';
+import { codexAppServerArgs } from '../codex-marketplace-args.js';
 import { spawnJsonlTurn } from '../turn.js';
 import type { TurnHandle, TurnOptions } from '../turn.js';
 import type { AccountIdentity, ActivityEvent, HistoryEntry, ProviderAdapter, ProviderModel } from '../provider.js';
@@ -564,7 +565,7 @@ function listModels(configDirs: string[]): ProviderModel[] {
  */
 function fetchUsage(configDir: string): Promise<Usage> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn('codex', ['app-server'], {
+    const child = spawn('codex', codexAppServerArgs(configDir), {
       env: { ...process.env, CODEX_HOME: configDir },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
