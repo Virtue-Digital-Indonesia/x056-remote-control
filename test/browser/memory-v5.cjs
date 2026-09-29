@@ -101,7 +101,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8767';
   await page.locator('[data-context-body]').filter({ hasText: 'Use memory here' }).waitFor();
   await page.locator('[data-enabled]').uncheck();
   await page.waitForFunction(() =>
-    document.querySelector('[data-context-body]').textContent.includes('Retrieval is disabled'),
+    document.querySelector('[data-context-body]').textContent.includes('Retrieval is off'),
   );
   await page.locator('[data-enabled]').check();
   await page.keyboard.press('Escape');
