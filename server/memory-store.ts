@@ -587,7 +587,7 @@ export class MemoryStore {
             score:
               matches * 12 +
               (e.pinned ? 8 : 0) +
-              (e.projectId === q.projectId ? 6 : 0) +
+              (q.projectId && e.projectId === q.projectId ? 6 : 0) +
               Math.max(0, 3 - (now - e.updatedAt) / 86400000 / 30) -
               (Number(row.rank) || 0),
             reason: terms.length ? matches + ' matching terms' : e.pinned ? 'Pinned memory' : 'Recent memory',

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -57,6 +57,27 @@ describe('canonical memory', () => {
     expect(
       store.search({ query: 'deploy', projectId: 'p1', access: 'context', limit: 1 }).items,
     ).toHaveLength(1);
+  });
+  it('gives no same-project bonus when the search names no project', () => {
+    // An unscoped search (the Memory page on "All projects") has no project to
+    // prefer. undefined === undefined used to hand every entry WITHOUT a
+    // projectId a +6 "same project" bonus, so a stale global note outranked a
+    // fresh project note that matched the same terms.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() - 120 * 86400000);
+      const old = note({ scope: 'global', projectId: undefined, title: 'Old deployment note' });
+      vi.setSystemTime(Date.now() + 120 * 86400000);
+      const fresh = note({ title: 'Fresh deployment note' });
+      const ids = store.search({ query: 'deployment' }).items.map((e) => e.id);
+      expect(ids).toEqual([fresh.id, old.id]);
+      // A search that names a project still prefers that project's notes.
+      const scoped = store.search({ query: 'deployment', projectId: 'p1' }).items;
+      expect(scoped.map((e) => e.id)).toEqual([fresh.id, old.id]);
+      expect(scoped[0].score - scoped[1].score).toBeGreaterThan(6);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('never injects proposals, deleted, archived, superseded or expired knowledge', () => {
     for (const status of ['proposed', 'deleted', 'archived', 'superseded'] as const)
