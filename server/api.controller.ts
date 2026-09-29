@@ -47,7 +47,7 @@ import { listWorkflowAgents, listWorkflowRuns, liveWorkflowRuns, readWorkflowAge
 import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
-import { McpServerManager, type McpServerSpec } from './mcp-servers.js';
+import { McpServerManager, REDACTED_RE, redactSpec, restoreRedacted, type McpServerSpec } from './mcp-servers.js';
 import type { HistoryEntry } from './history.js';
 import { withAskInstructions } from '../src/question.js';
 import type { PushService } from './push.js';
@@ -941,23 +941,35 @@ export class ApiController {
   //      a turn can run on any of them, so a server configured on only one
   //      silently vanishes on failover. ----
   @Get('mcp/servers')
-  listMcpServers() {
-    return this.mcpServers.list();
+  async listMcpServers() {
+    const listed = await this.mcpServers.list();
+    return { ...listed, servers: listed.servers.map((s) => redactSpec(s)) };
+  }
+
+  /** The Edit form round-trips masked secrets; resolve them against what the
+   *  accounts actually hold for this provider and name before writing. */
+  private async unmaskMcp(provider: 'claude' | 'codex', server: McpServerSpec): Promise<McpServerSpec> {
+    const masked = [...Object.values(server.headers ?? {}), ...Object.values(server.env ?? {})].some((v) => REDACTED_RE.test(String(v)));
+    if (!masked) return server;
+    const stored = (await this.mcpServers.list()).servers.find((s) => s.provider === provider && s.name === server.name);
+    try { return restoreRedacted(server, stored); } catch (e) { throw new BadRequestException((e as Error).message); }
   }
 
   @Post('mcp/servers/add')
   @HttpCode(200)
-  addMcpServer(@Body() body: { provider?: string; server?: McpServerSpec }) {
+  async addMcpServer(@Body() body: { provider?: string; server?: McpServerSpec }) {
     const { provider, server } = this.validateMcpBody(body);
-    return this.mcpServers.add(provider, server).finally(() => this.manager.refreshChatCapabilities());
+    const real = await this.unmaskMcp(provider, server);
+    return this.mcpServers.add(provider, real).finally(() => this.manager.refreshChatCapabilities());
   }
 
   /** Neither CLI has an edit; the manager does remove-then-add. */
   @Post('mcp/servers/update')
   @HttpCode(200)
-  updateMcpServer(@Body() body: { provider?: string; server?: McpServerSpec }) {
+  async updateMcpServer(@Body() body: { provider?: string; server?: McpServerSpec }) {
     const { provider, server } = this.validateMcpBody(body);
-    return this.mcpServers.update(provider, server).finally(() => this.manager.refreshChatCapabilities());
+    const real = await this.unmaskMcp(provider, server);
+    return this.mcpServers.update(provider, real).finally(() => this.manager.refreshChatCapabilities());
   }
 
   @Post('mcp/servers/remove')

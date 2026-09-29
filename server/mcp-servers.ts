@@ -297,3 +297,37 @@ function normalize(s: McpServerSpec): unknown {
     headers: Object.fromEntries(Object.entries(s.headers ?? {}).sort()),
   };
 }
+
+/**
+ * Secrets never leave the gateway through the settings API.
+ *
+ * Header values (e.g. `Authorization: Bearer obsk_…`) and env values (e.g.
+ * `KNOWLEDGE_API_TOKEN`) were returned verbatim by GET /api/mcp/servers, so
+ * any panel session could read the one Obscura token every account shares.
+ * They are masked to `«redacted-XXXX»` (the last four characters, so two
+ * tokens can still be told apart). The panel's Edit form sends back what it
+ * was given; `restoreRedacted` swaps each masked value for the stored one,
+ * and refuses a masked value it has nothing to restore from.
+ */
+export const REDACTED_RE = /^«redacted(?:-[^»]{0,8})?»$/;
+const mask = (v: string): string => `«redacted${v.length >= 12 ? '-' + v.slice(-4) : ''}»`;
+const maskAll = (o?: Record<string, string>) => (o ? Object.fromEntries(Object.entries(o).map(([k, v]) => [k, mask(String(v))])) : o);
+
+export function redactSpec<T extends McpServerSpec>(s: T): T {
+  return { ...s, ...(s.headers ? { headers: maskAll(s.headers) } : {}), ...(s.env ? { env: maskAll(s.env) } : {}) };
+}
+
+/** Put the real values back for every masked one; throws if one is unknown. */
+export function restoreRedacted(spec: McpServerSpec, stored: McpServerSpec | undefined): McpServerSpec {
+  const fix = (field: 'headers' | 'env'): Record<string, string> | undefined => {
+    const given = spec[field];
+    if (!given) return given;
+    return Object.fromEntries(Object.entries(given).map(([k, v]) => {
+      if (!REDACTED_RE.test(v)) return [k, v];
+      const real = stored?.[field]?.[k];
+      if (real === undefined) throw new Error(`${field === 'headers' ? 'Header' : 'Variable'} ${k} is masked and has no stored value; enter it again`);
+      return [k, real];
+    }));
+  };
+  return { ...spec, ...(spec.headers ? { headers: fix('headers') } : {}), ...(spec.env ? { env: fix('env') } : {}) };
+}

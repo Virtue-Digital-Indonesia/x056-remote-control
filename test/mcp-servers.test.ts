@@ -200,3 +200,26 @@ describe('codex: an http server WITH headers goes through config.toml', () => {
     expect(out).toContain('[mcp_servers.ab]');
   });
 });
+
+describe('secrets never leave through the settings API', () => {
+  it('masks header and env values, keeping a short hint', async () => {
+    const { redactSpec } = await import('../server/mcp-servers.js');
+    const out = redactSpec({ name: 'Obscura', transport: 'http', url: 'https://dms.example/mcp', headers: { Authorization: 'Bearer obsk_abcdefghijklmnop4P4g' }, env: { KNOWLEDGE_API_TOKEN: 'tok_0123456789xyz', SHORT: 'abc' } });
+    expect(out.headers).toEqual({ Authorization: '«redacted-4P4g»' });
+    expect(out.env).toEqual({ KNOWLEDGE_API_TOKEN: '«redacted-9xyz»', SHORT: '«redacted»' });
+    expect(out.url).toBe('https://dms.example/mcp');
+    expect(JSON.stringify(out)).not.toContain('obsk_');
+  });
+
+  it('restores masked values from the stored definition, and keeps edited ones', async () => {
+    const { restoreRedacted } = await import('../server/mcp-servers.js');
+    const stored = { name: 'Obscura', transport: 'http' as const, url: 'u', headers: { Authorization: 'Bearer real', 'X-Team': 'a' } };
+    expect(restoreRedacted({ name: 'Obscura', transport: 'http', url: 'u2', headers: { Authorization: '«redacted-real»', 'X-Team': 'b' } }, stored))
+      .toEqual({ name: 'Obscura', transport: 'http', url: 'u2', headers: { Authorization: 'Bearer real', 'X-Team': 'b' } });
+  });
+
+  it('refuses a masked value it cannot restore, instead of writing the mask to every account', async () => {
+    const { restoreRedacted } = await import('../server/mcp-servers.js');
+    expect(() => restoreRedacted({ name: 'New', transport: 'http', url: 'u', headers: { Authorization: '«redacted-abcd»' } }, undefined)).toThrow(/masked/);
+  });
+});
