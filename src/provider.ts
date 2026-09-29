@@ -48,7 +48,11 @@ export interface HistoryEntry {
    *  turn, so rendering it as one made a 15k-token block look like something
    *  the user typed. */
   artifacts?: string[];
-  role: 'error' | 'user' | 'assistant' | 'model' | 'action' | 'command' | 'notice' | 'summary';
+  role: 'error' | 'user' | 'assistant' | 'model' | 'action' | 'command' | 'notice' | 'summary' | 'advisor';
+  /** For 'advisor': one consultation. Claude's comes from the transcript (its
+   *  advice is encrypted, so only the outcome); the ChatGPT one from the
+   *  gateway's own advisor, with verdict and advice. */
+  advisor?: { model?: string; status?: 'reviewed' | 'declined' | 'unavailable'; trigger?: string; verdict?: string; advice?: string; delivered?: string; latencyMs?: number; error?: string };
   text: string;
   /** Complete tool input for the action detail reader. */
   detail?: string;

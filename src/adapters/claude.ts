@@ -378,7 +378,16 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
     // the transcript's messages with no actions between them.
     if (type === 'assistant' && Array.isArray(message.content)) {
       for (const block of message.content as unknown[]) {
-        const b = block as { type?: string; name?: string; input?: Record<string, unknown> };
+        const b = block as { type?: string; name?: string; input?: Record<string, unknown>; content?: { type?: string; error_code?: string } };
+        // Claude Code's advisor tool: its advice arrives encrypted, so the row
+        // records THAT it was consulted and how it answered, not what it said.
+        if (b && b.type === 'advisor_tool_result') {
+          const t = b.content?.type ?? '';
+          const status = /error|unavailable/.test(t) ? 'unavailable' : /declin/.test(t) ? 'declined' : 'reviewed';
+          out.push({ role: 'advisor', text: status, advisor: { status, ...(b.content?.error_code ? { error: b.content.error_code } : {}) }, ts });
+          offsets.push(at);
+          continue;
+        }
         if (b && b.type === 'tool_use' && b.name) {
           const artifacts = toolImagePaths(b as Record<string, unknown>);
           out.push({

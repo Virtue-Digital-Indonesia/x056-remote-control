@@ -2673,6 +2673,16 @@ export class SessionManager {
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {
           watcher?.observe(e);
+          // Claude's advisor, live: a card while it reviews, its outcome after.
+          if (advisor && e.type === 'assistant') {
+            for (const b of ((e as { message?: { content?: unknown[] } }).message?.content ?? []) as { type?: string; name?: string; content?: { type?: string; error_code?: string } }[]) {
+              if (b.type === 'server_tool_use' && b.name === 'advisor') emit('advisor_call', { phase: 'start', model: advisor });
+              if (b.type === 'advisor_tool_result') {
+                const t = b.content?.type ?? '';
+                emit('advisor_call', { phase: 'done', model: advisor, status: /error|unavailable/.test(t) ? 'unavailable' : /declin/.test(t) ? 'declined' : 'reviewed', ...(b.content?.error_code ? { error: b.content.error_code } : {}) });
+              }
+            }
+          }
           if (adapter.id === 'claude' && e.type === 'result') {
             try { const r = this.turnResults().record(sessionId, e as Record<string, unknown>); if (r) emit('turn_result', r as unknown as Record<string, unknown>); } catch { /* never break the stream */ }
           }

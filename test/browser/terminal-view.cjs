@@ -59,12 +59,14 @@ const TOKEN = 'browser-fixture-token-0123456789';
   assert.match(await page.locator('#term .tl.tool .td').last().textContent(), /"command": "npm test -- --run layout"/);
   await page.screenshot({ path: '/tmp/x056-terminal-view.png' });
 
-  // The helper picker: advisor persists; Jev is offered only with a key.
-  const decider = page.locator('#decider');
-  assert.equal(await decider.isDisabled(), false);
-  assert.equal(await decider.locator('option[value=jev]').isDisabled(), true, 'no Jev key in the fixture');
-  await decider.selectOption('advisor');
+  // The helper menu: advisor persists; Jev is offered only with a key.
+  const helper = page.locator('#helperBtn');
+  assert.equal(await helper.isDisabled(), false);
+  await helper.click();
+  assert.equal(await page.locator('#helperMenu [data-value=jev]').isDisabled(), true, 'no Jev key in the fixture');
+  await page.locator('#helperMenu [data-value=advisor]').click();
   await page.waitForTimeout(500);
+  assert.equal(await helper.getAttribute('data-state'), 'advisor');
   const after = (await api('/api/projects')).projects.find((p) => p.id === project.id).conversations.find((c) => c.sessionId === conv.sessionId);
   assert.equal(after.decisionMaker, 'advisor');
 
@@ -78,7 +80,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
   await page.waitForSelector('#term .tl.jev', { timeout: 6000 }); // reopened: the view remembers it was open
   assert.match(await page.locator('#term .tl.sys').filter({ hasText: 'turn done' }).last().textContent(), /turn done · 1 step · 8\.5 s · \$0\.175 \(haiku-4-5-20251001 \$0\.027 · opus-5-5 \$0\.148\)/);
   assert.match(await page.locator('#term .tl.jev').textContent(), /jev · model haiku 100% · effort low 100% → model -> haiku, effort -> low · 404 ms/);
-  assert.equal(await decider.inputValue(), 'advisor');
+  assert.equal(await page.locator('#helperBtn').getAttribute('data-state'), 'advisor');
 
   await page.locator('#chatTerminal').click();
   assert.equal(await page.locator('#term').isVisible(), false);

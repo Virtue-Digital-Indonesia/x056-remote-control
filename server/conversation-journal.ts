@@ -17,6 +17,10 @@ export class ConversationJournal {
       row = { role: 'user', text: data.displayPrompt, ts, messageId: String(data.messageId || ''), sender: data.sender as HistoryEntry['sender'] };
     } else if (kind === 'session_error' || kind === 'message_rejected' || (kind === 'session_done' && data.status === 'failed')) {
       row = { role: 'error', messageId: data.requestId ? 'error:' + data.requestId : undefined, text: String(data.message || data.reason || 'Turn failed'), ts };
+    } else if (kind === 'advisor_consult' && data.at) {
+      // The gateway-built ChatGPT advisor: not in any provider transcript.
+      row = { role: 'advisor', messageId: 'advisor:' + String(data.at), text: String(data.advice || data.error || ''), ts: String(data.at),
+        advisor: { model: data.model as string, trigger: data.trigger as string, verdict: data.verdict as string, advice: data.advice as string, delivered: data.delivered as string, latencyMs: data.latencyMs as number, error: data.error as string } };
     } else if (kind === 'session_done' && data.status === 'stopped') {
       row = { role: 'notice', messageId: data.requestId ? 'stopped:' + data.requestId : undefined, text: String(data.reason || 'Turn stopped.'), ts };
     } else return;

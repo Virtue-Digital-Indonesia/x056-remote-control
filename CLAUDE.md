@@ -143,6 +143,14 @@ live, not stale. Only `~/.claude-x056-a` is orphaned. Reading plugin state from
 the wrong one is an easy and repeated mistake; take the truth from
 `/app/state/accounts.json`.
 
+**Never launch `claude` or `codex` directly against a live account's config dir
+for a probe or a check.** Starting the CLI can refresh the OAuth token, and a
+refresh rotates the refresh token; a launch that exits or is killed around that
+moment can leave the account holding a dead token, and the next start clears it
+("OAuth session expired and could not be refreshed"). Account `f` was signed out
+this way on 2026-09-29 around a series of short `--advisor` launch checks. Probe
+with a scratch config dir, or through the gateway, which owns the accounts.
+
 Anything per-account must be applied to **all** of them, or it fires only when
 failover happens to land on the right one — which reads as "randomly broken":
 
@@ -392,6 +400,14 @@ No helper / Advisor / Jev. `POST /api/conversations/decision-maker`.
   that it happened, and its tokens in the turn's `result.modelUsage`, are
   visible. Never use `/advisor` for this: it writes `advisorModel` into the
   account's settings.json and leaks to every conversation on that account.
+- **What the user sees**: a helper button in the composer (✦; a pill reading
+  "Advisor"/"Jev" when on) opening a small menu with a one-line description of
+  each option and Jev's credits. Each consultation is an advisor card in the
+  chat: Claude's is one line ("Reviewed this step" -- the advice itself is
+  encrypted), the ChatGPT advisor's shows verdict, advice and what was done
+  with it. Live events `advisor_call` (Claude) / `advisor_consult` (ChatGPT);
+  on reload they come back as `role: 'advisor'` history rows (Claude's from the
+  transcript, ChatGPT's from the conversation journal).
 - **Advisor on ChatGPT** is built by the gateway (`server/codex-advisor.ts`),
   because Codex has none. `TurnWatcher` reads the turn's stream for the same
   three moments -- first plan (`turn/plan/updated`, translated into a
