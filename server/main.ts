@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildModule, type GatewayConfig } from './app.module.js';
+import { startStallWatchdog } from './stall-watchdog.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
@@ -107,7 +108,12 @@ if (isMain) {
   const port = Number(process.env.PORT ?? 4056);
   createApp(cfg)
     .then((app) => app.listen(port, '0.0.0.0'))
-    .then(() => console.log(`x056 gateway listening on :${port}`))
+    .then(() => {
+      console.log(`x056 gateway listening on :${port}`);
+      // Intermittent multi-second stalls left no trace; this keeps a profile
+      // of any window in which the event loop blocked. See stall-watchdog.ts.
+      startStallWatchdog(cfg.stateDir);
+    })
     .catch((err) => {
       console.error((err as Error).message);
       process.exit(1);
