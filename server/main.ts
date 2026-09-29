@@ -72,6 +72,7 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   serveStatic('/manifest.webmanifest', 'manifest.webmanifest', 'application/manifest+json');
   serveStatic('/control-room.css', 'control-room.css', 'text/css', { 'Cache-Control': 'no-cache' });
   serveStatic('/control-room.js', 'control-room.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
+  serveStatic('/terminal.js', 'terminal.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
   serveStatic('/rc-chat.js', 'rc-chat.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
   serveStatic('/rc-chat.css', 'rc-chat.css', 'text/css', { 'Cache-Control': 'no-cache' });
   serveStatic('/project-spaces.js', 'project-spaces.js', 'application/javascript', { 'Cache-Control': 'no-cache' });

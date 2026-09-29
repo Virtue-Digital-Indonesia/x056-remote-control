@@ -47,6 +47,7 @@ import { listWorkflowAgents, listWorkflowRuns, liveWorkflowRuns, readWorkflowAge
 import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
+import { readRawEntry, readRawPage } from './raw-transcript.js';
 import { McpServerManager, REDACTED_RE, redactSpec, restoreRedacted, type McpServerSpec } from './mcp-servers.js';
 import type { HistoryEntry } from './history.js';
 import { withAskInstructions } from '../src/question.js';
@@ -519,6 +520,29 @@ export class ApiController {
     if (!body?.projectId || !body.sessionId || !body.decisionMaker) throw new BadRequestException('projectId, sessionId and decisionMaker required');
     try { this.manager.setDecisionMaker(body.projectId, body.sessionId, body.decisionMaker as 'none' | 'advisor' | 'jev'); return { ok: true }; }
     catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** The raw transcript, paged by byte offset, for the terminal view. */
+  @Get('conversations/raw-page')
+  conversationRawPage(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string,
+    @Query('before') before?: string, @Query('after') after?: string, @Query('limit') limit?: string) {
+    if (!projectId || !sessionId || !this.manager.listConversations(projectId).some((c) => c.sessionId === sessionId))
+      throw new BadRequestException('unknown conversation for that project');
+    const num = (v?: string) => (v === undefined || v === '' ? undefined : Number(v));
+    const file = this.manager.transcriptFile(projectId, sessionId);
+    const provider = this.manager.historyContext(projectId, sessionId).adapter.id;
+    if (!file) return { provider, size: 0, start: 0, end: 0, entries: [], done: true };
+    return { provider, ...readRawPage(file, { before: num(before), after: num(after), limit: num(limit) }) };
+  }
+
+  /** One transcript entry in full (the page cuts long strings). */
+  @Get('conversations/raw-entry')
+  conversationRawEntry(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string, @Query('offset') offset: string) {
+    if (!projectId || !sessionId || !this.manager.listConversations(projectId).some((c) => c.sessionId === sessionId))
+      throw new BadRequestException('unknown conversation for that project');
+    const file = this.manager.transcriptFile(projectId, sessionId);
+    if (!file) throw new BadRequestException('No transcript for this conversation yet');
+    try { return readRawEntry(file, Number(offset)); } catch (e) { throw new BadRequestException((e as Error).message); }
   }
 
   /** Every Jev decision this conversation's turns got, oldest first. */

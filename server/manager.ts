@@ -1,6 +1,8 @@
 import { currentCodexPrefs } from '../src/codex-model-policy.js';
 import { currentClaudeModel } from '../src/claude-model-policy.js';
 import { JevService, type JevDecision } from './jev.js';
+import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
+import { findRollout } from '../src/adapters/codex.js';
 import { advisorFor, jevCandidates } from './decision-maker.js';
 import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
@@ -1475,6 +1477,20 @@ export class SessionManager {
 
   /** Display name for a project id (for push notifications, etc.). */
   projectName(pid: string): string | undefined { return this.projects().get(pid)?.name; }
+
+  /** Where this conversation's transcript lives on disk, for the terminal
+   *  view. Cached: finding a Claude transcript walks the whole projects/ tree,
+   *  and the view polls every couple of seconds. */
+  private transcriptPaths = new Map<string, string>();
+  transcriptFile(pid: string, sid: string): string | null {
+    const { adapter, providerSessionId, configDirs } = this.historyContext(pid, sid);
+    const key = adapter.id + ':' + providerSessionId;
+    const hit = this.transcriptPaths.get(key);
+    if (hit && existsSync(hit)) return hit;
+    const found = adapter.id === 'codex' ? findRollout(configDirs, providerSessionId) : findClaudeTranscript(configDirs, providerSessionId);
+    if (found) this.transcriptPaths.set(key, found);
+    return found;
+  }
 
   private jevService?: JevService;
   jev(): JevService { return this.jevService ??= new JevService(this.opts.stateDir); }

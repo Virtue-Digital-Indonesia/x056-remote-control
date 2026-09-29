@@ -1,0 +1,85 @@
+// The terminal view: the whole session, raw, like the CLI shows it.
+// Start fixture.ts first; this finds the fixture's transcript on disk to append
+// entries and prove the view tails a running conversation.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { execSync } = require('node:child_process');
+let playwright; try { playwright = require('playwright'); } catch { playwright = require('/usr/local/lib/node_modules/playwright'); }
+const base = process.argv[2] || 'http://127.0.0.1:8779';
+const TOKEN = 'browser-fixture-token-0123456789';
+
+(async () => {
+  const browser = await playwright.chromium.launch({ headless: true, args: ['--no-sandbox'] });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addInitScript(() => { if (location.protocol === 'http:') localStorage.setItem('x056_token', 'browser-fixture-token-0123456789'); });
+  const page = await context.newPage(), errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  const api = async (p) => (await context.request.get(base + p, { headers: { Authorization: 'Bearer ' + TOKEN } })).json();
+
+  const projects = await api('/api/projects');
+  const project = projects.projects.find((p) => p.name === 'Website refresh');
+  const conv = project.conversations.find((c) => c.title === 'Build the new homepage');
+  const transcript = execSync(`find /tmp -path '*primary/projects/fixture/${conv.sessionId}.jsonl' 2>/dev/null | head -1`).toString().trim();
+  assert.ok(transcript, 'fixture transcript not found');
+  const stateDir = path.join(transcript.split('/primary/')[0], 'state');
+
+  const open = async () => {
+    await page.goto(base); await page.waitForSelector('.cr-task');
+    await page.locator('.cr-task').filter({ hasText: 'Build the new homepage' }).first().click();
+    await page.waitForTimeout(800);
+  };
+  await open();
+  await page.locator('#chatTerminal').click();
+  await page.waitForSelector('#term .tl.user');
+  assert.equal(await page.locator('#term').isVisible(), true);
+  assert.equal(await page.locator('main .scroll').isVisible(), false, 'the chat is swapped out while the terminal is open');
+  assert.equal(await page.locator('#chatTerminal').getAttribute('aria-pressed'), 'true');
+  assert.match(await page.locator('#termMeta').textContent(), /Claude transcript/);
+
+  // Live: a running turn appends tool calls, results and an advisor consultation.
+  const now = new Date().toISOString();
+  const add = (o) => fs.appendFileSync(transcript, JSON.stringify({ timestamp: now, ...o }) + '\n');
+  add({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test -- --run layout' } }] } });
+  add({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Tests 12 passed (12)' }] } });
+  add({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'server_tool_use', id: 's1', name: 'advisor', input: {} }, { type: 'advisor_tool_result', tool_use_id: 's1', content: { type: 'advisor_redacted_result', encrypted_content: 'xyz' } }] } });
+  add({ type: 'custom-title', customTitle: 'Build the new homepage' });
+  await page.waitForSelector('#term .tl.tool', { timeout: 6000 });
+  assert.match(await page.locator('#term .tl.tool').last().textContent(), /Bash\(npm test -- --run layout\)/);
+  assert.match(await page.locator('#term .tl.result').last().textContent(), /Tests 12 passed/);
+  assert.match(await page.locator('#term .tl.advisor').first().textContent(), /Advising/);
+  assert.match(await page.locator('#term .tl.advisor').last().textContent(), /advisor reviewed · advice encrypted/);
+  // Metadata lines exist but are hidden until asked for.
+  assert.equal(await page.locator('#term .tl.meta').last().isVisible(), false);
+  await page.locator('#termShowMeta').check();
+  assert.equal(await page.locator('#term .tl.meta').last().isVisible(), true);
+
+  // Clicking a line shows its raw entry.
+  await page.locator('#term .tl.tool').last().click();
+  assert.match(await page.locator('#term .tl.tool .td').last().textContent(), /"command": "npm test -- --run layout"/);
+  await page.screenshot({ path: '/tmp/x056-terminal-view.png' });
+
+  // The helper picker: advisor persists; Jev is offered only with a key.
+  const decider = page.locator('#decider');
+  assert.equal(await decider.isDisabled(), false);
+  assert.equal(await decider.locator('option[value=jev]').isDisabled(), true, 'no Jev key in the fixture');
+  await decider.selectOption('advisor');
+  await page.waitForTimeout(500);
+  const after = (await api('/api/projects')).projects.find((p) => p.id === project.id).conversations.find((c) => c.sessionId === conv.sessionId);
+  assert.equal(after.decisionMaker, 'advisor');
+
+  // A Jev decision recorded for this conversation shows up merged in, by time.
+  fs.mkdirSync(path.join(stateDir, 'jev', 'decisions'), { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'jev', 'decisions', conv.sessionId + '.jsonl'), JSON.stringify({ at: now, sessionId: conv.sessionId, provider: 'claude', pickedModel: 'haiku', modelConfidence: 1, pickedEffort: 'low', effortConfidence: 1, model: 'haiku', effort: 'low', notes: ['model -> haiku', 'effort -> low'], latencyMs: 404, costUsd: 0.000026 }) + '\n');
+  await open();
+  await page.waitForSelector('#term .tl.jev', { timeout: 6000 }); // reopened: the view remembers it was open
+  assert.match(await page.locator('#term .tl.jev').textContent(), /jev · model haiku 100% · effort low 100% → model -> haiku, effort -> low · 404 ms/);
+  assert.equal(await decider.inputValue(), 'advisor');
+
+  await page.locator('#chatTerminal').click();
+  assert.equal(await page.locator('#term').isVisible(), false);
+  assert.equal(await page.locator('main .scroll').isVisible(), true);
+  assert.deepEqual(errors, []);
+  await browser.close();
+  console.log('PASS terminal view: tails tool calls, results and advisor lines live, raw entries on click, metadata toggle, Jev decisions merged, helper picker persists');
+})().catch((e) => { console.error(e); process.exit(1); });
