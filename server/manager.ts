@@ -4,6 +4,7 @@ import { JevService, type JevDecision } from './jev.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
 import { findRollout } from '../src/adapters/codex.js';
 import { advisorFor, jevCandidates } from './decision-maker.js';
+import { CodexAdvisor, TurnWatcher, type AdvisorConsult, type AdvisorTrigger } from './codex-advisor.js';
 import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
 import { withMessageSender, type MessageSender } from '../src/message-sender.js';
@@ -1492,6 +1493,36 @@ export class SessionManager {
     return found;
   }
 
+  private codexAdvisorService?: CodexAdvisor;
+  codexAdvisor(): CodexAdvisor { return this.codexAdvisorService ??= new CodexAdvisor(this.opts.stateDir); }
+
+  /** One consultation for a ChatGPT conversation, and what happens to it:
+   *  mid-turn "adjust" is steered into the running turn; a post-turn "concern"
+   *  becomes ONE queued follow-up from the Advisor (whose own turn is never
+   *  reviewed again, so the two cannot loop). */
+  private async runCodexAdvisor(pid: string, sid: string, trigger: AdvisorTrigger, transcript: string, account: string | undefined, mainModel?: string): Promise<AdvisorConsult> {
+    const codexAccounts = this.registry().list().filter((a) => a.provider === 'codex');
+    const acct = codexAccounts.find((a) => a.name === account) ?? codexAccounts.find((a) => a.state?.kind === 'ok') ?? codexAccounts[0];
+    const offered = getAdapter('codex').listModels?.(codexAccounts.map((a) => a.configDir)) ?? [];
+    const model = offered.find((m) => /astra/i.test(m.slug))?.slug ?? offered[0]?.slug ?? 'gpt-6-astra';
+    let c: AdvisorConsult;
+    if (!acct) c = { at: new Date().toISOString(), sessionId: sid, trigger, model, latencyMs: 0, delivered: 'none', error: 'No ChatGPT account to run the advisor on' };
+    else c = await this.codexAdvisor().consult(sid, { trigger, transcript, mainModel, model, effort: 'high', configDir: acct.configDir, account: acct.name });
+    if (!c.error && (c.verdict === 'adjust' || c.verdict === 'concern')) {
+      const note = `[Advisor · ${model}] ${c.advice}`;
+      if (trigger !== 'done') c.delivered = this.runs.has(sid) && this.steerSession(pid, sid, note) ? 'steered' : 'too-late';
+      else {
+        try {
+          this.enqueue(pid, { sessionId: sid, sender: { kind: 'advisor', projectName: model }, text: `The advisor (${model}) reviewed your work before you called it done:\n\n${c.advice}\n\nAddress this, or say briefly why it does not apply.` });
+          c.delivered = 'queued';
+        } catch (e) { c.error = 'Could not queue the advice: ' + (e as Error).message; }
+      }
+    }
+    this.codexAdvisor().record(c);
+    this.emit('advisor_consult', { ...c, projectId: pid } as unknown as Record<string, unknown>);
+    return c;
+  }
+
   private jevService?: JevService;
   jev(): JevService { return this.jevService ??= new JevService(this.opts.stateDir); }
 
@@ -1499,7 +1530,6 @@ export class SessionManager {
   setDecisionMaker(pid: string, sid: string, value: 'none' | 'advisor' | 'jev'): void {
     if (!['none', 'advisor', 'jev'].includes(value)) throw new Error('decisionMaker must be none, advisor or jev');
     const provider = this.projects().conversationProvider(pid, sid);
-    if (value === 'advisor' && provider !== 'claude') throw new Error('The advisor for ChatGPT conversations is not built yet; it works on Claude conversations');
     if (value === 'jev' && !this.jev().configured()) throw new Error('No Jev API key is configured');
     this.projects().setDecisionMaker(pid, sid, value === 'none' ? null : value);
     this.emitConversations(pid);
@@ -2585,6 +2615,12 @@ export class SessionManager {
           }) as typeof runFn
         : runFn;
       if (advisor) emit('advisor_state', { advisor, model: model ?? null });
+      // ChatGPT has no advisor of its own; the gateway watches the turn.
+      const watcher = decisionMaker === 'advisor' && adapter.id === 'codex'
+        ? new TurnWatcher(cleanMemorySource(prompt), (trigger, transcript) => {
+            void this.runCodexAdvisor(pid, sessionId, trigger, transcript, run.account, model).catch(() => {});
+          }, { reviewDone: sender?.kind !== 'advisor' })
+        : undefined;
       void runWith({
         accountEligibility: async () => {
           this.assertExecutionAllowed(pid,sessionId);
@@ -2632,6 +2668,7 @@ export class SessionManager {
         forceSwitchSignal: false,
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {
+          watcher?.observe(e);
           saveStateOnce();
           // Persist the CLI's own session id THE MOMENT the stream reveals it
           // (codex announces its thread id in thread.started), not just when the

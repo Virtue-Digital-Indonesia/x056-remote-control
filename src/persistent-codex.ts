@@ -293,6 +293,13 @@ export class CodexTransport implements Transport {
         // willRetry: the CLI is retrying on its own; surface but do not end.
         return { events: [{ type: 'error', message: String(e.message ?? 'error') }], turnEnded: false };
       }
+      case 'turn/plan/updated': {
+        // The agent's plan (update_plan). exec --json reports it as a
+        // `todo_list` item; the gateway's Codex advisor consults on the first
+        // one in a turn ("before a plan: is this the right approach?").
+        const steps = Array.isArray(p.plan) ? (p.plan as { step?: string; status?: string }[]) : [];
+        return { events: [{ type: 'item.completed', item: { type: 'todo_list', items: steps.map((x) => ({ text: String(x.step ?? ''), completed: x.status === 'completed' })), ...(typeof p.explanation === 'string' ? { explanation: p.explanation } : {}) } }], turnEnded: false };
+      }
       case 'thread/status/changed':
       case 'account/rateLimits/updated':
       case 'thread/tokenUsage/updated':

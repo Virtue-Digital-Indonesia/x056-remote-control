@@ -131,11 +131,11 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.decisionMaker).toBe('jev');
   });
 
-  it('refuses the advisor on a ChatGPT conversation and anything but none|advisor|jev', () => {
+  it('accepts the advisor on a ChatGPT conversation (gateway-built) and refuses anything but none|advisor|jev', () => {
     const { mgr, dir } = fixture();
     const p = mgr.createProject('C', dir, 'codex');
     const sid = mgr.start('hi', undefined, undefined, p.id);
-    expect(() => mgr.setDecisionMaker(p.id, sid, 'advisor')).toThrow(/not built yet/);
+    expect(() => mgr.setDecisionMaker(p.id, sid, 'advisor')).not.toThrow();
     expect(() => mgr.setDecisionMaker(p.id, sid, 'both' as never)).toThrow(/none, advisor or jev/);
   });
 });

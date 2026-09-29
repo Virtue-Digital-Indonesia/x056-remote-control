@@ -1912,7 +1912,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     sel.disabled = pendingNew || !lastSessionId || !c;
     sel.title = sel.disabled ? 'Send the first message, then choose a helper for the following turns' : 'Who helps each turn: the Claude advisor or Jev (picks model and effort)';
     var adv = sel.querySelector('option[value=advisor]'), jevOpt = sel.querySelector('option[value=jev]');
-    adv.disabled = codex; adv.textContent = codex ? 'Advisor (Claude only for now)' : 'Advisor';
+    adv.textContent = codex ? 'Advisor (Astra reviews)' : 'Advisor';
     jevOpt.disabled = !!jevStatus && !jevStatus.configured;
     jevOpt.textContent = !jevStatus ? 'Jev' : !jevStatus.configured ? 'Jev (no API key)' : jevStatus.estimatedLeft !== undefined ? 'Jev · ≈$' + jevStatus.estimatedLeft.toFixed(2) + ' left' : 'Jev';
   }
@@ -2273,14 +2273,14 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role; wrap._messageText = text; if(ts)wrap.dataset.messageTs=ts;
     var lab = document.createElement('div'); lab.className = 'role';
     lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
-    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp'].indexOf(sender.kind) >= 0) {
+    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor'].indexOf(sender.kind) >= 0) {
       wrap.classList.add('from-sender');
       if (sender.messageId) wrap.dataset.messageSourceId = sender.messageId;
       lab.classList.add('message-sender'); lab.textContent = '';
-      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : 'plug', 'sm'));
+      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : 'plug', 'sm'));
       var identity = document.createElement('span'), name = document.createElement('strong'), project = document.createElement('small');
-      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : 'External sender';
-      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : 'MCP');
+      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : 'External sender';
+      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : sender.kind === 'advisor' ? 'Review' : 'MCP');
       identity.appendChild(name); identity.appendChild(project); lab.appendChild(identity);
       lab.title = 'From ' + name.textContent + ' · ' + project.textContent;
       lab.setAttribute('aria-label', lab.title);
@@ -4472,7 +4472,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'advisor_state'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'advisor_state', 'advisor_consult'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
