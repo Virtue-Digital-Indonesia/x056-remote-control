@@ -61,10 +61,11 @@
       var myKey = key;
       $('termMeta').textContent = 'loading…';
       Promise.all([getJson('/api/conversations/raw-page' + q(c, '&limit=300')), getJson('/api/conversations/jev-decisions' + q(c)).catch(function () { return []; }),
-        getJson('/api/conversations/advisor-consultations' + q(c)).catch(function () { return []; })])
+        getJson('/api/conversations/advisor-consultations' + q(c)).catch(function () { return []; }),
+        getJson('/api/conversations/turn-results' + q(c)).catch(function () { return []; })])
         .then(function (res) {
           if (myKey !== key) return;
-          var page = res[0]; jev = (res[1] || []).concat((res[2] || []).map(function (a) { return Object.assign({ kind: 'advisor' }, a); })).sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
+          var page = res[0]; jev = (res[1] || []).concat((res[2] || []).map(function (a) { return Object.assign({ kind: 'advisor' }, a); }), (res[3] || []).map(function (r) { return Object.assign({ kind: 'result' }, r); })).sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
           provider = page.provider || 'claude';
           start = page.start; end = page.end; done = page.done;
           var firstTs = firstTimestamp(page.entries);
@@ -134,9 +135,10 @@
 
     /** Live events from the gateway. */
     function onEvent(kind, data) {
-      if ((kind !== 'jev_decision' && kind !== 'advisor_consult') || !open) return;
+      if ((kind !== 'jev_decision' && kind !== 'advisor_consult' && kind !== 'turn_result') || !open) return;
       var c = cur(); if (!c || data.sessionId !== c.sessionId) return;
       if (kind === 'advisor_consult') data = Object.assign({ kind: 'advisor' }, data);
+      if (kind === 'turn_result') data = Object.assign({ kind: 'result' }, data);
       jev.push(data);
       var atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
       linesEl.appendChild(renderLines([jevLine(data)]));
@@ -213,10 +215,20 @@
 
     function jevLine(d) {
       if (d.kind === 'advisor') return advisorLine(d);
+      if (d.kind === 'result') return resultLine(d);
       var t = d.error ? 'jev · ' + d.error
         : 'jev · model ' + (d.pickedModel || '—') + ' ' + pct(d.modelConfidence) + ' · effort ' + (d.pickedEffort || '—') + ' ' + pct(d.effortConfidence) +
           ' → ' + ((d.notes || []).join(', ') || 'no change') + ' · ' + d.latencyMs + ' ms · $' + (d.costUsd || 0).toFixed(6);
       return line(d.at, d.error ? 'err jev' : 'jev', '◆', t, d);
+    }
+
+    // A Claude turn's final result, as `claude -p` prints it: the only place an
+    // advisor model's cost shows up.
+    function resultLine(r) {
+      var per = (r.models || []).map(function (m) { return m.model.replace(/^claude-/, '') + ' $' + (m.costUsd || 0).toFixed(3); }).join(' · ');
+      var t = (r.ok ? 'turn done' : 'turn failed') + (r.numTurns ? ' · ' + r.numTurns + ' step' + (r.numTurns === 1 ? '' : 's') : '') + (r.durationMs ? ' · ' + (r.durationMs / 1000).toFixed(1) + ' s' : '') +
+        (r.totalCostUsd != null ? ' · $' + r.totalCostUsd.toFixed(3) : '') + (per ? ' (' + per + ')' : '');
+      return line(r.at, r.ok ? 'sys' : 'err', r.ok ? '✓' : '✗', t, r);
     }
 
     // The gateway-built ChatGPT advisor: one line per consultation.
@@ -231,7 +243,7 @@
 
     function mergeJev(lines, decisions) {
       if (!decisions.length) return lines;
-      var fresh = decisions.filter(function (d) { var k = d.at + d.sessionId; if (jevShown[k]) return false; jevShown[k] = 1; return true; }).map(jevLine);
+      var fresh = decisions.filter(function (d) { var k = (d.kind || 'jev') + ':' + (d.trigger || '') + ':' + d.at + ':' + d.sessionId; if (jevShown[k]) return false; jevShown[k] = 1; return true; }).map(jevLine);
       var out = [], j = 0, lastTs = '';
       lines.forEach(function (x) {
         if (x.ts) lastTs = x.ts;

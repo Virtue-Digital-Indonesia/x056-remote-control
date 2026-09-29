@@ -553,6 +553,14 @@ export class ApiController {
     return this.manager.jev().decisions(sessionId);
   }
 
+  /** Each Claude turn's final result: duration, total and per-model cost. */
+  @Get('conversations/turn-results')
+  conversationTurnResults(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {
+    if (!projectId || !sessionId || !this.manager.listConversations(projectId).some((c) => c.sessionId === sessionId))
+      throw new BadRequestException('unknown conversation for that project');
+    return this.manager.turnResults().list(sessionId);
+  }
+
   /** Every consultation the gateway-built ChatGPT advisor made, oldest first. */
   @Get('conversations/advisor-consultations')
   conversationAdvisorConsultations(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {

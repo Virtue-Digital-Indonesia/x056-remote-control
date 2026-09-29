@@ -5,6 +5,7 @@ import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.j
 import { findRollout } from '../src/adapters/codex.js';
 import { advisorFor, jevCandidates } from './decision-maker.js';
 import { CodexAdvisor, TurnWatcher, type AdvisorConsult, type AdvisorTrigger } from './codex-advisor.js';
+import { TurnResults } from './turn-results.js';
 import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
 import { withMessageSender, type MessageSender } from '../src/message-sender.js';
@@ -1493,6 +1494,9 @@ export class SessionManager {
     return found;
   }
 
+  private turnResultsLog?: TurnResults;
+  turnResults(): TurnResults { return this.turnResultsLog ??= new TurnResults(this.opts.stateDir); }
+
   private codexAdvisorService?: CodexAdvisor;
   codexAdvisor(): CodexAdvisor { return this.codexAdvisorService ??= new CodexAdvisor(this.opts.stateDir); }
 
@@ -2669,6 +2673,9 @@ export class SessionManager {
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {
           watcher?.observe(e);
+          if (adapter.id === 'claude' && e.type === 'result') {
+            try { const r = this.turnResults().record(sessionId, e as Record<string, unknown>); if (r) emit('turn_result', r as unknown as Record<string, unknown>); } catch { /* never break the stream */ }
+          }
           saveStateOnce();
           // Persist the CLI's own session id THE MOMENT the stream reveals it
           // (codex announces its thread id in thread.started), not just when the

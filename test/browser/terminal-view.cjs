@@ -71,8 +71,12 @@ const TOKEN = 'browser-fixture-token-0123456789';
   // A Jev decision recorded for this conversation shows up merged in, by time.
   fs.mkdirSync(path.join(stateDir, 'jev', 'decisions'), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'jev', 'decisions', conv.sessionId + '.jsonl'), JSON.stringify({ at: now, sessionId: conv.sessionId, provider: 'claude', pickedModel: 'haiku', modelConfidence: 1, pickedEffort: 'low', effortConfidence: 1, model: 'haiku', effort: 'low', notes: ['model -> haiku', 'effort -> low'], latencyMs: 404, costUsd: 0.000026 }) + '\n');
+  // A Claude turn's result, with its advisor's cost as a separate line item.
+  fs.mkdirSync(path.join(stateDir, 'turn-results'), { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'turn-results', conv.sessionId + '.jsonl'), JSON.stringify({ at: now, sessionId: conv.sessionId, ok: true, durationMs: 8523, numTurns: 1, totalCostUsd: 0.1750453, models: [{ model: 'claude-haiku-4-5-20251001', costUsd: 0.0266693 }, { model: 'claude-opus-5-5', costUsd: 0.148376 }] }) + '\n');
   await open();
   await page.waitForSelector('#term .tl.jev', { timeout: 6000 }); // reopened: the view remembers it was open
+  assert.match(await page.locator('#term .tl.sys').filter({ hasText: 'turn done' }).last().textContent(), /turn done · 1 step · 8\.5 s · \$0\.175 \(haiku-4-5-20251001 \$0\.027 · opus-5-5 \$0\.148\)/);
   assert.match(await page.locator('#term .tl.jev').textContent(), /jev · model haiku 100% · effort low 100% → model -> haiku, effort -> low · 404 ms/);
   assert.equal(await decider.inputValue(), 'advisor');
 
