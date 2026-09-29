@@ -47,6 +47,8 @@ export interface RunSessionOptions {
   claudePath?: string;
   model?: string;
   effort?: string;
+  /** Claude advisor model, passed to every turn of this session. */
+  advisor?: string;
   appendSystemPrompt?: string;
   /** The gateway's MCP bridge wiring, passed through to every turn (see
    *  TurnOptions.mcp) so sessions can read/message other conversations. */
@@ -294,6 +296,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         prompt,
         model: opts.model,
         effort: opts.effort,
+        advisor: opts.advisor,
         appendSystemPrompt: opts.appendSystemPrompt,
         mcp: opts.mcp,
         onEvent: (e) => processEvent(e),

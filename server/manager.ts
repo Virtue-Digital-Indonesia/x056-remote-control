@@ -1,5 +1,7 @@
 import { currentCodexPrefs } from '../src/codex-model-policy.js';
 import { currentClaudeModel } from '../src/claude-model-policy.js';
+import { JevService, type JevDecision } from './jev.js';
+import { advisorFor, jevCandidates } from './decision-maker.js';
 import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
 import { withMessageSender, type MessageSender } from '../src/message-sender.js';
@@ -1473,6 +1475,33 @@ export class SessionManager {
 
   /** Display name for a project id (for push notifications, etc.). */
   projectName(pid: string): string | undefined { return this.projects().get(pid)?.name; }
+
+  private jevService?: JevService;
+  jev(): JevService { return this.jevService ??= new JevService(this.opts.stateDir); }
+
+  /** Exactly one of: none, the advisor, Jev. */
+  setDecisionMaker(pid: string, sid: string, value: 'none' | 'advisor' | 'jev'): void {
+    if (!['none', 'advisor', 'jev'].includes(value)) throw new Error('decisionMaker must be none, advisor or jev');
+    const provider = this.projects().conversationProvider(pid, sid);
+    if (value === 'advisor' && provider !== 'claude') throw new Error('The advisor for ChatGPT conversations is not built yet; it works on Claude conversations');
+    if (value === 'jev' && !this.jev().configured()) throw new Error('No Jev API key is configured');
+    this.projects().setDecisionMaker(pid, sid, value === 'none' ? null : value);
+    this.emitConversations(pid);
+  }
+
+  /** Ask Jev for this turn's model/effort. The "current" values are what the
+   *  conversation last actually ran with, so the switching gap is honest. */
+  private async decideWithJev(pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string): Promise<JevDecision> {
+    const history = this.jev().decisions(sid);
+    const lastModel = [...history].reverse().find((d) => d.model)?.model;
+    const lastEffort = [...history].reverse().find((d) => d.effort)?.effort;
+    const codexModels = provider === 'codex'
+      ? (getAdapter('codex').listModels?.(this.registry().list().filter((a) => a.provider === 'codex').map((a) => a.configDir)) ?? [])
+      : [];
+    const { models, efforts } = jevCandidates(provider, codexModels);
+    const title = this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)?.title;
+    return this.jev().decide(sid, { provider, prompt, title, currentModel: lastModel ?? model, currentEffort: lastEffort ?? effort, models, efforts });
+  }
   /** A generated title for this CHAT is queued or being written right now. */
   titlePending(pid: string, sid: string): boolean {
     const p = this.projects().get(pid);
@@ -2445,6 +2474,8 @@ export class SessionManager {
     const adapter = this.adapterFor(pid, sessionId);
     const prefs = this.conversationRunPrefs(pid, sessionId, runOpts);
     const model = prefs.model || undefined, effort = prefs.effort || undefined;
+    const decisionMaker = reg.get(pid)?.conversations?.find((c) => c.sessionId === sessionId)?.decisionMaker;
+    const advisor = decisionMaker === 'advisor' ? advisorFor(adapter.id as 'claude' | 'codex', model) : undefined;
     reg.setConversationPrefs(pid, sessionId, prefs);
     // setPrefs snapshots legacy siblings before changing defaults for new chats.
     if (model || effort) reg.setPrefs(pid, { model, effort });
@@ -2527,7 +2558,18 @@ export class SessionManager {
       emit('turn_state', { active: true });
       if(memoryRecord)emit('memory_context',memoryRecord);
       if(memoryWarning)emit('memory_warning',{message:memoryWarning});
-      void runFn({
+      // Jev picks this turn's model/effort just before it starts -- inside the
+      // async run, so sending a message never waits on it. A failed or unsure
+      // Jev leaves the conversation's own choice in place.
+      const runWith: typeof runFn = decisionMaker === 'jev'
+        ? (async (o: Parameters<typeof runFn>[0]) => {
+            const d = await this.decideWithJev(pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort);
+            emit('jev_decision', d as unknown as Record<string, unknown>);
+            return runFn({ ...o, ...(d.model ? { model: d.model } : {}), ...(d.effort ? { effort: d.effort } : {}) });
+          }) as typeof runFn
+        : runFn;
+      if (advisor) emit('advisor_state', { advisor, model: model ?? null });
+      void runWith({
         accountEligibility: async () => {
           this.assertExecutionAllowed(pid,sessionId);
           this.projectHandoffs().validateMemory(memoryRequestId,pid,sessionId);
@@ -2553,6 +2595,7 @@ export class SessionManager {
         claudePath: this.opts.claudePath,
         model,
         effort,
+        advisor,
         appendSystemPrompt: CONTAINER_SYSTEM_NOTE,
         mcp: this.mcpWiringFor(pid, sessionId),
         // Each provider has a pool; the transport inside it speaks that CLI.

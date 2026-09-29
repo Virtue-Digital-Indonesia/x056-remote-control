@@ -34,6 +34,9 @@ export interface TurnOptions {
   prompt: string;
   model?: string;
   effort?: string;
+  /** Claude Code's advisor model (`--advisor`), consulted by the main model at
+   *  decision points. Claude only; Codex ignores it. */
+  advisor?: string;
   appendSystemPrompt?: string;
   /** The gateway's MCP bridge (scripts/x056-mcp.mjs), giving the session tools
    *  to read/message OTHER conversations and projects through the gateway. Each
@@ -122,6 +125,7 @@ export function startTurn(opts: TurnOptions): TurnHandle {
     ...(opts.mcp ? ['--mcp-config', opts.mcp.configPath] : []),
     ...(opts.model ? ['--model', opts.model] : []),
     ...(opts.effort ? ['--effort', opts.effort] : []),
+    ...(opts.advisor ? ['--advisor', opts.advisor] : []),
     ...(opts.mode === 'new' ? ['--session-id', opts.sessionId] : ['--resume', opts.sessionId]),
     // `--` ends option parsing so a prompt beginning with '-' (e.g. a markdown
     // bullet list) is taken as the positional prompt, not an unknown flag.

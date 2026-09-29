@@ -45,6 +45,10 @@ export interface Conversation {
   /** Last selected model/effort for this conversation. Empty means provider default. */
   model?: string;
   effort?: string;
+  /** Who else weighs in on each turn. ONE field, so the advisor and Jev can
+   *  never both be on: `advisor` = Claude Code's advisor tool, `jev` = TypeSafe
+   *  Jev picks model/effort per turn. Absent = neither. */
+  decisionMaker?: 'advisor' | 'jev';
   lastOutcome?: { status: 'completed' | 'failed' | 'parked' | 'stopped'; at: string; reason?: string };
   /** Which agent CLI this conversation runs on. Stamped when it's created (from
    *  the project's provider) and then FIXED: its transcript is that provider's
@@ -397,6 +401,13 @@ export class ProjectRegistry {
     }
     if (prefs.model) p.model = prefs.model;
     if (prefs.effort) p.effort = prefs.effort;
+    this.save();
+  }
+
+  setDecisionMaker(id: string, sessionId: string, value: 'advisor' | 'jev' | null): void {
+    const c = this.data.projects.find((x) => x.id === id)?.conversations?.find((x) => x.sessionId === sessionId);
+    if (!c) throw new Error('unknown conversation for that project');
+    if (value === null) delete c.decisionMaker; else c.decisionMaker = value;
     this.save();
   }
 

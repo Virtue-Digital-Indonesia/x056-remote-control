@@ -512,6 +512,34 @@ export class ApiController {
     } catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
+  /** none | advisor | jev -- one field, so they are exclusive by construction. */
+  @Post('conversations/decision-maker')
+  @HttpCode(200)
+  conversationDecisionMaker(@Body() body: { projectId?: string; sessionId?: string; decisionMaker?: string }): { ok: boolean } {
+    if (!body?.projectId || !body.sessionId || !body.decisionMaker) throw new BadRequestException('projectId, sessionId and decisionMaker required');
+    try { this.manager.setDecisionMaker(body.projectId, body.sessionId, body.decisionMaker as 'none' | 'advisor' | 'jev'); return { ok: true }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** Every Jev decision this conversation's turns got, oldest first. */
+  @Get('conversations/jev-decisions')
+  conversationJevDecisions(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {
+    if (!projectId || !sessionId || !this.manager.listConversations(projectId).some((c) => c.sessionId === sessionId))
+      throw new BadRequestException('unknown conversation for that project');
+    return this.manager.jev().decisions(sessionId);
+  }
+
+  /** Jev credit status: metered spend against the balance last synced from the console. */
+  @Get('jev/status')
+  jevStatus() { return this.manager.jev().status(); }
+
+  @Post('jev/balance')
+  @HttpCode(200)
+  jevBalance(@Body() body: { amount?: number }) {
+    try { return this.manager.jev().syncBalance(Number(body?.amount)); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
   /** Exact-request reply lookup. Never substitutes another turn's answer. */
   @Get('conversations/reply')
   conversationReply(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string, @Query('messageId') messageId: string) {
