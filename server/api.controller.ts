@@ -513,12 +513,12 @@ export class ApiController {
     } catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
-  /** none | advisor | jev -- one field, so they are exclusive by construction. */
+  /** none | advisor | jev | decisions -- one field, so they are exclusive by construction. */
   @Post('conversations/decision-maker')
   @HttpCode(200)
   conversationDecisionMaker(@Body() body: { projectId?: string; sessionId?: string; decisionMaker?: string }): { ok: boolean } {
     if (!body?.projectId || !body.sessionId || !body.decisionMaker) throw new BadRequestException('projectId, sessionId and decisionMaker required');
-    try { this.manager.setDecisionMaker(body.projectId, body.sessionId, body.decisionMaker as 'none' | 'advisor' | 'jev'); return { ok: true }; }
+    try { this.manager.setDecisionMaker(body.projectId, body.sessionId, body.decisionMaker as 'none' | 'advisor' | 'jev' | 'decisions'); return { ok: true }; }
     catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
@@ -545,7 +545,8 @@ export class ApiController {
     try { return readRawEntry(file, Number(offset)); } catch (e) { throw new BadRequestException((e as Error).message); }
   }
 
-  /** Every Jev decision this conversation's turns got, oldest first. */
+  /** Every model/effort decision this conversation's turns got (Jev and
+   *  OpenAI Decisions share the store), oldest first. */
   @Get('conversations/jev-decisions')
   conversationJevDecisions(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {
     if (!projectId || !sessionId || !this.manager.listConversations(projectId).some((c) => c.sessionId === sessionId))
@@ -577,6 +578,18 @@ export class ApiController {
   @HttpCode(200)
   jevBalance(@Body() body: { amount?: number }) {
     try { return this.manager.jev().syncBalance(Number(body?.amount)); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** OpenAI Decisions: configured or not, calls and tokens (no price is published). */
+  @Get('decisions/status')
+  decisionsStatus() { return this.manager.openaiDecisions().status(); }
+
+  /** One real call with the raw reply, to check the provisional request shape. */
+  @Post('decisions/probe')
+  @HttpCode(200)
+  async decisionsProbe() {
+    try { return await this.manager.openaiDecisions().probe(); }
     catch (err) { throw new BadRequestException((err as Error).message); }
   }
 

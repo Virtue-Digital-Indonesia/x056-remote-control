@@ -1,6 +1,7 @@
-import { currentCodexPrefs } from '../src/codex-model-policy.js';
+import { codexTurnForAccount, currentCodexPrefs } from '../src/codex-model-policy.js';
 import { currentClaudeModel } from '../src/claude-model-policy.js';
 import { JevService, type JevDecision } from './jev.js';
+import { OpenAIDecisionsService } from './openai-decisions.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
 import { findRollout } from '../src/adapters/codex.js';
 import { advisorFor, jevCandidates } from './decision-maker.js';
@@ -43,7 +44,7 @@ import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } 
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import { PersistentTurns } from '../src/persistent.js';
 import { CodexTransport } from '../src/persistent-codex.js';
-import type { TurnOptions } from '../src/turn.js';
+import type { TurnHandle, TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
 import { parseQuestion, stripAsk, stripAskInstructions, withAskInstructions } from '../src/question.js';
@@ -1402,6 +1403,24 @@ export class SessionManager {
 
   /** Resolve on the target conversation, never the panel's selected chat. Blank
    *  values deliberately select provider defaults instead of a project fallback. */
+  /**
+   * How a turn is started on the account failover picked. Each provider's pool
+   * drives its CLI (the transport inside it speaks that CLI); without a pool the
+   * adapter spawns a process per turn. A Codex turn also runs on the model that
+   * ACCOUNT has: a new model reaches plans at different times, and a failover
+   * onto an account without it would otherwise fail the turn.
+   */
+  private turnStarter(adapter: ProviderAdapter, log: { append(row: Record<string, unknown>): void }, sessionId: string, wire: (o: TurnOptions) => TurnOptions): ((o: TurnOptions) => TurnHandle) | undefined {
+    const pool = adapter.id === 'claude' ? this.persistent : adapter.id === 'codex' ? this.persistentCodex : undefined;
+    if (adapter.id !== 'codex') return pool ? (o) => pool.startTurn(wire(o)) : undefined;
+    return (o) => {
+      const run = codexTurnForAccount(o.configDir, o.model, o.effort);
+      if (run.model !== o.model) log.append({ type: 'model_fallback', sessionId, account: this.registry().list().find((a) => a.configDir === o.configDir)?.name ?? null, from: o.model ?? null, to: run.model ?? null, effort: run.effort ?? null });
+      const opts = { ...o, model: run.model, effort: run.effort };
+      return pool ? pool.startTurn(wire(opts)) : adapter.startTurn(opts);
+    };
+  }
+
   conversationRunPrefs(projectId: string, sessionId?: string, opts: TurnRunOptions = {}): Pick<TurnRunOptions, 'model' | 'effort'> {
     const project = this.projects().get(projectId);
     if (!project) throw new Error('unknown project');
@@ -1530,18 +1549,24 @@ export class SessionManager {
   private jevService?: JevService;
   jev(): JevService { return this.jevService ??= new JevService(this.opts.stateDir); }
 
-  /** Exactly one of: none, the advisor, Jev. */
-  setDecisionMaker(pid: string, sid: string, value: 'none' | 'advisor' | 'jev'): void {
-    if (!['none', 'advisor', 'jev'].includes(value)) throw new Error('decisionMaker must be none, advisor or jev');
+  private openaiDecisionsService?: OpenAIDecisionsService;
+  /** OpenAI's Decisions API: Jev's job, Jev's policy, Jev's decision store. */
+  openaiDecisions(): OpenAIDecisionsService { return this.openaiDecisionsService ??= new OpenAIDecisionsService(this.opts.stateDir, this.jev()); }
+
+  /** Exactly one of: none, the advisor, Jev, OpenAI Decisions. */
+  setDecisionMaker(pid: string, sid: string, value: 'none' | 'advisor' | 'jev' | 'decisions'): void {
+    if (!['none', 'advisor', 'jev', 'decisions'].includes(value)) throw new Error('decisionMaker must be none, advisor, jev or decisions');
     const provider = this.projects().conversationProvider(pid, sid);
     if (value === 'jev' && !this.jev().configured()) throw new Error('No Jev API key is configured');
+    if (value === 'decisions' && !this.openaiDecisions().configured()) throw new Error('No OpenAI API key is configured for the Decisions API');
     this.projects().setDecisionMaker(pid, sid, value === 'none' ? null : value);
     this.emitConversations(pid);
   }
 
-  /** Ask Jev for this turn's model/effort. The "current" values are what the
-   *  conversation last actually ran with, so the switching gap is honest. */
-  private async decideWithJev(pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string): Promise<JevDecision> {
+  /** Ask Jev or OpenAI Decisions for this turn's model/effort. The "current"
+   *  values are what the conversation last actually ran with -- by either
+   *  backend, the store is shared -- so the switching gap is honest. */
+  private async decideModelEffort(backend: 'jev' | 'decisions', pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string): Promise<JevDecision> {
     const history = this.jev().decisions(sid);
     const lastModel = [...history].reverse().find((d) => d.model)?.model;
     const lastEffort = [...history].reverse().find((d) => d.effort)?.effort;
@@ -1550,7 +1575,8 @@ export class SessionManager {
       : [];
     const { models, efforts } = jevCandidates(provider, codexModels);
     const title = this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)?.title;
-    return this.jev().decide(sid, { provider, prompt, title, currentModel: lastModel ?? model, currentEffort: lastEffort ?? effort, models, efforts });
+    const input = { provider, prompt, title, currentModel: lastModel ?? model, currentEffort: lastEffort ?? effort, models, efforts };
+    return backend === 'decisions' ? this.openaiDecisions().decide(sid, input) : this.jev().decide(sid, input);
   }
   /** A generated title for this CHAT is queued or being written right now. */
   titlePending(pid: string, sid: string): boolean {
@@ -2608,12 +2634,13 @@ export class SessionManager {
       emit('turn_state', { active: true });
       if(memoryRecord)emit('memory_context',memoryRecord);
       if(memoryWarning)emit('memory_warning',{message:memoryWarning});
-      // Jev picks this turn's model/effort just before it starts -- inside the
-      // async run, so sending a message never waits on it. A failed or unsure
-      // Jev leaves the conversation's own choice in place.
-      const runWith: typeof runFn = decisionMaker === 'jev'
+      // Jev (or OpenAI Decisions) picks this turn's model/effort just before
+      // it starts -- inside the async run, so sending a message never waits on
+      // it. A failed or unsure pick leaves the conversation's own choice in
+      // place. Both report as `jev_decision`, told apart by `backend`.
+      const runWith: typeof runFn = decisionMaker === 'jev' || decisionMaker === 'decisions'
         ? (async (o: Parameters<typeof runFn>[0]) => {
-            const d = await this.decideWithJev(pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort);
+            const d = await this.decideModelEffort(decisionMaker, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort);
             emit('jev_decision', d as unknown as Record<string, unknown>);
             return runFn({ ...o, ...(d.model ? { model: d.model } : {}), ...(d.effort ? { effort: d.effort } : {}) });
           }) as typeof runFn
@@ -2655,8 +2682,7 @@ export class SessionManager {
         appendSystemPrompt: CONTAINER_SYSTEM_NOTE,
         mcp: this.mcpWiringFor(pid, sessionId),
         // Each provider has a pool; the transport inside it speaks that CLI.
-        startTurnFn: (adapter.id === 'claude' ? this.persistent : adapter.id === 'codex' ? this.persistentCodex : null)
-          ? (o) => (adapter.id === 'claude' ? this.persistent! : this.persistentCodex!).startTurn({
+        startTurnFn: this.turnStarter(adapter, log, sessionId, (o) => ({
             ...o,
             onProviderActivity: () => emit('background_state', this.providerActivity(sessionId)),
             // Work that happens AFTER a turn ends — a background task finishing
@@ -2667,8 +2693,7 @@ export class SessionManager {
             onIdleEvent: (e: RawEvent) => {
               try { this.tapToEvents(e, emit, adapter, pid, sessionId); } catch { /* never break the stream */ }
             },
-          })
-          : undefined,
+          })),
         forceSwitchSignal: false,
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {

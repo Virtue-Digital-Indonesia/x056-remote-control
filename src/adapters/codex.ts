@@ -1,4 +1,4 @@
-import { currentCodexModel } from '../codex-model-policy.js';
+import { supersededCodexModel } from '../codex-model-policy.js';
 import { readMessageSender } from '../message-sender.js';
 import { toolImagePaths } from '../artifact-references.js';
 import { stripMemoryContext } from '../memory-context.js';
@@ -536,11 +536,15 @@ function listModels(configDirs: string[]): ProviderModel[] {
     }
   }
   caches.sort((a, b) => b.mtime - a.mtime);
+  // A model is retired from the picker once any account is offered its
+  // successor -- not before, or a line whose successor is still rolling out
+  // would vanish from the picker entirely.
+  const offered = new Set(caches.flatMap(({ models }) => models.filter((m) => m.slug && m.visibility === 'list').map((m) => m.slug!)));
   const seen = new Set<string>();
   const out: ProviderModel[] = [];
   for (const { models } of caches) {
     for (const m of models) {
-      if (!m.slug || currentCodexModel(m.slug) !== m.slug || m.visibility !== 'list' || seen.has(m.slug)) continue;
+      if (!m.slug || supersededCodexModel(m.slug, offered) || m.visibility !== 'list' || seen.has(m.slug)) continue;
       seen.add(m.slug);
       out.push({
         slug: m.slug,

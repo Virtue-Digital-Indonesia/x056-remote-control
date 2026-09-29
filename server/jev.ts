@@ -34,6 +34,9 @@ export interface JevDecision {
   at: string;
   sessionId: string;
   provider: 'claude' | 'codex';
+  /** Who decided: Jev, or OpenAI's Decisions API. Absent on rows written
+   *  before there was a choice, which were all Jev. */
+  backend?: 'jev' | 'openai';
   /** What the turn actually runs with (after policy). Undefined = unchanged. */
   model?: string;
   effort?: string;
@@ -118,7 +121,9 @@ export class JevService {
     if (!existsSync(f)) return [];
     try { return readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as JevDecision); } catch { return []; }
   }
-  private record(d: JevDecision): void {
+  /** Every backend records here, so the Claude switching gap counts a model
+   *  switch no matter which of them made it. */
+  record(d: JevDecision): void {
     if (!/^[A-Za-z0-9-]{8,64}$/.test(d.sessionId)) return;
     mkdirSync(join(this.dir, 'decisions'), { recursive: true });
     appendFileSync(join(this.dir, 'decisions', d.sessionId + '.jsonl'), JSON.stringify(d) + '\n', { mode: 0o600 });
@@ -128,23 +133,17 @@ export class JevService {
    *  returns a decision with `error` and no changes. */
   async decide(sessionId: string, input: JevDecisionInput): Promise<JevDecision> {
     const started = Date.now();
-    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, notes: [], latencyMs: 0 };
+    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'jev', notes: [], latencyMs: 0 };
     const key = this.key();
     if (!key) { const d = { ...base, error: 'No Jev API key configured' }; this.record(d); return d; }
     const models = input.models.filter((m) => m.id);
     const questions: Record<string, unknown> = {
-      effort: { type: 'choice', instructions: 'How much reasoning effort does the NEXT turn of this coding/assistant conversation need? Judge the new message, not the whole history.', criteria: input.efforts },
+      effort: { type: 'choice', instructions: EFFORT_QUESTION, criteria: input.efforts },
     };
     if (models.length > 1) {
-      questions.model = { type: 'choice', instructions: 'Which model should handle the NEXT turn? Prefer the cheapest model that will do it well.', criteria: Object.fromEntries(models.map((m) => [m.id, m.about])) };
+      questions.model = { type: 'choice', instructions: MODEL_QUESTION, criteria: Object.fromEntries(models.map((m) => [m.id, m.about])) };
     }
-    const state = {
-      provider: input.provider,
-      conversation_title: (input.title || '').slice(0, 200),
-      current_model: input.currentModel || 'provider default',
-      current_effort: input.currentEffort || 'provider default',
-      new_message: input.prompt.slice(0, 6000),
-    };
+    const state = decisionState(input);
     let res: Response;
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), this.timeoutMs);
@@ -167,7 +166,21 @@ export class JevService {
   }
 }
 
-/** Decide what actually changes, given Jev's answers and what came before. */
+export const EFFORT_QUESTION = 'How much reasoning effort does the NEXT turn of this coding/assistant conversation need? Judge the new message, not the whole history.';
+export const MODEL_QUESTION = 'Which model should handle the NEXT turn? Prefer the cheapest model that will do it well.';
+
+/** What a decision backend is told about the turn. */
+export function decisionState(input: JevDecisionInput): Record<string, string> {
+  return {
+    provider: input.provider,
+    conversation_title: (input.title || '').slice(0, 200),
+    current_model: input.currentModel || 'provider default',
+    current_effort: input.currentEffort || 'provider default',
+    new_message: input.prompt.slice(0, 6000),
+  };
+}
+
+/** Decide what actually changes, given a backend's answers and what came before. */
 export function applyPolicy(
   d: JevDecision,
   input: JevDecisionInput,
@@ -200,6 +213,8 @@ export function applyPolicy(
   }
   return out;
 }
+
+export type DecisionAnswer = { choice?: string; confidence?: number; probabilities?: Record<string, number> };
 
 const pct = (n?: number) => `${Math.round((n ?? 0) * 100)}%`;
 function round(n: number, places = 6): number { const f = 10 ** places; return Math.round(n * f) / f; }

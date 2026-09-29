@@ -64,22 +64,29 @@ const TOKEN = 'browser-fixture-token-0123456789';
   assert.equal(await helper.isDisabled(), false);
   await helper.click();
   assert.equal(await page.locator('#helperMenu [data-value=jev]').isDisabled(), true, 'no Jev key in the fixture');
+  // OpenAI Decisions is the alternative to Jev, offered once an OpenAI key exists.
+  assert.equal(await page.locator('#helperMenu [data-value=decisions]').isDisabled(), true, 'no OpenAI key in the fixture');
+  assert.match(await page.locator('#helperDecisionsDesc').textContent(), /Needs an OpenAI API key/);
+  await page.screenshot({ path: '/tmp/x056-helper-menu.png' });
   await page.locator('#helperMenu [data-value=advisor]').click();
   await page.waitForTimeout(500);
   assert.equal(await helper.getAttribute('data-state'), 'advisor');
   const after = (await api('/api/projects')).projects.find((p) => p.id === project.id).conversations.find((c) => c.sessionId === conv.sessionId);
   assert.equal(after.decisionMaker, 'advisor');
 
-  // A Jev decision recorded for this conversation shows up merged in, by time.
+  // A Jev decision recorded for this conversation shows up merged in, by time,
+  // and so does one from OpenAI Decisions (same store, told apart by backend).
   fs.mkdirSync(path.join(stateDir, 'jev', 'decisions'), { recursive: true });
-  fs.writeFileSync(path.join(stateDir, 'jev', 'decisions', conv.sessionId + '.jsonl'), JSON.stringify({ at: now, sessionId: conv.sessionId, provider: 'claude', pickedModel: 'haiku', modelConfidence: 1, pickedEffort: 'low', effortConfidence: 1, model: 'haiku', effort: 'low', notes: ['model -> haiku', 'effort -> low'], latencyMs: 404, costUsd: 0.000026 }) + '\n');
+  fs.writeFileSync(path.join(stateDir, 'jev', 'decisions', conv.sessionId + '.jsonl'), JSON.stringify({ at: now, sessionId: conv.sessionId, provider: 'claude', pickedModel: 'haiku', modelConfidence: 1, pickedEffort: 'low', effortConfidence: 1, model: 'haiku', effort: 'low', notes: ['model -> haiku', 'effort -> low'], latencyMs: 404, costUsd: 0.000026 }) + '\n'
+    + JSON.stringify({ at: now, sessionId: conv.sessionId, provider: 'claude', backend: 'openai', pickedEffort: 'high', effortConfidence: 0.9, effort: 'high', notes: ['effort -> high'], latencyMs: 151, inputTokens: 96 }) + '\n');
   // A Claude turn's result, with its advisor's cost as a separate line item.
   fs.mkdirSync(path.join(stateDir, 'turn-results'), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'turn-results', conv.sessionId + '.jsonl'), JSON.stringify({ at: now, sessionId: conv.sessionId, ok: true, durationMs: 8523, numTurns: 1, totalCostUsd: 0.1750453, models: [{ model: 'claude-haiku-4-5-20251001', costUsd: 0.0266693 }, { model: 'claude-opus-5-5', costUsd: 0.148376 }] }) + '\n');
   await open();
   await page.waitForSelector('#term .tl.jev', { timeout: 6000 }); // reopened: the view remembers it was open
   assert.match(await page.locator('#term .tl.sys').filter({ hasText: 'turn done' }).last().textContent(), /turn done · 1 step · 8\.5 s · \$0\.175 \(haiku-4-5-20251001 \$0\.027 · opus-5-5 \$0\.148\)/);
-  assert.match(await page.locator('#term .tl.jev').textContent(), /jev · model haiku 100% · effort low 100% → model -> haiku, effort -> low · 404 ms/);
+  assert.match(await page.locator('#term .tl.jev').first().textContent(), /jev · model haiku 100% · effort low 100% → model -> haiku, effort -> low · 404 ms/);
+  assert.match(await page.locator('#term .tl.jev').last().textContent(), /decisions · effort high 90% → effort -> high · 151 ms · 96 tok/);
   assert.equal(await page.locator('#helperBtn').getAttribute('data-state'), 'advisor');
 
   await page.locator('#chatTerminal').click();

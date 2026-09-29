@@ -8,6 +8,7 @@ import { ClaudeTransport } from '../src/persistent-transport.js';
 import { SessionManager, type GatewayEvent } from '../server/manager.js';
 import { JevService, JEV_POLICY, applyPolicy, type JevDecision, type JevDecisionInput } from '../server/jev.js';
 import { advisorFor, jevCandidates } from '../server/decision-maker.js';
+import { OpenAIDecisionsService } from '../server/openai-decisions.js';
 
 const input = (over: Partial<JevDecisionInput> = {}): JevDecisionInput => ({
   provider: 'claude', prompt: 'rename a variable', currentModel: 'opus', currentEffort: 'high', ...jevCandidates('claude', []), ...over,
@@ -131,11 +132,32 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.decisionMaker).toBe('jev');
   });
 
-  it('accepts the advisor on a ChatGPT conversation (gateway-built) and refuses anything but none|advisor|jev', () => {
+  it('accepts the advisor on a ChatGPT conversation (gateway-built) and refuses anything but none|advisor|jev|decisions', () => {
     const { mgr, dir } = fixture();
     const p = mgr.createProject('C', dir, 'codex');
     const sid = mgr.start('hi', undefined, undefined, p.id);
     expect(() => mgr.setDecisionMaker(p.id, sid, 'advisor')).not.toThrow();
-    expect(() => mgr.setDecisionMaker(p.id, sid, 'both' as never)).toThrow(/none, advisor or jev/);
+    expect(() => mgr.setDecisionMaker(p.id, sid, 'both' as never)).toThrow(/none, advisor, jev or decisions/);
+    // OpenAI Decisions replaces Jev only once there is a key to call it with.
+    expect(() => mgr.setDecisionMaker(p.id, sid, 'decisions')).toThrow(/No OpenAI API key/);
+  });
+
+  it('OpenAI Decisions picks the turn\'s model and effort in place of Jev', async () => {
+    const { mgr, calls, dir } = fixture();
+    const stateDir = join(dir, 'state');
+    writeFileSync(join(stateDir, 'secrets', 'openai.json'), JSON.stringify({ apiKey: 'sk-test-000000000000' }));
+    (mgr as unknown as { openaiDecisionsService: OpenAIDecisionsService }).openaiDecisionsService = new OpenAIDecisionsService(stateDir, mgr.jev(),
+      (async () => new Response(JSON.stringify({ answers: { effort: { choice: 'low', confidence: 0.95 }, model: { choice: 'haiku', confidence: 0.99 } } }), { status: 200 })) as unknown as typeof fetch);
+    const p = mgr.createProject('D', dir);
+    const sid = mgr.start('first', undefined, { model: 'sonnet', effort: 'high' }, p.id);
+    await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
+    mgr.setDecisionMaker(p.id, sid, 'decisions');
+    const seen: GatewayEvent[] = []; mgr.subscribe((e) => seen.push(e));
+    mgr.continueSession(p.id, sid, 'rename x to count', {});
+    await waitFor(() => calls.length === 2);
+    expect(calls[1]).toMatchObject({ model: 'haiku', effort: 'low' });
+    const d = seen.find((e) => e.kind === 'jev_decision')?.data as { backend?: string } | undefined;
+    expect(d?.backend).toBe('openai');
+    expect(mgr.jev().decisions(sid).at(-1)?.backend).toBe('openai');
   });
 });

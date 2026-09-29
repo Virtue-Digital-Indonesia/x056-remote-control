@@ -216,7 +216,7 @@ failover happens to land on the right one — which reads as "randomly broken":
   a stiff paragraph on haiku was blocked once, rewritten, and passed 100/100.
 - **Hooks are per account** (`<configDir>/settings.json`, NOT `~/.claude`),
   so a kit's `install-hooks.js` cannot be run as-is; merge its snippet into
-  every Claude account with the shared absolute path. Codex (0.156.1) now has
+  every Claude account with the shared absolute path. Codex (0.156.1+) now has
   stable hooks too (PreToolUse, PostToolUse, SessionStart, ...), but this kit
   is not wired into them -- there the SKILL.md instruction is the
   enforcement. `WRITING_STYLE_HOOK=off`
@@ -226,6 +226,20 @@ failover happens to land on the right one — which reads as "randomly broken":
   is provisioned as the SAME symlink, never a copy. `GET
   /api/accounts/baseline` shows that baseline and which accounts lag; `POST
   /api/accounts/provision` re-applies it.
+
+- **Codex models reach plans at different times, so failover checks.** The
+  catalog is server-side, per account AND per `client_version`: GPT-6.1-Sol
+  (2026-09-29) was offered only to client >=0.159.0 and only to the Pro
+  account (`e`); the Business/ProLite accounts still listed GPT-6-Sol. The
+  picker merges every account's `models_cache.json` and drops a model once
+  any account offers its successor (`SUCCESSOR` in
+  `src/codex-model-policy.ts`; saved `gpt-6-sol` / `gpt-5.6-sol` map forward).
+  Each Codex turn then re-checks the account failover actually picked
+  (`codexTurnForAccount`, in `SessionManager.turnStarter`): an account without
+  the model runs its newest predecessor, effort clamped, and the panel shows a
+  `model_fallback` banner. A new model: bump `@openai/codex` in the
+  Dockerfile, add it to `SUCCESSOR` and the panel's `LEGACY_MODEL_IDS`, price it
+  in `transcript-stats.ts`.
 
 ## Background work SURVIVES a turn (persistent sessions)
 
@@ -384,11 +398,12 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   swap, or the idle TTL. **Nothing wakes the model when a background task
   finishes** — it collects the output on its next turn.
 
-## Helpers: the advisor or Jev, one per conversation
+## Helpers: the advisor, Jev or OpenAI Decisions, one per conversation
 
 A conversation can have ONE helper -- `Conversation.decisionMaker`: `advisor`,
-`jev`, or absent. One field, so the two can never both be on. Composer picker:
-No helper / Advisor / Jev. `POST /api/conversations/decision-maker`.
+`jev`, `decisions`, or absent. One field, so two can never both be on.
+Composer picker: No helper / Advisor / Jev / OpenAI Decisions. `POST
+/api/conversations/decision-maker`.
 
 - **Advisor on Claude** is Claude Code's own advisor tool: the gateway passes
   `--advisor <model>` (one-shot argv and the persistent transport; it is part
@@ -434,6 +449,23 @@ No helper / Advisor / Jev. `POST /api/conversations/decision-maker`.
   meters each call from the returned `usage` ($0.042/M input tokens, output
   free) and "left" = balance synced from the console (`POST /api/jev/balance`)
   minus spend since. Synced to $5.00 on 2026-09-29.
+- **OpenAI Decisions replaces Jev** (`server/openai-decisions.ts`), same job:
+  same two questions, same `applyPolicy`, and it writes into JEV's decision
+  store with `backend: 'openai'` (rows without `backend` are Jev) -- shared on
+  purpose, so the Claude switching gap counts a switch whichever backend made
+  it. Live event is still `jev_decision`; the terminal labels the line
+  `decisions ·` and shows tokens, not dollars (no price published).
+  **It is PROVISIONAL.** Announced 2026-09-29 as a limited preview; `POST
+  https://api.openai.com/v1/decisions` exists (401 "A valid API key is
+  required", where a made-up path is 404) but nothing documents the request:
+  no docs page, nothing in `llms-full.txt`, nothing in openai@7.24.0 / Python
+  3.21.0. So the request is a guess in ONE function (`decisionsRequest`), the
+  reply goes through a tolerant reader (`decisionsAnswers`), OpenAI's own
+  error message is kept on the decision (a wrong parameter name shows up
+  there), and `POST /api/decisions/probe` sends one fixed question and returns
+  the raw reply -- run it the moment a key exists and correct the mapping.
+  Disabled until `state/secrets/openai.json` (0600) holds `{apiKey, model?,
+  endpoint?}`; `GET /api/decisions/status` never returns the key.
 
 ## Terminal view (`server/public/terminal.js`)
 

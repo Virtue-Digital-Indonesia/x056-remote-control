@@ -216,9 +216,16 @@
     function jevLine(d) {
       if (d.kind === 'advisor') return advisorLine(d);
       if (d.kind === 'result') return resultLine(d);
-      var t = d.error ? 'jev · ' + d.error
-        : 'jev · model ' + (d.pickedModel || '—') + ' ' + pct(d.modelConfidence) + ' · effort ' + (d.pickedEffort || '—') + ' ' + pct(d.effortConfidence) +
-          ' → ' + ((d.notes || []).join(', ') || 'no change') + ' · ' + d.latencyMs + ' ms · $' + (d.costUsd || 0).toFixed(6);
+      // Jev and OpenAI Decisions share the store; `backend` says which answered.
+      // Decisions has no published price, so its line shows tokens, not dollars.
+      var who = d.backend === 'openai' ? 'decisions' : 'jev';
+      var spent = d.backend === 'openai' ? (d.inputTokens ? ' · ' + d.inputTokens + ' tok' : '') : ' · $' + (d.costUsd || 0).toFixed(6);
+      // A question that was not asked (one model to choose from) is left out.
+      var picks = [];
+      if (d.pickedModel) picks.push('model ' + d.pickedModel + ' ' + pct(d.modelConfidence));
+      if (d.pickedEffort) picks.push('effort ' + d.pickedEffort + ' ' + pct(d.effortConfidence));
+      var t = d.error ? who + ' · ' + d.error
+        : who + ' · ' + (picks.join(' · ') || 'no answer') + ' → ' + ((d.notes || []).join(', ') || 'no change') + ' · ' + d.latencyMs + ' ms' + spent;
       return line(d.at, d.error ? 'err jev' : 'jev', '◆', t, d);
     }
 
@@ -243,7 +250,7 @@
 
     function mergeJev(lines, decisions) {
       if (!decisions.length) return lines;
-      var fresh = decisions.filter(function (d) { var k = (d.kind || 'jev') + ':' + (d.trigger || '') + ':' + d.at + ':' + d.sessionId; if (jevShown[k]) return false; jevShown[k] = 1; return true; }).map(jevLine);
+      var fresh = decisions.filter(function (d) { var k = (d.kind || d.backend || 'jev') + ':' + (d.trigger || '') + ':' + d.at + ':' + d.sessionId; if (jevShown[k]) return false; jevShown[k] = 1; return true; }).map(jevLine);
       var out = [], j = 0, lastTs = '';
       lines.forEach(function (x) {
         if (x.ts) lastTs = x.ts;

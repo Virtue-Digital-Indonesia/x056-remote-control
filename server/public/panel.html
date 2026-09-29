@@ -886,12 +886,12 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 .tl.sys .tg, .tl.sys .tx, .tl.meta .tg, .tl.meta .tx { color: #5c6570; }
 .term.hide-meta .tl.meta { display: none; }
 @media (max-width: 650px) { .tl { grid-template-columns: 0 14px minmax(0, 1fr); } .tl .tt { visibility: hidden; } .tl .td { margin-left: 20px; } }
-/* ---- helper control (composer): none | advisor | jev ---- */
+/* ---- helper control (composer): none | advisor | jev | decisions ---- */
 .helper { position: relative; display: inline-flex; flex: none; }
 .helper-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; min-width: 30px; justify-content: center; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
 .helper-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .helper-btn:disabled { opacity: .45; cursor: default; }
-.helper-btn[data-state=advisor], .helper-btn[data-state=jev] { color: var(--accent); background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 28%, transparent); padding: 0 10px 0 8px; }
+.helper-btn[data-state=advisor], .helper-btn[data-state=jev], .helper-btn[data-state=decisions] { color: var(--accent); background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 28%, transparent); padding: 0 10px 0 8px; }
 .helper-btn[data-state=none] .helper-label { display: none; }
 .helper-label { font-weight: 600; letter-spacing: .1px; }
 .helper-menu { position: fixed; z-index: 160; width: 300px; max-width: calc(100vw - 24px); padding: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); }
@@ -903,6 +903,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 .hi-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 .hi-title { font-size: 13.5px; font-weight: 600; }
 .hi-desc { font-size: 12px; line-height: 1.4; color: var(--muted); }
+.hi-tag { margin-left: 6px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-size: 10.5px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; vertical-align: 1px; }
 .hi-check { flex: none; color: var(--accent); visibility: hidden; }
 .helper-item[aria-checked=true] .hi-check { visibility: visible; }
 
@@ -1077,7 +1078,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
             <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option><option value="ultracode">Ultracode</option>
           </select></div>
         </div>
-        <!-- Helper: none | advisor | jev -- one field, so never both. -->
+        <!-- Helper: none | advisor | jev | decisions -- one field, so only ever one. -->
         <div class="helper" id="helperWrap">
           <button type="button" class="helper-btn" id="helperBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="helperMenu"><svg class="ic sm"><use href="#i-sparkles"/></svg><span class="helper-label" id="helperLabel"></span></button>
           <div class="helper-menu" id="helperMenu" role="menu" aria-label="Helper for the next turns" hidden>
@@ -1085,6 +1086,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
             <button type="button" class="helper-item" role="menuitemradio" data-value="none"><span class="hi-text"><span class="hi-title">No helper</span><span class="hi-desc">The model works on its own.</span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
             <button type="button" class="helper-item" role="menuitemradio" data-value="advisor"><span class="hi-text"><span class="hi-title">Advisor</span><span class="hi-desc" id="helperAdvisorDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
             <button type="button" class="helper-item" role="menuitemradio" data-value="jev"><span class="hi-text"><span class="hi-title">Jev</span><span class="hi-desc" id="helperJevDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <button type="button" class="helper-item" role="menuitemradio" data-value="decisions"><span class="hi-text"><span class="hi-title">OpenAI Decisions <span class="hi-tag">preview</span></span><span class="hi-desc" id="helperDecisionsDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
           </div>
         </div>
         <button class="attach" id="tplBtn" title="insert a saved prompt template (Alt+T)"><svg class="ic sm"><use href="#i-snippet"/></svg></button>
@@ -1363,8 +1365,10 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
    * Only ids the picker itself ever wrote are mapped. Remapping anything else
    * would rewrite a model someone pinned deliberately through the API.
    */
-  var LEGACY_MODEL_IDS = { 'claude-opus-5': 'opus', 'gpt-5.6-sol': 'gpt-6-sol', 'gpt-5.6-luna': 'gpt-6-luna' };
-  function canonModel(m) { return LEGACY_MODEL_IDS[m] || m || ''; }
+  var LEGACY_MODEL_IDS = { 'claude-opus-5': 'opus', 'gpt-5.6-sol': 'gpt-6-sol', 'gpt-6-sol': 'gpt-6.1-sol', 'gpt-5.6-luna': 'gpt-6-luna' };
+  // A saved id and every model that replaced it, oldest first.
+  function modelLine(m) { var out = [m || '']; while (LEGACY_MODEL_IDS[out[out.length - 1]] && out.length < 8) out.push(LEGACY_MODEL_IDS[out[out.length - 1]]); return out; }
+  function canonModel(m) { var line = modelLine(m); return line[line.length - 1]; }
   // The model actually sent for a turn: an explicit pick, else this provider's
   // Auto default (AUTO_MODEL). Resolved at SEND time rather than by pre-selecting
   // the option, so "Auto" stays a real, visible choice in the dropdown — and so a
@@ -1379,9 +1383,12 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
   function setModelOptions(opts, value) {
     modelEl.textContent = '';
     opts.forEach(function (o) { var e = document.createElement('option'); e.value = o.value; e.textContent = o.label; modelEl.appendChild(e); });
-    value = canonModel(value);
-    modelEl.value = value;
-    if (modelEl.value !== value) modelEl.value = ''; // stale/unknown model → Auto
+    // The newest model in the saved one's line that the list offers: a
+    // successor still rolling out (GPT-6.1-Sol reached one plan first) is not
+    // in the list yet, and its predecessor must stay selected until it is.
+    var line = modelLine(value);
+    for (var i = line.length - 1; i >= 0; i--) { modelEl.value = line[i]; if (modelEl.value === line[i]) return; }
+    modelEl.value = ''; // stale/unknown model → Auto
   }
   // What "Auto model" resolves to, per provider. Left to itself each CLI picks
   // its own top-priority model (codex → gpt-5.6-sol); these are the deliberate
@@ -1950,8 +1957,9 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     if (pick) { modelEl.value = pick.model; if (currentProvider() === 'codex') syncEffortOptionsForCodexModel(pick.effort); else effortEl.value = pick.effort; }
     syncDecider(pid);
   }
-  // ---- decision maker: none | advisor | jev (one field on the conversation) ----
-  var jevStatus = null;
+  // ---- decision maker: none | advisor | jev | decisions (one field on the conversation) ----
+  var jevStatus = null, decisionsStatus = null;
+  var HELPER_LABELS = { advisor: 'Advisor', jev: 'Jev', decisions: 'Decisions' };
   var ADVISOR_NAMES = { opus: 'Opus', fable: 'Fable', sonnet: 'Sonnet' };
   function advisorModelName(m) {
     if (!m) return '';
@@ -1969,14 +1977,19 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     var usable = !pendingNew && !!lastSessionId && !!h.conv;
     btn.disabled = !usable;
     btn.dataset.state = h.value;
-    $('helperLabel').textContent = h.value === 'advisor' ? 'Advisor' : h.value === 'jev' ? 'Jev' : '';
-    var what = h.value === 'advisor' ? 'Advisor on' : h.value === 'jev' ? 'Jev picks model and effort' : 'No helper';
+    $('helperLabel').textContent = HELPER_LABELS[h.value] || '';
+    var what = h.value === 'advisor' ? 'Advisor on' : h.value === 'jev' ? 'Jev picks model and effort' : h.value === 'decisions' ? 'OpenAI Decisions picks model and effort' : 'No helper';
     btn.title = usable ? 'Helper: ' + what : 'Send the first message, then choose a helper for the following turns';
     btn.setAttribute('aria-label', 'Helper: ' + what);
     $('helperAdvisorDesc').textContent = codex ? 'Astra reviews the plan, repeated failures and the finished turn.' : 'A stronger model reviews the plan, repeated errors and the result.';
     var jevItem = document.querySelector('#helperMenu [data-value=jev]'), jevReady = !jevStatus || jevStatus.configured;
     jevItem.disabled = !jevReady;
     $('helperJevDesc').textContent = !jevReady ? 'Needs a TypeSafe API key.' : 'Picks the model and effort for each turn' + (jevStatus && jevStatus.estimatedLeft !== undefined ? ' · ≈$' + jevStatus.estimatedLeft.toFixed(2) + ' left' : '') + '.';
+    // Same job as Jev through OpenAI's Decisions API. Offered only once a key
+    // is configured; a conversation already on it keeps it selectable.
+    var decItem = document.querySelector('#helperMenu [data-value=decisions]'), decReady = !!(decisionsStatus && decisionsStatus.configured);
+    decItem.disabled = !decReady && h.value !== 'decisions';
+    $('helperDecisionsDesc').textContent = !decReady ? 'Needs an OpenAI API key with Decisions access.' : 'Picks the model and effort for each turn, in place of Jev' + (decisionsStatus.calls ? ' · ' + decisionsStatus.calls + ' call' + (decisionsStatus.calls === 1 ? '' : 's') : '') + '.';
     document.querySelectorAll('#helperMenu .helper-item').forEach(function (it) { it.setAttribute('aria-checked', it.dataset.value === h.value ? 'true' : 'false'); });
   }
   function helperMenu(open) {
@@ -2003,7 +2016,8 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
       .then(function () { syncDecider(pid); btn.focus(); });
   }
   function refreshJevStatus() {
-    return api('/api/jev/status').then(function (r) { return r.ok ? r.json() : null; }).then(function (s) { jevStatus = s; if (currentProjectId) syncDecider(currentProjectId); }).catch(function () {});
+    var get = function (u) { return api(u).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }); };
+    return Promise.all([get('/api/jev/status'), get('/api/decisions/status')]).then(function (s) { jevStatus = s[0]; decisionsStatus = s[1]; if (currentProjectId) syncDecider(currentProjectId); });
   }
   function syncPickerBase(pid) {
     var p = projCache[pid]; if (!p) return;
@@ -2502,7 +2516,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     streamStatusEl.classList.remove('fade-out'); streamStatusEl.hidden = true;
   }
 
-  var BANNERS = { waiting_for_reset: 'Waiting for the account limit to reset. Stop cancels the wait.', limit_detected: 'limit reached — switching accounts…', auth_required: 'not logged in — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts unavailable — parked', turn_failed: 'turn failed', thread_reset: 'no saved history for this thread — started a fresh one', flap_guard_tripped: 'too many switches — stopped' };
+  var BANNERS = { waiting_for_reset: 'Waiting for the account limit to reset. Stop cancels the wait.', limit_detected: 'limit reached — switching accounts…', auth_required: 'not logged in — switching accounts…', forced_switch: 'switching accounts…', failover: 'switched account', parked: 'all accounts unavailable — parked', turn_failed: 'turn failed', thread_reset: 'no saved history for this thread — started a fresh one', model_fallback: 'this account does not have that model yet — ran on its predecessor', flap_guard_tripped: 'too many switches — stopped' };
   var active = false, lastLabel = '', runningSubs = 0, subs = {};
   var runningProjects = {}; // projectId -> true while ANY conversation runs there
   // projectId -> { sessionId: true } for every conversation currently running in
@@ -2747,7 +2761,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     if (kind === 'assistant_text') appendNode(pid, sid, nodeMsg('assistant', data.text, null, data.ts, providerFor(pid, sid)));
     else if (kind === 'supervisor') {
       if (data.type === 'turn_started' && data.account) { activeAccount[viewKey(pid, sid)] = data.account; if (mineConvo) { renderBusy(); renderAccountChip(); refreshAccountsPop(); } }
-      var l = BANNERS[data.type]; if(data.type==='waiting_for_reset' && data.until) l='Waiting for account reset at '+new Date(data.until*1000).toLocaleString()+'. Stop cancels the wait.'; if (l) appendNode(pid, sid, nodeSys(l, 'banner'));
+      var l = BANNERS[data.type]; if (data.type === 'model_fallback' && data.from && data.to) l = (data.account ? 'account ' + data.account + ' does not have ' : 'this account does not have ') + data.from + ' yet — ran on ' + data.to; if(data.type==='waiting_for_reset' && data.until) l='Waiting for account reset at '+new Date(data.until*1000).toLocaleString()+'. Stop cancels the wait.'; if (l) appendNode(pid, sid, nodeSys(l, 'banner'));
     }
     else if (kind === 'active_model') {
       if (data.model) {
