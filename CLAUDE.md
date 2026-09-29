@@ -137,7 +137,7 @@ auto-memory injection only ever gives you the *current* project's.
 
 ## Accounts are a fleet — keep them identical
 
-There are **three Claude accounts** (`a`, `b`, `c`) plus a codex one (`d`). Note
+The Claude accounts are **`a`, `b`, `f`** and the ChatGPT ones `d`, `e`, `g`, `h`, `j`, `k` (2026-09-29; `accounts.json` is the truth -- this list goes stale). Note
 that account **b lives at `/home/efran/.claude-x056-b`**, a HOME path — it is
 live, not stale. Only `~/.claude-x056-a` is orphaned. Reading plugin state from
 the wrong one is an easy and repeated mistake; take the truth from
@@ -208,8 +208,10 @@ failover happens to land on the right one — which reads as "randomly broken":
   a stiff paragraph on haiku was blocked once, rewritten, and passed 100/100.
 - **Hooks are per account** (`<configDir>/settings.json`, NOT `~/.claude`),
   so a kit's `install-hooks.js` cannot be run as-is; merge its snippet into
-  every Claude account with the shared absolute path. Codex has no hooks --
-  there the SKILL.md instruction is the enforcement. `WRITING_STYLE_HOOK=off`
+  every Claude account with the shared absolute path. Codex (0.156.1) now has
+  stable hooks too (PreToolUse, PostToolUse, SessionStart, ...), but this kit
+  is not wired into them -- there the SKILL.md instruction is the
+  enforcement. `WRITING_STYLE_HOOK=off`
   disables both hooks for a process.
 - **A newly onboarded account** is provisioned automatically to the fleet's
   baseline (`server/provision.ts`), design consent included. A shared skill
@@ -373,6 +375,61 @@ message per turn over `--input-format stream-json`. A turn now ends at the
 - What still ends background work: an operator stop, a failover, a container
   swap, or the idle TTL. **Nothing wakes the model when a background task
   finishes** — it collects the output on its next turn.
+
+## Helpers: the advisor or Jev, one per conversation
+
+A conversation can have ONE helper -- `Conversation.decisionMaker`: `advisor`,
+`jev`, or absent. One field, so the two can never both be on. Composer picker:
+No helper / Advisor / Jev. `POST /api/conversations/decision-maker`.
+
+- **Advisor on Claude** is Claude Code's own advisor tool: the gateway passes
+  `--advisor <model>` (one-shot argv and the persistent transport; it is part
+  of the process identity, so toggling respawns with `--resume`). The pairing
+  is automatic -- verified on 2.1.280 that an Opus advisor on a Fable main
+  model is NOT an error, Claude Code warns and runs WITHOUT it, which would
+  look "on" while doing nothing -- so Fable mains get `fable`, everything else
+  `opus`. The advice comes back ENCRYPTED (`advisor_redacted_result`); only
+  that it happened, and its tokens in the turn's `result.modelUsage`, are
+  visible. Never use `/advisor` for this: it writes `advisorModel` into the
+  account's settings.json and leaks to every conversation on that account.
+- **Advisor on ChatGPT** is built by the gateway (`server/codex-advisor.ts`),
+  because Codex has none. `TurnWatcher` reads the turn's stream for the same
+  three moments -- first plan (`turn/plan/updated`, translated into a
+  `todo_list` item), the same command failing twice or three failures in a
+  row, `turn.completed` -- max 3 per turn. A consultation is `codex exec
+  --ephemeral --sandbox read-only --output-schema` on the strongest offered
+  model (gpt-6-astra, effort high), from a scratch cwd. **`--ephemeral` is
+  load-bearing**: without it every consultation writes a rollout into the
+  store all accounts share. Mid-turn "adjust" is steered in (`turn/steer`); a
+  post-turn "concern" is ONE queued follow-up from sender kind `advisor`, and
+  an advisor-started turn is never reviewed again, so they cannot loop.
+  ~9 s and ~14.5k tokens per consultation (mostly Codex's own instructions).
+- **Jev** (TypeSafe AI's System One model, `server/jev.ts`) picks model and
+  effort per turn, both providers: one HTTPS call (~0.3 s, ~$0.00003) inside
+  the async run, so sending never waits. Applied to that turn only, never over
+  the user's saved choice: effort at >=60% confidence, model at >=80%, and a
+  Claude model switch at most every 3 turns (it respawns the process and drops
+  the prompt cache). Slow (3 s), failed or keyless = no change. Candidates:
+  haiku/sonnet/opus on Claude (Fable excluded: usage credits), the
+  account-advertised models on Codex. Key: `state/secrets/typesafe.json`
+  (0600). Decisions: `state/jev/decisions/<sid>.jsonl`.
+- **Jev credits**: TypeSafe has NO balance API (every balance-style path 404s
+  with the key; the console is Cloudflare-blocked for servers). The gateway
+  meters each call from the returned `usage` ($0.042/M input tokens, output
+  free) and "left" = balance synced from the console (`POST /api/jev/balance`)
+  minus spend since. Synced to $5.00 on 2026-09-29.
+
+## Terminal view (`server/public/terminal.js`)
+
+A header button swaps the conversation for its own transcript, CLI-style:
+prompts, text, thinking, every tool call and result, advisor consultations,
+system lines, Jev decisions and ChatGPT-advisor consultations merged in by
+time. Click a line for the raw entry. It tails the file every 2 s.
+`server/raw-transcript.ts` pages by byte offset (tail / `before` / `after`),
+returns only complete lines (a half-written one waits for the next poll),
+cuts long strings and inline images, and reads at most 32 MB per page. The
+transcript path is cached per conversation: finding a Claude one walks the
+whole `projects/` tree.
 
 ## Subagents have their own transcripts
 
