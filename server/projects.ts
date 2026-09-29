@@ -328,7 +328,16 @@ export class ProjectRegistry {
     c.titleOrigin = 'manual';
     c.titleRevision = (c.titleRevision || 0) + 1;
     c.titleUpdatedAt = Date.now();
+    ProjectRegistry.syncChatName(p!, c);
     this.save();
+  }
+
+  /** A Chat is one conversation; its name IS that conversation's title. The
+   *  panel's rename set both, but a GENERATED title set only the conversation,
+   *  so 19 chats stayed "New chat" -- and every notification, which is titled
+   *  from the project name, said "New chat". */
+  private static syncChatName(p: Project, c: Conversation): void {
+    if (p.kind === 'chat' && p.conversations?.[0]?.sessionId === c.sessionId) p.name = c.title;
   }
 
   applyTitle(projectId: string, sessionId: string, title: string, expected: { title: string; revision: number }, origin?: Conversation['titleOrigin']): Conversation {
@@ -339,6 +348,8 @@ export class ProjectRegistry {
     if (!title.trim() || title.length > 300) throw new Error('Invalid conversation title');
     c.title = title.trim(); c.titleOrigin = origin;
     c.titleRevision = (c.titleRevision || 0) + 1; c.titleUpdatedAt = Date.now();
+    const p = this.data.projects.find(x => x.id === projectId);
+    if (p) ProjectRegistry.syncChatName(p, c);
     this.save();
     return { ...c };
   }
@@ -359,6 +370,12 @@ export class ProjectRegistry {
   migrateConversations(): void {
     let changed = false;
     for (const p of this.data.projects) {
+      // Chats named before generated titles followed through (see syncChatName).
+      const only = p.kind === 'chat' ? p.conversations?.[0] : undefined;
+      if (only && p.name === 'New chat' && only.titleOrigin !== 'temporary' && only.title && only.title !== p.name) {
+        p.name = only.title;
+        changed = true;
+      }
       if (p.lastSessionId && (!p.conversations || p.conversations.length === 0)) {
         p.conversations = [{ sessionId: p.lastSessionId, title: 'Conversation 1', createdAt: Date.now() }];
         changed = true;

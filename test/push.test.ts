@@ -116,3 +116,28 @@ describe('notification noise control', () => {
     expect(sent[2].payload).toMatchObject({ title: 'Proj failed' });
   });
 });
+
+describe('a chat is named by its conversation, not "New chat"', () => {
+  beforeEach(() => { sent.length = 0; });
+  // A chat's first "finished" push used to go out while its title was still
+  // being generated, so it read "New chat finished".
+  it('waits for a pending title before naming the push, then uses it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-push-'));
+    let name = 'New chat', pending = true;
+    const p = new PushService(dir, () => name, () => false, undefined, () => pending, 3000);
+    p.add(sub('https://push/a'));
+    setTimeout(() => { name = 'Quarterly revenue review'; pending = false; }, 700);
+    await p.notify('conversation_settled', { projectId: 'c1', sessionId: 's1', status: 'completed', at: 't1' });
+    expect(sent[0].payload).toMatchObject({ title: 'Quarterly revenue review finished' });
+  });
+
+  it('gives up waiting after the bound and still sends', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-push-'));
+    const p = new PushService(dir, () => 'New chat', () => false, undefined, () => true, 600);
+    p.add(sub('https://push/a'));
+    const t0 = Date.now();
+    await p.notify('conversation_settled', { projectId: 'c1', sessionId: 's1', status: 'completed', at: 't2' });
+    expect(sent).toHaveLength(1);
+    expect(Date.now() - t0).toBeLessThan(2500);
+  });
+});

@@ -389,7 +389,7 @@ export class SessionManager {
         }
         return rows;
       },
-      changed: pid => { this.emitConversations(pid); this.emitAccounts(); this.emit('conversation_titles', { projectId: pid }); },
+      changed: pid => { this.emitConversations(pid); this.emitAccounts(); this.emit('conversation_titles', { projectId: pid }); if (this.projects().get(pid)?.kind === 'chat') this.emit('projects', { id: pid, kind: 'chat' }); },
       generate: this.opts.titleGenerator, claudePath: this.opts.claudePath,
     });
   }
@@ -1473,6 +1473,12 @@ export class SessionManager {
 
   /** Display name for a project id (for push notifications, etc.). */
   projectName(pid: string): string | undefined { return this.projects().get(pid)?.name; }
+  /** A generated title for this CHAT is queued or being written right now. */
+  titlePending(pid: string, sid: string): boolean {
+    const p = this.projects().get(pid);
+    if (p?.kind !== 'chat' || p.conversations?.find((c) => c.sessionId === sid)?.titleOrigin !== 'temporary') return false;
+    try { return this.titles().list(pid, sid).some((j) => j.status === 'waiting' || j.status === 'generating'); } catch { return false; }
+  }
   conversationUrl(pid: string, sid: string): string {
     const p = this.projects().get(pid);
     if (p?.kind === 'chat') return '/chat/' + encodeURIComponent(pid);

@@ -26,6 +26,11 @@ export class PushService {
     private readonly nameOf: (pid: string) => string,
     private readonly isAutopilot: (sessionId: string) => boolean,
     private readonly linkOf?: (projectId: string, sessionId: string) => string,
+    /** A title is being generated for this conversation right now. A chat's
+     *  first "finished" push used to go out while it was still "New chat";
+     *  it now waits (bounded) for the real name. */
+    private readonly titlePending?: (projectId: string, sessionId: string) => boolean,
+    private readonly titleWaitMs = 12_000,
   ) {
     this.vapid = this.loadOrCreateVapid();
     webpush.setVapidDetails('mailto:x056@val.id', this.vapid.publicKey, this.vapid.privateKey);
@@ -91,6 +96,12 @@ export class PushService {
     if (!NOTIFY_KINDS.has(kind) || this.subs.length === 0 || data.notificationSuppressed) return;
     if (['stopped', 'cancelled', 'canceled'].includes(String(data.status)) || data.reason === 'Stopped by user.') return;
     const pid = typeof data.projectId === 'string' ? data.projectId : '';
+    const waitSid = typeof data.sessionId === 'string' ? data.sessionId : '';
+    if (pid && waitSid && this.titlePending) {
+      for (let waited = 0; waited < this.titleWaitMs && this.titlePending(pid, waitSid); waited += 500) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
     const project = pid ? this.nameOf(pid) : 'a project';
     let title = '', body = '';
     if (kind === 'question') {

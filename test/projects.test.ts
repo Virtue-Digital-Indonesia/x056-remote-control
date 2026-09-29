@@ -135,3 +135,44 @@ describe('ProjectRegistry.reorder', () => {
     expect(reg.list().map((p) => p.name)).toEqual(['B', 'A']);
   });
 });
+
+describe('a chat is named by its conversation', () => {
+  const chat = (reg: import('../server/projects.js').ProjectRegistry, title = 'New chat', origin: 'temporary' | 'generated' | 'manual' = 'temporary') => {
+    const sid = 'sid-' + Math.random().toString(36).slice(2);
+    return reg.createChat({ id: 'chat-' + sid, name: 'New chat', cwd: '/tmp', provider: 'claude', kind: 'chat', lastSessionId: sid,
+      conversations: [{ sessionId: sid, title, titleOrigin: origin, titleRevision: 1, createdAt: 1 }] } as never);
+  };
+
+  it('a GENERATED title renames the chat too (it used to rename only the conversation)', async () => {
+    const { ProjectRegistry } = await import('../server/projects.js');
+    const file = join(mkdtempSync(join(tmpdir(), 'x056-chatname-')), 'projects.json');
+    const reg = ProjectRegistry.load(file), c = chat(reg);
+    reg.applyTitle(c.id, c.lastSessionId!, 'PMS and Wellness Feature Boundaries', { title: 'New chat', revision: 1 }, 'generated');
+    expect(ProjectRegistry.load(file).get(c.id)?.name).toBe('PMS and Wellness Feature Boundaries');
+  });
+
+  it('a manual conversation rename renames the chat; a Work project keeps its own name', async () => {
+    const { ProjectRegistry } = await import('../server/projects.js');
+    const file = join(mkdtempSync(join(tmpdir(), 'x056-chatname-')), 'projects.json');
+    const reg = ProjectRegistry.load(file), c = chat(reg);
+    reg.renameConversation(c.id, c.lastSessionId!, 'Draft MoM');
+    const work = reg.create('Website refresh', '/tmp');
+    reg.addConversation(work.id, 'w1', 'Build homepage', 'claude');
+    reg.renameConversation(work.id, 'w1', 'Build the new homepage');
+    const after = ProjectRegistry.load(file);
+    expect(after.get(c.id)?.name).toBe('Draft MoM');
+    expect(after.get(work.id)?.name).toBe('Website refresh');
+  });
+
+  it('boot repairs chats left as "New chat" with a real title, and leaves pending ones alone', async () => {
+    const { ProjectRegistry } = await import('../server/projects.js');
+    const file = join(mkdtempSync(join(tmpdir(), 'x056-chatname-')), 'projects.json');
+    const reg = ProjectRegistry.load(file);
+    const stuck = chat(reg, 'Obscura Product Pamphlet Design', 'generated');
+    const fresh = chat(reg, 'New chat', 'temporary');
+    const loaded = ProjectRegistry.load(file); loaded.migrateConversations();
+    const after = ProjectRegistry.load(file);
+    expect(after.get(stuck.id)?.name).toBe('Obscura Product Pamphlet Design');
+    expect(after.get(fresh.id)?.name).toBe('New chat');
+  });
+});
