@@ -28,6 +28,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
     await page.goto(base); await page.waitForSelector('.cr-task');
     await page.locator('.cr-task').filter({ hasText: 'Build the new homepage' }).first().click();
     await page.waitForFunction(() => !document.getElementById('helperBtn').disabled);
+    await page.locator('#prompt').click(); // the composer rests as one line; focus opens its controls
     await page.locator('#helperBtn').click();
     await page.waitForFunction(() => !document.querySelector('#helperMenu [data-value=jev]').disabled);
     return { page, errors };

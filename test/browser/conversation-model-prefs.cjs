@@ -20,7 +20,7 @@ const base=process.argv[2]||'http://127.0.0.1:8795';
         return c.model===model&&c.effort===effort;
       },{pid:project.id,sid:first.sessionId,model,effort});
     }
-    async function open(c){await page.locator('.cr-task[data-session="'+c.sessionId+'"]').click();await page.locator('#prompt').waitFor();}
+    async function open(c){await page.locator('.cr-task[data-session="'+c.sessionId+'"]').click();await page.locator('#prompt').waitFor();await page.locator('#prompt').click();}
     await page.goto(base);await open(first);
     await page.locator('#model').selectOption('fable');await page.locator('#effort').selectOption('high');
     await saved('fable','high');

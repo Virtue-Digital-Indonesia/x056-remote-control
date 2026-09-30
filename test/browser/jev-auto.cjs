@@ -41,6 +41,7 @@ const TITLE = 'Review accessibility findings';
     await page.goto(base); await page.waitForSelector('.cr-task');
     await page.locator('.cr-task').filter({ hasText: TITLE }).first().click();
     await page.waitForFunction(() => !document.getElementById('helperBtn').disabled);
+    await page.locator('#prompt').click(); // the composer rests as one line; focus opens its controls
     const sent = [];
     await page.route('**/api/sessions/current/messages', (route) => { sent.push(route.request().postDataJSON()); return route.fulfill({ status: 400, json: { message: 'Fixture captured send' } }); });
     return { ctx, page, errors, sent };

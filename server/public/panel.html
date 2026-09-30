@@ -455,6 +455,117 @@
   .send:hover { filter: brightness(1.05); }
   .send:disabled { opacity: .4; }
 
+  /* ---- composer: the quiet pill ----
+     At rest (unfocused, empty, no files, no menu) it is ONE line: the textarea
+     and send, with a quiet status line under it. Focused, holding text or files,
+     or with a menu open (.composer-wrap[data-qp-open]) it opens into the pill:
+     text on top, then + / helpers / model·effort / send. Send sits bottom-right
+     in both, so a collapse on blur never moves it under a tap.
+     #conversationSurface prefixes every rule: control-room.css and workspace.css
+     load later and restyle `.focus-main .composer` for each presentation mode. */
+  #conversationSurface .composer-wrap .composer { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "badge prompt send"; align-items: end; column-gap: 8px; max-width: 780px; margin: 0 auto; padding: 6px 6px 6px 18px; background: var(--surface-2); border: 1px solid transparent; border-radius: 24px; box-shadow: none; overflow: visible; transition: border-color .15s; }
+  #conversationSurface .composer-wrap .composer:focus-within { border-color: var(--border-strong); box-shadow: none; }
+  #conversationSurface .composer-wrap[data-qp-open] .composer { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "att att" "prompt prompt" "bar send"; padding: 10px 6px 6px 8px; border-color: var(--border-strong); }
+  #conversationSurface .composer #prompt { grid-area: prompt; min-height: 24px; padding: 7px 0; font-size: 15px; line-height: 1.5; }
+  #conversationSurface .composer-wrap[data-qp-open] #prompt { padding: 4px 10px 8px; }
+  #conversationSurface .composer #attachRow, #conversationSurface .composer #attachRow.show { display: none; grid-area: att; padding: 0 4px 10px; }
+  #conversationSurface .composer-wrap[data-qp-open] #attachRow.show { display: flex; }
+  #conversationSurface .composer .bar { display: none; grid-area: bar; align-items: center; flex-wrap: nowrap; gap: 4px; padding: 0; min-width: 0; }
+  #conversationSurface .composer-wrap[data-qp-open] .composer .bar { display: flex; }
+  #conversationSurface .composer .bar .sp { flex: 1 1 0; min-width: 0; }
+  .qp-badge { grid-area: badge; align-self: center; display: inline-flex; align-items: center; gap: 3px; height: 38px; margin-left: -8px; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+  .qp-badge[hidden], #conversationSurface .composer-wrap[data-qp-open] .qp-badge { display: none; }
+  .qp-badge .ic { width: 15px; height: 15px; }
+  .qp-send { grid-area: send; display: flex; align-items: center; gap: 6px; }
+  #conversationSurface .qp-send .send { width: 38px; height: 38px; min-width: 38px; min-height: 38px; padding: 0; border-radius: 50%; background: var(--surface-3); color: var(--faint); flex: none; transition: background .15s, color .15s; }
+  #conversationSurface .qp-send .send[hidden] { display: none; }
+  #conversationSurface .composer-wrap[data-qp-content] .qp-send #sendBtn { background: var(--accent); color: var(--on-accent); }
+  /* Three ids: control-room.css pins #conversationSurface #sendBtn/#steerBtn to a 36px circle. */
+  #conversationSurface #composerSend #sendBtn { box-sizing: border-box; width: 38px; height: 38px; min-width: 38px; max-width: 38px; max-height: 38px; flex: 0 0 38px; }
+  #conversationSurface #composerSend #steerBtn { box-sizing: border-box; height: 38px; min-height: 38px; max-height: 38px; min-width: 38px; max-width: none; flex: none; aspect-ratio: auto; }
+  #conversationSurface #composerSend #steerBtn[hidden], #conversationSurface #composerSend #sendBtn[hidden] { display: none; }
+  #conversationSurface .qp-send #steerBtn { width: auto; display: inline-flex; align-items: center; gap: 6px; padding: 0 14px 0 12px; border-radius: 999px; background: var(--bgwork); color: var(--on-accent); margin: 0; font: inherit; font-size: 13px; font-weight: 600; }
+  #conversationSurface .qp-send #steerBtn[hidden] { display: none; }
+  #conversationSurface .qp-send .qp-stop { position: relative; background: transparent; color: var(--text); }
+  #conversationSurface .qp-send .qp-stop:hover { background: var(--surface-3); filter: none; }
+  .qp-stop .ic { fill: currentColor; stroke: none; width: 13px; height: 13px; }
+  .qp-ring { position: absolute; inset: 0; width: 100%; height: 100%; animation: spin 1.4s linear infinite; }
+  .qp-ring circle { fill: none; stroke: var(--border-strong); stroke-width: 2; }
+  .qp-ring .qp-ring-arc { stroke: var(--accent); stroke-dasharray: 28 89; stroke-linecap: round; }
+  .qp-stop.bg .qp-ring-arc { stroke: var(--bgwork); }
+  /* + menu, helpers and the model·effort chip share one height. */
+  .qp-plus { position: relative; display: inline-flex; flex: none; }
+  .qp-plus-btn { display: inline-grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--border-strong); border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+  .qp-plus-btn:hover, .qp-plus-btn[aria-expanded=true] { background: var(--surface-3); color: var(--text); }
+  .qp-plus-btn .ic { width: 16px; height: 16px; }
+  .qp-plus-menu { width: 280px; }
+  .qp-plus-menu .helper-item > .ic { color: var(--muted); flex: none; }
+  .qp-plus-menu .helper-item[hidden] { display: none; }
+  .qp-kbd { flex: none; font: inherit; font-size: 11px; color: var(--faint); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+  #conversationSurface .composer .helper-btn { height: 34px; }
+  #conversationSurface .composer .selects.qp-run { display: inline-flex; align-items: center; flex: 0 1 auto; flex-wrap: nowrap; gap: 0; width: auto; min-width: 0; height: 34px; margin: 0; padding: 0 2px; border-radius: 999px; overflow: hidden; }
+  #conversationSurface .composer .selects.qp-run:focus-within { background: var(--surface-3); }
+  @media (hover: hover) { #conversationSurface .composer .selects.qp-run:hover { background: var(--surface-3); } }
+  #conversationSurface .composer .qp-run .select { flex: 0 1 auto; min-width: 0; }
+  #conversationSurface .composer .qp-run select { width: auto; max-width: 150px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font-size: 13px; padding: 6px 20px 6px 9px; text-overflow: ellipsis; field-sizing: content; }
+  #conversationSurface .composer .qp-run select:hover, #conversationSurface .composer .qp-run select:focus-visible { color: var(--text); }
+  #conversationSurface .composer .qp-run select:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #conversationSurface .composer .qp-run .select::after { right: 8px; }
+  #conversationSurface .composer .qp-run #providerWrap:not([hidden]) { border-right: 1px solid var(--border-strong); margin-right: 2px; }
+  /* A started conversation's provider is fixed: the chip is model · effort only. */
+  #conversationSurface .composer .qp-run #providerWrap.locked { display: none; }
+  #conversationSurface .composer .qp-run .provlock { padding: 6px 10px; font-size: 13px; }
+  .qp-run-sep { flex: none; color: var(--faint); font-size: 13px; margin: 0 -1px; }
+  /* The quiet line: live status or the run setup left, account + delivery right. */
+  #conversationSurface .composer-wrap .composer-footer { max-width: 780px; margin: 6px auto 0; padding: 0 8px 0 16px; border-top: 0; display: flex; align-items: center; gap: 10px; min-height: 26px; min-width: 0; font-size: 12px; color: var(--faint); }
+  .composer-status { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+  #conversationSurface .composer-status #busy { max-width: none; margin: 0; padding: 0; flex: 0 1 auto; min-width: 0; font-size: 12px; gap: 7px; }
+  #conversationSurface .composer-status #busy .spin { width: 11px; height: 11px; border-width: 1.7px; }
+  #conversationSurface .composer-status #busy .stopbtn { margin-left: 4px; padding: 1px 8px; font-size: 11px; }
+  #conversationSurface .composer-wrap:not([data-qp-content]) #busy .stopbtn { display: none; }
+  .qp-caption { flex: 0 1 auto; min-width: 0; margin-left: -4px; padding: 2px 4px; border: 0; border-radius: 6px; background: transparent; color: var(--faint); font: inherit; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  .qp-caption:hover { color: var(--text); background: var(--surface-2); }
+  .qp-caption:empty, #conversationSurface .composer-wrap[data-qp-open] .qp-caption, #conversationSurface .composer-wrap[data-qp-run] .qp-caption { display: none; }
+  #conversationSurface .composer-status #runningAccountLabel { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #conversationSurface .composer-footer .send-account-chip { flex: 0 1 auto; width: auto; max-width: 48%; min-height: 24px; margin: 0; padding: 2px 4px; border: 0; border-radius: 6px; font-size: 12px; }
+  #conversationSurface .composer-footer .send-account-chip:hover { background: var(--surface-2); }
+  #conversationSurface .composer-footer .send-account-chip small { display: none; }
+  #conversationSurface .composer-footer .send-account-chip > .ic:last-child { margin-left: 2px; }
+  #conversationSurface .composer-footer #deliveryStrip { flex: none; margin: 0; max-width: 40%; }
+  #conversationSurface .composer-wrap:not([data-qp-open]) .composer-footer #deliveryStrip button span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #conversationSurface .composer-wrap .composer-hint { position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  /* The desktop conversation stage floats bottom-right (bottom 22px, a 52px
+     bubble, its caption beside it): lift the pill and its quiet line above that
+     band so the caption never sits on send, the account or the delivery dot.
+     Wider screens keep the caption clear of the 780px pill anyway. */
+  @media (min-width: 851px) and (max-width: 1700px) {
+    body:not([data-stage-hidden=true]):not(.rc-chat-active):has(#conversationStage .stage-item) #conversationSurface .composer-wrap { padding-bottom: 80px; }
+  }
+  @media (max-width: 720px) {
+    #conversationSurface .composer-wrap { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+    #conversationSurface .composer #prompt { font-size: 16px; }
+    #conversationSurface .composer .qp-run select { font-size: 16px; max-width: 128px; padding-left: 7px; padding-right: 17px; }
+    #conversationSurface .composer .qp-run .select::after { right: 6px; }
+    #conversationSurface .qp-send #steerBtn { padding: 0 12px 0 11px; }
+    #conversationSurface .composer-wrap .composer-footer { padding: 0 4px 0 12px; gap: 6px; }
+    /* The account's name is what matters on a phone; "Send with" is in the title. */
+    #conversationSurface .composer-footer .send-account-chip > span { font-size: 0; }
+    #conversationSurface .composer-footer .send-account-chip > span strong { font-size: 12px; }
+  }
+  @media (max-width: 420px) {
+    /* A phone gives the chip ~170px: the model keeps its name, effort its word. */
+    #conversationSurface .composer .qp-run select { max-width: 118px; }
+    #conversationSurface .composer-footer .send-account-chip { max-width: 62%; }
+    #conversationSurface .composer .helper-btn[data-state=on] .helper-label { max-width: 64px; }
+    #conversationSurface .qp-send .qp-steer-label { display: none; }
+    #conversationSurface #composerSend #steerBtn { width: 38px; padding: 0; justify-content: center; }
+  }
+  @media (max-width: 360px) {
+    #conversationSurface .composer .qp-run select { max-width: 92px; padding-left: 5px; padding-right: 15px; }
+    #conversationSurface .composer .qp-run .select::after { right: 4px; }
+    #conversationSurface .composer .bar { gap: 2px; }
+  }
+
   .pop { position: absolute; bottom: 62px; left: 12px; width: 288px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; z-index: 30; }
   .pop[hidden] { display: none; }
   .pop h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); margin: 2px 4px 10px; }
@@ -1224,33 +1335,29 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     <div id="mcpApprovalBar"></div>
     <div id="autopilotBar"></div>
     <div id="otherRuns"></div>
-    <div id="busy"></div>
     <div id="delegatesBar" hidden></div>
     <div id="queueBar"></div>
-    <div class="composer">
+    <!-- One pill: quiet (one line) until it is focused, holds text or files, or
+         has a menu open; then it opens into + / helpers / model·effort / send. -->
+    <div class="composer" id="composerBox">
       <div id="attachRow"></div>
+      <button type="button" class="qp-badge" id="composerAttachBadge" hidden></button>
       <!-- autocomplete/name kill the mobile AutoFill Contact card: without them
            iOS and Android treat a lone text field as a form input, and the name
            is deliberately non-contact-shaped so the heuristics match nothing.
            autocorrect/spellcheck/autocapitalize stay ON — they drive the
            keyboard's word suggestions, which are wanted when typing prose and
            are a SEPARATE mechanism from AutoFill. -->
-      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" data-form-type="other" aria-label="Message" aria-describedby="composerHint" placeholder="Message x056…"></textarea>
+      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" data-form-type="other" aria-label="Message" aria-describedby="composerHint" placeholder="Ask anything"></textarea>
       <div class="bar">
-        <div class="selects">
-          <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
-            <option value="claude">Claude</option><option value="codex">ChatGPT</option>
-          </select><span class="provlock" id="providerLock" hidden></span></div>
-          <!-- ALIASES, not pinned ids: the CLI resolves `fable`/`opus`/... to the
-               latest of that family, so a new release is picked up without a code
-               change. `claude-opus-5` was pinned here and would have frozen Opus
-               the way Fable 5.1 would have been missed. -->
-          <div class="select"><select id="model" title="model">
-            <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus 5.5</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
-          </select></div>
-          <div class="select"><select id="effort" title="effort">
-            <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option><option value="ultracode">Ultracode</option>
-          </select></div>
+        <div class="qp-plus" id="composerPlusWrap">
+          <button type="button" class="qp-plus-btn" id="composerPlusBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="composerPlusMenu" aria-label="Add files, a template or a reference" title="Add files, a template or a reference"><svg class="ic sm"><use href="#i-plus"/></svg></button>
+          <div class="helper-menu qp-plus-menu" id="composerPlusMenu" role="menu" aria-label="Add to the message" hidden>
+            <button type="button" class="helper-item" role="menuitem" id="attachBtn"><svg class="ic sm"><use href="#i-paperclip"/></svg><span class="hi-text"><span class="hi-title">Attach files</span><span class="hi-desc">Any type. Drag, drop or paste works too.</span></span></button>
+            <button type="button" class="helper-item" role="menuitem" id="tplBtn" title="insert a saved prompt template (Alt+T)"><svg class="ic sm"><use href="#i-snippet"/></svg><span class="hi-text"><span class="hi-title">Insert template</span><span class="hi-desc">A saved prompt, at the caret.</span></span><kbd class="qp-kbd" id="tplKbd">Alt+T</kbd></button>
+            <button type="button" class="helper-item" role="menuitem" id="composerRefItem" hidden><svg class="ic sm"><use href="#i-link"/></svg><span class="hi-text"><span class="hi-title">Reference a conversation</span><span class="hi-desc">Give this chat another conversation to read.</span></span></button>
+          </div>
+          <input type="file" id="file" multiple hidden />
         </div>
         <!-- Helpers, combinable: advisor, agent team, and one model/effort picker. -->
         <div class="helper" id="helperWrap">
@@ -1273,11 +1380,39 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
             </div>
           </div>
         </div>
-        <button class="attach" id="tplBtn" title="insert a saved prompt template (Alt+T)"><svg class="ic sm"><use href="#i-snippet"/></svg></button>
-      <label class="attach" title="attach files (any type — drag &amp; drop or paste too)"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" multiple hidden /></label>
         <span class="sp"></span>
-        <button class="send steer" id="steerBtn" hidden title="steer into the running turn (Ctrl+Enter) — the model sees it immediately instead of after the turn"><svg class="ic sm"><use href="#i-zap"/></svg></button>
+        <div class="selects qp-run" id="composerRunChip">
+          <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
+            <option value="claude">Claude</option><option value="codex">ChatGPT</option>
+          </select><span class="provlock" id="providerLock" hidden></span></div>
+          <!-- ALIASES, not pinned ids: the CLI resolves `fable`/`opus`/... to the
+               latest of that family, so a new release is picked up without a code
+               change. `claude-opus-5` was pinned here and would have frozen Opus
+               the way Fable 5.1 would have been missed. -->
+          <div class="select"><select id="model" title="model">
+            <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus 5.5</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
+          </select></div>
+          <span class="qp-run-sep" aria-hidden="true">·</span>
+          <div class="select"><select id="effort" title="effort">
+            <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option><option value="ultracode">Ultracode</option>
+          </select></div>
+        </div>
+      </div>
+      <!-- Bottom-right in BOTH states, so collapsing on blur never moves it
+           between a tap's mousedown and its click. -->
+      <div class="qp-send" id="composerSend">
+        <button class="send steer" id="steerBtn" hidden title="steer into the running turn (Ctrl+Enter) — the model sees it immediately instead of after the turn"><svg class="ic sm"><use href="#i-zap"/></svg><span class="qp-steer-label">Steer</span></button>
         <button class="send" id="sendBtn" title="send"><svg class="ic sm"><use href="#i-up"/></svg></button>
+        <button type="button" class="send qp-stop" id="composerStopBtn" hidden aria-label="Stop this turn" title="Stop this turn"><svg class="qp-ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18.5"/><circle class="qp-ring-arc" cx="20" cy="20" r="18.5"/></svg><svg class="ic sm"><use href="#i-stop"/></svg></button>
+      </div>
+    </div>
+    <!-- The quiet line under the pill: status (or the run setup) on the left,
+         the account and the delivery dot on the right. control-room.js adds
+         #sendAccountChip, #deliveryStrip and #runningAccountLabel to it. -->
+    <div class="composer-footer" id="composerFooter">
+      <div class="composer-status" id="composerStatus">
+        <div id="busy" role="status"></div>
+        <button type="button" class="qp-caption" id="composerCaption" title="Change model and effort"></button>
       </div>
     </div>
     <div class="composer-hint" id="composerHint">Enter to send · Shift+Enter for a new line · Paste or drop files</div>
@@ -2870,7 +3005,8 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     if (pendingNew || !currentProjectId || !lastSessionId) return false;
     return isSessionRunning(currentProjectId, lastSessionId) || isSessionBackground(currentProjectId, lastSessionId);
   }
-  function syncSteerBtn() { var b = $('steerBtn'); if (b) { b.hidden = !canSteer(); b.title = pendingFiles?.length ? 'Queue message and files after this turn' : 'Steer the running turn'; b.setAttribute('aria-label',pendingFiles?.length ? 'Queue message and files' : 'Steer'); } }
+  // Steer shows only with something to steer: an empty box's button is Stop.
+  function syncSteerBtn() { var b = $('steerBtn'); if (b) { b.hidden = !canSteer() || !composerHasContent(); b.title = pendingFiles?.length ? 'Queue message and files after this turn' : 'Steer the running turn'; b.setAttribute('aria-label',pendingFiles?.length ? 'Queue message and files' : 'Steer'); } syncComposer(); }
   /** Put the amber spinner on an existing sidebar row without re-rendering the
    *  whole list (the 20s project poll rebuilds it authoritatively anyway). */
   function markConvBg(pid, sid) {
@@ -4601,7 +4737,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     return out;
   }
   function jumpToProject(idx) { var ps = orderedProjects(); if (idx >= 0 && idx < ps.length && ps[idx].id !== currentProjectId) switchProject(ps[idx]); }
-  function openSelect(el) { if (!el) return; el.focus(); try { if (el.showPicker) el.showPicker(); } catch (e) {} }
+  function openSelect(el) { if (!el) return; revealComposer(el); el.focus(); try { if (el.showPicker) el.showPicker(); } catch (e) {} }
   $('searchChatsBtn').addEventListener('click', function () { setNav(false); openPalette(); });
   $('searchShortcut').textContent = K_CMD + ' K';
   $('composerHint').textContent = 'Enter to send · ' + K_CMD + '+Enter to steer · Shift+Enter for a new line · Paste or drop files';
@@ -5047,7 +5183,9 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   }
 
   // ---- composer ----
-  function autogrow() { promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + 'px'; }
+  // Every programmatic write to the box (draft restore, clear after send) ends
+  // here, so this is also where the quiet pill learns the box changed.
+  function autogrow() { syncComposer(); promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + 'px'; }
   if (window.ResizeObserver) {
     var promptWidth = 0;
     new ResizeObserver(function (entries) {
@@ -5931,6 +6069,119 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   promptEl.addEventListener('input',updateSlashMenu);
   promptEl.addEventListener('keydown',function(e){if(slashMenu.hidden)return;if(e.key==='Escape'){slashMenu.hidden=true;e.preventDefault();e.stopPropagation();}else if(e.key==='ArrowUp'||e.key==='ArrowDown'){var buttons=slashMenu.querySelectorAll('button');if(buttons.length){e.preventDefault();buttons[e.key==='ArrowUp'?buttons.length-1:0].focus();}}},true);
   slashMenu.addEventListener('keydown',function(e){var buttons=Array.prototype.slice.call(slashMenu.querySelectorAll('button')),i=buttons.indexOf(document.activeElement);if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();buttons[(i+(e.key==='ArrowDown'?1:buttons.length-1))%buttons.length].focus();}if(e.key==='Escape'){e.stopPropagation();slashMenu.hidden=true;promptEl.focus();}});
+
+  // ---- the quiet pill ------------------------------------------------------
+  // One line at rest; open (data-qp-open on .composer-wrap) while focus is in
+  // it, it holds text or files, or one of its menus is open. Only the CSS
+  // differs between the two: every control keeps its element and listeners.
+  var composerWrap = document.querySelector('.composer-wrap'), composerBox = $('composerBox');
+  var qpHold = false, qpHoldTimer = null, qpForce = false;
+  function composerHasFiles() { return !!(attachRow && attachRow.querySelector('.chip')); }
+  function composerHasContent() { return !!(promptEl && promptEl.value.trim()) || composerHasFiles(); }
+  function composerMenuOpen() {
+    return ['helperMenu', 'composerPlusMenu', 'codexSlashMenu'].some(function (id) { var m = $(id); return m && !m.hidden; });
+  }
+  function composerRunning() { return !!(busyEl && busyEl.firstChild) || canSteer(); }
+  function composerCaption() {
+    var opt = function (sel) { var o = sel && sel.options[sel.selectedIndex]; return o ? o.textContent.trim() : ''; };
+    var parts = [opt(modelEl), opt(effortEl)].filter(Boolean);
+    var hb = $('helperBtn'), hl = $('helperLabel');
+    if (hb && hb.dataset.state === 'on' && hl && hl.textContent.trim()) parts.push(hl.textContent.trim());
+    return parts.join(' · ');
+  }
+  function syncComposer() {
+    if (!composerWrap || !composerBox) return;
+    var a = document.activeElement, running = composerRunning(), content = composerHasContent();
+    var open = qpForce || qpHold || !!(a && a !== document.body && composerBox.contains(a)) || promptEl.value.length > 0 || composerHasFiles() || composerMenuOpen();
+    composerWrap.toggleAttribute('data-qp-open', open);
+    composerWrap.toggleAttribute('data-qp-run', running);
+    composerWrap.toggleAttribute('data-qp-content', content);
+    var bg = !active && isSessionBackground(currentProjectId, lastSessionId);
+    var stop = $('composerStopBtn'), steerB = $('steerBtn');
+    if (steerB) steerB.hidden = !canSteer() || !content;
+    if (stop) {
+      stop.hidden = !running || content;
+      stop.classList.toggle('bg', bg);
+      var st = bg ? 'Interrupt the background work (keeps the session)' : 'Stop this turn';
+      stop.title = st; stop.setAttribute('aria-label', st);
+    }
+    sendBtn.hidden = running && !content;
+    var keys = 'Enter · Shift+Enter for a new line' + (typeof K_CMD === 'string' ? ' · ' + K_CMD + '+Enter steers a running turn' : '');
+    sendBtn.title = running ? 'Queue for after this turn · ' + keys : 'Send · ' + keys;
+    sendBtn.setAttribute('aria-label', running ? 'Queue for after this turn' : 'Send');
+    var n = attachRow ? attachRow.querySelectorAll('.chip').length : 0, badge = $('composerAttachBadge');
+    if (badge) {
+      badge.hidden = !n;
+      if (n && badge.dataset.n !== String(n)) {
+        badge.dataset.n = String(n); badge.textContent = ''; badge.appendChild(icon('paperclip', 'sm'));
+        badge.appendChild(document.createTextNode(String(n)));
+        badge.title = n + ' file' + (n > 1 ? 's' : '') + ' attached'; badge.setAttribute('aria-label', badge.title);
+      }
+    }
+    var cap = $('composerCaption');
+    if (cap) { var c = composerCaption(); if (cap.textContent !== c) { cap.textContent = c; cap.setAttribute('aria-label', 'Model and effort: ' + c); } }
+    promptEl.placeholder = open && running ? 'Ask anything to queue or steer' : open && currentProvider() === 'codex' ? 'Ask anything, or type / for commands' : 'Ask anything';
+  }
+  /** Open the pill before focusing a control that only shows when it is open
+   *  (a shortcut or /model opening #model while the box is at rest). */
+  function revealComposer(el) {
+    if (!composerBox || !composerBox.contains(el)) return;
+    qpForce = true; syncComposer(); qpForce = false;
+  }
+  composerBox.addEventListener('focusin', syncComposer);
+  // Collapse on a later tick and only if focus really left: a click on + or
+  // send moves focus INSIDE the pill, which must not fold it under the pointer.
+  composerBox.addEventListener('focusout', function () { setTimeout(syncComposer, 0); });
+  // iOS does not focus a tapped button, so focusout sees no relatedTarget: hold
+  // the pill open from pointerdown until that tap's click has run.
+  function releaseHold() { if (!qpHold) return; clearTimeout(qpHoldTimer); setTimeout(function () { qpHold = false; syncComposer(); }, 0); }
+  composerBox.addEventListener('pointerdown', function () { qpHold = true; clearTimeout(qpHoldTimer); qpHoldTimer = setTimeout(releaseHold, 1200); });
+  document.addEventListener('click', releaseHold, true);
+  document.addEventListener('pointercancel', releaseHold, true);
+  // A click on the pill's padding lands in the box, as a click on a field would.
+  composerBox.addEventListener('click', function (e) { if (e.target === composerBox) promptEl.focus(); });
+  promptEl.addEventListener('input', syncComposer);
+  $('composerAttachBadge').addEventListener('click', function () { promptEl.focus(); });
+  $('composerCaption').addEventListener('click', function () { openSelect(modelEl); });
+  [modelEl, effortEl, providerEl].forEach(function (el) { if (el) el.addEventListener('change', syncComposer); });
+  if (window.MutationObserver) {
+    var qpObs = new MutationObserver(syncComposer);
+    qpObs.observe(attachRow, { childList: true });
+    qpObs.observe(busyEl, { childList: true });
+    ['helperMenu', 'composerPlusMenu', 'codexSlashMenu'].forEach(function (id) { if ($(id)) qpObs.observe($(id), { attributes: true, attributeFilter: ['hidden'] }); });
+    qpObs.observe($('helperBtn'), { attributes: true, attributeFilter: ['data-state'], childList: true, subtree: true, characterData: true });
+    qpObs.observe(modelEl, { childList: true, subtree: true, characterData: true });
+    qpObs.observe(effortEl, { childList: true, subtree: true, characterData: true });
+  }
+  // The + menu: attach, a template, and (chat mode) a conversation reference.
+  function plusMenu(open) {
+    var menu = $('composerPlusMenu'), btn = $('composerPlusBtn');
+    if (open === undefined) open = menu.hidden;
+    if (open) { helperMenu(false); $('composerRefItem').hidden = !(document.body.classList.contains('rc-chat-active') && $('rcChatReference')); }
+    menu.hidden = !open; btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      var r = btn.getBoundingClientRect(), w = Math.min(280, window.innerWidth - 24);
+      menu.style.left = Math.max(12, Math.min(r.left, window.innerWidth - w - 12)) + 'px';
+      menu.style.bottom = (window.innerHeight - r.top + 10) + 'px';
+      menu.style.maxHeight = Math.max(160, r.top - 22) + 'px';
+      var first = menu.querySelector('.helper-item:not([hidden])'); if (first) first.focus();
+    }
+  }
+  $('composerPlusBtn').addEventListener('click', function (e) { e.stopPropagation(); plusMenu(); });
+  $('attachBtn').addEventListener('click', function () { plusMenu(false); fileEl.click(); });
+  $('tplBtn').addEventListener('click', function () { plusMenu(false); });
+  $('tplKbd').textContent = K_ALT + '+T';
+  $('composerRefItem').addEventListener('click', function () { plusMenu(false); var b = $('rcChatReference'); if (b) b.click(); });
+  $('composerPlusMenu').addEventListener('keydown', function (e) {
+    var items = Array.prototype.slice.call(this.querySelectorAll('.helper-item:not([hidden])')), i = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); plusMenu(false); $('composerPlusBtn').focus(); }
+  });
+  // Capture phase: the helpers button stops its click from bubbling.
+  document.addEventListener('click', function (e) { if (!$('composerPlusMenu').hidden && !e.target.closest('#composerPlusWrap')) plusMenu(false); }, true);
+  window.addEventListener('resize', function () { if (!$('composerPlusMenu').hidden) plusMenu(false); });
+  $('composerStopBtn').addEventListener('click', function () { stopCurrentTurn(); });
+  syncComposer();
   function handleCodexPanelCommand(text) {
     if (currentProvider() !== 'codex' || !/^\//.test(text)) return false;
     if(pendingFiles.length){uiAlert({title:'Command has attachments',message:'Remove the attachments before running a slash command, or send a regular message with the files.'});return true;}
@@ -5940,7 +6191,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     promptEl.value='';saveDraft();autogrow();slashMenu.hidden=true;
     if(command==='new')newConversation(currentProjectId);
     else if(command==='resume')openSessions();
-    else if(command==='model'){modelEl.focus();if(modelEl.showPicker)try{modelEl.showPicker();}catch{}}
+    else if(command==='model')openSelect(modelEl);
     else if(command==='status')controlRoom.showAccounts();
     else if(command==='cost')controlRoom.showCosts();
     else if(command==='agent')$('subagentsBtn').click();

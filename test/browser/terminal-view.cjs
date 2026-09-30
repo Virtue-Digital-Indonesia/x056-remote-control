@@ -62,6 +62,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
   // The helper menu: helpers combine; Jev is offered only with a key.
   const helper = page.locator('#helperBtn');
   assert.equal(await helper.isDisabled(), false);
+  await page.locator('#prompt').click(); // the composer rests as one line; focus opens its controls
   await helper.click();
   assert.equal(await page.locator('#helperMenu [data-value=jev]').isDisabled(), true, 'no Jev key in the fixture');
   // OpenAI Decisions is the alternative to Jev, offered once an OpenAI key exists.

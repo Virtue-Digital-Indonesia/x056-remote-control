@@ -47,8 +47,12 @@ window.createControlRoom = function (engine) {
   $('crHome').insertAdjacentHTML('afterend','<span id="crBreadcrumb">Workspace<span class="crumb-sep">/</span><span>Control room</span></span>');
   const projectVeil = document.createElement('div'); projectVeil.id='crProjectVeil'; projectVeil.hidden=true; shell.append(projectVeil);
   // Account selection stays next to the composer, in every presentation mode.
-  content.querySelector('.composer').insertAdjacentHTML('beforeend', '<div class="composer-footer"><button id="sendAccountChip" class="send-account-chip" aria-haspopup="dialog"></button></div>');
-  if($('deliveryStrip'))content.querySelector('.composer-footer').append($('deliveryStrip'));
+  // It sits on the quiet line under the composer pill (panel.html's .composer-footer),
+  // beside the delivery dot; that line is built here only if the markup lacks it.
+  let composerFooter = content.querySelector('.composer-footer');
+  if (!composerFooter) { content.querySelector('.composer').insertAdjacentHTML('afterend', '<div class="composer-footer"></div>'); composerFooter = content.querySelector('.composer-footer'); }
+  composerFooter.insertAdjacentHTML('beforeend', '<button id="sendAccountChip" class="send-account-chip" aria-haspopup="dialog"></button>');
+  if($('deliveryStrip'))composerFooter.append($('deliveryStrip'));
   const sendAccounts = document.createElement('dialog'); sendAccounts.id='sendAccountPicker'; sendAccounts.className='cr-dialog';sendAccounts.setAttribute('aria-label','Choose an account'); document.body.append(sendAccounts);
 
   const preferences = document.createElement('dialog'); preferences.id = 'displayPreferences'; preferences.className = 'cr-dialog'; preferences.setAttribute('aria-label','Settings');
@@ -1116,7 +1120,7 @@ window.createControlRoom = function (engine) {
     {heading:'More'},
     {label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},
     {label:'Remove from panel',icon:'trash',danger:true,disabled:isChat||!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
-  const runningLabel=document.createElement('div');runningLabel.id='runningAccountLabel';runningLabel.hidden=true;content.querySelector('.composer').before(runningLabel);
+  const runningLabel=document.createElement('div');runningLabel.id='runningAccountLabel';runningLabel.hidden=true;const composerStatus=$('composerStatus');if(composerStatus)composerStatus.append(runningLabel);else content.querySelector('.composer').before(runningLabel);
   $('autopilotBtn').insertAdjacentHTML('beforeend','<span>Autopilot</span>');
   $('chatActivity').insertAdjacentHTML('beforebegin',`<button id="chatAgents" aria-controls="wfIsland" aria-expanded="false" hidden>${ic('fanout')}<span>Agents</span><small></small></button>`);
   on('chatAgents',()=>$('wfBtn').click());
