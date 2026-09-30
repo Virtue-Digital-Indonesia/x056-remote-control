@@ -255,6 +255,39 @@
   .mcpbar .mcpacts .deny:hover { border-color: var(--err); color: var(--err); }
   .mcpbar .mcpacts .approve { background: var(--accent); border: 1px solid var(--accent); color: var(--on-accent); }
   .mcpbar .mcpacts button:disabled { opacity: .5; cursor: default; }
+  /* Delegates: an orchestrator's hidden workers, one compact bar. */
+  #delegatesBar { max-width: 780px; margin: 0 auto 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); overflow: hidden; }
+  #delegatesBar[hidden] { display: none; }
+  .dg-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+  .dg-head > .ic { color: var(--accent); flex: none; }
+  .dg-head strong { font-weight: 600; }
+  .dg-sum { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dg-head .dg-chev { color: var(--faint); transition: transform .15s; }
+  #delegatesBar.open .dg-chev { transform: rotate(180deg); }
+  .dg-list { display: none; border-top: 1px solid var(--border); max-height: 320px; overflow-y: auto; }
+  #delegatesBar.open .dg-list { display: block; }
+  .dg-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; padding: 9px 12px; border-top: 1px solid var(--border); }
+  .dg-row:first-child { border-top: 0; }
+  .dg-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+  .dg-row.working .dg-dot { background: var(--bgwork); animation: dgpulse 1.4s ease-in-out infinite; }
+  .dg-row.needs .dg-dot { background: var(--amber); }
+  .dg-row.failed .dg-dot { background: var(--err); }
+  .dg-row.idle .dg-dot { background: var(--ok); }
+  @keyframes dgpulse { 50% { opacity: .35; } }
+  .dg-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .dg-top { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; }
+  .dg-top strong { font-weight: 600; white-space: nowrap; }
+  .dg-chip { padding: 0 7px; border-radius: 999px; background: var(--bg); color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .dg-state { color: var(--faint); font-size: 12px; white-space: nowrap; }
+  .dg-last { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dg-acts { display: flex; gap: 2px; }
+  .dg-acts button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
+  .dg-acts button:hover { background: var(--bg); color: var(--text); }
+  .dg-say { grid-column: 2 / 4; display: flex; gap: 6px; }
+  .dg-say input { flex: 1; min-width: 0; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
+  .dg-send { height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .delegate-digest summary { cursor: pointer; font-weight: 500; }
+  .delegate-digest-body { margin-top: 8px; font-size: 13.5px; }
   #queueBar { max-width: 780px; margin: 0 auto 8px; display: flex; flex-direction: column; gap: 6px; }
   #queueBar:empty { display: none; }
   .qhdr { font-size: 11px; font-weight: 600; letter-spacing: .3px; text-transform: uppercase; color: var(--faint); padding: 0 2px; }
@@ -864,6 +897,9 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 .term-jev { color: #f0b35e; }
 .term-live { color: #3fb950; }
 .term-opt { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
+.term-back { margin-left: 10px; padding: 2px 10px; border: 1px solid #3a4150; border-radius: 999px; background: transparent; color: #c9d1d9; font: inherit; font-size: 12px; cursor: pointer; }
+.term-back:hover { background: #22272e; }
+.term-back[hidden] { display: none; }
 .term-body { flex: 1; overflow: auto; padding: 6px 0 18px; overscroll-behavior: contain; }
 .term-older, .term-full { font: inherit; color: #9aa7b4; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 3px 10px; cursor: pointer; }
 .term-older { margin: 4px 14px 8px; }
@@ -926,6 +962,15 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 .adverr { margin: 0; font-size: 13px; color: var(--muted); }
 .advfoot { display: flex; align-items: center; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
 .advfoot .ic { color: var(--faint); }
+.advcard.delegate .advhead > .ic { color: var(--bgwork); }
+.dg-gate { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.dg-gate.done { color: var(--ok); background: var(--ok-bg); }
+.dg-gate.needs_orchestrator { color: var(--accent); background: var(--accent-weak); }
+.dg-gate.needs_human, .dg-gate.blocked { color: var(--amber); background: var(--amber-bg); }
+.dg-first { margin-top: 6px; padding-left: 24px; font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.dg-more { margin-top: 4px; padding-left: 24px; font-size: 12.5px; }
+.dg-more summary { cursor: pointer; color: var(--muted); }
+.dg-more .dg-body { margin-top: 8px; font-size: 13.5px; }
 .advnote { margin-top: 4px; padding-left: 24px; font-size: 12px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
 .advdots { display: inline-block; width: 1.4em; text-align: left; }
 .advdots::after { content: '…'; animation: advdots 1.2s steps(4, end) infinite; display: inline-block; overflow: hidden; vertical-align: bottom; width: 0; }
@@ -1055,6 +1100,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     <div id="autopilotBar"></div>
     <div id="otherRuns"></div>
     <div id="busy"></div>
+    <div id="delegatesBar" hidden></div>
     <div id="queueBar"></div>
     <div class="composer">
       <div id="attachRow"></div>
@@ -1988,6 +2034,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     return [h.advisor && 'Advisor', h.team && 'Team', h.router === 'jev' && 'Jev', h.router === 'decisions' && 'Decisions'].filter(Boolean);
   }
   function syncDecider(pid) {
+    syncDelegates();
     var btn = $('helperBtn'); if (!btn) return;
     var h = helperFor(pid), on = h.helpers, codex = currentProvider() === 'codex';
     var usable = !pendingNew && !!lastSessionId && !!h.conv, names = helperNames(on);
@@ -2040,6 +2087,79 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
       .catch(function (e) { addSys(e.message, 'banner'); })
       .then(function () { menu.removeAttribute('aria-busy'); syncDecider(pid); if (menu.hidden) btn.focus(); });
   }
+  // ---- delegates: the orchestrator's hidden workers, one bar above the composer ----
+  var delegateState = { key: '', list: [], open: false, saying: '' };
+  function syncDelegates() {
+    var key = !pendingNew && currentProjectId && lastSessionId ? currentProjectId + '::' + lastSessionId : '';
+    if (key === delegateState.key) return;
+    delegateState = { key: key, list: [], open: delegateState.open, saying: '' };
+    renderDelegates();
+    if (!key) return;
+    api('/api/delegates?projectId=' + encodeURIComponent(currentProjectId) + '&sessionId=' + encodeURIComponent(lastSessionId))
+      .then(function (r) { return r.ok ? r.json() : { delegates: [] }; })
+      .then(function (j) { if (delegateState.key !== key) return; delegateState.list = j.delegates || []; renderDelegates(); })
+      .catch(function () {});
+  }
+  function delegateClass(d) {
+    if (d.working || d.status === 'working') return 'working';
+    if (d.status === 'failed' || d.status === 'interrupted') return 'failed';
+    if (d.lastReport && (d.lastReport.gate === 'needs_human' || d.lastReport.gate === 'blocked')) return 'needs';
+    return 'idle';
+  }
+  var DELEGATE_STATE = { working: 'Working', failed: 'Stopped with an error', needs: 'Waiting on you', idle: 'Reported' };
+  function renderDelegates() {
+    var bar = $('delegatesBar'); if (!bar) return;
+    var list = delegateState.list.filter(function (d) { return d.status !== 'stopped' || d.working; });
+    bar.textContent = '';
+    if (!list.length) { bar.hidden = true; return; }
+    bar.hidden = false; bar.classList.toggle('open', !!delegateState.open);
+    var counts = {}; list.forEach(function (d) { var c = delegateClass(d); counts[c] = (counts[c] || 0) + 1; });
+    var head = document.createElement('button'); head.type = 'button'; head.className = 'dg-head'; head.setAttribute('aria-expanded', delegateState.open ? 'true' : 'false');
+    head.appendChild(icon('fanout', 'sm'));
+    var t = document.createElement('strong'); t.textContent = 'Delegates'; head.appendChild(t);
+    var sum = document.createElement('span'); sum.className = 'dg-sum';
+    sum.textContent = [counts.working && counts.working + ' working', counts.needs && counts.needs + ' waiting on you', counts.failed && counts.failed + ' stopped with an error', counts.idle && counts.idle + ' reported'].filter(Boolean).join(' · ');
+    head.appendChild(sum);
+    var chev = icon('chevron', 'sm'); chev.classList.add('dg-chev'); head.appendChild(chev);
+    head.addEventListener('click', function () { delegateState.open = !delegateState.open; renderDelegates(); });
+    bar.appendChild(head);
+    var rows = document.createElement('div'); rows.className = 'dg-list';
+    list.forEach(function (d) {
+      var cls = delegateClass(d), row = document.createElement('div'); row.className = 'dg-row ' + cls;
+      var dot = document.createElement('span'); dot.className = 'dg-dot'; dot.setAttribute('aria-hidden', 'true'); row.appendChild(dot);
+      var main = document.createElement('div'); main.className = 'dg-main';
+      var top = document.createElement('div'); top.className = 'dg-top';
+      var nm = document.createElement('strong'); nm.textContent = d.role; top.appendChild(nm);
+      var chip = document.createElement('span'); chip.className = 'dg-chip'; chip.textContent = (d.provider === 'codex' ? 'ChatGPT' : 'Claude') + (d.model ? ' · ' + advisorModelName(d.model) : ''); top.appendChild(chip);
+      var st = document.createElement('span'); st.className = 'dg-state'; st.textContent = DELEGATE_STATE[cls] + (d.pending && d.pending.length ? ' · ' + d.pending.length + ' queued' : ''); top.appendChild(st);
+      main.appendChild(top);
+      if (d.lastReport && d.lastReport.text) { var last = document.createElement('div'); last.className = 'dg-last'; last.textContent = d.lastReport.text.split('\n').find(function (l) { return l.trim(); }) || ''; main.appendChild(last); }
+      row.appendChild(main);
+      var acts = document.createElement('div'); acts.className = 'dg-acts';
+      var act = function (ic, label, fn) { var b = document.createElement('button'); b.type = 'button'; b.title = label; b.setAttribute('aria-label', label + ': ' + d.role); b.appendChild(icon(ic, 'sm')); b.addEventListener('click', fn); acts.appendChild(b); };
+      act('terminal', 'Open its transcript', function () { if (terminalView && terminalView.showDelegate) terminalView.showDelegate(d.id, d.role); });
+      act('send', 'Message it directly', function () { delegateState.saying = delegateState.saying === d.id ? '' : d.id; renderDelegates(); });
+      if (cls === 'working') act('stop', 'Stop it', function () { stopDelegate(d.id); });
+      row.appendChild(acts);
+      if (delegateState.saying === d.id) {
+        var say = document.createElement('form'); say.className = 'dg-say';
+        var inp = document.createElement('input'); inp.placeholder = 'Message ' + d.role + ' directly…'; inp.setAttribute('aria-label', 'Message ' + d.role);
+        var go = document.createElement('button'); go.type = 'submit'; go.className = 'dg-send'; go.textContent = 'Send';
+        say.appendChild(inp); say.appendChild(go);
+        say.addEventListener('submit', function (e) { e.preventDefault(); if (inp.value.trim()) messageDelegate(d.id, inp.value.trim()); });
+        row.appendChild(say); setTimeout(function () { inp.focus(); }, 0);
+      }
+      rows.appendChild(row);
+    });
+    bar.appendChild(rows);
+  }
+  function delegateCall(path, body) {
+    return api(path, { method: 'POST', body: JSON.stringify(Object.assign({ projectId: currentProjectId, sessionId: lastSessionId }, body)) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || 'Delegate request failed'); return j; }); })
+      .catch(function (e) { addSys(e.message, 'banner'); });
+  }
+  function messageDelegate(id, text) { delegateState.saying = ''; renderDelegates(); delegateCall('/api/delegates/followup', { id: id, message: text, fromHuman: true }); }
+  function stopDelegate(id) { delegateCall('/api/delegates/stop', { id: id }); }
   function refreshJevStatus() {
     var get = function (u) { return api(u).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }); };
     return Promise.all([get('/api/jev/status'), get('/api/decisions/status')]).then(function (s) { jevStatus = s[0]; decisionsStatus = s[1]; if (currentProjectId) syncDecider(currentProjectId); });
@@ -2398,21 +2518,30 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role; wrap._messageText = text; if(ts)wrap.dataset.messageTs=ts;
     var lab = document.createElement('div'); lab.className = 'role';
     lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
-    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor'].indexOf(sender.kind) >= 0) {
+    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor','delegate'].indexOf(sender.kind) >= 0) {
       wrap.classList.add('from-sender');
       if (sender.messageId) wrap.dataset.messageSourceId = sender.messageId;
       lab.classList.add('message-sender'); lab.textContent = '';
-      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : 'plug', 'sm'));
+      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : sender.kind === 'delegate' ? 'fanout' : 'plug', 'sm'));
       var identity = document.createElement('span'), name = document.createElement('strong'), project = document.createElement('small');
-      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : 'External sender';
-      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : sender.kind === 'advisor' ? 'Review' : 'MCP');
+      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : sender.kind === 'delegate' ? 'Delegates' : 'External sender';
+      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : sender.kind === 'advisor' ? 'Review' : sender.kind === 'delegate' ? 'Reports' : 'MCP');
       identity.appendChild(name); identity.appendChild(project); lab.appendChild(identity);
       lab.title = 'From ' + name.textContent + ' · ' + project.textContent;
       lab.setAttribute('aria-label', lab.title);
     }
     wrap.appendChild(lab);
     var content = document.createElement('div'); content.className = 'content';
-    if (role === 'assistant') content.appendChild(renderMarkdown(text)); else content.appendChild(document.createTextNode(text));
+    if (role === 'assistant') content.appendChild(renderMarkdown(text));
+    // Delegate reports already have their own cards; the message that handed
+    // them to the orchestrator stays one line until opened.
+    else if (role === 'user' && sender && sender.kind === 'delegate') {
+      var det = document.createElement('details'); det.className = 'delegate-digest';
+      var sum = document.createElement('summary'); sum.textContent = (String(text).split('\n')[0] || 'Delegate reports').replace(/^\[Delegates\]\s*/, '');
+      var full = document.createElement('div'); full.className = 'delegate-digest-body'; full.appendChild(renderMarkdown(text));
+      det.appendChild(sum); det.appendChild(full); content.appendChild(det);
+    }
+    else content.appendChild(document.createTextNode(text));
     // atts: a single data URL (legacy), or an array of data URLs / {name,type,url}
     // objects. Images render as thumbnails; any other file as a download chip.
     var list = Array.isArray(atts) ? atts : (atts ? [atts] : []);
@@ -2858,6 +2987,15 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     else if (kind === 'advisor_consult') {
       appendNode(pid, sid, nodeAdvisor(data));
     }
+    else if (kind === 'delegate_report') {
+      appendNode(pid, sid, nodeDelegateReport(data, data.text));
+    }
+    else if (kind === 'delegate_update') {
+      if (pid === currentProjectId && sid === lastSessionId) { delegateState.list = data.delegates || []; renderDelegates(); }
+    }
+    else if (kind === 'delegate_warning') {
+      if (pid === currentProjectId && sid === lastSessionId) addSys(data.message || 'Delegate problem', 'banner');
+    }
     else if (kind === 'jev_decision') {
       appendNode(pid, sid, nodeAdvisor({ helper: data.backend === 'openai' ? 'openai' : 'jev', decision: data }));
     }
@@ -2952,8 +3090,37 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     if (note.textContent) d.appendChild(note);
     return d;
   }
-  function nodeAdvisor(a, pending) {
+  // A delegate's report, as its orchestrator sees it: who, what the gate
+  // decided, the report's first line, and the rest behind a disclosure.
+  var GATE_LABEL = { done: 'Done', needs_orchestrator: 'Needs orchestrator', needs_human: 'Needs you', blocked: 'Blocked' };
+  function nodeDelegateReport(x, text) {
+    var d = document.createElement('div'); d.className = 'advcard compact delegate';
+    var head = document.createElement('div'); head.className = 'advhead';
+    head.appendChild(icon('fanout', 'sm'));
+    var name = document.createElement('span'); name.className = 'advname'; name.textContent = x.role || 'Delegate'; head.appendChild(name);
+    var who = [x.provider === 'codex' ? 'ChatGPT' : x.provider === 'claude' ? 'Claude' : '', x.model ? advisorModelName(x.model) : ''].filter(Boolean).join(' · ');
+    if (who) { var chip = document.createElement('span'); chip.className = 'advmodel'; chip.textContent = who; head.appendChild(chip); }
+    var gate = document.createElement('span'); gate.className = 'dg-gate ' + (x.gate || 'done'); gate.textContent = GATE_LABEL[x.gate] || x.gate || '';
+    gate.title = x.gateBy === 'rule' ? 'Decided by rule: the turn did not complete' : x.gateBy === 'none' ? 'No decision model available: handed to the orchestrator' : (x.gateBy === 'openai' ? 'OpenAI Decisions' : 'Jev') + (x.gateConfidence != null ? ' · ' + Math.round(x.gateConfidence * 100) + '% sure' : '');
+    head.appendChild(gate);
+    var meta = document.createElement('span'); meta.className = 'advmeta';
+    meta.textContent = 'turn ' + (x.turn || 1) + (x.durationMs ? ' · ' + (x.durationMs >= 60000 ? Math.round(x.durationMs / 60000) + ' min' : Math.max(1, Math.round(x.durationMs / 1000)) + ' s') : '');
+    head.appendChild(meta);
+    d.appendChild(head);
+    var body = String(text || '').trim(), lines = body.split('\n'), at = lines.findIndex(function (l) { return l.trim(); });
+    var first = at < 0 ? '' : lines[at].replace(/^#+\s*/, ''), rest = at < 0 ? '' : lines.slice(at + 1).join('\n').trim();
+    if (first) { var f = document.createElement('div'); f.className = 'dg-first'; f.appendChild(renderInline(first)); d.appendChild(f); }
+    if (rest) {
+      var more = document.createElement('details'); more.className = 'dg-more';
+      var sm = document.createElement('summary'); sm.textContent = 'Full report'; more.appendChild(sm);
+      more.addEventListener('toggle', function () { if (more.open && !more._filled) { more._filled = true; var b = document.createElement('div'); b.className = 'dg-body'; b.appendChild(renderMarkdown(rest)); more.appendChild(b); } });
+      d.appendChild(more);
+    }
+    return d;
+  }
+  function nodeAdvisor(a, pending, text) {
     a = a || {};
+    if (a.delegate) return nodeDelegateReport(a.delegate, text);
     if (a.helper) return nodeDecision(a);
     var d = document.createElement('div');
     var full = !!(a.verdict || a.advice || a.trigger || a.error && a.trigger);
@@ -4473,7 +4640,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
             : m.role === 'command'
               ? function () { appendNode(pid, sid, nodeCmd(m.text, m.args, m.ts)); }  // a slash command the user ran
               : m.role === 'advisor'
-                ? function () { appendNode(pid, sid, nodeAdvisor(m.advisor)); }        // an advisor consultation
+                ? function () { appendNode(pid, sid, nodeAdvisor(m.advisor, false, m.text)); }        // an advisor consultation
               : m.role === 'notice'
                 ? function () { appendNode(pid, sid, nodeNotice(m.text)); }           // compacted / cleared divider
                 : m.role === 'summary'
@@ -4591,7 +4758,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
               : m.role === 'command'
                 ? nodeCmd(m.text, m.args, m.ts)
                 : m.role === 'advisor'
-                  ? nodeAdvisor(m.advisor)
+                  ? nodeAdvisor(m.advisor, false, m.text)
                 : m.role === 'notice'
                   ? nodeNotice(m.text)
                   : m.role === 'summary'
@@ -4676,7 +4843,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -4883,7 +5050,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     (rows || []).forEach(function (m) {
       var n = m.role === 'action' ? nodeAct(m.text, m.sub, m.agentId, m.detail)
         : m.role === 'command' ? nodeCmd(m.text, m.args, m.ts)
-        : m.role === 'advisor' ? nodeAdvisor(m.advisor)
+        : m.role === 'advisor' ? nodeAdvisor(m.advisor, false, m.text)
         : m.role === 'notice' ? nodeNotice(m.text)
         : m.role === 'summary' ? nodeSummary(m.text, m.ts)
         : m.role === 'model' ? nodeModelMark(m.text, m.ts)

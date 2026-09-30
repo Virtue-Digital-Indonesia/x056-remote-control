@@ -52,7 +52,7 @@ afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir
 
 describe('all advertised output contracts', () => {
   it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(55);
+    expect(TOOLS).toHaveLength(59);
     expect(validators.size).toBe(TOOLS.length);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
@@ -125,6 +125,25 @@ describe('all advertised output contracts', () => {
     expect(qd.content[0].text).toBe('SHARP: a (90% sure). Follow it.');
     manager.setHelpers('p', 's', {});
     covered.add('quick_decision');
+
+    // Delegates, with the turn runner stubbed: no CLI process is started here.
+    vi.spyOn(manager as unknown as { runDelegateTurn(): void }, 'runDelegateTurn').mockImplementation(() => {});
+    const dapi = async (path: string, o?: RequestInit) => {
+      const body = o?.body ? JSON.parse(String(o.body)) : {};
+      if (path === '/api/delegates') return manager.startDelegate(body.projectId, body.sessionId, { role: body.role, brief: body.brief, provider: body.provider, model: body.model });
+      if (path === '/api/delegates/followup') return manager.delegateFollowup(body.projectId, body.sessionId, body.id, body.message);
+      if (path === '/api/delegates/stop') return { stopped: manager.stopDelegates(body.projectId, body.sessionId, body.id) };
+      const q = new URLSearchParams(path.split('?')[1]);
+      return { delegates: manager.listDelegates(q.get('projectId')!, q.get('sessionId')!, q.get('id') || undefined) };
+    };
+    const dtool = (name: string, args: Record<string, unknown>) => self.callToolResult(dapi, name, args);
+    const started = validateResult('delegate', await dtool('delegate', { role: 'backend', brief: 'Fix the flaky login test.' }));
+    expect(started).toMatchObject({ role: 'backend', status: 'working' });
+    expect(validateResult('delegate_followup', await dtool('delegate_followup', { id: started.id, message: 'Add a test.' }))).toMatchObject({ id: started.id, status: 'working' });
+    expect(validateResult('list_delegates', await dtool('list_delegates', {})).delegates).toHaveLength(1);
+    expect(validateResult('list_delegates', await dtool('list_delegates', { id: started.id })).delegates[0]).toMatchObject({ role: 'backend' });
+    expect(validateResult('stop_delegate', await dtool('stop_delegate', {}))).toEqual({ stopped: 1 });
+    for (const n of ['delegate', 'delegate_followup', 'list_delegates', 'stop_delegate']) covered.add(n);
   });
 
   it('exercises schedule creation, pause, resume, missing targets, run results and cancellation in the fixture', async () => {

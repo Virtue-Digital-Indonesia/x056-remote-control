@@ -500,6 +500,51 @@ the thread they come from uses them together, and so do we now.
   Disabled until `state/secrets/openai.json` (0600) holds `{apiKey, model?,
   endpoint?}`; `GET /api/decisions/status` never returns the key.
 
+## Delegates: an orchestrator's hidden workers (`server/delegates.ts`)
+
+Built 2026-09-30 to replace how the AHU "AI Progress Scoring" chat ran a team:
+8 `create_chat` (8 sidebar rows), 74 `send_chat_message` through the approval
+gate, 341 `read_reply`/`read_chat`/`chat_status` polls, 108 `sleep`s, and one
+orchestrator turn per worker report. The owner chose: no approval (hard limits
+only), and Jev gates which reports wake the orchestrator.
+
+- **A delegate is NOT a project conversation.** Nothing in `projects.json`, so
+  no sidebar row, strip entry, search hit or notification of its own -- hiding
+  one inside `conversations` would have leaked through ~45 listing call sites.
+  Roster `state/delegates/<parentSid>.json`, reports
+  `state/delegates/<parentSid>.reports.jsonl`, events `delegate-events.jsonl`.
+- **Its turns are ordinary `runSession` turns** (accounts, failover, the
+  persistent pools via `turnStarter`, the Codex per-account model fallback),
+  run by `SessionManager.runDelegateTurn` with no x056 MCP (so it cannot
+  delegate: one level deep) and `delegateInstructions(role)` appended to the
+  system prompt: every turn ends in a REPORT whose first line is DONE / NEEDS
+  ORCHESTRATOR / NEEDS HUMAN / BLOCKED.
+- **While a delegate works, its orchestrator counts as background work**
+  (`backgroundSessions`, `providerActivity`): the violet spinner, Stop reaches
+  it (`stopTurn` stops every delegate), and the deployer's idle check waits.
+- **The gate** (`settleDelegateNow`): rules first -- a failed, stopped or
+  interrupted turn is `blocked` without asking anyone -- then one Jev Choice
+  (`JevService.choose`, logged in the fork log as `report gate · <role>`):
+  done / needs_orchestrator / needs_human / blocked, followed only at >= 75%;
+  unsure or no model = needs_orchestrator. `needs_orchestrator` and `blocked`
+  wake at once; `done` and `needs_human` wait until no delegate of that
+  orchestrator is working, then everything unseen goes over together.
+  `needs_human` also sends a push notification.
+- **One wake message** (`digest`), sender kind `delegate`, merged into a wake
+  still waiting in the orchestrator's queue rather than queued twice. The panel
+  shows it collapsed to one line; each report is also its own card (journal
+  `delegate_report` -> `role: 'advisor'`, `advisor.delegate`).
+- **Limits**: 8 active delegates (`stop_delegate` frees a slot; a follow-up
+  revives it with its context), unique roles, and 40 dispatches between two
+  human messages (`clearRelayChain` resets it). A follow-up to a working
+  delegate queues behind its turn. A restart marks working delegates
+  `interrupted` and wakes the orchestrator once (`recoverDelegates`).
+- **Tools** (x056 MCP): `delegate`, `delegate_followup`, `list_delegates`,
+  `stop_delegate`; the system note tells sessions to orchestrate with these,
+  never with chats and polling. **Panel**: a Delegates bar above the composer
+  (status per delegate, open its transcript in the terminal view -- the
+  pager takes `delegateId` -- message it directly, stop it).
+
 ## Terminal view (`server/public/terminal.js`)
 
 A header button swaps the conversation for its own transcript, CLI-style:

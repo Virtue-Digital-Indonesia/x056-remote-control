@@ -1,7 +1,7 @@
 /** Display attribution, carried with the prompt so either provider retains it. */
 export interface MessageSender {
   messageId?: string;
-  kind: 'conversation' | 'automation' | 'autopilot' | 'mcp' | 'advisor';
+  kind: 'conversation' | 'automation' | 'autopilot' | 'mcp' | 'advisor' | 'delegate';
   projectId?: string;
   sessionId?: string;
   projectName?: string;
@@ -17,7 +17,7 @@ export function readMessageSender(text: string): { text: string; sender?: Messag
   if (index < 0 || text.length - index > 8000) return { text };
   try {
     const raw = JSON.parse(text.slice(index + MARKER.length));
-    if (!raw || !['conversation', 'automation', 'autopilot', 'mcp', 'advisor'].includes(raw.kind)) return { text };
+    if (!raw || !['conversation', 'automation', 'autopilot', 'mcp', 'advisor', 'delegate'].includes(raw.kind)) return { text };
     const sender: MessageSender = { kind: raw.kind };
     for (const key of ['messageId', 'projectId', 'sessionId', 'projectName', 'conversationTitle'] as const) {
       if (raw[key] !== undefined) {

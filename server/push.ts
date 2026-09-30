@@ -14,7 +14,7 @@ export interface StoredSub {
   at: number;
 }
 
-const NOTIFY_KINDS = new Set(['question', 'session_done', 'session_error', 'conversation_settled', 'turn_orphaned', 'autopilot']);
+const NOTIFY_KINDS = new Set(['question', 'session_done', 'session_error', 'conversation_settled', 'turn_orphaned', 'autopilot', 'delegate_report']);
 
 export class PushService {
   private vapid: { publicKey: string; privateKey: string };
@@ -114,6 +114,11 @@ export class PushService {
       const status = kind === 'session_error' ? 'failed' : typeof data.status === 'string' ? data.status : 'done';
       title = status === 'completed' ? `${project} finished` : status === 'failed' ? `${project} failed` : `${project} is waiting`;
       body = status === 'completed' ? 'The turn completed — tap to continue.' : `Turn ${status}.`;
+    } else if (kind === 'delegate_report') {
+      // Only the reports a person must act on; the rest go to the orchestrator.
+      if (data.gate !== 'needs_human') return;
+      title = `${project} · ${String(data.role || 'a delegate')} needs you`;
+      body = String(data.text || '').split('\n').find((l) => l.trim())?.slice(0, 140) || 'A delegate is waiting on a person.';
     } else if (kind === 'turn_orphaned') {
       title = `${project} was interrupted`;
       body = 'A turn stopped mid-flight — tap to resume.';

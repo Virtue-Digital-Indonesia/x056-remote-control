@@ -26,6 +26,11 @@ export class ConversationJournal {
       const keep = ['pickedModel', 'pickedEffort', 'modelConfidence', 'effortConfidence', 'model', 'effort', 'baseModel', 'baseEffort', 'notes', 'latencyMs', 'error'];
       row = { role: 'advisor', messageId: 'decision:' + String(data.at), text: ((data.notes as string[] | undefined) ?? []).join(', ') || String(data.error || ''), ts: String(data.at),
         advisor: { helper: data.backend === 'openai' ? 'openai' : 'jev', decision: Object.fromEntries(keep.filter((k) => data[k] !== undefined).map((k) => [k, data[k]])) } };
+    } else if (kind === 'delegate_report' && data.at && data.delegateId) {
+      // A delegate's report: its orchestrator's card, in no transcript.
+      const keep = ['delegateId', 'role', 'turn', 'status', 'gate', 'gateConfidence', 'gateBy', 'durationMs', 'provider', 'model'];
+      row = { role: 'advisor', messageId: 'delegate:' + String(data.delegateId) + '@' + String(data.at), text: String(data.text || '').slice(0, 20000), ts: String(data.at),
+        advisor: { delegate: Object.fromEntries(keep.filter((k) => data[k] !== undefined && data[k] !== null).map((k) => [k, data[k]])) } };
     } else if (kind === 'session_done' && data.status === 'stopped') {
       row = { role: 'notice', messageId: data.requestId ? 'stopped:' + data.requestId : undefined, text: String(data.reason || 'Turn stopped.'), ts };
     } else return;

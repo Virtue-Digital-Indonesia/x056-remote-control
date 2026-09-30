@@ -181,8 +181,18 @@ export class JevService {
   /** One fork on Jev. Never throws; an unreachable Jev is a SPLIT with an error,
    *  so the agent simply decides itself. */
   async fork(sessionId: string, input: ForkInput): Promise<ForkDecision> {
+    return this.choose(sessionId, { label: input.question, instructions: input.question, criteria: Object.fromEntries(input.options.map((o) => [o, o])), state: { context: input.context || '' } });
+  }
+
+  /**
+   * One Choice question, recorded in the conversation's fork log like a fork
+   * (the terminal view shows both). `label` is what the log calls it;
+   * `criteria` maps each option to what it means. Never throws.
+   */
+  async choose(sessionId: string, q: { label: string; instructions: string; criteria: Record<string, string>; state: Record<string, unknown> }): Promise<ForkDecision> {
     const started = Date.now();
-    const base: ForkDecision = { at: new Date().toISOString(), sessionId, backend: 'jev', question: input.question, options: input.options, latencyMs: 0 };
+    const options = Object.keys(q.criteria);
+    const base: ForkDecision = { at: new Date().toISOString(), sessionId, backend: 'jev', question: q.label, options, latencyMs: 0 };
     const done = (d: ForkDecision) => { this.recordFork(d); return d; };
     const key = this.key();
     if (!key) return done({ ...base, verdict: 'split', error: 'No Jev API key configured' });
@@ -191,7 +201,7 @@ export class JevService {
     let res: Response;
     try {
       res = await this.fetchFn(API, { method: 'POST', signal: ctl.signal, headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'jev-latest', state: { context: input.context || '' }, questions: { fork: { type: 'choice', instructions: input.question, criteria: Object.fromEntries(input.options.map((o) => [o, o])) } } }) });
+        body: JSON.stringify({ model: 'jev-latest', state: q.state, questions: { fork: { type: 'choice', instructions: q.instructions, criteria: q.criteria } } }) });
     } catch (e) {
       return done({ ...base, verdict: 'split', latencyMs: Date.now() - started, error: (e as Error).name === 'AbortError' ? `Jev did not answer within ${this.timeoutMs} ms` : 'Jev unreachable: ' + (e as Error).message });
     } finally { clearTimeout(timer); }
@@ -201,7 +211,7 @@ export class JevService {
     const inputTokens = body.usage?.input_tokens ?? 0;
     const costUsd = round(this.meter(inputTokens, body.usage?.output_tokens ?? 0), 8);
     const a = body.answers?.fork;
-    if (!a?.choice || !input.options.includes(a.choice)) return done({ ...base, verdict: 'split', latencyMs, inputTokens, costUsd, error: 'Jev gave no usable answer' });
+    if (!a?.choice || !options.includes(a.choice)) return done({ ...base, verdict: 'split', latencyMs, inputTokens, costUsd, error: 'Jev gave no usable answer' });
     return done({ ...base, choice: a.choice, confidence: a.confidence, probabilities: a.probabilities, verdict: forkVerdict(a.confidence), latencyMs, inputTokens, costUsd });
   }
 

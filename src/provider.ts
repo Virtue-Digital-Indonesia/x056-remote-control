@@ -54,7 +54,9 @@ export interface HistoryEntry {
    *  gateway's own advisor, with verdict and advice. */
   advisor?: { model?: string; status?: 'reviewed' | 'declined' | 'unavailable'; trigger?: string; verdict?: string; advice?: string; delivered?: string; latencyMs?: number; error?: string;
     /** Set when the row is a model/effort pick (Jev or OpenAI Decisions), not advice. */
-    helper?: 'jev' | 'openai'; decision?: Record<string, unknown> };
+    helper?: 'jev' | 'openai'; decision?: Record<string, unknown>;
+    /** Set when the row is a delegate's report to its orchestrator (the text is the report). */
+    delegate?: Record<string, unknown> };
   text: string;
   /** Complete tool input for the action detail reader. */
   detail?: string;

@@ -18,7 +18,8 @@
     root.id = 'term'; root.className = 'term hide-meta'; root.hidden = true; root.setAttribute('aria-label', 'Terminal view');
     root.innerHTML =
       '<div class="term-head">' +
-        '<strong>Terminal</strong><span class="term-meta" id="termMeta"></span><span class="sp"></span>' +
+        '<strong>Terminal</strong><span class="term-meta" id="termMeta"></span>' +
+        '<button type="button" class="term-back" id="termBack" hidden>Back to the conversation</button><span class="sp"></span>' +
         '<span class="term-jev" id="termJev" hidden></span>' +
         '<label class="term-opt"><input type="checkbox" id="termShowMeta"> metadata</label>' +
         '<span class="term-live" id="termLive" title="updates every 2 seconds">● live</span>' +
@@ -30,12 +31,17 @@
     var body = $('termBody'), linesEl = $('termLines');
 
     var open = false, key = '', provider = 'claude', start = 0, end = 0, done = true, timer = null, busy = false, jev = [], jevShown = {};
+    // A delegate's transcript instead of the conversation's own (Delegates bar).
+    var delegate = null;
 
     $('termShowMeta').addEventListener('change', function () { root.classList.toggle('hide-meta', !this.checked); });
     $('termOlder').addEventListener('click', loadOlder);
 
     function cur() { return engine.current(); }
-    function q(c, extra) { return '?projectId=' + encodeURIComponent(c.projectId) + '&sessionId=' + encodeURIComponent(c.sessionId) + (extra || ''); }
+    function q(c, extra) { return '?projectId=' + encodeURIComponent(c.projectId) + '&sessionId=' + encodeURIComponent(c.sessionId) + (delegate ? '&delegateId=' + encodeURIComponent(delegate.id) : '') + (extra || ''); }
+    // Side records (Jev, advisor, forks) belong to the conversation, not to a delegate.
+    function side(path, c) { return delegate ? Promise.resolve([]) : getJson(path + q(c)).catch(function () { return []; }); }
+    $('termBack').addEventListener('click', function () { delegate = null; reload(); });
     function getJson(path) { return engine.api(path).then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || 'request failed'); return j; }); }); }
 
     function toggle() { if (open) close(); else show(); }
@@ -46,6 +52,7 @@
       reload();
     }
     function close() {
+      delegate = null;
       open = false; root.hidden = true; main.classList.remove('term-open'); stop(); pressed(false);
       try { localStorage.removeItem('x056_terminal'); } catch (e) {}
     }
@@ -57,13 +64,12 @@
       var c = cur();
       linesEl.textContent = ''; jevShown = {}; jev = []; start = end = 0; done = true;
       if (!c || !c.projectId || !c.sessionId) { key = ''; $('termMeta').textContent = 'No conversation selected'; return; }
-      key = c.projectId + '::' + c.sessionId;
+      key = c.projectId + '::' + c.sessionId + (delegate ? '::' + delegate.id : '');
+      $('termBack').hidden = !delegate;
       var myKey = key;
       $('termMeta').textContent = 'loading…';
-      Promise.all([getJson('/api/conversations/raw-page' + q(c, '&limit=300')), getJson('/api/conversations/jev-decisions' + q(c)).catch(function () { return []; }),
-        getJson('/api/conversations/advisor-consultations' + q(c)).catch(function () { return []; }),
-        getJson('/api/conversations/turn-results' + q(c)).catch(function () { return []; }),
-        getJson('/api/conversations/jev-forks' + q(c)).catch(function () { return []; })])
+      Promise.all([getJson('/api/conversations/raw-page' + q(c, '&limit=300')), side('/api/conversations/jev-decisions', c),
+        side('/api/conversations/advisor-consultations', c), side('/api/conversations/turn-results', c), side('/api/conversations/jev-forks', c)])
         .then(function (res) {
           if (myKey !== key) return;
           var page = res[0]; jev = (res[1] || []).concat((res[2] || []).map(function (a) { return Object.assign({ kind: 'advisor' }, a); }), (res[3] || []).map(function (r) { return Object.assign({ kind: 'result' }, r); }), (res[4] || []).map(function (f) { return Object.assign({ kind: 'fork' }, f); })).sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
@@ -122,7 +128,7 @@
     }
 
     function meta(page) {
-      $('termMeta').textContent = (provider === 'codex' ? 'Codex rollout' : 'Claude transcript') + ' · ' + mb(page.size);
+      $('termMeta').textContent = (delegate ? 'Delegate ' + delegate.role + ' · ' : '') + (provider === 'codex' ? 'Codex rollout' : 'Claude transcript') + ' · ' + mb(page.size);
     }
     function refreshJev() {
       engine.api('/api/jev/status').then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
@@ -136,7 +142,7 @@
 
     /** Live events from the gateway. */
     function onEvent(kind, data) {
-      if ((kind !== 'jev_decision' && kind !== 'advisor_consult' && kind !== 'turn_result' && kind !== 'jev_fork') || !open) return;
+      if ((kind !== 'jev_decision' && kind !== 'advisor_consult' && kind !== 'turn_result' && kind !== 'jev_fork') || !open || delegate) return;
       var c = cur(); if (!c || data.sessionId !== c.sessionId) return;
       if (kind === 'advisor_consult') data = Object.assign({ kind: 'advisor' }, data);
       if (kind === 'turn_result') data = Object.assign({ kind: 'result' }, data);
@@ -336,7 +342,8 @@
     function mb(b) { return b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB'; }
     function clock(ts) { var d = new Date(ts); return isNaN(d) ? '' : d.toTimeString().slice(0, 8); }
 
-    var api = { toggle: toggle, show: show, close: close, isOpen: function () { return open; }, conversationChanged: function () { if (open) reload(); }, event: onEvent };
+    function showDelegate(id, role) { delegate = { id: id, role: role }; if (open) reload(); else show(); }
+    var api = { toggle: toggle, show: show, close: close, showDelegate: showDelegate, isOpen: function () { return open; }, conversationChanged: function () { delegate = null; if (open) reload(); }, event: onEvent };
     try { if (localStorage.getItem('x056_terminal') === '1') setTimeout(show, 0); } catch (e) {}
     return api;
   };

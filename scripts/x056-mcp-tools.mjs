@@ -259,6 +259,44 @@ QUEUE_TOOLS.push({
   },
 });
 
+// Delegates: an orchestrator's hidden workers. They never appear in the panel
+// as conversations; their reports come back to the orchestrator on their own.
+const DELEGATE_NOTE = ' Delegates are hidden workers owned by THIS conversation: no sidebar rows, no approvals, no polling -- when one finishes a turn its report is handed to you automatically (reports that need nothing from you are held until the rest of the team is quiet, then handed over together). Limits: 8 active delegates, and 40 dispatches between two messages from the user.';
+QUEUE_TOOLS.push({
+  name: 'delegate',
+  description: 'Start a worker (a delegate) for a piece of work you are orchestrating: a full agent session that keeps its own context across rounds, on any provider and model, in this project or another.' + DELEGATE_NOTE
+    + ' Write a self-contained brief: it does not see this conversation. Do NOT wait, sleep or poll for the result.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      role: { type: 'string', description: 'Short name, unique among your delegates: "backend", "reviewer", "dwh".' },
+      brief: { type: 'string', description: 'Goal, context, files or paths, constraints, and what to report.' },
+      provider: { type: 'string', enum: ['claude', 'codex'], description: 'Defaults to this conversation\'s provider.' },
+      model: { type: 'string', description: 'e.g. opus, sonnet, fable, gpt-6.1-sol, gpt-6-astra. Defaults to the provider default.' },
+      effort: { type: 'string', description: 'low, medium, high, xhigh, max (ultra on some GPT models).' },
+      projectId: { type: 'string', description: 'Run in another project\'s working directory (id from list_projects). Defaults to this one.' },
+      advisor: { type: 'boolean', description: 'Give it an advisor too.' },
+    },
+    required: ['role', 'brief'],
+    additionalProperties: false,
+  },
+});
+QUEUE_TOOLS.push({
+  name: 'delegate_followup',
+  description: 'Send a delegate its next instruction. It continues with its full context; if it is still working, the instruction waits for its current turn to end. Its report comes back to you automatically.',
+  inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'delegate id from delegate or list_delegates' }, message: { type: 'string' } }, required: ['id', 'message'], additionalProperties: false },
+});
+QUEUE_TOOLS.push({
+  name: 'list_delegates',
+  description: 'Your delegates: role, provider and model, status, and the start of each last report. Pass id for one delegate with its full last report.',
+  inputSchema: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false },
+});
+QUEUE_TOOLS.push({
+  name: 'stop_delegate',
+  description: 'Stop a delegate (or all of them, without id): its turn ends and its waiting instructions are dropped. A later delegate_followup revives it with its context.',
+  inputSchema: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false },
+});
+
 QUEUE_TOOLS.push({
   name: 'stop_conversation',
   description:
@@ -553,6 +591,29 @@ export async function callToolResult(api, name, args) {
       parts.push(res?.stopped ? 'stopped its running turn' : 'it had no turn running');
       parts.push(res?.dropped ? `dropped ${res.dropped} queued message(s)` : 'nothing was queued for it');
       return result(`${args.sessionId}: ${parts.join('; ')}.`, { projectId: args.projectId, sessionId: args.sessionId, stopped: res.stopped, dropped: res.dropped });
+    }
+    if (['delegate', 'delegate_followup', 'list_delegates', 'stop_delegate'].includes(name)) {
+      if (!SELF.projectId || !SELF.sessionId) throw new Error(name + ' is only available to a conversation running on this gateway (a delegate cannot delegate)');
+      const self = { projectId: SELF.projectId, sessionId: SELF.sessionId };
+      const clip = (d) => ({ id: d.id, role: d.role, provider: d.provider, ...(d.model ? { model: d.model } : {}), ...(d.effort ? { effort: d.effort } : {}), status: d.working ? 'working' : d.status, turns: d.turns, queued: (d.pending || []).length,
+        ...(d.lastReport ? { lastReport: { at: d.lastReport.at, gate: d.lastReport.gate, status: d.lastReport.status, text: d.lastReport.text } } : {}) });
+      if (name === 'delegate') {
+        const d = await api('/api/delegates', { method: 'POST', body: JSON.stringify({ ...self, role: args.role, brief: args.brief, provider: args.provider, model: args.model, effort: args.effort, targetProjectId: args.projectId, advisor: args.advisor }) });
+        return result(`Delegate ${d.role} (${d.id}) started on ${d.provider}${d.model ? ' · ' + d.model : ''}. Its report will come back to you when it finishes: do not wait or poll.`, { id: d.id, role: d.role, provider: d.provider, status: 'working' });
+      }
+      if (name === 'delegate_followup') {
+        const r = await api('/api/delegates/followup', { method: 'POST', body: JSON.stringify({ ...self, id: args.id, message: args.message }) });
+        return result(r.status === 'queued' ? `${args.id} is still working; the instruction runs when its current turn ends.` : `${args.id} is working on it. Its report will come back to you.`, { id: r.id, status: r.status });
+      }
+      if (name === 'list_delegates') {
+        const q = new URLSearchParams({ ...self, ...(args.id ? { id: args.id } : {}) });
+        const r = await api('/api/delegates?' + q);
+        const list = (r.delegates || []).map(clip);
+        const text = list.length ? list.map((d) => `${d.id} ${d.role} · ${d.provider}${d.model ? ' ' + d.model : ''} · ${d.status}${d.queued ? ` (+${d.queued} queued)` : ''}${d.lastReport ? `\n  last report (${d.lastReport.gate}): ${args.id ? d.lastReport.text : d.lastReport.text.split('\n')[0]}` : ''}`).join('\n') : 'No delegates yet.';
+        return result(text, { delegates: list });
+      }
+      const r = await api('/api/delegates/stop', { method: 'POST', body: JSON.stringify({ ...self, ...(args.id ? { id: args.id } : {}) }) });
+      return result(`Stopped ${r.stopped} delegate(s).`, { stopped: r.stopped });
     }
     if (name === 'quick_decision') {
       if (!SELF.projectId || !SELF.sessionId) throw new Error('quick_decision is only available to a conversation running on this gateway');

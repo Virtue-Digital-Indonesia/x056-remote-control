@@ -552,25 +552,72 @@ export class ApiController {
     return this.manager.jev().forks(sessionId);
   }
 
+  // ---- delegates (server/delegates.ts): an orchestrator's hidden workers ----
+  @Post('delegates')
+  @HttpCode(200)
+  delegateStart(@Body() b: { projectId?: string; sessionId?: string; role?: string; brief?: string; provider?: string; model?: string; effort?: string; targetProjectId?: string; advisor?: boolean }) {
+    if (!b?.projectId || !b.sessionId) throw new BadRequestException('projectId and sessionId required');
+    try { return this.manager.startDelegate(b.projectId, b.sessionId, { role: b.role ?? '', brief: b.brief ?? '', provider: b.provider, model: b.model, effort: b.effort, projectId: b.targetProjectId, advisor: b.advisor === true }); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** The orchestrator's next instruction, or (fromHuman) the user stepping in. */
+  @Post('delegates/followup')
+  @HttpCode(200)
+  delegateFollowup(@Body() b: { projectId?: string; sessionId?: string; id?: string; message?: string; fromHuman?: boolean }) {
+    if (!b?.projectId || !b.sessionId || !b.id) throw new BadRequestException('projectId, sessionId and id required');
+    try { return this.manager.delegateFollowup(b.projectId, b.sessionId, b.id, b.message ?? '', b.fromHuman === true); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  @Get('delegates')
+  delegateList(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string, @Query('id') id?: string) {
+    if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    try { return { delegates: this.manager.listDelegates(projectId, sessionId, id || undefined) }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  @Post('delegates/stop')
+  @HttpCode(200)
+  delegateStop(@Body() b: { projectId?: string; sessionId?: string; id?: string }) {
+    if (!b?.projectId || !b.sessionId) throw new BadRequestException('projectId and sessionId required');
+    try { return { stopped: this.manager.stopDelegates(b.projectId, b.sessionId, b.id || undefined) }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** Every report this orchestrator's delegates wrote, oldest first. */
+  @Get('delegates/reports')
+  delegateReports(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {
+    if (!projectId || !sessionId || !this.manager.listConversations(projectId).some((c) => c.sessionId === sessionId))
+      throw new BadRequestException('unknown conversation for that project');
+    return this.manager.delegateStore().reports(sessionId);
+  }
+
   /** The raw transcript, paged by byte offset, for the terminal view. */
   @Get('conversations/raw-page')
   conversationRawPage(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string,
-    @Query('before') before?: string, @Query('after') after?: string, @Query('limit') limit?: string) {
+    @Query('before') before?: string, @Query('after') after?: string, @Query('limit') limit?: string, @Query('delegateId') delegateId?: string) {
     if (!projectId || !sessionId || !this.manager.listConversations(projectId).some((c) => c.sessionId === sessionId))
       throw new BadRequestException('unknown conversation for that project');
     const num = (v?: string) => (v === undefined || v === '' ? undefined : Number(v));
-    const file = this.manager.transcriptFile(projectId, sessionId);
-    const provider = this.manager.historyContext(projectId, sessionId).adapter.id;
+    // A delegate's transcript is paged the same way; its id is checked
+    // against the roster before any path is built.
+    const delegate = delegateId ? this.manager.listDelegates(projectId, sessionId).find((d) => d.id === delegateId) : undefined;
+    if (delegateId && !delegate) throw new BadRequestException('unknown delegate for that conversation');
+    const file = delegate ? this.manager.delegateTranscriptFile(projectId, sessionId, delegate.id) : this.manager.transcriptFile(projectId, sessionId);
+    const provider = delegate ? delegate.provider : this.manager.historyContext(projectId, sessionId).adapter.id;
     if (!file) return { provider, size: 0, start: 0, end: 0, entries: [], done: true };
     return { provider, ...readRawPage(file, { before: num(before), after: num(after), limit: num(limit) }) };
   }
 
   /** One transcript entry in full (the page cuts long strings). */
   @Get('conversations/raw-entry')
-  conversationRawEntry(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string, @Query('offset') offset: string) {
+  conversationRawEntry(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string, @Query('offset') offset: string, @Query('delegateId') delegateId?: string) {
     if (!projectId || !sessionId || !this.manager.listConversations(projectId).some((c) => c.sessionId === sessionId))
       throw new BadRequestException('unknown conversation for that project');
-    const file = this.manager.transcriptFile(projectId, sessionId);
+    const delegate = delegateId ? this.manager.listDelegates(projectId, sessionId).find((d) => d.id === delegateId) : undefined;
+    if (delegateId && !delegate) throw new BadRequestException('unknown delegate for that conversation');
+    const file = delegate ? this.manager.delegateTranscriptFile(projectId, sessionId, delegate.id) : this.manager.transcriptFile(projectId, sessionId);
     if (!file) throw new BadRequestException('No transcript for this conversation yet');
     try { return readRawEntry(file, Number(offset)); } catch (e) { throw new BadRequestException((e as Error).message); }
   }
