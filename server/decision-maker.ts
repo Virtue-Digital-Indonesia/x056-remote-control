@@ -30,6 +30,11 @@ export const CLAUDE_CANDIDATES: JevCandidate[] = [
  * transcripts 2026-09-30: opus -> claude-opus-5-5, sonnet -> claude-sonnet-5,
  * fable -> claude-fable-5-1. Haiku 4.5 takes no effort, so it has no entry.
  */
+/** What "Auto model" runs when the picker cannot decide: the house defaults,
+ *  a balanced everyday model rather than the frontier one each CLI would pick.
+ *  The panel's AUTO_MODEL is the same table. */
+export const AUTO_MODEL: Record<'claude' | 'codex', string> = { claude: 'sonnet', codex: 'gpt-5.6-terra' };
+
 export const CLAUDE_DEFAULT_EFFORT: Record<string, string> = {
   opus: 'medium', 'claude-opus-5-5': 'medium', sonnet: 'high', 'claude-sonnet-5': 'high', fable: 'high', 'claude-fable-5-1': 'high',
 };

@@ -39,6 +39,10 @@ export interface JevDecisionInput {
    *  effort"). Without it every pick read as a raise, so a Low lean needed 80%
    *  even to pick `low` -- the opposite of what Low is for. */
   baselineEffort?: string;
+  /** "Auto model" / "Auto effort" with a picker on: the pick decides, with no
+   *  confidence bar. `currentModel` is then the Auto baseline (what the last
+   *  turn ran on, else the house default) and what a failed pick falls back to. */
+  auto?: { model?: boolean; effort?: boolean };
   /** What the conversation is in the middle of, built in code (never by a
    *  model): a short "yes, deploy" or an autopilot "continue" carries the
    *  weight of the task it continues, which the message alone does not show. */
@@ -67,6 +71,8 @@ export interface JevDecision {
   notes: string[];
   /** The lean the pick was made under, when not medium. */
   lean?: 'low' | 'high';
+  /** Which of model/effort were on Auto, i.e. decided by the pick alone. */
+  auto?: { model?: boolean; effort?: boolean };
   /** The turn's own model/effort before any pick (what it runs with when
    *  `model`/`effort` are absent). */
   baseModel?: string;
@@ -84,13 +90,18 @@ interface Ledger {
 }
 const zero = () => ({ calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 });
 
-/** Thresholds for applying a pick. A Claude model switch respawns the process
- *  and drops the prompt cache, so it needs more confidence and a gap. */
+/** Thresholds for applying a pick to a SAVED model/effort (Auto ignores them).
+ *  They are on Jev's confidence scale, which runs well below its top
+ *  probability (0.54 confidence for a 0.69 pick is typical): over the first 24
+ *  picks the model confidence never passed 0.70, so the old 0.8/0.9 bars
+ *  (written as if confidence were a probability) never let a model move.
+ *  A Claude model switch respawns the process and drops the prompt cache, so
+ *  it still waits a gap. */
 export const JEV_POLICY = {
-  effortMin: 0.6, modelMin: 0.8, claudeModelGapTurns: 3, forkSharp: 0.75,
+  effortMin: 0.5, modelMin: 0.6, claudeModelGapTurns: 3, forkSharp: 0.75,
   // Lowering costs quality and a human round trip when wrong; raising costs
   // tokens. So a pick BELOW the turn's own choice needs more confidence.
-  effortDownMin: 0.8, modelDownMin: 0.9,
+  effortDownMin: 0.65, modelDownMin: 0.65,
 };
 
 /**
@@ -102,9 +113,9 @@ export const JEV_POLICY = {
  */
 export type Lean = 'low' | 'medium' | 'high';
 export const LEAN_BARS: Record<Lean, { effortUp: number; effortDown: number; modelUp: number; modelDown: number }> = {
-  low: { effortUp: 0.8, effortDown: 0.6, modelUp: 0.9, modelDown: 0.8 },
+  low: { effortUp: 0.65, effortDown: 0.45, modelUp: 0.75, modelDown: 0.55 },
   medium: { effortUp: JEV_POLICY.effortMin, effortDown: JEV_POLICY.effortDownMin, modelUp: JEV_POLICY.modelMin, modelDown: JEV_POLICY.modelDownMin },
-  high: { effortUp: 0.6, effortDown: 0.9, modelUp: 0.7, modelDown: 0.95 },
+  high: { effortUp: 0.45, effortDown: 0.75, modelUp: 0.5, modelDown: 0.8 },
 };
 const LEAN_WORD: Record<Lean, string> = { low: 'leaning low', medium: '', high: 'leaning high' };
 
@@ -259,7 +270,7 @@ export class JevService {
    *  returns a decision with `error` and no changes. */
   async decide(sessionId: string, input: JevDecisionInput): Promise<JevDecision> {
     const started = Date.now();
-    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'jev', notes: [], latencyMs: 0, baseModel: input.currentModel, baseEffort: input.currentEffort, ...leanField(input.lean) };
+    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'jev', notes: [], latencyMs: 0, baseModel: input.currentModel, baseEffort: input.currentEffort, ...leanField(input.lean), ...autoField(input.auto) };
     const key = this.key();
     if (!key) { const d = { ...base, error: 'No Jev API key configured' }; this.record(d); return d; }
     const models = input.models.filter((m) => m.id);
@@ -313,6 +324,9 @@ export function modelQuestion(lean: Lean = 'medium'): string {
   return MODEL_QUESTION;
 }
 export const leanField = (lean?: Lean): { lean?: 'low' | 'high' } => (lean === 'low' || lean === 'high' ? { lean } : {});
+/** The Auto marker for a decision row, only when something was on Auto. */
+export const autoField = (auto?: JevDecisionInput['auto']): { auto?: { model?: boolean; effort?: boolean } } =>
+  (auto?.model || auto?.effort ? { auto: { ...(auto.model ? { model: true } : {}), ...(auto.effort ? { effort: true } : {}) } } : {});
 
 export interface DecisionContext {
   project?: string;
@@ -338,8 +352,10 @@ export function decisionState(input: JevDecisionInput): Record<string, string> {
   const out: Record<string, string> = {
     provider: input.provider,
     conversation_title: (input.title || '').slice(0, 200),
-    current_model: input.currentModel || 'provider default',
-    current_effort: input.currentEffort || 'provider default',
+    // On Auto nothing is saved: the pick IS the choice. Say so, rather than
+    // present the baseline as a choice the user made.
+    current_model: input.auto?.model ? `auto, your pick decides${input.currentModel ? ` (the last turn ran on ${input.currentModel})` : ''}` : input.currentModel || 'provider default',
+    current_effort: input.auto?.effort ? 'auto, your pick decides' : input.currentEffort || 'provider default',
   };
   if (c.project) out.project = c.project.slice(0, 120);
   if (c.origin) out.message_from = c.origin;
@@ -357,45 +373,65 @@ export function applyPolicy(
   answers: Record<string, { choice?: string; confidence?: number; probabilities?: Record<string, number> }>,
   history: JevDecision[],
 ): JevDecision {
-  const out: JevDecision = { ...d, notes: [...d.notes], ...leanField(input.lean) };
+  const out: JevDecision = { ...d, notes: [...d.notes], ...leanField(input.lean), ...autoField(input.auto) };
   const m = answers.model, e = answers.effort;
   const lean: Lean = input.lean ?? 'medium', bars = LEAN_BARS[lean];
   const leanNote = LEAN_WORD[lean] ? ', ' + LEAN_WORD[lean] : '';
+  const autoModel = !!input.auto?.model, autoEffort = !!input.auto?.effort;
   let model = input.currentModel;
+  // Under Auto the turn names its model outright, so the row always says what
+  // it ran on -- even when the pick failed or was held back.
+  if (autoModel && model) out.model = model;
   if (m?.choice) {
     out.pickedModel = m.choice; out.modelConfidence = m.confidence; out.modelProbabilities = m.probabilities;
     const known = input.models.some((c) => c.id === m.choice);
     // Up and down are judged by rank; a move the ranks cannot place keeps
-    // the plain bar. The first bar a downgrade meets is the lower of the two,
-    // so medium reads exactly as it did before there was a lean.
+    // the plain bar. The first bar a downgrade meets is the lower of the two.
     const modelDown = lower(modelRank, m.choice, input.currentModel), modelUp = higher(modelRank, m.choice, input.currentModel);
     const modelFloor = modelUp ? bars.modelUp : modelDown ? Math.min(JEV_POLICY.modelMin, bars.modelDown) : JEV_POLICY.modelMin;
-    // `model` is set on a decision only when a pick moved the turn off its
-    // own model; a switch is a decision whose model differs from the turn
-    // before. The gap is the number of decisions recorded since the last one.
-    const lastSwitch = history.map((h, i) => !!h.model && (i === 0 || history[i - 1].model !== h.model)).lastIndexOf(true);
+    // A switch is a turn that ran on a different model from the one before
+    // (for the first row: from its own base). The gap is the number of
+    // decisions recorded since the last one.
+    const ran = (h: JevDecision) => h.model ?? h.baseModel;
+    const lastSwitch = history.map((h, i) => {
+      const now = ran(h), before = i === 0 ? h.baseModel : ran(history[i - 1]);
+      return !!now && now !== before && (!!before || !!h.model);
+    }).lastIndexOf(true);
     const turnsSinceSwitch = lastSwitch < 0 ? Infinity : history.length - 1 - lastSwitch;
+    const gapHolds = input.provider === 'claude' && turnsSinceSwitch < JEV_POLICY.claudeModelGapTurns;
+    const gapNote = `model switched ${turnsSinceSwitch} turn(s) ago; waiting ${JEV_POLICY.claudeModelGapTurns} to keep the prompt cache`;
     if (!known) out.notes.push(`model ${m.choice} is not a candidate; kept`);
     else if (m.choice === input.currentModel) out.notes.push('model unchanged');
+    // Auto: the pick decides, whatever its confidence. Only the switching gap
+    // still holds, because a Claude switch respawns the process.
+    else if (autoModel) {
+      if (gapHolds) out.notes.push(gapNote);
+      else { out.model = m.choice; model = m.choice; out.notes.push(`model -> ${m.choice} (auto)`); }
+    }
     // Already running there since the last turn: no respawn, no cache loss,
     // so the switching bar does not apply -- the effort bar does.
     else if (m.choice === input.previousModel && (m.confidence ?? 0) >= JEV_POLICY.effortMin) { out.model = m.choice; model = m.choice; out.notes.push(`model stays ${m.choice}`); }
     else if ((m.confidence ?? 0) < modelFloor) out.notes.push(`model ${m.choice} only ${pct(m.confidence)} sure (needs ${pct(modelFloor)}${leanNote}); kept`);
     else if (modelDown && (m.confidence ?? 0) < bars.modelDown) out.notes.push(`model ${m.choice} is below ${input.currentModel} at only ${pct(m.confidence)} (needs ${pct(bars.modelDown)} to go lower${leanNote}); kept`);
-    else if (input.provider === 'claude' && turnsSinceSwitch < JEV_POLICY.claudeModelGapTurns) out.notes.push(`model switched ${turnsSinceSwitch} turn(s) ago; waiting ${JEV_POLICY.claudeModelGapTurns} to keep the prompt cache`);
+    else if (gapHolds) out.notes.push(gapNote);
     else { out.model = m.choice; model = m.choice; out.notes.push(`model -> ${m.choice}`); }
   }
   if (e?.choice) {
     out.pickedEffort = e.choice; out.effortConfidence = e.confidence; out.effortProbabilities = e.probabilities;
     const allowed = input.models.find((c) => c.id === model)?.efforts;
+    const offered = !(allowed && allowed.length && !allowed.includes(e.choice));
     // Up and down are measured from the saved effort, or from what the CLI
     // runs with when none is saved. With neither, a pick counts as a raise.
     const cur = input.currentEffort ?? input.baselineEffort;
     const effortDown = lower(effortRank, e.choice, cur);
     const effortFloor = effortDown ? Math.min(JEV_POLICY.effortMin, bars.effortDown) : e.choice === cur ? JEV_POLICY.effortMin : bars.effortUp;
-    if ((e.confidence ?? 0) < effortFloor) out.notes.push(effortFloor === JEV_POLICY.effortMin ? `effort ${e.choice} only ${pct(e.confidence)} sure; kept` : `effort ${e.choice} only ${pct(e.confidence)} sure (needs ${pct(effortFloor)} to go higher${leanNote}); kept`);
+    if (autoEffort) {
+      if (!offered) out.notes.push(`effort ${e.choice} not offered by ${model}; the model's default`);
+      else { out.effort = e.choice; out.notes.push(`effort -> ${e.choice} (auto)`); }
+    }
+    else if ((e.confidence ?? 0) < effortFloor) out.notes.push(effortFloor === JEV_POLICY.effortMin ? `effort ${e.choice} only ${pct(e.confidence)} sure; kept` : `effort ${e.choice} only ${pct(e.confidence)} sure (needs ${pct(effortFloor)} to go higher${leanNote}); kept`);
     else if (effortDown && (e.confidence ?? 0) < bars.effortDown) out.notes.push(`effort ${e.choice} is below ${cur}${input.currentEffort ? '' : ' (the default)'} at only ${pct(e.confidence)} (needs ${pct(bars.effortDown)} to go lower${leanNote}); kept`);
-    else if (allowed && allowed.length && !allowed.includes(e.choice)) out.notes.push(`effort ${e.choice} not offered by ${model}; kept`);
+    else if (!offered) out.notes.push(`effort ${e.choice} not offered by ${model}; kept`);
     else if (e.choice === input.currentEffort) out.notes.push('effort unchanged');
     else if (e.choice === cur) out.notes.push(`effort unchanged (${cur} is the default)`);
     else { out.effort = e.choice; out.notes.push(`effort -> ${e.choice}`); }

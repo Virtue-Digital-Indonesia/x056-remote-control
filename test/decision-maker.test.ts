@@ -40,10 +40,10 @@ describe('Jev policy', () => {
   it('applies a confident effort, and a model only above the higher bar', () => {
     const d = applyPolicy(base(), input(), { effort: { choice: 'low', confidence: 0.9 }, model: { choice: 'haiku', confidence: 0.95 } }, []);
     expect(d).toMatchObject({ effort: 'low', model: 'haiku', pickedModel: 'haiku', pickedEffort: 'low' });
-    const unsure = applyPolicy(base(), input(), { effort: { choice: 'low', confidence: 0.5 }, model: { choice: 'haiku', confidence: 0.7 } }, []);
+    const unsure = applyPolicy(base(), input(), { effort: { choice: 'low', confidence: 0.5 }, model: { choice: 'haiku', confidence: 0.55 } }, []);
     expect(unsure.effort).toBeUndefined();
     expect(unsure.model).toBeUndefined();
-    expect(unsure.notes.join(' ')).toMatch(/only 70% sure/);
+    expect(unsure.notes.join(' ')).toMatch(/only 55% sure/);
   });
 
   // Seen live 2026-09-30: the previous turn's pick was medium, the saved
@@ -61,11 +61,11 @@ describe('Jev policy', () => {
   // only costs tokens. So going below the turn's own choice needs more.
   it('needs more confidence to go lower than to go higher', () => {
     const cur = input({ currentModel: 'sonnet', currentEffort: 'high' });
-    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.71 }, model: { choice: 'haiku', confidence: 0.85 } }, []);
+    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.6 }, model: { choice: 'haiku', confidence: 0.62 } }, []);
     expect(down.effort).toBeUndefined();
     expect(down.model).toBeUndefined();
-    expect(down.notes).toEqual(['model haiku is below sonnet at only 85% (needs 90% to go lower); kept', 'effort medium is below high at only 71% (needs 80% to go lower); kept']);
-    const up = applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.71 }, model: { choice: 'opus', confidence: 0.85 } }, []);
+    expect(down.notes).toEqual(['model haiku is below sonnet at only 62% (needs 65% to go lower); kept', 'effort medium is below high at only 60% (needs 65% to go lower); kept']);
+    const up = applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.6 }, model: { choice: 'opus', confidence: 0.62 } }, []);
     expect(up).toMatchObject({ effort: 'xhigh', model: 'opus' });
   });
 
@@ -73,42 +73,83 @@ describe('Jev policy', () => {
   // for moving up or down change; medium is the policy above, unchanged.
   it('leans low: cheaper is easier to reach, stronger harder', () => {
     const cur = input({ currentModel: 'sonnet', currentEffort: 'high', lean: 'low' });
-    const up = applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.7 }, model: { choice: 'opus', confidence: 0.85 } }, []);
+    const up = applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.6 }, model: { choice: 'opus', confidence: 0.7 } }, []);
     expect(up).toMatchObject({ lean: 'low' });
     expect(up.effort).toBeUndefined(); expect(up.model).toBeUndefined();
-    expect(up.notes).toEqual(['model opus only 85% sure (needs 90%, leaning low); kept', 'effort xhigh only 70% sure (needs 80% to go higher, leaning low); kept']);
-    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.65 }, model: { choice: 'haiku', confidence: 0.82 } }, []);
+    expect(up.notes).toEqual(['model opus only 70% sure (needs 75%, leaning low); kept', 'effort xhigh only 60% sure (needs 65% to go higher, leaning low); kept']);
+    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.5 }, model: { choice: 'haiku', confidence: 0.58 } }, []);
     expect(down).toMatchObject({ effort: 'medium', model: 'haiku' });
   });
 
   it('leans high: stronger is easier to reach, cheaper harder', () => {
     const cur = input({ currentModel: 'sonnet', currentEffort: 'high', lean: 'high' });
-    expect(applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.62 }, model: { choice: 'opus', confidence: 0.72 } }, [])).toMatchObject({ effort: 'xhigh', model: 'opus', lean: 'high' });
-    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.85 }, model: { choice: 'haiku', confidence: 0.92 } }, []);
+    expect(applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.47 }, model: { choice: 'opus', confidence: 0.52 } }, [])).toMatchObject({ effort: 'xhigh', model: 'opus', lean: 'high' });
+    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.72 }, model: { choice: 'haiku', confidence: 0.78 } }, []);
     expect(down.effort).toBeUndefined(); expect(down.model).toBeUndefined();
-    expect(down.notes).toEqual(['model haiku is below sonnet at only 92% (needs 95% to go lower, leaning high); kept', 'effort medium is below high at only 85% (needs 90% to go lower, leaning high); kept']);
-    // A move the ranks cannot place (Fable) keeps the plain 80% bar.
-    expect(applyPolicy(base(), input({ currentModel: 'fable', lean: 'high' }), { model: { choice: 'opus', confidence: 0.75 } }, []).model).toBeUndefined();
+    expect(down.notes).toEqual(['model haiku is below sonnet at only 78% (needs 80% to go lower, leaning high); kept', 'effort medium is below high at only 72% (needs 75% to go lower, leaning high); kept']);
+    // A move the ranks cannot place (Fable) keeps the plain 60% bar.
+    expect(applyPolicy(base(), input({ currentModel: 'fable', lean: 'high' }), { model: { choice: 'opus', confidence: 0.55 } }, []).model).toBeUndefined();
   });
 
-  // "Auto effort" saves none; the CLI then runs its own default (Opus 5.5:
-  // medium). Measured from nothing, every pick was a raise, and Low needed 80%
-  // even to pick `low`.
-  it('with Auto effort, measures up and down from the CLI default', () => {
+  // No effort saved and not on Auto: the CLI runs its own default (Opus 5.5:
+  // medium). Measured from nothing, every pick was a raise, and Low needed the
+  // raise bar even to pick `low`.
+  it('without a saved effort, measures up and down from the CLI default', () => {
     const auto = (lean: 'low' | 'high') => input({ currentModel: 'opus', currentEffort: undefined, baselineEffort: 'medium', lean });
-    expect(applyPolicy(base(), auto('low'), { effort: { choice: 'low', confidence: 0.65 } }, []).effort).toBe('low');
-    const highUp = applyPolicy(base(), auto('low'), { effort: { choice: 'high', confidence: 0.7 } }, []);
+    expect(applyPolicy(base(), auto('low'), { effort: { choice: 'low', confidence: 0.5 } }, []).effort).toBe('low');
+    const highUp = applyPolicy(base(), auto('low'), { effort: { choice: 'high', confidence: 0.6 } }, []);
     expect(highUp.effort).toBeUndefined();
-    expect(highUp.notes).toEqual(['effort high only 70% sure (needs 80% to go higher, leaning low); kept']);
-    const lowDown = applyPolicy(base(), auto('high'), { effort: { choice: 'low', confidence: 0.85 } }, []);
-    expect(lowDown.notes).toEqual(['effort low is below medium (the default) at only 85% (needs 90% to go lower, leaning high); kept']);
+    expect(highUp.notes).toEqual(['effort high only 60% sure (needs 65% to go higher, leaning low); kept']);
+    const lowDown = applyPolicy(base(), auto('high'), { effort: { choice: 'low', confidence: 0.72 } }, []);
+    expect(lowDown.notes).toEqual(['effort low is below medium (the default) at only 72% (needs 75% to go lower, leaning high); kept']);
     expect(applyPolicy(base(), auto('high'), { effort: { choice: 'medium', confidence: 0.9 } }, []).notes).toEqual(['effort unchanged (medium is the default)']);
   });
 
-  it('medium reads exactly as before, with no lean recorded', () => {
-    const d = applyPolicy(base(), input({ currentModel: 'sonnet', currentEffort: 'high', lean: 'medium' }), { effort: { choice: 'medium', confidence: 0.71 } }, []);
+  it('medium is the plain policy, with no lean recorded', () => {
+    const d = applyPolicy(base(), input({ currentModel: 'sonnet', currentEffort: 'high', lean: 'medium' }), { effort: { choice: 'medium', confidence: 0.6 } }, []);
     expect(d.lean).toBeUndefined();
-    expect(d.notes).toEqual(['effort medium is below high at only 71% (needs 80% to go lower); kept']);
+    expect(d.notes).toEqual(['effort medium is below high at only 60% (needs 65% to go lower); kept']);
+  });
+
+  // The bars are on Jev's confidence scale, which runs ~0.15 under its top
+  // probability. Over the first 24 live picks the model confidence never
+  // passed 0.70, so the old 0.8 / 0.9 bars let no model move at all.
+  it('lets a typical confident pick through on a saved choice', () => {
+    const d = applyPolicy(base(), input({ currentModel: 'opus', currentEffort: 'xhigh' }), { model: { choice: 'sonnet', confidence: 0.68 }, effort: { choice: 'high', confidence: 0.7 } }, []);
+    expect(d).toMatchObject({ model: 'sonnet', effort: 'high' });
+  });
+
+  // Auto model / Auto effort with a picker on: "fully up to Jev".
+  it('on Auto, the pick decides whatever its confidence', () => {
+    const d = applyPolicy(base(), input({ currentModel: 'sonnet', currentEffort: undefined, auto: { model: true, effort: true } }), { model: { choice: 'opus', confidence: 0.3 }, effort: { choice: 'xhigh', confidence: 0.2 } }, []);
+    expect(d).toMatchObject({ model: 'opus', effort: 'xhigh', auto: { model: true, effort: true } });
+    expect(d.notes).toEqual(['model -> opus (auto)', 'effort -> xhigh (auto)']);
+    // The baseline itself is named, so the row says what the turn ran on.
+    expect(applyPolicy(base(), input({ currentModel: 'sonnet', auto: { model: true } }), { model: { choice: 'sonnet', confidence: 0.2 } }, []).model).toBe('sonnet');
+    // An unknown model keeps the baseline; an effort the model lacks leaves its default.
+    const odd = applyPolicy(base(), input({ currentModel: 'sonnet', currentEffort: undefined, auto: { model: true, effort: true }, models: [{ id: 'sonnet', about: 's', efforts: ['low', 'high'] }] }),
+      { model: { choice: 'gpt-9', confidence: 0.9 }, effort: { choice: 'max', confidence: 0.9 } }, []);
+    expect(odd.model).toBe('sonnet'); expect(odd.effort).toBeUndefined();
+    // Auto on one side only: the other still meets its bar.
+    const half = applyPolicy(base(), input({ currentModel: 'sonnet', currentEffort: 'high', auto: { model: true } }), { model: { choice: 'haiku', confidence: 0.3 }, effort: { choice: 'low', confidence: 0.3 } }, []);
+    expect(half).toMatchObject({ model: 'haiku' }); expect(half.effort).toBeUndefined();
+  });
+
+  it('on Auto, a Claude model switch still waits the gap; Codex does not', () => {
+    const history: JevDecision[] = [{ ...base(), baseModel: 'sonnet', model: 'opus', auto: { model: true } }];
+    const d = applyPolicy(base(), input({ currentModel: 'opus', auto: { model: true } }), { model: { choice: 'haiku', confidence: 0.9 } }, history);
+    expect(d.model).toBe('opus');
+    expect(d.notes[0]).toMatch(/switched 0 turn\(s\) ago/);
+    const codex = input({ provider: 'codex', currentModel: 'gpt-a', auto: { model: true }, models: [{ id: 'gpt-a', about: 'a' }, { id: 'gpt-b', about: 'b' }] });
+    expect(applyPolicy({ ...base(), provider: 'codex' }, codex, { model: { choice: 'gpt-b', confidence: 0.2 } }, [{ ...base(), baseModel: 'gpt-b', model: 'gpt-a' }]).model).toBe('gpt-b');
+  });
+
+  // Going back to the saved model respawns the process just the same.
+  it('counts a return to the saved model as a switch', () => {
+    const history: JevDecision[] = [{ ...base(), baseModel: 'opus', model: 'sonnet' }, { ...base(), baseModel: 'opus' }];
+    const d = applyPolicy(base(), input({ currentModel: 'opus' }), { model: { choice: 'haiku', confidence: 0.95 } }, history);
+    expect(d.model).toBeUndefined();
+    expect(d.notes[0]).toMatch(/switched 0 turn\(s\) ago/);
   });
 
   it('tells both backends which way to lean', () => {
@@ -232,10 +273,57 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     expect(decide.mock.calls[0][1].context).toMatchObject({ project: 'P', origin: 'the user' });
     expect(decide.mock.calls[0][1].lean).toBeUndefined();
     // Sonnet saved with no effort: Jev is told what the CLI runs with.
-    expect(decide.mock.calls[0][1]).toMatchObject({ currentModel: 'sonnet', baselineEffort: 'high' });
+    expect(decide.mock.calls[0][1]).toMatchObject({ currentModel: 'sonnet', baselineEffort: 'high', auto: { model: false, effort: true } });
     // The user's own saved choice is untouched by Jev's per-turn pick.
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.model).toBe('sonnet');
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.decisionMaker).toBe('jev');
+  });
+
+  it('Auto model with a picker on: Jev decides, the house default is the fallback', async () => {
+    const { mgr, calls, dir } = fixture();
+    const p = mgr.createProject('A', dir);
+    const sid = mgr.start('first', undefined, { model: '', effort: '' }, p.id);
+    await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
+    mgr.setDecisionMaker(p.id, sid, 'jev');
+    // Jev unreachable: the turn runs on the house default, not the CLI's own.
+    const decide = vi.spyOn(mgr.jev(), 'decide').mockImplementation(async (s, i) => ({ ...base(), sessionId: s, baseModel: i.currentModel, auto: i.auto, error: 'Jev unreachable' }));
+    mgr.continueSession(p.id, sid, 'second', { model: '', effort: '' });
+    await waitFor(() => calls.length === 2 && !mgr.snapshot().running);
+    expect(decide.mock.calls[0][1]).toMatchObject({ currentModel: 'sonnet', auto: { model: true, effort: true } });
+    expect(calls[1].model).toBe('sonnet');
+    expect(calls[1].effort).toBeUndefined();
+    // A pick at any confidence is the turn's model; the next turn starts from it.
+    decide.mockRestore();
+    const jev = new JevService(join(dir, 'state'), (async () => new Response(JSON.stringify({ answers: { model: { choice: 'opus', confidence: 0.31 }, effort: { choice: 'xhigh', confidence: 0.28 } } }), { status: 200 })) as unknown as typeof fetch);
+    (mgr as unknown as { jevService: JevService }).jevService = jev;
+    const spy = vi.spyOn(jev, 'decide');
+    mgr.continueSession(p.id, sid, 'third', {});
+    await waitFor(() => calls.length === 3 && !mgr.snapshot().running);
+    expect(calls[2]).toMatchObject({ model: 'opus', effort: 'xhigh' });
+    mgr.continueSession(p.id, sid, 'fourth', {});
+    await waitFor(() => calls.length === 4);
+    expect(spy.mock.calls[1][1].currentModel).toBe('opus');
+    // The conversation stays on Auto.
+    const conv = mgr.listConversations(p.id).find((c) => c.sessionId === sid);
+    expect(conv?.model || '').toBe(''); expect(conv?.effort || '').toBe('');
+  });
+
+  it('Auto on ChatGPT: the Codex house default is the fallback, and a pick decides', async () => {
+    const { mgr, calls, dir } = fixture();
+    const p = mgr.createProject('X', dir, 'codex');
+    const sid = mgr.start('first', undefined, { model: '', effort: '' }, p.id);
+    await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
+    mgr.setDecisionMaker(p.id, sid, 'jev');
+    const decide = vi.spyOn(mgr.jev(), 'decide').mockImplementation(async (s, i) => ({ ...base(), provider: 'codex', sessionId: s, baseModel: i.currentModel, auto: i.auto, error: 'Jev unreachable' }));
+    mgr.continueSession(p.id, sid, 'second', { model: '', effort: '' });
+    await waitFor(() => calls.length === 2 && !mgr.snapshot().running);
+    expect(decide.mock.calls[0][1]).toMatchObject({ provider: 'codex', currentModel: 'gpt-5.6-terra', auto: { model: true, effort: true } });
+    expect(calls[1].model).toBe('gpt-5.6-terra');
+    decide.mockImplementation(async (s, i) => ({ ...base(), provider: 'codex', sessionId: s, baseModel: i.currentModel, auto: i.auto, model: 'gpt-6-astra', effort: 'max', notes: ['model -> gpt-6-astra (auto)'] }));
+    mgr.continueSession(p.id, sid, 'third', {});
+    await waitFor(() => calls.length === 3 && !mgr.snapshot().running);
+    expect(calls[2]).toMatchObject({ model: 'gpt-6-astra', effort: 'max' });
+    expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.model || '').toBe('');
   });
 
   it('accepts the advisor on a ChatGPT conversation (gateway-built) and refuses anything but none|advisor|jev|decisions', () => {

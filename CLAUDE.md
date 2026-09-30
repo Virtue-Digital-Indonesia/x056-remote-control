@@ -282,6 +282,13 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   conversation collided with itself on its second turn, four times in a row,
   live, while the idle first process sat in the pool holding the thread.
   Steer, interrupt and the working indicator look entries up by the same id.
+- **Switching a Claude model and back must not reuse the first process.**
+  Model is identity, so sonnet -> opus spawns a second process; opus ->
+  sonnet then found the FIRST one by key, whose context never saw the opus
+  turns. A process is stale once a sibling of the same conversation started a
+  turn after it (`isStale`): it is never reused -- destroyed if idle, moved to
+  a `#retired:N` key if still working -- and a new spawn destroys its idle
+  siblings (`retireSiblings`). Jev on Auto made this routine.
 - **A failed handshake frees its slot.** A Codex process whose thread could
   not be opened is alive but can never take a prompt; left in the pool it
   swallowed the NEXT turn (parked as `pendingPrompt`, five minutes of
@@ -469,34 +476,54 @@ the thread they come from uses them together, and so do we now.
 - **Jev** (TypeSafe AI's System One model, `server/jev.ts`) picks model and
   effort per turn, both providers: one HTTPS call (~0.3 s, ~$0.00003) inside
   the async run, so sending never waits. Applied to that turn only, never over
-  the user's saved choice: effort at >=60% confidence, model at >=80%, and a
+  the user's saved choice: effort at >=50% confidence, model at >=60%, and a
   Claude model switch at most every 3 turns (it respawns the process and drops
-  the prompt cache). A pick is weighed against what THIS turn runs with
+  the prompt cache; returning to the saved model counts as a switch too).
+  **The bars are on Jev's confidence scale**, which runs ~0.15 below its top
+  probability (0.54 for a 0.69 pick is typical). The first bars (60/80/90%)
+  were written as if it were a probability: over the first 24 live picks the
+  model confidence never passed 0.70, so no model ever moved (0/24) and
+  effort moved 6 times. Rescaled 2026-09-30. A pick is weighed against what THIS turn runs with
   otherwise -- the saved choice -- never against the previous pick: doing
   that called a 71% "medium" "unchanged" and the turn ran on the saved xhigh
   (seen live 2026-09-30). Staying on a model a pick already moved to is not a
-  switch, so it needs only the 60% bar. **Going LOWER needs more**: effort
-  below the turn's own >= 80%, a cheaper model >= 90% (`effortDownMin`,
+  switch, so it needs only the 50% bar. **Going LOWER needs more**: effort
+  below the turn's own >= 65%, a cheaper model >= 65% (`effortDownMin`,
   `modelDownMin`) -- a wrong downgrade costs quality and a human round trip, a
-  wrong upgrade only tokens.
+  wrong upgrade only tokens. At 60-65% the live downgrades were a mix of right
+  (a scheduled status check -> haiku 59%) and wrong (a feature build ->
+  sonnet 60%), which is where the down bar sits.
+- **Auto model / Auto effort with a picker on = the picker decides**, with no
+  confidence bar (`JevDecisionInput.auto`, `(auto)` in the notes). The panel
+  sends Auto as `''` instead of resolving it to its house default (else Jev
+  would only ever see Sonnet) and labels it "Jev picks" (short: a phone gives
+  each select ~100px); the
+  conversation stays saved as Auto. A turn starts from what the last routed
+  turn ran on, else the house default (`AUTO_MODEL`: sonnet /
+  gpt-5.6-terra), and a failed or missing pick runs on that -- never on the
+  CLI's own default, which is the frontier model. The Claude switching gap
+  still holds on Auto; the lean still changes the questions. With no picker,
+  Auto is unchanged (the panel sends the house default). A conversation that
+  used Auto before 2026-09-30 is saved as `sonnet`, because that is what the
+  panel sent: reselect Auto on it.
 - **Lean** (`helpers.lean`, the Low / Medium / High control under the picker;
   absent = medium): which way the picker errs. It changes only the up/down bars
-  (`LEAN_BARS` -- low: effort up 80% / down 60%, model up 90% / down 80%;
-  high: effort up 60% / down 90%, model up 70% / down 95%; medium = the bars
-  above, byte-identical notes) and swaps both questions for a Low / High
+  (`LEAN_BARS` -- low: effort up 65% / down 45%, model up 75% / down 55%;
+  high: effort up 45% / down 75%, model up 50% / down 80%; medium = the bars
+  above; no effect on Auto) and swaps both questions for a Low / High
   version written whole (`effortQuestion` / `modelQuestion`: COST EFFICIENCY
   vs BEST RESULT), for Jev and OpenAI Decisions alike. Appending a sentence
   instead contradicted "prefer the cheapest model" and barely moved Jev;
   written whole, live 2026-09-30: High took Opus from 4% to 49% on a
   refactor and 11% to 69% on "yes, go ahead" after a big task; Low took a
   refactor's effort from high 58% to medium 65% but left the big-task
-  follow-up at high 90%. With **Auto effort** (none saved) up and down are
+  follow-up at high 90%. With no effort saved (and not on Auto) up and down are
   measured from what the CLI runs with (`baselineEffort`:
   `CLAUDE_DEFAULT_EFFORT` -- opus/Opus 5.5 medium, sonnet/Sonnet 5 and fable
   high, per the model-config docs and the aliases seen in real transcripts;
-  Codex: the model's catalog `defaultEffort`), or Low would need 80% even to
-  pick `low`. A move the ranks cannot place (Fable, an
-  unknown Codex slug) keeps the plain 80% bar; the "model stays" rule and the
+  Codex: the model's catalog `defaultEffort`), or Low would need the raise
+  bar even to pick `low`. A move the ranks cannot place (Fable, an
+  unknown Codex slug) keeps the plain 60% bar; the "model stays" rule and the
   Claude switching gap are not relaxed; forks and the delegate gate ignore it;
   Fable is still never a candidate. Kept while the picker is off; the panel
   sends it on every full-set save (else toggling Advisor would wipe it);

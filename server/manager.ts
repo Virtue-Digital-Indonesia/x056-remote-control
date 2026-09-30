@@ -7,7 +7,7 @@ import { ClaudeAdvisorLog, forkSummary, mainRun, tailJsonl } from './agent-tree.
 import { checkBrief, checkRole, decideGate, delegateInstructions, DelegateStore, digest, GATE_OPTIONS, GATE_QUESTION, gateState, MAX_DELEGATES, reportKey, ROUND_LIMIT, shouldWake, type Delegate, type DelegateReport } from './delegates.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
 import { findRollout } from '../src/adapters/codex.js';
-import { advisorFor, CLAUDE_DEFAULT_EFFORT, jevCandidates } from './decision-maker.js';
+import { advisorFor, AUTO_MODEL, CLAUDE_DEFAULT_EFFORT, jevCandidates } from './decision-maker.js';
 import { CodexAdvisor, TurnWatcher, type AdvisorConsult, type AdvisorTrigger } from './codex-advisor.js';
 import { TurnResults } from './turn-results.js';
 import { messageImages } from './message-images.js';
@@ -1925,7 +1925,8 @@ export class SessionManager {
    *  the saved effort instead (seen live: medium at 71% became xhigh). The
    *  store is shared by both backends, so the switching gap counts either. */
   private async decideModelEffort(backend: 'jev' | 'decisions', pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string, sender?: MessageSender): Promise<JevDecision> {
-    const previousModel = this.jev().decisions(sid).at(-1)?.model;
+    const history = this.jev().decisions(sid);
+    const previousModel = history.at(-1)?.model;
     const context = this.decisionContext(pid, sid, sender);
     const codexModels = provider === 'codex'
       ? (getAdapter('codex').listModels?.(this.registry().list().filter((a) => a.provider === 'codex').map((a) => a.configDir)) ?? [])
@@ -1933,9 +1934,19 @@ export class SessionManager {
     const { models, efforts } = jevCandidates(provider, codexModels);
     const title = this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)?.title;
     const lean = helpersOf(this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)).lean;
+    // Auto model / Auto effort: the pick decides. The model a turn starts from
+    // (and falls back to if the pick fails) is what the last routed turn ran
+    // on, else the house default -- never the CLI's own default, which is the
+    // frontier model.
+    const auto = { model: !model, effort: !effort };
+    const offered = (id?: string) => !!id && models.some((c) => c.id === id);
+    const last = history.at(-1), lastRan = last ? last.model ?? last.baseModel : undefined;
+    // An unreadable Codex catalog lists nothing; the house default still holds.
+    const house = AUTO_MODEL[provider];
+    const current = model || (offered(lastRan) ? lastRan : !models.length || offered(house) ? house : undefined);
     // "Auto effort": measure up and down from what the CLI would run with.
-    const baselineEffort = effort ? undefined : provider === 'codex' ? codexModels.find((m) => m.slug === model)?.defaultEffort : model ? CLAUDE_DEFAULT_EFFORT[model] : undefined;
-    const input = { provider, prompt, title, currentModel: model, currentEffort: effort, previousModel, models, efforts, context, ...(lean ? { lean } : {}), ...(baselineEffort ? { baselineEffort } : {}) };
+    const baselineEffort = effort ? undefined : provider === 'codex' ? codexModels.find((m) => m.slug === current)?.defaultEffort : current ? CLAUDE_DEFAULT_EFFORT[current] : undefined;
+    const input = { provider, prompt, title, currentModel: current, currentEffort: effort, previousModel, models, efforts, context, auto, ...(lean ? { lean } : {}), ...(baselineEffort ? { baselineEffort } : {}) };
     return backend === 'decisions' ? this.openaiDecisions().decide(sid, input) : this.jev().decide(sid, input);
   }
   /** A generated title for this CHAT is queued or being written right now. */
@@ -3039,7 +3050,9 @@ export class SessionManager {
         ? (async (o: Parameters<typeof runFn>[0]) => {
             const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort, sender);
             emit('jev_decision', d as unknown as Record<string, unknown>);
-            return runFn({ ...o, ...(d.model ? { model: d.model } : {}), ...(d.effort ? { effort: d.effort } : {}) });
+            // On Auto a failed pick still runs on the Auto baseline it started from.
+            const useModel = d.model ?? (d.auto?.model ? d.baseModel : undefined);
+            return runFn({ ...o, ...(useModel ? { model: useModel } : {}), ...(d.effort ? { effort: d.effort } : {}) });
           }) as typeof runFn
         : runFn;
       if (advisor) emit('advisor_state', { advisor, model: model ?? null });

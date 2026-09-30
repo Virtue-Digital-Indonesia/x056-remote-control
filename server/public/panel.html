@@ -1561,7 +1561,31 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   // instead of being silently pinned to whatever it resolved to on day one.
   function effectiveModel() {
     if (modelEl.value) return modelEl.value;
+    if (pickerName()) return '';
     return AUTO_MODEL[currentProvider()] || '';
+  }
+  // With Jev (or OpenAI Decisions) on, Auto is the picker's call, so it is SENT
+  // as Auto ('') instead of the house default -- resolved here, the picker
+  // would only ever have seen Sonnet. The server falls back to the house
+  // default when a pick fails.
+  function pickerName() {
+    if (pendingNew || !lastSessionId || typeof helperFor !== 'function') return '';
+    var h = helperFor(currentProjectId);
+    return !h.conv ? '' : h.helpers.router === 'jev' ? 'Jev' : h.helpers.router === 'decisions' ? 'OpenAI' : '';
+  }
+  function putModelEffort(b) {
+    var auto = !!pickerName(), m = effectiveModel();
+    if (m || auto) b.model = m;
+    if (effortEl.value || auto) b.effort = effortEl.value;
+    return b;
+  }
+  // The Auto rows name who decides: the picker, or the house default. Short,
+  // because a phone gives each select ~100px ("Auto (Sonnet)" is the most
+  // that fits).
+  function syncAutoLabels() {
+    var who = pickerName(), mo = modelEl.querySelector('option[value=""]'), eo = effortEl.querySelector('option[value=""]');
+    if (mo) { if (!mo.dataset.base) mo.dataset.base = mo.textContent; mo.textContent = who ? who + ' picks' : mo.dataset.base; }
+    if (eo) { if (!eo.dataset.base) eo.dataset.base = eo.textContent; eo.textContent = who ? who + ' picks' : eo.dataset.base; }
   }
   var CLAUDE_EFFORT_OPTS = [].slice.call(effortEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
   var providerModels = {}; // { codex: [{slug,label,efforts,defaultEffort,…}] }
@@ -1572,6 +1596,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     // successor still rolling out (GPT-6.1-Sol reached one plan first) is not
     // in the list yet, and its predecessor must stay selected until it is.
     var line = modelLine(value);
+    syncAutoLabels();
     for (var i = line.length - 1; i >= 0; i--) { modelEl.value = line[i]; if (modelEl.value === line[i]) return; }
     modelEl.value = ''; // stale/unknown model → Auto
   }
@@ -1603,6 +1628,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     opts.forEach(function (o) { var e = document.createElement('option'); e.value = o.value; e.textContent = o.label; effortEl.appendChild(e); });
     effortEl.value = value;
     if (effortEl.value !== value) effortEl.value = ''; // this model doesn't support the previous choice → Auto
+    syncAutoLabels();
   }
   // Codex publishes each model's OWN supported reasoning levels (e.g. gpt-5.6-sol
   // goes up to "ultra" — Claude has no such level; gpt-5.5/5.4 top out at "xhigh",
@@ -2144,7 +2170,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   }
   // ---- helpers: advisor + agent team + a model/effort picker (Jev or OpenAI Decisions) ----
   var jevStatus = null, decisionsStatus = null;
-  var ADVISOR_NAMES = { opus: 'Opus', fable: 'Fable', sonnet: 'Sonnet' };
+  var ADVISOR_NAMES = { opus: 'Opus', fable: 'Fable', sonnet: 'Sonnet', haiku: 'Haiku' };
   function advisorModelName(m) {
     if (!m) return '';
     if (ADVISOR_NAMES[m]) return ADVISOR_NAMES[m];
@@ -2199,6 +2225,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       var k = it.dataset.kind, v = k === 'router' ? (on.router || '') === it.dataset.value : !!on[k];
       it.setAttribute('aria-checked', v ? 'true' : 'false');
     });
+    syncAutoLabels();
     var lean = leanOf(on);
     $('helperLean').hidden = !on.router;
     $('helperLeanCap').textContent = LEAN_CAPS[lean];
@@ -3227,14 +3254,17 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     head.appendChild(icon('sparkles', 'sm'));
     var name = document.createElement('span'); name.className = 'advname'; name.textContent = (a.helper === 'openai' ? 'OpenAI Decisions' : 'Jev') + (x.lean === 'low' || x.lean === 'high' ? ' · ' + LEAN_NAMES[x.lean] : ''); head.appendChild(name);
     var ranModel = x.model || x.baseModel, ranEffort = x.effort || x.baseEffort;
-    if (!x.error && (ranModel || ranEffort)) {
+    // On Auto the pick IS the choice, and a failed one still ran on the Auto
+    // baseline (the last turn's model, else the house default).
+    var auto = !!(x.auto && (x.auto.model || x.auto.effort));
+    if ((!x.error || auto) && (ranModel || ranEffort)) {
       var chip = document.createElement('span'); chip.className = 'advmodel';
       chip.textContent = [ranModel && advisorModelName(ranModel), ranEffort && (EFFORT_NAMES[ranEffort] || ranEffort)].filter(Boolean).join(' · ');
       chip.title = 'What this turn ran on';
       head.appendChild(chip);
     }
     var meta = document.createElement('span'); meta.className = 'advmeta';
-    meta.textContent = x.error ? 'No pick' : (x.model || x.effort ? 'Changed this turn' : 'Kept your choice') + (x.latencyMs ? ' · ' + (x.latencyMs / 1000).toFixed(1) + ' s' : '');
+    meta.textContent = x.error ? (auto ? 'No pick · Auto fallback' : 'No pick') : (auto ? 'Auto · its pick' : x.model || x.effort ? 'Changed this turn' : 'Kept your choice') + (x.latencyMs ? ' · ' + (x.latencyMs / 1000).toFixed(1) + ' s' : '');
     head.appendChild(meta);
     d.appendChild(head);
     var note = document.createElement('div'); note.className = 'advnote';
@@ -4324,7 +4354,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     // then its active/selected model and provider. Live state belongs in the
     // running indicator, so it is not repeated here.
     var vk = viewKey(currentProjectId, lastSessionId);
-    var model = modelLabel(activeModel[vk] || effectiveModel());
+    var model = modelLabel(activeModel[vk] || effectiveModel()) || (pickerName() ? pickerName() + ' picks' : '');
     var effort = activeEffort[vk];
     if (effort === undefined) effort = effortEl.value;
     acctPlan.textContent = [model, effortLabel(effort), plan].filter(Boolean).join(' · ');
@@ -5827,7 +5857,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     for (var i = 0; i < e.dataTransfer.files.length; i++) addFile(e.dataTransfer.files[i]);
   });
 
-  function queueBody(text) { var b = { projectId: currentProjectId, sessionId: lastSessionId, prompt: text }; var m = effectiveModel(); if (m) b.model = m; if (effortEl.value) b.effort = effortEl.value; return b; }
+  function queueBody(text) { return putModelEffort({ projectId: currentProjectId, sessionId: lastSessionId, prompt: text }); }
   /** Push the prompt into whatever the conversation is doing RIGHT NOW. The
    *  server queues it instead if the process turns out to be gone, so the
    *  message is never lost -- the response says which happened. */
@@ -5850,8 +5880,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     // wrong thread and destroyed that thread's unsent draft.
     var pid = currentProjectId, sid = lastSessionId, steerDraft=promptEl.value;
     var body = { projectId: pid, sessionId: sid, prompt: text };
-    var m = effectiveModel(); if (m) body.model = m;
-    if (effortEl.value) body.effort = effortEl.value; // matters on the queue fallback
+    putModelEffort(body); // the effort matters on the queue fallback
     var steerTicket;
     try {steerTicket=await prepareDelivery('/api/steer',body);}catch(e){steerInFlight=false;addSys(e.message,'banner');return;}
     var stillHere = function () { return currentProjectId === pid && lastSessionId === sid; };
@@ -6158,7 +6187,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       return;
     }
     var files = pendingFiles.slice(), sentFileList=pendingFiles;
-    var body = { prompt: text }; if((pendingNew||!lastSessionId)&&composerAccounts[composerAccountKey()])body.account=composerAccounts[composerAccountKey()]; var m = effectiveModel(); if (m) body.model = m; if (effortEl.value) body.effort = effortEl.value;
+    var body = { prompt: text }; if((pendingNew||!lastSessionId)&&composerAccounts[composerAccountKey()])body.account=composerAccounts[composerAccountKey()]; putModelEffort(body);
     addFilePayload(body, files);
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';

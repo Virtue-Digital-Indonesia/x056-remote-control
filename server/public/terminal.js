@@ -239,7 +239,9 @@
       // Decisions has no published price, so its line shows tokens, not dollars.
       var who = d.backend === 'openai' ? 'decisions' : 'jev';
       // The lean the pick ran with (low / high); medium is the default and unmarked.
-      if (d.lean === 'low' || d.lean === 'high') who += ' (' + d.lean + ')';
+      // and whether it was on Auto, where the pick decides outright.
+      var tags = [d.lean === 'low' || d.lean === 'high' ? d.lean : '', d.auto && (d.auto.model || d.auto.effort) ? 'auto' : ''].filter(Boolean);
+      if (tags.length) who += ' (' + tags.join(', ') + ')';
       var spent = d.backend === 'openai' ? (d.inputTokens ? ' · ' + d.inputTokens + ' tok' : '') : ' · $' + (d.costUsd || 0).toFixed(6);
       // A question that was not asked (one model to choose from) is left out.
       var picks = [];
