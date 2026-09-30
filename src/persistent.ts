@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { RawEvent } from './types.js';
 import type { TurnExit, TurnHandle, TurnOptions } from './turn.js';
@@ -49,6 +50,8 @@ export interface PersistentOptions {
 interface Live {
   key: string;
   child: ChildProcess;
+  /** Turns stdout bytes into text without splitting a multi-byte character. */
+  decoder?: StringDecoder;
   sessionId: string;
   /** A turn is in flight; the pool must not hand this process to another. */
   busy: boolean;
@@ -367,8 +370,15 @@ export class PersistentTurns {
     // ANY output means this process is doing something, turn or no turn. This is
     // what keeps eviction from killing a session that only looks idle.
     entry.lastOutput = this.now();
-    entry.st.buf += d.toString();
-    const lines = entry.st.buf.split('\n');
+    // Only a chunk that ends a line is split. Appending to the partial line and
+    // re-splitting the whole buffer on every chunk was quadratic: a Codex
+    // thread/resume sent the 802 MB UAT thread's history as ONE line, in 64 KB
+    // pieces, and the gateway spent 94% of its CPU re-scanning it -- every
+    // request took 4-8 s (profiled live, 2026-09-30). The decoder keeps a
+    // multi-byte character that straddles two chunks whole.
+    const chunk = (entry.decoder ??= new StringDecoder('utf8')).write(d);
+    if (!chunk.includes('\n')) { entry.st.buf += chunk; return; }
+    const lines = (entry.st.buf + chunk).split('\n');
     entry.st.buf = lines.pop() ?? '';
     for (const line of lines) {
       if (!line.trim().startsWith('{')) continue;

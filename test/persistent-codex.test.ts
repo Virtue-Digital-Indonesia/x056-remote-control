@@ -164,6 +164,14 @@ describe('codex persistent: handshake', () => {
     expect(f.sent('turn/start')[0].params).toMatchObject({ threadId: '019f9220-old' });
   });
 
+  // Without it the reply carries the thread's whole history as one line:
+  // 1.8 MB for a 7 MB thread (4 KB with it), hundreds of MB for the UAT one.
+  it('resumes without the history: excludeTurns', () => {
+    const { p, spawned } = pool();
+    p.startTurn(turn({ mode: 'resume', sessionId: 'thr_big' }));
+    expect(spawned[0].sent('thread/resume')[0].params).toMatchObject({ threadId: 'thr_big', excludeTurns: true });
+  });
+
   it('passes model and effort on turn/start, and MCP wiring on thread/start', () => {
     const { p, spawned } = pool();
     p.startTurn(turn({ model: 'gpt-6-astra', effort: 'ultra', mcp: { configPath: '/x', command: 'node', args: ['s.js'], env: { T: '1' } } }));
@@ -410,6 +418,39 @@ describe('codex persistent: identity and a failed handshake', () => {
     expect(spawned).toHaveLength(2);
     const exit = await Promise.race([h2.done, new Promise<'hung'>((r) => setTimeout(() => r('hung'), 500))]);
     expect(exit).not.toBe('hung');
+  });
+});
+
+describe('the pool reads a stream in linear time', () => {
+  // A 20 MB line in 64 KB pieces: re-splitting the growing buffer on every
+  // piece is quadratic (the live gateway spent 94% of its CPU there). Linear
+  // reading takes a few ms; the old way took seconds.
+  it('parses one huge line that arrives in many chunks, quickly', async () => {
+    const { p, spawned } = pool({ deferThread: true, threadId: 'thr_huge' });
+    const c = collect();
+    const h = p.startTurn(turn({ mode: 'resume', sessionId: 'thr_huge', onEvent: c.onEvent }));
+    const f = spawned[0];
+    const id = f.sent('thread/resume')[0].id;
+    const big = Buffer.from(JSON.stringify({ id, result: { thread: { id: 'thr_huge', turns: [{ blob: 'x'.repeat(20 * 1024 * 1024) }] } } }) + '\n');
+    const started = Date.now();
+    for (let i = 0; i < big.length; i += 64 * 1024) f.child.stdout.emit('data', big.subarray(i, i + 64 * 1024));
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(f.sent('turn/start')).toHaveLength(1); // the handshake line was read whole
+    f.complete(); await h.done;
+  });
+
+  it('keeps a multi-byte character that straddles two chunks', async () => {
+    const { p, spawned } = pool();
+    const c = collect();
+    const h = p.startTurn(turn({ onEvent: c.onEvent }));
+    const f = spawned[0];
+    const line = Buffer.from(JSON.stringify({ method: 'item/completed', params: { threadId: 'thr_new', turnId: 'turn_1', item: { type: 'agentMessage', id: 'm1', text: 'selesai ✅ 👍' } } }) + '\n');
+    const cut = line.indexOf(Buffer.from('✅')) + 1; // inside the 3-byte character
+    f.child.stdout.emit('data', line.subarray(0, cut));
+    f.child.stdout.emit('data', line.subarray(cut));
+    f.complete(); await h.done;
+    const msg = c.ev.find((e) => e.type === 'item.completed' && (e.item as { type?: string })?.type === 'agent_message');
+    expect((msg?.item as { text?: string })?.text).toBe('selesai ✅ 👍');
   });
 });
 

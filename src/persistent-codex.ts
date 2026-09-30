@@ -129,8 +129,11 @@ export class CodexTransport implements Transport {
     if (o.mcp) config.mcp_servers = { x056: { command: o.mcp.command, args: o.mcp.args, env: o.mcp.env } };
     const startParams = { cwd: o.cwd, ...(o.model ? { model: o.model } : {}), approvalPolicy: 'never', sandbox: 'danger-full-access', config,
       ...(o.appendSystemPrompt ? { developerInstructions: o.appendSystemPrompt } : {}) };
+    // excludeTurns: without it the reply carries the thread's WHOLE history in
+    // `thread.turns` as one JSON line -- hundreds of MB for the UAT thread,
+    // which blocked the gateway for minutes. Only the thread id is read here.
     const params = o.mode === 'resume'
-      ? { ...startParams, threadId: o.sessionId }
+      ? { ...startParams, threadId: o.sessionId, excludeTurns: true }
       : startParams;
     x.write = write; x.startParams = startParams; x.retried = false; x.writerRetries = 0;
     x.resumeTarget = o.mode === 'resume' ? o.sessionId : undefined;

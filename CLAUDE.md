@@ -301,6 +301,17 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   the locks are in different homes but the rollout is the same file). A
   killed process can hold its lock for a moment, so a resume refused that way
   is retried (`WRITER_RETRIES` x `WRITER_RETRY_MS`, 5 x 1 s) before it fails.
+- **Resume WITHOUT the history, and read the stream in linear time.**
+  `thread/resume` puts the thread's whole history in `thread.turns` unless
+  `excludeTurns: true` (1.8 MB reply for a 7 MB thread, 4 KB with it); the
+  gateway only reads the id. For the 802 MB UAT thread that was hundreds of
+  MB on ONE line, and `onData` re-split its growing buffer on every 64 KB
+  chunk -- quadratic -- so the gateway spent 94% of its CPU there and every
+  request, helper toggles included, took 4-8 s (CPU-profiled live via
+  `kill -USR1` + the inspector, 2026-09-30). Every new Codex process on a big
+  thread (deploy, helper toggle, failover) re-triggered it. Now resume sends
+  `excludeTurns`, and `onData` splits only a chunk that holds a newline, with
+  a `StringDecoder` so a multi-byte character across two chunks survives.
 - **A failed handshake frees its slot.** A Codex process whose thread could
   not be opened is alive but can never take a prompt; left in the pool it
   swallowed the NEXT turn (parked as `pendingPrompt`, five minutes of
