@@ -3263,6 +3263,13 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       chip.title = 'What this turn ran on';
       head.appendChild(chip);
     }
+    // The agent team's subagents this turn, when the team is on.
+    if (!x.error && x.team && x.team.effort) {
+      var tchip = document.createElement('span'); tchip.className = 'advmodel';
+      tchip.textContent = ['Team', x.team.model && advisorModelName(x.team.model), EFFORT_NAMES[x.team.effort] || x.team.effort].filter(Boolean).join(' · ');
+      tchip.title = 'What the agent team\'s subagents use this turn';
+      head.appendChild(tchip);
+    }
     var meta = document.createElement('span'); meta.className = 'advmeta';
     meta.textContent = x.error ? (auto ? 'No pick · Auto fallback' : 'No pick') : (auto ? 'Auto · its pick' : x.model || x.effort ? 'Changed this turn' : 'Kept your choice') + (x.latencyMs ? ' · ' + (x.latencyMs / 1000).toFixed(1) + ' s' : '');
     head.appendChild(meta);

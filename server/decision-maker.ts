@@ -1,4 +1,4 @@
-import type { JevCandidate } from './jev.js';
+import type { JevCandidate, TeamPickInput } from './jev.js';
 import type { ProviderModel } from '../src/provider.js';
 
 /**
@@ -62,4 +62,32 @@ export function jevCandidates(provider: 'claude' | 'codex', codexModels: Provide
 
 function pick(keys: string[]): Record<string, string> {
   return Object.fromEntries(keys.filter((k) => EFFORT_CRITERIA[k]).map((k) => [k, EFFORT_CRITERIA[k]]));
+}
+
+/** What the agent team's subagents need, in their own terms: legwork, not the
+ *  whole turn. Claude's Agent tool reaches three efforts (one agent definition
+ *  per effort, see server/team.ts); Codex's spawn_agent takes any. */
+export const SUBAGENT_EFFORT_CRITERIA: Record<string, string> = {
+  low: 'Lookups and mapping: find where something is defined or called, read a doc page, a mechanical edit.',
+  medium: 'Ordinary legwork: trace a flow, a bounded edit with its tests, a focused documentation question.',
+  high: 'Hard legwork: chase a subtle bug, a change across several files, reconcile conflicting docs.',
+  xhigh: 'Very hard legwork: careful reasoning throughout, a risky change to a delicate part.',
+};
+
+/**
+ * The team pick's candidates. Models: the same list the main pick uses.
+ * Efforts: Claude low/medium/high; Codex up to xhigh, as far as any offered
+ * model goes (the policy then filters by the model actually chosen). Base:
+ * Claude subagents are defined on Opus at medium; Codex children run on the
+ * main session's model (absent here: resolved after the main pick) at medium.
+ */
+export function teamCandidates(provider: 'claude' | 'codex', models: JevCandidate[], baseEffort = 'medium'): TeamPickInput {
+  const keys = provider === 'claude' ? ['low', 'medium', 'high']
+    : ['low', 'medium', 'high', 'xhigh'].filter((e) => !models.length || models.some((m) => !m.efforts?.length || m.efforts.includes(e)));
+  return {
+    models,
+    efforts: Object.fromEntries(keys.map((k) => [k, SUBAGENT_EFFORT_CRITERIA[k]])),
+    ...(provider === 'claude' ? { baseModel: 'opus' } : {}),
+    baseEffort,
+  };
 }

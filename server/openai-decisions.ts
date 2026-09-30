@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readState, writeState } from './workspace-store.js';
-import { applyPolicy, autoField, decisionState, effortQuestion, forkVerdict, leanField, modelQuestion, type DecisionAnswer, type ForkDecision, type ForkInput, type JevDecision, type JevDecisionInput } from './jev.js';
+import { applyPolicy, autoField, decisionState, effortQuestion, forkVerdict, leanField, modelQuestion, teamQuestions, type DecisionAnswer, type ForkDecision, type ForkInput, type JevDecision, type JevDecisionInput } from './jev.js';
 
 /**
  * OpenAI's Decisions API as the per-turn model/effort picker: the same job as
@@ -40,6 +40,8 @@ export function decisionsRequest(input: JevDecisionInput, model?: string): Recor
   const questions: Record<string, unknown>[] = [{ id: 'effort', instructions: effortQuestion(input.lean), options: options(input.efforts) }];
   const models = input.models.filter((m) => m.id);
   if (models.length > 1) questions.push({ id: 'model', instructions: modelQuestion(input.lean), options: options(Object.fromEntries(models.map((m) => [m.id, m.about]))) });
+  // The agent team's subagent model/effort: the same questions Jev gets.
+  for (const q of teamQuestions(input)) questions.push({ id: q.id, instructions: q.instructions, options: options(q.criteria) });
   return { ...(model ? { model } : {}), input: [{ type: 'input_text', text: context }], questions };
 }
 

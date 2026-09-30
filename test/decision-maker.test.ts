@@ -6,9 +6,9 @@ import { AccountRegistry } from '../src/accounts.js';
 import type { RunSessionOptions, SessionResult } from '../src/failover.js';
 import { ClaudeTransport } from '../src/persistent-transport.js';
 import { SessionManager, type GatewayEvent } from '../server/manager.js';
-import { JevService, JEV_POLICY, EFFORT_QUESTION, applyPolicy, decisionState, effortQuestion, modelQuestion, type JevDecision, type JevDecisionInput } from '../server/jev.js';
+import { JevService, JEV_POLICY, EFFORT_QUESTION, LEAN_BARS, applyPolicy, applySubagentPolicy, decisionState, effortQuestion, modelQuestion, subagentEffortQuestion, subagentModelQuestion, type JevDecision, type JevDecisionInput } from '../server/jev.js';
 import { decisionsRequest } from '../server/openai-decisions.js';
-import { advisorFor, jevCandidates } from '../server/decision-maker.js';
+import { advisorFor, jevCandidates, teamCandidates } from '../server/decision-maker.js';
 import { OpenAIDecisionsService } from '../server/openai-decisions.js';
 
 const input = (over: Partial<JevDecisionInput> = {}): JevDecisionInput => ({
@@ -203,6 +203,89 @@ describe('Jev policy', () => {
       { model: { choice: 'gpt-9', confidence: 0.99 }, effort: { choice: 'max', confidence: 0.99 } }, []);
     expect(d.model).toBeUndefined();
     expect(d.effort).toBeUndefined();
+  });
+});
+
+describe('Jev policy: the agent team\'s subagents', () => {
+  const claudeTeam = (over: Partial<JevDecisionInput> = {}) => { const c = jevCandidates('claude', []); return input({ ...over, team: teamCandidates('claude', c.models) }); };
+  const codexModels = [
+    { id: 'gpt-6-astra', about: 'strongest', efforts: ['low', 'medium', 'high', 'xhigh'] },
+    { id: 'gpt-6-luna', about: 'cheap', efforts: ['low', 'medium'] },
+  ];
+  const codexTeam = (over: Partial<JevDecisionInput> = {}) => input({ provider: 'codex', currentModel: 'gpt-6-astra', currentEffort: 'medium', models: codexModels, efforts: { low: 'l', medium: 'm', high: 'h', xhigh: 'x' }, team: teamCandidates('codex', codexModels), ...over });
+
+  it('Claude: Opus at medium is the base; candidates low/medium/high and the main model list', () => {
+    const t = teamCandidates('claude', jevCandidates('claude', []).models);
+    expect(t).toMatchObject({ baseModel: 'opus', baseEffort: 'medium' });
+    expect(Object.keys(t.efforts)).toEqual(['low', 'medium', 'high']);
+    expect(t.models.map((m) => m.id)).toEqual(['haiku', 'sonnet', 'opus']);
+    // Codex: up to xhigh, and the base model follows the main session.
+    const c = teamCandidates('codex', codexModels);
+    expect(Object.keys(c.efforts)).toEqual(['low', 'medium', 'high', 'xhigh']);
+    expect(c.baseModel).toBeUndefined();
+  });
+
+  it('applies the lean bars up and down, per lean', () => {
+    for (const lean of ['low', 'medium', 'high'] as const) {
+      const bars = LEAN_BARS[lean];
+      const up = (conf: number) => applyPolicy(base(), claudeTeam({ lean }), { subagent_effort: { choice: 'high', confidence: conf } }, []).team!;
+      expect(up(bars.effortUp).effort).toBe('high');
+      expect(up(bars.effortUp - 0.01).effort).toBe('medium');
+      const down = (conf: number) => applyPolicy(base(), claudeTeam({ lean }), { subagent_model: { choice: 'sonnet', confidence: conf } }, []).team!;
+      expect(down(bars.modelDown).model).toBe('sonnet');
+      expect(down(bars.modelDown - 0.01).model).toBe('opus');
+    }
+    const kept = applyPolicy(base(), claudeTeam({ lean: 'low' }), { subagent_model: { choice: 'sonnet', confidence: 0.5 } }, []);
+    expect(kept.notes).toContain('team model sonnet only 50% sure (needs 55% to go lower, leaning low); kept');
+    const raised = applyPolicy(base(), claudeTeam(), { subagent_effort: { choice: 'high', confidence: 0.7 } }, []);
+    expect(raised.notes).toContain('team effort -> high');
+    expect(raised.team).toMatchObject({ model: 'opus', effort: 'high', base: { model: 'opus', effort: 'medium' }, pickedEffort: 'high', effortConfidence: 0.7 });
+  });
+
+  it('falls back to the base on a missing, off-list or weak pick', () => {
+    expect(applyPolicy(base(), claudeTeam(), {}, []).team).toEqual({ model: 'opus', effort: 'medium', base: { model: 'opus', effort: 'medium' } });
+    const off = applyPolicy(base(), claudeTeam(), { subagent_model: { choice: 'fable', confidence: 0.99 }, subagent_effort: { choice: 'max', confidence: 0.99 } }, []);
+    expect(off.team).toMatchObject({ model: 'opus', effort: 'medium', pickedModel: 'fable', pickedEffort: 'max' });
+    expect(off.notes).toEqual(expect.arrayContaining(['team model fable is not a candidate; kept', 'team effort max is not a candidate; kept']));
+    const weak = applyPolicy(base(), claudeTeam(), { subagent_effort: { choice: 'low', confidence: 0.3 } }, []);
+    expect(weak.team!.effort).toBe('medium');
+    // No team input: no team on the row.
+    expect(applyPolicy(base(), input(), { subagent_effort: { choice: 'low', confidence: 0.99 } }, []).team).toBeUndefined();
+  });
+
+  it('Codex: the base model is the one the main session runs on, and effort is filtered by the chosen model', () => {
+    // The main pick moved to luna; the team's base follows it.
+    const d = applyPolicy(base(), codexTeam({ auto: { model: true } }), { model: { choice: 'gpt-6-luna', confidence: 0.9 } }, []);
+    expect(d.team!.base.model).toBe('gpt-6-luna');
+    const moved = applyPolicy(base(), codexTeam(), { subagent_model: { choice: 'gpt-6-luna', confidence: 0.9 }, subagent_effort: { choice: 'xhigh', confidence: 0.9 } }, []);
+    expect(moved.team).toMatchObject({ model: 'gpt-6-luna', effort: 'medium', base: { model: 'gpt-6-astra' } });
+    expect(moved.notes).toContain('team effort xhigh not offered by gpt-6-luna; kept');
+    const ok = applyPolicy(base(), codexTeam(), { subagent_effort: { choice: 'xhigh', confidence: 0.9 } }, []);
+    expect(ok.team).toMatchObject({ model: 'gpt-6-astra', effort: 'xhigh' });
+  });
+
+  it('has no Claude switching gap: nothing respawns', () => {
+    const history: JevDecision[] = [{ ...base(), baseModel: 'opus', model: 'haiku' }];
+    const d = applyPolicy(base(), claudeTeam(), { subagent_model: { choice: 'sonnet', confidence: 0.95 }, model: { choice: 'sonnet', confidence: 0.95 } }, history);
+    expect(d.model).toBeUndefined(); // the main switch waits the gap
+    expect(d.team!.model).toBe('sonnet');
+    expect(applySubagentPolicy(base(), claudeTeam(), { subagent_model: { choice: 'haiku', confidence: 0.95 } }).team!.model).toBe('haiku');
+  });
+
+  it('asks both team questions in the same Jev call, written per lean', async () => {
+    expect(subagentEffortQuestion('low')).toMatch(/COST EFFICIENCY/);
+    expect(subagentModelQuestion('high')).toMatch(/BEST RESULT/);
+    expect(subagentEffortQuestion('medium')).not.toMatch(/COST EFFICIENCY|BEST RESULT/);
+    const bodies: { questions: Record<string, { instructions: string; criteria: Record<string, string> }> }[] = [];
+    const fetchFn = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return new Response(JSON.stringify({ answers: { effort: { choice: 'high', confidence: 0.9 }, subagent_model: { choice: 'sonnet', confidence: 0.9 }, subagent_effort: { choice: 'high', confidence: 0.9 } }, usage: { input_tokens: 10 } }), { status: 200 }); }) as unknown as typeof fetch;
+    const d = await new JevService(jevState(), fetchFn).decide('s-00000009', claudeTeam({ lean: 'high' }));
+    expect(bodies).toHaveLength(1);
+    expect(Object.keys(bodies[0].questions)).toEqual(['effort', 'model', 'subagent_model', 'subagent_effort']);
+    expect(bodies[0].questions.subagent_effort.instructions).toBe(subagentEffortQuestion('high'));
+    expect(d.team).toMatchObject({ model: 'sonnet', effort: 'high' });
+    // One candidate model: no model question.
+    const one = decisionsRequest({ ...claudeTeam(), team: { ...teamCandidates('claude', [{ id: 'opus', about: 'x' }]) } }) as { questions: { id: string }[] };
+    expect(one.questions.map((q) => q.id)).toEqual(['effort', 'model', 'subagent_effort']);
   });
 });
 

@@ -4,7 +4,8 @@ import { readState, writeState } from './workspace-store.js';
 
 /**
  * Jev (TypeSafe AI's "System One" decision model) as a per-turn model/effort
- * picker. One HTTPS call before a turn, two Choice questions, ~0.3 s.
+ * picker. One HTTPS call before a turn, two Choice questions (four with the
+ * agent team on: its subagents' model and effort too), ~0.3 s.
  *
  * It picks, it does not run anything: the gateway applies the pick to that one
  * turn and never writes it over the user's saved model/effort, which stay the
@@ -49,6 +50,31 @@ export interface JevDecisionInput {
   context?: DecisionContext;
   models: JevCandidate[];
   efforts: Record<string, string>;
+  /** The agent team is on: also pick its subagents' model and effort. */
+  team?: TeamPickInput;
+}
+/** What the agent team's subagents may run with this turn. The choice rides in
+ *  the turn's message, never in the system prompt or the agent definitions,
+ *  which are process identity: a per-turn value there respawns every turn. */
+export interface TeamPickInput {
+  /** The same candidates the main pick uses. */
+  models: JevCandidate[];
+  /** Subagent effort criteria (Claude low/medium/high; Codex up to xhigh). */
+  efforts: Record<string, string>;
+  /** What subagents run with unless a pick moves them. Absent model = the
+   *  model the main session runs on this turn (Codex: children inherit it). */
+  baseModel?: string;
+  baseEffort: string;
+}
+export interface TeamPick {
+  /** What the subagents use this turn (the base when nothing was applied). */
+  model?: string;
+  effort: string;
+  base: { model?: string; effort: string };
+  pickedModel?: string;
+  pickedEffort?: string;
+  modelConfidence?: number;
+  effortConfidence?: number;
 }
 export interface JevDecision {
   at: string;
@@ -77,6 +103,8 @@ export interface JevDecision {
    *  `model`/`effort` are absent). */
   baseModel?: string;
   baseEffort?: string;
+  /** The agent team's subagents this turn, when the team is on. */
+  team?: TeamPick;
   latencyMs: number;
   inputTokens?: number;
   outputTokens?: number;
@@ -280,6 +308,8 @@ export class JevService {
     if (models.length > 1) {
       questions.model = { type: 'choice', instructions: modelQuestion(input.lean), criteria: Object.fromEntries(models.map((m) => [m.id, m.about])) };
     }
+    // The team's two questions ride in the same call.
+    for (const q of teamQuestions(input)) questions[q.id] = { type: 'choice', instructions: q.instructions, criteria: q.criteria };
     const state = decisionState(input);
     let res: Response;
     const ctl = new AbortController();
@@ -322,6 +352,33 @@ export function modelQuestion(lean: Lean = 'medium'): string {
   if (lean === 'low') return 'Which model should handle the NEXT turn? The user wants COST EFFICIENCY: choose the cheapest model that can do it adequately, and a stronger one only when a cheaper one would clearly fail. ' + CONTEXT_CLAUSE;
   if (lean === 'high') return 'Which model should handle the NEXT turn? The user wants the BEST RESULT and accepts higher cost: choose the strongest model for anything beyond a trivial, self-contained request -- code changes, debugging, design, multi-step work -- and a cheaper one only for genuinely trivial requests. ' + CONTEXT_CLAUSE;
   return MODEL_QUESTION;
+}
+/**
+ * The agent team's two questions, under a lean, written whole like the main
+ * ones. The frame: the main session keeps the plan and hands the legwork to
+ * subagents, so what THEY need is often less than the turn as a whole.
+ */
+const SUBAGENT_FRAME = 'In this coding conversation the main session plans and decides, and hands the legwork to subagents: reading and mapping code, bounded edits with their tests, documentation lookups.';
+export function subagentEffortQuestion(lean: Lean = 'medium'): string {
+  if (lean === 'low') return SUBAGENT_FRAME + ' How much reasoning effort do THOSE subagents need for the NEXT turn\'s work? The user wants COST EFFICIENCY: choose the lowest effort that will still get the legwork right, and more only when a lower one would clearly fail. ' + CONTEXT_CLAUSE;
+  if (lean === 'high') return SUBAGENT_FRAME + ' How much reasoning effort do THOSE subagents need for the NEXT turn\'s work? The user wants the BEST RESULT and accepts higher cost: for anything beyond simple lookups -- tracing a subtle bug, edits across several files, risky changes -- choose generous effort. ' + CONTEXT_CLAUSE;
+  return SUBAGENT_FRAME + ' How much reasoning effort do THOSE subagents need for the NEXT turn\'s work? Mapping code and looking up docs usually needs little; a subtle bug or a risky multi-file change needs more. ' + CONTEXT_CLAUSE;
+}
+export function subagentModelQuestion(lean: Lean = 'medium'): string {
+  if (lean === 'low') return SUBAGENT_FRAME + ' Which model should THOSE subagents run on for the NEXT turn\'s work? The user wants COST EFFICIENCY: choose the cheapest model that can do the legwork adequately, and a stronger one only when a cheaper one would clearly fail. ' + CONTEXT_CLAUSE;
+  if (lean === 'high') return SUBAGENT_FRAME + ' Which model should THOSE subagents run on for the NEXT turn\'s work? The user wants the BEST RESULT and accepts higher cost: choose the strongest model for anything beyond simple lookups, and a cheaper one only for genuinely routine legwork. ' + CONTEXT_CLAUSE;
+  return SUBAGENT_FRAME + ' Which model should THOSE subagents run on for the NEXT turn\'s work? Prefer the cheapest model that will do the legwork well. ' + CONTEXT_CLAUSE;
+}
+/** The team questions for one turn (none when the team is off). Both backends
+ *  ask exactly these. The model question only when there is a choice. */
+export function teamQuestions(input: JevDecisionInput): { id: 'subagent_model' | 'subagent_effort'; instructions: string; criteria: Record<string, string> }[] {
+  const t = input.team;
+  if (!t) return [];
+  const out: ReturnType<typeof teamQuestions> = [];
+  const models = t.models.filter((m) => m.id);
+  if (models.length > 1) out.push({ id: 'subagent_model', instructions: subagentModelQuestion(input.lean), criteria: Object.fromEntries(models.map((m) => [m.id, m.about])) });
+  if (Object.keys(t.efforts).length) out.push({ id: 'subagent_effort', instructions: subagentEffortQuestion(input.lean), criteria: t.efforts });
+  return out;
 }
 export const leanField = (lean?: Lean): { lean?: 'low' | 'high' } => (lean === 'low' || lean === 'high' ? { lean } : {});
 /** The Auto marker for a decision row, only when something was on Auto. */
@@ -436,6 +493,50 @@ export function applyPolicy(
     else if (e.choice === cur) out.notes.push(`effort unchanged (${cur} is the default)`);
     else { out.effort = e.choice; out.notes.push(`effort -> ${e.choice}`); }
   }
+  return input.team ? applySubagentPolicy(out, input, answers) : out;
+}
+
+/**
+ * The agent team's model and effort for this turn. The same lean bars as the
+ * main pick, measured from the team's own base; no Claude switching gap (the
+ * choice rides in the message, nothing respawns) and no Auto. `d.team` always
+ * says what the subagents use, the base when a pick is missing, off-list or
+ * below its bar.
+ */
+export function applySubagentPolicy(d: JevDecision, input: JevDecisionInput, answers: Record<string, DecisionAnswer>): JevDecision {
+  const t = input.team;
+  if (!t) return d;
+  const out: JevDecision = { ...d, notes: [...d.notes] };
+  const lean: Lean = input.lean ?? 'medium', bars = LEAN_BARS[lean];
+  const leanNote = LEAN_WORD[lean] ? ', ' + LEAN_WORD[lean] : '';
+  const baseModel = t.baseModel ?? d.model ?? input.currentModel;
+  const team: TeamPick = { ...(baseModel ? { model: baseModel } : {}), effort: t.baseEffort, base: { ...(baseModel ? { model: baseModel } : {}), effort: t.baseEffort } };
+  const m = answers.subagent_model, e = answers.subagent_effort;
+  if (m?.choice) {
+    team.pickedModel = m.choice; team.modelConfidence = m.confidence;
+    const known = t.models.some((c) => c.id === m.choice);
+    const down = lower(modelRank, m.choice, baseModel), up = higher(modelRank, m.choice, baseModel);
+    // An unranked move keeps the plain bar, as for the main pick.
+    const floor = up ? bars.modelUp : down ? bars.modelDown : JEV_POLICY.modelMin;
+    if (!known) out.notes.push(`team model ${m.choice} is not a candidate; kept`);
+    else if (m.choice === baseModel) out.notes.push('team model unchanged');
+    else if ((m.confidence ?? 0) < floor) out.notes.push(`team model ${m.choice} only ${pct(m.confidence)} sure (needs ${pct(floor)}${down ? ' to go lower' : up ? ' to go higher' : ''}${leanNote}); kept`);
+    else { team.model = m.choice; out.notes.push(`team model -> ${m.choice}`); }
+  }
+  if (e?.choice) {
+    team.pickedEffort = e.choice; team.effortConfidence = e.confidence;
+    const known = Object.prototype.hasOwnProperty.call(t.efforts, e.choice);
+    const allowed = t.models.find((c) => c.id === team.model)?.efforts;
+    const offered = !(allowed && allowed.length && !allowed.includes(e.choice));
+    const down = lower(effortRank, e.choice, t.baseEffort), up = higher(effortRank, e.choice, t.baseEffort);
+    const floor = up ? bars.effortUp : down ? bars.effortDown : JEV_POLICY.effortMin;
+    if (!known) out.notes.push(`team effort ${e.choice} is not a candidate; kept`);
+    else if (e.choice === t.baseEffort) out.notes.push('team effort unchanged');
+    else if ((e.confidence ?? 0) < floor) out.notes.push(`team effort ${e.choice} only ${pct(e.confidence)} sure (needs ${pct(floor)}${down ? ' to go lower' : up ? ' to go higher' : ''}${leanNote}); kept`);
+    else if (!offered) out.notes.push(`team effort ${e.choice} not offered by ${team.model}; kept`);
+    else { team.effort = e.choice; out.notes.push(`team effort -> ${e.choice}`); }
+  }
+  out.team = team;
   return out;
 }
 

@@ -1,4 +1,5 @@
 import type { ProviderId } from '../src/provider.js';
+import { TEAM_LINE_PREFIX } from '../src/message-sender.js';
 
 /**
  * The agent team: the tree from the "advisor + Jev" thread, per conversation.
@@ -6,11 +7,18 @@ import type { ProviderId } from '../src/provider.js';
  *   main session (the conversation's own model/effort) plans and decides
  *   ├─ explorer    reads the code
  *   ├─ worker      edits and runs tests
- *   └─ researcher  pulls the docs            all three on medium effort
+ *   └─ researcher  pulls the docs            medium effort unless Jev picks
  *   advisor on call (if the Advisor helper is on) -- subagents inherit it
  *   Jev fork layer: small forks (which file, which tool, which subagent,
  *   retry or stop) go to `quick_decision`; a sharp answer is followed, a
  *   split one goes back to the main model.
+ *
+ * Jev (or OpenAI Decisions), when on, picks the subagents' model and effort
+ * per turn. That choice is named in the turn's MESSAGE (`teamTurnLine`),
+ * never here: everything below is process identity, constant per
+ * conversation, and a per-turn value in it would respawn the process each
+ * turn. Claude's Agent tool takes a model per call but no effort, so each role
+ * is defined at three efforts (`explorer`, `explorer-low`, `explorer-high`).
  *
  * Nothing here is installed into an account. Claude gets the three agents on
  * argv (`--agents`, session-scoped), Codex gets the subagent effort as thread
@@ -44,9 +52,38 @@ const AGENTS: Record<string, Omit<AgentDef, 'model' | 'effort'>> = {
   },
 };
 
-/** `--agents` JSON for Claude: the three roles on Opus, effort medium. */
+/** The Claude effort variants of each role: the plain name is medium. */
+export const CLAUDE_TEAM_EFFORTS = ['low', 'medium', 'high'] as const;
+const roleName = (role: string, effort: string) => effort === TEAM_EFFORT ? role : `${role}-${effort}`;
+
+/** `--agents` JSON for Claude: the three roles on Opus, each at low, medium
+ *  (the plain name) and high effort. Constant, so the process identity is. */
 export function claudeTeamAgents(): string {
-  return JSON.stringify(Object.fromEntries(Object.entries(AGENTS).map(([name, a]) => [name, { ...a, model: 'opus', effort: TEAM_EFFORT }])));
+  const out: Record<string, AgentDef> = {};
+  for (const [name, a] of Object.entries(AGENTS)) {
+    // The plain (medium) name first, then its variants.
+    for (const effort of [TEAM_EFFORT, ...CLAUDE_TEAM_EFFORTS.filter((e) => e !== TEAM_EFFORT)]) {
+      out[roleName(name, effort)] = { ...a, ...(effort === TEAM_EFFORT ? {} : { description: `${a.description} This variant runs at ${effort} effort: use it when the message names it.` }), model: 'opus', effort };
+    }
+  }
+  return JSON.stringify(out);
+}
+
+/**
+ * The one line appended to a turn's message when a picker chose the team's
+ * model and effort. Codex's spawn_agent takes both per call; Claude's Agent
+ * tool takes the model per call and the effort through the variant's name.
+ */
+export function teamTurnLine(provider: ProviderId, team: { model?: string; effort: string }, backend: 'jev' | 'openai' = 'jev'): string {
+  const by = backend === 'openai' ? 'OpenAI Decisions' : 'Jev';
+  if (provider === 'codex') {
+    const what = [team.model ? `model "${team.model}"` : '', `reasoning_effort "${team.effort}"`].filter(Boolean).join(' and ');
+    return `${TEAM_LINE_PREFIX}pass ${what} on every spawn_agent call. Picked by ${by}.]`;
+  }
+  const effort = (CLAUDE_TEAM_EFFORTS as readonly string[]).includes(team.effort) ? team.effort : TEAM_EFFORT;
+  const names = Object.keys(AGENTS).map((r) => roleName(r, effort));
+  const types = `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`;
+  return `${TEAM_LINE_PREFIX}call the Agent tool with ${team.model ? `model "${team.model}" and ` : ''}subagent_type ${types}. Picked by ${by}.]`;
 }
 
 /** Thread config for Codex: its built-in roles, on medium effort. */
@@ -57,8 +94,8 @@ export function codexTeamConfig(): Record<string, unknown> {
 /** What the main session is told about its team. */
 export function teamInstructions(provider: ProviderId, opts: { advisor: boolean; forks: boolean }): string {
   const roles = provider === 'codex'
-    ? 'Delegate with spawn_agent: agent_type "explorer" to read and map code (spawn several in parallel for independent questions), "worker" for a bounded code change plus its tests, and "default" with a research brief (docs, changelogs, specs, with source URLs) as the researcher. Subagents run at medium reasoning effort.'
-    : 'Delegate with the Agent tool: "explorer" to read and map code (run several in parallel for independent questions), "worker" for a bounded code change plus its tests, "researcher" for external docs. They run on Opus at medium effort.';
+    ? 'Delegate with spawn_agent: agent_type "explorer" to read and map code (spawn several in parallel for independent questions), "worker" for a bounded code change plus its tests, and "default" with a research brief (docs, changelogs, specs, with source URLs) as the researcher. When a message carries an "[Agent team this turn: ...]" line, pass the model and reasoning_effort it names on every spawn_agent call in that turn; otherwise subagents run at medium reasoning effort.'
+    : 'Delegate with the Agent tool: "explorer" to read and map code (run several in parallel for independent questions), "worker" for a bounded code change plus its tests, "researcher" for external docs. When a message carries an "[Agent team this turn: ...]" line, use the model and the subagent_type variants it names (e.g. explorer-high) for every subagent in that turn; otherwise they run on Opus at medium effort.';
   // Saying HOW to spawn was not enough: a Codex chat with the team on ran a
   // 28-command turn alone (2026-09-30) after 218 solo turns. So: when, and a
   // one-line account of the choice before starting.

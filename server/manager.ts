@@ -2,17 +2,17 @@ import { codexTurnForAccount, currentCodexPrefs } from '../src/codex-model-polic
 import { currentClaudeModel } from '../src/claude-model-policy.js';
 import { checkFork, JEV_POLICY, JevService, type DecisionContext, type ForkDecision, type ForkInput, type JevDecision } from './jev.js';
 import { OpenAIDecisionsService } from './openai-decisions.js';
-import { claudeTeamAgents, codexTeamConfig, teamInstructions } from './team.js';
-import { ClaudeAdvisorLog, forkSummary, mainRun, tailJsonl } from './agent-tree.js';
+import { claudeTeamAgents, codexTeamConfig, teamInstructions, teamTurnLine, TEAM_EFFORT } from './team.js';
+import { ClaudeAdvisorLog, forkSummary, mainRun, tailJsonl, teamRun } from './agent-tree.js';
 import { checkBrief, checkRole, decideGate, delegateInstructions, DelegateStore, digest, GATE_OPTIONS, GATE_QUESTION, gateState, MAX_DELEGATES, reportKey, ROUND_LIMIT, shouldWake, type Delegate, type DelegateReport } from './delegates.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
 import { findRollout } from '../src/adapters/codex.js';
-import { advisorFor, AUTO_MODEL, CLAUDE_DEFAULT_EFFORT, jevCandidates } from './decision-maker.js';
+import { advisorFor, AUTO_MODEL, CLAUDE_DEFAULT_EFFORT, jevCandidates, teamCandidates } from './decision-maker.js';
 import { CodexAdvisor, TurnWatcher, type AdvisorConsult, type AdvisorTrigger } from './codex-advisor.js';
 import { TurnResults } from './turn-results.js';
 import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
-import { withMessageSender, type MessageSender } from '../src/message-sender.js';
+import { withMessageSender, withTeamLine, type MessageSender } from '../src/message-sender.js';
 import { CompletionGate } from './completion-gate.js';
 import { FileStore, type FileReference } from './file-store.js';
 import { DOCUMENT_SKILL } from './documents.js';
@@ -1574,7 +1574,7 @@ export class SessionManager {
       provider, helpers, turnStartedAt: turnStartedAt ?? null,
       main: { ...main, running, background, lastTurn: last ? { at: last.at, durationMs: last.durationMs, steps: last.numTurns, costUsd: last.totalCostUsd } : null },
       advisor,
-      team: helpers.team ? { effort: 'medium', model: provider === 'claude' ? 'opus' : undefined, roles: provider === 'claude' ? ['explorer', 'worker', 'researcher'] : ['explorer', 'worker', 'default'] } : null,
+      team: helpers.team ? teamRun(provider, picks, turnStartedAt) : null,
       forks: { total: forks.total, sharp: forks.sharp, split: forks.split, recent: forks.recent },
       gates: forks.gates,
       picks: picks.slice(-8),
@@ -1930,7 +1930,7 @@ export class SessionManager {
    *  called a pick "unchanged" that the turn did not have, and the turn ran on
    *  the saved effort instead (seen live: medium at 71% became xhigh). The
    *  store is shared by both backends, so the switching gap counts either. */
-  private async decideModelEffort(backend: 'jev' | 'decisions', pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string, sender?: MessageSender): Promise<JevDecision> {
+  private async decideModelEffort(backend: 'jev' | 'decisions', pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string, sender?: MessageSender, withTeam = false): Promise<JevDecision> {
     const history = this.jev().decisions(sid);
     const previousModel = history.at(-1)?.model;
     const context = this.decisionContext(pid, sid, sender);
@@ -1952,7 +1952,9 @@ export class SessionManager {
     const current = model || (offered(lastRan) ? lastRan : !models.length || offered(house) ? house : undefined);
     // "Auto effort": measure up and down from what the CLI would run with.
     const baselineEffort = effort ? undefined : provider === 'codex' ? codexModels.find((m) => m.slug === current)?.defaultEffort : current ? CLAUDE_DEFAULT_EFFORT[current] : undefined;
-    const input = { provider, prompt, title, currentModel: current, currentEffort: effort, previousModel, models, efforts, context, auto, ...(lean ? { lean } : {}), ...(baselineEffort ? { baselineEffort } : {}) };
+    // The agent team on: its subagents' model/effort too, in the same call.
+    const team = withTeam ? teamCandidates(provider, models, TEAM_EFFORT) : undefined;
+    const input = { provider, prompt, title, currentModel: current, currentEffort: effort, previousModel, models, efforts, context, auto, ...(lean ? { lean } : {}), ...(baselineEffort ? { baselineEffort } : {}), ...(team ? { team } : {}) };
     return backend === 'decisions' ? this.openaiDecisions().decide(sid, input) : this.jev().decide(sid, input);
   }
   /** A generated title for this CHAT is queued or being written right now. */
@@ -3054,11 +3056,14 @@ export class SessionManager {
       const router = helpers.router;
       const runWith: typeof runFn = router
         ? (async (o: Parameters<typeof runFn>[0]) => {
-            const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort, sender);
+            const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort, sender, !!team);
             emit('jev_decision', d as unknown as Record<string, unknown>);
             // On Auto a failed pick still runs on the Auto baseline it started from.
             const useModel = d.model ?? (d.auto?.model ? d.baseModel : undefined);
-            return runFn({ ...o, ...(useModel ? { model: useModel } : {}), ...(d.effort ? { effort: d.effort } : {}) });
+            // The team's pick rides in THIS turn's message, never in the system
+            // prompt or --agents (process identity: it would respawn per turn).
+            const teamLine = team && d.team && !d.error ? teamTurnLine(adapter.id, d.team, d.backend === 'openai' ? 'openai' : 'jev') : undefined;
+            return runFn({ ...o, ...(teamLine ? { prompt: withTeamLine(o.prompt, teamLine) } : {}), ...(useModel ? { model: useModel } : {}), ...(d.effort ? { effort: d.effort } : {}) });
           }) as typeof runFn
         : runFn;
       if (advisor) emit('advisor_state', { advisor, model: model ?? null });

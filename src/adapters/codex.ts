@@ -1,6 +1,6 @@
 import { supersededCodexModel } from '../codex-model-policy.js';
 import { CODEX_INDEXING_REASON, codexHomePreparing } from '../codex-home.js';
-import { readMessageSender } from '../message-sender.js';
+import { readMessageSender, stripTeamLine } from '../message-sender.js';
 import { toolImagePaths } from '../artifact-references.js';
 import { stripMemoryContext } from '../memory-context.js';
 import { spawn } from 'node:child_process';
@@ -476,7 +476,7 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
       const kind = firstStr(item.type);
       if (kind === 'UserMessage' || kind === 'userMessage') {
         const attributed = readMessageSender(itemText(item).trim());
-        const shown = stripAskInstructions(stripMemoryContext(attributed.text));
+        const shown = stripAskInstructions(stripMemoryContext(stripTeamLine(attributed.text)));
         const userKey = JSON.stringify(attributed.sender || null) + shown;
         if (shown && userKey !== lastUser) { push({ role: 'user', text: shown, ...(attributed.sender ? { sender: attributed.sender } : {}), ts }, at); lastUser = userKey; }
       } else if (kind === 'AgentMessage' || kind === 'agentMessage') {
@@ -488,7 +488,7 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
       // Command/patch items are already rendered from response_item above.
     } else if (payload.type === 'user_message' && typeof payload.message === 'string') {
       const attributed = readMessageSender(payload.message.trim());
-      const shown = stripAskInstructions(stripMemoryContext(attributed.text));
+      const shown = stripAskInstructions(stripMemoryContext(stripTeamLine(attributed.text)));
       const userKey = JSON.stringify(attributed.sender || null) + shown;
       if (shown && userKey !== lastUser) { push({ role: 'user', text: shown, ...(attributed.sender ? { sender: attributed.sender } : {}), ts }, at); lastUser = userKey; }
     } else if (payload.type === 'agent_message' && typeof payload.message === 'string') {

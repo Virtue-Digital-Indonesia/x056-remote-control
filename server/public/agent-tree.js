@@ -182,7 +182,7 @@
       if (showForks) { add(flow, link()); add(flow, forkNode(t.forks, picker)); }
       var anyWorkers = subs.length > 0 || (t.delegates || []).length > 0;
       if (team || subs.length) {
-        add(flow, link(team ? 'delegate to subagents · ' : 'subagents', team ? 'effort ' + team.effort : ''));
+        add(flow, link(team ? 'delegate to subagents · ' : 'subagents', team ? teamLabel(team) : ''));
         add(flow, workersNode(thisTurn, earlier, t));
       }
       if ((t.delegates || []).length) { add(flow, link(team || subs.length ? '' : 'delegate to hidden workers')); add(flow, delegatesNode(t.delegates, t.gates || [])); }
@@ -198,7 +198,7 @@
       var ul = el('ul', 'at-legend'); ul.setAttribute('aria-label', 'Legend');
       var chip = function (cls, text) { var li = el('li', cls); add(li, el('i'), el('span', '', text)); return li; };
       add(ul, chip('main', mainModel.toLowerCase() + (t.main.effort ? ' · ' + t.main.effort : '')));
-      if (t.team || subs.length) add(ul, chip('sub', 'subagents' + (t.team ? ' · ' + t.team.effort : '')));
+      if (t.team || subs.length) add(ul, chip('sub', 'subagents' + (t.team ? ' · ' + (t.team.pickedBy && t.team.model ? modelName(t.team.model).toLowerCase() + ' · ' : '') + t.team.effort : '')));
       if (showForks) add(ul, chip('jev', picker + ' · forks'));
       if ((t.delegates || []).length) add(ul, chip('dg', 'delegates'));
       if (t.advisor && t.advisor.on) add(ul, chip('adv', modelName(t.advisor.model).toLowerCase() + ' · advisor'));
@@ -253,10 +253,18 @@
       return li;
     }
 
+    // The team's model and effort this turn: "effort medium" when fixed, the
+    // picked "Sonnet · high · Jev 72%" when a picker chose them.
+    function teamLabel(team) {
+      if (!team.pickedBy) return 'effort ' + team.effort;
+      return [team.model && modelName(team.model), team.effort, (team.pickedBy === 'openai' ? 'Decisions' : 'Jev') + (team.confidence != null ? ' ' + Math.round(team.confidence * 100) + '%' : '')].filter(Boolean).join(' · ');
+    }
     function workerLabel(s, t) {
       if (!t.team) return '';
-      if (t.provider === 'codex') return 'effort ' + t.team.effort;
-      return t.team.roles.indexOf(s.agentType) >= 0 ? modelName(t.team.model || 'opus') + ' · ' + t.team.effort : '';
+      if (t.provider === 'codex') return (t.team.pickedBy && t.team.model ? modelName(t.team.model) + ' · ' : '') + 'effort ' + t.team.effort;
+      // Claude roles come in effort variants (explorer-high); the suffix is the effort.
+      var m = /^(.*?)(?:-(low|high))?$/.exec(s.agentType || '');
+      return t.team.roles.indexOf(m[1]) >= 0 ? modelName(t.team.model || 'opus') + ' · ' + (m[2] || 'medium') : '';
     }
     function subCard(s, t, kids) {
       var li = el('li', 'at-card ' + (s.status || 'unknown'));

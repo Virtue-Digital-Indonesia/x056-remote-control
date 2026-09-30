@@ -460,7 +460,8 @@ the thread they come from uses them together, and so do we now.
 - **Agent team** (`server/team.ts`) is that thread's tree: the main session
   (its own model/effort) plans and decides; **explorer** (reads code,
   read-only), **worker** (bounded edit + tests) and **researcher** (docs,
-  read-only) do the legwork at effort **medium**; the advisor is on call if
+  read-only) do the legwork at effort **medium** (or what the picker names
+  for the turn, below); the advisor is on call if
   on (Claude subagents inherit it); small forks go to the fork layer.
   Nothing is installed into an account. Claude gets the three on argv
   (`--agents` JSON, Opus, part of the process identity so toggling respawns
@@ -477,6 +478,30 @@ the thread they come from uses them together, and so do we now.
   turns worked alone, and asks for one line naming the spawns (or why none)
   before the first command. Still a prompt: nothing in the gateway forces a
   spawn.
+- **With a picker on, it also picks the TEAM's model and effort per turn**
+  (2026-09-30): two more questions in the same call (`subagent_model`,
+  `subagent_effort`, written whole per lean like the main ones; model only
+  when there is a choice), for Jev and OpenAI Decisions alike.
+  `applySubagentPolicy` uses the same lean bars, measured from the team's
+  own base -- Claude Opus/medium, Codex the main session's model this turn
+  at medium -- with no switching gap and no Auto; a missing, off-list, weak
+  or (Codex) not-offered pick keeps the base. Candidates: the main pick's
+  model list; efforts low/medium/high on Claude, up to xhigh on Codex.
+  **The choice rides in the turn's MESSAGE**, one line before the sender
+  marker (`[Agent team this turn: ...]`, `teamTurnLine` + `withTeamLine`),
+  never in the system prompt, `--agents` or `codexConfig`: those are process
+  identity, and a per-turn value there would respawn every turn (Claude
+  losing its prompt cache, Codex the kill-then-resume single-writer path).
+  Codex's `spawn_agent` takes `model` and `reasoning_effort` per call.
+  Claude's Agent tool takes `model` per call but no effort, so `--agents`
+  defines each role three times -- `explorer` (medium), `explorer-low`,
+  `explorer-high`, same for worker and researcher -- constant JSON, and the
+  line names the variant. `stripTeamLine` removes it wherever a prompt is
+  read back (history readers, `cleanMemorySource`: titles, memory,
+  `previousRequest`). No line when the picker is off or failed: medium, as
+  before. The decision row carries `team`; the chat card shows "Team ·
+  Sonnet · High", the terminal `team sonnet · high`, the agent tree the
+  picked model · effort and "Jev NN%".
 - **Fork layer**: the x056 MCP tool `quick_decision {question, options[2-6],
   context}` -> `POST /api/jev/fork` -> Jev (or OpenAI Decisions when that is
   the picker) as ONE choice question. `confidence >= 0.75`

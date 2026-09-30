@@ -247,6 +247,8 @@
       var picks = [];
       if (d.pickedModel) picks.push('model ' + d.pickedModel + ' ' + pct(d.modelConfidence));
       if (d.pickedEffort) picks.push('effort ' + d.pickedEffort + ' ' + pct(d.effortConfidence));
+      // The agent team's subagents: what they use this turn.
+      if (!d.error && d.team && d.team.effort) picks.push('team ' + [d.team.model, d.team.effort].filter(Boolean).join(' · '));
       var t = d.error ? who + ' · ' + d.error
         : who + ' · ' + (picks.join(' · ') || 'no answer') + ' → ' + ((d.notes || []).join(', ') || 'no change') + ' · ' + d.latencyMs + ' ms' + spent;
       return line(d.at, d.error ? 'err jev' : 'jev', '◆', t, d);

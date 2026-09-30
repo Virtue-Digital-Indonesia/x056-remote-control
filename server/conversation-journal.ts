@@ -23,7 +23,7 @@ export class ConversationJournal {
         advisor: { model: data.model as string, trigger: data.trigger as string, verdict: data.verdict as string, advice: data.advice as string, delivered: data.delivered as string, latencyMs: data.latencyMs as number, error: data.error as string } };
     } else if (kind === 'jev_decision' && data.at) {
       // A per-turn model/effort pick: recorded by the gateway, in no transcript.
-      const keep = ['pickedModel', 'pickedEffort', 'modelConfidence', 'effortConfidence', 'model', 'effort', 'baseModel', 'baseEffort', 'notes', 'latencyMs', 'error', 'lean', 'auto'];
+      const keep = ['pickedModel', 'pickedEffort', 'modelConfidence', 'effortConfidence', 'model', 'effort', 'baseModel', 'baseEffort', 'notes', 'latencyMs', 'error', 'lean', 'auto', 'team'];
       row = { role: 'advisor', messageId: 'decision:' + String(data.at), text: ((data.notes as string[] | undefined) ?? []).join(', ') || String(data.error || ''), ts: String(data.at),
         advisor: { helper: data.backend === 'openai' ? 'openai' : 'jev', decision: Object.fromEntries(keep.filter((k) => data[k] !== undefined).map((k) => [k, data[k]])) } };
     } else if (kind === 'delegate_report' && data.at && data.delegateId) {

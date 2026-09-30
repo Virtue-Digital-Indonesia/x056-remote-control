@@ -78,3 +78,15 @@ export function mainRun(saved: { model?: string; effort?: string }, picks: JevDe
     ...(pick.lean ? { lean: pick.lean } : {}),
   };
 }
+
+/** What the agent team's subagents run with: this turn's team pick when the
+ *  picker made one (the latest, when no turn start is known), else the fixed
+ *  default -- Opus at medium on Claude, the main model at medium on Codex. */
+export function teamRun(provider: 'claude' | 'codex', picks: JevDecision[], turnStartedAt?: string): { model?: string; effort: string; pickedBy?: 'jev' | 'openai'; confidence?: number; roles: string[] } {
+  const roles = provider === 'claude' ? ['explorer', 'worker', 'researcher'] : ['explorer', 'worker', 'default'];
+  const pick = [...picks].reverse().find((d) => !d.error && d.team && (!turnStartedAt || d.at >= turnStartedAt));
+  if (!pick?.team) return { effort: 'medium', model: provider === 'claude' ? 'opus' : undefined, roles };
+  const t = pick.team;
+  const confidence = t.effort !== t.base.effort ? t.effortConfidence : t.model !== t.base.model ? t.modelConfidence : t.effortConfidence ?? t.modelConfidence;
+  return { ...(t.model ? { model: t.model } : {}), effort: t.effort, pickedBy: pick.backend === 'openai' ? 'openai' : 'jev', ...(confidence != null ? { confidence } : {}), roles };
+}
