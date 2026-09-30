@@ -22,8 +22,9 @@ import { readState, writeState } from './workspace-store.js';
  *     wake still waiting in its queue. No polling.
  *
  * Bounded, not approved (the owner chose that): at most MAX_DELEGATES per
- * orchestrator, one level deep (a delegate has no x056 tools, so it cannot
- * delegate), and ROUND_LIMIT dispatches between two human messages.
+ * orchestrator, one level deep (a delegate's x056 tools carry no identity of
+ * its own, so it cannot delegate), and ROUND_LIMIT dispatches between two
+ * human messages.
  */
 
 export const MAX_DELEGATES = 8;

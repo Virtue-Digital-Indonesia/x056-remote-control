@@ -525,8 +525,9 @@ only), and Jev gates which reports wake the orchestrator.
   `state/delegates/<parentSid>.reports.jsonl`, events `delegate-events.jsonl`.
 - **Its turns are ordinary `runSession` turns** (accounts, failover, the
   persistent pools via `turnStarter`, the Codex per-account model fallback),
-  run by `SessionManager.runDelegateTurn` with no x056 MCP (so it cannot
-  delegate: one level deep) and `delegateInstructions(role)` appended to the
+  run by `SessionManager.runDelegateTurn` with x056 tools but no identity of
+  its own (so it cannot delegate: one level deep; see below) and
+  `delegateInstructions(role)` appended to the
   system prompt: every turn ends in a REPORT whose first line is DONE / NEEDS
   ORCHESTRATOR / NEEDS HUMAN / BLOCKED.
 - **While a delegate works, its orchestrator counts as background work**
