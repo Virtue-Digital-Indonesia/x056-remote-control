@@ -398,12 +398,38 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   swap, or the idle TTL. **Nothing wakes the model when a background task
   finishes** — it collects the output on its next turn.
 
-## Helpers: the advisor, Jev or OpenAI Decisions, one per conversation
+## Helpers: advisor + agent team + a model/effort picker, combinable
 
-A conversation can have ONE helper -- `Conversation.decisionMaker`: `advisor`,
-`jev`, `decisions`, or absent. One field, so two can never both be on.
-Composer picker: No helper / Advisor / Jev / OpenAI Decisions. `POST
-/api/conversations/decision-maker`.
+`Conversation.helpers` = `{ advisor?, team?, router?: 'jev' | 'decisions' }`,
+any combination (`POST /api/conversations/helpers`). The older single field
+`decisionMaker` is still read through `helpersOf` and dropped on the first
+combined save; `POST /api/conversations/decision-maker` still sets it. They
+were exclusive until 2026-09-30 because the owner first asked for "only one";
+the thread they come from uses them together, and so do we now.
+
+- **Agent team** (`server/team.ts`) is that thread's tree: the main session
+  (its own model/effort) plans and decides; **explorer** (reads code,
+  read-only), **worker** (bounded edit + tests) and **researcher** (docs,
+  read-only) do the legwork at effort **medium**; the advisor is on call if
+  on (Claude subagents inherit it); small forks go to the fork layer.
+  Nothing is installed into an account. Claude gets the three on argv
+  (`--agents` JSON, Opus, part of the process identity so toggling respawns
+  with `--resume`); read-only roles use `disallowedTools`, never an allowlist,
+  which would also strip the MCP tools. Codex already has built-in `explorer`
+  and `worker` roles, so it gets `agents.default_subagent_reasoning_effort =
+  "medium"` as thread config (`TurnOptions.codexConfig`, `-c` on the one-shot
+  path) and a `default` agent briefed as researcher. Both get the team
+  instructions appended to the system prompt.
+- **Fork layer**: the x056 MCP tool `quick_decision {question, options[2-6],
+  context}` -> `POST /api/jev/fork` -> Jev (or OpenAI Decisions when that is
+  the picker) as ONE choice question. `confidence >= 0.75`
+  (`JEV_POLICY.forkSharp`) is **SHARP** (follow it), else **SPLIT** (the main
+  model decides). Only for a conversation whose team is on. Never throws: no
+  key, a timeout or an off-list answer is a SPLIT with the reason. Logged in
+  `state/jev/forks/<sid>.jsonl`, metered in Jev's ledger, live as `jev_fork`,
+  shown in the terminal view as `◇ jev · fork · …`. Live-checked 2026-09-30:
+  "which file" with the stack trace naming it = SHARP 100% in 434 ms; retry-vs-
+  stop and REST-vs-GraphQL = SPLIT; ~$0.000015 per fork.
 
 - **Advisor on Claude** is Claude Code's own advisor tool: the gateway passes
   `--advisor <model>` (one-shot argv and the persistent transport; it is part
@@ -415,9 +441,10 @@ Composer picker: No helper / Advisor / Jev / OpenAI Decisions. `POST
   that it happened, and its tokens in the turn's `result.modelUsage`, are
   visible. Never use `/advisor` for this: it writes `advisorModel` into the
   account's settings.json and leaks to every conversation on that account.
-- **What the user sees**: a helper button in the composer (✦; a pill reading
-  "Advisor"/"Jev" when on) opening a small menu with a one-line description of
-  each option and Jev's credits. Each consultation is an advisor card in the
+- **What the user sees**: a helper button in the composer (✦; a pill naming
+  what is on, e.g. "Advisor · Team · Jev") opening a menu: Advisor and Agent
+  team are checkboxes, then one radio group for model & effort (your choice /
+  Jev / OpenAI Decisions); it stays open so several can be set. Each consultation is an advisor card in the
   chat: Claude's is one line ("Reviewed this step" -- the advice itself is
   encrypted), the ChatGPT advisor's shows verdict, advice and what was done
   with it. Live events `advisor_call` (Claude) / `advisor_consult` (ChatGPT);

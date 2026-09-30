@@ -1,7 +1,8 @@
 import { codexTurnForAccount, currentCodexPrefs } from '../src/codex-model-policy.js';
 import { currentClaudeModel } from '../src/claude-model-policy.js';
-import { JevService, type JevDecision } from './jev.js';
+import { checkFork, JevService, type ForkDecision, type ForkInput, type JevDecision } from './jev.js';
 import { OpenAIDecisionsService } from './openai-decisions.js';
+import { claudeTeamAgents, codexTeamConfig, teamInstructions } from './team.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
 import { findRollout } from '../src/adapters/codex.js';
 import { advisorFor, jevCandidates } from './decision-maker.js';
@@ -39,7 +40,7 @@ import { shareCodexSessions, prepareCodexHome } from './codex-sessions.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { getAdapter } from '../src/adapters/registry.js';
-import { ProjectRegistry, ProjectConflict, validateModeDefaults, requireWorkspace, requireWork, type ModeDefaults, type RunnableProject, type Project, type Conversation } from './projects.js';
+import { ProjectRegistry, ProjectConflict, validateModeDefaults, requireWorkspace, requireWork, type ModeDefaults, type RunnableProject, type Project, type Conversation, type ConversationHelpers, helpersOf } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import { PersistentTurns } from '../src/persistent.js';
@@ -1563,6 +1564,41 @@ export class SessionManager {
     this.emitConversations(pid);
   }
 
+  /** Turn helpers on or off together: the advisor, a model/effort picker, the
+   *  agent team. Each is checked against what it needs before it is saved. */
+  setHelpers(pid: string, sid: string, helpers: ConversationHelpers): ConversationHelpers {
+    if (helpers.router !== undefined && !['jev', 'decisions'].includes(helpers.router)) throw new Error('router must be jev or decisions');
+    this.projects().conversationProvider(pid, sid); // unknown conversation throws here
+    if (helpers.router === 'jev' && !this.jev().configured()) throw new Error('No Jev API key is configured');
+    if (helpers.router === 'decisions' && !this.openaiDecisions().configured()) throw new Error('No OpenAI API key is configured for the Decisions API');
+    this.projects().setHelpers(pid, sid, helpers);
+    this.emitConversations(pid);
+    return helpersOf(this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid));
+  }
+
+  /** Which backend answers the team's forks: the conversation's own picker if
+   *  it has one, else whichever is configured (Jev first). */
+  private forkBackend(helpers: ConversationHelpers): 'jev' | 'decisions' | undefined {
+    if (helpers.router === 'decisions' && this.openaiDecisions().configured()) return 'decisions';
+    if (this.jev().configured()) return 'jev';
+    return this.openaiDecisions().configured() ? 'decisions' : undefined;
+  }
+
+  /** The fork layer (`quick_decision`): one small choice for a conversation
+   *  whose agent team is on. */
+  async forkDecision(pid: string, sid: string, input: ForkInput): Promise<ForkDecision> {
+    const conv = this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid);
+    if (!conv) throw new Error('unknown conversation for that project');
+    const helpers = helpersOf(conv);
+    if (!helpers.team) throw new Error('The agent team is off for this conversation, so there is no fork layer: decide yourself.');
+    const backend = this.forkBackend(helpers);
+    if (!backend) throw new Error('Neither Jev nor OpenAI Decisions is configured: decide yourself.');
+    const fork = checkFork(input);
+    const d = backend === 'decisions' ? await this.openaiDecisions().fork(sid, fork) : await this.jev().fork(sid, fork);
+    this.emit('jev_fork', { ...d, projectId: pid } as unknown as Record<string, unknown>);
+    return d;
+  }
+
   /** Ask Jev or OpenAI Decisions for this turn's model/effort. A pick lasts
    *  one turn, so it is weighed against what THIS turn runs with otherwise --
    *  the conversation's saved choice. Weighing it against the previous pick
@@ -2551,8 +2587,15 @@ export class SessionManager {
     const adapter = this.adapterFor(pid, sessionId);
     const prefs = this.conversationRunPrefs(pid, sessionId, runOpts);
     const model = prefs.model || undefined, effort = prefs.effort || undefined;
-    const decisionMaker = reg.get(pid)?.conversations?.find((c) => c.sessionId === sessionId)?.decisionMaker;
-    const advisor = decisionMaker === 'advisor' ? advisorFor(adapter.id as 'claude' | 'codex', model) : undefined;
+    const helpers = helpersOf(reg.get(pid)?.conversations?.find((c) => c.sessionId === sessionId));
+    const advisor = helpers.advisor ? advisorFor(adapter.id as 'claude' | 'codex', model) : undefined;
+    // The agent team: subagents on argv (Claude) or thread config (Codex),
+    // and the main session told how to use them and the fork layer.
+    const team = helpers.team ? {
+      subagents: adapter.id === 'claude' ? claudeTeamAgents() : undefined,
+      codexConfig: adapter.id === 'codex' ? codexTeamConfig() : undefined,
+      instructions: teamInstructions(adapter.id, { advisor: !!helpers.advisor, forks: !!this.forkBackend(helpers) }),
+    } : undefined;
     reg.setConversationPrefs(pid, sessionId, prefs);
     // setPrefs snapshots legacy siblings before changing defaults for new chats.
     if (model || effort) reg.setPrefs(pid, { model, effort });
@@ -2639,16 +2682,17 @@ export class SessionManager {
       // it starts -- inside the async run, so sending a message never waits on
       // it. A failed or unsure pick leaves the conversation's own choice in
       // place. Both report as `jev_decision`, told apart by `backend`.
-      const runWith: typeof runFn = decisionMaker === 'jev' || decisionMaker === 'decisions'
+      const router = helpers.router;
+      const runWith: typeof runFn = router
         ? (async (o: Parameters<typeof runFn>[0]) => {
-            const d = await this.decideModelEffort(decisionMaker, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort);
+            const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort);
             emit('jev_decision', d as unknown as Record<string, unknown>);
             return runFn({ ...o, ...(d.model ? { model: d.model } : {}), ...(d.effort ? { effort: d.effort } : {}) });
           }) as typeof runFn
         : runFn;
       if (advisor) emit('advisor_state', { advisor, model: model ?? null });
       // ChatGPT has no advisor of its own; the gateway watches the turn.
-      const watcher = decisionMaker === 'advisor' && adapter.id === 'codex'
+      const watcher = helpers.advisor && adapter.id === 'codex'
         ? new TurnWatcher(cleanMemorySource(prompt), (trigger, transcript) => {
             void this.runCodexAdvisor(pid, sessionId, trigger, transcript, run.account, model).catch(() => {});
           }, { reviewDone: sender?.kind !== 'advisor' })
@@ -2680,7 +2724,9 @@ export class SessionManager {
         model,
         effort,
         advisor,
-        appendSystemPrompt: CONTAINER_SYSTEM_NOTE,
+        subagents: team?.subagents,
+        codexConfig: team?.codexConfig,
+        appendSystemPrompt: team ? CONTAINER_SYSTEM_NOTE + '\n\n' + team.instructions : CONTAINER_SYSTEM_NOTE,
         mcp: this.mcpWiringFor(pid, sessionId),
         // Each provider has a pool; the transport inside it speaks that CLI.
         startTurnFn: this.turnStarter(adapter, log, sessionId, (o) => ({

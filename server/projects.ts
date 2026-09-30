@@ -26,6 +26,21 @@ export interface MembershipOperation {
 export interface ArchiveOperation { id: string; projectId: string; expectedRevision: number; archived: boolean; executionIds: string[]; state: 'pending' | 'complete' }
 
 /** One conversation (a resumable session) within a project. */
+export interface ConversationHelpers {
+  advisor?: boolean;
+  router?: 'jev' | 'decisions';
+  team?: boolean;
+}
+
+/** A conversation's helpers, whichever way they were stored. */
+export function helpersOf(c: { helpers?: ConversationHelpers; decisionMaker?: 'advisor' | 'jev' | 'decisions' } | undefined): ConversationHelpers {
+  if (!c) return {};
+  if (c.helpers) return c.helpers;
+  if (c.decisionMaker === 'advisor') return { advisor: true };
+  if (c.decisionMaker === 'jev' || c.decisionMaker === 'decisions') return { router: c.decisionMaker };
+  return {};
+}
+
 export interface Conversation {
   creationIntent?: boolean;
   initialSpaceId?: string;
@@ -45,10 +60,12 @@ export interface Conversation {
   /** Last selected model/effort for this conversation. Empty means provider default. */
   model?: string;
   effort?: string;
-  /** Who else weighs in on each turn. ONE field, so the advisor and Jev can
-   *  never both be on: `advisor` = Claude Code's advisor tool, `jev` = TypeSafe
-   *  Jev picks model/effort per turn. Absent = neither. */
+  /** LEGACY single helper (before helpers combined): `advisor`, or a
+   *  model/effort picker. Read through `helpersOf`; `helpers` replaces it. */
   decisionMaker?: 'advisor' | 'jev' | 'decisions';
+  /** Who weighs in on each turn, combinable: the advisor, a per-turn
+   *  model/effort picker (Jev or OpenAI Decisions), the agent team. */
+  helpers?: ConversationHelpers;
   lastOutcome?: { status: 'completed' | 'failed' | 'parked' | 'stopped'; at: string; reason?: string };
   /** Which agent CLI this conversation runs on. Stamped when it's created (from
    *  the project's provider) and then FIXED: its transcript is that provider's
@@ -408,6 +425,16 @@ export class ProjectRegistry {
     const c = this.data.projects.find((x) => x.id === id)?.conversations?.find((x) => x.sessionId === sessionId);
     if (!c) throw new Error('unknown conversation for that project');
     if (value === null) delete c.decisionMaker; else c.decisionMaker = value;
+    delete c.helpers;
+    this.save();
+  }
+
+  setHelpers(id: string, sessionId: string, helpers: ConversationHelpers): void {
+    const c = this.data.projects.find((x) => x.id === id)?.conversations?.find((x) => x.sessionId === sessionId);
+    if (!c) throw new Error('unknown conversation for that project');
+    const clean: ConversationHelpers = { ...(helpers.advisor ? { advisor: true } : {}), ...(helpers.router ? { router: helpers.router } : {}), ...(helpers.team ? { team: true } : {}) };
+    delete c.decisionMaker;
+    if (Object.keys(clean).length) c.helpers = clean; else delete c.helpers;
     this.save();
   }
 

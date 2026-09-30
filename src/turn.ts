@@ -37,6 +37,11 @@ export interface TurnOptions {
   /** Claude Code's advisor model (`--advisor`), consulted by the main model at
    *  decision points. Claude only; Codex ignores it. */
   advisor?: string;
+  /** Session-scoped subagents, as the JSON `--agents` takes. Claude only. */
+  subagents?: string;
+  /** Extra config for the Codex thread (merged into thread/start `config`).
+   *  Codex only; the agent team sets its subagents' effort here. */
+  codexConfig?: Record<string, unknown>;
   appendSystemPrompt?: string;
   /** The gateway's MCP bridge (scripts/x056-mcp.mjs), giving the session tools
    *  to read/message OTHER conversations and projects through the gateway. Each
@@ -126,6 +131,7 @@ export function startTurn(opts: TurnOptions): TurnHandle {
     ...(opts.model ? ['--model', opts.model] : []),
     ...(opts.effort ? ['--effort', opts.effort] : []),
     ...(opts.advisor ? ['--advisor', opts.advisor] : []),
+    ...(opts.subagents ? ['--agents', opts.subagents] : []),
     ...(opts.mode === 'new' ? ['--session-id', opts.sessionId] : ['--resume', opts.sessionId]),
     // `--` ends option parsing so a prompt beginning with '-' (e.g. a markdown
     // bullet list) is taken as the positional prompt, not an unknown flag.

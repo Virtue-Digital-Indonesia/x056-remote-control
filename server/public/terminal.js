@@ -62,10 +62,11 @@
       $('termMeta').textContent = 'loading…';
       Promise.all([getJson('/api/conversations/raw-page' + q(c, '&limit=300')), getJson('/api/conversations/jev-decisions' + q(c)).catch(function () { return []; }),
         getJson('/api/conversations/advisor-consultations' + q(c)).catch(function () { return []; }),
-        getJson('/api/conversations/turn-results' + q(c)).catch(function () { return []; })])
+        getJson('/api/conversations/turn-results' + q(c)).catch(function () { return []; }),
+        getJson('/api/conversations/jev-forks' + q(c)).catch(function () { return []; })])
         .then(function (res) {
           if (myKey !== key) return;
-          var page = res[0]; jev = (res[1] || []).concat((res[2] || []).map(function (a) { return Object.assign({ kind: 'advisor' }, a); }), (res[3] || []).map(function (r) { return Object.assign({ kind: 'result' }, r); })).sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
+          var page = res[0]; jev = (res[1] || []).concat((res[2] || []).map(function (a) { return Object.assign({ kind: 'advisor' }, a); }), (res[3] || []).map(function (r) { return Object.assign({ kind: 'result' }, r); }), (res[4] || []).map(function (f) { return Object.assign({ kind: 'fork' }, f); })).sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
           provider = page.provider || 'claude';
           start = page.start; end = page.end; done = page.done;
           var firstTs = firstTimestamp(page.entries);
@@ -135,10 +136,11 @@
 
     /** Live events from the gateway. */
     function onEvent(kind, data) {
-      if ((kind !== 'jev_decision' && kind !== 'advisor_consult' && kind !== 'turn_result') || !open) return;
+      if ((kind !== 'jev_decision' && kind !== 'advisor_consult' && kind !== 'turn_result' && kind !== 'jev_fork') || !open) return;
       var c = cur(); if (!c || data.sessionId !== c.sessionId) return;
       if (kind === 'advisor_consult') data = Object.assign({ kind: 'advisor' }, data);
       if (kind === 'turn_result') data = Object.assign({ kind: 'result' }, data);
+      if (kind === 'jev_fork') data = Object.assign({ kind: 'fork' }, data);
       jev.push(data);
       var atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
       linesEl.appendChild(renderLines([jevLine(data)]));
@@ -213,9 +215,19 @@
       return out;
     }
 
+    // A small fork the agent team handed off: SHARP is followed, SPLIT goes
+    // back to the main model.
+    function forkLine(d) {
+      var who = d.backend === 'openai' ? 'decisions' : 'jev';
+      var t = who + ' · fork · ' + d.question + ' → ' + (d.choice ? d.choice + ' ' + pct(d.confidence) + ' ' : '') + (d.verdict === 'sharp' ? 'SHARP → follow' : 'SPLIT → main model') +
+        (d.error ? ' (' + d.error + ')' : '') + ' · ' + d.latencyMs + ' ms';
+      return line(d.at, d.verdict === 'sharp' ? 'jev' : 'jev split', '◇', t, d);
+    }
+
     function jevLine(d) {
       if (d.kind === 'advisor') return advisorLine(d);
       if (d.kind === 'result') return resultLine(d);
+      if (d.kind === 'fork') return forkLine(d);
       // Jev and OpenAI Decisions share the store; `backend` says which answered.
       // Decisions has no published price, so its line shows tokens, not dollars.
       var who = d.backend === 'openai' ? 'decisions' : 'jev';
@@ -250,7 +262,7 @@
 
     function mergeJev(lines, decisions) {
       if (!decisions.length) return lines;
-      var fresh = decisions.filter(function (d) { var k = (d.kind || d.backend || 'jev') + ':' + (d.trigger || '') + ':' + d.at + ':' + d.sessionId; if (jevShown[k]) return false; jevShown[k] = 1; return true; }).map(jevLine);
+      var fresh = decisions.filter(function (d) { var k = (d.kind || d.backend || 'jev') + ':' + (d.trigger || d.question || '') + ':' + d.at + ':' + d.sessionId; if (jevShown[k]) return false; jevShown[k] = 1; return true; }).map(jevLine);
       var out = [], j = 0, lastTs = '';
       lines.forEach(function (x) {
         if (x.ts) lastTs = x.ts;

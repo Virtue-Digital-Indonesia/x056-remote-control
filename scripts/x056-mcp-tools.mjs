@@ -240,6 +240,25 @@ const QUEUE_TOOLS = [
   },
 ];
 
+// The agent team's fork layer: Jev (or OpenAI Decisions) answers small forks.
+QUEUE_TOOLS.push({
+  name: 'quick_decision',
+  description:
+    'Fork layer for AGENT TEAM conversations: hand a small routine choice (which file to open first, which tool or subagent to use, retry a failed step or stop) to a fast decision model and get an answer in well under a second. '
+    + 'Give the question, 2 to 6 short distinct options, and one line of context. The answer is SHARP (confident: follow it) or SPLIT (a close call: decide yourself). '
+    + 'Not for design decisions or anything the user must decide. Only works in a conversation whose agent team is on.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      question: { type: 'string', description: 'The fork, as one question.' },
+      options: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 6, description: 'The choices, each short and distinct.' },
+      context: { type: 'string', description: 'One or two lines the decision depends on.' },
+    },
+    required: ['question', 'options'],
+    additionalProperties: false,
+  },
+});
+
 QUEUE_TOOLS.push({
   name: 'stop_conversation',
   description:
@@ -534,6 +553,15 @@ export async function callToolResult(api, name, args) {
       parts.push(res?.stopped ? 'stopped its running turn' : 'it had no turn running');
       parts.push(res?.dropped ? `dropped ${res.dropped} queued message(s)` : 'nothing was queued for it');
       return result(`${args.sessionId}: ${parts.join('; ')}.`, { projectId: args.projectId, sessionId: args.sessionId, stopped: res.stopped, dropped: res.dropped });
+    }
+    if (name === 'quick_decision') {
+      if (!SELF.projectId || !SELF.sessionId) throw new Error('quick_decision is only available to a conversation running on this gateway');
+      const d = await api('/api/jev/fork', { method: 'POST', body: JSON.stringify({ projectId: SELF.projectId, sessionId: SELF.sessionId, question: args.question, options: args.options, context: args.context }) });
+      const sure = d.confidence != null ? ` (${Math.round(d.confidence * 100)}% sure)` : '';
+      const text = d.verdict === 'sharp'
+        ? `SHARP: ${d.choice}${sure}. Follow it.`
+        : `SPLIT${d.choice ? `: leaning ${d.choice}${sure}, too close to call` : ''}${d.error ? ` (${d.error})` : ''}. Decide this one yourself.`;
+      return result(text, { verdict: d.verdict, backend: d.backend, latencyMs: d.latencyMs, ...(d.choice ? { choice: d.choice } : {}), ...(d.confidence != null ? { confidence: d.confidence } : {}), ...(d.error ? { error: d.error } : {}) });
     }
     if (name === 'message_self') {
       if (!SELF.projectId || !SELF.sessionId) {

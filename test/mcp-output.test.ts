@@ -52,7 +52,7 @@ afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir
 
 describe('all advertised output contracts', () => {
   it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(54);
+    expect(TOOLS).toHaveLength(55);
     expect(validators.size).toBe(TOOLS.length);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
@@ -113,6 +113,18 @@ describe('all advertised output contracts', () => {
     await expect(self.callToolResult(async () => manager.queueSelfMessage('p', 's', 'fixture'), 'message_self', { message: 'fixture' })).rejects.toThrow(/self-message limit/);
     manager.haltConversation('p', 's');
     covered.add('message_self');
+
+    // The agent team's fork layer: off without the team, SHARP/SPLIT with it.
+    const fork = (args: Record<string, unknown>) => self.callToolResult(async (_path: string, o?: RequestInit) => manager.forkDecision('p', 's', JSON.parse(String(o?.body))), 'quick_decision', args);
+    await expect(fork({ question: 'which file', options: ['a', 'b'] })).rejects.toThrow(/agent team is off/);
+    manager.setHelpers('p', 's', { team: true });
+    vi.spyOn(manager.jev(), 'configured').mockReturnValue(true);
+    vi.spyOn(manager.jev(), 'fork').mockResolvedValue({ at: 't', sessionId: 's', backend: 'jev', question: 'which file', options: ['a', 'b'], choice: 'a', confidence: 0.9, verdict: 'sharp', latencyMs: 3 });
+    const qd = await fork({ question: 'which file', options: ['a', 'b'] });
+    expect(validateResult('quick_decision', qd)).toMatchObject({ verdict: 'sharp', choice: 'a', backend: 'jev' });
+    expect(qd.content[0].text).toBe('SHARP: a (90% sure). Follow it.');
+    manager.setHelpers('p', 's', {});
+    covered.add('quick_decision');
   });
 
   it('exercises schedule creation, pause, resume, missing targets, run results and cancellation in the fixture', async () => {

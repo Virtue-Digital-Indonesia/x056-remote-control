@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readState, writeState } from './workspace-store.js';
-import { applyPolicy, decisionState, EFFORT_QUESTION, MODEL_QUESTION, type DecisionAnswer, type JevDecision, type JevDecisionInput } from './jev.js';
+import { applyPolicy, decisionState, EFFORT_QUESTION, forkVerdict, MODEL_QUESTION, type DecisionAnswer, type ForkDecision, type ForkInput, type JevDecision, type JevDecisionInput } from './jev.js';
 
 /**
  * OpenAI's Decisions API as the per-turn model/effort picker: the same job as
@@ -30,7 +30,7 @@ const DEFAULT_ENDPOINT = 'https://api.openai.com/v1/decisions';
 interface Config { apiKey?: string; model?: string; endpoint?: string }
 interface Ledger { calls: number; failures: number; inputTokens: number; outputTokens: number; lastOkAt?: string; lastError?: { at: string; message: string } }
 
-export interface DecisionStore { decisions(sessionId: string): JevDecision[]; record(d: JevDecision): void }
+export interface DecisionStore { decisions(sessionId: string): JevDecision[]; record(d: JevDecision): void; recordFork(d: ForkDecision): void }
 
 /** The request, in one place so a published schema is a one-function change. */
 export function decisionsRequest(input: JevDecisionInput, model?: string): Record<string, unknown> {
@@ -150,6 +150,30 @@ export class OpenAIDecisionsService {
     }
     this.note(true, inputTokens, outputTokens);
     return finish(applyPolicy({ ...base, latencyMs: r.latencyMs, inputTokens, outputTokens }, input, answers, this.store.decisions(sessionId)));
+  }
+
+  /** One fork (see JevService.fork), same verdict rule. Never throws. */
+  async fork(sessionId: string, input: ForkInput): Promise<ForkDecision> {
+    const started = Date.now();
+    const base: ForkDecision = { at: new Date().toISOString(), sessionId, backend: 'openai', question: input.question, options: input.options, latencyMs: 0 };
+    const done = (d: ForkDecision) => { this.store.recordFork(d); return d; };
+    if (!this.configured()) return done({ ...base, verdict: 'split', error: 'No OpenAI API key configured' });
+    const body = { ...(this.config().model ? { model: this.config().model } : {}), input: [{ type: 'input_text', text: input.context || input.question }],
+      questions: [{ id: 'fork', instructions: input.question, options: input.options.map((value) => ({ value, description: value })) }] };
+    let r: Awaited<ReturnType<OpenAIDecisionsService['call']>>;
+    try { r = await this.call(body); }
+    catch (e) { this.note(false, 0, 0, (e as Error).message); return done({ ...base, verdict: 'split', latencyMs: Date.now() - started, error: (e as Error).message }); }
+    const usage = (r.json.usage ?? {}) as Record<string, number>;
+    const inputTokens = usage.input_tokens ?? usage.prompt_tokens ?? 0;
+    const a = decisionsAnswers(r.json).fork;
+    if (r.status < 200 || r.status >= 300 || !a?.choice || !input.options.includes(a.choice)) {
+      const msg = ((r.json.error as Record<string, unknown> | undefined)?.message as string | undefined)?.slice(0, 300);
+      const error = r.status >= 200 && r.status < 300 ? 'OpenAI Decisions gave no usable answer' : `OpenAI Decisions answered HTTP ${r.status}` + (msg ? ': ' + msg : '');
+      this.note(false, inputTokens, 0, error);
+      return done({ ...base, verdict: 'split', latencyMs: r.latencyMs, inputTokens, error });
+    }
+    this.note(true, inputTokens, usage.output_tokens ?? 0);
+    return done({ ...base, choice: a.choice, confidence: a.confidence, probabilities: a.probabilities, verdict: forkVerdict(a.confidence), latencyMs: r.latencyMs, inputTokens });
   }
 
   /** One real call on a fixed question, raw reply included -- for checking

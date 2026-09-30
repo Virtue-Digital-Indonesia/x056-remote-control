@@ -893,6 +893,16 @@ function readSubagentPage(configDirs: string[], providerSessionId: string, agent
   return readHistoryPage(configDirs, agentId, limit, before);
 }
 
+/** Nested thread config as `-c dotted.key=value` pairs (values as TOML/JSON literals). */
+export function configOverrides(config: Record<string, unknown> | undefined, prefix = ''): string[] {
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(config ?? {})) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) out.push(...configOverrides(v as Record<string, unknown>, prefix + k + '.'));
+    else if (v !== undefined) out.push('-c', `${prefix}${k}=${JSON.stringify(v)}`);
+  }
+  return out;
+}
+
 function startCodexTurn(opts: TurnOptions): TurnHandle {
   const flags = [
     '--json',
@@ -906,6 +916,7 @@ function startCodexTurn(opts: TurnOptions): TurnHandle {
     // value passed here (tested "high" and "ultra" — a level only some GPT
     // models support, e.g. gpt-5.6-sol; Claude has no equivalent).
     ...(opts.effort ? ['-c', `model_reasoning_effort="${opts.effort}"`] : []),
+    ...configOverrides(opts.codexConfig),
     // The gateway's MCP bridge, as config overrides (codex has no --mcp-config
     // file flag; -c takes dotted TOML keys, values parsed as TOML).
     ...(opts.mcp

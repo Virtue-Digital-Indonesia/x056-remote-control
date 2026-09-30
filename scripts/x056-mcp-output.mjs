@@ -88,6 +88,7 @@ const schemas = {
   edit_queued: object({ projectId: str, id: str, ok: bool }),
   stop_conversation: object({ projectId: str, sessionId: str, stopped: bool, dropped: num }),
   message_self: object({ id: str, remaining: num }),
+  quick_decision: object({ verdict: choices('sharp', 'split'), choice: str, confidence: num, backend: choices('jev', 'openai'), latencyMs: num, error: str }, ['verdict', 'backend', 'latencyMs']),
   schedule_task: object({ job: object(jobFields, jobRequired) }),
   pause_scheduled: object({ job: object(jobFields, jobRequired) }),
   cancel_scheduled: object({ id: str, ok: bool }),

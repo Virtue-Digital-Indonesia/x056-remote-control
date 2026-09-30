@@ -101,7 +101,7 @@ export class CodexTransport implements Transport {
    *  in either is served by the process the thread already has. The MCP wiring
    *  and the developer instructions go into thread/start and are fixed. */
   identity(o: TurnOptions): string {
-    return [o.configDir, o.conversationId ?? o.sessionId, o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? '')].join('\0');
+    return [o.configDir, o.conversationId ?? o.sessionId, o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? ''), hashText(JSON.stringify(o.codexConfig ?? {}))].join('\0');
   }
 
   spawnSpec(o: TurnOptions) {
@@ -117,7 +117,7 @@ export class CodexTransport implements Transport {
     const x = ext(st);
     x.lastOptions = o; x.write = write; x.ready = false; x.turnStarts = new Set(); x.commands = new Map();
     write(JSON.stringify({ jsonrpc: '2.0', id: RPC_INIT, method: 'initialize', params: { clientInfo: { name: 'x056', version: '1' } } }));
-    const config: Record<string, unknown> = {};
+    const config: Record<string, unknown> = { ...(o.codexConfig ?? {}) };
     if (o.mcp) config.mcp_servers = { x056: { command: o.mcp.command, args: o.mcp.args, env: o.mcp.env } };
     const startParams = { cwd: o.cwd, ...(o.model ? { model: o.model } : {}), approvalPolicy: 'never', sandbox: 'danger-full-access', config,
       ...(o.appendSystemPrompt ? { developerInstructions: o.appendSystemPrompt } : {}) };

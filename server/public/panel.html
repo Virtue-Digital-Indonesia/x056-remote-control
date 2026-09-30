@@ -886,13 +886,15 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 .tl.sys .tg, .tl.sys .tx, .tl.meta .tg, .tl.meta .tx { color: #5c6570; }
 .term.hide-meta .tl.meta { display: none; }
 @media (max-width: 650px) { .tl { grid-template-columns: 0 14px minmax(0, 1fr); } .tl .tt { visibility: hidden; } .tl .td { margin-left: 20px; } }
-/* ---- helper control (composer): none | advisor | jev | decisions ---- */
+/* ---- helper control (composer): advisor + agent team + model/effort picker ---- */
 .helper { position: relative; display: inline-flex; flex: none; }
 .helper-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; min-width: 30px; justify-content: center; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
 .helper-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .helper-btn:disabled { opacity: .45; cursor: default; }
-.helper-btn[data-state=advisor], .helper-btn[data-state=jev], .helper-btn[data-state=decisions] { color: var(--accent); background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 28%, transparent); padding: 0 10px 0 8px; }
+.helper-btn[data-state=on] { color: var(--accent); background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 28%, transparent); padding: 0 10px 0 8px; }
 .helper-btn[data-state=none] .helper-label { display: none; }
+.helper-label { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.helper-head.sub { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
 .helper-label { font-weight: 600; letter-spacing: .1px; }
 .helper-menu { position: fixed; z-index: 160; width: 300px; max-width: calc(100vw - 24px); padding: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); }
 .helper-menu[hidden] { display: none; }
@@ -1079,15 +1081,17 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
             <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option><option value="ultracode">Ultracode</option>
           </select></div>
         </div>
-        <!-- Helper: none | advisor | jev | decisions -- one field, so only ever one. -->
+        <!-- Helpers, combinable: advisor, agent team, and one model/effort picker. -->
         <div class="helper" id="helperWrap">
           <button type="button" class="helper-btn" id="helperBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="helperMenu"><svg class="ic sm"><use href="#i-sparkles"/></svg><span class="helper-label" id="helperLabel"></span></button>
-          <div class="helper-menu" id="helperMenu" role="menu" aria-label="Helper for the next turns" hidden>
-            <div class="helper-head">Helper for the next turns</div>
-            <button type="button" class="helper-item" role="menuitemradio" data-value="none"><span class="hi-text"><span class="hi-title">No helper</span><span class="hi-desc">The model works on its own.</span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <button type="button" class="helper-item" role="menuitemradio" data-value="advisor"><span class="hi-text"><span class="hi-title">Advisor</span><span class="hi-desc" id="helperAdvisorDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <button type="button" class="helper-item" role="menuitemradio" data-value="jev"><span class="hi-text"><span class="hi-title">Jev</span><span class="hi-desc" id="helperJevDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <button type="button" class="helper-item" role="menuitemradio" data-value="decisions"><span class="hi-text"><span class="hi-title">OpenAI Decisions <span class="hi-tag">preview</span></span><span class="hi-desc" id="helperDecisionsDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+          <div class="helper-menu" id="helperMenu" role="menu" aria-label="Helpers for the next turns" hidden>
+            <div class="helper-head">Helpers for the next turns</div>
+            <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="advisor"><span class="hi-text"><span class="hi-title">Advisor</span><span class="hi-desc" id="helperAdvisorDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="team"><span class="hi-text"><span class="hi-title">Agent team</span><span class="hi-desc" id="helperTeamDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <div class="helper-head sub">Model &amp; effort for each turn</div>
+            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value=""><span class="hi-text"><span class="hi-title">Your choice</span><span class="hi-desc">The model and effort in the composer.</span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="jev"><span class="hi-text"><span class="hi-title">Jev</span><span class="hi-desc" id="helperJevDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="decisions"><span class="hi-text"><span class="hi-title">OpenAI Decisions <span class="hi-tag">preview</span></span><span class="hi-desc" id="helperDecisionsDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
           </div>
         </div>
         <button class="attach" id="tplBtn" title="insert a saved prompt template (Alt+T)"><svg class="ic sm"><use href="#i-snippet"/></svg></button>
@@ -1958,9 +1962,8 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     if (pick) { modelEl.value = pick.model; if (currentProvider() === 'codex') syncEffortOptionsForCodexModel(pick.effort); else effortEl.value = pick.effort; }
     syncDecider(pid);
   }
-  // ---- decision maker: none | advisor | jev | decisions (one field on the conversation) ----
+  // ---- helpers: advisor + agent team + a model/effort picker (Jev or OpenAI Decisions) ----
   var jevStatus = null, decisionsStatus = null;
-  var HELPER_LABELS = { advisor: 'Advisor', jev: 'Jev', decisions: 'Decisions' };
   var ADVISOR_NAMES = { opus: 'Opus', fable: 'Fable', sonnet: 'Sonnet' };
   function advisorModelName(m) {
     if (!m) return '';
@@ -1968,30 +1971,47 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     var g = /^gpt-\d+(?:\.\d+)?-(\w+)/i.exec(m); if (g) return g[1].charAt(0).toUpperCase() + g[1].slice(1);
     return m.replace(/^claude-/, '');
   }
+  // Helpers are combinable: { advisor, team, router: 'jev' | 'decisions' }.
+  // Older conversations stored ONE `decisionMaker`; read it the same way.
+  function helpersOfConv(c) {
+    if (!c) return {};
+    if (c.helpers) return c.helpers;
+    if (c.decisionMaker === 'advisor') return { advisor: true };
+    if (c.decisionMaker === 'jev' || c.decisionMaker === 'decisions') return { router: c.decisionMaker };
+    return {};
+  }
   function helperFor(pid) {
     var c = ((projCache[pid] || {}).conversations || []).find(function (row) { return row.sessionId === lastSessionId; });
-    return { conv: c, value: (c && c.decisionMaker) || 'none' };
+    return { conv: c, helpers: helpersOfConv(c) };
+  }
+  function helperNames(h) {
+    return [h.advisor && 'Advisor', h.team && 'Team', h.router === 'jev' && 'Jev', h.router === 'decisions' && 'Decisions'].filter(Boolean);
   }
   function syncDecider(pid) {
     var btn = $('helperBtn'); if (!btn) return;
-    var h = helperFor(pid), codex = currentProvider() === 'codex';
-    var usable = !pendingNew && !!lastSessionId && !!h.conv;
+    var h = helperFor(pid), on = h.helpers, codex = currentProvider() === 'codex';
+    var usable = !pendingNew && !!lastSessionId && !!h.conv, names = helperNames(on);
     btn.disabled = !usable;
-    btn.dataset.state = h.value;
-    $('helperLabel').textContent = HELPER_LABELS[h.value] || '';
-    var what = h.value === 'advisor' ? 'Advisor on' : h.value === 'jev' ? 'Jev picks model and effort' : h.value === 'decisions' ? 'OpenAI Decisions picks model and effort' : 'No helper';
-    btn.title = usable ? 'Helper: ' + what : 'Send the first message, then choose a helper for the following turns';
-    btn.setAttribute('aria-label', 'Helper: ' + what);
+    btn.dataset.state = names.length ? 'on' : 'none';
+    $('helperLabel').textContent = names.join(' · ');
+    var what = names.length ? names.join(', ') : 'none';
+    btn.title = usable ? 'Helpers: ' + what : 'Send the first message, then choose helpers for the following turns';
+    btn.setAttribute('aria-label', 'Helpers: ' + what);
     $('helperAdvisorDesc').textContent = codex ? 'Astra reviews the plan, repeated failures and the finished turn.' : 'A stronger model reviews the plan, repeated errors and the result.';
+    var forks = (jevStatus && jevStatus.configured) || (decisionsStatus && decisionsStatus.configured);
+    $('helperTeamDesc').textContent = (codex ? 'Explorer and worker subagents, plus a researcher, on medium effort.' : 'Explorer, worker and researcher subagents on Opus, medium effort.') + (forks ? ' Small forks go to ' + (on.router === 'decisions' ? 'OpenAI Decisions' : 'Jev') + '.' : '');
     var jevItem = document.querySelector('#helperMenu [data-value=jev]'), jevReady = !jevStatus || jevStatus.configured;
-    jevItem.disabled = !jevReady;
+    jevItem.disabled = !jevReady && on.router !== 'jev';
     $('helperJevDesc').textContent = !jevReady ? 'Needs a TypeSafe API key.' : 'Picks the model and effort for each turn' + (jevStatus && jevStatus.estimatedLeft !== undefined ? ' · ≈$' + jevStatus.estimatedLeft.toFixed(2) + ' left' : '') + '.';
     // Same job as Jev through OpenAI's Decisions API. Offered only once a key
     // is configured; a conversation already on it keeps it selectable.
     var decItem = document.querySelector('#helperMenu [data-value=decisions]'), decReady = !!(decisionsStatus && decisionsStatus.configured);
-    decItem.disabled = !decReady && h.value !== 'decisions';
+    decItem.disabled = !decReady && on.router !== 'decisions';
     $('helperDecisionsDesc').textContent = !decReady ? 'Needs an OpenAI API key with Decisions access.' : 'Picks the model and effort for each turn, in place of Jev' + (decisionsStatus.calls ? ' · ' + decisionsStatus.calls + ' call' + (decisionsStatus.calls === 1 ? '' : 's') : '') + '.';
-    document.querySelectorAll('#helperMenu .helper-item').forEach(function (it) { it.setAttribute('aria-checked', it.dataset.value === h.value ? 'true' : 'false'); });
+    document.querySelectorAll('#helperMenu .helper-item').forEach(function (it) {
+      var k = it.dataset.kind, v = k === 'router' ? (on.router || '') === it.dataset.value : !!on[k];
+      it.setAttribute('aria-checked', v ? 'true' : 'false');
+    });
   }
   function helperMenu(open) {
     var menu = $('helperMenu'), btn = $('helperBtn');
@@ -2005,16 +2025,20 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     }
     if (open) { refreshJevStatus(); var sel = menu.querySelector('[aria-checked=true]') || menu.querySelector('.helper-item'); if (sel) sel.focus(); }
   }
-  function setHelper(value) {
+  // One click changes one helper; the menu stays open so several can be set.
+  function setHelper(kind, value) {
     var pid = currentProjectId, sid = lastSessionId, h = helperFor(pid);
-    helperMenu(false);
-    if (!pid || !sid || value === h.value) return;
-    var btn = $('helperBtn'); btn.disabled = true;
-    api('/api/conversations/decision-maker', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, decisionMaker: value }) })
-      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || 'Could not change the helper'); }); })
-      .then(function () { if (h.conv) { if (value === 'none') delete h.conv.decisionMaker; else h.conv.decisionMaker = value; } })
+    if (!pid || !sid || !h.conv) return;
+    var next = Object.assign({}, h.helpers);
+    if (kind === 'router') { if (value) next.router = value; else delete next.router; }
+    else next[kind] = !next[kind];
+    var btn = $('helperBtn'), menu = $('helperMenu');
+    menu.setAttribute('aria-busy', 'true');
+    api('/api/conversations/helpers', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, advisor: !!next.advisor, team: !!next.team, router: next.router || null }) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || 'Could not change the helpers'); return j; }); })
+      .then(function (j) { if (h.conv) { h.conv.helpers = j.helpers || next; delete h.conv.decisionMaker; } })
       .catch(function (e) { addSys(e.message, 'banner'); })
-      .then(function () { syncDecider(pid); btn.focus(); });
+      .then(function () { menu.removeAttribute('aria-busy'); syncDecider(pid); if (menu.hidden) btn.focus(); });
   }
   function refreshJevStatus() {
     var get = function (u) { return api(u).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }); };
@@ -4652,7 +4676,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -6157,7 +6181,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
   modelEl.addEventListener('change', saveConversationPick);
   effortEl.addEventListener('change', saveConversationPick);
   $('helperBtn').addEventListener('click', function (e) { e.stopPropagation(); helperMenu(); });
-  $('helperMenu').addEventListener('click', function (e) { var it = e.target.closest('.helper-item'); if (it && !it.disabled) setHelper(it.dataset.value); });
+  $('helperMenu').addEventListener('click', function (e) { var it = e.target.closest('.helper-item'); if (it && !it.disabled) setHelper(it.dataset.kind, it.dataset.value); });
   $('helperMenu').addEventListener('keydown', function (e) {
     var items = [].slice.call(this.querySelectorAll('.helper-item:not([disabled])')), i = items.indexOf(document.activeElement);
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); var n = items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]; if (n) n.focus(); }

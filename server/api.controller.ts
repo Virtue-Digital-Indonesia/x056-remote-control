@@ -522,6 +522,36 @@ export class ApiController {
     catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
+  /** Helpers, combinable: { advisor?, router?: 'jev'|'decisions', team? }. */
+  @Post('conversations/helpers')
+  @HttpCode(200)
+  conversationHelpers(@Body() body: { projectId?: string; sessionId?: string; advisor?: boolean; router?: string | null; team?: boolean }) {
+    if (!body?.projectId || !body.sessionId) throw new BadRequestException('projectId and sessionId required');
+    try {
+      return { ok: true, helpers: this.manager.setHelpers(body.projectId, body.sessionId, {
+        advisor: body.advisor === true, team: body.team === true,
+        ...(body.router ? { router: body.router as 'jev' | 'decisions' } : {}),
+      }) };
+    } catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** The fork layer, for `quick_decision`: one small choice, SHARP or SPLIT. */
+  @Post('jev/fork')
+  @HttpCode(200)
+  async jevFork(@Body() body: { projectId?: string; sessionId?: string; question?: string; options?: string[]; context?: string }) {
+    if (!body?.projectId || !body.sessionId) throw new BadRequestException('projectId and sessionId required');
+    try { return await this.manager.forkDecision(body.projectId, body.sessionId, { question: body.question ?? '', options: body.options ?? [], context: body.context }); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** Every fork this conversation's team handed off, oldest first. */
+  @Get('conversations/jev-forks')
+  conversationJevForks(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {
+    if (!projectId || !sessionId || !this.manager.listConversations(projectId).some((c) => c.sessionId === sessionId))
+      throw new BadRequestException('unknown conversation for that project');
+    return this.manager.jev().forks(sessionId);
+  }
+
   /** The raw transcript, paged by byte offset, for the terminal view. */
   @Get('conversations/raw-page')
   conversationRawPage(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string,

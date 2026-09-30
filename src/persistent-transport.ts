@@ -82,7 +82,7 @@ export class ClaudeTransport implements Transport {
   readonly id = 'claude' as const;
 
   identity(o: TurnOptions): string {
-    return [o.configDir, o.conversationId ?? o.sessionId, o.model ?? '', o.effort ?? '', o.advisor ?? '', o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? '')].join('\0');
+    return [o.configDir, o.conversationId ?? o.sessionId, o.model ?? '', o.effort ?? '', o.advisor ?? '', hashText(o.subagents ?? ''), o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? '')].join('\0');
   }
 
   spawnSpec(o: TurnOptions) {
@@ -97,6 +97,7 @@ export class ClaudeTransport implements Transport {
       ...(o.model ? ['--model', o.model] : []),
       ...(o.effort ? ['--effort', o.effort] : []),
       ...(o.advisor ? ['--advisor', o.advisor] : []),
+      ...(o.subagents ? ['--agents', o.subagents] : []),
       ...(o.mode === 'new' ? ['--session-id', o.sessionId] : ['--resume', o.sessionId]),
     ];
     return { bin: o.claudePath ?? o.binPath ?? 'claude', args, env: { ...process.env, CLAUDE_CONFIG_DIR: o.configDir } };

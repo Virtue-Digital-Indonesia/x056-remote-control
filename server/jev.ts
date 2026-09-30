@@ -74,7 +74,42 @@ const zero = () => ({ calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 });
 
 /** Thresholds for applying a pick. A Claude model switch respawns the process
  *  and drops the prompt cache, so it needs more confidence and a gap. */
-export const JEV_POLICY = { effortMin: 0.6, modelMin: 0.8, claudeModelGapTurns: 3 };
+export const JEV_POLICY = { effortMin: 0.6, modelMin: 0.8, claudeModelGapTurns: 3, forkSharp: 0.75 };
+
+/** One small fork the agent team hands off (`quick_decision`): which file,
+ *  which tool or subagent, retry or stop. SHARP = confident enough to follow;
+ *  SPLIT = close call, the main model decides. */
+export interface ForkInput { question: string; options: string[]; context?: string }
+export interface ForkDecision {
+  at: string;
+  sessionId: string;
+  backend: 'jev' | 'openai';
+  question: string;
+  options: string[];
+  choice?: string;
+  confidence?: number;
+  probabilities?: Record<string, number>;
+  verdict?: 'sharp' | 'split';
+  latencyMs: number;
+  inputTokens?: number;
+  costUsd?: number;
+  error?: string;
+}
+
+/** Validate what an agent sent; throws a message the agent can act on. */
+export function checkFork(input: ForkInput): ForkInput {
+  const question = String(input?.question ?? '').trim();
+  const options = [...new Set((Array.isArray(input?.options) ? input.options : []).map((o) => String(o).trim()).filter(Boolean))];
+  if (!question) throw new Error('question is required');
+  if (question.length > 500) throw new Error('question is too long (500 characters max): a fork is a small question');
+  if (options.length < 2 || options.length > 6) throw new Error('give 2 to 6 distinct options');
+  if (options.some((o) => o.length > 200)) throw new Error('keep each option under 200 characters');
+  return { question, options, context: input.context ? String(input.context).slice(0, 2000) : undefined };
+}
+
+export function forkVerdict(confidence: number | undefined): 'sharp' | 'split' {
+  return (confidence ?? 0) >= JEV_POLICY.forkSharp ? 'sharp' : 'split';
+}
 
 export class JevService {
   private readonly dir: string;
@@ -131,6 +166,45 @@ export class JevService {
     if (!existsSync(f)) return [];
     try { return readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as JevDecision); } catch { return []; }
   }
+  forks(sessionId: string): ForkDecision[] {
+    if (!/^[A-Za-z0-9-]{8,64}$/.test(sessionId)) return [];
+    const f = join(this.dir, 'forks', sessionId + '.jsonl');
+    if (!existsSync(f)) return [];
+    try { return readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as ForkDecision); } catch { return []; }
+  }
+  recordFork(d: ForkDecision): void {
+    if (!/^[A-Za-z0-9-]{8,64}$/.test(d.sessionId)) return;
+    mkdirSync(join(this.dir, 'forks'), { recursive: true });
+    appendFileSync(join(this.dir, 'forks', d.sessionId + '.jsonl'), JSON.stringify(d) + '\n', { mode: 0o600 });
+  }
+
+  /** One fork on Jev. Never throws; an unreachable Jev is a SPLIT with an error,
+   *  so the agent simply decides itself. */
+  async fork(sessionId: string, input: ForkInput): Promise<ForkDecision> {
+    const started = Date.now();
+    const base: ForkDecision = { at: new Date().toISOString(), sessionId, backend: 'jev', question: input.question, options: input.options, latencyMs: 0 };
+    const done = (d: ForkDecision) => { this.recordFork(d); return d; };
+    const key = this.key();
+    if (!key) return done({ ...base, verdict: 'split', error: 'No Jev API key configured' });
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), this.timeoutMs);
+    let res: Response;
+    try {
+      res = await this.fetchFn(API, { method: 'POST', signal: ctl.signal, headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'jev-latest', state: { context: input.context || '' }, questions: { fork: { type: 'choice', instructions: input.question, criteria: Object.fromEntries(input.options.map((o) => [o, o])) } } }) });
+    } catch (e) {
+      return done({ ...base, verdict: 'split', latencyMs: Date.now() - started, error: (e as Error).name === 'AbortError' ? `Jev did not answer within ${this.timeoutMs} ms` : 'Jev unreachable: ' + (e as Error).message });
+    } finally { clearTimeout(timer); }
+    const body = (await res.json().catch(() => ({}))) as { answers?: Record<string, DecisionAnswer>; usage?: { input_tokens?: number; output_tokens?: number } };
+    const latencyMs = Date.now() - started;
+    if (!res.ok) return done({ ...base, verdict: 'split', latencyMs, error: `Jev answered HTTP ${res.status}` });
+    const inputTokens = body.usage?.input_tokens ?? 0;
+    const costUsd = round(this.meter(inputTokens, body.usage?.output_tokens ?? 0), 8);
+    const a = body.answers?.fork;
+    if (!a?.choice || !input.options.includes(a.choice)) return done({ ...base, verdict: 'split', latencyMs, inputTokens, costUsd, error: 'Jev gave no usable answer' });
+    return done({ ...base, choice: a.choice, confidence: a.confidence, probabilities: a.probabilities, verdict: forkVerdict(a.confidence), latencyMs, inputTokens, costUsd });
+  }
+
   /** Every backend records here, so the Claude switching gap counts a model
    *  switch no matter which of them made it. */
   record(d: JevDecision): void {

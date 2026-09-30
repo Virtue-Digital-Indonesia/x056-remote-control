@@ -49,6 +49,9 @@ export interface RunSessionOptions {
   effort?: string;
   /** Claude advisor model, passed to every turn of this session. */
   advisor?: string;
+  /** Agent team wiring (see TurnOptions.subagents / codexConfig). */
+  subagents?: string;
+  codexConfig?: Record<string, unknown>;
   appendSystemPrompt?: string;
   /** The gateway's MCP bridge wiring, passed through to every turn (see
    *  TurnOptions.mcp) so sessions can read/message other conversations. */
@@ -297,6 +300,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         model: opts.model,
         effort: opts.effort,
         advisor: opts.advisor,
+        subagents: opts.subagents,
+        codexConfig: opts.codexConfig,
         appendSystemPrompt: opts.appendSystemPrompt,
         mcp: opts.mcp,
         onEvent: (e) => processEvent(e),
