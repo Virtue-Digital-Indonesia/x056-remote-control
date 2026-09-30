@@ -118,6 +118,19 @@ export function codexHomeIndexed(configDir: string): boolean | undefined {
   } catch { return undefined; }
 }
 
+/** Renames a home's `state_N.sqlite` (and its -wal/-shm) out of the way, kept
+ *  for a look later, so the next start builds the index from scratch. */
+export function setAsideCodexState(configDir: string): string[] {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-'), moved: string[] = [];
+  let files: string[] = [];
+  try { files = readdirSync(configDir).filter((f) => /^state_\d+\.sqlite(-wal|-shm)?$/.test(f)); } catch { return moved; }
+  for (const f of files) {
+    try { renameSync(join(configDir, f), join(configDir, `${f}.unfinished-${stamp}`)); moved.push(f); } catch { /* leave it */ }
+  }
+  if (moved.length) console.log(`[codex-sessions] ${configDir}: unfinished index set aside (${moved.join(', ')})`);
+  return moved;
+}
+
 /**
  * Runs Codex's one-time index of the shared store for a home, outside any
  * turn's timeout, and keeps the account out of routing until it is done.
@@ -140,6 +153,12 @@ export function codexHomeIndexed(configDir: string): boolean | undefined {
 export function prepareCodexHome(configDir: string, codexPath = 'codex', timeoutMs = 20 * 60_000): Promise<boolean> {
   if (codexHomePreparing(configDir)) return Promise.resolve(false);
   markCodexHomePreparing(configDir, true);
+  // "running" with nobody running it -- a start killed part-way -- makes every
+  // later start, this one included, wait 30 s for it and exit 1: "timed out
+  // waiting for state db backfill ... (status: running)" (reproduced from g's
+  // state, 2026-09-30). A home that never finished its index has never served
+  // a turn, so that file holds nothing but the partial index: set it aside.
+  if (codexHomeIndexed(configDir) === false) setAsideCodexState(configDir);
   const started = Date.now();
   return new Promise((done) => {
     let settled = false, answered = false, buf = '';

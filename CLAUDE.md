@@ -385,6 +385,16 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   swap mid-index heals itself. It used to be `codex migrate-rollouts --apply`,
   which on 0.159 is a different migration (legacy sessions to paginated
   history) and never finished this index.
+  **A killed start leaves a phantom that blocks every later one**, the
+  preparing app-server included: "state db backfill is running ... waiting up
+  to 30s" then "timed out waiting for state db backfill ... (status:
+  running)", exit 1 (reproduced from g's state in a scratch home -- the first
+  boot-time prepare died exactly so). So a home whose index is unfinished gets
+  its `state_N.sqlite*` set aside (`setAsideCodexState`, renamed
+  `.unfinished-<ts>`, the other sqlite files untouched) before the prepare:
+  it has never served a turn, so the file holds only a partial index. The
+  likely phantom-maker, the 15 s usage probe (`fetchUsage`, which spawns an
+  app-server and kills it), now refuses a home that is indexing.
 - **A thread whose first turn died has an id but no history, and used to wedge
   the conversation.** `thread/start` assigns the id at once but writes no
   rollout until a turn runs, so a 401, a limit or a swap on the first turn

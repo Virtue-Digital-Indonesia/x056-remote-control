@@ -569,6 +569,10 @@ function listModels(configDirs: string[]): ProviderModel[] {
  * controller's existing 90s quota cache absorbs (same policy as Claude's poll).
  */
 function fetchUsage(configDir: string): Promise<Usage> {
+  // An app-server started in a home that is still indexing either waits on the
+  // index or, worse, starts it -- and this probe kills it at 15 s, which is
+  // how a home is left with a "running" index nobody runs.
+  if (codexHomePreparing(configDir)) return Promise.reject(new Error(CODEX_INDEXING_REASON));
   return new Promise((resolvePromise, reject) => {
     const child = spawn('codex', codexAppServerArgs(configDir), {
       env: { ...process.env, CODEX_HOME: configDir },

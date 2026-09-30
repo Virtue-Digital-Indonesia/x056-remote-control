@@ -1,10 +1,10 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AccountRegistry } from '../src/accounts.js';
 import { codexHomeIndexed, prepareCodexHome, shareCodexSessions, sharedCodexSessionsDir } from '../server/codex-sessions.js';
-import { CODEX_INDEXING_REASON, codexHomePreparing } from '../src/codex-home.js';
+import { CODEX_INDEXING_REASON, codexHomePreparing, markCodexHomePreparing } from '../src/codex-home.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { createRequire } from 'node:module';
 import { SessionManager } from '../server/manager.js';
@@ -159,5 +159,54 @@ ${delayMs < 0 ? 'setTimeout(() => process.exit(1), 150);' : ''}
     const dir = home('running');
     expect(await prepareCodexHome(dir, fakeCodex(-1))).toBe(false);
     expect(codexHomePreparing(dir)).toBe(false);
+  });
+});
+
+describe('an index left "running" by a killed start', () => {
+  const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
+  // Reproduced from g's state: every start waits 30 s for the phantom and
+  // exits 1, the preparing app-server included.
+  it('is set aside before the home is prepared, so the index is built from scratch', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-cxw-'));
+    const db = new DatabaseSync(join(dir, 'state_5.sqlite'));
+    db.exec("create table backfill_state (id integer primary key, status text not null); insert into backfill_state values (1, 'running')");
+    db.close();
+    writeFileSync(join(dir, 'state_5.sqlite-wal'), '');
+    writeFileSync(join(dir, 'goals_1.sqlite'), 'keep');
+    const bin = join(mkdtempSync(join(tmpdir(), 'x056-cxbin-')), 'codex');
+    // Answers only when no state db is left, the way the real one behaves after the reset.
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('fs');
+const rl = require('readline').createInterface({ input: process.stdin });
+rl.on('line', (l) => { const m = JSON.parse(l); if (m.method !== 'initialize') return;
+  if (fs.existsSync(process.env.CODEX_HOME + '/state_5.sqlite')) process.exit(1);
+  process.stdout.write(JSON.stringify({ id: m.id, result: {} }) + '\\n'); });
+rl.on('close', () => process.exit(0));
+`, { mode: 0o755 });
+    expect(await prepareCodexHome(dir, bin)).toBe(true);
+    const files = readdirSync(dir);
+    expect(files).not.toContain('state_5.sqlite');
+    expect(files.some((f) => f.startsWith('state_5.sqlite.unfinished-'))).toBe(true);
+    expect(files.some((f) => f.startsWith('state_5.sqlite-wal.unfinished-'))).toBe(true);
+    expect(files).toContain('goals_1.sqlite'); // only the index goes
+  });
+
+  it('leaves a finished index alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-cxw-'));
+    const db = new DatabaseSync(join(dir, 'state_5.sqlite'));
+    db.exec("create table backfill_state (id integer primary key, status text not null); insert into backfill_state values (1, 'complete')");
+    db.close();
+    expect(codexHomeIndexed(dir)).toBe(true);
+    expect(readdirSync(dir)).toContain('state_5.sqlite');
+  });
+
+  // The usage probe spawns an app-server and kills it at 15 s: in a home that
+  // is indexing, that is exactly how the phantom is made.
+  it('the usage probe does not start an app-server in a home that is indexing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-cxw-'));
+    markCodexHomePreparing(dir, true);
+    try {
+      await expect(getAdapter('codex').fetchUsage!(dir)).rejects.toThrow(CODEX_INDEXING_REASON);
+    } finally { markCodexHomePreparing(dir, false); }
   });
 });
