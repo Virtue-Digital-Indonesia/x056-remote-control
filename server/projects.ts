@@ -32,6 +32,9 @@ export interface ConversationHelpers {
   team?: boolean;
 }
 
+/** A change to some helpers, from a send or a tool; router 'none' removes it. */
+export interface HelperPatch { advisor?: boolean; team?: boolean; router?: 'jev' | 'decisions' | 'none' }
+
 /** A conversation's helpers, whichever way they were stored. */
 export function helpersOf(c: { helpers?: ConversationHelpers; decisionMaker?: 'advisor' | 'jev' | 'decisions' } | undefined): ConversationHelpers {
   if (!c) return {};

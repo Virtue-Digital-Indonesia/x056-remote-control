@@ -52,7 +52,7 @@ afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir
 
 describe('all advertised output contracts', () => {
   it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(59);
+    expect(TOOLS).toHaveLength(60);
     expect(validators.size).toBe(TOOLS.length);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
@@ -144,6 +144,21 @@ describe('all advertised output contracts', () => {
     expect(validateResult('list_delegates', await dtool('list_delegates', { id: started.id })).delegates[0]).toMatchObject({ role: 'backend' });
     expect(validateResult('stop_delegate', await dtool('stop_delegate', {}))).toEqual({ stopped: 1 });
     for (const n of ['delegate', 'delegate_followup', 'list_delegates', 'stop_delegate']) covered.add(n);
+
+    // Another conversation's helpers: change only what is named, read them back.
+    const hapi = async (path: string, o?: RequestInit) => {
+      const body = o?.body ? JSON.parse(String(o.body)) : {};
+      if (path === '/api/conversations/helpers/patch') { const { projectId, sessionId, ...patch } = body; return { helpers: manager.patchHelpers(projectId, sessionId, patch) }; }
+      throw new Error('unexpected ' + path);
+    };
+    const on = validateResult('set_helpers', await self.callToolResult(hapi, 'set_helpers', { projectId: 'p', sessionId: 's', advisor: true, team: true }));
+    expect(on).toEqual({ projectId: 'p', sessionId: 's', helpers: { advisor: true, team: true } });
+    expect(validateResult('set_helpers', await self.callToolResult(hapi, 'set_helpers', { team: false })).helpers).toEqual({ advisor: true });
+    await expect(self.callToolResult(hapi, 'set_helpers', {})).rejects.toThrow(/name at least one helper/);
+    vi.spyOn(manager.jev(), 'configured').mockReturnValue(false);
+    await expect(self.callToolResult(hapi, 'set_helpers', { router: 'jev' })).rejects.toThrow(/No Jev API key/);
+    manager.setHelpers('p', 's', {});
+    covered.add('set_helpers');
   });
 
   it('exercises schedule creation, pause, resume, missing targets, run results and cancellation in the fixture', async () => {

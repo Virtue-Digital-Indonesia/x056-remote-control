@@ -155,3 +155,70 @@ describe('Jev forks', () => {
     expect(checkFork({ question: ' q ', options: [' a ', 'b', ''] })).toEqual({ question: 'q', options: ['a', 'b'], context: undefined });
   });
 });
+
+describe('helpers ride along with a send', () => {
+  function fixture() {
+    const dir = temp(), stateDir = join(dir, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }]);
+    const calls: RunSessionOptions[] = [];
+    const runSessionFn = (async (o: RunSessionOptions) => { calls.push(o); return { status: 'completed', finalAccount: 'a', failovers: 0 } as SessionResult; }) as unknown as typeof import('../src/failover.js').runSession;
+    return { mgr: new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn }), calls, dir };
+  }
+  const waitFor = async (f: () => boolean) => { for (let i = 0; i < 200 && !f(); i++) await new Promise((r) => setTimeout(r, 10)); };
+
+  it('turns helpers on for an existing conversation before its next turn, changing only those named', async () => {
+    const { mgr, calls, dir } = fixture();
+    const p = mgr.createProject('P', dir);
+    const sid = mgr.start('first', undefined, { model: 'opus' }, p.id);
+    await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
+    mgr.setHelpers(p.id, sid, { advisor: true });
+    mgr.deliverMcpMessage(p.id, sid, 'Please split this up', { helpers: { team: true } });
+    await waitFor(() => calls.length === 2);
+    expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.helpers).toEqual({ advisor: true, team: true });
+    expect(calls[1]).toMatchObject({ advisor: 'opus', subagents: claudeTeamAgents() });
+    expect(() => mgr.deliverMcpMessage(p.id, sid, 'x', { helpers: { router: 'jev', bogus: true } as never })).toThrow(/unknown helper bogus/);
+  });
+
+  it('a new conversation starts with them', async () => {
+    const { mgr, calls, dir } = fixture();
+    const p = mgr.createProject('P', dir);
+    const out = mgr.deliverMcpMessage(p.id, undefined, 'Start a team', { helpers: { team: true } });
+    await waitFor(() => calls.length === 1);
+    expect(calls[0].subagents).toBe(claudeTeamAgents());
+    expect(mgr.listConversations(p.id).find((c) => c.sessionId === out.sessionId)?.helpers).toEqual({ team: true });
+  });
+
+  it('in approval mode they apply only if the send is approved', async () => {
+    const { mgr, calls, dir } = fixture();
+    const p = mgr.createProject('P', dir);
+    const sid = mgr.start('first', undefined, {}, p.id);
+    await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
+    const denied = mgr.requestMcpSend(p.id, sid, 'x', { helpers: { advisor: true } });
+    mgr.decideMcpApproval(denied.id, false);
+    expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.helpers).toBeUndefined();
+    const approved = mgr.requestMcpSend(p.id, sid, 'y', { helpers: { advisor: true } });
+    mgr.decideMcpApproval(approved.id, true);
+    await waitFor(() => calls.length === 2);
+    expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.helpers).toEqual({ advisor: true });
+  });
+
+  it('a delegate reads and messages through x056 with no identity of its own, on its orchestrator\'s relay chain', async () => {
+    const dir = temp(), stateDir = join(dir, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }]);
+    const calls: RunSessionOptions[] = [];
+    const runSessionFn = ((o: RunSessionOptions) => { calls.push(o); return new Promise(() => {}); }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn, mcp: { command: 'node', args: ['x056-mcp.mjs'], env: { X056_URL: 'http://gw' } } } as never);
+    const p = mgr.createProject('P', dir);
+    const sid = mgr.start('orchestrate', undefined, {}, p.id);
+    await waitFor(() => calls.length === 1);
+    expect(calls[0].mcp?.env).toMatchObject({ X056_SELF_PROJECT_ID: p.id, X056_SELF_SESSION_ID: sid });
+    mgr.startDelegate(p.id, sid, { role: 'backend', brief: 'A' });
+    await waitFor(() => calls.length === 2);
+    const env = calls[1].mcp!.env;
+    expect(env).toMatchObject({ X056_URL: 'http://gw', X056_RELAY_FROM: sid, X056_DELEGATE_OF: p.id + '/' + sid });
+    expect(env.X056_SELF_PROJECT_ID).toBeUndefined();
+    expect(env.X056_SELF_SESSION_ID).toBeUndefined();
+  });
+});

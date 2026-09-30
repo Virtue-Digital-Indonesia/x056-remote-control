@@ -17,8 +17,9 @@ const base=process.argv[2]||'http://127.0.0.1:8767';
  for(const mode of ['side','page','modal']){
    if(mode==='page')await page.locator('#chatMax').click();
    if(mode==='modal'){await page.locator('#focusSettings').click();await page.locator('input[name=maximize][value=modal]').check();await page.keyboard.press('Escape');}
-   const dimensions=await page.locator('.composer').evaluate(e=>{const r=e.getBoundingClientRect(),p=e.parentElement,s=getComputedStyle(p);return{margin:getComputedStyle(e).marginRight,width:r.width,available:p.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight)}});
-   assert.equal(dimensions.margin,'0px');assert(Math.abs(dimensions.width-dimensions.available)<2,JSON.stringify({mode,...dimensions}));
+   // Full width up to the composer's own cap, and centred in what is left.
+   const dimensions=await page.locator('.composer').evaluate(e=>{const r=e.getBoundingClientRect(),p=e.parentElement,pr=p.getBoundingClientRect(),s=getComputedStyle(p);const left=r.left-pr.left-parseFloat(s.paddingLeft),right=pr.right-r.right-parseFloat(s.paddingRight);return{left,right,width:r.width,available:p.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight)}});
+   assert(Math.abs(dimensions.width-Math.min(780,dimensions.available))<2&&Math.abs(dimensions.left-dimensions.right)<2,JSON.stringify({mode,...dimensions}));
  }
  await page.locator('#prompt').fill('The composer uses the full available width.');await page.locator('#stageToggle').hover();await page.waitForTimeout(400);await page.screenshot({path:'/tmp/x056-fan-composer.png'});
  await page.locator('#stageToggle').focus();await page.keyboard.press('Escape');await page.locator('#stageShelf').waitFor({state:'hidden'});assert(await page.locator('#stageShelf').isHidden(),JSON.stringify(await page.locator('#conversationStage').evaluate(e=>({expanded:e.dataset.expanded,aria:document.getElementById('stageToggle').getAttribute('aria-expanded'),animations:document.getAnimations().map(a=>({state:a.playState,time:a.currentTime})),focus:document.activeElement?.id}))));

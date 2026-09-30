@@ -266,7 +266,10 @@
   #delegatesBar.open .dg-chev { transform: rotate(180deg); }
   .dg-list { display: none; border-top: 1px solid var(--border); max-height: 320px; overflow-y: auto; }
   #delegatesBar.open .dg-list { display: block; }
-  .dg-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; padding: 9px 12px; border-top: 1px solid var(--border); }
+  .dg-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: start; gap: 4px 10px; padding: 9px 12px; border-top: 1px solid var(--border); }
+  /* Dot, name line and buttons share one centre line (14px down, half a
+     28px button), whether the row has one line of text or three. */
+  .dg-dot { margin-top: 10px; }
   .dg-row:first-child { border-top: 0; }
   .dg-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
   .dg-row.working .dg-dot { background: var(--bgwork); animation: dgpulse 1.4s ease-in-out infinite; }
@@ -275,8 +278,8 @@
   .dg-row.idle .dg-dot { background: var(--ok); }
   @keyframes dgpulse { 50% { opacity: .35; } }
   .dg-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .dg-top { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; }
-  .dg-top strong { font-weight: 600; white-space: nowrap; }
+  .dg-top { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; padding-top: 4px; font-size: 13px; line-height: 20px; }
+  .dg-top strong { font-weight: 600; white-space: nowrap; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .dg-chip { padding: 0 7px; border-radius: 999px; background: var(--bg); color: var(--muted); font-size: 11px; white-space: nowrap; }
   .dg-state { color: var(--faint); font-size: 12px; white-space: nowrap; }
   .dg-last { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -976,7 +979,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 .advdots::after { content: '…'; animation: advdots 1.2s steps(4, end) infinite; display: inline-block; overflow: hidden; vertical-align: bottom; width: 0; }
 @keyframes advdots { to { width: 1.2em; } }
 @media (prefers-reduced-motion: reduce) { .advdots::after { animation: none; width: auto; } }
-@media (max-width: 650px) { .advhead { flex-wrap: wrap; row-gap: 2px; } .advmeta { flex-basis: 100%; margin-left: 24px; white-space: normal; font-size: 11.5px; } .advcard.compact .advmeta { flex-basis: auto; margin-left: auto; } .advcard { padding: 12px 14px; } }
+@media (max-width: 650px) { .advhead { flex-wrap: wrap; row-gap: 2px; } .advmeta { flex-basis: 100%; margin-left: 24px; white-space: normal; font-size: 11.5px; } .advcard.compact .advmeta { flex-basis: auto; margin-left: auto; } .advcard.decision .advmeta, .advcard.delegate .advmeta { flex-basis: 100%; margin-left: 24px; } .advcard { padding: 12px 14px; } }
 </style>
 <script>
   // Runs before first paint so there's no flash. An explicit 'light'/'dark'

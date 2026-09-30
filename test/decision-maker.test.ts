@@ -6,7 +6,7 @@ import { AccountRegistry } from '../src/accounts.js';
 import type { RunSessionOptions, SessionResult } from '../src/failover.js';
 import { ClaudeTransport } from '../src/persistent-transport.js';
 import { SessionManager, type GatewayEvent } from '../server/manager.js';
-import { JevService, JEV_POLICY, applyPolicy, type JevDecision, type JevDecisionInput } from '../server/jev.js';
+import { JevService, JEV_POLICY, EFFORT_QUESTION, applyPolicy, decisionState, type JevDecision, type JevDecisionInput } from '../server/jev.js';
 import { advisorFor, jevCandidates } from '../server/decision-maker.js';
 import { OpenAIDecisionsService } from '../server/openai-decisions.js';
 
@@ -37,7 +37,7 @@ describe('advisor pairing', () => {
 
 describe('Jev policy', () => {
   it('applies a confident effort, and a model only above the higher bar', () => {
-    const d = applyPolicy(base(), input(), { effort: { choice: 'low', confidence: 0.9 }, model: { choice: 'haiku', confidence: 0.85 } }, []);
+    const d = applyPolicy(base(), input(), { effort: { choice: 'low', confidence: 0.9 }, model: { choice: 'haiku', confidence: 0.95 } }, []);
     expect(d).toMatchObject({ effort: 'low', model: 'haiku', pickedModel: 'haiku', pickedEffort: 'low' });
     const unsure = applyPolicy(base(), input(), { effort: { choice: 'low', confidence: 0.5 }, model: { choice: 'haiku', confidence: 0.7 } }, []);
     expect(unsure.effort).toBeUndefined();
@@ -51,9 +51,30 @@ describe('Jev policy', () => {
   // with what this turn runs with otherwise.
   it('applies a pick that equals the previous pick but not the turn\'s own effort', () => {
     const history: JevDecision[] = [{ ...base(), effort: 'medium' }];
-    const d = applyPolicy(base(), input({ currentModel: 'opus', currentEffort: 'xhigh' }), { effort: { choice: 'medium', confidence: 0.71 } }, history);
+    const d = applyPolicy(base(), input({ currentModel: 'opus', currentEffort: 'xhigh' }), { effort: { choice: 'medium', confidence: 0.85 } }, history);
     expect(d.effort).toBe('medium');
     expect(d.notes).toContain('effort -> medium');
+  });
+
+  // Lowering is the costly mistake (quality, a human round trip); raising
+  // only costs tokens. So going below the turn's own choice needs more.
+  it('needs more confidence to go lower than to go higher', () => {
+    const cur = input({ currentModel: 'sonnet', currentEffort: 'high' });
+    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.71 }, model: { choice: 'haiku', confidence: 0.85 } }, []);
+    expect(down.effort).toBeUndefined();
+    expect(down.model).toBeUndefined();
+    expect(down.notes).toEqual(['model haiku is below sonnet at only 85% (needs 90% to go lower); kept', 'effort medium is below high at only 71% (needs 80% to go lower); kept']);
+    const up = applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.71 }, model: { choice: 'opus', confidence: 0.85 } }, []);
+    expect(up).toMatchObject({ effort: 'xhigh', model: 'opus' });
+  });
+
+  it('tells the picker what the conversation is in the middle of', () => {
+    const state = decisionState(input({ prompt: 'yes, deploy it', title: 'Delegates', context: { project: 'X056 Remote Control', origin: 'the user', previousRequest: 'Build Delegates', previousReply: 'x'.repeat(2000) + 'Want me to deploy?', lastTurn: '48 min, 212 steps' } }));
+    expect(state).toMatchObject({ project: 'X056 Remote Control', message_from: 'the user', previous_request: 'Build Delegates', previous_turn_size: '48 min, 212 steps', new_message: 'yes, deploy it' });
+    expect(state.previous_reply.startsWith('…')).toBe(true);
+    expect(state.previous_reply.endsWith('Want me to deploy?')).toBe(true);
+    expect(Object.keys(state).at(-1)).toBe('new_message');
+    expect(EFFORT_QUESTION).toMatch(/short follow-up/);
   });
 
   it('stays on a model a pick already moved to without the switching bar', () => {
@@ -156,6 +177,8 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     expect(calls[2]).toMatchObject({ model: 'haiku', effort: 'low' });
     expect(calls[2].advisor).toBeUndefined();
     expect(seen.some((e) => e.kind === 'jev_decision')).toBe(true);
+    // Jev is told what the conversation is in the middle of, not just the message.
+    expect(decide.mock.calls[0][1].context).toMatchObject({ project: 'P', origin: 'the user' });
     // The user's own saved choice is untouched by Jev's per-turn pick.
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.model).toBe('sonnet');
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.decisionMaker).toBe('jev');

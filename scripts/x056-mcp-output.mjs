@@ -15,6 +15,7 @@ const object = (properties, required = Object.keys(properties)) => ({
 });
 const provider = choices('claude', 'codex');
 const nullableProvider = { anyOf: [provider, { type: 'null' }] };
+const helpers = object({ advisor: bool, team: bool, router: choices('jev', 'decisions') }, []);
 const ref = (name) => ({ $ref: `#/$defs/${name}` });
 
 const memoryOwner=object({kind:choices('space','execution'),id:str});
@@ -80,8 +81,9 @@ const schemas = {
   read_reply: object({ messageId: str, found: bool, messages: array(message), truncated: bool }),
   list_projects: object({ projects: array(object({ id: str, name: str, cwd: { anyOf: [str, { type: 'null' }] }, provider, current: bool, kind: choices('project','chat'), parentProjectId: str, membershipRevision: integer }, ['id','name','cwd','provider','current'])) }),
   list_conversations: object({ conversations: array(object({ sessionId: str, title: str, provider, model: str,
-    effort: str, createdAt: str, current: bool }, ['sessionId', 'title', 'provider', 'current'])) }),
-  read_conversation: object({ messages: array(message) }),
+    effort: str, createdAt: str, current: bool, helpers }, ['sessionId', 'title', 'provider', 'current'])) }),
+  read_conversation: object({ messages: array(message), helpers, delegates: array(object({ id: str, role: str, provider, status: choices('working', 'idle', 'failed', 'stopped', 'interrupted') })) }, ['messages']),
+  set_helpers: object({ projectId: str, sessionId: str, helpers }),
   send_message: object({ delivery: sendResult }),
   list_queued: object({ messages: array(queueItem) }),
   cancel_queued: object({ projectId: str, id: str, ok: bool }),

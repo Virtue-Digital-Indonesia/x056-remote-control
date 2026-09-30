@@ -229,9 +229,17 @@ window.createControlRoom = function (engine) {
     const assign={'x056_stage_pins':v=>stagePins=v,'x056_stage_recent':v=>stageRecent=v,'x056_recent_dismissed':v=>recentDismissed=v,'x056_stage_dismissed':v=>stageDismissed=v};if(!assign[e.key])return;
     try{const value=JSON.parse(e.newValue||'[]');if(Array.isArray(value)){assign[e.key]([...new Set(value.filter(x=>typeof x==='string'))]);renderStage();refresh();}}catch{}
   });
-  function renderStage(){
+  // Phones: the stage floats just above everything docked on the composer.
+  // Bars there (queue, approvals, delegates) change height on their own, so a
+  // size watcher keeps it clear of them, not only a stage re-render.
+  let composerWatch=null;
+  function placeMobileStage(){
     const composer=document.querySelector('.focus-main .composer-wrap');
+    if(composer&&!composerWatch&&window.ResizeObserver){composerWatch=new ResizeObserver(placeMobileStage);composerWatch.observe(composer);}
     if(innerWidth<=850&&composer&&document.body.dataset.chatMode==='page'){const top=composer.getBoundingClientRect().top;document.body.style.setProperty('--mobile-stage-bottom',Math.max(16,innerHeight-top+12)+'px');}
+  }
+  function renderStage(){
+    placeMobileStage();
     const all=cards(),s=engine.state(),byId=new Map(all.map(x=>[stageKey(x.p.id,x.c.sessionId),x]));
     const pinned=stageCandidates(all).sort((a,b)=>compareProjects(a,b)||b.time-a.time||a.k.localeCompare(b.k)),pageSize=Math.max(1,Math.min(7,Math.floor((innerHeight-230)/58)));
     stagePage=Math.min(stagePage,Math.max(0,Math.ceil(pinned.length/pageSize)-1));

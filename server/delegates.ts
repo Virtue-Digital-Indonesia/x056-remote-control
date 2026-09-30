@@ -154,6 +154,7 @@ export function delegateInstructions(role: string): string {
     'Work autonomously within your brief and keep your context: follow-ups continue the same task.',
     'Your final message of EVERY turn is your REPORT to the orchestrator. First line: one of DONE, NEEDS ORCHESTRATOR, NEEDS HUMAN or BLOCKED, then a one-line summary. Then the evidence: files changed, commands and their results, URLs, and exactly what you need if anything.',
     'Never end with a question block for the user; put what you need in the report. Do not deploy, push, or change shared or production systems unless your brief explicitly says so.',
+    'You can read other conversations with the x056 tools, and message one when your brief calls for it (for example to hand a finding to the conversation that owns that code); report back to your orchestrator rather than coordinating the team yourself. You cannot start delegates of your own.',
   ].join('\n');
 }
 

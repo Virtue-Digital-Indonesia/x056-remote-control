@@ -37,7 +37,7 @@ export const TOOLS = [
   {
     name: 'read_conversation',
     description:
-      'Read a conversation\'s message history (user + assistant turns, oldest first). Works across projects and providers.',
+      'Read a conversation\'s message history (user + assistant turns, oldest first). Works across projects and providers. Also returns its helpers (advisor, agent team, model/effort picker) and its delegates with their status.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -66,6 +66,7 @@ export const TOOLS = [
         model: { type: 'string', description: 'Model id for the target conversation\'s provider. Omit to reuse that conversation\'s last selected model; new conversations use the project default. Empty string selects the provider default. The choice is retained through approval and queueing.' },
         effort: { type: 'string', description: 'Reasoning effort for the target provider. Omit to reuse the target conversation\'s last selection; empty string selects the provider default.' },
         waitSeconds: { type: 'number', description: 'wait up to this long for the reply (default 0 = don\'t wait)' },
+        helpers: { type: 'object', properties: { advisor: { type: 'boolean' }, team: { type: 'boolean' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'], description: 'per-turn model/effort picker; none turns it off' } }, additionalProperties: false, description: 'Turn helpers on or off for the target before this message runs (only those named change): advisor, the agent team, the Jev/OpenAI Decisions picker. Applied only if the send is delivered.' },
       },
       required: ['projectId', 'message'],
       additionalProperties: false,
@@ -259,6 +260,13 @@ QUEUE_TOOLS.push({
   },
 });
 
+// Helpers of any conversation: read with read_conversation, change here.
+QUEUE_TOOLS.push({
+  name: 'set_helpers',
+  description: 'Turn a conversation\'s helpers on or off -- the advisor, the agent team (explorer/worker/researcher subagents plus the Jev fork layer), and the per-turn model/effort picker (Jev or OpenAI Decisions). Only the helpers you name change. Defaults to this conversation; give projectId and sessionId for another one. Takes effect from its next turn.',
+  inputSchema: { type: 'object', properties: { projectId: { type: 'string' }, sessionId: { type: 'string' }, advisor: { type: 'boolean' }, team: { type: 'boolean' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'] } }, additionalProperties: false },
+});
+
 // Delegates: an orchestrator's hidden workers. They never appear in the panel
 // as conversations; their reports come back to the orchestrator on their own.
 const DELEGATE_NOTE = ' Delegates are hidden workers owned by THIS conversation: no sidebar rows, no approvals, no polling -- when one finishes a turn its report is handed to you automatically (reports that need nothing from you are held until the rest of the team is quiet, then handed over together). Limits: 8 active delegates, and 40 dispatches between two messages from the user.';
@@ -288,13 +296,13 @@ QUEUE_TOOLS.push({
 });
 QUEUE_TOOLS.push({
   name: 'list_delegates',
-  description: 'Your delegates: role, provider and model, status, and the start of each last report. Pass id for one delegate with its full last report.',
-  inputSchema: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false },
+  description: 'Delegates of this conversation (or of another one: give projectId and sessionId): role, provider and model, status, and the start of each last report. Pass id for one delegate with its full last report.',
+  inputSchema: { type: 'object', properties: { projectId: { type: 'string' }, sessionId: { type: 'string' }, id: { type: 'string' } }, additionalProperties: false },
 });
 QUEUE_TOOLS.push({
   name: 'stop_delegate',
-  description: 'Stop a delegate (or all of them, without id): its turn ends and its waiting instructions are dropped. A later delegate_followup revives it with its context.',
-  inputSchema: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false },
+  description: 'Stop a delegate (or all of them, without id) of this conversation or of another one (projectId + sessionId): its turn ends and its waiting instructions are dropped. A later delegate_followup from its orchestrator revives it with its context.',
+  inputSchema: { type: 'object', properties: { projectId: { type: 'string' }, sessionId: { type: 'string' }, id: { type: 'string' } }, additionalProperties: false },
 });
 
 QUEUE_TOOLS.push({
@@ -497,6 +505,9 @@ for (const tool of TOOLS) {
 const inputValidator = new Ajv({ strict: true, allErrors: true });
 const inputs = new Map(TOOLS.map(tool => [tool.name, inputValidator.compile(tool.inputSchema)]));
 
+// A conversation's helpers as stored (older rows keep one `decisionMaker`).
+const helpersOfRow = (c) => c.helpers || (c.decisionMaker === 'advisor' ? { advisor: true } : c.decisionMaker ? { router: c.decisionMaker } : {});
+const helperText = (h = {}) => [h.advisor && 'advisor', h.team && 'agent team', h.router === 'jev' && 'Jev picks model/effort', h.router === 'decisions' && 'OpenAI Decisions picks model/effort'].filter(Boolean).join(', ') || 'none';
 const result = (text, structuredContent) => ({ content: [{ type: 'text', text: text + (structuredContent.delivery?.messageId ? `\nmessageId: ${structuredContent.delivery.messageId}` : '') }], structuredContent });
 const messages = (rows) => (Array.isArray(rows) ? rows : [])
   .filter((r) => r.role === 'user' || r.role === 'assistant')
@@ -593,8 +604,11 @@ export async function callToolResult(api, name, args) {
       return result(`${args.sessionId}: ${parts.join('; ')}.`, { projectId: args.projectId, sessionId: args.sessionId, stopped: res.stopped, dropped: res.dropped });
     }
     if (['delegate', 'delegate_followup', 'list_delegates', 'stop_delegate'].includes(name)) {
-      if (!SELF.projectId || !SELF.sessionId) throw new Error(name + ' is only available to a conversation running on this gateway (a delegate cannot delegate)');
-      const self = { projectId: SELF.projectId, sessionId: SELF.sessionId };
+      // Reading and stopping reach any conversation; starting and instructing
+      // delegates only your own.
+      const other = args.projectId && args.sessionId && ['list_delegates', 'stop_delegate'].includes(name);
+      if (!other && (!SELF.projectId || !SELF.sessionId)) throw new Error(name + ' is only available to a conversation running on this gateway (a delegate cannot delegate)');
+      const self = other ? { projectId: args.projectId, sessionId: args.sessionId } : { projectId: SELF.projectId, sessionId: SELF.sessionId };
       const clip = (d) => ({ id: d.id, role: d.role, provider: d.provider, ...(d.model ? { model: d.model } : {}), ...(d.effort ? { effort: d.effort } : {}), status: d.working ? 'working' : d.status, turns: d.turns, queued: (d.pending || []).length,
         ...(d.lastReport ? { lastReport: { at: d.lastReport.at, gate: d.lastReport.gate, status: d.lastReport.status, text: d.lastReport.text } } : {}) });
       if (name === 'delegate') {
@@ -614,6 +628,14 @@ export async function callToolResult(api, name, args) {
       }
       const r = await api('/api/delegates/stop', { method: 'POST', body: JSON.stringify({ ...self, ...(args.id ? { id: args.id } : {}) }) });
       return result(`Stopped ${r.stopped} delegate(s).`, { stopped: r.stopped });
+    }
+    if (name === 'set_helpers') {
+      const target = args.projectId && args.sessionId ? { projectId: args.projectId, sessionId: args.sessionId } : { projectId: SELF.projectId, sessionId: SELF.sessionId };
+      if (!target.projectId || !target.sessionId) throw new Error('give projectId and sessionId (this client has no conversation of its own)');
+      const patch = Object.fromEntries(['advisor', 'team', 'router'].filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
+      if (!Object.keys(patch).length) throw new Error('name at least one helper: advisor, team or router');
+      const r = await api('/api/conversations/helpers/patch', { method: 'POST', body: JSON.stringify({ ...target, ...patch }) });
+      return result('Helpers now: ' + helperText(r.helpers) + '. Takes effect from its next turn.', { projectId: target.projectId, sessionId: target.sessionId, helpers: r.helpers });
     }
     if (name === 'quick_decision') {
       if (!SELF.projectId || !SELF.sessionId) throw new Error('quick_decision is only available to a conversation running on this gateway');
@@ -670,20 +692,26 @@ export async function callToolResult(api, name, args) {
     const reg = await api('/api/projects');
     const p = (reg.projects || reg || []).find((x) => x.id === args.projectId);
     if (!p) throw new Error('unknown projectId — use list_projects');
-    const convs = (p.conversations || []).map((c) => ({ sessionId: c.sessionId, title: c.title, provider: c.provider || 'claude', model: c.model, effort: c.effort, createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : undefined, current: c.sessionId === p.lastSessionId }));
+    const convs = (p.conversations || []).map((c) => ({ sessionId: c.sessionId, title: c.title, provider: c.provider || 'claude', model: c.model, effort: c.effort, createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : undefined, current: c.sessionId === p.lastSessionId, helpers: helpersOfRow(c) }));
     return result(JSON.stringify(convs, null, 2), { conversations: convs });
   }
   if (name === 'read_conversation') {
     const limit = args.limit && args.limit > 0 ? Math.floor(args.limit) : 30;
     const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}&limit=${limit}&strict=true`);
-    return result(fmtHistory(rows), { messages: messages(rows) });
+    // Its helpers and delegates, so a reader can see and then steer them.
+    const state = await api(`/api/conversations/helpers?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}`).catch(() => null);
+    const team = (state?.delegates || []).map((d) => ({ id: d.id, role: d.role, provider: d.provider, status: d.working ? 'working' : d.status }));
+    const head = state ? `[helpers: ${helperText(state.helpers)}${team.length ? ` · delegates: ${team.map((d) => d.role + ' ' + d.status).join(', ')}` : ''}]\n\n` : '';
+    return result(head + fmtHistory(rows), { messages: messages(rows), ...(state ? { helpers: state.helpers, delegates: team } : {}) });
   }
   if (name === 'send_message') {
     const requested = await api('/api/conversations/send', {
       method: 'POST',
       // `from` is OUR identity from the per-turn config, not something the
       // model chose: it is what lets the gateway count this exchange's hops.
-      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort, from: SELF.sessionId || undefined }),
+      // A delegate has no identity of its own; its sends count against its
+      // orchestrator's chain (X056_RELAY_FROM) rather than starting a new one.
+      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort, from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}) }),
     });
     // Two modes, chosen by the OPERATOR in the panel (not by us): 'auto' delivers
     // straight away, 'approval' waits for them to approve it. Either way, if that

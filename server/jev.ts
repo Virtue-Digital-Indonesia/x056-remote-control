@@ -33,6 +33,10 @@ export interface JevDecisionInput {
   /** The model the previous turn ran on, when a pick moved it off
    *  `currentModel`. Staying there is not a switch. */
   previousModel?: string;
+  /** What the conversation is in the middle of, built in code (never by a
+   *  model): a short "yes, deploy" or an autopilot "continue" carries the
+   *  weight of the task it continues, which the message alone does not show. */
+  context?: DecisionContext;
   models: JevCandidate[];
   efforts: Record<string, string>;
 }
@@ -74,7 +78,12 @@ const zero = () => ({ calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 });
 
 /** Thresholds for applying a pick. A Claude model switch respawns the process
  *  and drops the prompt cache, so it needs more confidence and a gap. */
-export const JEV_POLICY = { effortMin: 0.6, modelMin: 0.8, claudeModelGapTurns: 3, forkSharp: 0.75 };
+export const JEV_POLICY = {
+  effortMin: 0.6, modelMin: 0.8, claudeModelGapTurns: 3, forkSharp: 0.75,
+  // Lowering costs quality and a human round trip when wrong; raising costs
+  // tokens. So a pick BELOW the turn's own choice needs more confidence.
+  effortDownMin: 0.8, modelDownMin: 0.9,
+};
 
 /** One small fork the agent team hands off (`quick_decision`): which file,
  *  which tool or subagent, retry or stop. SHARP = confident enough to follow;
@@ -260,18 +269,42 @@ export class JevService {
   }
 }
 
-export const EFFORT_QUESTION = 'How much reasoning effort does the NEXT turn of this coding/assistant conversation need? Judge the new message, not the whole history.';
-export const MODEL_QUESTION = 'Which model should handle the NEXT turn? Prefer the cheapest model that will do it well.';
+export const EFFORT_QUESTION = 'How much reasoning effort does the NEXT turn of this coding/assistant conversation need? Judge the new message IN THE CONTEXT of the work in progress: a short follow-up ("yes", "continue", "deploy it", an answer to a question) continues the previous task and needs that task\'s effort, not the effort its length suggests. Only a genuinely small, self-contained request needs little.';
+export const MODEL_QUESTION = 'Which model should handle the NEXT turn? Prefer the cheapest model that will do it well, judged by the work in progress (see the previous request, reply and turn size), not by the length of the new message.';
+
+export interface DecisionContext {
+  project?: string;
+  /** Who sent the new message: the user, autopilot, a delegate report, ... */
+  origin?: string;
+  previousRequest?: string;
+  previousReply?: string;
+  /** The previous turn's size, e.g. "6 min, 41 steps". */
+  lastTurn?: string;
+}
+
+/** Ranks for "is this pick a downgrade?". Unknown ids are never ranked. */
+const EFFORT_RANK = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const MODEL_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3, 'gpt-6-luna': 1, 'gpt-5.6-terra': 2, 'gpt-6-sol': 3, 'gpt-6.1-sol': 3, 'gpt-6-astra': 4 };
+const lower = (rank: (x: string) => number, pick: string, cur?: string) => { if (!cur) return false; const a = rank(pick), b = rank(cur); return a >= 0 && b >= 0 && a < b; };
+const effortRank = (e: string) => EFFORT_RANK.indexOf(e);
+const modelRank = (m: string) => MODEL_RANK[m] ?? -1;
 
 /** What a decision backend is told about the turn. */
 export function decisionState(input: JevDecisionInput): Record<string, string> {
-  return {
+  const c = input.context ?? {};
+  const out: Record<string, string> = {
     provider: input.provider,
     conversation_title: (input.title || '').slice(0, 200),
     current_model: input.currentModel || 'provider default',
     current_effort: input.currentEffort || 'provider default',
-    new_message: input.prompt.slice(0, 6000),
   };
+  if (c.project) out.project = c.project.slice(0, 120);
+  if (c.origin) out.message_from = c.origin;
+  if (c.previousRequest) out.previous_request = c.previousRequest.slice(0, 1200);
+  if (c.previousReply) out.previous_reply = c.previousReply.length > 1500 ? '…' + c.previousReply.slice(-1500) : c.previousReply;
+  if (c.lastTurn) out.previous_turn_size = c.lastTurn;
+  out.new_message = input.prompt.slice(0, 6000);
+  return out;
 }
 
 /** Decide what actually changes, given a backend's answers and what came before. */
@@ -298,6 +331,7 @@ export function applyPolicy(
     // so the switching bar does not apply -- the effort bar does.
     else if (m.choice === input.previousModel && (m.confidence ?? 0) >= JEV_POLICY.effortMin) { out.model = m.choice; model = m.choice; out.notes.push(`model stays ${m.choice}`); }
     else if ((m.confidence ?? 0) < JEV_POLICY.modelMin) out.notes.push(`model ${m.choice} only ${pct(m.confidence)} sure (needs ${pct(JEV_POLICY.modelMin)}); kept`);
+    else if (lower(modelRank, m.choice, input.currentModel) && (m.confidence ?? 0) < JEV_POLICY.modelDownMin) out.notes.push(`model ${m.choice} is below ${input.currentModel} at only ${pct(m.confidence)} (needs ${pct(JEV_POLICY.modelDownMin)} to go lower); kept`);
     else if (input.provider === 'claude' && turnsSinceSwitch < JEV_POLICY.claudeModelGapTurns) out.notes.push(`model switched ${turnsSinceSwitch} turn(s) ago; waiting ${JEV_POLICY.claudeModelGapTurns} to keep the prompt cache`);
     else { out.model = m.choice; model = m.choice; out.notes.push(`model -> ${m.choice}`); }
   }
@@ -305,6 +339,7 @@ export function applyPolicy(
     out.pickedEffort = e.choice; out.effortConfidence = e.confidence; out.effortProbabilities = e.probabilities;
     const allowed = input.models.find((c) => c.id === model)?.efforts;
     if ((e.confidence ?? 0) < JEV_POLICY.effortMin) out.notes.push(`effort ${e.choice} only ${pct(e.confidence)} sure; kept`);
+    else if (lower(effortRank, e.choice, input.currentEffort) && (e.confidence ?? 0) < JEV_POLICY.effortDownMin) out.notes.push(`effort ${e.choice} is below ${input.currentEffort} at only ${pct(e.confidence)} (needs ${pct(JEV_POLICY.effortDownMin)} to go lower); kept`);
     else if (allowed && allowed.length && !allowed.includes(e.choice)) out.notes.push(`effort ${e.choice} not offered by ${model}; kept`);
     else if (e.choice === input.currentEffort) out.notes.push('effort unchanged');
     else { out.effort = e.choice; out.notes.push(`effort -> ${e.choice}`); }

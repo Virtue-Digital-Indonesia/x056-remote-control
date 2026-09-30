@@ -4,7 +4,7 @@ import { findMessageReply } from './message-reply.js';
 import type { FileReference } from './file-store.js';
 import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { SessionTimerReader } from './session-timers.js';
-import type { Project } from './projects.js';
+import { helpersOf, type HelperPatch, type Project } from './projects.js';
 import { transcriptIndex } from '../src/adapters/subagents.js';
 import { ArtifactStore } from './workspace-store.js';
 import { accountHealth } from './routing-health.js';
@@ -535,6 +535,27 @@ export class ApiController {
     } catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
+  /** A conversation's helpers and delegates, for another conversation (MCP). */
+  @Get('conversations/helpers')
+  conversationHelperState(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {
+    const conv = projectId && sessionId ? this.manager.listConversations(projectId).find((c) => c.sessionId === sessionId) : undefined;
+    if (!conv) throw new BadRequestException('unknown conversation for that project');
+    return { helpers: helpersOf(conv), delegates: this.manager.listDelegates(projectId, sessionId) };
+  }
+
+  /** Change only the helpers named; router "none" clears the picker. */
+  @Post('conversations/helpers/patch')
+  @HttpCode(200)
+  conversationHelperPatch(@Body() b: { projectId?: string; sessionId?: string; advisor?: boolean; team?: boolean; router?: 'jev' | 'decisions' | 'none' }) {
+    if (!b?.projectId || !b.sessionId) throw new BadRequestException('projectId and sessionId required');
+    const patch: HelperPatch = {};
+    if (b.advisor !== undefined) patch.advisor = b.advisor;
+    if (b.team !== undefined) patch.team = b.team;
+    if (b.router !== undefined) patch.router = b.router;
+    try { return { helpers: this.manager.patchHelpers(b.projectId, b.sessionId, patch) }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
   /** The fork layer, for `quick_decision`: one small choice, SHARP or SPLIT. */
   @Post('jev/fork')
   @HttpCode(200)
@@ -715,7 +736,7 @@ export class ApiController {
    *  moves, the panel's "current" selection. */
   @Post('conversations/send')
   @HttpCode(200)
-  conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean; from?: string }):
+  conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean; from?: string; helpers?: HelperPatch }):
     { mode: 'auto'; sessionId: string; queued: boolean; hopsLeft: number; messageId: string } | { mode: 'approval'; approvalId: string; messageId?: string } {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
@@ -728,8 +749,8 @@ export class ApiController {
     // `from` is the CALLING conversation, supplied by the per-turn MCP config
     // rather than the model, so a caller cannot disown its own chain by leaving
     // it out — an external client (Claude Desktop) genuinely has none.
-    const opts = { model: body.model, effort: body.effort, interactive: body.interactive, from: body.from };
-    try { this.manager.validateConversationRunPrefs(body.projectId, body.sessionId, opts); }
+    const opts = { model: body.model, effort: body.effort, interactive: body.interactive, from: body.from, ...(body.helpers ? { helpers: body.helpers } : {}) };
+    try { this.manager.validateConversationRunPrefs(body.projectId, body.sessionId, opts); if (body.helpers) this.manager.checkHelperPatch(body.helpers); }
     catch (err) { throw new BadRequestException((err as Error).message); }
     // The MODE is the operator's setting, never the caller's choice — an AI that
     // could ask for 'auto' would make the approval gate worthless.

@@ -192,7 +192,8 @@ html[data-theme=dark]{--chat-idle:#a0a0a6;--chat-question:#ffa44d}
 #stageToggle.stacked::before{opacity:1;transform:translate(-4px,-5px)}#stageToggle.stacked-many::after{opacity:1;transform:translate(-8px,-10px);z-index:-2}
 #conversationStage[data-expanded=true] #stageToggle::before,#conversationStage[data-expanded=true] #stageToggle::after{opacity:0;transform:none}
 #conversationStage[data-expanded=false] .stage-caption{visibility:hidden}#stageToggle>.ic{position:relative;background:var(--bg)}#stageToggle:hover>.ic{background:var(--surface-2)}
-.focus-main .composer{margin-right:0}
+/* The composer keeps its centring (margin:0 auto): a bare margin-right:0 here
+   once pushed it 11px right of the thread and of every bar docked above it. */
 @media(prefers-reduced-motion:reduce){#stageToggle::before,#stageToggle::after{transition:none}}
 
 .cr-cost-idr{display:block;font-size:18px;font-weight:500;color:var(--muted);margin-top:5px}.cost-conversations>div>strong small,.cost-project summary>strong small{display:block;font-weight:400;text-align:right;color:var(--muted);margin-top:4px}

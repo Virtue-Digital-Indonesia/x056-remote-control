@@ -471,7 +471,17 @@ the thread they come from uses them together, and so do we now.
   otherwise -- the saved choice -- never against the previous pick: doing
   that called a 71% "medium" "unchanged" and the turn ran on the saved xhigh
   (seen live 2026-09-30). Staying on a model a pick already moved to is not a
-  switch, so it needs only the 60% bar. Each pick is a compact card in the
+  switch, so it needs only the 60% bar. **Going LOWER needs more**: effort
+  below the turn's own >= 80%, a cheaper model >= 90% (`effortDownMin`,
+  `modelDownMin`) -- a wrong downgrade costs quality and a human round trip, a
+  wrong upgrade only tokens.
+- **Jev is told the work in progress** (`decisionContext`, built in code):
+  project, who sent the message (user / autopilot / delegate reports / ...),
+  the previous request and the tail of the previous reply (cleaned of memory
+  preambles, protocol blocks, credentials), and the previous turn's size.
+  Measured live 2026-09-30: "yes, fix it" after a 48 min / 212-step task got
+  effort medium from the message alone and high (69-80%) with the context;
+  "and UTC?" after a one-line answer got haiku 95% / low 98% with it. Each pick is a compact card in the
   chat ("Jev · Opus · Medium · Changed this turn") via the conversation
   journal, so reloads keep it. Slow (3 s), failed or keyless = no change. Candidates:
   haiku/sonnet/opus on Claude (Fable excluded: usage credits), the
@@ -540,8 +550,22 @@ only), and Jev gates which reports wake the orchestrator.
   delegate queues behind its turn. A restart marks working delegates
   `interrupted` and wakes the orchestrator once (`recoverDelegates`).
 - **Tools** (x056 MCP): `delegate`, `delegate_followup`, `list_delegates`,
-  `stop_delegate`; the system note tells sessions to orchestrate with these,
-  never with chats and polling. **Panel**: a Delegates bar above the composer
+  `stop_delegate`. The system note ((5b)) gives an ORDER, not a ban: own
+  subagents/team and advisor first, delegates for parallel or multi-round
+  workers, and `send_message` still for work that belongs to an existing
+  conversation or when the user asks -- only "chats as workers" is out.
+- **Any conversation's helpers and delegates are visible and steerable over
+  MCP**: `read_conversation` returns `helpers` + `delegates`,
+  `list_conversations` returns `helpers`, `set_helpers` changes only what it
+  names (router `none` clears), `send_message` takes `helpers` for its target
+  (applied only if the send is delivered -- in approval mode only on approve;
+  a new conversation gets them via `TurnRunOptions.helpers` in `launch`), and
+  `list_delegates` / `stop_delegate` take another conversation's ids.
+  Starting or instructing delegates stays with their own orchestrator.
+- **Delegates have x056 tools too, without an identity**: no `X056_SELF_*`
+  (so no delegating, no message_self, no passing as the orchestrator), and
+  `X056_RELAY_FROM` = the orchestrator, so their sends count on its relay
+  chain instead of starting a fresh, unbounded one. **Panel**: a Delegates bar above the composer
   (status per delegate, open its transcript in the terminal view -- the
   pager takes `delegateId` -- message it directly, stop it).
 
