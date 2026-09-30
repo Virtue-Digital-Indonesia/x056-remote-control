@@ -33,6 +33,8 @@ export interface JevDecisionInput {
   /** The model the previous turn ran on, when a pick moved it off
    *  `currentModel`. Staying there is not a switch. */
   previousModel?: string;
+  /** Low = err toward cheaper, high = err toward stronger; absent = medium. */
+  lean?: Lean;
   /** What the conversation is in the middle of, built in code (never by a
    *  model): a short "yes, deploy" or an autopilot "continue" carries the
    *  weight of the task it continues, which the message alone does not show. */
@@ -59,6 +61,8 @@ export interface JevDecision {
   effortProbabilities?: Record<string, number>;
   /** Why a pick was or was not applied. */
   notes: string[];
+  /** The lean the pick was made under, when not medium. */
+  lean?: 'low' | 'high';
   /** The turn's own model/effort before any pick (what it runs with when
    *  `model`/`effort` are absent). */
   baseModel?: string;
@@ -84,6 +88,21 @@ export const JEV_POLICY = {
   // tokens. So a pick BELOW the turn's own choice needs more confidence.
   effortDownMin: 0.8, modelDownMin: 0.9,
 };
+
+/**
+ * The user's lean (the slider next to the picker): which way to err when the
+ * picker is unsure. Only the bars for moving UP or DOWN change; medium is
+ * exactly JEV_POLICY. A model move between unranked models (Fable, an unknown
+ * Codex slug) keeps JEV_POLICY.modelMin whatever the lean, and the "model
+ * stays" rule and the Claude switching gap are never relaxed by it.
+ */
+export type Lean = 'low' | 'medium' | 'high';
+export const LEAN_BARS: Record<Lean, { effortUp: number; effortDown: number; modelUp: number; modelDown: number }> = {
+  low: { effortUp: 0.8, effortDown: 0.6, modelUp: 0.9, modelDown: 0.8 },
+  medium: { effortUp: JEV_POLICY.effortMin, effortDown: JEV_POLICY.effortDownMin, modelUp: JEV_POLICY.modelMin, modelDown: JEV_POLICY.modelDownMin },
+  high: { effortUp: 0.6, effortDown: 0.9, modelUp: 0.7, modelDown: 0.95 },
+};
+const LEAN_WORD: Record<Lean, string> = { low: 'leaning low', medium: '', high: 'leaning high' };
 
 /** One small fork the agent team hands off (`quick_decision`): which file,
  *  which tool or subagent, retry or stop. SHARP = confident enough to follow;
@@ -236,15 +255,15 @@ export class JevService {
    *  returns a decision with `error` and no changes. */
   async decide(sessionId: string, input: JevDecisionInput): Promise<JevDecision> {
     const started = Date.now();
-    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'jev', notes: [], latencyMs: 0, baseModel: input.currentModel, baseEffort: input.currentEffort };
+    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'jev', notes: [], latencyMs: 0, baseModel: input.currentModel, baseEffort: input.currentEffort, ...leanField(input.lean) };
     const key = this.key();
     if (!key) { const d = { ...base, error: 'No Jev API key configured' }; this.record(d); return d; }
     const models = input.models.filter((m) => m.id);
     const questions: Record<string, unknown> = {
-      effort: { type: 'choice', instructions: EFFORT_QUESTION, criteria: input.efforts },
+      effort: { type: 'choice', instructions: effortQuestion(input.lean), criteria: input.efforts },
     };
     if (models.length > 1) {
-      questions.model = { type: 'choice', instructions: MODEL_QUESTION, criteria: Object.fromEntries(models.map((m) => [m.id, m.about])) };
+      questions.model = { type: 'choice', instructions: modelQuestion(input.lean), criteria: Object.fromEntries(models.map((m) => [m.id, m.about])) };
     }
     const state = decisionState(input);
     let res: Response;
@@ -272,6 +291,17 @@ export class JevService {
 export const EFFORT_QUESTION = 'How much reasoning effort does the NEXT turn of this coding/assistant conversation need? Judge the new message IN THE CONTEXT of the work in progress: a short follow-up ("yes", "continue", "deploy it", an answer to a question) continues the previous task and needs that task\'s effort, not the effort its length suggests. Only a genuinely small, self-contained request needs little.';
 export const MODEL_QUESTION = 'Which model should handle the NEXT turn? Prefer the cheapest model that will do it well, judged by the work in progress (see the previous request, reply and turn size), not by the length of the new message.';
 
+/** The questions under a lean; medium is the plain text above. */
+export function effortQuestion(lean: Lean = 'medium'): string {
+  return EFFORT_QUESTION + (lean === 'low' ? ' The user wants COST EFFICIENCY: choose the lowest effort that will still do this adequately, and raise it only when clearly necessary.'
+    : lean === 'high' ? ' The user wants the BEST RESULT: when in doubt choose more effort; cost is secondary.' : '');
+}
+export function modelQuestion(lean: Lean = 'medium'): string {
+  return MODEL_QUESTION + (lean === 'low' ? ' The user wants COST EFFICIENCY: choose the cheapest model that will do this adequately.'
+    : lean === 'high' ? ' The user wants the BEST RESULT: when in doubt choose the stronger model; cost is secondary.' : '');
+}
+export const leanField = (lean?: Lean): { lean?: 'low' | 'high' } => (lean === 'low' || lean === 'high' ? { lean } : {});
+
 export interface DecisionContext {
   project?: string;
   /** Who sent the new message: the user, autopilot, a delegate report, ... */
@@ -286,6 +316,7 @@ export interface DecisionContext {
 const EFFORT_RANK = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const MODEL_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3, 'gpt-6-luna': 1, 'gpt-5.6-terra': 2, 'gpt-6-sol': 3, 'gpt-6.1-sol': 3, 'gpt-6-astra': 4 };
 const lower = (rank: (x: string) => number, pick: string, cur?: string) => { if (!cur) return false; const a = rank(pick), b = rank(cur); return a >= 0 && b >= 0 && a < b; };
+const higher = (rank: (x: string) => number, pick: string, cur?: string) => { if (!cur) return false; const a = rank(pick), b = rank(cur); return a >= 0 && b >= 0 && a > b; };
 const effortRank = (e: string) => EFFORT_RANK.indexOf(e);
 const modelRank = (m: string) => MODEL_RANK[m] ?? -1;
 
@@ -314,12 +345,19 @@ export function applyPolicy(
   answers: Record<string, { choice?: string; confidence?: number; probabilities?: Record<string, number> }>,
   history: JevDecision[],
 ): JevDecision {
-  const out: JevDecision = { ...d, notes: [...d.notes] };
+  const out: JevDecision = { ...d, notes: [...d.notes], ...leanField(input.lean) };
   const m = answers.model, e = answers.effort;
+  const lean: Lean = input.lean ?? 'medium', bars = LEAN_BARS[lean];
+  const leanNote = LEAN_WORD[lean] ? ', ' + LEAN_WORD[lean] : '';
   let model = input.currentModel;
   if (m?.choice) {
     out.pickedModel = m.choice; out.modelConfidence = m.confidence; out.modelProbabilities = m.probabilities;
     const known = input.models.some((c) => c.id === m.choice);
+    // Up and down are judged by rank; a move the ranks cannot place keeps
+    // the plain bar. The first bar a downgrade meets is the lower of the two,
+    // so medium reads exactly as it did before there was a lean.
+    const modelDown = lower(modelRank, m.choice, input.currentModel), modelUp = higher(modelRank, m.choice, input.currentModel);
+    const modelFloor = modelUp ? bars.modelUp : modelDown ? Math.min(JEV_POLICY.modelMin, bars.modelDown) : JEV_POLICY.modelMin;
     // `model` is set on a decision only when a pick moved the turn off its
     // own model; a switch is a decision whose model differs from the turn
     // before. The gap is the number of decisions recorded since the last one.
@@ -330,16 +368,19 @@ export function applyPolicy(
     // Already running there since the last turn: no respawn, no cache loss,
     // so the switching bar does not apply -- the effort bar does.
     else if (m.choice === input.previousModel && (m.confidence ?? 0) >= JEV_POLICY.effortMin) { out.model = m.choice; model = m.choice; out.notes.push(`model stays ${m.choice}`); }
-    else if ((m.confidence ?? 0) < JEV_POLICY.modelMin) out.notes.push(`model ${m.choice} only ${pct(m.confidence)} sure (needs ${pct(JEV_POLICY.modelMin)}); kept`);
-    else if (lower(modelRank, m.choice, input.currentModel) && (m.confidence ?? 0) < JEV_POLICY.modelDownMin) out.notes.push(`model ${m.choice} is below ${input.currentModel} at only ${pct(m.confidence)} (needs ${pct(JEV_POLICY.modelDownMin)} to go lower); kept`);
+    else if ((m.confidence ?? 0) < modelFloor) out.notes.push(`model ${m.choice} only ${pct(m.confidence)} sure (needs ${pct(modelFloor)}${leanNote}); kept`);
+    else if (modelDown && (m.confidence ?? 0) < bars.modelDown) out.notes.push(`model ${m.choice} is below ${input.currentModel} at only ${pct(m.confidence)} (needs ${pct(bars.modelDown)} to go lower${leanNote}); kept`);
     else if (input.provider === 'claude' && turnsSinceSwitch < JEV_POLICY.claudeModelGapTurns) out.notes.push(`model switched ${turnsSinceSwitch} turn(s) ago; waiting ${JEV_POLICY.claudeModelGapTurns} to keep the prompt cache`);
     else { out.model = m.choice; model = m.choice; out.notes.push(`model -> ${m.choice}`); }
   }
   if (e?.choice) {
     out.pickedEffort = e.choice; out.effortConfidence = e.confidence; out.effortProbabilities = e.probabilities;
     const allowed = input.models.find((c) => c.id === model)?.efforts;
-    if ((e.confidence ?? 0) < JEV_POLICY.effortMin) out.notes.push(`effort ${e.choice} only ${pct(e.confidence)} sure; kept`);
-    else if (lower(effortRank, e.choice, input.currentEffort) && (e.confidence ?? 0) < JEV_POLICY.effortDownMin) out.notes.push(`effort ${e.choice} is below ${input.currentEffort} at only ${pct(e.confidence)} (needs ${pct(JEV_POLICY.effortDownMin)} to go lower); kept`);
+    const effortDown = lower(effortRank, e.choice, input.currentEffort);
+    // With no saved effort there is no "down"; a pick is treated as a raise.
+    const effortFloor = effortDown ? Math.min(JEV_POLICY.effortMin, bars.effortDown) : e.choice === input.currentEffort ? JEV_POLICY.effortMin : bars.effortUp;
+    if ((e.confidence ?? 0) < effortFloor) out.notes.push(effortFloor === JEV_POLICY.effortMin ? `effort ${e.choice} only ${pct(e.confidence)} sure; kept` : `effort ${e.choice} only ${pct(e.confidence)} sure (needs ${pct(effortFloor)} to go higher${leanNote}); kept`);
+    else if (effortDown && (e.confidence ?? 0) < bars.effortDown) out.notes.push(`effort ${e.choice} is below ${input.currentEffort} at only ${pct(e.confidence)} (needs ${pct(bars.effortDown)} to go lower${leanNote}); kept`);
     else if (allowed && allowed.length && !allowed.includes(e.choice)) out.notes.push(`effort ${e.choice} not offered by ${model}; kept`);
     else if (e.choice === input.currentEffort) out.notes.push('effort unchanged');
     else { out.effort = e.choice; out.notes.push(`effort -> ${e.choice}`); }

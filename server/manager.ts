@@ -1600,6 +1600,7 @@ export class SessionManager {
    *  agent team. Each is checked against what it needs before it is saved. */
   setHelpers(pid: string, sid: string, helpers: ConversationHelpers): ConversationHelpers {
     if (helpers.router !== undefined && !['jev', 'decisions'].includes(helpers.router)) throw new Error('router must be jev or decisions');
+    if (helpers.lean !== undefined && !['low', 'high'].includes(helpers.lean)) throw new Error('lean must be low, medium or high');
     this.projects().conversationProvider(pid, sid); // unknown conversation throws here
     if (helpers.router === 'jev' && !this.jev().configured()) throw new Error('No Jev API key is configured');
     if (helpers.router === 'decisions' && !this.openaiDecisions().configured()) throw new Error('No OpenAI API key is configured for the Decisions API');
@@ -1611,7 +1612,8 @@ export class SessionManager {
   /** A partial change: only the helpers named change; router 'none' clears it. */
   checkHelperPatch(patch: HelperPatch): void {
     if (!patch || typeof patch !== 'object') throw new Error('helpers must be an object');
-    for (const k of Object.keys(patch)) if (!['advisor', 'team', 'router'].includes(k)) throw new Error('unknown helper ' + k + ' (advisor, team, router)');
+    for (const k of Object.keys(patch)) if (!['advisor', 'team', 'router', 'lean'].includes(k)) throw new Error('unknown helper ' + k + ' (advisor, team, router, lean)');
+    if (patch.lean !== undefined && !['low', 'medium', 'high'].includes(patch.lean)) throw new Error('lean must be low, medium or high');
     if (patch.advisor !== undefined && typeof patch.advisor !== 'boolean') throw new Error('advisor must be true or false');
     if (patch.team !== undefined && typeof patch.team !== 'boolean') throw new Error('team must be true or false');
     if (patch.router !== undefined && !['jev', 'decisions', 'none'].includes(patch.router)) throw new Error('router must be jev, decisions or none');
@@ -1623,6 +1625,7 @@ export class SessionManager {
     const cur = helpersOf(this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid));
     const next: ConversationHelpers = { ...cur, ...(patch.advisor !== undefined ? { advisor: patch.advisor } : {}), ...(patch.team !== undefined ? { team: patch.team } : {}) };
     if (patch.router === 'none') delete next.router; else if (patch.router) next.router = patch.router;
+    if (patch.lean === 'medium') delete next.lean; else if (patch.lean) next.lean = patch.lean;
     return this.setHelpers(pid, sid, next);
   }
 
@@ -1881,7 +1884,8 @@ export class SessionManager {
       : [];
     const { models, efforts } = jevCandidates(provider, codexModels);
     const title = this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)?.title;
-    const input = { provider, prompt, title, currentModel: model, currentEffort: effort, previousModel, models, efforts, context };
+    const lean = helpersOf(this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)).lean;
+    const input = { provider, prompt, title, currentModel: model, currentEffort: effort, previousModel, models, efforts, context, ...(lean ? { lean } : {}) };
     return backend === 'decisions' ? this.openaiDecisions().decide(sid, input) : this.jev().decide(sid, input);
   }
   /** A generated title for this CHAT is queued or being written right now. */

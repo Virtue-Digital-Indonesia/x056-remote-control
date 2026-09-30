@@ -935,7 +935,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 .helper-label { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .helper-head.sub { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
 .helper-label { font-weight: 600; letter-spacing: .1px; }
-.helper-menu { position: fixed; z-index: 160; width: 300px; max-width: calc(100vw - 24px); padding: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); }
+.helper-menu { position: fixed; z-index: 160; width: 300px; max-width: calc(100vw - 24px); overflow-y: auto; overscroll-behavior: contain; padding: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); }
 .helper-menu[hidden] { display: none; }
 .helper-head { padding: 8px 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--faint); }
 .helper-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 10px; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
@@ -946,6 +946,18 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 .hi-desc { font-size: 12px; line-height: 1.4; color: var(--muted); }
 .hi-tag { margin-left: 6px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-size: 10.5px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; vertical-align: 1px; }
 .hi-check { flex: none; color: var(--accent); visibility: hidden; }
+/* The picker's lean, Low / Medium / High: shown only while a picker is on. */
+.helper-lean { margin: 2px 0 2px; padding: 8px 10px 10px; }
+.helper-lean[hidden] { display: none; }
+.lean-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.lean-title { font-size: 12.5px; font-weight: 600; color: var(--text); flex: none; }
+.lean-cap { font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lean-seg-group { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 3px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
+.lean-seg { height: 26px; padding: 0 6px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s; }
+.lean-seg:hover:not([aria-checked=true]) { color: var(--text); }
+.lean-seg[aria-checked=true] { background: var(--bg); color: var(--accent); font-weight: 600; box-shadow: 0 0 0 1px var(--border), 0 1px 2px color-mix(in srgb, var(--text) 12%, transparent); }
+.lean-seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.helper-menu[aria-busy=true] .lean-seg { cursor: progress; }
 .helper-item[aria-checked=true] .hi-check { visibility: visible; }
 
 /* ---- advisor card (chat) ---- */
@@ -1141,6 +1153,14 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
             <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value=""><span class="hi-text"><span class="hi-title">Your choice</span><span class="hi-desc">The model and effort in the composer.</span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
             <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="jev"><span class="hi-text"><span class="hi-title">Jev</span><span class="hi-desc" id="helperJevDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
             <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="decisions"><span class="hi-text"><span class="hi-title">OpenAI Decisions <span class="hi-tag">preview</span></span><span class="hi-desc" id="helperDecisionsDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <div class="helper-lean" id="helperLean" hidden>
+              <div class="lean-top"><span class="lean-title" id="helperLeanTitle">Lean</span><span class="lean-cap" id="helperLeanCap"></span></div>
+              <div class="lean-seg-group" role="group" aria-labelledby="helperLeanTitle" aria-describedby="helperLeanCap">
+                <button type="button" class="lean-seg" role="menuitemradio" data-lean="low" aria-checked="false">Low</button>
+                <button type="button" class="lean-seg" role="menuitemradio" data-lean="medium" aria-checked="true">Medium</button>
+                <button type="button" class="lean-seg" role="menuitemradio" data-lean="high" aria-checked="false">High</button>
+              </div>
+            </div>
           </div>
         </div>
         <button class="attach" id="tplBtn" title="insert a saved prompt template (Alt+T)"><svg class="ic sm"><use href="#i-snippet"/></svg></button>
@@ -2033,8 +2053,14 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     var c = ((projCache[pid] || {}).conversations || []).find(function (row) { return row.sessionId === lastSessionId; });
     return { conv: c, helpers: helpersOfConv(c) };
   }
+  // The picker's lean: 'low' | 'high', absent = medium (balanced).
+  var LEAN_NAMES = { low: 'Low', medium: 'Medium', high: 'High' };
+  var LEAN_CAPS = { low: 'Cheaper models, less effort', medium: 'Balanced', high: 'Stronger models, more effort' };
+  function leanOf(h) { return h && (h.lean === 'low' || h.lean === 'high') ? h.lean : 'medium'; }
   function helperNames(h) {
-    return [h.advisor && 'Advisor', h.team && 'Team', h.router === 'jev' && 'Jev', h.router === 'decisions' && 'Decisions'].filter(Boolean);
+    var lean = leanOf(h), router = h.router === 'jev' ? 'Jev' : h.router === 'decisions' ? 'Decisions' : '';
+    if (router && lean !== 'medium') router += ' · ' + LEAN_NAMES[lean];
+    return [h.advisor && 'Advisor', h.team && 'Team', router].filter(Boolean);
   }
   function syncDecider(pid) {
     syncDelegates();
@@ -2062,6 +2088,14 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
       var k = it.dataset.kind, v = k === 'router' ? (on.router || '') === it.dataset.value : !!on[k];
       it.setAttribute('aria-checked', v ? 'true' : 'false');
     });
+    var lean = leanOf(on);
+    $('helperLean').hidden = !on.router;
+    $('helperLeanCap').textContent = LEAN_CAPS[lean];
+    document.querySelectorAll('#helperLean .lean-seg').forEach(function (b) {
+      var v = b.dataset.lean === lean;
+      b.setAttribute('aria-checked', v ? 'true' : 'false');
+      b.tabIndex = v ? 0 : -1;
+    });
   }
   function helperMenu(open) {
     var menu = $('helperMenu'), btn = $('helperBtn');
@@ -2072,6 +2106,8 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
       var r = btn.getBoundingClientRect(), w = Math.min(300, window.innerWidth - 24);
       menu.style.left = Math.max(12, Math.min(r.left, window.innerWidth - w - 12)) + 'px';
       menu.style.bottom = (window.innerHeight - r.top + 10) + 'px';
+      // A short screen scrolls the menu rather than pushing it off the top.
+      menu.style.maxHeight = Math.max(160, r.top - 22) + 'px';
     }
     if (open) { refreshJevStatus(); var sel = menu.querySelector('[aria-checked=true]') || menu.querySelector('.helper-item'); if (sel) sel.focus(); }
   }
@@ -2081,10 +2117,11 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     if (!pid || !sid || !h.conv) return;
     var next = Object.assign({}, h.helpers);
     if (kind === 'router') { if (value) next.router = value; else delete next.router; }
+    else if (kind === 'lean') { if (value === 'low' || value === 'high') next.lean = value; else delete next.lean; }
     else next[kind] = !next[kind];
     var btn = $('helperBtn'), menu = $('helperMenu');
     menu.setAttribute('aria-busy', 'true');
-    api('/api/conversations/helpers', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, advisor: !!next.advisor, team: !!next.team, router: next.router || null }) })
+    api('/api/conversations/helpers', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, advisor: !!next.advisor, team: !!next.team, router: next.router || null, lean: leanOf(next) }) })
       .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || 'Could not change the helpers'); return j; }); })
       .then(function (j) { if (h.conv) { h.conv.helpers = j.helpers || next; delete h.conv.decisionMaker; } })
       .catch(function (e) { addSys(e.message, 'banner'); })
@@ -3076,7 +3113,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     d.className = 'advcard compact decision' + (x.error ? ' failed' : '');
     var head = document.createElement('div'); head.className = 'advhead';
     head.appendChild(icon('sparkles', 'sm'));
-    var name = document.createElement('span'); name.className = 'advname'; name.textContent = a.helper === 'openai' ? 'OpenAI Decisions' : 'Jev'; head.appendChild(name);
+    var name = document.createElement('span'); name.className = 'advname'; name.textContent = (a.helper === 'openai' ? 'OpenAI Decisions' : 'Jev') + (x.lean === 'low' || x.lean === 'high' ? ' · ' + LEAN_NAMES[x.lean] : ''); head.appendChild(name);
     var ranModel = x.model || x.baseModel, ranEffort = x.effort || x.baseEffort;
     if (!x.error && (ranModel || ranEffort)) {
       var chip = document.createElement('span'); chip.className = 'advmodel';
@@ -6352,9 +6389,23 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
   effortEl.addEventListener('change', saveConversationPick);
   $('helperBtn').addEventListener('click', function (e) { e.stopPropagation(); helperMenu(); });
   $('helperMenu').addEventListener('click', function (e) { var it = e.target.closest('.helper-item'); if (it && !it.disabled) setHelper(it.dataset.kind, it.dataset.value); });
+  $('helperLean').addEventListener('click', function (e) {
+    var b = e.target.closest('.lean-seg'); if (!b || b.getAttribute('aria-checked') === 'true') return;
+    setHelper('lean', b.dataset.lean);
+  });
   $('helperMenu').addEventListener('keydown', function (e) {
-    var items = [].slice.call(this.querySelectorAll('.helper-item:not([disabled])')), i = items.indexOf(document.activeElement);
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); var n = items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]; if (n) n.focus(); }
+    // Up/Down walk the menu (the lean control is one stop: its checked segment);
+    // Left/Right move the lean itself.
+    var items = [].slice.call(this.querySelectorAll('.helper-item:not([disabled]), #helperLean:not([hidden]) .lean-seg[aria-checked=true]')), i = items.indexOf(document.activeElement);
+    var seg = e.target.closest && e.target.closest('.lean-seg');
+    if (seg && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End')) {
+      e.preventDefault();
+      var segs = [].slice.call(this.querySelectorAll('.lean-seg')), j = segs.indexOf(seg);
+      j = e.key === 'Home' ? 0 : e.key === 'End' ? segs.length - 1 : Math.max(0, Math.min(segs.length - 1, j + (e.key === 'ArrowRight' ? 1 : -1)));
+      segs[j].focus();
+      if (segs[j].getAttribute('aria-checked') !== 'true') setHelper('lean', segs[j].dataset.lean);
+    }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); var n = items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]; if (n) n.focus(); }
     else if (e.key === 'Escape') { e.preventDefault(); helperMenu(false); $('helperBtn').focus(); }
   });
   document.addEventListener('click', function (e) { if (!$('helperMenu').hidden && !e.target.closest('#helperWrap')) helperMenu(false); });

@@ -66,7 +66,7 @@ export const TOOLS = [
         model: { type: 'string', description: 'Model id for the target conversation\'s provider. Omit to reuse that conversation\'s last selected model; new conversations use the project default. Empty string selects the provider default. The choice is retained through approval and queueing.' },
         effort: { type: 'string', description: 'Reasoning effort for the target provider. Omit to reuse the target conversation\'s last selection; empty string selects the provider default.' },
         waitSeconds: { type: 'number', description: 'wait up to this long for the reply (default 0 = don\'t wait)' },
-        helpers: { type: 'object', properties: { advisor: { type: 'boolean' }, team: { type: 'boolean' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'], description: 'per-turn model/effort picker; none turns it off' } }, additionalProperties: false, description: 'Turn helpers on or off for the target before this message runs (only those named change): advisor, the agent team, the Jev/OpenAI Decisions picker. Applied only if the send is delivered.' },
+        helpers: { type: 'object', properties: { advisor: { type: 'boolean' }, team: { type: 'boolean' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'], description: 'per-turn model/effort picker; none turns it off' }, lean: { type: 'string', enum: ['low', 'medium', 'high'], description: 'which way the picker errs: low = cheaper models and less effort, high = stronger ones' } }, additionalProperties: false, description: 'Turn helpers on or off for the target before this message runs (only those named change): advisor, the agent team, the Jev/OpenAI Decisions picker. Applied only if the send is delivered.' },
       },
       required: ['projectId', 'message'],
       additionalProperties: false,
@@ -263,8 +263,8 @@ QUEUE_TOOLS.push({
 // Helpers of any conversation: read with read_conversation, change here.
 QUEUE_TOOLS.push({
   name: 'set_helpers',
-  description: 'Turn a conversation\'s helpers on or off -- the advisor, the agent team (explorer/worker/researcher subagents plus the Jev fork layer), and the per-turn model/effort picker (Jev or OpenAI Decisions). Only the helpers you name change. Defaults to this conversation; give projectId and sessionId for another one. Takes effect from its next turn.',
-  inputSchema: { type: 'object', properties: { projectId: { type: 'string' }, sessionId: { type: 'string' }, advisor: { type: 'boolean' }, team: { type: 'boolean' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'] } }, additionalProperties: false },
+  description: 'Turn a conversation\'s helpers on or off -- the advisor, the agent team (explorer/worker/researcher subagents plus the Jev fork layer), and the per-turn model/effort picker (Jev or OpenAI Decisions) with its lean (low = cost, high = performance). Only the helpers you name change. Defaults to this conversation; give projectId and sessionId for another one. Takes effect from its next turn.',
+  inputSchema: { type: 'object', properties: { projectId: { type: 'string' }, sessionId: { type: 'string' }, advisor: { type: 'boolean' }, team: { type: 'boolean' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'] }, lean: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Low = the picker errs toward cheaper models and less effort (cost), High = toward stronger ones (performance), Medium = balanced.' } }, additionalProperties: false },
 });
 
 // Delegates: an orchestrator's hidden workers. They never appear in the panel
@@ -507,7 +507,7 @@ const inputs = new Map(TOOLS.map(tool => [tool.name, inputValidator.compile(tool
 
 // A conversation's helpers as stored (older rows keep one `decisionMaker`).
 const helpersOfRow = (c) => c.helpers || (c.decisionMaker === 'advisor' ? { advisor: true } : c.decisionMaker ? { router: c.decisionMaker } : {});
-const helperText = (h = {}) => [h.advisor && 'advisor', h.team && 'agent team', h.router === 'jev' && 'Jev picks model/effort', h.router === 'decisions' && 'OpenAI Decisions picks model/effort'].filter(Boolean).join(', ') || 'none';
+const helperText = (h = {}) => [h.advisor && 'advisor', h.team && 'agent team', h.router && `${h.router === 'jev' ? 'Jev' : 'OpenAI Decisions'} picks model/effort${h.lean ? ` (leaning ${h.lean})` : ''}`].filter(Boolean).join(', ') || 'none';
 const result = (text, structuredContent) => ({ content: [{ type: 'text', text: text + (structuredContent.delivery?.messageId ? `\nmessageId: ${structuredContent.delivery.messageId}` : '') }], structuredContent });
 const messages = (rows) => (Array.isArray(rows) ? rows : [])
   .filter((r) => r.role === 'user' || r.role === 'assistant')
@@ -632,8 +632,8 @@ export async function callToolResult(api, name, args) {
     if (name === 'set_helpers') {
       const target = args.projectId && args.sessionId ? { projectId: args.projectId, sessionId: args.sessionId } : { projectId: SELF.projectId, sessionId: SELF.sessionId };
       if (!target.projectId || !target.sessionId) throw new Error('give projectId and sessionId (this client has no conversation of its own)');
-      const patch = Object.fromEntries(['advisor', 'team', 'router'].filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
-      if (!Object.keys(patch).length) throw new Error('name at least one helper: advisor, team or router');
+      const patch = Object.fromEntries(['advisor', 'team', 'router', 'lean'].filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
+      if (!Object.keys(patch).length) throw new Error('name at least one helper: advisor, team, router or lean');
       const r = await api('/api/conversations/helpers/patch', { method: 'POST', body: JSON.stringify({ ...target, ...patch }) });
       return result('Helpers now: ' + helperText(r.helpers) + '. Takes effect from its next turn.', { projectId: target.projectId, sessionId: target.sessionId, helpers: r.helpers });
     }

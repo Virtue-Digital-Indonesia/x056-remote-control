@@ -206,7 +206,8 @@ trap 'exit 143' TERM
       exit 0
     fi
     sleep "$POLL_EVERY"
-    waited=$((waited + POLL_EVERY))
+    # At least 1 per poll, so an interval of 0 still ends the window.
+    waited=$((waited + (POLL_EVERY > 0 ? POLL_EVERY : 1)))
     [ -f "$FLAG" ] || { echo "request withdrawn while waiting — nothing swapped"; exit 0; }
   done
   [ "$waited" -gt 0 ] && echo "gateway idle after ${waited}s of polling"

@@ -154,6 +154,8 @@ describe('all advertised output contracts', () => {
     const on = validateResult('set_helpers', await self.callToolResult(hapi, 'set_helpers', { projectId: 'p', sessionId: 's', advisor: true, team: true }));
     expect(on).toEqual({ projectId: 'p', sessionId: 's', helpers: { advisor: true, team: true } });
     expect(validateResult('set_helpers', await self.callToolResult(hapi, 'set_helpers', { team: false })).helpers).toEqual({ advisor: true });
+    expect(validateResult('set_helpers', await self.callToolResult(hapi, 'set_helpers', { lean: 'low' })).helpers).toEqual({ advisor: true, lean: 'low' });
+    expect((await self.callToolResult(hapi, 'set_helpers', { lean: 'medium' })).structuredContent.helpers).toEqual({ advisor: true });
     await expect(self.callToolResult(hapi, 'set_helpers', {})).rejects.toThrow(/name at least one helper/);
     vi.spyOn(manager.jev(), 'configured').mockReturnValue(false);
     await expect(self.callToolResult(hapi, 'set_helpers', { router: 'jev' })).rejects.toThrow(/No Jev API key/);

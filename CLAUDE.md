@@ -30,7 +30,8 @@ Sessions started through the panel run **inside the Docker container** this repo
      is already built, `.deploy/built-key`), then **swaps only when the gateway
      is idle**: no running turn, no background work, no live workflow. It
      re-checks every 5 s for 45 s inside each cron tick
-     (`X056_DEPLOY_POLL_EVERY` / `_WINDOW`), so an idle gateway swaps within
+     (`X056_DEPLOY_POLL_EVERY` / `_WINDOW`; each poll counts at least 1 s, so
+     an interval of 0 cannot loop forever), so an idle gateway swaps within
      seconds. **`touch .deploy/force` swaps despite running turns** (they resume
      on the new container) and is honoured within one poll even mid-wait.
      A live **workflow run** blocks it with **no timeout**, because a killed
@@ -478,6 +479,18 @@ the thread they come from uses them together, and so do we now.
   below the turn's own >= 80%, a cheaper model >= 90% (`effortDownMin`,
   `modelDownMin`) -- a wrong downgrade costs quality and a human round trip, a
   wrong upgrade only tokens.
+- **Lean** (`helpers.lean`, the Low / Medium / High control under the picker;
+  absent = medium): which way the picker errs. It changes only the up/down bars
+  (`LEAN_BARS` -- low: effort up 80% / down 60%, model up 90% / down 80%;
+  high: effort up 60% / down 90%, model up 70% / down 95%; medium = the bars
+  above, byte-identical notes) and adds one sentence to both questions
+  (`effortQuestion` / `modelQuestion`: COST EFFICIENCY vs BEST RESULT), for
+  Jev and OpenAI Decisions alike. A move the ranks cannot place (Fable, an
+  unknown Codex slug) keeps the plain 80% bar; the "model stays" rule and the
+  Claude switching gap are not relaxed; forks and the delegate gate ignore it;
+  Fable is still never a candidate. Kept while the picker is off; the panel
+  sends it on every full-set save (else toggling Advisor would wipe it);
+  `set_helpers` / `send_message` `helpers` take `lean` too.
 - **Jev is told the work in progress** (`decisionContext`, built in code):
   project, who sent the message (user / autopilot / delegate reports / ...),
   the previous request and the tail of the previous reply (cleaned of memory

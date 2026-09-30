@@ -30,10 +30,17 @@ export interface ConversationHelpers {
   advisor?: boolean;
   router?: 'jev' | 'decisions';
   team?: boolean;
+  /** Which way the picker leans when it is unsure: 'low' toward cheaper
+   *  models and less effort, 'high' toward stronger ones. Absent = medium,
+   *  the balanced default. Kept while the picker is off, so switching it
+   *  back on keeps the setting. */
+  lean?: 'low' | 'high';
 }
+export type Lean = 'low' | 'medium' | 'high';
 
-/** A change to some helpers, from a send or a tool; router 'none' removes it. */
-export interface HelperPatch { advisor?: boolean; team?: boolean; router?: 'jev' | 'decisions' | 'none' }
+/** A change to some helpers, from a send or a tool; router 'none' removes it,
+ *  lean 'medium' clears the lean. */
+export interface HelperPatch { advisor?: boolean; team?: boolean; router?: 'jev' | 'decisions' | 'none'; lean?: Lean }
 
 /** A conversation's helpers, whichever way they were stored. */
 export function helpersOf(c: { helpers?: ConversationHelpers; decisionMaker?: 'advisor' | 'jev' | 'decisions' } | undefined): ConversationHelpers {
@@ -435,7 +442,8 @@ export class ProjectRegistry {
   setHelpers(id: string, sessionId: string, helpers: ConversationHelpers): void {
     const c = this.data.projects.find((x) => x.id === id)?.conversations?.find((x) => x.sessionId === sessionId);
     if (!c) throw new Error('unknown conversation for that project');
-    const clean: ConversationHelpers = { ...(helpers.advisor ? { advisor: true } : {}), ...(helpers.router ? { router: helpers.router } : {}), ...(helpers.team ? { team: true } : {}) };
+    const clean: ConversationHelpers = { ...(helpers.advisor ? { advisor: true } : {}), ...(helpers.router ? { router: helpers.router } : {}), ...(helpers.team ? { team: true } : {}),
+      ...(helpers.lean === 'low' || helpers.lean === 'high' ? { lean: helpers.lean } : {}) };
     delete c.decisionMaker;
     if (Object.keys(clean).length) c.helpers = clean; else delete c.helpers;
     this.save();

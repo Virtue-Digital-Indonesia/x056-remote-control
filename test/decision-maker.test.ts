@@ -6,7 +6,8 @@ import { AccountRegistry } from '../src/accounts.js';
 import type { RunSessionOptions, SessionResult } from '../src/failover.js';
 import { ClaudeTransport } from '../src/persistent-transport.js';
 import { SessionManager, type GatewayEvent } from '../server/manager.js';
-import { JevService, JEV_POLICY, EFFORT_QUESTION, applyPolicy, decisionState, type JevDecision, type JevDecisionInput } from '../server/jev.js';
+import { JevService, JEV_POLICY, EFFORT_QUESTION, applyPolicy, decisionState, effortQuestion, modelQuestion, type JevDecision, type JevDecisionInput } from '../server/jev.js';
+import { decisionsRequest } from '../server/openai-decisions.js';
 import { advisorFor, jevCandidates } from '../server/decision-maker.js';
 import { OpenAIDecisionsService } from '../server/openai-decisions.js';
 
@@ -66,6 +67,42 @@ describe('Jev policy', () => {
     expect(down.notes).toEqual(['model haiku is below sonnet at only 85% (needs 90% to go lower); kept', 'effort medium is below high at only 71% (needs 80% to go lower); kept']);
     const up = applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.71 }, model: { choice: 'opus', confidence: 0.85 } }, []);
     expect(up).toMatchObject({ effort: 'xhigh', model: 'opus' });
+  });
+
+  // The slider: low errs toward cheaper, high toward stronger. Only the bars
+  // for moving up or down change; medium is the policy above, unchanged.
+  it('leans low: cheaper is easier to reach, stronger harder', () => {
+    const cur = input({ currentModel: 'sonnet', currentEffort: 'high', lean: 'low' });
+    const up = applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.7 }, model: { choice: 'opus', confidence: 0.85 } }, []);
+    expect(up).toMatchObject({ lean: 'low' });
+    expect(up.effort).toBeUndefined(); expect(up.model).toBeUndefined();
+    expect(up.notes).toEqual(['model opus only 85% sure (needs 90%, leaning low); kept', 'effort xhigh only 70% sure (needs 80% to go higher, leaning low); kept']);
+    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.65 }, model: { choice: 'haiku', confidence: 0.82 } }, []);
+    expect(down).toMatchObject({ effort: 'medium', model: 'haiku' });
+  });
+
+  it('leans high: stronger is easier to reach, cheaper harder', () => {
+    const cur = input({ currentModel: 'sonnet', currentEffort: 'high', lean: 'high' });
+    expect(applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.62 }, model: { choice: 'opus', confidence: 0.72 } }, [])).toMatchObject({ effort: 'xhigh', model: 'opus', lean: 'high' });
+    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.85 }, model: { choice: 'haiku', confidence: 0.92 } }, []);
+    expect(down.effort).toBeUndefined(); expect(down.model).toBeUndefined();
+    expect(down.notes).toEqual(['model haiku is below sonnet at only 92% (needs 95% to go lower, leaning high); kept', 'effort medium is below high at only 85% (needs 90% to go lower, leaning high); kept']);
+    // A move the ranks cannot place (Fable) keeps the plain 80% bar.
+    expect(applyPolicy(base(), input({ currentModel: 'fable', lean: 'high' }), { model: { choice: 'opus', confidence: 0.75 } }, []).model).toBeUndefined();
+  });
+
+  it('medium reads exactly as before, with no lean recorded', () => {
+    const d = applyPolicy(base(), input({ currentModel: 'sonnet', currentEffort: 'high', lean: 'medium' }), { effort: { choice: 'medium', confidence: 0.71 } }, []);
+    expect(d.lean).toBeUndefined();
+    expect(d.notes).toEqual(['effort medium is below high at only 71% (needs 80% to go lower); kept']);
+  });
+
+  it('tells both backends which way to lean', () => {
+    expect(effortQuestion('medium')).toBe(EFFORT_QUESTION);
+    expect(effortQuestion('low')).toMatch(/COST EFFICIENCY/);
+    expect(modelQuestion('high')).toMatch(/BEST RESULT/);
+    const body = decisionsRequest(input({ lean: 'low' })) as { questions: { id: string; instructions: string }[] };
+    expect(body.questions.every((q) => /COST EFFICIENCY/.test(q.instructions))).toBe(true);
   });
 
   it('tells the picker what the conversation is in the middle of', () => {
@@ -179,6 +216,7 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     expect(seen.some((e) => e.kind === 'jev_decision')).toBe(true);
     // Jev is told what the conversation is in the middle of, not just the message.
     expect(decide.mock.calls[0][1].context).toMatchObject({ project: 'P', origin: 'the user' });
+    expect(decide.mock.calls[0][1].lean).toBeUndefined();
     // The user's own saved choice is untouched by Jev's per-turn pick.
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.model).toBe('sonnet');
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.decisionMaker).toBe('jev');

@@ -48,12 +48,12 @@ it('keeps stopped turns as neutral notices after reload', () => {
 
 it('keeps each Jev / OpenAI Decisions pick as a history row', () => {
   const dir = temp(), journal = new ConversationJournal(dir), at = new Date().toISOString();
-  const data = { projectId:'p', sessionId:'s', at, backend:'jev', baseModel:'opus', baseEffort:'xhigh', effort:'medium', pickedEffort:'medium', effortConfidence:0.71, notes:['effort -> medium'], latencyMs:336, inputTokens:768, costUsd:0.00003 };
+  const data = { projectId:'p', sessionId:'s', at, backend:'jev', baseModel:'opus', baseEffort:'xhigh', effort:'medium', pickedEffort:'medium', effortConfidence:0.71, notes:['effort -> medium'], latencyMs:336, inputTokens:768, costUsd:0.00003, lean:'low' };
   journal.record('jev_decision', data, at);
   journal.record('jev_decision', data, at);
   const rows = new ConversationJournal(dir).merge('p','s',[],true);
   expect(rows).toHaveLength(1);
-  expect(rows[0]).toMatchObject({ role:'advisor', text:'effort -> medium', advisor:{ helper:'jev', decision:{ baseModel:'opus', effort:'medium', effortConfidence:0.71 } } });
+  expect(rows[0]).toMatchObject({ role:'advisor', text:'effort -> medium', advisor:{ helper:'jev', decision:{ baseModel:'opus', effort:'medium', effortConfidence:0.71, lean:'low' } } });
   // Billing detail stays in the terminal view and the ledger, not in chat history.
   expect(rows[0].advisor?.decision).not.toHaveProperty('costUsd');
 });

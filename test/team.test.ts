@@ -78,6 +78,20 @@ describe('helpers combine', () => {
   }
   const waitFor = async (f: () => boolean) => { for (let i = 0; i < 200 && !f(); i++) await new Promise((r) => setTimeout(r, 10)); };
 
+  it('keeps the lean across other changes, and medium clears it', async () => {
+    const { mgr, calls, dir } = fixture();
+    const p = mgr.createProject('P', dir);
+    const sid = mgr.start('first', undefined, {}, p.id);
+    await waitFor(() => calls.length === 1);
+    const conv = () => mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.helpers;
+    expect(mgr.patchHelpers(p.id, sid, { router: 'jev', lean: 'high' })).toEqual({ router: 'jev', lean: 'high' });
+    expect(mgr.patchHelpers(p.id, sid, { advisor: true })).toEqual({ router: 'jev', lean: 'high', advisor: true });
+    expect(mgr.patchHelpers(p.id, sid, { lean: 'medium' })).toEqual({ router: 'jev', advisor: true });
+    expect(conv()).toEqual({ router: 'jev', advisor: true });
+    expect(() => mgr.patchHelpers(p.id, sid, { lean: 'max' as never })).toThrow(/lean must be low, medium or high/);
+    expect(() => mgr.setHelpers(p.id, sid, { lean: 'medium' as never })).toThrow(/lean must be/);
+  });
+
   it('reads the legacy single field and replaces it on the first combined save', () => {
     expect(helpersOf({ decisionMaker: 'advisor' })).toEqual({ advisor: true });
     expect(helpersOf({ decisionMaker: 'jev' })).toEqual({ router: 'jev' });

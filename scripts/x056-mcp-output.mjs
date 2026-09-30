@@ -15,7 +15,7 @@ const object = (properties, required = Object.keys(properties)) => ({
 });
 const provider = choices('claude', 'codex');
 const nullableProvider = { anyOf: [provider, { type: 'null' }] };
-const helpers = object({ advisor: bool, team: bool, router: choices('jev', 'decisions') }, []);
+const helpers = object({ advisor: bool, team: bool, router: choices('jev', 'decisions'), lean: choices('low', 'high') }, []);
 const ref = (name) => ({ $ref: `#/$defs/${name}` });
 
 const memoryOwner=object({kind:choices('space','execution'),id:str});

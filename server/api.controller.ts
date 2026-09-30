@@ -522,15 +522,17 @@ export class ApiController {
     catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
-  /** Helpers, combinable: { advisor?, router?: 'jev'|'decisions', team? }. */
+  /** Helpers, combinable: { advisor?, router?: 'jev'|'decisions', team?, lean?: 'low'|'medium'|'high' }. */
   @Post('conversations/helpers')
   @HttpCode(200)
-  conversationHelpers(@Body() body: { projectId?: string; sessionId?: string; advisor?: boolean; router?: string | null; team?: boolean }) {
+  conversationHelpers(@Body() body: { projectId?: string; sessionId?: string; advisor?: boolean; router?: string | null; team?: boolean; lean?: string | null }) {
     if (!body?.projectId || !body.sessionId) throw new BadRequestException('projectId and sessionId required');
     try {
       return { ok: true, helpers: this.manager.setHelpers(body.projectId, body.sessionId, {
         advisor: body.advisor === true, team: body.team === true,
         ...(body.router ? { router: body.router as 'jev' | 'decisions' } : {}),
+        // The whole set is saved at once, so an absent lean means medium.
+        ...(body.lean && body.lean !== 'medium' ? { lean: body.lean as 'low' | 'high' } : {}),
       }) };
     } catch (err) { throw new BadRequestException((err as Error).message); }
   }
@@ -546,12 +548,13 @@ export class ApiController {
   /** Change only the helpers named; router "none" clears the picker. */
   @Post('conversations/helpers/patch')
   @HttpCode(200)
-  conversationHelperPatch(@Body() b: { projectId?: string; sessionId?: string; advisor?: boolean; team?: boolean; router?: 'jev' | 'decisions' | 'none' }) {
+  conversationHelperPatch(@Body() b: { projectId?: string; sessionId?: string; advisor?: boolean; team?: boolean; router?: 'jev' | 'decisions' | 'none'; lean?: 'low' | 'medium' | 'high' }) {
     if (!b?.projectId || !b.sessionId) throw new BadRequestException('projectId and sessionId required');
     const patch: HelperPatch = {};
     if (b.advisor !== undefined) patch.advisor = b.advisor;
     if (b.team !== undefined) patch.team = b.team;
     if (b.router !== undefined) patch.router = b.router;
+    if (b.lean !== undefined) patch.lean = b.lean;
     try { return { helpers: this.manager.patchHelpers(b.projectId, b.sessionId, patch) }; }
     catch (err) { throw new BadRequestException((err as Error).message); }
   }

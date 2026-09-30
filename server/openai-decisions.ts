@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readState, writeState } from './workspace-store.js';
-import { applyPolicy, decisionState, EFFORT_QUESTION, forkVerdict, MODEL_QUESTION, type DecisionAnswer, type ForkDecision, type ForkInput, type JevDecision, type JevDecisionInput } from './jev.js';
+import { applyPolicy, decisionState, effortQuestion, forkVerdict, leanField, modelQuestion, type DecisionAnswer, type ForkDecision, type ForkInput, type JevDecision, type JevDecisionInput } from './jev.js';
 
 /**
  * OpenAI's Decisions API as the per-turn model/effort picker: the same job as
@@ -37,9 +37,9 @@ export function decisionsRequest(input: JevDecisionInput, model?: string): Recor
   const state = decisionState(input);
   const context = Object.entries(state).map(([k, v]) => `${k}: ${v}`).join('\n');
   const options = (criteria: Record<string, string>) => Object.entries(criteria).map(([value, description]) => ({ value, description }));
-  const questions: Record<string, unknown>[] = [{ id: 'effort', instructions: EFFORT_QUESTION, options: options(input.efforts) }];
+  const questions: Record<string, unknown>[] = [{ id: 'effort', instructions: effortQuestion(input.lean), options: options(input.efforts) }];
   const models = input.models.filter((m) => m.id);
-  if (models.length > 1) questions.push({ id: 'model', instructions: MODEL_QUESTION, options: options(Object.fromEntries(models.map((m) => [m.id, m.about]))) });
+  if (models.length > 1) questions.push({ id: 'model', instructions: modelQuestion(input.lean), options: options(Object.fromEntries(models.map((m) => [m.id, m.about]))) });
   return { ...(model ? { model } : {}), input: [{ type: 'input_text', text: context }], questions };
 }
 
@@ -126,7 +126,7 @@ export class OpenAIDecisionsService {
   /** Ask, apply the shared policy, record. Never throws. */
   async decide(sessionId: string, input: JevDecisionInput): Promise<JevDecision> {
     const started = Date.now();
-    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'openai', notes: [], latencyMs: 0, baseModel: input.currentModel, baseEffort: input.currentEffort };
+    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'openai', notes: [], latencyMs: 0, baseModel: input.currentModel, baseEffort: input.currentEffort, ...leanField(input.lean) };
     const finish = (d: JevDecision) => { this.store.record(d); return d; };
     if (!this.configured()) return finish({ ...base, error: 'No OpenAI API key configured' });
     let r: Awaited<ReturnType<OpenAIDecisionsService['call']>>;

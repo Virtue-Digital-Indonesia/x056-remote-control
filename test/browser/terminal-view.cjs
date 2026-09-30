@@ -87,7 +87,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
   // and so does one from OpenAI Decisions (same store, told apart by backend).
   fs.mkdirSync(path.join(stateDir, 'jev', 'decisions'), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'jev', 'decisions', conv.sessionId + '.jsonl'), JSON.stringify({ at: now, sessionId: conv.sessionId, provider: 'claude', pickedModel: 'haiku', modelConfidence: 1, pickedEffort: 'low', effortConfidence: 1, model: 'haiku', effort: 'low', notes: ['model -> haiku', 'effort -> low'], latencyMs: 404, costUsd: 0.000026 }) + '\n'
-    + JSON.stringify({ at: now, sessionId: conv.sessionId, provider: 'claude', backend: 'openai', pickedEffort: 'high', effortConfidence: 0.9, effort: 'high', notes: ['effort -> high'], latencyMs: 151, inputTokens: 96 }) + '\n');
+    + JSON.stringify({ at: now, sessionId: conv.sessionId, provider: 'claude', backend: 'openai', lean: 'low', pickedEffort: 'high', effortConfidence: 0.9, effort: 'high', notes: ['effort -> high'], latencyMs: 151, inputTokens: 96 }) + '\n');
   // A Claude turn's result, with its advisor's cost as a separate line item.
   // Two forks the team handed off: one followed, one sent back to the main model.
   fs.mkdirSync(path.join(stateDir, 'jev', 'forks'), { recursive: true });
@@ -102,7 +102,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
   assert.match(await page.locator('#term .tl.sys').filter({ hasText: 'turn done' }).last().textContent(), /turn done · 1 step · 8\.5 s · \$0\.175 \(haiku-4-5-20251001 \$0\.027 · opus-5-5 \$0\.148\)/);
   const picks = page.locator('#term .tl.jev').filter({ hasNotText: 'fork' });
   assert.match(await picks.first().textContent(), /jev · model haiku 100% · effort low 100% → model -> haiku, effort -> low · 404 ms/);
-  assert.match(await picks.last().textContent(), /decisions · effort high 90% → effort -> high · 151 ms · 96 tok/);
+  assert.match(await picks.last().textContent(), /decisions \(low\) · effort high 90% → effort -> high · 151 ms · 96 tok/);
   assert.equal(await page.locator('#helperBtn').getAttribute('data-state'), 'on');
   const forks = page.locator('#term .tl.jev').filter({ hasText: 'fork' });
   assert.match(await forks.first().textContent(), /jev · fork · which file → src\/auth\.ts 79% SHARP → follow · 280 ms/);

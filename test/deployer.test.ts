@@ -19,13 +19,42 @@ function gate(snapshot: string, opts: { token?: string; failure?: boolean; idleO
   } });
 }
 describe('idle-only release gate', () => {
-  it('never reaches the swap after the normal timeout while activity is present', () => {
-    const decision = source.slice(source.indexOf('  # 2.'), source.indexOf('  if ! release_unchanged; then'));
-    const output = execFileSync('bash', ['-c', `IDLE_ONLY=1; age=86400; MAX_DEFER=180; FORCE=/dev/null
-      live_workflows() { :; }; busy() { return 0; }
-      ${decision}
-      echo WOULD_SWAP`], { encoding: 'utf8' });
-    expect(output).toContain('idle-only release stays pending');
+  // The swap gate as the script runs it: re-check every POLL_EVERY seconds for
+  // up to POLL_WINDOW inside one tick (sleep 0 here, so the test is instant).
+  const waitLoop = (setup: string, env = 'X056_DEPLOY_POLL_EVERY=0 X056_DEPLOY_POLL_WINDOW=3') => {
+    const decision = source.slice(source.indexOf('  # 2+3.'), source.indexOf('  if ! release_unchanged; then'));
+    const dir = mkdtempSync(join(tmpdir(), 'x056-deploy-gate-'));
+    try {
+      writeFileSync(join(dir, 'requested'), '');
+      return execFileSync('bash', ['-c', `export ${env}; IDLE_ONLY=1; age=86400; DIR=${dir}; FLAG=${dir}/requested; FORCE=${dir}/force
+        n=0; live_workflows() { :; }; ${setup}
+        ${decision}
+        echo WOULD_SWAP`], { encoding: 'utf8' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  };
+  it('never reaches the swap while activity is present, however long it waits', () => {
+    const output = waitLoop('busy() { return 0; }');
+    expect(output).toContain('release stays pending (checked every 0s for 3s');
+    expect(output).not.toContain('WOULD_SWAP');
+  });
+  it('swaps as soon as a later poll finds the gateway idle', () => {
+    const output = waitLoop('busy() { n=$((n+1)); [ "$n" -lt 3 ]; }');
+    expect(output).toContain('gateway idle after 2s of polling');
+    expect(output).toContain('WOULD_SWAP');
+  });
+  it('honours a force created while it waits, within one poll', () => {
+    const output = waitLoop('busy() { n=$((n+1)); [ "$n" -ge 2 ] && touch "$FORCE"; return 0; }');
+    expect(output).toContain('.deploy/force present');
+    expect(output).toContain('WOULD_SWAP');
+  });
+  it('stops waiting when the request is withdrawn', () => {
+    const output = waitLoop('busy() { rm -f "$FLAG"; return 0; }');
+    expect(output).toContain('request withdrawn while waiting');
+    expect(output).not.toContain('WOULD_SWAP');
+  });
+  it('a live workflow keeps it pending too', () => {
+    const output = waitLoop('busy() { return 1; }; live_workflows() { echo "1 run"; }');
+    expect(output).toContain('workflow runs still live: 1 run');
     expect(output).not.toContain('WOULD_SWAP');
   });
   it('allows a confirmed idle gateway', () => {
