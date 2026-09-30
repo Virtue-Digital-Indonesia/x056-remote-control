@@ -149,45 +149,67 @@ trap 'exit 143' TERM
   echo "=== tick $(date -Is) commit $(git -C "$DIR" rev-parse --short HEAD) ==="
   # 1. Build ahead of time — safe while a turn runs; only creates a new image.
   export X056_BUILD_REVISION="$(git -C "$DIR" rev-parse HEAD)"
-  # The host's resolver flaps between an upstream and a VPN nameserver, and
-  # BuildKit's registry metadata lookup is the one step that notices: three
-  # releases in a row died on "failed to resolve source metadata" while the
-  # daemon itself could pull. That lookup is worth a few more tries.
-  build_ok=0
-  for attempt in 1 2 3 4; do
-    if docker compose --project-directory "$DIR" build; then build_ok=1; break; fi
-    echo "build attempt $attempt failed; retrying in 20s"
-    sleep 20
-  done
-  if [ "$build_ok" != 1 ]; then
-    rm -f "$FLAG" "$FORCE"
-    printf '{"status":"build_failed","ts":"%s"}\n' "$(date -Is)" > "$STATUS"
-    echo "build FAILED — flag cleared"
-    exit 0
+  # A pending release used to rebuild on every tick (~20 s even fully cached)
+  # before it could look at the gateway again. The image for this exact tree
+  # -- HEAD, uncommitted edits and the untracked-file list -- is built once.
+  tree_key="$X056_BUILD_REVISION-$( { git -C "$DIR" diff HEAD; git -C "$DIR" status --porcelain=v1 -uall; } | sha256sum | cut -c1-16)"
+  image=$(docker compose --project-directory "$DIR" config --images 2>/dev/null | grep -- "-x056$" | head -1)
+  if [ "$(cat "$DIR/.deploy/built-key" 2>/dev/null)" = "$tree_key" ] && [ -n "$image" ] && docker image inspect "$image" >/dev/null 2>&1; then
+    echo "image already built for this tree ($tree_key) — not rebuilding"
+  else
+    # The host's resolver flaps between an upstream and a VPN nameserver, and
+    # BuildKit's registry metadata lookup is the one step that notices: three
+    # releases in a row died on "failed to resolve source metadata" while the
+    # daemon itself could pull. That lookup is worth a few more tries.
+    build_ok=0
+    for attempt in 1 2 3 4; do
+      if docker compose --project-directory "$DIR" build; then build_ok=1; break; fi
+      echo "build attempt $attempt failed; retrying in 20s"
+      sleep 20
+    done
+    if [ "$build_ok" != 1 ]; then
+      rm -f "$FLAG" "$FORCE" "$DIR/.deploy/built-key"
+      printf '{"status":"build_failed","ts":"%s"}\n' "$(date -Is)" > "$STATUS"
+      echo "build FAILED — flag cleared"
+      exit 0
+    fi
+    printf '%s\n' "$tree_key" > "$DIR/.deploy/built-key"
   fi
 
   age=$(( $(date +%s) - $(stat -c %Y "$FLAG" 2>/dev/null || echo 0) ))
 
-  # 2. A live fan-out blocks the swap outright — no MAX_DEFER escape hatch.
-  if [ -f "$FORCE" ] && [ "$IDLE_ONLY" != 1 ]; then
-    echo "note: .deploy/force present — swapping even if workflows are live"
-  else
+  # 2+3. Wait for idle, looking every POLL_EVERY seconds (default 5) for up to
+  # POLL_WINDOW (default 45) within this tick; the next cron tick carries on.
+  # Checking once a minute made an idle gateway wait up to a minute for its
+  # swap. A live fan-out blocks outright; only .deploy/force swaps during a
+  # turn -- and a force created WHILE this loop waits is honoured within one
+  # poll, not at the next tick.
+  POLL_EVERY="${X056_DEPLOY_POLL_EVERY:-5}"
+  POLL_WINDOW="${X056_DEPLOY_POLL_WINDOW:-45}"
+  waited=0
+  while :; do
+    if [ -f "$FORCE" ] && [ ! -f "$DIR/.deploy/idle-only" ]; then
+      IDLE_ONLY=0
+      echo "note: .deploy/force present — swapping even if workflows are live or turns are running"
+      break
+    fi
     wf=$(live_workflows)
     if [ -n "$wf" ]; then
-      echo "built OK; workflow runs still live — NOT swapping (pending ${age}s): $wf"
-      echo "  (touch .deploy/force to override)"
+      reason="workflow runs still live: $wf (touch .deploy/force to override)"
+    elif busy; then
+      reason="provider activity remains or cannot be checked"
+    else
+      break
+    fi
+    if [ "$waited" -ge "$POLL_WINDOW" ]; then
+      echo "built OK; $reason — release stays pending (checked every ${POLL_EVERY}s for ${waited}s, pending ${age}s)"
       exit 0
     fi
-  fi
-
-  # 3. Only explicit interruption authorization permits swapping during a turn.
-  if busy; then
-    if [ "$IDLE_ONLY" = 1 ]; then
-      echo "built OK; provider activity remains or cannot be checked — idle-only release stays pending"
-      exit 0
-    fi
-    echo "explicit .deploy/force authorization — swapping despite active turns"
-  fi
+    sleep "$POLL_EVERY"
+    waited=$((waited + POLL_EVERY))
+    [ -f "$FLAG" ] || { echo "request withdrawn while waiting — nothing swapped"; exit 0; }
+  done
+  [ "$waited" -gt 0 ] && echo "gateway idle after ${waited}s of polling"
 
   if ! release_unchanged; then
     echo "pinned release changed during build — NOT swapping"

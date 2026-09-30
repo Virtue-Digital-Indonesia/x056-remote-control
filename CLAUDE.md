@@ -25,11 +25,14 @@ Sessions started through the panel run **inside the Docker container** this repo
   - That's the **entire** sudo grant (`/etc/sudoers.d/x056-nginx`) — no blanket root shell, no arbitrary file writes, no other host-OS sudo. Anything outside these three actions (installing a cert, editing `nginx.conf` itself, restarting non-nginx services) still needs the user, same as any other host change.
 - **Deployments happen via the host-side actuator** (`scripts/deployer.sh`, cron every minute):
   1. Commit your changes, then `touch .deploy/requested`.
-  2. The actuator **builds immediately** (safe while turns run), then swaps.
-     A running **turn** defers the swap for at most `MAX_DEFER` (180s) — after
-     that it swaps anyway, because a killed turn resumes on the new container.
-     **Do not read that as "the swap waits for you"**: past 180s it lands
-     mid-turn.
+  2. The actuator **builds immediately** (safe while turns run; skipped when
+     the image for this exact tree -- HEAD, uncommitted diff, untracked list --
+     is already built, `.deploy/built-key`), then **swaps only when the gateway
+     is idle**: no running turn, no background work, no live workflow. It
+     re-checks every 5 s for 45 s inside each cron tick
+     (`X056_DEPLOY_POLL_EVERY` / `_WINDOW`), so an idle gateway swaps within
+     seconds. **`touch .deploy/force` swaps despite running turns** (they resume
+     on the new container) and is honoured within one poll even mid-wait.
      A live **workflow run** blocks it with **no timeout**, because a killed
      workflow does not resume — its agents are gone and someone has to notice
      and relaunch it by run id. `GET /api/workflows/live` is what the actuator
