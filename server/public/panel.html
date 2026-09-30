@@ -924,6 +924,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 .adverr { margin: 0; font-size: 13px; color: var(--muted); }
 .advfoot { display: flex; align-items: center; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
 .advfoot .ic { color: var(--faint); }
+.advnote { margin-top: 4px; padding-left: 24px; font-size: 12px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
 .advdots { display: inline-block; width: 1.4em; text-align: left; }
 .advdots::after { content: '…'; animation: advdots 1.2s steps(4, end) infinite; display: inline-block; overflow: hidden; vertical-align: bottom; width: 0; }
 @keyframes advdots { to { width: 1.2em; } }
@@ -2833,6 +2834,9 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     else if (kind === 'advisor_consult') {
       appendNode(pid, sid, nodeAdvisor(data));
     }
+    else if (kind === 'jev_decision') {
+      appendNode(pid, sid, nodeAdvisor({ helper: data.backend === 'openai' ? 'openai' : 'jev', decision: data }));
+    }
     else if (kind === 'question') {
       // `at` identifies THIS question; older servers only have the envelope's timestamp.
       var qAt = data.at || data.ts;
@@ -2899,8 +2903,34 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
   var ADVISOR_TRIGGER = { plan: 'Reviewed the plan', stuck: 'Looked at the repeated failure', done: 'Reviewed the finished turn' };
   var ADVISOR_DELIVERED = { steered: 'Steered into the running turn', queued: 'Sent as a follow-up message', 'too-late': 'The turn had already ended' };
   var ADVISOR_VERDICT = { proceed: 'Proceed', looks_good: 'Looks good', adjust: 'Adjust', concern: 'Concern' };
+  // A per-turn model/effort pick (Jev or OpenAI Decisions): one compact row
+  // saying what the turn ran on and why, between the prompt and the reply.
+  var EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
+  function nodeDecision(a) {
+    var x = a.decision || {}, d = document.createElement('div');
+    d.className = 'advcard compact decision' + (x.error ? ' failed' : '');
+    var head = document.createElement('div'); head.className = 'advhead';
+    head.appendChild(icon('sparkles', 'sm'));
+    var name = document.createElement('span'); name.className = 'advname'; name.textContent = a.helper === 'openai' ? 'OpenAI Decisions' : 'Jev'; head.appendChild(name);
+    var ranModel = x.model || x.baseModel, ranEffort = x.effort || x.baseEffort;
+    if (!x.error && (ranModel || ranEffort)) {
+      var chip = document.createElement('span'); chip.className = 'advmodel';
+      chip.textContent = [ranModel && advisorModelName(ranModel), ranEffort && (EFFORT_NAMES[ranEffort] || ranEffort)].filter(Boolean).join(' · ');
+      chip.title = 'What this turn ran on';
+      head.appendChild(chip);
+    }
+    var meta = document.createElement('span'); meta.className = 'advmeta';
+    meta.textContent = x.error ? 'No pick' : (x.model || x.effort ? 'Changed this turn' : 'Kept your choice') + (x.latencyMs ? ' · ' + (x.latencyMs / 1000).toFixed(1) + ' s' : '');
+    head.appendChild(meta);
+    d.appendChild(head);
+    var note = document.createElement('div'); note.className = 'advnote';
+    note.textContent = x.error || (x.notes || []).map(function (n) { return n.replace(/->/g, '→'); }).join(' · ');
+    if (note.textContent) d.appendChild(note);
+    return d;
+  }
   function nodeAdvisor(a, pending) {
     a = a || {};
+    if (a.helper) return nodeDecision(a);
     var d = document.createElement('div');
     var full = !!(a.verdict || a.advice || a.trigger || a.error && a.trigger);
     d.className = 'advcard' + (full ? '' : ' compact') + (pending ? ' pending' : '') + (a.error ? ' failed' : '');

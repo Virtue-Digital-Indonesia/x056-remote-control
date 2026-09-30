@@ -45,6 +45,35 @@ describe('Jev policy', () => {
     expect(unsure.notes.join(' ')).toMatch(/only 70% sure/);
   });
 
+  // Seen live 2026-09-30: the previous turn's pick was medium, the saved
+  // effort xhigh; Jev picked medium at 71% and the policy called it
+  // "unchanged", so the turn ran on xhigh. A pick lasts one turn: compare it
+  // with what this turn runs with otherwise.
+  it('applies a pick that equals the previous pick but not the turn\'s own effort', () => {
+    const history: JevDecision[] = [{ ...base(), effort: 'medium' }];
+    const d = applyPolicy(base(), input({ currentModel: 'opus', currentEffort: 'xhigh' }), { effort: { choice: 'medium', confidence: 0.71 } }, history);
+    expect(d.effort).toBe('medium');
+    expect(d.notes).toContain('effort -> medium');
+  });
+
+  it('stays on a model a pick already moved to without the switching bar', () => {
+    const history: JevDecision[] = [{ ...base(), model: 'sonnet' }];
+    const stay = applyPolicy(base(), input({ currentModel: 'opus', previousModel: 'sonnet' }), { model: { choice: 'sonnet', confidence: 0.69 } }, history);
+    expect(stay.model).toBe('sonnet');
+    expect(stay.notes).toContain('model stays sonnet');
+    // Under the effort bar it goes back to the saved model.
+    expect(applyPolicy(base(), input({ currentModel: 'opus', previousModel: 'sonnet' }), { model: { choice: 'sonnet', confidence: 0.4 } }, history).model).toBeUndefined();
+  });
+
+  it('counts a run of stays as ONE switch for the gap', () => {
+    const history: JevDecision[] = [{ ...base(), model: 'sonnet' }, base(), base(), { ...base(), model: 'sonnet' }];
+    // The last decision re-entered sonnet after two turns on opus: a switch.
+    expect(applyPolicy(base(), input({ currentModel: 'opus', previousModel: 'sonnet' }), { model: { choice: 'haiku', confidence: 0.95 } }, history).model).toBeUndefined();
+    const stays: JevDecision[] = [{ ...base(), model: 'sonnet' }, { ...base(), model: 'sonnet' }, { ...base(), model: 'sonnet' }, { ...base(), model: 'sonnet' }];
+    // Four turns on sonnet, switched only at the first: the gap has passed.
+    expect(applyPolicy(base(), input({ currentModel: 'opus', previousModel: 'sonnet' }), { model: { choice: 'haiku', confidence: 0.95 } }, stays).model).toBe('haiku');
+  });
+
   // A Claude model switch respawns the process and drops the prompt cache.
   it('waits a few turns between Claude model switches; Codex has no such gap', () => {
     const switched: JevDecision[] = [{ ...base(), model: 'haiku' }];

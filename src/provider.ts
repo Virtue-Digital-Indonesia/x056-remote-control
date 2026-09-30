@@ -52,7 +52,9 @@ export interface HistoryEntry {
   /** For 'advisor': one consultation. Claude's comes from the transcript (its
    *  advice is encrypted, so only the outcome); the ChatGPT one from the
    *  gateway's own advisor, with verdict and advice. */
-  advisor?: { model?: string; status?: 'reviewed' | 'declined' | 'unavailable'; trigger?: string; verdict?: string; advice?: string; delivered?: string; latencyMs?: number; error?: string };
+  advisor?: { model?: string; status?: 'reviewed' | 'declined' | 'unavailable'; trigger?: string; verdict?: string; advice?: string; delivered?: string; latencyMs?: number; error?: string;
+    /** Set when the row is a model/effort pick (Jev or OpenAI Decisions), not advice. */
+    helper?: 'jev' | 'openai'; decision?: Record<string, unknown> };
   text: string;
   /** Complete tool input for the action detail reader. */
   detail?: string;

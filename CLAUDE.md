@@ -440,7 +440,13 @@ Composer picker: No helper / Advisor / Jev / OpenAI Decisions. `POST
   the async run, so sending never waits. Applied to that turn only, never over
   the user's saved choice: effort at >=60% confidence, model at >=80%, and a
   Claude model switch at most every 3 turns (it respawns the process and drops
-  the prompt cache). Slow (3 s), failed or keyless = no change. Candidates:
+  the prompt cache). A pick is weighed against what THIS turn runs with
+  otherwise -- the saved choice -- never against the previous pick: doing
+  that called a 71% "medium" "unchanged" and the turn ran on the saved xhigh
+  (seen live 2026-09-30). Staying on a model a pick already moved to is not a
+  switch, so it needs only the 60% bar. Each pick is a compact card in the
+  chat ("Jev · Opus · Medium · Changed this turn") via the conversation
+  journal, so reloads keep it. Slow (3 s), failed or keyless = no change. Candidates:
   haiku/sonnet/opus on Claude (Fable excluded: usage credits), the
   account-advertised models on Codex. Key: `state/secrets/typesafe.json`
   (0600). Decisions: `state/jev/decisions/<sid>.jsonl`.

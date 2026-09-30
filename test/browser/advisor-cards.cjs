@@ -25,6 +25,8 @@ const TOKEN = 'browser-fixture-token-0123456789';
   const rows = fs.existsSync(jf) ? JSON.parse(fs.readFileSync(jf, 'utf8')) : [];
   rows.push({ role: 'advisor', messageId: 'advisor:a1', text: '', ts: iso(45000), advisor: { model: 'gpt-6-astra', trigger: 'stuck', verdict: 'adjust', advice: 'Read the stack trace before restarting anything.', delivered: 'steered', latencyMs: 8985 } });
   rows.push({ role: 'advisor', messageId: 'advisor:a2', text: '', ts: iso(30000), advisor: { model: 'gpt-6-astra', trigger: 'done', verdict: 'looks_good', advice: 'Covered by the snapshot test.', delivered: 'none', latencyMs: 6100 } });
+  // A Jev pick, as the journal records it: between the prompt and the reply.
+  rows.push({ role: 'advisor', messageId: 'decision:d1', text: 'effort -> medium', ts: iso(40000), advisor: { helper: 'jev', decision: { baseModel: 'opus', baseEffort: 'xhigh', effort: 'medium', pickedModel: 'sonnet', modelConfidence: 0.33, pickedEffort: 'medium', effortConfidence: 0.71, notes: ['model sonnet only 33% sure (needs 80%); kept', 'effort -> medium'], latencyMs: 336 } } });
   fs.writeFileSync(jf, JSON.stringify(rows));
 
   for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
@@ -35,8 +37,12 @@ const TOKEN = 'browser-fixture-token-0123456789';
     await page.goto(base); await page.waitForSelector('.cr-task');
     await page.locator('.cr-task').filter({ hasText: 'Build the new homepage' }).first().click();
     await page.waitForSelector('.advcard');
-    const compact = page.locator('.advcard.compact');
+    const compact = page.locator('.advcard.compact:not(.decision)');
     assert.equal(await compact.count(), 1);
+    const pick = page.locator('.advcard.decision');
+    assert.equal(await pick.count(), 1);
+    assert.match(await pick.textContent(), /JevOpus · MediumChanged this turn · 0\.3 smodel sonnet only 33% sure \(needs 80%\); kept · effort → medium/);
+    await pick.scrollIntoViewIfNeeded(); await page.screenshot({ path: '/tmp/x056-advisor-cards-' + vp.width + '.png' });
     assert.match(await compact.textContent(), /Advisor.*Reviewed this step/);
     const full = page.locator('.advcard:not(.compact)');
     assert.equal(await full.count(), 2);

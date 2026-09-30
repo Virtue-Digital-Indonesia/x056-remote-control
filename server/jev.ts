@@ -25,8 +25,14 @@ export interface JevDecisionInput {
   provider: 'claude' | 'codex';
   prompt: string;
   title?: string;
+  /** What THIS turn runs with unless a pick is applied: the conversation's
+   *  saved choice. A pick lasts one turn, so this -- not the last pick -- is
+   *  what "unchanged" means. */
   currentModel?: string;
   currentEffort?: string;
+  /** The model the previous turn ran on, when a pick moved it off
+   *  `currentModel`. Staying there is not a switch. */
+  previousModel?: string;
   models: JevCandidate[];
   efforts: Record<string, string>;
 }
@@ -49,6 +55,10 @@ export interface JevDecision {
   effortProbabilities?: Record<string, number>;
   /** Why a pick was or was not applied. */
   notes: string[];
+  /** The turn's own model/effort before any pick (what it runs with when
+   *  `model`/`effort` are absent). */
+  baseModel?: string;
+  baseEffort?: string;
   latencyMs: number;
   inputTokens?: number;
   outputTokens?: number;
@@ -133,7 +143,7 @@ export class JevService {
    *  returns a decision with `error` and no changes. */
   async decide(sessionId: string, input: JevDecisionInput): Promise<JevDecision> {
     const started = Date.now();
-    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'jev', notes: [], latencyMs: 0 };
+    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'jev', notes: [], latencyMs: 0, baseModel: input.currentModel, baseEffort: input.currentEffort };
     const key = this.key();
     if (!key) { const d = { ...base, error: 'No Jev API key configured' }; this.record(d); return d; }
     const models = input.models.filter((m) => m.id);
@@ -193,12 +203,16 @@ export function applyPolicy(
   if (m?.choice) {
     out.pickedModel = m.choice; out.modelConfidence = m.confidence; out.modelProbabilities = m.probabilities;
     const known = input.models.some((c) => c.id === m.choice);
-    // `model` is set on a decision only when it switched, so the gap is the
-    // number of decisions recorded after the last one that did.
-    const lastSwitch = history.map((h) => !!h.model).lastIndexOf(true);
+    // `model` is set on a decision only when a pick moved the turn off its
+    // own model; a switch is a decision whose model differs from the turn
+    // before. The gap is the number of decisions recorded since the last one.
+    const lastSwitch = history.map((h, i) => !!h.model && (i === 0 || history[i - 1].model !== h.model)).lastIndexOf(true);
     const turnsSinceSwitch = lastSwitch < 0 ? Infinity : history.length - 1 - lastSwitch;
     if (!known) out.notes.push(`model ${m.choice} is not a candidate; kept`);
     else if (m.choice === input.currentModel) out.notes.push('model unchanged');
+    // Already running there since the last turn: no respawn, no cache loss,
+    // so the switching bar does not apply -- the effort bar does.
+    else if (m.choice === input.previousModel && (m.confidence ?? 0) >= JEV_POLICY.effortMin) { out.model = m.choice; model = m.choice; out.notes.push(`model stays ${m.choice}`); }
     else if ((m.confidence ?? 0) < JEV_POLICY.modelMin) out.notes.push(`model ${m.choice} only ${pct(m.confidence)} sure (needs ${pct(JEV_POLICY.modelMin)}); kept`);
     else if (input.provider === 'claude' && turnsSinceSwitch < JEV_POLICY.claudeModelGapTurns) out.notes.push(`model switched ${turnsSinceSwitch} turn(s) ago; waiting ${JEV_POLICY.claudeModelGapTurns} to keep the prompt cache`);
     else { out.model = m.choice; model = m.choice; out.notes.push(`model -> ${m.choice}`); }

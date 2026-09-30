@@ -1563,19 +1563,20 @@ export class SessionManager {
     this.emitConversations(pid);
   }
 
-  /** Ask Jev or OpenAI Decisions for this turn's model/effort. The "current"
-   *  values are what the conversation last actually ran with -- by either
-   *  backend, the store is shared -- so the switching gap is honest. */
+  /** Ask Jev or OpenAI Decisions for this turn's model/effort. A pick lasts
+   *  one turn, so it is weighed against what THIS turn runs with otherwise --
+   *  the conversation's saved choice. Weighing it against the previous pick
+   *  called a pick "unchanged" that the turn did not have, and the turn ran on
+   *  the saved effort instead (seen live: medium at 71% became xhigh). The
+   *  store is shared by both backends, so the switching gap counts either. */
   private async decideModelEffort(backend: 'jev' | 'decisions', pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string): Promise<JevDecision> {
-    const history = this.jev().decisions(sid);
-    const lastModel = [...history].reverse().find((d) => d.model)?.model;
-    const lastEffort = [...history].reverse().find((d) => d.effort)?.effort;
+    const previousModel = this.jev().decisions(sid).at(-1)?.model;
     const codexModels = provider === 'codex'
       ? (getAdapter('codex').listModels?.(this.registry().list().filter((a) => a.provider === 'codex').map((a) => a.configDir)) ?? [])
       : [];
     const { models, efforts } = jevCandidates(provider, codexModels);
     const title = this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)?.title;
-    const input = { provider, prompt, title, currentModel: lastModel ?? model, currentEffort: lastEffort ?? effort, models, efforts };
+    const input = { provider, prompt, title, currentModel: model, currentEffort: effort, previousModel, models, efforts };
     return backend === 'decisions' ? this.openaiDecisions().decide(sid, input) : this.jev().decide(sid, input);
   }
   /** A generated title for this CHAT is queued or being written right now. */

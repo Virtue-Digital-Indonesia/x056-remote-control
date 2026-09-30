@@ -126,7 +126,7 @@ export class OpenAIDecisionsService {
   /** Ask, apply the shared policy, record. Never throws. */
   async decide(sessionId: string, input: JevDecisionInput): Promise<JevDecision> {
     const started = Date.now();
-    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'openai', notes: [], latencyMs: 0 };
+    const base: JevDecision = { at: new Date().toISOString(), sessionId, provider: input.provider, backend: 'openai', notes: [], latencyMs: 0, baseModel: input.currentModel, baseEffort: input.currentEffort };
     const finish = (d: JevDecision) => { this.store.record(d); return d; };
     if (!this.configured()) return finish({ ...base, error: 'No OpenAI API key configured' });
     let r: Awaited<ReturnType<OpenAIDecisionsService['call']>>;

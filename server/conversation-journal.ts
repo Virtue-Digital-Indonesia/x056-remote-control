@@ -21,6 +21,11 @@ export class ConversationJournal {
       // The gateway-built ChatGPT advisor: not in any provider transcript.
       row = { role: 'advisor', messageId: 'advisor:' + String(data.at), text: String(data.advice || data.error || ''), ts: String(data.at),
         advisor: { model: data.model as string, trigger: data.trigger as string, verdict: data.verdict as string, advice: data.advice as string, delivered: data.delivered as string, latencyMs: data.latencyMs as number, error: data.error as string } };
+    } else if (kind === 'jev_decision' && data.at) {
+      // A per-turn model/effort pick: recorded by the gateway, in no transcript.
+      const keep = ['pickedModel', 'pickedEffort', 'modelConfidence', 'effortConfidence', 'model', 'effort', 'baseModel', 'baseEffort', 'notes', 'latencyMs', 'error'];
+      row = { role: 'advisor', messageId: 'decision:' + String(data.at), text: ((data.notes as string[] | undefined) ?? []).join(', ') || String(data.error || ''), ts: String(data.at),
+        advisor: { helper: data.backend === 'openai' ? 'openai' : 'jev', decision: Object.fromEntries(keep.filter((k) => data[k] !== undefined).map((k) => [k, data[k]])) } };
     } else if (kind === 'session_done' && data.status === 'stopped') {
       row = { role: 'notice', messageId: data.requestId ? 'stopped:' + data.requestId : undefined, text: String(data.reason || 'Turn stopped.'), ts };
     } else return;
