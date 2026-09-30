@@ -108,6 +108,7 @@ export class PersistentTurns {
   private readonly now: () => number;
   private readonly transport: Transport;
   private sweeper: ReturnType<typeof setInterval> | null = null;
+  private retiredSeq = 0;
 
   constructor(private readonly opts: PersistentOptions = {}) {
     this.idleTtlMs = opts.idleTtlMs ?? 30 * 60_000;
@@ -268,14 +269,57 @@ export class PersistentTurns {
     // fail loudly rather than corrupt a session.
     if (entry?.busy) return deadHandle(`persistent session already running a turn: ${o.sessionId}`);
 
+    // A conversation that switched model (sonnet -> opus -> sonnet) finds its
+    // FIRST process again under this key -- but that process never saw the turns
+    // that ran on the other one, and would answer from a stale context. Any
+    // sibling of the same conversation that started a turn more recently makes
+    // this entry stale: never reuse it; spawn fresh, which resumes from the
+    // transcript.
+    if (entry && this.isStale(entry)) {
+      if (this.working(entry)) {
+        // Still doing background work: move it off the key rather than kill it.
+        // It stays in the pool (sweep, eviction and shutdown still reach it,
+        // interrupt still hits it), is found by no key lookup, and loses every
+        // steer to the new process on lastTurnStart. Once quiet it is retired
+        // like any other stale sibling.
+        this.live.delete(key);
+        entry.key = `${key}#retired:${++this.retiredSeq}`;
+        this.live.set(entry.key, entry);
+      } else {
+        this.destroy(entry);
+      }
+      entry = undefined;
+    }
+
     if (!entry) {
       const made = this.spawn(o, key);
       if ('error' in made) return deadHandle(made.error);
       entry = made.entry;
       this.live.set(key, entry);
+      this.retireSiblings(entry);
       this.evictOverCap(entry);
     }
     return this.runOn(entry, o);
+  }
+
+  /** Has another process of this conversation started a turn after this one? */
+  private isStale(entry: Live): boolean {
+    for (const e of this.live.values()) {
+      if (e !== entry && e.sessionId === entry.sessionId && !e.exited && e.lastTurnStart > entry.lastTurnStart) return true;
+    }
+    return false;
+  }
+
+  /**
+   * A new process for a conversation makes its other processes stale: they
+   * hold a context the new one is about to move past. Idle ones go now; a
+   * working one is left to finish its background work (isStale keeps it from
+   * ever being reused).
+   */
+  private retireSiblings(fresh: Live): void {
+    for (const e of [...this.live.values()]) {
+      if (e !== fresh && e.sessionId === fresh.sessionId && !this.working(e)) this.destroy(e);
+    }
   }
 
   private spawn(o: TurnOptions, key: string): { entry: Live } | { error: string } {
