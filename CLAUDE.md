@@ -289,6 +289,18 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   turn after it (`isStale`): it is never reused -- destroyed if idle, moved to
   a `#retired:N` key if still working -- and a new spawn destroys its idle
   siblings (`retireSiblings`). Jev on Auto made this routine.
+- **A Codex thread takes ONE writer, so a Codex conversation gets one
+  process.** codex 0.159 holds `<CODEX_HOME>/thread-writer-locks/<thread>.lock`
+  (an flock) for the life of the app-server that opened the thread. A helper
+  toggle changes the identity (team/advisor -> system prompt, `codexConfig`),
+  so a new process spawned while the old one, still inside its working grace,
+  held the lock: every turn failed in 400 ms with "thread ... already has an
+  active writer" (seen live 2026-09-30, twice, 22 s apart). The Codex
+  transport is `singleWriter`: before a spawn, every other process of that
+  conversation is killed, working or not (an account switch included, where
+  the locks are in different homes but the rollout is the same file). A
+  killed process can hold its lock for a moment, so a resume refused that way
+  is retried (`WRITER_RETRIES` x `WRITER_RETRY_MS`, 5 x 1 s) before it fails.
 - **A failed handshake frees its slot.** A Codex process whose thread could
   not be opened is alive but can never take a prompt; left in the pool it
   swallowed the NEXT turn (parked as `pendingPrompt`, five minutes of
@@ -360,13 +372,19 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   'running'` in the account's `state_5.sqlite` with no process behind it; every
   later start waited 30 s for that phantom and exited 1, so each turn on the
   account failed after exactly 30 s with `error: null` and the panel showed
-  "Not checked · Usage temporarily unavailable". Seen live on account `j`.
-  Onboarding now runs `codex migrate-rollouts --apply` for the new home,
-  detached, before the account is routable, so the index completes outside any
-  turn's timeout. Manual repair for a wedged home: pause the account, move its
-  `*.sqlite*` files aside (they hold nothing for an account with no turns), run
-  `CODEX_HOME=<dir> codex migrate-rollouts --apply`, confirm `codex app-server`
-  answers `initialize` within a second, unpause.
+  "Not checked · Usage temporarily unavailable". Seen live on account `j`,
+  and again on `g` after a re-login (2026-09-30): 3.5 GB, 205 threads.
+  **The app-server answers nothing, `initialize` included, until the index is
+  done** -- measured in a scratch home: 224 s -- and each killed start begins
+  it again (`backfill_state = running`, no watermark). `prepareCodexHome`
+  (`server/codex-sessions.ts`) holds ONE app-server open until `initialize`
+  answers, then closes stdin so it exits on its own; meanwhile the router
+  skips the account (`notReadyReason`, "Indexing the shared session store").
+  Onboarding runs it, and boot runs it for any home whose newest
+  `state_N.sqlite` says the backfill is unfinished (`codexHomeIndexed`), so a
+  swap mid-index heals itself. It used to be `codex migrate-rollouts --apply`,
+  which on 0.159 is a different migration (legacy sessions to paginated
+  history) and never finished this index.
 - **A thread whose first turn died has an id but no history, and used to wedge
   the conversation.** `thread/start` assigns the id at once but writes no
   rollout until a turn runs, so a 401, a limit or a swap on the first turn

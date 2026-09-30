@@ -57,6 +57,15 @@ export interface Transport {
    * a key built on it never matched the first turn's process again.
    */
   identity(o: TurnOptions): string;
+  /**
+   * A thread takes ONE writer at a time (Codex: `thread-writer-locks/<id>.lock`
+   * in the home, held for the life of the app-server that opened it). A second
+   * process for the same conversation cannot open the thread while the first
+   * lives -- "thread ... already has an active writer" -- so before one spawns,
+   * every other process of that conversation goes, working or not. Claude has
+   * no such lock; its stale processes are parked instead (see isStale).
+   */
+  readonly singleWriter?: boolean;
   /** Process to spawn for this conversation. */
   spawnSpec(o: TurnOptions): { bin: string; args: string[]; env: NodeJS.ProcessEnv };
   /**

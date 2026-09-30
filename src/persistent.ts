@@ -276,7 +276,7 @@ export class PersistentTurns {
     // this entry stale: never reuse it; spawn fresh, which resumes from the
     // transcript.
     if (entry && this.isStale(entry)) {
-      if (this.working(entry)) {
+      if (this.working(entry) && !this.transport.singleWriter) {
         // Still doing background work: move it off the key rather than kill it.
         // It stays in the pool (sweep, eviction and shutdown still reach it,
         // interrupt still hits it), is found by no key lookup, and loses every
@@ -292,6 +292,15 @@ export class PersistentTurns {
     }
 
     if (!entry) {
+      // A single-writer thread: the new process cannot open it while any other
+      // process of this conversation lives -- a helper toggle (new identity)
+      // or an account switch left the old one holding it, and every turn after
+      // failed in 400 ms. Kill them first; the old one's background work is on
+      // a configuration the conversation has left.
+      if (this.transport.singleWriter) {
+        const conv = o.conversationId ?? o.sessionId;
+        for (const e of [...this.live.values()]) if (e.sessionId === conv) this.destroy(e);
+      }
       const made = this.spawn(o, key);
       if ('error' in made) return deadHandle(made.error);
       entry = made.entry;

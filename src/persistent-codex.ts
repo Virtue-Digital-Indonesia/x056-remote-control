@@ -33,6 +33,10 @@ const RPC_THREAD_FRESH = 3;
 
 /** app-server's answer when the thread id has no rollout under this CODEX_HOME. */
 const NO_ROLLOUT_RE = /no rollout found/i;
+/** Another process holds the thread's writer lock. Released when it exits. */
+const ACTIVE_WRITER_RE = /already has an active writer/i;
+/** A process the pool just killed can take a moment to release its lock. */
+export const WRITER_RETRIES = 5, WRITER_RETRY_MS = 1000;
 
 interface Ext {
   ready?: boolean;
@@ -46,6 +50,9 @@ interface Ext {
   resumeTarget?: string;
   /** The fallback was already tried once; a second failure is final. */
   retried?: boolean;
+  /** thread/resume params, re-sent while a killed process releases its lock. */
+  resumeParams?: Record<string, unknown>;
+  writerRetries?: number;
   /** Next JSON-RPC id; turn/start and steer/interrupt requests are tracked. */
   seq?: number;
   /** Which of our request ids are turn/start calls awaiting a turn id. */
@@ -96,6 +103,7 @@ export function mapItem(raw: unknown): Record<string, unknown> {
 
 export class CodexTransport implements Transport {
   readonly id = 'codex' as const;
+  readonly singleWriter = true;
 
   /** Model and effort ride on every turn/start (see userMessage), so a change
    *  in either is served by the process the thread already has. The MCP wiring
@@ -124,8 +132,9 @@ export class CodexTransport implements Transport {
     const params = o.mode === 'resume'
       ? { ...startParams, threadId: o.sessionId }
       : startParams;
-    x.write = write; x.startParams = startParams; x.retried = false;
+    x.write = write; x.startParams = startParams; x.retried = false; x.writerRetries = 0;
     x.resumeTarget = o.mode === 'resume' ? o.sessionId : undefined;
+    x.resumeParams = o.mode === 'resume' ? params : undefined;
     write(JSON.stringify({ jsonrpc: '2.0', id: RPC_THREAD, method: o.mode === 'resume' ? 'thread/resume' : 'thread/start', params }));
     return { ready: false };
   }
@@ -204,6 +213,15 @@ export class CodexTransport implements Transport {
         // rollout store, "no rollout found" means no history anywhere, so a
         // fresh thread loses nothing; the alternative is a conversation that
         // can never take another message. Tried once: a second miss is real.
+        // The pool kills a conversation's other processes before spawning this
+        // one, but a SIGKILLed app-server can still hold its writer lock for a
+        // moment. Ask again, a few times; a holder that outlives that is real.
+        if (id === RPC_THREAD && x.resumeParams && ACTIVE_WRITER_RE.test(message) && (x.writerRetries ?? 0) < WRITER_RETRIES && x.write) {
+          x.writerRetries = (x.writerRetries ?? 0) + 1;
+          const write = x.write, line = JSON.stringify({ jsonrpc: '2.0', id: RPC_THREAD, method: 'thread/resume', params: x.resumeParams });
+          setTimeout(() => write(line), WRITER_RETRY_MS).unref?.();
+          return { events: [], turnEnded: false, readyNow: false };
+        }
         if (id === RPC_THREAD && x.resumeTarget && !x.retried && NO_ROLLOUT_RE.test(message) && x.write && x.startParams) {
           x.retried = true;
           x.write(JSON.stringify({ jsonrpc: '2.0', id: RPC_THREAD_FRESH, method: 'thread/start', params: x.startParams }));

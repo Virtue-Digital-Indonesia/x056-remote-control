@@ -38,7 +38,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { AccountRegistry, type RoutingStrategy, type AccountRouteContext } from '../src/accounts.js';
-import { shareCodexSessions, prepareCodexHome } from './codex-sessions.js';
+import { shareCodexSessions, prepareCodexHome, codexHomeIndexed } from './codex-sessions.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { getAdapter } from '../src/adapters/registry.js';
@@ -535,6 +535,11 @@ export class SessionManager {
       const r = shareCodexSessions(this.opts.stateDir, a);
       if (r.error) console.warn(`[codex-sessions] ${a.name}: ${r.error}`);
       else if (r.linked) console.log(`[codex-sessions] ${a.name}: sessions/ -> shared store (${r.moved} rollout(s) moved, ${r.skipped} already there)`);
+      // An index a swap or a crash cut short: finish it before routing there.
+      if (codexHomeIndexed(a.configDir) === false) {
+        console.log(`[codex-sessions] ${a.name}: rollout index unfinished; building it before routing there`);
+        void prepareCodexHome(a.configDir);
+      }
     }
   }
 
@@ -1124,8 +1129,9 @@ export class SessionManager {
     // Before the first turn, so even that one's thread lands in the shared store.
     const shared = shareCodexSessions(this.opts.stateDir, { name, configDir: dir });
     if (shared.error) console.warn(`[codex-sessions] ${name}: ${shared.error}`);
-    // The linked store is large; let Codex index it now, not inside the first turn.
-    prepareCodexHome(dir);
+    // The linked store is large; let Codex index it now, not inside the first
+    // turn. The router skips the account until it is done.
+    void prepareCodexHome(dir);
     reg.add(name, dir, 'codex');
     try { this.opts.onAccountAdded?.({ name, configDir: dir, provider: 'codex' }); } catch { /* never block onboarding */ }
     this.emitAccounts();

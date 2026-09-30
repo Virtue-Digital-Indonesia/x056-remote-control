@@ -1,4 +1,5 @@
 import { supersededCodexModel } from '../codex-model-policy.js';
+import { CODEX_INDEXING_REASON, codexHomePreparing } from '../codex-home.js';
 import { readMessageSender } from '../message-sender.js';
 import { toolImagePaths } from '../artifact-references.js';
 import { stripMemoryContext } from '../memory-context.js';
@@ -975,6 +976,7 @@ export const codexAdapter: ProviderAdapter = {
   readIdentity,
   listModels,
   hasCredentials,
+  notReadyReason: (configDir: string) => (codexHomePreparing(configDir) ? CODEX_INDEXING_REASON : undefined),
   activeModel,
   listSubagents,
   subagentStatus,
