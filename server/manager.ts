@@ -3,6 +3,7 @@ import { currentClaudeModel } from '../src/claude-model-policy.js';
 import { checkFork, JEV_POLICY, JevService, type DecisionContext, type ForkDecision, type ForkInput, type JevDecision } from './jev.js';
 import { OpenAIDecisionsService } from './openai-decisions.js';
 import { claudeTeamAgents, codexTeamConfig, teamInstructions } from './team.js';
+import { ClaudeAdvisorLog, forkSummary, mainRun, tailJsonl } from './agent-tree.js';
 import { checkBrief, checkRole, decideGate, delegateInstructions, DelegateStore, digest, GATE_OPTIONS, GATE_QUESTION, gateState, MAX_DELEGATES, reportKey, ROUND_LIMIT, shouldWake, type Delegate, type DelegateReport } from './delegates.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
 import { findRollout } from '../src/adapters/codex.js';
@@ -251,6 +252,8 @@ interface PersistedState {
 }
 
 interface ActiveRun {
+  /** When this turn began (ISO), for "this turn's" workers and picks. */
+  startedAt?: string;
   stopRequested?: boolean;
   suppressCompletion?: boolean;
   sessionId: string;
@@ -1527,6 +1530,51 @@ export class SessionManager {
 
   private codexAdvisorService?: CodexAdvisor;
   codexAdvisor(): CodexAdvisor { return this.codexAdvisorService ??= new CodexAdvisor(this.opts.stateDir); }
+  private claudeAdvisorLogRef?: ClaudeAdvisorLog;
+  claudeAdvisorLog(): ClaudeAdvisorLog { return this.claudeAdvisorLogRef ??= new ClaudeAdvisorLog(this.opts.stateDir); }
+
+  /**
+   * The agent tree for one conversation (server/agent-tree.ts): main session,
+   * advisor, fork layer, delegates and the gate, from cheap reads only. The
+   * view reads team subagents from their own endpoint and keeps the ones
+   * started since `turnStartedAt`.
+   */
+  agentTree(pid: string, sid: string) {
+    const conv = this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid);
+    if (!conv) throw new Error('unknown conversation for that project');
+    const provider = this.projects().conversationProvider(pid, sid) as 'claude' | 'codex';
+    const helpers = helpersOf(conv);
+    const run = this.runs.get(sid);
+    const running = !!run, background = !running && this.backgroundSessions().some((b) => b.sessionId === sid);
+    const turnStartedAt = run?.startedAt ?? new ConversationJournal(this.opts.stateDir).lastPromptAt(pid, sid);
+    const decisionsFile = join(this.opts.stateDir, 'jev', 'decisions', sid + '.jsonl');
+    const forksFile = join(this.opts.stateDir, 'jev', 'forks', sid + '.jsonl');
+    const picks = /^[A-Za-z0-9_-]{1,80}$/.test(sid) ? tailJsonl<JevDecision>(decisionsFile, 12) : [];
+    const forks = forkSummary(/^[A-Za-z0-9_-]{1,80}$/.test(sid) ? tailJsonl<ForkDecision>(forksFile, 60) : []);
+    const main = mainRun({ model: conv.model, effort: conv.effort }, picks, turnStartedAt);
+    const results = this.turnResults().list(sid) as { at?: string; durationMs?: number; numTurns?: number; totalCostUsd?: number }[];
+    const last = results.at(-1);
+    const codexAdvisorModel = () => {
+      const offered = getAdapter('codex').listModels?.(this.registry().list().filter((a) => a.provider === 'codex').map((a) => a.configDir)) ?? [];
+      return offered.find((m) => /astra/i.test(m.slug))?.slug ?? 'gpt-6-astra';
+    };
+    const advisor = !helpers.advisor ? { on: false } : provider === 'codex'
+      ? { on: true, model: codexAdvisorModel(), kind: 'gateway' as const, checkpoints: true,
+          calls: this.codexAdvisor().consultations(sid).slice(-20).map((c) => ({ at: c.at, trigger: c.trigger, verdict: c.verdict, delivered: c.delivered, error: c.error, advice: c.advice?.slice(0, 400) })) }
+      : { on: true, model: advisorFor('claude', main.model), kind: 'claude' as const, checkpoints: false,
+          note: 'Claude decides when to consult; the advice is encrypted. Main-session calls only, counted from 2026-09-30.',
+          calls: this.claudeAdvisorLog().tail(sid, 20) };
+    return {
+      provider, helpers, turnStartedAt: turnStartedAt ?? null,
+      main: { ...main, running, background, lastTurn: last ? { at: last.at, durationMs: last.durationMs, steps: last.numTurns, costUsd: last.totalCostUsd } : null },
+      advisor,
+      team: helpers.team ? { effort: 'medium', model: provider === 'claude' ? 'opus' : undefined, roles: provider === 'claude' ? ['explorer', 'worker', 'researcher'] : ['explorer', 'worker', 'default'] } : null,
+      forks: { total: forks.total, sharp: forks.sharp, split: forks.split, recent: forks.recent },
+      gates: forks.gates,
+      picks: picks.slice(-8),
+      delegates: this.listDelegates(pid, sid),
+    };
+  }
 
   /** One consultation for a ChatGPT conversation, and what happens to it:
    *  mid-turn "adjust" is steered into the running turn; a post-turn "concern"
@@ -2933,7 +2981,7 @@ export class SessionManager {
     const sourcePrompt=prompt;
     const autopilot = this.loadAutopilot()[sessionId];
     // Keep the turn's notification ownership even if autopilot is disabled later.
-    const run: ActiveRun = { sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId, suppressCompletion: sender?.kind === 'autopilot' || (!!autopilot && !autopilot.paused) };
+    const run: ActiveRun = { startedAt: new Date().toISOString(), sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId, suppressCompletion: sender?.kind === 'autopilot' || (!!autopilot && !autopilot.paused) };
     this.runs.set(sessionId, run);
     // Every event from this run carries its projectId AND sessionId so the panel
     // can route it to the right conversation — a project can have several
@@ -3055,7 +3103,10 @@ export class SessionManager {
               if (b.type === 'server_tool_use' && b.name === 'advisor') emit('advisor_call', { phase: 'start', model: advisor });
               if (b.type === 'advisor_tool_result') {
                 const t = b.content?.type ?? '';
-                emit('advisor_call', { phase: 'done', model: advisor, status: /error|unavailable/.test(t) ? 'unavailable' : /declin/.test(t) ? 'declined' : 'reviewed', ...(b.content?.error_code ? { error: b.content.error_code } : {}) });
+                const status = /error|unavailable/.test(t) ? 'unavailable' : /declin/.test(t) ? 'declined' : 'reviewed';
+                emit('advisor_call', { phase: 'done', model: advisor, status, ...(b.content?.error_code ? { error: b.content.error_code } : {}) });
+                // The agent tree counts these; the stream is the only place they show.
+                try { this.claudeAdvisorLog().record(sessionId, { at: new Date().toISOString(), model: advisor, status, ...(b.content?.error_code ? { error: b.content.error_code } : {}) }); } catch { /* never break the stream */ }
               }
             }
           }

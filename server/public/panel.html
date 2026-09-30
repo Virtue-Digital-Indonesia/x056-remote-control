@@ -925,6 +925,113 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 .tl.sys .tg, .tl.sys .tx, .tl.meta .tg, .tl.meta .tx { color: #5c6570; }
 .term.hide-meta .tl.meta { display: none; }
 @media (max-width: 650px) { .tl { grid-template-columns: 0 14px minmax(0, 1fr); } .tl .tt { visibility: hidden; } .tl .td { margin-left: 20px; } }
+/* ---- agent tree (agent-tree.js): main session, advisor, forks, workers ---- */
+main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus { display: none !important; }
+.atree { --at-main: #f0a57a; --at-sub: #79a8ff; --at-jev: #7ee2a0; --at-adv: #c9a7ff; --at-dg: #56d4dd; --at-line: #3a4452; --at-faint: #6b7580; --at-muted: #9aa7b4; --at-warn: #e3b341; --at-err: #ff7b72; }
+.atree .at-title { color: var(--at-muted); letter-spacing: .06em; font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-body { flex: 1; overflow: auto; padding: 14px 18px 28px; overscroll-behavior: contain; }
+.at-empty { color: var(--at-muted); padding: 24px 0; text-align: center; margin: 0; }
+.at-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 20px; list-style: none; margin: 0 auto 18px; padding: 0 0 12px; max-width: 980px; border-bottom: 1px solid #222a35; color: var(--at-muted); }
+.at-legend li { display: inline-flex; align-items: center; gap: 7px; }
+.at-legend i { width: 9px; height: 9px; border-radius: 2px; background: currentColor; }
+.at-legend .main i { color: var(--at-main); } .at-legend .sub i { color: var(--at-sub); } .at-legend .jev i { color: var(--at-jev); } .at-legend .adv i { color: var(--at-adv); } .at-legend .dg i { color: var(--at-dg); }
+.at-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; max-width: 980px; margin: 0 auto; align-items: start; }
+.at-grid.has-adv { grid-template-columns: 220px minmax(0, 1fr); }
+.at-flow { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.at-node { box-sizing: border-box; width: min(460px, 100%); padding: 10px 16px 11px; border: 1px solid var(--at-line); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.at-node-title { font-weight: 700; color: #e6edf3; }
+.at-node-title.spread { align-self: stretch; display: flex; justify-content: space-between; gap: 12px; text-align: left; }
+.at-sub { color: #e6edf3; }
+.at-faint { color: var(--at-faint); font-size: 11.5px; }
+.at-row { display: flex; gap: 10px; align-items: center; justify-content: center; }
+.at-row .k { color: var(--at-muted); }
+.at-effort { display: inline-flex; gap: 2px; vertical-align: -1px; margin-right: 6px; }
+.at-effort i { display: inline-block; width: 5px; height: 11px; border: 1px solid currentColor; box-sizing: border-box; opacity: .45; }
+.at-effort i.on { background: currentColor; opacity: 1; }
+.at-chip { font-size: 11px; padding: 0 8px; border: 1px solid currentColor; border-radius: 999px; }
+.at-chip.jev { color: var(--at-jev); }
+.at-status { font-size: 11.5px; } .at-status.run { color: var(--at-main); } .at-status.bg { color: var(--at-adv); } .at-status.idle { color: var(--at-faint); }
+.at-node.main { border-color: var(--at-main); } .at-node.main .at-node-title, .at-node.main .v { color: var(--at-main); }
+.at-node.back { border-color: var(--at-main); border-style: dashed; } .at-node.back .at-node-title { color: var(--at-main); }
+.at-link { width: 1px; height: 20px; background: var(--at-line); }
+.at-link.labelled { width: auto; height: auto; background: none; display: flex; flex-direction: column; align-items: center; color: #e6edf3; text-align: center; }
+.at-link.labelled::before, .at-link.labelled::after { content: ''; width: 1px; height: 12px; background: var(--at-line); }
+.at-link-label { padding: 3px 0; } .at-link-label b { color: var(--at-sub); font-weight: 700; }
+.at-link.labelled:has(.at-link-label:empty) { display: none; }
+.at-node.fork { border-color: var(--at-jev); text-align: left; align-items: stretch; width: min(560px, 100%); }
+.at-node.fork .at-node-title > span:first-child { color: var(--at-jev); }
+.at-forkcount .k { color: var(--at-muted); font-weight: 400; } .at-forkcount b { color: var(--at-jev); }
+.at-forks { list-style: none; margin: 4px 0 2px; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.at-fork { display: grid; grid-template-columns: minmax(0, 1fr) 110px 38px 48px; gap: 10px; align-items: center; }
+.at-fork .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e6edf3; }
+.at-fork .at-meter { display: block; height: 10px; background: repeating-linear-gradient(45deg, #2a323d 0 2px, #1a2029 2px 4px); }
+.at-fork .at-meter i { display: block; height: 100%; }
+.at-fork.sharp .at-meter i { background: var(--at-jev); } .at-fork.split .at-meter i { background: var(--at-main); }
+.at-fork .p { text-align: right; font-variant-numeric: tabular-nums; }
+.at-fork.sharp .p, .at-fork.sharp .vd { color: var(--at-jev); } .at-fork.split .p, .at-fork.split .vd { color: var(--at-main); }
+.at-fork .vd { font-weight: 700; font-size: 11px; }
+.at-forkfoot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--at-muted); font-size: 11.5px; margin-top: 2px; }
+.at-forkfoot .split { color: var(--at-main); }
+.at-workers { width: 100%; display: flex; flex-direction: column; align-items: center; }
+.at-cards { list-style: none; margin: 0; padding: 0; width: 100%; max-width: 760px; display: grid; align-items: start; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.at-card { min-width: 0; display: flex; flex-direction: column; }
+.at-card-btn { box-sizing: border-box; width: 100%; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 9px 12px 10px; border: 1px solid var(--at-sub); background: transparent; color: #d6dde6; font: inherit; text-align: center; cursor: pointer; }
+.at-card-btn:hover, .at-card-btn:focus-visible { background: #161b22; outline: none; }
+.at-card-btn:focus-visible { box-shadow: 0 0 0 2px var(--at-sub); }
+.at-card-role { font-weight: 700; color: #e6edf3; }
+.at-card-model { color: var(--at-sub); }
+.at-card-desc { color: var(--at-muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.at-card-status { color: var(--at-sub); font-size: 11.5px; }
+.at-card.done .at-card-status { color: var(--at-jev); } .at-card.failed .at-card-status { color: var(--at-err); } .at-card.stopped .at-card-status { color: var(--at-faint); }
+.at-card.done .at-card-btn, .at-card.stopped .at-card-btn { border-color: #2f4a70; }
+.at-kids { list-style: none; margin: 0 0 0 12px; padding: 6px 0 0 10px; border-left: 1px dashed var(--at-line); display: flex; flex-direction: column; gap: 6px; }
+.at-kids .at-card-btn { padding: 6px 10px 7px; border-style: dashed; }
+.at-none, .at-hint { color: var(--at-muted); text-align: center; grid-column: 1 / -1; padding: 6px 0; }
+.at-hint { list-style: none; max-width: 460px; margin-top: 16px; padding: 10px 14px; border: 1px dashed var(--at-line); }
+.at-earlier { margin-top: 8px; color: var(--at-faint); font-size: 11.5px; }
+.at-node.dg { border-color: var(--at-dg); text-align: left; align-items: stretch; width: min(560px, 100%); }
+.at-node.dg .at-node-title > span:first-child { color: var(--at-dg); }
+.at-dgs { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.at-dg-btn { box-sizing: border-box; width: 100%; display: grid; grid-template-columns: minmax(70px, auto) minmax(0, 1fr) auto auto; gap: 4px 12px; align-items: center; padding: 5px 8px; border: 1px solid #22303a; background: transparent; color: #d6dde6; font: inherit; text-align: left; cursor: pointer; }
+.at-dg-btn:hover, .at-dg-btn:focus-visible { background: #161b22; border-color: var(--at-dg); outline: none; }
+.at-dg-btn .role { font-weight: 700; color: #e6edf3; } .at-dg-btn .model { color: var(--at-dg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .at-dg-btn .st { color: var(--at-muted); font-size: 11.5px; white-space: nowrap; }
+.at-dg.working .st { color: var(--at-adv); }
+.at-dg-btn .gate { font-size: 11px; padding: 0 7px; border: 1px solid currentColor; border-radius: 999px; white-space: nowrap; }
+.at-dg-btn .gate.done { color: var(--at-jev); } .at-dg-btn .gate.needs_orchestrator { color: var(--at-sub); } .at-dg-btn .gate.needs_human, .at-dg-btn .gate.blocked { color: var(--at-warn); }
+.at-adv { box-sizing: border-box; background: transparent; color: #d6dde6; border: 1px solid var(--at-adv); padding: 10px 14px 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.at-adv > .at-node-title { color: var(--at-adv); text-align: center; }
+.at-adv > .at-sub { color: var(--at-adv); text-align: center; margin-bottom: 4px; }
+.at-checks { list-style: none; margin: 0 0 4px; padding: 0 0 0 8px; border-left: 1px dashed var(--at-line); display: flex; flex-direction: column; gap: 6px; }
+.at-check { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; color: var(--at-muted); }
+.at-check .dia { color: var(--at-faint); }
+.at-check.lit { color: #e6edf3; background: #1d1f2e; margin-left: -8px; padding: 2px 6px; font-weight: 700; } .at-check.lit .dia { color: var(--at-adv); }
+.at-check.neutral { color: var(--at-faint); }
+.at-check .vd { font-size: 11px; font-weight: 400; } .at-check .vd.ok { color: var(--at-jev); } .at-check .vd.warn { color: var(--at-warn); } .at-check .vd.err { color: var(--at-err); }
+.at-adv .at-row { justify-content: space-between; } .at-adv .at-row .v { color: var(--at-adv); }
+.at-calls { list-style: none; margin: 0; padding: 0; color: var(--at-muted); font-size: 11.5px; } .at-calls .warn { color: var(--at-warn); }
+.at-note, .at-advice { margin: 0; color: var(--at-muted); font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.at-advice { color: #e6edf3; }
+.at-log { max-width: 980px; margin: 28px auto 0; border: 1px solid #2a323d; padding: 0 12px 10px; }
+.at-log h3 { display: inline-block; margin: 0 0 6px; padding: 0 8px; transform: translateY(-50%); background: #0e1116; font: inherit; font-weight: 400; color: var(--at-muted); }
+.at-log ol { list-style: none; margin: -4px 0 0; padding: 0; }
+.at-log li { display: grid; grid-template-columns: 64px 128px minmax(0, 1fr); gap: 10px; padding: 1px 0; }
+.at-log .t { color: var(--at-faint); font-variant-numeric: tabular-nums; } .at-log .g { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .at-log .x { overflow-wrap: anywhere; }
+.at-log .sub .g { color: var(--at-sub); } .at-log .jev .g { color: var(--at-jev); } .at-log .adv .g { color: var(--at-adv); } .at-log .gate .g, .at-log .dg .g { color: var(--at-dg); }
+.at-log li.none { display: block; color: var(--at-faint); }
+@media (max-width: 650px) {
+  .at-body { padding: 12px 12px 24px; }
+  .at-legend { justify-content: flex-start; gap: 4px 14px; }
+  .at-grid.has-adv { grid-template-columns: minmax(0, 1fr); }
+  .at-adv { order: 2; }
+  .at-cards { grid-template-columns: minmax(0, 1fr); }
+  .at-fork { grid-template-columns: minmax(0, 1fr) 54px 34px 44px; gap: 6px; }
+  .at-dg-btn { grid-template-columns: minmax(0, 1fr) auto; }
+  .at-dg-btn .st { grid-column: 1; }
+  .at-log li { grid-template-columns: 58px minmax(0, 1fr); gap: 0 8px; }
+  .at-log .x { grid-column: 2; }
+  .at-log .g { grid-column: 2; grid-row: 1; }
+  .at-log .t { grid-row: 1 / span 2; }
+}
 /* ---- helper control (composer): advisor + agent team + model/effort picker ---- */
 .helper { position: relative; display: inline-flex; flex: none; }
 .helper-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; min-width: 30px; justify-content: center; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
@@ -1007,6 +1114,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 <link rel="stylesheet" href="/control-room.css" />
 <script src="/control-room.js"></script>
 <script src="/terminal.js"></script>
+<script src="/agent-tree.js"></script>
 <link rel="stylesheet" href="/rc-chat.css" />
 <script src="/rc-chat.js"></script>
 <link rel="stylesheet" href="/project-spaces.css" />
@@ -1053,6 +1161,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
   <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></symbol>
   <symbol id="i-terminal" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></symbol>
+  <symbol id="i-tree" viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="5" rx="1.2"/><rect x="2.5" y="16.5" width="6" height="5" rx="1.2"/><rect x="15.5" y="16.5" width="6" height="5" rx="1.2"/><path d="M12 7.5v4.5"/><path d="M5.5 16.5V12h13v4.5"/></symbol>
   <symbol id="i-console" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="M7 10l3 2.5L7 15"/><path d="M12.5 15h4.5"/></symbol>
   <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3z"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
@@ -1102,6 +1211,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
     <button class="ico" id="wfBtn" hidden title="workflow runs in this conversation"><svg class="ic"><use href="#i-fanout"/></svg><span class="mcpBadge" id="wfBadge" hidden></span></button>
     <button class="ico" id="termBtn" title="terminal view: the whole session, raw"><svg class="ic"><use href="#i-console"/></svg></button>
+    <button class="ico" id="atreeBtn" title="agent tree: main session, advisor, forks and workers"><svg class="ic"><use href="#i-tree"/></svg></button>
     <button class="ico" id="shortcutsBtn" title="keyboard shortcuts (⌘/)"><svg class="ic"><use href="#i-keyboard"/></svg></button>
     <button class="ico" id="themeBtn" title="theme"><svg class="ic"><use href="#i-moon"/></svg></button>
     <button class="ico" id="tokenBtn" title="log out"><svg class="ic"><use href="#i-logout"/></svg></button>
@@ -1354,6 +1464,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
 (function () {
   var controlRoom = null;
   var terminalView = null; // terminal.js: the raw session view
+  var agentTree = null; // agent-tree.js: main session, advisor, forks, workers
   var dismissedQuestions = {};
   var questionsVersion = 0;
   var conversationPicks = {};
@@ -2925,6 +3036,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     if (['question','question_dismissed','session_started'].indexOf(kind) >= 0) questionsVersion++;
     if (controlRoom) controlRoom.event(kind, data);
     if (terminalView) terminalView.event(kind, data);
+    if (agentTree) agentTree.event(kind, data);
     if (kind === 'jev_decision') refreshJevStatus();
     var pid = data.projectId || currentProjectId;
     var mine = !data.projectId || data.projectId === currentProjectId;
@@ -3734,6 +3846,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
   function switchConversation(projectId, sessionId) {
     if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(false); }
     if (terminalView) setTimeout(function () { terminalView.conversationChanged(); }, 0);
+    if (agentTree) setTimeout(function () { agentTree.conversationChanged(); }, 0);
     saveConversationPick();
     if (projectId !== currentProjectId) return;
     setNav(false);
@@ -6366,6 +6479,7 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     memoryDraftRequest:memoryDraftRequest,
     insertPrompt: function (text) { promptEl.value = text; autogrow(); saveDraft(); promptEl.focus(); },
     toggleTerminal: function () { if (terminalView) terminalView.toggle(); },
+    toggleAgentTree: function () { if (agentTree) agentTree.toggle(); },
     attachSaved: function (pid, sid, file) {
       var key = filesKeyFor(pid,sid), list = pendingFilesByConv[key] || (pendingFilesByConv[key] = []);
       if (!list.some(function(f){return f.fileId===file.fileId && f.versionId===file.versionId;})) list.push(file);
@@ -6378,8 +6492,19 @@ main.term-open .scroll, main.term-open #jumpBtn, main.term-open #streamStatus { 
     api: api,
     current: function () { return pendingNew || !currentProjectId || !lastSessionId ? null : { projectId: currentProjectId, sessionId: lastSessionId }; },
     notify: function (m) { if (controlRoom) controlRoom.notify(m); else addSys(m, 'banner'); },
+    onOpen: function () { if (agentTree && agentTree.isOpen()) agentTree.close(); },
   }) : null;
   $('termBtn').addEventListener('click', function () { if (terminalView) terminalView.toggle(); });
+  // The agent tree takes the chat's place like the terminal; only one of them is open.
+  agentTree = typeof window.createAgentTree === 'function' ? window.createAgentTree({
+    api: api,
+    current: function () { return pendingNew || !currentProjectId || !lastSessionId ? null : { projectId: currentProjectId, sessionId: lastSessionId }; },
+    notify: function (m) { if (controlRoom) controlRoom.notify(m); else addSys(m, 'banner'); },
+    onOpen: function () { if (terminalView && terminalView.isOpen()) terminalView.close(); },
+    openSubagent: function (meta) { openSubShell(meta); },
+    openDelegate: function (id, role) { if (terminalView) terminalView.showDelegate(id, role); },
+  }) : null;
+  $('atreeBtn').addEventListener('click', function () { if (agentTree) agentTree.toggle(); });
   // Static assets can update before the gateway swaps to their matching build.
   var rcChat = typeof window.createRCChat === 'function' ? window.createRCChat(rcEngine, controlRoom) : null;
   window.rcChat = rcChat;

@@ -47,6 +47,7 @@
     function toggle() { if (open) close(); else show(); }
     function pressed(on) { ['chatTerminal', 'termBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false'); }); }
     function show() {
+      if (engine.onOpen) engine.onOpen(); // the agent tree and the terminal share the chat's place
       open = true; root.hidden = false; main.classList.add('term-open'); pressed(true);
       try { localStorage.setItem('x056_terminal', '1'); } catch (e) {}
       reload();

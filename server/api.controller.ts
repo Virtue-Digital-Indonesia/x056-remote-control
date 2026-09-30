@@ -537,6 +537,16 @@ export class ApiController {
     } catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
+  /** The agent tree view: main session, advisor, fork layer, delegates and
+   *  the gate, from cheap reads (server/agent-tree.ts). Subagents are read
+   *  from conversations/subagents by the view itself. */
+  @Get('conversations/agent-tree')
+  conversationAgentTree(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {
+    if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    try { return this.manager.agentTree(projectId, sessionId); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
   /** A conversation's helpers and delegates, for another conversation (MCP). */
   @Get('conversations/helpers')
   conversationHelperState(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {

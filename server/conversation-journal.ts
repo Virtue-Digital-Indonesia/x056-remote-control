@@ -43,6 +43,12 @@ export class ConversationJournal {
     while (retained.length > 1 && chars > 2_000_000) chars -= retained.shift()!.text.length;
     writeState(file, retained);
   }
+  /** When the conversation's latest turn began: its last recorded prompt. */
+  lastPromptAt(pid: string, sid: string): string | undefined {
+    const rows = readState<HistoryEntry[]>(this.path(pid, sid), []);
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i].role === 'user' && rows[i].ts) return rows[i].ts;
+    return undefined;
+  }
   merge(pid: string, sid: string, transcript: HistoryEntry[], newest: boolean): HistoryEntry[] {
     const rows = transcript.map(r => ({ ...r }));
     const dated = rows.map(r => Date.parse(r.ts || '')).filter(Number.isFinite);

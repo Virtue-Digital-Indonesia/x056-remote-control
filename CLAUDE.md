@@ -596,6 +596,30 @@ only), and Jev gates which reports wake the orchestrator.
   (status per delegate, open its transcript in the terminal view -- the
   pager takes `delegateId` -- message it directly, stop it).
 
+## Agent tree (`server/public/agent-tree.js`, `server/agent-tree.ts`)
+
+The view of a conversation's whole working setup the owner asked for
+("where is the fork layer?" -- it had only been terminal lines): the main
+session (model/effort this turn, Jev pick marked), the advisor column, the Jev
+fork layer, the workers (agent-team subagents / Codex children, and
+delegates), and a pipeline log. Its own header button beside the terminal
+button (⋯ menu on phones); the two views are mutually exclusive.
+
+- **`GET /api/conversations/agent-tree`** does cheap reads only: helpers,
+  delegate roster, log TAILS (`tailJsonl`, last 512 KB), turn results, the
+  ChatGPT consultations and the Claude advisor call log. The subagent list is
+  NOT in it -- that scan does per-file stats and once blocked the event loop
+  at a 5 s poll -- the view reads `conversations/subagents` itself, only while
+  open and something runs, and keeps this turn's workers (`turnStartedAt`:
+  the running turn's start, else the journal's last prompt), folding the rest.
+- **The delegate report gate is not a fork**: it shares the fork log
+  (`report gate · <role>`) and is returned apart as `gates`.
+- **Claude's advisor has no checkpoints to light**: it is model-driven and
+  its advice is encrypted, so the tree shows calls (logged from the stream's
+  `advisor_tool_result` into `state/advisor/<sid>.claude.jsonl` from
+  2026-09-30 on, main session only) and says so. The ChatGPT advisor's
+  plan / stuck / done are real and lit.
+
 ## Terminal view (`server/public/terminal.js`)
 
 A header button swaps the conversation for its own transcript, CLI-style:
