@@ -379,6 +379,8 @@
       pane.classList.toggle('ap-sheet', sh);
       pane.classList.toggle('ap-wide', wide);
       pane.classList.toggle('ap-drill', !!S.node && !wide);
+      // A narrow chat column drops its topbar labels rather than overlapping them.
+      host.classList.toggle('ap-narrow-chat', !pane.hidden && !sh && hostWidth() - (width + (wide ? HIST_W : 0)) < 560);
       pane.style.width = sh ? '' : (width + (wide ? HIST_W : 0)) + 'px';
       pane.style.setProperty('--ap-outline-w', width + 'px');
       document.body.style.setProperty('--agent-pane-w', (sh ? 0 : width + (wide ? HIST_W : 0)) + 'px');
@@ -619,6 +621,10 @@
       } else if (it.kind === 'main') {
         var m = t.main || {}, lt = m.lastTurn || {};
         box.appendChild(stats([['Model', modelName(m.model) || 'Default'], ['Effort', (m.effort || 'default') + (m.pickedBy ? ' · ' + (m.pickedBy === 'openai' ? 'Decisions' : 'Jev') : '')], ['Steps', lt.steps != null ? String(lt.steps) : '—'], ['Last turn', lt.durationMs != null ? dur(0, lt.durationMs) : '—']]));
+        // What the conversation and its agents spent (the retired usage popup's figures).
+        var self = engine.subagentSelf && engine.subagentSelf(), all = (S.data && S.data.subs) || [];
+        var agentTok = all.reduce(function (n, x) { return n + usageTok(x.usage); }, 0);
+        box.appendChild(stats([['Conversation cost', self ? (engine.costLabel && engine.costLabel(self.cost)) || '—' : '—', self && self.partial ? 'Usage is still being scanned' : 'API list price for the same work'], ['Agents', String(all.length)], ['Running', String(all.filter(function (x) { return x.status === 'running'; }).length)], ['Agent tokens', agentTok ? tok(agentTok) : '—']]));
       } else if (it.kind === 'jev') {
         var fk = t.forks || {};
         box.appendChild(stats([['Forks', String(fk.total || 0)], ['Sharp', String(fk.sharp || 0)], ['Split', String(fk.split || 0)], ['Picks', String((t.picks || []).length)]]));
@@ -763,7 +769,8 @@
         var acts = el('div', 'ap-acts');
         var sc = el('button', 'ap-btn', 'Scroll the chat to the latest'); sc.type = 'button'; sc.addEventListener('click', function () { if (engine.scrollChat) engine.scrollChat(); });
         var tv = el('button', 'ap-btn'); tv.type = 'button'; add(tv, icon('console'), el('span', '', 'Open terminal view')); tv.addEventListener('click', function () { if (engine.openTerminal) engine.openTerminal(); });
-        add(acts, sc, tv); body.appendChild(acts);
+        var cb = el('button', 'ap-btn', 'Project cost breakdown'); cb.type = 'button'; cb.addEventListener('click', function () { if (engine.showCosts) engine.showCosts(); });
+        add(acts, sc, tv, cb); body.appendChild(acts);
         if (S.M && S.M.turns.length) {
           body.appendChild(el('div', 'ap-sect', 'Turns'));
           var tl = el('ol', 'ap-list');
@@ -818,7 +825,7 @@
     return {
       el: pane,
       show: function () { pane.hidden = false; host.classList.add('ap-open'); layout(); S.sig = ''; render(); },
-      hide: function () { pane.hidden = true; host.classList.remove('ap-open'); },
+      hide: function () { pane.hidden = true; host.classList.remove('ap-open', 'ap-narrow-chat'); },
       isShown: function () { return !pane.hidden; },
       /** A new conversation: forget the turn, the open history and its caches. */
       reset: function () { S.data = null; S.turn = null; S.sel = null; S.node = null; S.sig = ''; S.focus = 'main'; H = null; histCache = {}; hist.hidden = true; hist.textContent = ''; outline.textContent = ''; outline.appendChild(el('p', 'ap-empty', 'Loading…')); layout(); },
@@ -1084,8 +1091,18 @@
       var turnStart = turn.start;
       var thisTurn = workingFirst(list.filter(function (s) { return Model.inTurn(turn, ms(s.startedAt), isFinite(ms(s.endedAt)) ? ms(s.endedAt) : ms(s.updatedAt), s.status === 'running'); }));
       var M = Model.build({ tree: t, subs: list, runs: runs, runAgents: runAgents, reports: reports }, null, engine);
+      // Rule (d) here too: forks, gates, picks, advisor calls and delegates of THIS turn only.
+      var inT = function (x) { var a = ms(x.at); return isFinite(a) && a >= turn.start && a < turn.end; };
+      var recent = ((t.forks && t.forks.recent) || []).filter(inT);
+      var dgs = []; M.tiers.forEach(function (x) { if (x.kind === 'dgroup') x.kids.forEach(function (k) { dgs.push(k.raw); }); });
+      t = Object.assign({}, t, {
+        forks: { total: recent.length, sharp: recent.filter(function (f) { return f.verdict === 'sharp'; }).length, split: recent.filter(function (f) { return f.verdict !== 'sharp'; }).length, recent: recent },
+        gates: (t.gates || []).filter(inT), picks: (t.picks || []).filter(inT), delegates: dgs,
+        advisor: Object.assign({}, adv, { calls: (adv.calls || []).filter(inT) }),
+      });
+      adv = t.advisor;
       var picker = h.router === 'decisions' ? 'decisions' : 'jev';
-      var showForks = !!team || (t.forks && t.forks.total > 0);
+      var showForks = !!team || t.forks.total > 0;
 
       add(body, legend(t, mainModel, showForks, picker, list));
       var grid = put(body, el('div', 'at-grid' + (adv.on ? ' has-adv' : '')));

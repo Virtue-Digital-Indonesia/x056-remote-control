@@ -1283,6 +1283,7 @@ html[data-theme="dark"] #agentPane {
 /* The pinned-conversation stage floats bottom-right; keep it off the pane. */
 body:has(#agentPane:not([hidden]):not(.ap-sheet)) #conversationStage { right: calc(var(--agent-pane-w, 420px) + 22px); }
 body:has(#agentPane.ap-sheet:not([hidden])) #conversationStage { display: none !important; }
+#conversationSurface.ap-narrow-chat .topbar #chatActivity > span, #conversationSurface.ap-narrow-chat .topbar #autopilotBtn > span { display: none; }
 /* ---- the reader's header knows "ended" too ---- */
 .agent-status.ended { color: #be185d; background: transparent; }
 html[data-theme="dark"] .agent-status.ended { color: #f9a8d4; }
@@ -6667,6 +6668,8 @@ main.atree-open .composer-wrap { display: none !important; }
     openTerminal: function () { if (terminalView && !terminalView.isOpen()) terminalView.toggle(); },
     // One reader of conversations/subagents: the panel's own list, shared.
     subagents: function () { return subMetas; },
+    subagentSelf: function () { return subSelf; },
+    showCosts: function () { controlRoom.showCosts(); },
     onSubagents: onSubagents,
     refreshSubagents: function () { return refreshSubagents(); },
     renderRows: function (box, rows, provider) { renderRowsInto(box, rows, provider); },

@@ -41,12 +41,13 @@ const SHOTS = '/tmp/x056-agent-tree';
   rows.push({ role: 'user', messageId: 'u-tree', text: 'Fix the login flow.', ts: iso(120000) });
   fs.writeFileSync(jf, JSON.stringify(rows));
 
-  // Three forks and one report gate (the gate is NOT a fork).
+  // Three forks this turn, one in turn 13, and one report gate (the gate is NOT a fork).
   fs.mkdirSync(path.join(state, 'jev', 'forks'), { recursive: true });
   fs.writeFileSync(path.join(state, 'jev', 'forks', sid + '.jsonl'), [
     { at: iso(100000), sessionId: sid, backend: 'jev', question: 'which file', options: ['src/auth.ts', 'README.md'], choice: 'src/auth.ts', confidence: 0.79, verdict: 'sharp', latencyMs: 280 },
     { at: iso(90000), sessionId: sid, backend: 'jev', question: 'which tool', options: ['grep', 'codegraph'], choice: 'grep', confidence: 0.48, verdict: 'split', latencyMs: 300 },
     { at: iso(80000), sessionId: sid, backend: 'jev', question: 'retry or stop', options: ['retry', 'stop'], choice: 'stop', confidence: 0.53, verdict: 'split', latencyMs: 250 },
+    { at: iso(3600000 - 60000), sessionId: sid, backend: 'jev', question: 'which adapter', options: ['perubahan', 'pendirian'], choice: 'perubahan', confidence: 0.81, verdict: 'sharp', latencyMs: 270 },
     { at: iso(40000), sessionId: sid, backend: 'jev', question: 'report gate · backend', options: ['done', 'needs_orchestrator', 'needs_human', 'blocked'], choice: 'done', confidence: 0.91, verdict: 'sharp', latencyMs: 310 },
   ].map((f) => JSON.stringify(f)).join('\n') + '\n');
 
@@ -70,9 +71,9 @@ const SHOTS = '/tmp/x056-agent-tree';
     { type: 'assistant', timestamp: iso(100000), message: { role: 'assistant', model: 'claude-fable-5-1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'psql -c "\\\\dv"' } }] } },
   ].map((e) => JSON.stringify(e)).join('\n') + '\n');
 
-  // The tree reads exactly this from the server: 3 forks, 1 gate.
+  // The tree reads exactly this from the server: 4 forks, 1 gate.
   const t = await api(`/api/conversations/agent-tree?projectId=${project.id}&sessionId=${sid}`);
-  assert.equal(t.forks.total, 3); assert.equal(t.gates.length, 1);
+  assert.equal(t.forks.total, 4); assert.equal(t.gates.length, 1);
 
   // Three turns (injected until the server sends them): now, 1 h ago, 3 h ago.
   const TURNS = [
@@ -125,6 +126,7 @@ const SHOTS = '/tmp/x056-agent-tree';
       if (s === codexConv.c.sessionId) return r.fulfill({ json: codexTree });
       const res = await r.fetch(); const j = await res.json();
       if (s === sid) { if (withTurns) j.turns = TURNS; else delete j.turns; } // injected, or absent (the fallback)
+      if (s === sid && j.team) j.team = Object.assign({}, j.team, { model: 'sonnet', effort: 'high', pickedBy: 'jev', confidence: 0.72 });
       return r.fulfill({ response: res, json: j });
     });
     await page.goto(base); await page.waitForSelector('.cr-task');
@@ -172,13 +174,14 @@ const SHOTS = '/tmp/x056-agent-tree';
     assert.equal(await pane(page).locator('img').count(), 0, 'text is never parsed as HTML');
     // Team header: model · effort; helpers; delegates with gate pills; forks expand.
     assert.match(await row(page, 'team').textContent(), /Agent team/);
-    assert.match(await row(page, 'team').locator('.ap-brief').textContent(), /Opus · medium/);
+    assert.match(await row(page, 'team').locator('.ap-brief').textContent(), /Sonnet · high/);
+    assert.equal(await row(page, 'team').locator('.ap-pick').textContent(), 'Jev 72%', 'the per-turn team pick');
     assert.equal(await row(page, 'advisor').count(), 1);
     assert.match(await row(page, 'dg:d-reviewer').textContent(), /Needs you/);
     assert.equal(await statusOf(page, 'dg:d-backend'), 'run');
     assert.equal(await row(page, 'jev').getAttribute('aria-expanded'), 'false');
     await row(page, 'jev').locator('.ap-chev').click();
-    assert.equal(await page.locator('#agentPane .ap-row[data-kind="fork"]').count(), 3, 'three forks, the gate excluded');
+    assert.equal(await page.locator('#agentPane .ap-row[data-kind="fork"]').count(), 3, "this turn's three forks, the gate excluded");
     await page.screenshot({ path: SHOTS + '/pane-desktop-dark.png' });
 
     // The workflow run expands to its agents (fetched on demand).
@@ -221,6 +224,10 @@ const SHOTS = '/tmp/x056-agent-tree';
     assert.equal(await page.locator('#agentPaneHistBody .ap-card').filter({ hasText: 'report gate' }).count(), 0);
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#agentPaneHistory').isVisible(), false, 'Escape closes the history');
+    await row(page, 'main').click();
+    assert.match(await page.locator('#agentPaneHistory .ap-stats').nth(1).textContent(), /Conversation cost.*Agents9Running1Agent tokens11k/);
+    assert.equal(await page.locator('#agentPaneHistory button').filter({ hasText: 'Project cost breakdown' }).count(), 1);
+    await page.keyboard.press('Escape');
 
     // Keyboard: arrows move, right/left expand and collapse, Enter opens.
     await row(page, 'main').focus();
@@ -256,6 +263,8 @@ const SHOTS = '/tmp/x056-agent-tree';
     assert.equal(await row(page, 'sub:old13').count(), 1);
     assert.equal(await row(page, 'sub:w1').count(), 0);
     assert.equal(await row(page, 'wf:audit').count(), 0, 'the run belongs to turn 14');
+    if (await row(page, 'jev').getAttribute('aria-expanded') !== 'true') await row(page, 'jev').locator('.ap-chev').click();
+    assert.deepEqual(await page.locator('#agentPane .ap-row[data-kind="fork"] b').evaluateAll((l) => l.map((e) => e.textContent)), ['which adapter'], "turn 13's fork only");
     assert.match(await page.locator('#agentPane .ap-tnote').textContent(), /Only the work of that turn is shown/);
     await page.locator('#agentPane .ap-tnote button').click();
     assert.equal(await page.locator('#agentPaneTurn').textContent(), 'Turn 14 · now');
@@ -281,7 +290,9 @@ const SHOTS = '/tmp/x056-agent-tree';
     assert.equal(await pane(page).isVisible(), false);
     assert.equal(await page.evaluate(() => localStorage.getItem('x056_agent_tree')), 'expanded');
     assert.match(await page.locator('#atreeTitle').textContent(), /WORKS · OPUS ON CALL/);
-    assert.equal((await page.locator('#atreeForkCount b').textContent()).trim(), '3');
+    assert.equal((await page.locator('#atreeForkCount b').textContent()).trim(), '3', "this turn's forks only");
+    assert.equal(await page.locator('#atree .at-fork').filter({ hasText: 'which adapter' }).count(), 0);
+    assert.doesNotMatch(await page.locator('#atree .at-log').textContent(), /which adapter/);
     assert.equal(await page.locator('#atree .at-card-status[data-status=ended]').first().textContent(), '⊘ ended · no result');
     const cardOrder = await page.locator('#atree .at-cards > .at-card').evaluateAll((l) => l.map((e) => e.className.replace('at-card ', '')));
     assert.deepEqual(cardOrder, ['running', 'done', 'ended', 'stopped', 'failed']);
