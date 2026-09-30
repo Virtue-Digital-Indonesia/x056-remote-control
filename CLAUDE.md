@@ -469,7 +469,14 @@ the thread they come from uses them together, and so do we now.
   and `worker` roles, so it gets `agents.default_subagent_reasoning_effort =
   "medium"` as thread config (`TurnOptions.codexConfig`, `-c` on the one-shot
   path) and a `default` agent briefed as researcher. Both get the team
-  instructions appended to the system prompt.
+  instructions appended to the system prompt. **The brief says WHEN, not just
+  how**: a Codex chat with the team on ran a 28-command turn alone
+  (2026-09-30), its brief delivered, after 218 solo turns. It now names the
+  triggers (unread code -> explorers in parallel, a multi-file change -> a
+  worker per part, outside docs -> researcher), says it holds even if earlier
+  turns worked alone, and asks for one line naming the spawns (or why none)
+  before the first command. Still a prompt: nothing in the gateway forces a
+  spawn.
 - **Fork layer**: the x056 MCP tool `quick_decision {question, options[2-6],
   context}` -> `POST /api/jev/fork` -> Jev (or OpenAI Decisions when that is
   the picker) as ONE choice question. `confidence >= 0.75`

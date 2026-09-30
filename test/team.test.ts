@@ -42,6 +42,13 @@ describe('the team tree', () => {
     expect(claude).toMatch(/Consult the advisor/);
     expect(teamInstructions('claude', { advisor: false, forks: false })).not.toMatch(/quick_decision|advisor/);
     expect(teamInstructions('codex', { advisor: true, forks: true })).toMatch(/spawn_agent: agent_type "explorer"/);
+    // When, not just how: a brief that only named the roles was ignored.
+    for (const provider of ['claude', 'codex'] as const) {
+      const brief = teamInstructions(provider, { advisor: false, forks: false });
+      expect(brief).toMatch(/Spawn instead of doing it yourself when/);
+      expect(brief).toMatch(/even if earlier turns in this conversation worked alone/);
+      expect(brief).toMatch(/Before the first command of a multi-step task/);
+    }
   });
 
   it('puts the agents on Claude argv and keys the process on them', () => {
