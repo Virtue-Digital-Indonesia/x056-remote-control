@@ -35,6 +35,10 @@ export interface JevDecisionInput {
   previousModel?: string;
   /** Low = err toward cheaper, high = err toward stronger; absent = medium. */
   lean?: Lean;
+  /** The effort the CLI runs with when the conversation saves none ("Auto
+   *  effort"). Without it every pick read as a raise, so a Low lean needed 80%
+   *  even to pick `low` -- the opposite of what Low is for. */
+  baselineEffort?: string;
   /** What the conversation is in the middle of, built in code (never by a
    *  model): a short "yes, deploy" or an autopilot "continue" carries the
    *  weight of the task it continues, which the message alone does not show. */
@@ -291,14 +295,22 @@ export class JevService {
 export const EFFORT_QUESTION = 'How much reasoning effort does the NEXT turn of this coding/assistant conversation need? Judge the new message IN THE CONTEXT of the work in progress: a short follow-up ("yes", "continue", "deploy it", an answer to a question) continues the previous task and needs that task\'s effort, not the effort its length suggests. Only a genuinely small, self-contained request needs little.';
 export const MODEL_QUESTION = 'Which model should handle the NEXT turn? Prefer the cheapest model that will do it well, judged by the work in progress (see the previous request, reply and turn size), not by the length of the new message.';
 
-/** The questions under a lean; medium is the plain text above. */
+/**
+ * The questions under a lean. Medium is the plain text above. Low and High are
+ * written whole rather than appended: "prefer the cheapest model" followed by
+ * "when in doubt choose the stronger one" contradicted itself, and measured
+ * live (2026-09-30) an appended sentence moved Jev's answers only a little.
+ */
+const CONTEXT_CLAUSE = 'Judge by the work in progress (the previous request, reply and turn size), not by the length of the new message: a short follow-up continues the previous task.';
 export function effortQuestion(lean: Lean = 'medium'): string {
-  return EFFORT_QUESTION + (lean === 'low' ? ' The user wants COST EFFICIENCY: choose the lowest effort that will still do this adequately, and raise it only when clearly necessary.'
-    : lean === 'high' ? ' The user wants the BEST RESULT: when in doubt choose more effort; cost is secondary.' : '');
+  if (lean === 'low') return 'How much reasoning effort does the NEXT turn of this coding/assistant conversation need? The user wants COST EFFICIENCY and accepts a slower or less thorough answer: choose the lowest effort that will still get this right, and more only when a lower one would clearly fail. ' + CONTEXT_CLAUSE;
+  if (lean === 'high') return 'How much reasoning effort does the NEXT turn of this coding/assistant conversation need? The user wants the BEST RESULT and accepts higher cost: for anything beyond a trivial, self-contained request -- code changes, debugging, design, multi-step work -- choose generous effort; low effort only for genuinely trivial requests. ' + CONTEXT_CLAUSE;
+  return EFFORT_QUESTION;
 }
 export function modelQuestion(lean: Lean = 'medium'): string {
-  return MODEL_QUESTION + (lean === 'low' ? ' The user wants COST EFFICIENCY: choose the cheapest model that will do this adequately.'
-    : lean === 'high' ? ' The user wants the BEST RESULT: when in doubt choose the stronger model; cost is secondary.' : '');
+  if (lean === 'low') return 'Which model should handle the NEXT turn? The user wants COST EFFICIENCY: choose the cheapest model that can do it adequately, and a stronger one only when a cheaper one would clearly fail. ' + CONTEXT_CLAUSE;
+  if (lean === 'high') return 'Which model should handle the NEXT turn? The user wants the BEST RESULT and accepts higher cost: choose the strongest model for anything beyond a trivial, self-contained request -- code changes, debugging, design, multi-step work -- and a cheaper one only for genuinely trivial requests. ' + CONTEXT_CLAUSE;
+  return MODEL_QUESTION;
 }
 export const leanField = (lean?: Lean): { lean?: 'low' | 'high' } => (lean === 'low' || lean === 'high' ? { lean } : {});
 
@@ -376,13 +388,16 @@ export function applyPolicy(
   if (e?.choice) {
     out.pickedEffort = e.choice; out.effortConfidence = e.confidence; out.effortProbabilities = e.probabilities;
     const allowed = input.models.find((c) => c.id === model)?.efforts;
-    const effortDown = lower(effortRank, e.choice, input.currentEffort);
-    // With no saved effort there is no "down"; a pick is treated as a raise.
-    const effortFloor = effortDown ? Math.min(JEV_POLICY.effortMin, bars.effortDown) : e.choice === input.currentEffort ? JEV_POLICY.effortMin : bars.effortUp;
+    // Up and down are measured from the saved effort, or from what the CLI
+    // runs with when none is saved. With neither, a pick counts as a raise.
+    const cur = input.currentEffort ?? input.baselineEffort;
+    const effortDown = lower(effortRank, e.choice, cur);
+    const effortFloor = effortDown ? Math.min(JEV_POLICY.effortMin, bars.effortDown) : e.choice === cur ? JEV_POLICY.effortMin : bars.effortUp;
     if ((e.confidence ?? 0) < effortFloor) out.notes.push(effortFloor === JEV_POLICY.effortMin ? `effort ${e.choice} only ${pct(e.confidence)} sure; kept` : `effort ${e.choice} only ${pct(e.confidence)} sure (needs ${pct(effortFloor)} to go higher${leanNote}); kept`);
-    else if (effortDown && (e.confidence ?? 0) < bars.effortDown) out.notes.push(`effort ${e.choice} is below ${input.currentEffort} at only ${pct(e.confidence)} (needs ${pct(bars.effortDown)} to go lower${leanNote}); kept`);
+    else if (effortDown && (e.confidence ?? 0) < bars.effortDown) out.notes.push(`effort ${e.choice} is below ${cur}${input.currentEffort ? '' : ' (the default)'} at only ${pct(e.confidence)} (needs ${pct(bars.effortDown)} to go lower${leanNote}); kept`);
     else if (allowed && allowed.length && !allowed.includes(e.choice)) out.notes.push(`effort ${e.choice} not offered by ${model}; kept`);
     else if (e.choice === input.currentEffort) out.notes.push('effort unchanged');
+    else if (e.choice === cur) out.notes.push(`effort unchanged (${cur} is the default)`);
     else { out.effort = e.choice; out.notes.push(`effort -> ${e.choice}`); }
   }
   return out;

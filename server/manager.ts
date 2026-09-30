@@ -6,7 +6,7 @@ import { claudeTeamAgents, codexTeamConfig, teamInstructions } from './team.js';
 import { checkBrief, checkRole, decideGate, delegateInstructions, DelegateStore, digest, GATE_OPTIONS, GATE_QUESTION, gateState, MAX_DELEGATES, reportKey, ROUND_LIMIT, shouldWake, type Delegate, type DelegateReport } from './delegates.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
 import { findRollout } from '../src/adapters/codex.js';
-import { advisorFor, jevCandidates } from './decision-maker.js';
+import { advisorFor, CLAUDE_DEFAULT_EFFORT, jevCandidates } from './decision-maker.js';
 import { CodexAdvisor, TurnWatcher, type AdvisorConsult, type AdvisorTrigger } from './codex-advisor.js';
 import { TurnResults } from './turn-results.js';
 import { messageImages } from './message-images.js';
@@ -1885,7 +1885,9 @@ export class SessionManager {
     const { models, efforts } = jevCandidates(provider, codexModels);
     const title = this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)?.title;
     const lean = helpersOf(this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)).lean;
-    const input = { provider, prompt, title, currentModel: model, currentEffort: effort, previousModel, models, efforts, context, ...(lean ? { lean } : {}) };
+    // "Auto effort": measure up and down from what the CLI would run with.
+    const baselineEffort = effort ? undefined : provider === 'codex' ? codexModels.find((m) => m.slug === model)?.defaultEffort : model ? CLAUDE_DEFAULT_EFFORT[model] : undefined;
+    const input = { provider, prompt, title, currentModel: model, currentEffort: effort, previousModel, models, efforts, context, ...(lean ? { lean } : {}), ...(baselineEffort ? { baselineEffort } : {}) };
     return backend === 'decisions' ? this.openaiDecisions().decide(sid, input) : this.jev().decide(sid, input);
   }
   /** A generated title for this CHAT is queued or being written right now. */

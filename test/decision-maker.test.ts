@@ -91,6 +91,20 @@ describe('Jev policy', () => {
     expect(applyPolicy(base(), input({ currentModel: 'fable', lean: 'high' }), { model: { choice: 'opus', confidence: 0.75 } }, []).model).toBeUndefined();
   });
 
+  // "Auto effort" saves none; the CLI then runs its own default (Opus 5.5:
+  // medium). Measured from nothing, every pick was a raise, and Low needed 80%
+  // even to pick `low`.
+  it('with Auto effort, measures up and down from the CLI default', () => {
+    const auto = (lean: 'low' | 'high') => input({ currentModel: 'opus', currentEffort: undefined, baselineEffort: 'medium', lean });
+    expect(applyPolicy(base(), auto('low'), { effort: { choice: 'low', confidence: 0.65 } }, []).effort).toBe('low');
+    const highUp = applyPolicy(base(), auto('low'), { effort: { choice: 'high', confidence: 0.7 } }, []);
+    expect(highUp.effort).toBeUndefined();
+    expect(highUp.notes).toEqual(['effort high only 70% sure (needs 80% to go higher, leaning low); kept']);
+    const lowDown = applyPolicy(base(), auto('high'), { effort: { choice: 'low', confidence: 0.85 } }, []);
+    expect(lowDown.notes).toEqual(['effort low is below medium (the default) at only 85% (needs 90% to go lower, leaning high); kept']);
+    expect(applyPolicy(base(), auto('high'), { effort: { choice: 'medium', confidence: 0.9 } }, []).notes).toEqual(['effort unchanged (medium is the default)']);
+  });
+
   it('medium reads exactly as before, with no lean recorded', () => {
     const d = applyPolicy(base(), input({ currentModel: 'sonnet', currentEffort: 'high', lean: 'medium' }), { effort: { choice: 'medium', confidence: 0.71 } }, []);
     expect(d.lean).toBeUndefined();
@@ -217,6 +231,8 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     // Jev is told what the conversation is in the middle of, not just the message.
     expect(decide.mock.calls[0][1].context).toMatchObject({ project: 'P', origin: 'the user' });
     expect(decide.mock.calls[0][1].lean).toBeUndefined();
+    // Sonnet saved with no effort: Jev is told what the CLI runs with.
+    expect(decide.mock.calls[0][1]).toMatchObject({ currentModel: 'sonnet', baselineEffort: 'high' });
     // The user's own saved choice is untouched by Jev's per-turn pick.
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.model).toBe('sonnet');
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.decisionMaker).toBe('jev');

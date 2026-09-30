@@ -483,9 +483,19 @@ the thread they come from uses them together, and so do we now.
   absent = medium): which way the picker errs. It changes only the up/down bars
   (`LEAN_BARS` -- low: effort up 80% / down 60%, model up 90% / down 80%;
   high: effort up 60% / down 90%, model up 70% / down 95%; medium = the bars
-  above, byte-identical notes) and adds one sentence to both questions
-  (`effortQuestion` / `modelQuestion`: COST EFFICIENCY vs BEST RESULT), for
-  Jev and OpenAI Decisions alike. A move the ranks cannot place (Fable, an
+  above, byte-identical notes) and swaps both questions for a Low / High
+  version written whole (`effortQuestion` / `modelQuestion`: COST EFFICIENCY
+  vs BEST RESULT), for Jev and OpenAI Decisions alike. Appending a sentence
+  instead contradicted "prefer the cheapest model" and barely moved Jev;
+  written whole, live 2026-09-30: High took Opus from 4% to 49% on a
+  refactor and 11% to 69% on "yes, go ahead" after a big task; Low took a
+  refactor's effort from high 58% to medium 65% but left the big-task
+  follow-up at high 90%. With **Auto effort** (none saved) up and down are
+  measured from what the CLI runs with (`baselineEffort`:
+  `CLAUDE_DEFAULT_EFFORT` -- opus/Opus 5.5 medium, sonnet/Sonnet 5 and fable
+  high, per the model-config docs and the aliases seen in real transcripts;
+  Codex: the model's catalog `defaultEffort`), or Low would need 80% even to
+  pick `low`. A move the ranks cannot place (Fable, an
   unknown Codex slug) keeps the plain 80% bar; the "model stays" rule and the
   Claude switching gap are not relaxed; forks and the delegate gate ignore it;
   Fable is still never a candidate. Kept while the picker is off; the panel

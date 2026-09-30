@@ -23,6 +23,17 @@ export const CLAUDE_CANDIDATES: JevCandidate[] = [
   { id: 'opus', about: 'Strongest affordable reasoning. Hard debugging, architecture, large or risky refactors, ambiguous problems.' },
 ];
 
+/**
+ * What Claude Code runs with when no --effort is given (docs, model-config:
+ * "high on every model that supports effort, except that Opus 5.5 and Sonnet
+ * 5.5 default to medium"). Aliases as they resolve here, checked against real
+ * transcripts 2026-09-30: opus -> claude-opus-5-5, sonnet -> claude-sonnet-5,
+ * fable -> claude-fable-5-1. Haiku 4.5 takes no effort, so it has no entry.
+ */
+export const CLAUDE_DEFAULT_EFFORT: Record<string, string> = {
+  opus: 'medium', 'claude-opus-5-5': 'medium', sonnet: 'high', 'claude-sonnet-5': 'high', fable: 'high', 'claude-fable-5-1': 'high',
+};
+
 export const EFFORT_CRITERIA: Record<string, string> = {
   low: 'Trivial: a quick answer, a lookup, a mechanical one-line change.',
   medium: 'Ordinary: a normal edit, explanation, or small feature.',
