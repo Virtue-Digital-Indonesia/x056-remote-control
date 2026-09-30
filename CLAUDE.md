@@ -49,6 +49,20 @@ Sessions started through the panel run **inside the Docker container** this repo
 - **You CAN screenshot** to eyeball UI work: a headless Chromium (Playwright) is baked into the image at `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`. Start the project's dev server, then `node /app/scripts/shot.cjs <url> <out.png> [width] [height]` and Read the PNG. Any project's own Playwright/Puppeteer also finds the browser via that env var. (Requires a container built after this note — if `shot.cjs` says playwright not found, the image predates it; commit + request a deploy.)
 - **Toolchains baked into the image** (so any project builds, not just Node): Go (`GOTOOLCHAIN=auto`), Java 17 + Maven (Gradle via each project's `./gradlew`), Python 3 with pip/venv (system Python is PEP-668 externally-managed — always work in a venv), PHP + Composer, plus gcc/make/git/ripgrep/jq. `git push` over SSH works to GitHub, the VPN host `192.168.83.20` (`ssh ocr`), and the gateway host `ssh valbox` (dedicated keys in `state/ssh/`).
 
+## Composer: the quiet pill (2026-09-30)
+
+The owner chose draft D ("quiet until you type" + "one pill"). At rest the
+composer is one line with send and a faded caption of model · effort ·
+helpers; focus, text, files, a saved draft or an open menu open it into the
+pill: `+` (attach, template, reference), the helpers chip, ONE chip holding
+the two native `#model` / `#effort` selects (kept native on purpose: phones
+get the OS picker and tests use `selectOption`), send. While a turn runs an
+empty box's send is Stop; with content it is Steer + Queue. Status, account
+chip and delivery dot share the quiet line under it. All element ids are
+unchanged. Tests that touch the hidden controls must click `#prompt` first.
+Collapse on blur checks `relatedTarget` and holds on pointerdown, so a tap on
+send never lands on a moved button.
+
 ## There is a SECOND instance on this host (`/home/efran/x056-devs`)
 
 A dev-facing gateway for employed developers runs beside production on the same
@@ -698,10 +712,30 @@ only), and Jev gates which reports wake the orchestrator.
 
 The view of a conversation's whole working setup the owner asked for
 ("where is the fork layer?" -- it had only been terminal lines): the main
-session (model/effort this turn, Jev pick marked), the advisor column, the Jev
-fork layer, the workers (agent-team subagents / Codex children, and
-delegates), and a pipeline log. Its own header button beside the terminal
-button (⋯ menu on phones); the two views are mutually exclusive.
+session (model/effort this turn, Jev pick marked), the advisor, the Jev fork
+layer, the workers (agent-team subagents / Codex children), delegates,
+Workflow runs, and a pipeline log.
+
+- **Two views (2026-09-30, the owner chose draft E of the redesign).** The
+  header button (⋯ menu on phones, Activity -> Agent tree, `/agent`) opens a
+  **docked outline** to the RIGHT of the chat -- chat and composer stay
+  usable, resizable 320-560 px. An indented tree with drawn guide lines, one
+  **turn** at a time (stepper "Turn N · now"), running nodes first, an
+  "Earlier turns" fold that expands in place. Clicking any node opens ITS
+  history in a second column (drill-in with back on narrow frames):
+  subagent / Codex child / workflow agent -> Conversation, Brief, Result;
+  delegate -> reports, transcript, message box, Stop; advisor -> consultations
+  (Claude: calls only, the advice is encrypted); Jev -> forks and picks; main
+  -> the conversation's and its agents' cost (what the retired popup showed).
+  **Expand** swaps in the old console-style tree over the WHOLE conversation,
+  composer hidden too; only that expanded view is exclusive with the terminal
+  view -- the docked pane may sit beside it.
+- **The owner's four rules** hold in both views: "done" only with a real
+  result (see the status contract under Subagents); working first; the
+  earlier fold expands; only what was active or used in the turn.
+- **Retired with it:** the floating Agents island (`#wfIsland`, `#chatAgents`)
+  and the "Cost & subagents" popup (`#subPop`). Chat rows that name a
+  subagent still open the agent reader (`openSubShell`).
 
 - **`GET /api/conversations/agent-tree`** does cheap reads only: helpers,
   delegate roster, log TAILS (`tailJsonl`, last 512 KB), turn results, the
@@ -756,8 +790,9 @@ CLI writes each subagent a complete transcript of its own:
   finished turn reads exactly like a running one.
 - `toolUseId` ties a subagent back to the Task call in the parent; `spawnDepth`
   is 1 for one the conversation spawned, 2+ for one another subagent spawned.
-- `src/adapters/subagents.ts` lists and reads them; the panel's ✨ topbar button
-  opens "Cost & subagents", and each row opens its own shell. `agentId` is matched
+- `src/adapters/subagents.ts` lists and reads them; the Agent tree lists them
+  per turn and opens each one's history (the old "Cost & subagents" popup is
+  retired). `agentId` is matched
   against the directory listing before use — it arrives from a query string, and
   pasting it into a path would let `../` escape the session.
 - **Status comes from a Task's `tool_result`, not from mtime.** A `tool_use` and
@@ -810,7 +845,7 @@ CLI writes each subagent a complete transcript of its own:
   `task_complete` is done only with a `last_agent_message`; empty is `ended`,
   and an `event_msg` `error` since `task_started` makes it `failed`.
 
-## Workflow runs have their own island (`src/adapters/workflows.ts`)
+## Workflow runs (`src/adapters/workflows.ts`)
 
 A `Workflow` call writes its agents beside the session in a directory per RUN,
 using the **same file shapes as an ordinary subagent** — so nothing about
@@ -847,11 +882,9 @@ reading them is new:
   for. A run counts as live only if it is also moving (5 min).
 - The accounts share one `projects/` tree, so every run is reachable through
   every configDir — dedupe by runId or one run lists three times.
-- It **floats** over the chat rather than taking a column: a run is glanced at
-  and dismissed, and permanently narrowing the conversation costs more than it
-  gives. Because it covers content it opens on its own only while a run is
-  MOVING; a finished one stays behind the topbar button (its own `#i-fanout`
-  icon — `#i-repeat` is autopilot's).
+- Runs are shown in the **Agent tree** (a "Workflow run" branch whose agents
+  open their own history via `workflow-history`). The floating island that
+  used to show them was retired on 2026-09-30.
 - `runId` and `agentId` both arrive from a query string and are matched against
   the directory listing before reaching a path.
 

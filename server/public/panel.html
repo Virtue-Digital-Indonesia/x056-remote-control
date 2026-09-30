@@ -5955,9 +5955,14 @@ main.atree-open .composer-wrap { display: none !important; }
   function composerRunning() { return !!(busyEl && busyEl.firstChild) || canSteer(); }
   function composerCaption() {
     var opt = function (sel) { var o = sel && sel.options[sel.selectedIndex]; return o ? o.textContent.trim() : ''; };
-    var parts = [opt(modelEl), opt(effortEl)].filter(Boolean);
+    var m = opt(modelEl), e = opt(effortEl);
+    // Both on Auto with a picker read "Jev picks": say it once, and do not
+    // name the picker again among the helpers.
+    var parts = m && m === e ? [m + ' model and effort'] : [m, e].filter(Boolean);
     var hb = $('helperBtn'), hl = $('helperLabel');
-    if (hb && hb.dataset.state === 'on' && hl && hl.textContent.trim()) parts.push(hl.textContent.trim());
+    if (hb && hb.dataset.state === 'on' && hl) {
+      hl.textContent.split(' · ').map(function (s) { return s.trim(); }).filter(function (h) { return h && !(parts[0] || '').startsWith(h + ' '); }).forEach(function (h) { parts.push(h); });
+    }
     return parts.join(' · ');
   }
   function syncComposer() {

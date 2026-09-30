@@ -7,7 +7,7 @@ import { configDefaults, defineConfig } from 'vitest/config';
 // run sequentially. Slower wall-time, but reliable — and this gates deploys.
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, '**/.deploy/**'],
+    exclude: [...configDefaults.exclude, '**/.deploy/**', '**/.claude/worktrees/**'],
     fileParallelism: false,
     testTimeout: 30_000,
     hookTimeout: 30_000,
