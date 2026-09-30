@@ -10,8 +10,8 @@ import { cachedBrief, type SubagentMeta } from './subagents.js';
  * RUN, using the same file shapes as an ordinary subagent:
  *
  *   <configDir>/projects/<projectDir>/<sessionId>/subagents/workflows/wf_<runId>/
- *       journal.jsonl                one {type:'started'|'result', key, agentId}
- *                                    line per agent, appended live
+ *       journal.jsonl                {type:'started'|'result'|'failed', key, agentId}
+ *                                    lines, appended live
  *       agent-<agentId>.jsonl        full transcript, same entry shapes
  *       agent-<agentId>.meta.json    {agentType, spawnDepth}
  *
@@ -38,6 +38,10 @@ export interface WorkflowAgent {
   brief: string;
   /** A journal `result` line was written for it. */
   done: boolean;
+  /** A journal `failed` line, and no result. */
+  failed: boolean;
+  /** running only while the run is live and the agent has not finished. */
+  status: 'running' | 'done' | 'failed' | 'unknown';
   bytes: number;
   updatedAt?: number;
 }
@@ -55,7 +59,12 @@ export interface WorkflowRun {
   description?: string;
   phases: WorkflowPhase[];
   started: number;
+  /** Agents that returned OR failed. */
   finished: number;
+  /** Of those, how many failed. */
+  failed: number;
+  /** isWorkflowLive at listing time: incomplete AND moving. */
+  live: boolean;
   /** Newest mtime under the run directory -- "is this still moving". */
   updatedAt?: number;
   startedAt?: number;
@@ -121,26 +130,34 @@ export function workflowScript(runDir: string, runId: string): string | null {
   } catch { return null; }
 }
 
-interface Journal { started: Set<string>; finished: Set<string> }
+/** `finished` = returned OR failed; `failed` = a `failed` line and no result. */
+interface Journal { started: Set<string>; finished: Set<string>; failed: Set<string> }
 
 function readJournal(runDir: string): Journal {
   const started = new Set<string>();
   const finished = new Set<string>();
+  const results = new Set<string>();
+  const failed = new Set<string>();
   const path = join(runDir, 'journal.jsonl');
-  if (!existsSync(path)) return { started, finished };
+  if (!existsSync(path)) return { started, finished, failed };
   let raw: string;
   // A journal holds every agent's full return value, so it reaches megabytes on
   // a large run. Only the type and agentId are needed, and both sit at the head
   // of each line, so the lines are scanned rather than parsed where possible.
-  try { raw = readFileSync(path, 'utf8'); } catch { return { started, finished }; }
+  try { raw = readFileSync(path, 'utf8'); } catch { return { started, finished, failed }; }
   for (const line of raw.split('\n')) {
     if (!line.startsWith('{')) continue;
     const id = /"agentId"\s*:\s*"([^"]+)"/.exec(line)?.[1];
     if (!id) continue;
-    if (line.startsWith('{"type": "started"') || /"type"\s*:\s*"started"/.test(line.slice(0, 40))) started.add(id);
-    else if (/"type"\s*:\s*"result"/.test(line.slice(0, 40))) finished.add(id);
+    const head = line.slice(0, 40);
+    if (/"type"\s*:\s*"started"/.test(head)) started.add(id);
+    else if (/"type"\s*:\s*"result"/.test(head)) { results.add(id); finished.add(id); }
+    // A failed agent is finished too: ignoring these (134 in 20 real journals)
+    // left its run "incomplete" forever, so it read as live while moving.
+    else if (/"type"\s*:\s*"failed"/.test(head)) { failed.add(id); finished.add(id); }
   }
-  return { started, finished };
+  for (const id of results) failed.delete(id);
+  return { started, finished, failed };
 }
 
 /** Every workflow run of a session, newest first. */
@@ -148,7 +165,7 @@ export function listWorkflowRuns(configDirs: string[], sessionId: string): Workf
   const byId = new Map<string, WorkflowRun>();
   for (const dir of workflowDirs(configDirs, sessionId)) {
     const runId = dir.slice(dir.lastIndexOf('/') + 1);
-    const { started, finished } = readJournal(dir);
+    const { started, finished, failed } = readJournal(dir);
     let meta: { name?: string; description?: string; phases: WorkflowPhase[] } = { phases: [] };
     const script = workflowScript(dir, runId);
     if (script) {
@@ -180,8 +197,11 @@ export function listWorkflowRuns(configDirs: string[], sessionId: string): Workf
       runId, dir, ...meta,
       started: started.size,
       finished: finished.size,
+      failed: failed.size,
+      live: false,
       startedAt, updatedAt,
     };
+    run.live = isWorkflowLive(run);
     // The accounts share one `projects/` tree, so the same run is reachable
     // through every configDir and would otherwise be listed once per account.
     // Keep whichever view saw the most agents -- a partially-synced copy should
@@ -193,8 +213,8 @@ export function listWorkflowRuns(configDirs: string[], sessionId: string): Workf
 }
 
 /** One run's agents, with the only label each of them has. */
-export function listWorkflowAgents(runDir: string): WorkflowAgent[] {
-  const { finished } = readJournal(runDir);
+export function listWorkflowAgents(runDir: string, runLive = false): WorkflowAgent[] {
+  const { finished, failed } = readJournal(runDir);
   let names: string[];
   try { names = readdirSync(runDir); } catch { return []; }
   const out: WorkflowAgent[] = [];
@@ -218,7 +238,9 @@ export function listWorkflowAgents(runDir: string): WorkflowAgent[] {
       brief: cachedBrief(file),
       // The journal is the authority on completion. File mtime is not: an agent
       // thinking hard looks identical to one that finished.
-      done: finished.has(agentId),
+      done: finished.has(agentId) && !failed.has(agentId),
+      failed: failed.has(agentId),
+      status: failed.has(agentId) ? 'failed' : finished.has(agentId) ? 'done' : runLive ? 'running' : 'unknown',
       bytes, updatedAt,
     });
   }
@@ -258,7 +280,7 @@ export function readWorkflowAgentPage(
 /** A run is live only if it is BOTH incomplete and still moving. */
 export const WORKFLOW_STALE_MS = 5 * 60_000;
 
-export function isWorkflowLive(r: WorkflowRun, now = Date.now()): boolean {
+export function isWorkflowLive(r: Pick<WorkflowRun, 'started' | 'finished' | 'updatedAt'>, now = Date.now()): boolean {
   if (r.started <= r.finished) return false;
   if (!r.updatedAt) return false;
   return now - r.updatedAt < WORKFLOW_STALE_MS;

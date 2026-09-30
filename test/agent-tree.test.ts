@@ -100,6 +100,10 @@ describe('SessionManager.agentTree', () => {
     expect(t.forks).toMatchObject({ total: 2, sharp: 1, split: 1 });
     expect(t.gates.map((g) => g.question)).toEqual(['report gate · backend']);
     expect(t.delegates.map((d) => d.role)).toEqual(['backend']);
+    // One gateway turn, finished: its end is the recorded session_done.
+    expect(t.turns).toHaveLength(1);
+    expect(t.turns[0]).toMatchObject({ n: 1, prompt: 'orchestrate', running: false });
+    expect(t.turns[0].endedAt! >= t.turns[0].startedAt).toBe(true);
     // Helpers off: nothing claims to be on.
     mgr.setHelpers(p.id, sid, {});
     expect(mgr.agentTree(p.id, sid)).toMatchObject({ advisor: { on: false }, team: null });

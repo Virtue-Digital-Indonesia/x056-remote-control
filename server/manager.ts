@@ -3,7 +3,7 @@ import { currentClaudeModel } from '../src/claude-model-policy.js';
 import { checkFork, JEV_POLICY, JevService, type DecisionContext, type ForkDecision, type ForkInput, type JevDecision } from './jev.js';
 import { OpenAIDecisionsService } from './openai-decisions.js';
 import { claudeTeamAgents, codexTeamConfig, teamInstructions, teamTurnLine, TEAM_EFFORT } from './team.js';
-import { ClaudeAdvisorLog, forkSummary, mainRun, tailJsonl, teamRun } from './agent-tree.js';
+import { ClaudeAdvisorLog, buildTurns, forkSummary, mainRun, tailJsonl, teamRun } from './agent-tree.js';
 import { checkBrief, checkRole, decideGate, delegateInstructions, DelegateStore, digest, GATE_OPTIONS, GATE_QUESTION, gateState, MAX_DELEGATES, reportKey, ROUND_LIMIT, shouldWake, type Delegate, type DelegateReport } from './delegates.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
 import { findRollout } from '../src/adapters/codex.js';
@@ -1560,6 +1560,13 @@ export class SessionManager {
     const main = mainRun({ model: conv.model, effort: conv.effort }, picks, turnStartedAt);
     const results = this.turnResults().list(sid) as { at?: string; durationMs?: number; numTurns?: number; totalCostUsd?: number }[];
     const last = results.at(-1);
+    // Per-turn view: the journal's prompts, bounded by the recorded turn
+    // ends; older turns (before ends were recorded) fall back to the latest
+    // thing known to have happened -- a Claude result, or any journal row.
+    const journal = new ConversationJournal(this.opts.stateDir).turnSource(pid, sid);
+    const fallbackEnd = [last?.at, journal.rows.at(-1)?.ts].filter((t): t is string => !!t && Number.isFinite(Date.parse(t)))
+      .sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1);
+    const turns = buildTurns(journal.rows, journal.ends, running, fallbackEnd);
     const codexAdvisorModel = () => {
       const offered = getAdapter('codex').listModels?.(this.registry().list().filter((a) => a.provider === 'codex').map((a) => a.configDir)) ?? [];
       return offered.find((m) => /astra/i.test(m.slug))?.slug ?? 'gpt-6-astra';
@@ -1579,6 +1586,7 @@ export class SessionManager {
       gates: forks.gates,
       picks: picks.slice(-8),
       delegates: this.listDelegates(pid, sid),
+      turns,
     };
   }
 

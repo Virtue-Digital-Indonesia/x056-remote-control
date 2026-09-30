@@ -104,8 +104,12 @@ export const DEFAULT_CONTINUE_PROMPT =
  * can't resume a Claude transcript on GPT). Failover pools are per-provider.
  */
 export interface SubagentOutcome {
+  /** Finished WITH a result (status 'done'). */
   done: boolean;
-  status?: 'running' | 'done' | 'stopped' | 'failed';
+  /** 'ended' = finished but handed back nothing. */
+  status?: 'running' | 'done' | 'stopped' | 'failed' | 'ended';
+  /** An error event folded in since the task started. */
+  error?: string;
   startedAt?: number;
   endedAt?: number;
   /** The sub-agent's last message, when it finished. */

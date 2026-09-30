@@ -710,6 +710,16 @@ button (⋯ menu on phones); the two views are mutually exclusive.
   at a 5 s poll -- the view reads `conversations/subagents` itself, only while
   open and something runs, and keeps this turn's workers (`turnStartedAt`:
   the running turn's start, else the journal's last prompt), folding the rest.
+- **`turns`** (last 50, oldest first: `n`, `messageId`, `startedAt`,
+  `endedAt`, `prompt`, `running`) come from the conversation journal's
+  `user` rows, so both providers and reloads work. A turn ends where the
+  next starts; the last one is open while it runs, else ends at the first
+  recorded end after it (`session_done` / `session_error` timestamps, kept in
+  a `.ends.json` beside the journal because `merge()` hands every journal row
+  to the chat), else the latest Claude result or journal row. Slash-command
+  turns are not journalled, so they are not turns here. Membership is
+  `inTurn(node, turn)`: started before the turn ended, AND running or ended
+  (else last written) at or after it began.
 - **The delegate report gate is not a fork**: it shares the fork log
   (`report gate · <role>`) and is returned apart as `gates`.
 - **Claude's advisor has no checkpoints to light**: it is model-driven and
@@ -754,6 +764,24 @@ CLI writes each subagent a complete transcript of its own:
   its later `tool_result` bracket the subagent, so a missing result means it
   never came back — running if the turn is live, stopped if it is not. Guessing
   from file mtime calls a subagent that is thinking hard "finished".
+- **A background agent's `tool_result` is only its launch ack** ("Async agent
+  launched…", `toolUseResult.status: async_launched`), and every one of them
+  used to read ✓ done the moment it started. It ends in a later
+  `<task-notification>` (`<task-id>` = agentId, `<tool-use-id>`, `<status>`
+  completed / failed / killed / stopped / running, `<result>`), written up to
+  three times -- a `queue-operation` enqueue, a `queued_command` attachment
+  and a `user` message; only those three shapes count, since grep output and
+  prose quote the tag too. A `stopped` one may carry no tool-use-id, so the
+  ack's agentId is kept to match it. `claudeSubagentStatus`
+  (`server/agent-tree.ts`) sets the contract: `running` (the process's
+  `subagentRunning` says so, or an async agent not yet notified with a fresh
+  transcript -- a finished parent turn is exactly when these keep going),
+  `done` (a real result), `failed` (is_error, notification failed/killed),
+  `stopped` ("[Request interrupted", notification stopped, or no result and
+  not running), `ended` (finished, empty), `unknown`. Rows carry
+  `parentAgentId` from a depth >= 2 meta; times stay epoch ms. Verified on
+  this repo's own orchestrating transcript: 61 async agents, 58 done at their
+  notification (45 s to 24 min after launch), 3 still running.
 - **A nested subagent's result is in its SPAWNER's transcript, not the parent's**,
   and nesting is the common case: a real security scan here produced 90
   subagents, 80 of them depth 2 or 3. Reading only the parent reported all 80 as
@@ -779,6 +807,8 @@ CLI writes each subagent a complete transcript of its own:
   session_meta is read once per file for the life of the process, the store is
   scanned once per request (memo cleared on `setImmediate`), and
   `subagentStatus` folds only the bytes appended since its last call.
+  `task_complete` is done only with a `last_agent_message`; empty is `ended`,
+  and an `event_msg` `error` since `task_started` makes it `failed`.
 
 ## Workflow runs have their own island (`src/adapters/workflows.ts`)
 
@@ -801,7 +831,11 @@ reading them is new:
   phases it DECLARED — read out of the script's `meta` literal, which the tool
   requires to be pure, so it is pattern-matched rather than evaluated — and each
   agent is named by the head of its own prompt (`cachedBrief`).
-- **Progress is the journal**, not mtime: `started` minus `result` per agentId.
+- **Progress is the journal**, not mtime: `started` minus finished per agentId,
+  where finished is a `result` OR a `failed` line (`{type:'failed', key,
+  agentId}`). Ignoring `failed` left 10 of 15 real runs that had one
+  "incomplete" forever. Runs carry `failed` and `live`; agents `failed` and
+  `status` (running only while the run is live).
 - **But liveness is NOT the journal.** It only gains a line when an agent STARTS
   or RETURNS, and the run directory's mtime only moves when a file is added, so
   three agents each thinking for ten minutes touch neither — a working run read
@@ -840,7 +874,8 @@ pass collects both that and the Task outcomes above.
   with 30ms remaining cannot overshoot the budget.
 - The cache is **versioned** (`CACHE_VERSION`). v1 entries began mid-file under
   an older tail cap, so their totals are not whole-file numbers and are
-  discarded rather than shown as if they were.
+  discarded rather than shown as if they were. v4 (2026-09-30) re-reads
+  everything once so the async-agent fold above covers old transcripts.
 - Dollars are **API list price for the same work**, not what Max billed (it is a
   flat subscription). An unpriced model is NAMED rather than blanking the figure;
   `<synthetic>` carries no tokens and is skipped.

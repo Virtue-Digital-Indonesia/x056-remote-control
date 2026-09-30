@@ -40,6 +40,7 @@ import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { TEMPLATES, TemplateStore } from './templates.js';
 import { TRANSCRIPT_STATS, TranscriptStatsReader, estimateCost } from './transcript-stats.js';
+import { claudeSubagentStatus } from './agent-tree.js';
 import type { ProviderId } from '../src/provider.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles } from '../src/adapters/subagents.js';
@@ -878,7 +879,7 @@ export class ApiController {
           const usageStats = file ? this.stats.statsFor(file, 256 * 1024) : null;
           const fresh = s.updatedAt != null && Date.now() - s.updatedAt < LIVE_SUBAGENT_MS;
           const live = this.manager.subagentRunning(sessionId, s.agentId);
-          const status = live === true ? 'running' : st?.done ? 'done' : st?.status === 'stopped' || st?.status === 'failed' ? st.status : live === undefined && running && fresh && st?.status === 'running' ? 'running' : 'unknown';
+          const status = live === true ? 'running' : st?.status === 'failed' || st?.status === 'ended' || st?.status === 'stopped' ? st.status : st?.done ? 'done' : live === undefined && running && fresh && st?.status === 'running' ? 'running' : 'unknown';
           return {
             ...s, status,
             startedAt: st?.startedAt ?? s.startedAt,
@@ -935,9 +936,8 @@ export class ApiController {
         // long tool call, and calling that one "stopped" is the worse mistake.
         // An abandoned one is hours stale, not minutes.
         const fresh = s.updatedAt != null && Date.now() - s.updatedAt < LIVE_SUBAGENT_MS;
-        const status = task?.done ? (task.isError ? 'failed' : 'done')
-          : task ? (running && fresh ? 'running' : 'stopped')
-          : running && fresh ? 'running' : 'unknown';
+        const live = this.manager.subagentRunning(sessionId, s.agentId);
+        const status = claudeSubagentStatus(task, live, running, fresh);
         return {
           ...s,
           status,
@@ -1012,7 +1012,7 @@ export class ApiController {
       const one = runs.find((r) => r.runId === runId);
       if (!one) return { runs: [], agents: [] };
       const { dir, ...rest } = one;
-      return { runs: [rest], agents: listWorkflowAgents(dir) };
+      return { runs: [rest], agents: listWorkflowAgents(dir, one.live) };
     } catch {
       return { runs: [] };
     }

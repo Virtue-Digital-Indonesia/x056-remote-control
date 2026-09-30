@@ -1,6 +1,8 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ForkDecision, JevDecision } from './jev.js';
+import { stripMemoryContext } from '../src/memory-context.js';
+import { stripTeamLine } from '../src/message-sender.js';
 
 /**
  * The agent tree: one conversation's whole working setup at a glance -- the
@@ -89,4 +91,114 @@ export function teamRun(provider: 'claude' | 'codex', picks: JevDecision[], turn
   const t = pick.team;
   const confidence = t.effort !== t.base.effort ? t.effortConfidence : t.model !== t.base.model ? t.modelConfidence : t.effortConfidence ?? t.modelConfidence;
   return { ...(t.model ? { model: t.model } : {}), effort: t.effort, pickedBy: pick.backend === 'openai' ? 'openai' : 'jev', ...(confidence != null ? { confidence } : {}), roles };
+}
+
+/** A subagent's status, as the tree's contract spells it: `done` only with a
+ *  result, `failed` / `stopped` / `ended` for the ways it can end without
+ *  one, `running` only on live evidence. */
+export type SubagentStatus = 'running' | 'done' | 'failed' | 'stopped' | 'ended' | 'unknown';
+
+/**
+ * A Claude subagent's status from its Task record (the transcript fold in
+ * transcript-stats.ts), the live process's own view of it (`subagentRunning`:
+ * true / false / undefined = not tracked), whether a gateway turn runs, and
+ * whether its transcript was written to recently.
+ *
+ *  - The process saying it runs wins: a subagent that outlives its parent
+ *    turn used to read "stopped".
+ *  - A finished record is final (the fold already told done from failed,
+ *    stopped and ended).
+ *  - A background agent's launch ack is not an ending; it runs until its
+ *    task-notification, as long as its transcript is fresh. That does NOT
+ *    need a gateway turn -- a turn ending is exactly when these keep going.
+ *  - A sync Task with no result runs only inside a live turn, else it never
+ *    came back.
+ */
+export function claudeSubagentStatus(
+  task: { done: boolean; outcome?: string; isError?: boolean; async?: boolean } | undefined,
+  live: boolean | undefined,
+  turnRunning: boolean,
+  fresh: boolean,
+): SubagentStatus {
+  if (live === true) return 'running';
+  if (task?.done) {
+    const o = task.outcome;
+    return o === 'done' || o === 'failed' || o === 'stopped' || o === 'ended' ? o : task.isError ? 'failed' : 'done';
+  }
+  if (task?.async || task?.outcome === 'running') return fresh ? 'running' : 'stopped';
+  if (task) return turnRunning && fresh ? 'running' : 'stopped';
+  return turnRunning && fresh ? 'running' : 'unknown';
+}
+
+/** One turn of a conversation, for the tree's per-turn view. */
+export interface TurnWindow {
+  /** 1-based position in the returned window. No absolute index: the journal
+   *  keeps its last 200 rows, so no count it could give would be true. */
+  n: number;
+  messageId?: string;
+  startedAt: string;
+  endedAt: string | null;
+  prompt: string;
+  running: boolean;
+}
+
+type Instant = string | number | null | undefined;
+const instant = (v: Instant): number => (v == null || v === '' ? NaN : typeof v === 'number' ? v : Date.parse(v));
+
+/**
+ * The turn membership rule, pinned here so the panel and the tests agree:
+ * a node belongs to a turn iff it started before the turn ended, AND it is
+ * still running or it ended (else was last written) at or after the turn
+ * began. So work spanning turns shows in each of them, and a background
+ * agent still running shows in the turn it outlived. Times are ISO strings
+ * or epoch ms, mixed freely.
+ */
+export function inTurn(
+  node: { startedAt?: Instant; endedAt?: Instant; updatedAt?: Instant; status?: string },
+  turn: { startedAt: Instant; endedAt?: Instant },
+): boolean {
+  const turnEnd = turn.endedAt == null ? Infinity : instant(turn.endedAt);
+  if (!(instant(node.startedAt) < turnEnd)) return false;
+  if (node.status === 'running') return true;
+  return instant(node.endedAt ?? node.updatedAt) >= instant(turn.startedAt);
+}
+
+/**
+ * The conversation's turns, oldest first, at most `limit`: each gateway
+ * turn's prompt is a journal `user` row. A turn ends where the next begins;
+ * the last one is open while a turn runs, else ends at the first recorded
+ * turn end after it began, else at `fallbackEnd` (the latest thing known to
+ * have happened after it), else stays open.
+ */
+export function buildTurns(
+  rows: { role: string; ts?: string; text: string; messageId?: string }[],
+  ends: string[],
+  running: boolean,
+  fallbackEnd?: string,
+  limit = 50,
+): TurnWindow[] {
+  const prompts = rows.filter((r) => r.role === 'user' && r.ts && Number.isFinite(Date.parse(r.ts)))
+    .sort((a, b) => Date.parse(a.ts!) - Date.parse(b.ts!))
+    .slice(-limit);
+  return prompts.map((r, i) => {
+    const next = prompts[i + 1];
+    let endedAt: string | null = next ? next.ts! : null;
+    if (!next && !running) {
+      const start = Date.parse(r.ts!);
+      endedAt = ends.filter((e) => Date.parse(e) >= start).sort((a, b) => Date.parse(a) - Date.parse(b))[0]
+        // Strictly after: the fallback may be this very prompt's row.
+        ?? (fallbackEnd && Date.parse(fallbackEnd) > start ? fallbackEnd : null);
+    }
+    // displayPrompt is cleaned when it is journalled; older rows predate the
+    // team line, so strip what is cheap to strip again.
+    const prompt = stripMemoryContext(stripTeamLine(r.text)).replace(/\s+/g, ' ').trim();
+    return {
+      n: i + 1,
+      ...(r.messageId ? { messageId: r.messageId } : {}),
+      startedAt: r.ts!,
+      endedAt,
+      prompt: prompt.length > 140 ? prompt.slice(0, 139) + '…' : prompt,
+      running: !next && running,
+    };
+  });
 }

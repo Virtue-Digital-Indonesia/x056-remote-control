@@ -109,3 +109,29 @@ it('renders native agent activity live and after reload', () => {
   const home=codexHome([{id:P,lines:[{type:'event_msg',payload:{type:'item_completed',item}}]}]);
   expect(codexAdapter.readHistoryPage!([home],P,20).rows).toContainEqual(expect.objectContaining({role:'action',sub:true,text:'Agent /root/review: started'}));
 });
+
+it('a task_complete with no message ended without a result; an error folded in makes it failed', () => {
+  const home = codexHome([{ id: P }, { id: C1, parent: P, lines: [
+    { type: 'event_msg', timestamp: '2026-09-07T12:00:00Z', payload: { type: 'task_started' } },
+    { type: 'event_msg', timestamp: '2026-09-07T12:00:05Z', payload: { type: 'task_complete', last_agent_message: null } },
+  ] }, { id: C2, parent: P, lines: [
+    { type: 'event_msg', timestamp: '2026-09-07T12:00:00Z', payload: { type: 'task_started' } },
+    { type: 'event_msg', timestamp: '2026-09-07T12:00:03Z', payload: { type: 'error', message: 'stream disconnected' } },
+    { type: 'event_msg', timestamp: '2026-09-07T12:00:05Z', payload: { type: 'task_complete', last_agent_message: 'partial' } },
+  ] }]);
+  expect(codexAdapter.subagentStatus!([home], P, C1)).toMatchObject({ done: false, status: 'ended', endedAt: Date.parse('2026-09-07T12:00:05Z') });
+  expect(codexAdapter.subagentStatus!([home], P, C2)).toMatchObject({ done: false, status: 'failed', error: 'stream disconnected' });
+});
+
+it('a new task clears an earlier error, and an abort records when it stopped', () => {
+  const home = codexHome([{ id: P }, { id: C1, parent: P, lines: [
+    { type: 'event_msg', payload: { type: 'error', message: 'old' } },
+    { type: 'event_msg', timestamp: '2026-09-07T12:00:00Z', payload: { type: 'task_started' } },
+    { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'fine' } },
+  ] }, { id: C2, parent: P, lines: [
+    { type: 'event_msg', timestamp: '2026-09-07T12:00:00Z', payload: { type: 'task_started' } },
+    { type: 'event_msg', timestamp: '2026-09-07T12:00:09Z', payload: { type: 'turn_aborted' } },
+  ] }]);
+  expect(codexAdapter.subagentStatus!([home], P, C1)).toMatchObject({ done: true, status: 'done', result: 'fine' });
+  expect(codexAdapter.subagentStatus!([home], P, C2)).toMatchObject({ status: 'stopped', endedAt: Date.parse('2026-09-07T12:00:09Z') });
+});

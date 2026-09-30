@@ -26,6 +26,8 @@ export interface SubagentMeta {
   toolUseId?: string;
   /** 1 = spawned by the conversation; 2+ = spawned by another subagent. */
   spawnDepth: number;
+  /** The spawning subagent's agentId, which a depth >= 2 meta carries. */
+  parentAgentId?: string;
   startedAt?: number;
   updatedAt?: number;
   /** Transcript size in bytes — cheap "did anything happen" signal. */
@@ -169,6 +171,7 @@ function readMeta(dir: string, agentId: string): Partial<SubagentMeta> {
       description: typeof raw.description === 'string' ? raw.description : undefined,
       toolUseId: typeof raw.toolUseId === 'string' ? raw.toolUseId : undefined,
       spawnDepth: typeof raw.spawnDepth === 'number' ? raw.spawnDepth : undefined,
+      parentAgentId: typeof raw.parentAgentId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(raw.parentAgentId) ? raw.parentAgentId : undefined,
     };
   } catch {
     // The transcript is the real artifact; meta is a label. A subagent still
@@ -205,6 +208,7 @@ export function listSubagents(configDirs: string[], sessionId: string): Subagent
       description: meta.description ?? '',
       toolUseId: meta.toolUseId,
       spawnDepth: meta.spawnDepth ?? 1,
+      ...(meta.parentAgentId ? { parentAgentId: meta.parentAgentId } : {}),
       startedAt,
       updatedAt,
       bytes,

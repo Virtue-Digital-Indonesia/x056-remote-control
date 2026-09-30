@@ -832,18 +832,27 @@ function foldOutcomeLine(out: SubagentOutcome, line: string): void {
   let d: Record<string, unknown>;
   try { d = JSON.parse(line) as Record<string, unknown>; } catch { return; }
   const p = asObj(d.payload);
+  const at = Date.parse(String(d.timestamp ?? ''));
   if (d.type === 'event_msg' && p.type === 'task_started') {
-    out.done = false; out.status = 'running'; out.result = undefined; out.endedAt = undefined;
-    const ts = Date.parse(String(d.timestamp ?? ''));
-    if (Number.isFinite(ts)) out.startedAt = ts;
+    out.done = false; out.status = 'running'; out.result = undefined; out.endedAt = undefined; out.error = undefined;
+    if (Number.isFinite(at)) out.startedAt = at;
+  } else if (d.type === 'event_msg' && p.type === 'error') {
+    // An error inside the task: whatever task_complete follows, it did not
+    // finish cleanly. Cleared by the next task_started.
+    out.error = firstStr(p.message) || 'error';
   } else if (d.type === 'event_msg' && (p.type === 'turn_aborted' || p.type === 'task_failed')) {
     out.done = false; out.status = p.type === 'task_failed' ? 'failed' : 'stopped';
+    if (Number.isFinite(at)) out.endedAt = at;
   } else if (d.type === 'event_msg' && p.type === 'task_complete') {
-    out.done = true; out.status = 'done';
     out.result = firstStr(p.last_agent_message) || undefined;
+    // Complete is not done: a folded error means it failed, and a complete
+    // with nothing to hand back produced no result ('ended').
+    out.status = out.error ? 'failed' : out.result ? 'done' : 'ended';
+    out.done = out.status === 'done';
     const s = p.started_at, c = p.completed_at;
     if (typeof s === 'number') out.startedAt = s * 1000;
     if (typeof c === 'number') out.endedAt = c * 1000;
+    else if (Number.isFinite(at)) out.endedAt = at;
   } else if (d.type === 'event_msg' && p.type === 'token_count') {
     const t = asObj(asObj(p.info).total_token_usage);
     if (typeof t.input_tokens === 'number') {
