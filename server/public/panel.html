@@ -58,7 +58,7 @@
 
   :where(button, a, select, input, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   button, select, .attach, .proj, .conv { transition: background-color .15s, border-color .15s, color .15s; }
-  :where(.side-scroll, .scroll, .wf-body, .pop) { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+  :where(.side-scroll, .scroll, .pop) { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
   /* sidebar */
   aside { background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
@@ -137,38 +137,6 @@
 
   /* main */
   main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-  /* The workflow island floats OVER the chat rather than taking a column of its
-     own: a run is something you glance at and dismiss, and permanently
-     narrowing the conversation to carry it costs more than it gives. */
-  #wfIsland { position: fixed; right: 16px; top: 76px; width: 330px; max-height: calc(100dvh - 160px);
-    background: var(--bg); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow);
-    display: flex; flex-direction: column; min-height: 0; overflow: hidden; z-index: 30; }
-  #wfIsland[hidden] { display: none; }
-  .wf-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); flex: none; }
-  .wf-head .t { flex: 1; font-weight: 600; font-size: 13px; }
-  .wf-body { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-  .wf-run { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); overflow: hidden; }
-  .wf-run.live { border-color: var(--bgwork); }
-  .wf-top { padding: 9px 11px; cursor: pointer; }
-  .wf-top:hover { background: var(--surface-2); }
-  .wf-nm { font-weight: 600; font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
-  .wf-nm .rspin { width: 10px; height: 10px; flex: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--bgwork); animation: spin .7s linear infinite; }
-  .wf-desc { font-size: 11.5px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wf-phases { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-  .wf-ph { font-size: 10.5px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 1px 8px; }
-  .wf-meter { height: 4px; border-radius: 3px; background: var(--surface-3); margin-top: 8px; overflow: hidden; }
-  .wf-meter i { display: block; height: 100%; background: var(--bgwork); border-radius: 3px; }
-  .wf-run.done .wf-meter i { background: var(--ok); }
-  .wf-run.stalled .wf-meter i { background: var(--faint); }
-  .wf-run.stalled .wf-count { color: var(--amber); }
-  .wf-count { font-size: 11px; color: var(--faint); margin-top: 5px; }
-  .wf-agents { border-top: 1px solid var(--border); max-height: 320px; overflow-y: auto; }
-  .wf-ag { display: flex; align-items: center; gap: 7px; padding: 6px 11px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
-  .wf-ag:hover { background: var(--surface-2); color: var(--text); }
-  .wf-ag .st { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--bgwork); }
-  .wf-ag.fin .st { background: var(--ok); }
-  .wf-ag .lb { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wf-empty { font-size: 12px; color: var(--faint); padding: 14px; text-align: center; }
   .topbar { display: flex; align-items: center; gap: 10px; height: 64px; padding: 0 24px; border-bottom: 1px solid var(--border); flex: none; }
   .project-heading { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
   .topbar .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -614,10 +582,6 @@
   .plug-foot code { background: var(--surface-3); padding: 1px 5px; border-radius: 5px; font-size: 10.5px; }
   .plug-empty { font-size: 12px; color: var(--faint); padding: 6px 2px; }
   /* Scheduled tasks */
-  /* The count badge is informational, not an alert like the approvals one. */
-  .subBadge { background: var(--accent); }
-  .subfilter { display: flex; align-items: center; gap: 7px; margin: 0 2px 8px; font-size: 11.5px; color: var(--muted); cursor: pointer; user-select: none; }
-  .subfilter input { margin: 0; accent-color: var(--accent); }
   .subr.col { display: block; }
   .sst { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border-radius: 999px; padding: 1px 7px; flex: none; }
   .sst.running { background: var(--accent); color: var(--on-accent); }
@@ -924,10 +888,6 @@
   .more-item { display: flex; align-items: center; gap: 11px; padding: 10px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; color: var(--text); background: none; border: none; width: 100%; text-align: left; }
   .more-item:hover { background: var(--surface-2); }
   .more-item .ic { color: var(--muted); flex: none; }
-  @media (max-width: 760px) {
-    /* No room to float beside the chat; sit it against the edges instead. */
-    #wfIsland { left: 12px; right: 12px; width: auto; top: 56px; max-height: 60dvh; }
-  }
   @media (max-width: 720px) {
     body { grid-template-columns: 1fr; }
     .hamburger { display: inline-grid; place-items: center; }
@@ -943,12 +903,12 @@
        lives only on the .nav-open rule — on the base rule its blur radius peeked
        past the -100% translated edge as a permanent dark sliver down the left
        side of the screen even while the drawer was closed. */
-    body > aside:not(#wfIsland) {
+    body > aside {
       position: fixed; top: 0; left: 0; bottom: 0; width: 84%; max-width: 300px; z-index: 60;
       transform: translateX(-100%); transition: transform .22s ease;
       padding-top: env(safe-area-inset-top);
     }
-    body.nav-open > aside:not(#wfIsland) { transform: translateX(0); box-shadow: 2px 0 24px rgba(0,0,0,.3); }
+    body.nav-open > aside { transform: translateX(0); box-shadow: 2px 0 24px rgba(0,0,0,.3); }
     /* iOS Safari auto-zooms the page on focus if the control's font-size is
        under 16px — bump these to 16px on mobile to stop the zoom-in-while-typing. */
     textarea, select, .pk-search { font-size: 16px; }
@@ -1129,6 +1089,225 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
 .at-log .t { color: var(--at-faint); font-variant-numeric: tabular-nums; } .at-log .g { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .at-log .x { overflow-wrap: anywhere; }
 .at-log .sub .g { color: var(--at-sub); } .at-log .jev .g { color: var(--at-jev); } .at-log .adv .g { color: var(--at-adv); } .at-log .gate .g, .at-log .dg .g { color: var(--at-dg); }
 .at-log li.none { display: block; color: var(--at-faint); }
+/* Agent tree, docked beside the chat (agent-tree.js, #agentPane), and the additions the
+   expanded console view (agent-tree.js) needs. Panel tokens only; role and
+   status colours are defined here for both themes. */
+#agentPane {
+  --ap-main: #c2410c; --ap-sub: #2563eb; --ap-jev: #15803d; --ap-adv: #7c3aed; --ap-dg: #0e7490;
+  --ap-stop: #475569; --ap-ended: #be185d;
+}
+html[data-theme="dark"] #agentPane {
+  --ap-main: #f0a57a; --ap-sub: #79a8ff; --ap-jev: #7ee2a0; --ap-adv: #c9a7ff; --ap-dg: #56d4dd;
+  --ap-stop: #a5b4c8; --ap-ended: #f9a8d4;
+}
+#agentPane { position: relative; flex: none; width: 420px; min-width: 0; min-height: 0; display: flex; flex-direction: column;
+  background: var(--bg); color: var(--text); border-left: 1px solid var(--border); font-family: var(--font); font-size: 13px; line-height: 1.45; }
+#agentPane[hidden] { display: none; }
+#agentPane.ap-sheet { position: absolute; inset: 0 0 0 auto; width: 100%; z-index: 20; border-left: 0; }
+#agentPane .ic { width: 15px; height: 15px; }
+
+/* Resize handle on the left edge. */
+.ap-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 3; }
+.ap-grip::after { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px; background: transparent; transition: background .12s; }
+.ap-grip:hover::after, .ap-grip:focus-visible::after, .ap-resizing .ap-grip::after { background: var(--link); }
+.ap-grip:focus-visible { outline: none; }
+.ap-sheet .ap-grip { display: none; }
+.ap-resizing { user-select: none; }
+
+.ap-head { display: flex; align-items: center; gap: 7px; min-height: 52px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--border); flex: none; min-width: 0; }
+.ap-hicon { display: grid; place-items: center; color: var(--muted); }
+.ap-title { font-weight: 600; font-size: 13px; white-space: nowrap; }
+.ap-sp { flex: 1; min-width: 0; }
+.ap-live { font-size: 11px; color: var(--faint); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ap-live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.ap-live.on { color: var(--bgwork); } .ap-live.on::before { background: var(--bgwork); }
+.ap-ib { display: grid; place-items: center; width: 30px; height: 30px; flex: none; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; padding: 0; }
+.ap-ib:hover { background: var(--surface-2); color: var(--text); }
+.ap-ib:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.ap-ib:disabled { opacity: .35; cursor: default; background: transparent; }
+.ap-turn { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 9px; height: 30px; padding: 0 1px; flex: none; }
+.ap-turn[hidden] { display: none; }
+.ap-turn .ap-ib { width: 26px; height: 26px; border-radius: 7px; }
+.ap-turn-l { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 4px; }
+.ap-tnote { display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; font-size: 12px; color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--border); flex: none; }
+.ap-tnote[hidden] { display: none; }
+.ap-tnote .ic { margin-top: 2px; flex: none; }
+.ap-tnote span { flex: 1; min-width: 0; }
+.ap-link { border: 0; background: none; color: var(--link); font: inherit; font-size: 12px; cursor: pointer; padding: 0; white-space: nowrap; }
+.ap-link:hover { text-decoration: underline; }
+
+.ap-cols { flex: 1; min-height: 0; display: flex; }
+.ap-outline { flex: 1; min-width: 0; overflow: auto; padding: 8px 6px 16px 8px; scrollbar-width: thin; overscroll-behavior: contain; }
+.ap-wide .ap-outline { flex: 0 0 var(--ap-outline-w, 420px); border-right: 1px solid var(--border); }
+.ap-drill .ap-outline { display: none; }
+.ap-hist { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.ap-hist[hidden] { display: none; }
+.ap-empty { color: var(--muted); margin: 10px 4px; line-height: 1.55; font-size: 12.5px; }
+
+/* ---- the outline: guide lines are borders, one per level ---- */
+.ap-ul { list-style: none; margin: 0; padding: 0; }
+.ap-ul .ap-ul { margin-left: 12px; }
+.ap-li { position: relative; }
+.ap-ul .ap-ul > .ap-li { padding-left: 16px; }
+.ap-ul .ap-ul > .ap-li::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; border-left: 1.5px solid color-mix(in srgb, var(--c) 42%, var(--border)); }
+.ap-ul .ap-ul > .ap-li::after { content: ""; position: absolute; left: 0; top: 18px; width: 13px; border-top: 1.5px solid color-mix(in srgb, var(--c) 42%, var(--border)); }
+.ap-ul .ap-ul > .ap-li:last-child::before { bottom: auto; height: 18px; width: 13px; border-bottom: 1.5px solid color-mix(in srgb, var(--c) 42%, var(--border)); border-bottom-left-radius: 7px; }
+.ap-ul .ap-ul > .ap-li:last-child::after { display: none; }
+.ap-root > .ap-li + .ap-li { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.ap-row { display: flex; align-items: flex-start; gap: 6px; padding: 5px 8px 5px 2px; border-radius: 9px; cursor: pointer; min-width: 0; border: 1px solid transparent; font-size: 12.5px; }
+.ap-row:hover { background: var(--surface-2); }
+.ap-row:focus { outline: none; }
+.ap-row:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.ap-row[aria-selected=true] { background: color-mix(in srgb, var(--c) 11%, var(--bg)); border-color: color-mix(in srgb, var(--c) 50%, transparent); }
+.ap-noterow { cursor: default; color: var(--muted); }
+.ap-noterow:hover { background: transparent; }
+.ap-chev { display: grid; place-items: center; width: 18px; height: 22px; flex: none; color: var(--muted); border-radius: 5px; }
+.ap-chev[data-tog]:hover { background: var(--surface-3); color: var(--text); }
+.ap-chev .ic { width: 14px; height: 14px; transition: transform .15s; }
+.ap-row[aria-expanded=true] > .ap-chev .ic { transform: rotate(90deg); }
+.ap-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--faint)); flex: none; margin-top: 7px; }
+.ap-dot.sq { border-radius: 2px; }
+.ap-ico { display: grid; place-items: center; height: 22px; flex: none; }
+.ap-ico .ic { width: 14px !important; height: 14px !important; color: var(--c); }
+.ap-tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; padding-top: 2px; }
+.ap-l1 { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 19px; }
+.ap-l1 b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ap-l2 { display: flex; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
+.ap-brief { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-bits { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; margin-left: auto; }
+.ap-pick { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 550; color: var(--ap-jev); background: color-mix(in srgb, var(--ap-jev) 14%, transparent); white-space: nowrap; flex: none; }
+.ap-gate { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 550; white-space: nowrap; flex: none; }
+.ap-gate-needs { color: var(--amber); background: var(--amber-bg); }
+.ap-gate-link { color: var(--link); background: color-mix(in srgb, var(--link) 13%, transparent); }
+.ap-gate-done { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); }
+.ap-gate-failed { color: var(--err); background: var(--err-bg); }
+.ap-gate-idle { color: var(--muted); background: var(--surface-2); }
+.ap-verdict { font-size: 11px; font-weight: 550; color: var(--muted); white-space: nowrap; flex: none; }
+.ap-verdict.sharp { color: var(--ap-jev); } .ap-verdict.warn { color: var(--amber); } .ap-verdict.err { color: var(--err); }
+
+/* ---- status: glyph + colour + words, one per value ---- */
+.ap-st { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 550; white-space: nowrap; flex: none; color: var(--muted); }
+.ap-st-run { color: var(--bgwork); } .ap-st-needs { color: var(--amber); } .ap-st-done { color: var(--ok); }
+.ap-st-ended { color: var(--ap-ended); } .ap-st-stopped { color: var(--ap-stop); } .ap-st-failed { color: var(--err); }
+.ap-st-unknown { color: var(--faint); } .ap-st-idle { color: var(--muted); }
+.ap-g { display: inline-grid; place-items: center; width: 12px; height: 12px; flex: none; box-sizing: border-box; }
+.ap-g .ic { width: 13px !important; height: 13px !important; stroke-width: 2.4; }
+.ap-g-run { border-radius: 50%; border: 1.8px solid currentColor; border-right-color: transparent; animation: ap-rot .8s linear infinite; color: var(--bgwork); }
+.ap-g-needs { width: 13px; height: 13px; border-radius: 50%; background: var(--amber); color: var(--bg); font-size: 9.5px; font-weight: 800; line-height: 1; }
+.ap-g-stopped { width: 9px; height: 9px; border-radius: 2px; background: currentColor; }
+.ap-g-ended { border-radius: 50%; border: 1.5px solid currentColor; position: relative; }
+.ap-g-ended::after { content: ""; position: absolute; left: 2px; right: 2px; top: 50%; border-top: 1.5px solid currentColor; transform: translateY(-50%) rotate(-45deg); }
+.ap-g-unknown { border-radius: 50%; border: 1.5px dotted currentColor; }
+.ap-g-idle { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; }
+@keyframes ap-rot { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ap-g-run { animation: none; border-right-color: currentColor; border-style: dashed; } }
+
+/* ---- a node's history ---- */
+.ap-hwrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.ap-slide { animation: ap-in .16s ease-out; }
+@keyframes ap-in { from { transform: translateX(14px); opacity: .4; } }
+.ap-hh { display: flex; align-items: center; gap: 8px; padding: 9px 8px 9px 12px; border-bottom: 1px solid var(--border); flex: none; min-width: 0; }
+.ap-hh > .ap-dot { margin-top: 0; }
+.ap-hm { flex: 1; min-width: 0; }
+.ap-hn { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-hmeta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.ap-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; border-bottom: 1px solid var(--border); flex: none; }
+.ap-stats div { padding: 7px 10px; min-width: 0; }
+.ap-stats div + div { border-left: 1px solid var(--border); }
+.ap-stats dt { font-size: 11px; color: var(--muted); }
+.ap-stats dd { margin: 0; font-size: 12.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.ap-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); flex: none; }
+.ap-tabs button { border: 0; background: transparent; padding: 7px 10px 8px; font: inherit; font-size: 12.5px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 6px 6px 0 0; cursor: pointer; }
+.ap-tabs button:hover { color: var(--text); }
+.ap-tabs button[aria-selected=true] { color: var(--text); font-weight: 550; border-bottom-color: var(--c); }
+.ap-tabs button:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.ap-hbody { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 14px; scrollbar-width: thin; overscroll-behavior: contain; }
+#agentPane .ap-rows.thread { max-width: none; padding: 0; margin: 0; width: auto; font-size: 13px; }
+#agentPane .ap-rows .msg { font-size: 13px; line-height: 1.6; }
+.ap-older { display: block; margin: 0 auto 8px; }
+.ap-working { display: flex; align-items: center; gap: 7px; color: var(--bgwork); font-size: 12px; margin: 8px 2px; }
+.ap-doc { line-height: 1.55; overflow-wrap: anywhere; }
+.ap-doc p { margin: 0 0 8px; }
+.ap-faint { color: var(--faint); font-size: 11.5px; }
+.ap-note { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 10px; padding: 8px 10px; margin: 0 0 10px; line-height: 1.5; }
+.ap-note .ic { margin-top: 2px; flex: none; }
+.ap-sect { font-size: 11.5px; font-weight: 600; color: var(--muted); margin: 12px 2px 6px; text-transform: none; }
+.ap-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ap-card { border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; font-size: 12.5px; }
+.ap-card p { margin: 5px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
+.ap-fch { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ap-fch time { font-family: var(--mono); font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.ap-fch b { font-weight: 550; min-width: 0; overflow-wrap: anywhere; flex: 1; }
+.ap-opts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.ap-opt { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.ap-opt.on { border-color: color-mix(in srgb, var(--ap-jev) 55%, transparent); color: var(--ap-jev); background: color-mix(in srgb, var(--ap-jev) 10%, transparent); }
+.ap-opt .ic { width: 11px !important; height: 11px !important; }
+.ap-fconf { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.ap-bar { position: relative; flex: 1; height: 6px; border-radius: 4px; background: var(--surface-3); overflow: visible; }
+.ap-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--ap-main); }
+.ap-bar.sharp i { background: var(--ap-jev); }
+.ap-bar em { position: absolute; left: 75%; top: -3px; bottom: -3px; border-left: 1.5px solid var(--text); opacity: .5; }
+.ap-report { margin: 10px 12px 0; border: 1px solid color-mix(in srgb, var(--c) 45%, var(--border)); border-radius: 10px; padding: 8px 10px; flex: none; }
+.ap-report p { margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.ap-rph { display: flex; align-items: center; gap: 8px; }
+.ap-raw { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.ap-r { display: grid; grid-template-columns: 58px 14px minmax(0, 1fr); gap: 6px; padding: 3px 0; align-items: start; }
+.ap-r time { font-family: var(--mono); font-size: 10.5px; color: var(--faint); padding-top: 2px; }
+.ap-rg { text-align: center; font-size: 12px; color: var(--muted); }
+.ap-rx { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; }
+.ap-r-tool .ap-rx, .ap-r-result .ap-rx, .ap-r-err .ap-rx { font-family: var(--mono); font-size: 11.5px; }
+.ap-r-tool .ap-rg { color: var(--c); } .ap-r-result .ap-rx { color: var(--muted); } .ap-r-err .ap-rx { color: var(--err); }
+.ap-r-think .ap-rx { color: var(--muted); font-style: italic; }
+.ap-r-user .ap-rx { background: var(--user-bg); border-radius: 8px; padding: 3px 8px; }
+.ap-send { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); flex: none; flex-wrap: wrap; }
+.ap-send input { flex: 1 1 140px; min-width: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; padding: 7px 10px; }
+.ap-btn { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 9px; padding: 6px 10px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.ap-btn:hover:not(:disabled) { background: var(--surface-2); }
+.ap-btn:disabled { opacity: .45; cursor: default; }
+.ap-btn.pri { background: var(--text); color: var(--bg); border-color: var(--text); }
+.ap-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.ap-turnrow { padding: 0; }
+.ap-turnbtn { display: flex; align-items: baseline; gap: 8px; width: 100%; border: 0; background: none; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; padding: 7px 10px; border-radius: 10px; cursor: pointer; min-width: 0; }
+.ap-turnbtn:hover { background: var(--surface-2); }
+.ap-turnbtn time { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+.ap-turnbtn .ap-faint { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Narrow frames: the stats wrap to two rows instead of truncating. */
+.ap-sheet .ap-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ap-sheet .ap-stats div:nth-child(3) { border-left: 0; }
+.ap-sheet .ap-stats div:nth-child(n+3) { border-top: 1px solid var(--border); }
+@media (max-width: 650px) {
+  .ap-head { padding-left: 10px; gap: 4px; }
+  .ap-live { display: none; }
+}
+
+/* The pinned-conversation stage floats bottom-right; keep it off the pane. */
+body:has(#agentPane:not([hidden]):not(.ap-sheet)) #conversationStage { right: calc(var(--agent-pane-w, 420px) + 22px); }
+body:has(#agentPane.ap-sheet:not([hidden])) #conversationStage { display: none !important; }
+/* ---- the reader's header knows "ended" too ---- */
+.agent-status.ended { color: #be185d; background: transparent; }
+html[data-theme="dark"] .agent-status.ended { color: #f9a8d4; }
+.agent-status.stopped { color: #475569; background: transparent; }
+html[data-theme="dark"] .agent-status.stopped { color: #a5b4c8; }
+
+/* ---- the expanded console view: it takes the whole conversation's place ---- */
+main.atree-open .composer-wrap { display: none !important; }
+.atree .at-collapse { margin-left: 0; }
+.at-card.ended .at-card-status { color: #f9a8d4; } .at-card.unknown .at-card-status { color: var(--at-faint); }
+.at-card.stopped .at-card-status { color: #a5b4c8; }
+.at-earlier { margin-top: 10px; width: 100%; max-width: 760px; display: flex; flex-direction: column; align-items: center; }
+.at-earlier-btn { font: inherit; font-size: 11.5px; color: var(--at-muted); background: transparent; border: 1px dashed var(--at-line); padding: 3px 12px; cursor: pointer; }
+.at-earlier-btn:hover, .at-earlier-btn:focus-visible { color: #e6edf3; border-color: var(--at-sub); outline: none; }
+.at-eg { width: 100%; margin-top: 10px; text-align: left; }
+.at-egh { color: var(--at-muted); font-size: 11.5px; padding: 0 0 4px; border-bottom: 1px solid #222a35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-eg-list { list-style: none; margin: 4px 0 0; padding: 0 0 0 10px; border-left: 1px dashed var(--at-line); display: flex; flex-direction: column; gap: 2px; }
+.at-er-btn { width: 100%; display: grid; grid-template-columns: minmax(80px, auto) minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 3px 8px; border: 0; background: transparent; color: #d6dde6; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.at-er-btn:hover, .at-er-btn:focus-visible { background: #161b22; outline: none; }
+.at-er-btn .role { font-weight: 700; color: #e6edf3; } .at-er-btn .desc { color: var(--at-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atree .st-run { color: var(--at-adv); } .atree .st-done { color: var(--at-jev); } .atree .st-ended { color: #f9a8d4; } .atree .st-stopped { color: #a5b4c8; }
+.atree .st-failed { color: var(--at-err); } .atree .st-needs { color: var(--at-warn); } .atree .st-unknown, .atree .st-idle { color: var(--at-faint); }
+.at-node.wf { border-color: var(--at-sub); text-align: left; align-items: stretch; width: min(560px, 100%); }
+.at-node.wf .at-node-title > span:first-child { color: var(--at-sub); }
+.at-node.wf .at-dg-btn { cursor: default; grid-template-columns: minmax(0, 1fr) auto auto; }
 @media (max-width: 650px) {
   .at-body { padding: 12px 12px 24px; }
   .at-legend { justify-content: flex-start; gap: 4px 14px; }
@@ -1312,7 +1491,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     <span id="dot" class="off" title="connection"></span>
     <button class="ico" id="notifyBtn" title="enable phone/desktop notifications"><svg class="ic"><use href="#i-bell"/></svg></button>
     <button class="ico" id="mcpApprovalsBtn" title="AI cross-conversation send requests awaiting your approval" hidden><svg class="ic"><use href="#i-inbox"/></svg><span class="mcpBadge" id="mcpApprovalsBadge"></span></button>
-    <button class="ico" id="subagentsBtn" title="subagents this conversation spawned" hidden><svg class="ic"><use href="#i-users"/></svg><span class="mcpBadge subBadge" id="subagentsBadge"></span></button>
     <button class="ico" id="autopilotBtn" title="autopilot — gateway keeps the work going across turns/restarts"><svg class="ic"><use href="#i-repeat"/></svg></button>
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
@@ -1320,7 +1498,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     <button class="ico" id="mcpSrvBtn" title="MCP servers"><svg class="ic"><use href="#i-terminal"/></svg></button>
     <button class="ico" id="cronBtn" title="Scheduled tasks"><svg class="ic"><use href="#i-alarm"/></svg></button>
     <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
-    <button class="ico" id="wfBtn" hidden title="workflow runs in this conversation"><svg class="ic"><use href="#i-fanout"/></svg><span class="mcpBadge" id="wfBadge" hidden></span></button>
     <button class="ico" id="termBtn" title="terminal view: the whole session, raw"><svg class="ic"><use href="#i-console"/></svg></button>
     <button class="ico" id="atreeBtn" title="agent tree: main session, advisor, forks and workers"><svg class="ic"><use href="#i-tree"/></svg></button>
     <button class="ico" id="shortcutsBtn" title="keyboard shortcuts (⌘/)"><svg class="ic"><use href="#i-keyboard"/></svg></button>
@@ -1418,15 +1595,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     <div class="composer-hint" id="composerHint">Enter to send · Shift+Enter for a new line · Paste or drop files</div>
   </div>
 </main>
-<aside id="wfIsland" aria-labelledby="wfTitle" hidden>
-  <div class="wf-head">
-    <svg class="ic sm" aria-hidden="true"><use href="#i-fanout"/></svg>
-    <span class="t" id="wfTitle">Workflows</span>
-    <span id="wfSummary"></span>
-    <button class="ico" id="wfCloseBtn" aria-label="Close workflows" title="Close workflows"><svg class="ic sm"><use href="#i-x"/></svg></button>
-  </div>
-  <div class="wf-body" id="wfBody"></div>
-</aside>
 
 <div class="backdrop" id="backdrop" hidden></div>
 <div class="pop" id="quotaPop" hidden><h2>accounts</h2><div class="acct-tabs" id="acctTabs" hidden></div><div id="acctScopeNote" class="acct-scope" hidden></div><div id="accounts"></div><div class="pop-footer"><button class="send ghost" id="addAcctBtn" style="width:100%;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div></div>
@@ -1507,14 +1675,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     </div>
   </div>
   <div class="plug-foot">Changes apply to the next turn. Invoke a plugin command by sending it as a message, e.g. <code>/claude-security scan my branch</code>.</div>
-</div>
-<div class="pop" id="subPop" hidden>
-  <h2>Conversation activity</h2>
-  <p class="agent-intro">Follow delegated work and open each agent’s conversation.</p>
-  <div id="selfCost"></div>
-  <div class="agent-tools"><div class="agent-filters" role="group" aria-label="Filter agents"><button data-agent-filter="all" class="selected">All agents</button><button data-agent-filter="running">Running</button><button data-agent-filter="done">Finished</button><button data-agent-filter="issues">Needs attention</button></div><label class="agent-search"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><input id="agentSearch" type="search" placeholder="Find an agent…" aria-label="Find an agent"></label></div>
-  <div id="agentListStatus" role="status"></div><div id="subList"></div>
-  <footer class="agent-footer"><span>Usage estimates use standard API rates.</span><button class="cr-text-button" id="allUsageBtn">Project cost breakdown →</button></footer>
 </div>
 <div class="pop" id="tplPop" hidden style="top:auto; bottom:96px; right:12px; left:auto; width:400px; max-height:70vh; overflow:auto;">
   <h2>Prompt templates</h2>
@@ -4856,9 +5016,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       if (closeTopModal()) { e.preventDefault(); return; }
       if (window.rcChat?.closePanel?.()) { e.preventDefault(); return; }
       if (!backdrop.hidden) { e.preventDefault(); closeAllPops(); return; }
-      if ($('wfIsland').getClientRects().length && !document.querySelector('dialog[open],:popover-open')) {
-        e.preventDefault(); $('wfCloseBtn').click(); ($('chatAgents') && !$('chatAgents').hidden ? $('chatAgents') : $('chatActivity') || $('wfBtn')).focus(); return;
-      }
       if (document.body.classList.contains('nav-open')) { e.preventDefault(); setNav(false); return; }
       return;
     }
@@ -5016,11 +5173,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       // The subagent list belongs to THIS conversation, so it is refetched with
       // its history rather than carried over from whatever was on screen before.
       refreshSubagents();
-      // Same for workflow runs, and the expansion must reset too: run ids do not
-      // collide, but an open agent list from the previous conversation would sit
-      // there unrefreshed until it happened to be clicked.
-      wfOpenRun = null; wfAgents = {}; wfHidden = false; wfShown = false; wfAgentLimit = 6;
-      loadWorkflows();
     }).catch(function (err) { if(reportErrors===true)throw err; });
   }
 
@@ -5388,50 +5540,30 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     box.replaceChildren(fragment);
   }
 
-  $('allUsageBtn').addEventListener('click', function () { closeAllPops(); controlRoom.showCosts(); });
-
-  function renderSubBadge() {
-    var btn = $('subagentsBtn'), badge = $('subagentsBadge');
-    if (!btn) return;
-    // Shown whenever there is anything to report — the conversation's own cost
-    // counts, so this is no longer hidden just because nothing was delegated.
-    btn.hidden = subMetas.length === 0 && !subSelf;
-    badge.textContent = subMetas.length ? String(subMetas.length) : '';
-    var running = subMetas.filter(function (m) { return m.status === 'running'; }).length;
-    badge.dataset.running = running ? String(running) : '';
-    btn.title = 'cost' + (subMetas.length ? ' & ' + subMetas.length + ' subagent(s)' + (running ? ', ' + running + ' running' : '') : '')
-      + (subSelf && subSelf.cost ? ' · ' + costLabel(subSelf.cost) : '');
+  /** Listeners for a fresh subagent list: the agent tree reads the same list
+   *  rather than polling the endpoint a second time. */
+  var subWatchers = [];
+  function onSubagents(fn) { subWatchers.push(fn); }
+  function subagentsChanged() {
     // Chat rows that name a subagent become links once the list can resolve them.
     markSubagentRows();
-  }
-
-  /** The conversation's own token spend, above the subagents it paid for. */
-  function renderSelfCost() {
-    var box = $('selfCost'); box.textContent = '';
-    var running=subMetas.filter(function(m){return m.status==='running';}).length;
-    var agentTokens=subMetas.reduce(function(n,m){var u=m.usage||{};return n+(u.input||0)+(u.output||0)+(u.cacheRead||0)+(u.cacheWrite||0);},0);
-    var values=[['Agents',String(subMetas.length)],['Running',String(running)],['Agent tokens',agentTokens?fmtTok(agentTokens):'—'],['Conversation cost',subSelf?costLabel(subSelf.cost)||'—':'—']];
-    values.forEach(function(v){var d=document.createElement('div');d.className='agent-stat';var label=document.createElement('span');label.textContent=v[0];var value=document.createElement('strong');value.textContent=v[1];d.appendChild(label);d.appendChild(value);box.appendChild(d);});
-    if(subSelf && (subSelf.partial || unpricedNote(subSelf.cost))){var note=document.createElement('p');note.className='agent-usage-note';note.textContent=subSelf.partial?'Usage is still being scanned.':unpricedNote(subSelf.cost);box.appendChild(note);}
+    subWatchers.forEach(function (fn) { try { fn(subMetas, subSelf); } catch (e) {} });
   }
 
   function refreshSubagents() {
     var pid = currentProjectId, sid = lastSessionId;
     var context = (pid || '') + ':' + (sid || '');
-    if (context !== subContext) { subContext=context; subMetas=[]; subSelf=null; renderSubBadge(); renderWorkflows(); }
-    if (!pid || !sid) { subMetas = []; subSelf = null; renderSubBadge(); return Promise.resolve(); }
+    if (context !== subContext) { subContext=context; subMetas=[]; subSelf=null; subagentsChanged(); }
+    if (!pid || !sid) { subMetas = []; subSelf = null; subagentsChanged(); return Promise.resolve(); }
     return api('/api/conversations/subagents?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid))
       .then(function (r) { return r.json().then(function(data){if(!r.ok)throw new Error(data.message||'Could not load agents');return data;}); })
       .then(function (d) {
         if (currentProjectId !== pid || lastSessionId !== sid) return; // switched while loading
-        $('agentListStatus').textContent='';agentListSignature='';
         subMetas = (d && d.subagents) || [];
         subSelf = (d && d.self) || null;
-        renderSubBadge();
-        renderWorkflows();
-        if (!$('subPop').hidden) { renderSelfCost(); renderSubList(); }
+        subagentsChanged();
       })
-      .catch(function (e) { if(currentProjectId===pid&&lastSessionId===sid)$('agentListStatus').textContent=e.message; });
+      .catch(function () {});
   }
 
   /** Match "Subagent: <description>" activity rows to a known subagent. The
@@ -5457,268 +5589,10 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     }
   }
 
-  var agentFilter='all',agentLimit=30,agentListSignature='';
-  var agentStatusLabels={running:'Running',done:'Finished',failed:'Failed',stopped:'Stopped',unknown:'Status unknown'};
+  // Every status the server reports has its own words; "ended" is a subagent
+  // whose turn finished without its result coming back -- never "done".
+  var agentStatusLabels={running:'Running',done:'Finished',failed:'Failed',stopped:'Stopped',ended:'Ended · no result',unknown:'Status unknown'};
   function agentName(m){return m.description || (m.agentType==='codex-subagent'?'Codex agent':m.agentType) || 'Agent';}
-  $('agentSearch').addEventListener('input',function(){agentLimit=30;renderSubList();});
-  document.querySelectorAll('[data-agent-filter]').forEach(function(b){b.addEventListener('click',function(){agentFilter=b.dataset.agentFilter;agentLimit=30;renderSubList();});});
-  function renderSubList() {
-    var list=$('subList'),query=$('agentSearch').value.trim().toLowerCase();
-    document.querySelectorAll('[data-agent-filter]').forEach(function(b){b.classList.toggle('selected',b.dataset.agentFilter===agentFilter);b.setAttribute('aria-pressed',String(b.dataset.agentFilter===agentFilter));});
-    var rank={running:0,unknown:1,failed:2,stopped:3,done:4};
-    var shown=subMetas.filter(function(m){return (agentFilter==='all'||agentFilter===m.status||agentFilter==='issues'&&['failed','stopped','unknown'].includes(m.status))&&(!query||[agentName(m),m.agentType,m.agentId,m.spawnedBy].join(' ').toLowerCase().includes(query));}).sort(function(a,b){return (rank[a.status]??5)-(rank[b.status]??5)||(b.startedAt||0)-(a.startedAt||0);});
-    var signature=JSON.stringify([shown.slice(0,agentLimit),agentLimit,query,agentFilter]);if(signature===agentListSignature)return;agentListSignature=signature;
-    var focused=document.activeElement&&document.activeElement.dataset.agent;list.textContent='';
-    $('agentListStatus').textContent=shown.length?Math.min(agentLimit,shown.length)+' of '+shown.length+' agents':'';
-    if(!shown.length){var empty=document.createElement('div');empty.className='agent-empty';empty.textContent=subMetas.length?'No agents match this view.':'No delegated work yet. Agents will appear here when this conversation uses them.';list.appendChild(empty);return;}
-    shown.slice(0,agentLimit).forEach(function(m){
-      var row=document.createElement('button');row.type='button';row.className='agent-row';row.dataset.agent=m.agentId;
-      var avatar=document.createElement('span');avatar.className='agent-avatar '+(m.status||'unknown');avatar.appendChild(icon('sparkles','sm'));row.appendChild(avatar);
-      var copy=document.createElement('span');copy.className='agent-copy';var title=document.createElement('strong');title.textContent=agentName(m);copy.appendChild(title);
-      var meta=document.createElement('small');var bits=[];if(m.agentType&&m.agentType!=='codex-subagent')bits.push(m.agentType);if(m.spawnDepth>1)bits.push(m.spawnedBy?'via '+m.spawnedBy:'Nested agent · level '+m.spawnDepth);var duration=fmtDur(m.startedAt,m.endedAt);if(duration&&m.status!=='unknown'&&m.status!=='stopped')bits.push(duration);if(m.usage)bits.push(fmtTok((m.usage.input||0)+(m.usage.output||0)+(m.usage.cacheRead||0)+(m.usage.cacheWrite||0))+' tokens');meta.textContent=bits.join(' · ');copy.appendChild(meta);row.appendChild(copy);
-      var side=document.createElement('span');side.className='agent-row-side';var status=document.createElement('span');status.className='agent-status '+(m.status||'unknown');status.textContent=agentStatusLabels[m.status]||'Status unknown';side.appendChild(status);var cost=document.createElement('small');cost.textContent=(costLabel(m.cost)||(m.usage?'Cost unavailable':'Usage unavailable'))+(m.partial?' · Updating':'');side.appendChild(cost);row.appendChild(side);row.appendChild(icon('right','sm'));
-      row.addEventListener('click',function(){openSubShell(m);});list.appendChild(row);
-    });
-    if(shown.length>agentLimit){var more=document.createElement('button');more.className='cr-load-more';more.textContent='Show '+Math.min(30,shown.length-agentLimit)+' more agents';more.onclick=function(){agentLimit+=30;renderSubList();};list.appendChild(more);}
-    if(focused){var target=Array.from(list.querySelectorAll('[data-agent]')).find(function(n){return n.dataset.agent===focused;});if(target)target.focus({preventScroll:true});}
-  }
-
-  // ---- workflow island -------------------------------------------------
-  // A workflow's agents are written in exactly the shape a plain subagent uses,
-  // so each one opens in the same shell. What is NOT on disk is the `label` and
-  // `phase` passed to agent() — neither the journal nor the meta file carries
-  // them — so a run shows the phases it DECLARED and each agent is named by the
-  // head of its own prompt.
-  var wfRuns = [];            // runs for the viewed conversation
-  var wfOpenRun = null;       // runId whose agent list is expanded
-  var wfAgents = {};          // runId -> agents (only the expanded one is fetched)
-  var wfHidden = false;       // the operator closed it; don't reopen on poll
-  var wfShown = false;        // the operator opened it explicitly; keep it open
-  var wfAgentLimit = 6;
-  var wfPoll = null;
-  /**
-   * Hide runs that are neither moving nor recent. On by default, matching the
-   * subagent list: a conversation accumulates runs forever, and the ones worth
-   * a floating card are the live ones plus whatever just finished.
-   *
-   * "Recent" rather than "not finished" so a run that returned a minute ago
-   * does not vanish while it is still being read.
-   */
-  var WF_HIDE_KEY = 'x056_wf_hide';
-  var WF_RECENT_MS = 30 * 60_000;
-  var wfHideOld = lsGet(WF_HIDE_KEY) !== 'off';
-  function wfIsCurrent(r) {
-    if (wfLive(r)) return true;
-    var at = r.updatedAt || r.startedAt || 0;
-    return at > 0 && Date.now() - at < WF_RECENT_MS;
-  }
-
-  // An incomplete run is not necessarily a running one: a container swap, a
-  // stop or a crash leaves it short of its agents forever, and "0 / 4 agents ·
-  // running" on a run that died hours ago is exactly the phantom-busy lie the
-  // conversation strip was fixed for. Require recent movement too.
-  var WF_STALE_MS = 5 * 60 * 1000;
-  function wfLive(r) {
-    if (r.started <= r.finished) return false;
-    if (!r.updatedAt) return false;
-    return (Date.now() - r.updatedAt) < WF_STALE_MS;
-  }
-  function wfStalled(r) { return r.started > r.finished && !wfLive(r); }
-
-  function loadWorkflows() {
-    if (!currentProjectId || !lastSessionId || pendingNew) { wfRuns = []; renderWorkflows(); return Promise.resolve(); }
-    var pid = currentProjectId, sid = lastSessionId;
-    var q = '/api/conversations/workflows?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid);
-    if (wfOpenRun) q += '&runId=' + encodeURIComponent(wfOpenRun);
-    return api(q).then(function (r) { return r.json(); }).then(function (m) {
-      // The conversation may have been switched while this was in flight.
-      if (currentProjectId !== pid || lastSessionId !== sid) return;
-      if (wfOpenRun && m && m.agents) {
-        wfAgents[wfOpenRun] = m.agents;
-        // Asking for one run returns only that run, so keep the full list and
-        // refresh the single entry rather than collapsing the island to one row.
-        var one = (m.runs || [])[0];
-        if (one) wfRuns = wfRuns.map(function (x) { return x.runId === one.runId ? one : x; });
-      } else {
-        wfRuns = (m && m.runs) || [];
-      }
-      renderWorkflows();
-    }).catch(function () {});
-  }
-
-  function renderWorkflows() {
-    var btn = $('wfBtn'), badge = $('wfBadge'), island = $('wfIsland');
-    var live = wfRuns.filter(wfLive).length;
-    var liveAgents = subMetas.filter(function(m){return m.status==='running';}).length;
-    btn.hidden = wfRuns.length === 0;
-    badge.hidden = live === 0;
-    badge.textContent = String(live);
-    $('wfSummary').textContent = live + liveAgents ? (live + liveAgents) + ' running' : '';
-    $('wfTitle').textContent = liveAgents ? (wfRuns.length ? 'Agents & workflows' : 'Agents') : 'Workflows';
-    $('wfCloseBtn').setAttribute('aria-label','Close '+$('wfTitle').textContent.toLowerCase());
-    $('wfCloseBtn').title = $('wfCloseBtn').getAttribute('aria-label');
-    // As a column it could sit open harmlessly; floating over the chat it
-    // cannot, so it opens on its own only when something is actually MOVING.
-    // A finished run stays one click away on the topbar button.
-    var show = (wfRuns.length > 0 || liveAgents > 0) && !wfHidden && (wfShown || live > 0 || liveAgents > 0);
-    island.hidden = !show;
-    if ($('chatAgents')) $('chatAgents').setAttribute('aria-expanded',String(show));
-    if (!show) return;
-
-    var body = $('wfBody'), scrollTop = body.scrollTop;
-    var focused = body.contains(document.activeElement) ? document.activeElement.dataset.wfFocus : null;
-    body.textContent = '';
-    renderFloatingAgents(body);
-    var shownRuns = wfHideOld ? wfRuns.filter(wfIsCurrent) : wfRuns;
-    var hiddenRuns = wfRuns.length - shownRuns.length;
-    if (!shownRuns.length && !liveAgents) {
-      var e = document.createElement('div'); e.className = 'wf-empty';
-      e.textContent = wfRuns.length
-        ? 'Nothing running. ' + wfRuns.length + ' older run' + (wfRuns.length === 1 ? '' : 's') + ' hidden.'
-        : 'No workflow runs in this conversation yet.';
-      body.appendChild(e);
-    }
-    shownRuns.forEach(function (r) {
-      var live1 = wfLive(r), stalled = wfStalled(r);
-      var card = document.createElement('div');
-      card.className = 'wf-run' + (live1 ? ' live' : stalled ? ' stalled' : ' done');
-
-      var expanded = wfOpenRun === r.runId;
-      var top = document.createElement('button'); top.type = 'button'; top.className = 'wf-top';
-      top.dataset.wfFocus = 'run:' + r.runId;
-      top.setAttribute('aria-expanded', String(expanded));
-      var nm = document.createElement('span'); nm.className = 'wf-nm';
-      if (live1) { var sp = document.createElement('span'); sp.className = 'rspin'; nm.appendChild(sp); }
-      var nt = document.createElement('span');
-      nt.textContent = r.name || r.runId;
-      nm.appendChild(nt);
-      var chevron = document.createElement('span'); chevron.className = 'wf-chevron'; chevron.setAttribute('aria-hidden', 'true');
-      chevron.textContent = '›'; nm.appendChild(chevron); top.appendChild(nm);
-
-      // A run launched by NAME (a saved workflow) stores no script, so there is
-      // no meta to read. Say so, rather than leaving a bare id that reads like
-      // the panel failed to render something.
-      var desc = r.description || (r.name ? '' : 'ran from a saved workflow — no script stored');
-      if (desc) {
-        var d = document.createElement('span'); d.className = 'wf-desc';
-        d.textContent = desc; d.title = desc; top.appendChild(d);
-      }
-      if (expanded && r.phases && r.phases.length) {
-        var ph = document.createElement('span'); ph.className = 'wf-phases';
-        r.phases.forEach(function (p) {
-          var t = document.createElement('span'); t.className = 'wf-ph';
-          t.textContent = p.title; if (p.detail) t.title = p.detail;
-          ph.appendChild(t);
-        });
-        top.appendChild(ph);
-      }
-      var meter = document.createElement('span'); meter.className = 'wf-meter';
-      var fill = document.createElement('i');
-      fill.style.width = (r.started ? Math.round((r.finished / r.started) * 100) : 0) + '%';
-      meter.appendChild(fill); top.appendChild(meter);
-
-      var c = document.createElement('span'); c.className = 'wf-count';
-      c.textContent = r.finished + ' of ' + r.started + ' agents completed'
-        + (live1 ? ' · running' : stalled ? ' · stopped before finishing' : '');
-      top.appendChild(c);
-
-      top.addEventListener('click', function () {
-        wfOpenRun = wfOpenRun === r.runId ? null : r.runId;
-        renderWorkflows();
-        if (wfOpenRun) loadWorkflows();
-      });
-      card.appendChild(top);
-
-      if (wfOpenRun === r.runId) {
-        var list = document.createElement('div'); list.className = 'wf-agents';
-        var ags = wfAgents[r.runId] || [];
-        if (!ags.length) {
-          var le = document.createElement('div'); le.className = 'wf-empty'; le.textContent = 'loading agents…';
-          list.appendChild(le);
-        }
-        ags.forEach(function (a) {
-          var row = document.createElement('button'); row.type = 'button'; row.className = 'wf-ag' + (a.done ? ' fin' : '');
-          row.dataset.wfFocus = 'agent:' + r.runId + ':' + a.agentId;
-          var st = document.createElement('span'); st.className = 'st'; row.appendChild(st);
-          var lb = document.createElement('span'); lb.className = 'lb';
-          lb.textContent = a.brief || a.agentId;
-          lb.title = a.brief || '';
-          row.appendChild(lb);
-          row.addEventListener('click', function () { openWorkflowShell(r, a); });
-          list.appendChild(row);
-        });
-        card.appendChild(list);
-      }
-      body.appendChild(card);
-    });
-
-    // The control only earns its space when it is actually holding something
-    // back -- with two live runs there is nothing to hide.
-    if (hiddenRuns > 0 || !wfHideOld) {
-      var f = document.createElement('label'); f.className = 'subfilter';
-      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = wfHideOld;
-      cb.dataset.wfFocus = 'filter';
-      cb.addEventListener('change', function () {
-        wfHideOld = cb.checked; lsSet(WF_HIDE_KEY, wfHideOld ? 'on' : 'off'); renderWorkflows();
-      });
-      var tx = document.createElement('span');
-      tx.textContent = wfHideOld
-        ? 'Hide older runs (' + hiddenRuns + ')'
-        : 'Hide older runs';
-      f.appendChild(cb); f.appendChild(tx);
-      f.title = 'hides runs that stopped moving more than 30 minutes ago';
-      body.appendChild(f);
-    }
-    if (focused) Array.from(body.querySelectorAll('[data-wf-focus]')).find(function (node) { return node.dataset.wfFocus === focused; })?.focus({preventScroll:true});
-    body.scrollTop = scrollTop;
-  }
-
-  function renderFloatingAgents(body) {
-    var agents=subMetas.filter(function(m){return m.status==='running';}).sort(function(a,b){return (b.startedAt||0)-(a.startedAt||0);});
-    if (!agents.length) return;
-    var group=document.createElement('div');group.className='wf-agent-group';
-    agents.slice(0,wfAgentLimit).forEach(function(m){
-      var row=document.createElement('button');row.type='button';row.className='wf-agent-row';row.dataset.agent=m.agentId;row.dataset.wfFocus='agent:'+m.agentId;
-      var state=document.createElement('span');state.className='wf-agent-state '+(m.status||'unknown');state.setAttribute('aria-hidden','true');state.appendChild(icon(m.status==='done'?'check':m.status==='failed'?'x':'sparkles','sm'));row.appendChild(state);
-      var copy=document.createElement('span');copy.className='wf-agent-copy';var name=document.createElement('strong');name.textContent=agentName(m);name.title=agentName(m);copy.appendChild(name);
-      var meta=document.createElement('small');var details=[agentStatusLabels[m.status]||'Status unknown'];var duration=fmtDur(m.startedAt,m.endedAt);if(duration&&['running','done'].includes(m.status))details.push(duration);meta.textContent=details.join(' · ');copy.appendChild(meta);row.appendChild(copy);row.appendChild(icon('right','sm'));
-      row.addEventListener('click',function(){openSubShell(m);});group.appendChild(row);
-    });
-    if(agents.length>wfAgentLimit){var more=document.createElement('button');more.type='button';more.className='wf-agents-more';more.dataset.wfFocus='more-agents';more.textContent='Show '+(agents.length-wfAgentLimit)+' more agents';more.addEventListener('click',function(){wfAgentLimit+=12;renderWorkflows();});group.appendChild(more);}
-    body.appendChild(group);
-  }
-
-  /** A workflow agent's transcript, in the same shell a plain subagent uses. */
-  function openWorkflowShell(run, a) {
-    return openSubShell(Object.assign({},a,{status:a.done?'done':'unknown',description:a.description||a.agentType}),run);
-  }
-
-  $('wfCloseBtn').addEventListener('click', function () { wfHidden = true; wfShown = false; renderWorkflows(); });
-  // A floating card that only closes by its own X is a card you fight. Dismiss
-  // on any click outside it -- but not the topbar button (which toggles), and
-  // not while an agent shell is open on top of it, where an outside click
-  // belongs to the modal.
-  document.addEventListener('mousedown', function (e) {
-    var island = $('wfIsland');
-    if (!island.getClientRects().length) return;
-    if (island.contains(e.target) || $('wfBtn').contains(e.target) || $('chatAgents')?.contains(e.target)) return;
-    if (modalStack.length) return; // an agent shell is on top; the click is its own
-    wfHidden = true; wfShown = false; renderWorkflows();
-  });
-  $('wfBtn').addEventListener('click', function () {
-    var open = !$('wfIsland').hidden;
-    wfShown = !open; wfHidden = open;
-    renderWorkflows();
-    if (wfShown) loadWorkflows();
-  });
-
-  // A run appends to its journal as agents finish, and nothing pushes that to
-  // the panel, so the island polls while anything is live. Idle conversations
-  // cost one request per switch, not a timer.
-  function wfTick() {
-    if (wfRuns.some(wfLive) || wfOpenRun) loadWorkflows();
-  }
-  wfPoll = setInterval(wfTick, 4000);
 
   /** Agent reader: summary tabs, incremental history, and explicit follow mode. */
   function openSubShell(m, workflow) {
@@ -5760,17 +5634,13 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     }).then(function(v){alive=false;delete subShells[shellKey];return v;});
   }
 
-  $('subagentsBtn').addEventListener('click', function () { openPop($('subPop')); renderSelfCost(); renderSubList(); refreshSubagents(); });
-
   // A running turn spawns and feeds subagents; poll while one is live so the
   // count, the list and any open shell all move on their own.
   setInterval(function () {
     var shellOpen = Object.keys(subShells).length > 0;
     var agentsRunning = subMetas.some(function(m){return m.status === 'running';});
-    if (!active && !agentsRunning && !shellOpen && $('subPop').hidden) return;
+    if (!active && !agentsRunning && !shellOpen) return;
     refreshSubagents();
-    // Scanning every conversation is driven by ITS OWN modal now — opening the
-    // subagent popover should not start 400ms of reading behind it.
     for (var id in subShells) subShells[id]();
   }, 5000);
 
@@ -6194,7 +6064,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     else if(command==='model')openSelect(modelEl);
     else if(command==='status')controlRoom.showAccounts();
     else if(command==='cost')controlRoom.showCosts();
-    else if(command==='agent')$('subagentsBtn').click();
+    else if(command==='agent'){if(agentTree)agentTree.show();}
     return true;
   }
   var deliveryRecords=new Map(), deliveryDb=null, deliveryPreparing=false, deliveryPanel=null;
@@ -6767,6 +6637,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     insertPrompt: function (text) { promptEl.value = text; autogrow(); saveDraft(); promptEl.focus(); },
     toggleTerminal: function () { if (terminalView) terminalView.toggle(); },
     toggleAgentTree: function () { if (agentTree) agentTree.toggle(); },
+    showAgentTree: function () { if (agentTree) agentTree.show(); },
     attachSaved: function (pid, sid, file) {
       var key = filesKeyFor(pid,sid), list = pendingFilesByConv[key] || (pendingFilesByConv[key] = []);
       if (!list.some(function(f){return f.fileId===file.fileId && f.versionId===file.versionId;})) list.push(file);
@@ -6779,17 +6650,31 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     api: api,
     current: function () { return pendingNew || !currentProjectId || !lastSessionId ? null : { projectId: currentProjectId, sessionId: lastSessionId }; },
     notify: function (m) { if (controlRoom) controlRoom.notify(m); else addSys(m, 'banner'); },
-    onOpen: function () { if (agentTree && agentTree.isOpen()) agentTree.close(); },
+    // The docked agent tree may sit beside the terminal; only its expanded view takes the same place.
+    onOpen: function () { if (agentTree && agentTree.isExpanded()) agentTree.collapse(); },
   }) : null;
   $('termBtn').addEventListener('click', function () { if (terminalView) terminalView.toggle(); });
-  // The agent tree takes the chat's place like the terminal; only one of them is open.
+  // The agent tree docks beside the chat; its expanded view takes the whole
+  // conversation's place like the terminal, and only one of those two is open.
   agentTree = typeof window.createAgentTree === 'function' ? window.createAgentTree({
     api: api,
     current: function () { return pendingNew || !currentProjectId || !lastSessionId ? null : { projectId: currentProjectId, sessionId: lastSessionId }; },
+    provider: function () { return currentProvider(); },
     notify: function (m) { if (controlRoom) controlRoom.notify(m); else addSys(m, 'banner'); },
-    onOpen: function () { if (terminalView && terminalView.isOpen()) terminalView.close(); },
+    onExpand: function () { if (terminalView && terminalView.isOpen()) terminalView.close(); },
     openSubagent: function (meta) { openSubShell(meta); },
     openDelegate: function (id, role) { if (terminalView) terminalView.showDelegate(id, role); },
+    openTerminal: function () { if (terminalView && !terminalView.isOpen()) terminalView.toggle(); },
+    // One reader of conversations/subagents: the panel's own list, shared.
+    subagents: function () { return subMetas; },
+    onSubagents: onSubagents,
+    refreshSubagents: function () { return refreshSubagents(); },
+    renderRows: function (box, rows, provider) { renderRowsInto(box, rows, provider); },
+    renderMarkdown: function (text) { return renderMarkdown(String(text || '')); },
+    fmtTok: fmtTok, costLabel: costLabel, fmtDur: fmtDur,
+    messageDelegate: function (id, text) { return delegateCall('/api/delegates/followup', { id: id, message: text, fromHuman: true }); },
+    stopDelegate: function (id) { return delegateCall('/api/delegates/stop', { id: id }); },
+    scrollChat: function () { if (typeof down === 'function') down(); },
   }) : null;
   $('atreeBtn').addEventListener('click', function () { if (agentTree) agentTree.toggle(); });
   // Static assets can update before the gateway swaps to their matching build.

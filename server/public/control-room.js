@@ -12,17 +12,6 @@ window.createControlRoom = function (engine) {
   const content = document.createElement('div'); content.className = 'focus-main';
   while (main.firstChild) content.append(main.firstChild);
   main.append(content);
-  // Keep workflow activity attached to this conversation, above its composer.
-  const workflow = $('wfIsland');
-  content.append(workflow);
-  function fitWorkflow() {
-    const toolbar = content.querySelector('.topbar'), composer = content.querySelector('.composer-wrap');
-    const top = toolbar.offsetHeight + 12;
-    workflow.style.setProperty('--wf-top', top + 'px');
-    workflow.style.setProperty('--wf-height', Math.max(0, content.clientHeight - top - composer.offsetHeight - 12) + 'px');
-  }
-  const workflowResize = new ResizeObserver(fitWorkflow);
-  [content, content.querySelector('.topbar'), content.querySelector('.composer-wrap')].forEach(node => workflowResize.observe(node));
   main.insertAdjacentHTML('afterbegin', `<nav id="focusNav" aria-label="Focus navigation"><button class="cr-logo" id="focusHome" title="Back to Control room">x0</button>${iconButton('focusBack','left','Back to Control room')}${iconButton('focusSearch','search','Search conversations')}${iconButton('focusNew','compose','New conversation')}<span class="sp"></span>${iconButton('focusAccounts','user','Accounts')}${iconButton('focusSettings','gear','Display settings')}</nav>`);
   // The existing toolbar actions remain wired; less-used actions live in More.
   main.querySelector('.topbar').insertAdjacentHTML('beforeend', `<button class="cr-secondary" id="chatActivity">${ic('users')}<span>Activity</span><small id="chatActivityCount"></small></button>${iconButton('chatTools','plug','Tools')}${iconButton('chatResults','results','Conversation results')}${iconButton('chatTerminal','console','Terminal view')}${iconButton('chatAgentTree','tree','Agent tree')}${iconButton('chatRefresh','refresh','Refresh conversation')}${iconButton('chatClose','x','Close conversation')}`);
@@ -938,7 +927,7 @@ window.createControlRoom = function (engine) {
     const destinations={defaultsPop:'models',pluginsPop:'connections',mcpSrvPop:'connections',passkeyPop:'security'};
     if(destinations[el.id]){if(el.id==='pluginsPop')connectionSection='plugins';if(el.id==='mcpSrvPop')connectionSection='mcp';settings(destinations[el.id]);return;}
     if(el.id==='cronPop'){showSection('automations');return;}
-    closeUtility();utilityElement=el;utility.classList.toggle('agent-utility',el.id==='subPop');utility.classList.toggle('onboarding-dialog',el.id==='addAcctPop');
+    closeUtility();utilityElement=el;utility.classList.toggle('onboarding-dialog',el.id==='addAcctPop');
     const title=el.querySelector('h2')?.textContent||'Controls';utility.setAttribute('aria-label',title);
     utility.innerHTML=`<header><h2>${esc(title)}</h2><button class="cr-icon" aria-label="Close ${esc(title)}">${ic('x')}</button></header><div class="utility-body"></div>`;
     utility.querySelector('button').onclick=closeUtility;utility.querySelector('.utility-body').append(el);el.hidden=false;el.classList.add('integrated-pop');
@@ -1100,7 +1089,7 @@ window.createControlRoom = function (engine) {
     d.querySelectorAll('[data-notification]').forEach(b=>b.onclick=()=>{const x=entries[Number(b.dataset.notification)];d.close();openConversation({dataset:{project:x.p.id,session:x.c.sessionId}});});
     d.querySelector('[data-approvals]').onclick=()=>{d.close();$('mcpApprovalsBtn').click();};d.querySelector('[data-browser]').onclick=()=>$('notifyBtn').click();document.body.append(d);d.showModal();
   }
-  function activityMenu(anchor){openMenu(anchor,[{label:'Usage & subagents',icon:'users',run:()=>$('subagentsBtn').click()},{label:'Workflow runs',icon:'fanout',disabled:$('wfBtn').hidden,run:()=>$('wfBtn').click()},{label:'Message approvals',icon:'inbox',run:()=>$('mcpApprovalsBtn').click()}]);}
+  function activityMenu(anchor){openMenu(anchor,[{label:'Agent tree',icon:'tree',disabled:!engine.state().sessionId,run:()=>engine.showAgentTree&&engine.showAgentTree()},{label:'Message approvals',icon:'inbox',run:()=>$('mcpApprovalsBtn').click()}]);}
   function conversationMenu(anchor){const s=engine.state(),isChat=s.projects.find(p=>p.id===s.projectId)?.kind==='chat',pinned=isStagePinned(s.projectId,s.sessionId);openMenu(anchor,[
     {heading:'Conversation'},
     {label:pinned?'Unpin conversation':'Pin conversation',icon:'pin',disabled:!s.sessionId,run:()=>{pinStage(s.projectId,s.sessionId,!pinned);toast(!pinned?'Conversation pinned.':'Conversation unpinned.');}},
@@ -1122,10 +1111,6 @@ window.createControlRoom = function (engine) {
     {label:'Remove from panel',icon:'trash',danger:true,disabled:isChat||!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}
   const runningLabel=document.createElement('div');runningLabel.id='runningAccountLabel';runningLabel.hidden=true;const composerStatus=$('composerStatus');if(composerStatus)composerStatus.append(runningLabel);else content.querySelector('.composer').before(runningLabel);
   $('autopilotBtn').insertAdjacentHTML('beforeend','<span>Autopilot</span>');
-  $('chatActivity').insertAdjacentHTML('beforebegin',`<button id="chatAgents" aria-controls="wfIsland" aria-expanded="false" hidden>${ic('fanout')}<span>Agents</span><small></small></button>`);
-  on('chatAgents',()=>$('wfBtn').click());
-  const syncActivity=()=>{const badge=$('subagentsBadge'),count=badge.dataset.running||'';const agents=$('chatAgents');agents.hidden=!count;agents.querySelector('small').textContent=count;agents.classList.toggle('has-running',!!badge.dataset.running);agents.title=count+' agent'+(count==='1'?'':'s')+(badge.dataset.running?' · '+badge.dataset.running+' running':'');$('chatActivityCount').textContent='';};
-  new MutationObserver(syncActivity).observe($('subagentsBadge'),{attributes:true,childList:true,subtree:true,characterData:true});
   new MutationObserver(syncTheme).observe($('themeBtn'),{childList:true,subtree:true});syncTheme();
 
   function routeKey(s) {

@@ -109,6 +109,16 @@ const TOKEN = 'browser-fixture-token-0123456789';
   assert.match(await forks.first().textContent(), /jev · fork · which file → src\/auth\.ts 79% SHARP → follow · 280 ms/);
   assert.match(await forks.last().textContent(), /jev · fork · retry or stop → stop 53% SPLIT → main model · 250 ms/);
 
+  // The docked agent tree may sit beside the terminal; only its expanded view is exclusive.
+  await page.locator('#chatAgentTree').click();
+  await page.locator('#agentPane .ap-row[data-key="main"]').waitFor();
+  assert.equal(await page.locator('#term').isVisible(), true, 'the terminal stays with the pane open');
+  await page.locator('#agentPaneExpand').click();
+  assert.equal(await page.locator('#term').isVisible(), false, 'the expanded tree replaces the terminal');
+  await page.locator('#atreeClose').click();
+  await page.locator('#chatTerminal').click();
+  assert.equal(await page.locator('#term').isVisible(), true);
+
   await page.locator('#chatTerminal').click();
   assert.equal(await page.locator('#term').isVisible(), false);
   assert.equal(await page.locator('main .scroll').isVisible(), true);
