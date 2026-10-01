@@ -92,3 +92,37 @@ extension Double {
 extension Project {
     var providerLabel: String { providerName == "codex" ? "ChatGPT" : "Claude" }
 }
+
+extension Account {
+    /// The panel's available(): not paused, not limited or signed out, and no
+    /// usage window already at its limit.
+    var isAvailable: Bool {
+        paused != true
+            && !["limited", "unauthenticated"].contains(state?.kind ?? "")
+            && !UsageWindow.of(self).contains { $0.percent >= 100 }
+    }
+
+    /// The fullest usage window, 0-100.
+    var fullest: Double? { UsageWindow.of(self).map(\.percent).max() }
+
+    var level: String {
+        if paused == true { return "Paused" }
+        switch state?.kind {
+        case "unauthenticated": return "Needs login"
+        case "limited":
+            let at = state?.until.map { Date(timeIntervalSince1970: $0).formatted(date: .omitted, time: .shortened) }
+            return at.map { "Limit reached, resets \($0)" } ?? "Limit reached"
+        default:
+            guard let f = fullest else { return "Usage not checked" }
+            return f >= 100 ? "Limit reached" : "\(Int(f.rounded()))% of the limit used"
+        }
+    }
+
+    var levelColor: Color {
+        if !isAvailable { return paused == true ? .secondary : .red }
+        guard let f = fullest else { return .secondary }
+        return f > 80 ? .orange : f >= 50 ? .yellow : Palette.ok
+    }
+
+    var title: String { displayName ?? label ?? name }
+}

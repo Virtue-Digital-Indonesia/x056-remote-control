@@ -48,14 +48,11 @@ final class FlowTests: XCTestCase {
         let allow = springboard.buttons["Allow"]
         if allow.waitForExistence(timeout: 5) { allow.tap() }
 
-        let project = app.staticTexts["Website refresh"]
-        XCTAssertTrue(project.waitForExistence(timeout: 15))
-        snapshot(app, "2-projects")
-
-        // Activity: the fixture's pending question waits on you.
-        app.buttons["Activity"].firstMatch.tap()
-        XCTAssertTrue(app.staticTexts["Which landing page should we publish?"].waitForExistence(timeout: 10))
-        snapshot(app, "3-activity")
+        // Home: the fixture's pending question puts its conversation in
+        // Needs attention.
+        XCTAssertTrue(app.staticTexts["Needs attention"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Build the new homepage"].exists)
+        snapshot(app, "2-home")
 
         // Usage gauges: the fixture has one Claude account limited for an hour.
         app.buttons["Accounts"].firstMatch.tap()
@@ -63,7 +60,9 @@ final class FlowTests: XCTestCase {
         snapshot(app, "3-accounts")
 
         app.buttons["Projects"].firstMatch.tap()
-        XCTAssertTrue(project.waitForExistence(timeout: 5))
+        let project = app.staticTexts["Website refresh"]
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+        snapshot(app, "3-projects")
         project.tap()
 
         let conversation = app.staticTexts["Build the new homepage"]
@@ -76,18 +75,28 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["Main page"].exists)
         snapshot(app, "5-conversation")
 
-        let composer = app.textViews["composer"].exists ? app.textViews["composer"] : app.textFields["composer"]
+        let composer = app.textViews["composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.tap()
         composer.typeText("Ship the campaign page.")
         app.buttons["send"].tap()
 
         // Optimistic row first, then the fake CLI's reply over the event stream.
         XCTAssertTrue(app.staticTexts["Ship the campaign page."].waitForExistence(timeout: 5))
-        let reply = app.staticTexts["Fixture response received."]
-        XCTAssertTrue(reply.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["Fixture response received."].waitForExistence(timeout: 20))
         // The question is cleared by the new turn.
         XCTAssertFalse(app.staticTexts["Which landing page should we publish?"].exists)
         snapshot(app, "6-reply")
+
+        // Helpers sheet and the agent tree.
+        app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Helpers")).firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Agent team"].waitForExistence(timeout: 5))
+        snapshot(app, "7-helpers")
+        app.buttons["Done"].firstMatch.tap()
+        app.buttons["Agents"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Main session"].waitForExistence(timeout: 10))
+        snapshot(app, "8-agent-tree")
+        app.buttons["Done"].firstMatch.tap()
     }
 
     /// The main screens in dark mode, signed in to the fixture.
@@ -99,12 +108,13 @@ final class FlowTests: XCTestCase {
             app.terminate()
             return XCTFail("run testSignInBrowseAndSend first: this test needs the fixture sign-in it leaves behind")
         }
-        let project = app.staticTexts["Website refresh"]
-        XCTAssertTrue(project.waitForExistence(timeout: 15))
-        snapshot(app, "dark-projects")
-        app.buttons["Activity"].firstMatch.tap()
-        snapshot(app, "dark-activity")
+        XCTAssertTrue(app.staticTexts["Home"].waitForExistence(timeout: 15))
+        sleep(1)
+        snapshot(app, "dark-home")
         app.buttons["Projects"].firstMatch.tap()
+        let project = app.staticTexts["Website refresh"]
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+        snapshot(app, "dark-projects")
         project.tap()
         let conversation = app.staticTexts["Build the new homepage"]
         XCTAssertTrue(conversation.waitForExistence(timeout: 10))
@@ -142,5 +152,12 @@ final class FlowTests: XCTestCase {
         shot.name = name
         shot.lifetime = .keepAlways
         add(shot)
+        // On iPhone Duo held open, XCTest captures a blank display. When the
+        // host runs a watcher on this folder, ask it for a simctl screenshot.
+        let dir = "/tmp/x056-shots"
+        guard FileManager.default.fileExists(atPath: dir) else { return }
+        let request = "\(dir)/\(name).request"
+        FileManager.default.createFile(atPath: request, contents: nil)
+        for _ in 0..<30 where FileManager.default.fileExists(atPath: request) { usleep(100_000) }
     }
 }

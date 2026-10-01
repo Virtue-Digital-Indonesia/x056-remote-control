@@ -88,7 +88,7 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
 
     @Test func mapsHistoryRoles() {
         let decode = { (json: String) in try! JSONDecoder().decode(HistoryEntry.self, from: Data(json.utf8)) }
-        #expect(ConversationModel.row(decode(#"{"role":"model","text":"opus"}"#))?.text == "Model · opus")
+        #expect(ConversationModel.row(decode(#"{"role":"model","text":"opus"}"#))?.text == "Model: Opus")
         #expect(ConversationModel.row(decode(#"{"role":"assistant","text":""}"#)) == nil)
         let user = ConversationModel.row(decode(#"{"role":"user","text":"hi","sender":{"kind":"automation"},"attachments":[{"name":"a.png","type":"image/png","url":"/api/x"}]}"#))
         #expect(user?.sender == "Scheduled task")
@@ -123,5 +123,36 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         #expect(session.httpShouldHandleCookies == false)
         #expect(APIClient(baseURL: URL(string: "http://127.0.0.1:8768")!, credential: nil).origin == "http://127.0.0.1:8768")
         #expect(APIClient(baseURL: base, credential: nil).origin == "https://x056.rc.val.id")
+    }
+}
+
+@MainActor @Suite struct PanelParityTests {
+    @Test func namesModelsTheWayThePanelDoes() {
+        #expect(ModelCatalog.displayName("claude-opus-5-5-20260901") == "Opus 5.5")
+        #expect(ModelCatalog.displayName("sonnet") == "Sonnet")
+        #expect(ModelCatalog.displayName("claude-sonnet-5") == "Sonnet 5")
+        #expect(ModelCatalog.displayName("gpt-6-astra") == "Astra")
+    }
+
+    @Test func helpersPillMatchesThePanel() {
+        #expect(Helpers().summary == "")
+        #expect(Helpers(advisor: true, team: true, router: "jev", lean: "high").summary == "Advisor · Team · Jev · High")
+        #expect(Helpers(router: "decisions").summary == "Decisions")
+        let legacy = try! JSONDecoder().decode(Conversation.self, from: Data(#"{"sessionId":"s","title":"t","decisionMaker":"advisor"}"#.utf8))
+        #expect(legacy.effectiveHelpers.advisor == true)
+    }
+
+    @Test func readsJevAndDelegateCardsFromHistory() {
+        let decode = { (json: String) in try! JSONDecoder().decode(HistoryEntry.self, from: Data(json.utf8)) }
+        let jev = ConversationModel.row(decode(#"{"role":"advisor","text":"model -> opus","advisor":{"helper":"jev","decision":{"model":"opus","effort":"high","notes":["model -> opus"],"latencyMs":300}}}"#))
+        guard case .decision(let d) = jev?.card else { Issue.record("expected a decision card"); return }
+        #expect(d.ranModel == "opus")
+        #expect(d.verdict == "Changed this turn")
+        #expect(d.noteLine == "model → opus")
+        let kept = try! JSONDecoder().decode(JevDecision.self, from: Data(#"{"baseModel":"sonnet","notes":[]}"#.utf8))
+        #expect(kept.verdict == "Kept your choice")
+        let report = ConversationModel.row(decode(#"{"role":"advisor","text":"DONE","advisor":{"delegate":{"role":"worker","gate":"needs_human","text":"NEEDS HUMAN: pick a port"}}}"#))
+        guard case .delegate(let role, let gate, _) = report?.card else { Issue.record("expected a delegate card"); return }
+        #expect(role == "worker" && gate == "needs_human")
     }
 }

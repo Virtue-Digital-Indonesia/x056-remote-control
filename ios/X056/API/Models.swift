@@ -96,6 +96,19 @@ struct Conversation: Codable, Sendable, Identifiable, Hashable {
     var effort: String?
     var provider: String?
     var lastOutcome: Outcome?
+    var helpers: Helpers?
+    /// Legacy single helper ('advisor' | 'jev' | 'decisions'), read through `effectiveHelpers`.
+    var decisionMaker: String?
+
+    /// The panel's helpersOf: `helpers` wins; the legacy field maps onto it.
+    var effectiveHelpers: Helpers {
+        if let helpers { return helpers }
+        switch decisionMaker {
+        case "advisor": return Helpers(advisor: true)
+        case "jev", "decisions": return Helpers(router: decisionMaker)
+        default: return Helpers()
+        }
+    }
 
     /// Epoch ms of the last activity, for sorting.
     var recency: Double { lastMessageAt ?? createdAt ?? 0 }
@@ -167,6 +180,9 @@ struct QueueItem: Decodable, Sendable, Identifiable, Hashable {
     let paused: Bool?
     let dispatching: Bool?
     let error: String?
+    /// Epoch ms; not sent before this.
+    let notBefore: Double?
+    let model: String?
 }
 
 struct QuestionPart: Decodable, Sendable, Hashable {
@@ -275,8 +291,16 @@ struct SendBody: Encodable, Sendable {
     var sessionId: String?
     var model: String?
     var effort: String?
-    let requestId: String
+    var requestId: String?
     var attachments: [UploadAttachment]?
+    var fileRefs: [FileRef]?
+    /// The account for a NEW conversation's first turn (a lock with project spaces).
+    var account: String?
+}
+
+struct FileRef: Codable, Sendable, Hashable {
+    let fileId: String
+    let versionId: String
 }
 
 struct ConversationRef: Encodable, Sendable {
@@ -333,3 +357,258 @@ struct PresenceBody: Encodable, Sendable {
 }
 
 struct Empty: Encodable, Sendable {}
+
+struct RenameBody: Encodable, Sendable {
+    let projectId: String
+    let sessionId: String
+    let title: String
+}
+
+/// `GET /api/workspace/metadata`, keyed "pid::sid".
+struct ConversationMeta: Decodable, Sendable, Hashable {
+    let archived: Bool?
+    let tags: [String]?
+}
+
+// MARK: helpers, Jev, routing
+
+/// A conversation's helpers (server/projects.ts ConversationHelpers).
+struct Helpers: Codable, Sendable, Hashable {
+    var advisor: Bool?
+    var team: Bool?
+    /// 'jev' | 'decisions'; nil = your own model and effort.
+    var router: String?
+    /// 'low' | 'high'; nil = medium.
+    var lean: String?
+
+    var isEmpty: Bool { advisor != true && team != true && router == nil }
+
+    /// The panel's pill: "Advisor · Team · Jev · High".
+    var summary: String {
+        var parts: [String] = []
+        if advisor == true { parts.append("Advisor") }
+        if team == true { parts.append("Team") }
+        if let router {
+            parts.append((router == "decisions" ? "Decisions" : "Jev") + (lean == "low" ? " · Low" : lean == "high" ? " · High" : ""))
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+struct HelpersBody: Encodable, Sendable {
+    let projectId: String
+    let sessionId: String
+    let advisor: Bool
+    let team: Bool
+    /// "" clears the router.
+    let router: String
+    let lean: String
+}
+
+struct HelpersReply: Decodable, Sendable { let helpers: Helpers? }
+
+/// One Jev / OpenAI Decisions pick for a turn (server/jev.ts JevDecision).
+struct JevDecision: Decodable, Sendable, Hashable {
+    struct Auto: Decodable, Sendable, Hashable { let model: Bool?; let effort: Bool? }
+    struct TeamPick: Decodable, Sendable, Hashable { let model: String?; let effort: String? }
+    let at: String?
+    let backend: String?
+    let model: String?
+    let effort: String?
+    let pickedModel: String?
+    let pickedEffort: String?
+    let modelConfidence: Double?
+    let effortConfidence: Double?
+    let notes: [String]?
+    let lean: String?
+    let auto: Auto?
+    let baseModel: String?
+    let baseEffort: String?
+    let latencyMs: Double?
+    let error: String?
+    let team: TeamPick?
+
+    /// What the turn actually ran on.
+    var ranModel: String? { model ?? baseModel }
+    var ranEffort: String? { effort ?? baseEffort }
+    var backendName: String { backend == "openai" ? "OpenAI Decisions" : "Jev" }
+
+    /// "Changed this turn", "Kept your choice", "Auto · its pick", "No pick".
+    var verdict: String {
+        if error != nil { return auto != nil ? "No pick · Auto fallback" : "No pick" }
+        if auto?.model == true || auto?.effort == true { return "Auto · its pick" }
+        if model != nil || effort != nil { return "Changed this turn" }
+        return "Kept your choice"
+    }
+
+    var noteLine: String {
+        if let error { return error }
+        return (notes ?? []).joined(separator: ", ").replacingOccurrences(of: "->", with: "→")
+    }
+}
+
+struct JevStatus: Decodable, Sendable { let configured: Bool; let estimatedLeft: Double? }
+struct DecisionsStatus: Decodable, Sendable { let configured: Bool; let calls: Int? }
+struct SettingsReply: Decodable, Sendable { let modelEffort: [String: String]? }
+struct EnabledReply: Decodable, Sendable { let enabled: Bool? }
+
+/// `GET /api/routing/preview`: which account the next turn would take.
+struct RoutingPreview: Decodable, Sendable {
+    struct Prefs: Decodable, Sendable { let lockedAccount: String?; let nextAccount: String?; let useReserve: Bool? }
+    let selected: String?
+    let reason: String?
+    let preferences: Prefs?
+    let runningAccount: String?
+}
+
+/// `nextAccount: null` means automatic routing, so it is written explicitly.
+struct NextAccountBody: Encodable, Sendable {
+    let projectId: String
+    let sessionId: String
+    let nextAccount: String?
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(projectId, forKey: .projectId)
+        try c.encode(sessionId, forKey: .sessionId)
+        try c.encode(nextAccount, forKey: .nextAccount)
+    }
+    enum CodingKeys: String, CodingKey { case projectId, sessionId, nextAccount }
+}
+
+struct SwitchBody: Encodable, Sendable { let projectId: String; let sessionId: String; let account: String }
+
+// MARK: queue, steer
+
+struct SteerBody: Encodable, Sendable { let projectId: String; let sessionId: String; let prompt: String; var model: String?; var effort: String? }
+struct SteerReply: Decodable, Sendable { let steered: Bool?; let queued: Bool? }
+struct QueueEditBody: Encodable, Sendable {
+    let projectId: String
+    let id: String
+    var prompt: String?
+    var paused: Bool?
+    var notBefore: Double?
+}
+struct QueueReorderBody: Encodable, Sendable { let projectId: String; let ids: [String] }
+
+// MARK: new chat / work, chat files
+
+struct NewChatBody: Encodable, Sendable {
+    let requestId: String
+    let provider: String
+    var model: String?
+    var effort: String?
+    var account: String?
+}
+
+struct NewWorkBody: Encodable, Sendable {
+    let requestId: String
+    var name: String?
+    let provider: String
+    var model: String?
+    var effort: String?
+    var account: String?
+}
+
+struct NewWorkReply: Decodable, Sendable { let projectId: String; let sessionId: String }
+
+struct ChatFile: Decodable, Sendable { let id: String; let name: String?; let latestVersionId: String }
+struct ChatFilesReply: Decodable, Sendable { let files: [ChatFile] }
+
+// MARK: agent tree (server/agent-tree.ts, manager.ts agentTree)
+
+struct AgentTree: Decodable, Sendable {
+    struct Main: Decodable, Sendable {
+        struct LastTurn: Decodable, Sendable { let at: String?; let durationMs: Double?; let steps: Int?; let costUsd: Double? }
+        let model: String?
+        let effort: String?
+        let pickedBy: String?
+        let lean: String?
+        let running: Bool?
+        let background: Bool?
+        let lastTurn: LastTurn?
+    }
+    struct AdvisorCall: Decodable, Sendable, Hashable {
+        let at: String?
+        let trigger: String?
+        let verdict: String?
+        let delivered: String?
+        let advice: String?
+        let model: String?
+        let status: String?
+        let error: String?
+    }
+    struct Advisor: Decodable, Sendable {
+        let on: Bool
+        let kind: String?
+        let model: String?
+        let note: String?
+        let calls: [AdvisorCall]?
+    }
+    struct Team: Decodable, Sendable {
+        let model: String?
+        let effort: String?
+        let pickedBy: String?
+        let confidence: Double?
+        let roles: [String]?
+    }
+    struct Fork: Decodable, Sendable, Hashable {
+        let at: String?
+        let question: String?
+        let options: [String]?
+        let choice: String?
+        let confidence: Double?
+        let verdict: String?
+        let error: String?
+    }
+    struct Forks: Decodable, Sendable { let total: Int?; let sharp: Int?; let split: Int?; let recent: [Fork]? }
+    struct Report: Decodable, Sendable, Hashable { let at: String?; let text: String?; let gate: String?; let status: String? }
+    struct Delegate: Decodable, Sendable, Identifiable, Hashable {
+        let id: String
+        let role: String
+        let brief: String?
+        let provider: String?
+        let model: String?
+        let status: String
+        let turns: Int?
+        let pending: [String]?
+        let working: Bool?
+        let lastReport: Report?
+    }
+    struct Turn: Decodable, Sendable, Hashable {
+        let n: Int
+        let startedAt: String?
+        let endedAt: String?
+        let prompt: String?
+        let running: Bool?
+    }
+    let provider: String?
+    let helpers: Helpers?
+    let turnStartedAt: String?
+    let main: Main
+    let advisor: Advisor?
+    let team: Team?
+    let forks: Forks?
+    let gates: [Fork]?
+    let picks: [JevDecision]?
+    let delegates: [Delegate]?
+    let turns: [Turn]?
+}
+
+struct Subagent: Decodable, Sendable, Identifiable, Hashable {
+    struct Cost: Decodable, Sendable, Hashable { let usd: Double? }
+    var id: String { agentId }
+    let agentId: String
+    let agentType: String?
+    let description: String?
+    let spawnDepth: Int?
+    let parentAgentId: String?
+    let spawnedBy: String?
+    let startedAt: Double?
+    let endedAt: Double?
+    let status: String
+    let brief: String?
+    let cost: Cost?
+}
+
+struct SubagentsReply: Decodable, Sendable { let subagents: [Subagent] }

@@ -3,6 +3,7 @@ import SwiftUI
 struct ConversationsView: View {
     @Environment(AppModel.self) private var app
     let projectId: String
+    @State private var showNew = false
 
     var body: some View {
         let project = app.project(projectId)
@@ -36,20 +37,21 @@ struct ConversationsView: View {
                 } description: {
                     Text("Start one to run a turn in \(project?.name ?? "this project").")
                 } actions: {
-                    NavigationLink("New conversation", value: Route.draft(projectId: projectId, id: UUID()))
+                    Button("New conversation") { showNew = true }
                         .buttonStyle(.glassProminent)
                 }
             }
         }
         .refreshable { await app.refreshProjects() }
+        .sheet(isPresented: $showNew) {
+            NewConversationSheet(initialProject: projectId) { route in app.path.append(route) }
+        }
         .navigationTitle(project?.name ?? "Project")
         .navigationSubtitle(project?.providerLabel ?? "")
         .toolbarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink(value: Route.draft(projectId: projectId, id: UUID())) {
-                    Label("New conversation", systemImage: "square.and.pencil")
-                }
+                Button("New conversation", systemImage: "square.and.pencil") { showNew = true }
             }
         }
     }

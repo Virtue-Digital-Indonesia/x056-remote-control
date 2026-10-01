@@ -1,0 +1,613 @@
+import PhotosUI
+import SwiftUI
+import UniformTypeIdentifiers
+
+/// Everything that floats over the bottom of a conversation, in glass.
+struct ComposerArea: View {
+    let model: ConversationModel
+    @State private var showQueue = false
+
+    var body: some View {
+        GlassEffectContainer(spacing: 10) {
+            VStack(spacing: 10) {
+                if let banner = model.banner {
+                    Label(banner, systemImage: "arrow.triangle.2.circlepath")
+                        .font(.footnote)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .glassEffect(.regular.tint(.orange.opacity(0.18)), in: .rect(cornerRadius: 16, style: .continuous))
+                }
+                if let error = model.sendError {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .glassEffect(.regular, in: .rect(cornerRadius: 16, style: .continuous))
+                }
+                if let q = model.question {
+                    QuestionCard(question: q, model: model)
+                }
+                Composer(model: model, showQueue: $showQueue)
+            }
+        }
+        .frame(maxWidth: 800)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+        .sheet(isPresented: $showQueue) { QueueSheet(model: model) }
+    }
+}
+
+struct Composer: View {
+    @Environment(AppModel.self) private var app
+    let model: ConversationModel
+    @Binding var showQueue: Bool
+    @State private var text = ""
+    @State private var files: [PendingFile] = []
+    @State private var picks: [PhotosPickerItem] = []
+    @State private var showPhotos = false
+    @State private var showFiles = false
+    @State private var showHelpers = false
+    @State private var loadedDraft = false
+
+    /// The panel's paste rule: 30 lines or 4000 characters becomes a file.
+    private static let longTextChars = 4000
+    private static let longTextLines = 30
+
+    var body: some View {
+        let empty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty
+        VStack(alignment: .leading, spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    RunChip(model: model)
+                    Button { showHelpers = true } label: {
+                        ChipLabel(icon: "sparkles", text: model.helpers.isEmpty ? "Helpers" : model.helpers.summary, active: !model.helpers.isEmpty)
+                    }
+                    .buttonStyle(.plain)
+                    AccountChip(model: model)
+                    if !model.queued.isEmpty {
+                        Button { showQueue = true } label: {
+                            ChipLabel(icon: "tray.full", text: "\(model.queued.count) queued", active: true)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+            .scrollClipDisabled()
+            if !files.isEmpty {
+                AttachmentTray(files: $files)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                Menu {
+                    Button("Photos", systemImage: "photo.on.rectangle") { showPhotos = true }
+                    Button("Files", systemImage: "folder") { showFiles = true }
+                    Button("Paste", systemImage: "doc.on.clipboard") { pasteFromMenu() }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.title3.weight(.medium))
+                        .frame(width: 44, height: 44)
+                }
+                .glassEffect(.regular.interactive(), in: .circle)
+                .accessibilityLabel("Attach")
+                ComposerTextView(text: $text, placeholder: placeholder, longTextLimit: Self.longTextChars) { pasted in
+                    files.append(contentsOf: pasted)
+                }
+                .frame(minHeight: 44)
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22, style: .continuous))
+                primaryButton(empty: empty)
+            }
+        }
+        .animation(.snappy, value: model.isWorking && empty)
+        .photosPicker(isPresented: $showPhotos, selection: $picks, maxSelectionCount: 10, matching: .images)
+        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result { files.append(contentsOf: urls.compactMap(Self.read)) }
+        }
+        .onChange(of: picks) { _, items in
+            guard !items.isEmpty else { return }
+            Task {
+                for (i, item) in items.enumerated() {
+                    if let data = try? await item.loadTransferable(type: Data.self), let img = UIImage(data: data),
+                       let f = PendingFile.photo(img, index: files.count + i + 1) {
+                        files.append(f)
+                    }
+                }
+                picks = []
+            }
+        }
+        .onChange(of: text) { _, t in
+            if t.split(separator: "\n", omittingEmptySubsequences: false).count >= Self.longTextLines && t.count > 200 && !loadedDraft {
+                // A long paste that slipped past the text view (dictation, Scribble).
+                files.append(.text(t))
+                text = ""
+            }
+            loadedDraft = false
+            app.setDraft(model.projectId, model.sessionId, t)
+        }
+        .onAppear {
+            let draft = app.draft(model.projectId, model.sessionId)
+            if text.isEmpty && !draft.isEmpty {
+                loadedDraft = true
+                text = draft
+            }
+        }
+        .sheet(isPresented: $showHelpers) { HelpersSheet(model: model) }
+    }
+
+    private var placeholder: String {
+        model.isWorking ? "Queue a message, or steer" : "Message"
+    }
+
+    @ViewBuilder
+    private func primaryButton(empty: Bool) -> some View {
+        if model.isWorking && empty {
+            Button {
+                Task { await model.stop() }
+            } label: {
+                Image(systemName: "stop.fill")
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 44, height: 44)
+            }
+            .glassEffect(.regular.tint((model.isBackground ? Color.purple : Color.red).opacity(0.85)).interactive(), in: .circle)
+            .foregroundStyle(.white)
+            .accessibilityLabel("Stop")
+        } else if model.isWorking {
+            // Tap queues for after this turn; hold to steer into it.
+            Menu {
+                Button("Steer into this turn", systemImage: "arrow.turn.down.right") { submit(.steer) }
+                    .disabled(!files.isEmpty)
+                Button("Queue for after this turn", systemImage: "tray.and.arrow.down") { submit(.queue) }
+            } label: {
+                Image(systemName: "tray.and.arrow.down.fill")
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 44, height: 44)
+            } primaryAction: {
+                submit(.queue)
+            }
+            .glassEffect(.regular.tint(Palette.clay).interactive(), in: .circle)
+            .foregroundStyle(.white)
+            .accessibilityLabel("Queue")
+            .accessibilityHint("Hold to steer into the running turn instead")
+            .accessibilityIdentifier("send")
+        } else {
+            Button { submit(.send) } label: {
+                Image(systemName: "arrow.up")
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 44, height: 44)
+            }
+            .glassEffect(.regular.tint(Palette.clay).interactive(), in: .circle)
+            .foregroundStyle(.white)
+            .disabled(empty)
+            .opacity(empty ? 0.5 : 1)
+            .accessibilityLabel("Send")
+            .accessibilityIdentifier("send")
+        }
+    }
+
+    private func submit(_ mode: ConversationModel.SendMode) {
+        let t = text
+        let f = files
+        text = ""
+        files = []
+        app.setDraft(model.projectId, model.sessionId, "")
+        Task { await model.send(t, files: f, mode: mode) }
+    }
+
+    /// "Paste" from the + menu: whatever is on the clipboard, as attachments
+    /// when it is not short text.
+    private func pasteFromMenu() {
+        let pb = UIPasteboard.general
+        if let images = pb.images, !images.isEmpty {
+            files.append(contentsOf: images.enumerated().compactMap { PendingFile.photo($0.element, index: files.count + $0.offset + 1) })
+        } else if let s = pb.string {
+            if s.count >= Self.longTextChars || s.split(separator: "\n", omittingEmptySubsequences: false).count >= Self.longTextLines {
+                files.append(.text(s))
+            } else {
+                text += s
+            }
+        }
+    }
+
+    private static func read(_ url: URL) -> PendingFile? {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let type = UTType(filenameExtension: url.pathExtension)
+        return PendingFile(name: url.lastPathComponent, data: data, mime: PendingFile.mime(for: type, fallbackName: url.lastPathComponent))
+    }
+}
+
+/// A small glass capsule in the composer's control row.
+struct ChipLabel: View {
+    let icon: String
+    let text: String
+    var active = false
+    var dot: Color?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let dot {
+                Circle().fill(dot).frame(width: 7, height: 7)
+            } else {
+                Image(systemName: icon).imageScale(.small)
+            }
+            Text(text).lineLimit(1)
+            Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.tertiary)
+        }
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(active ? AnyShapeStyle(Palette.clay) : AnyShapeStyle(.secondary))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+}
+
+/// Model and effort: what the next turn runs with, or "Jev picks".
+struct RunChip: View {
+    @Environment(AppModel.self) private var app
+    let model: ConversationModel
+
+    var body: some View {
+        let provider = model.provider
+        let models = ModelCatalog.models(provider: provider, codex: app.codexModels)
+        let efforts = ModelCatalog.efforts(provider: provider, model: model.model, codex: app.codexModels)
+        Menu {
+            Picker(selection: Binding(get: { model.model }, set: { m in
+                // The per-model default effort follows a model change, like the panel.
+                let e = app.modelEffortDefaults[m].flatMap { efforts.contains($0) ? $0 : nil } ?? model.effort
+                Task { await model.setPreferences(model: m, effort: e) }
+            })) {
+                ForEach(models, id: \.self) { Text(autoLabel($0)).tag($0.value) }
+            } label: {
+                Label("Model", systemImage: "cpu")
+            }
+            .pickerStyle(.inline)
+            Picker(selection: Binding(get: { model.effort }, set: { e in Task { await model.setPreferences(model: model.model, effort: e) } })) {
+                ForEach(efforts, id: \.self) { Text(effortName($0)).tag($0) }
+            } label: {
+                Label("Effort", systemImage: "gauge.with.needle")
+            }
+            .pickerStyle(.menu)
+        } label: {
+            ChipLabel(icon: model.routerOn && model.model.isEmpty ? "wand.and.stars" : "cpu", text: summary, active: true)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Model and effort: \(summary)")
+    }
+
+    private var picker: String { model.helpers.router == "decisions" ? "OpenAI" : "Jev" }
+
+    private func autoLabel(_ o: ModelCatalog.Option) -> String {
+        o.value.isEmpty && model.routerOn ? "\(picker) picks" : o.label
+    }
+
+    private func effortName(_ e: String) -> String {
+        e.isEmpty && model.routerOn ? "\(picker) picks" : ModelCatalog.effortLabel(e)
+    }
+
+    private var summary: String {
+        if model.routerOn && model.model.isEmpty {
+            if let pick = model.latestPick, let ran = pick.ranModel {
+                return "\(picker): " + [ModelCatalog.displayName(ran), pick.ranEffort.map(ModelCatalog.effortLabel)].compactMap { $0 }.joined(separator: " · ")
+            }
+            return "\(picker) picks"
+        }
+        let m = model.model.isEmpty ? "Auto" : ModelCatalog.modelLabel(model.model, provider: model.provider, codex: app.codexModels)
+        let e = model.effort.isEmpty ? nil : ModelCatalog.effortLabel(model.effort)
+        return [m, e].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+/// "Send with <account>": the next turn's account, with its usage level.
+struct AccountChip: View {
+    @Environment(AppModel.self) private var app
+    let model: ConversationModel
+    @State private var routing: RoutingPreview?
+
+    var body: some View {
+        let pool = app.pool(model.provider)
+        let chosen = model.sessionId == nil
+            ? (model.draftAccount ?? pool.first { $0.nextUp == true && $0.isAvailable }?.name)
+            : (routing?.preferences?.nextAccount ?? routing?.selected)
+        let account = pool.first { $0.name == chosen }
+        Menu {
+            Section("Send with account") {
+                Button {
+                    choose(nil)
+                } label: {
+                    Label("Automatic", systemImage: isAutomatic ? "checkmark" : "arrow.triangle.branch")
+                }
+                ForEach(pool) { a in
+                    Button {
+                        choose(a.name)
+                    } label: {
+                        Label {
+                            Text(a.title)
+                            Text(a.level)
+                        } icon: {
+                            Image(systemName: chosen == a.name && !isAutomatic ? "checkmark" : "person.crop.circle")
+                        }
+                    }
+                    .disabled(!a.isAvailable)
+                }
+            }
+            if model.isRunning, let sid = model.sessionId {
+                Section("Switch the running turn now") {
+                    ForEach(pool.filter { $0.isAvailable && $0.name != routing?.runningAccount }) { a in
+                        Button(a.title, systemImage: "arrow.left.arrow.right") {
+                            Task {
+                                try? await app.switchAccountNow(model.projectId, sid, a.name)
+                                await refresh()
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            ChipLabel(icon: "person.crop.circle", text: label(account?.title ?? chosen), active: !isAutomatic, dot: account?.levelColor ?? .secondary)
+        }
+        .buttonStyle(.plain)
+        .task(id: model.sessionId) { await refresh() }
+        .onChange(of: model.isRunning) { Task { await refresh() } }
+    }
+
+    private var isAutomatic: Bool {
+        model.sessionId == nil ? model.draftAccount == nil : routing?.preferences?.nextAccount == nil
+    }
+
+    private func label(_ name: String?) -> String {
+        guard let name else { return "No available account" }
+        return (model.isRunning ? "Next: " : "Send with ") + name
+    }
+
+    private func choose(_ account: String?) {
+        guard let sid = model.sessionId else {
+            model.draftAccount = account
+            return
+        }
+        Task {
+            do {
+                try await app.setNextAccount(model.projectId, sid, account)
+            } catch {
+                model.sendError = error.localizedDescription
+            }
+            await refresh()
+        }
+    }
+
+    private func refresh() async {
+        guard let sid = model.sessionId else { return }
+        routing = await app.routingPreview(model.projectId, sid)
+    }
+}
+
+struct AttachmentTray: View {
+    @Binding var files: [PendingFile]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(files) { f in
+                    HStack(spacing: 8) {
+                        if let img = f.image {
+                            Image(uiImage: img)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 40, height: 40)
+                                .clipShape(.rect(cornerRadius: 8, style: .continuous))
+                        } else {
+                            Image(systemName: f.mime.hasPrefix("text/") ? "doc.text" : "doc")
+                                .font(.title3)
+                                .frame(width: 40, height: 40)
+                                .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8, style: .continuous))
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(f.name).font(.caption.weight(.medium)).lineLimit(1)
+                            Text(f.sizeLabel).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: 130, alignment: .leading)
+                        Button("Remove \(f.name)", systemImage: "xmark.circle.fill") { files.removeAll { $0.id == f.id } }
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(6)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .scrollClipDisabled()
+    }
+}
+
+/// Advisor, agent team, and who picks model and effort, for the next turns.
+struct HelpersSheet: View {
+    @Environment(AppModel.self) private var app
+    @Environment(\.dismiss) private var dismiss
+    let model: ConversationModel
+
+    var body: some View {
+        let h = model.helpers
+        let codex = model.provider == "codex"
+        NavigationStack {
+            Form {
+                if model.sessionId == nil {
+                    Section {
+                        Text("Send the first message, then choose helpers for the following turns.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section {
+                    Toggle(isOn: binding(\.advisor)) {
+                        Text("Advisor")
+                        Text(codex ? "Astra reviews the plan, repeated failures and the finished turn." : "A stronger model reviews the plan, repeated errors and the result.")
+                    }
+                    Toggle(isOn: binding(\.team)) {
+                        Text("Agent team")
+                        Text((codex ? "Explorer and worker subagents, plus a researcher, on medium effort." : "Explorer, worker and researcher subagents on Opus, medium effort.")
+                             + (routerAvailable ? " Small forks go to \(h.router == "decisions" ? "OpenAI Decisions" : "Jev")." : ""))
+                    }
+                } footer: {
+                    Text("Applies to the next turns of this conversation.")
+                }
+                Section("Model and effort") {
+                    Picker("Chosen by", selection: Binding(get: { h.router ?? "" }, set: { r in
+                        var next = h
+                        next.router = r.isEmpty ? nil : r
+                        save(next)
+                    })) {
+                        VStack(alignment: .leading) {
+                            Text("Your choice")
+                            Text("The model and effort in the composer.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        .tag("")
+                        VStack(alignment: .leading) {
+                            Text("Jev")
+                            Text(jevCaption).font(.caption).foregroundStyle(.secondary)
+                        }
+                        .tag("jev")
+                        .disabled(!(app.jevStatus?.configured ?? true) && h.router != "jev")
+                        VStack(alignment: .leading) {
+                            Text("OpenAI Decisions (preview)")
+                            Text(decisionsCaption).font(.caption).foregroundStyle(.secondary)
+                        }
+                        .tag("decisions")
+                        .disabled(!(app.decisionsStatus?.configured ?? false) && h.router != "decisions")
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                    if h.router != nil {
+                        Picker("Lean", selection: Binding(get: { h.lean ?? "medium" }, set: { l in
+                            var next = h
+                            next.lean = l == "medium" ? nil : l
+                            save(next)
+                        })) {
+                            Text("Low").tag("low")
+                            Text("Medium").tag("medium")
+                            Text("High").tag("high")
+                        }
+                        .pickerStyle(.segmented)
+                        Text(leanCaption(h.lean)).font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .disabled(model.sessionId == nil)
+            .navigationTitle("Helpers")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var routerAvailable: Bool { model.helpers.router != nil }
+
+    private var jevCaption: String {
+        guard let s = app.jevStatus else { return "Picks the model and effort for each turn." }
+        guard s.configured else { return "Needs a TypeSafe API key." }
+        return "Picks the model and effort for each turn" + (s.estimatedLeft.map { String(format: ", about $%.2f left.", $0) } ?? ".")
+    }
+
+    private var decisionsCaption: String {
+        guard let s = app.decisionsStatus, s.configured else { return "Needs an OpenAI API key with Decisions access." }
+        return "Picks the model and effort for each turn, in place of Jev."
+    }
+
+    private func leanCaption(_ lean: String?) -> String {
+        switch lean {
+        case "low": return "Errs toward cheaper models and lower effort."
+        case "high": return "Errs toward the best result."
+        default: return "Balanced between cost and result."
+        }
+    }
+
+    private func binding(_ key: WritableKeyPath<Helpers, Bool?>) -> Binding<Bool> {
+        Binding(get: { model.helpers[keyPath: key] == true }, set: { on in
+            var next = model.helpers
+            next[keyPath: key] = on
+            save(next)
+        })
+    }
+
+    private func save(_ h: Helpers) {
+        Task { await model.setHelpers(h) }
+    }
+}
+
+/// This conversation's queued messages: edit, reorder, pause, remove.
+struct QueueSheet: View {
+    @Environment(AppModel.self) private var app
+    @Environment(\.dismiss) private var dismiss
+    let model: ConversationModel
+    @State private var editing: QueueItem?
+    @State private var editText = ""
+
+    var body: some View {
+        let items = model.queued
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.text).lineLimit(4)
+                            Text(status(item, first: i == 0))
+                                .font(.caption)
+                                .foregroundStyle(item.paused == true || item.error != nil ? .orange : .secondary)
+                        }
+                        .swipeActions {
+                            Button("Remove", systemImage: "trash", role: .destructive) { Task { await model.cancelQueued(item.id) } }
+                            Button(item.paused == true ? "Resume" : "Pause", systemImage: item.paused == true ? "play" : "pause") {
+                                Task { try? await app.editQueued(model.projectId, item.id, paused: item.paused != true) }
+                            }
+                            .tint(.orange)
+                        }
+                        .contextMenu {
+                            Button("Edit", systemImage: "pencil") {
+                                editText = item.text
+                                editing = item
+                            }
+                            Button(item.paused == true ? "Resume" : "Pause", systemImage: item.paused == true ? "play" : "pause") {
+                                Task { try? await app.editQueued(model.projectId, item.id, paused: item.paused != true) }
+                            }
+                            if i > 0 {
+                                Button("Move up", systemImage: "arrow.up") { Task { try? await app.moveQueued(model.projectId, item.id, by: -1) } }
+                            }
+                            if i < items.count - 1 {
+                                Button("Move down", systemImage: "arrow.down") { Task { try? await app.moveQueued(model.projectId, item.id, by: 1) } }
+                            }
+                            Button("Remove", systemImage: "trash", role: .destructive) { Task { await model.cancelQueued(item.id) } }
+                        }
+                    }
+                } footer: {
+                    Text("Queued messages send when this conversation is free, in this order.")
+                }
+            }
+            .overlay {
+                if items.isEmpty {
+                    ContentUnavailableView("Nothing queued", systemImage: "tray", description: Text("While a turn runs, Send queues the next message here."))
+                }
+            }
+            .navigationTitle("Queued")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .alert("Edit queued message", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
+                TextField("Message", text: $editText, axis: .vertical)
+                Button("Save") {
+                    if let item = editing { Task { try? await app.editQueued(model.projectId, item.id, prompt: editText) } }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func status(_ item: QueueItem, first: Bool) -> String {
+        if let e = item.error { return "Paused: \(e)" }
+        if item.paused == true { return "Paused" }
+        if let nb = item.notBefore, nb > Date().timeIntervalSince1970 * 1000 {
+            return "Scheduled " + Date(timeIntervalSince1970: nb / 1000).formatted(date: .abbreviated, time: .shortened)
+        }
+        if item.dispatching == true { return "Sending" }
+        return first ? (model.isWorking ? "Waiting for the current turn" : "Ready to send") : "Waiting for the earlier message"
+    }
+}

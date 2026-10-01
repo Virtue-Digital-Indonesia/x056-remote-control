@@ -16,7 +16,7 @@ enum ModelCatalog {
     static let claudeModels: [Option] = [
         Option(value: "", label: "Auto (Sonnet)"),
         Option(value: "fable", label: "Fable"),
-        Option(value: "opus", label: "Opus"),
+        Option(value: "opus", label: "Opus 5.5"),
         Option(value: "sonnet", label: "Sonnet"),
         Option(value: "haiku", label: "Haiku"),
     ]
@@ -30,6 +30,22 @@ enum ModelCatalog {
         case "ultracode": return "Ultracode"
         default: return e.prefix(1).uppercased() + e.dropFirst()
         }
+    }
+
+    /// A model id as people read it: "claude-opus-5-5-…" → "Opus 5.5",
+    /// "sonnet" → "Sonnet", "gpt-6-astra" → "Astra".
+    static func displayName(_ id: String) -> String {
+        let lower = id.lowercased()
+        for family in ["opus", "sonnet", "haiku", "fable"] {
+            guard let r = lower.range(of: family) else { continue }
+            let rest = lower[r.upperBound...].split(separator: "-").prefix(2).filter { $0.allSatisfy(\.isNumber) && $0.count <= 2 }
+            let name = family.prefix(1).uppercased() + family.dropFirst()
+            return rest.isEmpty ? name : name + " " + rest.joined(separator: ".")
+        }
+        if lower.hasPrefix("gpt-"), let last = lower.split(separator: "-").last, !last.allSatisfy({ $0.isNumber || $0 == "." }) {
+            return last.prefix(1).uppercased() + last.dropFirst()
+        }
+        return id
     }
 
     static func models(provider: String, codex: [CodexModel]) -> [Option] {

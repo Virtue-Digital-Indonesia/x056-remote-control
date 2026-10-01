@@ -56,17 +56,17 @@ struct MainView: View {
     var body: some View {
         @Bindable var app = app
         TabView(selection: $app.tab) {
+            Tab("Home", systemImage: "house", value: AppTab.home) {
+                NavigationStack(path: $app.homePath) {
+                    HomeView().routes()
+                }
+            }
+            .badge(app.needsYouCount)
             Tab("Projects", systemImage: "folder", value: AppTab.projects) {
                 NavigationStack(path: $app.path) {
                     ProjectsView().routes()
                 }
             }
-            Tab("Activity", systemImage: "dot.radiowaves.left.and.right", value: AppTab.activity) {
-                NavigationStack {
-                    ActivityView().routes()
-                }
-            }
-            .badge(app.needsYouCount)
             Tab("Accounts", systemImage: "gauge.with.dots.needle.67percent", value: AppTab.accounts) {
                 NavigationStack {
                     AccountsView()
@@ -92,8 +92,8 @@ extension View {
                 ConversationsView(projectId: id)
             case .conversation(let pid, let sid):
                 ConversationView(projectId: pid, sessionId: sid)
-            case .draft(let pid, _):
-                ConversationView(projectId: pid, sessionId: nil)
+            case .draft(let pid, let id):
+                ConversationView(projectId: pid, sessionId: nil, draftID: id)
             }
         }
     }

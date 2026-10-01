@@ -9,7 +9,22 @@ enum Route: Hashable {
 }
 
 enum AppTab: Hashable {
-    case projects, activity, accounts, search
+    case home, projects, accounts, search
+}
+
+/// An unseen notable event in a conversation (Home's Unread), ranked like
+/// the panel's: a question outranks a failure outranks a finished turn.
+enum UnreadKind: String, Codable {
+    case question, failed, done, unread
+
+    var rank: Double {
+        switch self {
+        case .question: return 3
+        case .failed: return 2
+        case .done: return 1.5
+        case .unread: return 1
+        }
+    }
 }
 
 enum Connection: Equatable {
@@ -48,14 +63,39 @@ final class AppModel {
     /// Bumped on the `accounts` event; the accounts screen refetches on change.
     var accountsTick = 0
 
-    var tab: AppTab = .projects
-    /// The Projects tab's stack; notification taps write it.
+    var tab: AppTab = .home
+    /// Each tab's navigation stack; notification taps open into Home.
+    var homePath: [Route] = []
     var path: [Route] = []
+
+    /// The fleet, for the Accounts tab and the composer's account chip.
+    var accounts: [Account] = []
+    var accountsError: String?
+    var jevStatus: JevStatus?
+    var decisionsStatus: DecisionsStatus?
+    /// Per-model default effort (`GET /api/settings`).
+    var modelEffortDefaults: [String: String] = [:]
+    /// Whether this gateway has Chats and Project spaces switched on.
+    var chatsEnabled = false
+    var spacesEnabled = false
+    /// New-work choices waiting for the draft screen, by draft route id.
+    var draftSettings: [UUID: DraftSettings] = [:]
     /// The conversation on screen, so its own notifications don't banner.
     private(set) var visibleSessionId: String?
     private(set) var visibleProjectId: String?
 
     var pushError: String?
+
+    /// Per conversation ("pid::sid"), this phone only, like the panel's
+    /// localStorage: what is unread, unsent drafts, recents dismissed by hand.
+    private(set) var unread: [String: UnreadKind] = Stored.load("unread") ?? [:]
+    private(set) var drafts: [String: String] = Stored.load("drafts") ?? [:]
+    private(set) var recentDismissed: Set<String> = Stored.load("recentDismissed") ?? []
+    /// Workspace metadata (archived, tags), shared with the panel.
+    var conversationMeta: [String: ConversationMeta] = [:]
+    /// Events from before this sign-in replay on connect; they are history,
+    /// not news, so they do not raise unread.
+    @ObservationIgnored private var unreadSince = Date(timeIntervalSince1970: UserDefaults.standard.double(forKey: "unreadSince"))
 
     @ObservationIgnored private var lastSeq: Int
     @ObservationIgnored private var streamTask: Task<Void, Never>?
@@ -140,6 +180,8 @@ final class AppModel {
         credential = cred
         signInNotice = nil
         lastSeq = 0
+        unreadSince = Date()
+        UserDefaults.standard.set(unreadSince.timeIntervalSince1970, forKey: "unreadSince")
         connect()
         startPresence()
         await Push.requestAndRegister()
@@ -166,6 +208,8 @@ final class AppModel {
         Keychain.delete("token")
         Keychain.delete("session")
         credential = nil
+        unread = [:]
+        Stored.save("unread", unread)
         projects = []
         projectsLoaded = false
         running = []
@@ -196,6 +240,7 @@ final class AppModel {
     /// conversation being read, and while the app is in front, this iPhone is
     /// "the device you are at" and the others stay quiet for non-urgent notices.
     func setVisible(projectId: String?, sessionId: String?) {
+        if let projectId, let sessionId { markRead(projectId, sessionId) }
         guard projectId != visibleProjectId || sessionId != visibleSessionId else { return }
         visibleProjectId = projectId
         visibleSessionId = sessionId
@@ -258,8 +303,191 @@ final class AppModel {
         return c.url
     }
 
-    /// Questions and approvals: the Activity tab's badge.
-    var needsYouCount: Int { questions.count + approvals.count }
+    /// Home's badge: unread conversations, open questions, approvals.
+    var needsYouCount: Int {
+        Set(unread.keys).union(questions.values.map { Self.key($0.projectId, $0.sessionId) }).count + approvals.count
+    }
+
+    // MARK: Home state
+
+    nonisolated static func key(_ projectId: String, _ sessionId: String) -> String { projectId + "::" + sessionId }
+
+    func raiseUnread(_ projectId: String, _ sessionId: String, _ kind: UnreadKind, at ts: String?) {
+        guard sessionId != visibleSessionId else { return }
+        if let ts, let at = Self.isoDate(ts), at < unreadSince { return }
+        let k = Self.key(projectId, sessionId)
+        if let cur = unread[k], cur.rank > kind.rank { return }
+        unread[k] = kind
+        Stored.save("unread", unread)
+    }
+
+    func markRead(_ projectId: String, _ sessionId: String) {
+        guard unread.removeValue(forKey: Self.key(projectId, sessionId)) != nil else { return }
+        Stored.save("unread", unread)
+    }
+
+    func markUnread(_ projectId: String, _ sessionId: String) {
+        unread[Self.key(projectId, sessionId)] = .unread
+        Stored.save("unread", unread)
+    }
+
+    func markAllRead() {
+        unread = [:]
+        Stored.save("unread", unread)
+    }
+
+    func draft(_ projectId: String, _ sessionId: String?) -> String {
+        drafts[Self.key(projectId, sessionId ?? "")] ?? ""
+    }
+
+    func setDraft(_ projectId: String, _ sessionId: String?, _ text: String) {
+        let k = Self.key(projectId, sessionId ?? "")
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+        guard drafts[k] != value else { return }
+        drafts[k] = value
+        Stored.save("drafts", drafts)
+    }
+
+    func setRecentDismissed(_ projectId: String, _ sessionId: String, _ dismissed: Bool) {
+        let k = Self.key(projectId, sessionId)
+        if dismissed { recentDismissed.insert(k) } else { recentDismissed.remove(k) }
+        Stored.save("recentDismissed", recentDismissed)
+    }
+
+    func dismissQuestion(_ q: PendingQuestion) async {
+        _ = try? await client?.post("/api/questions/dismiss", DismissQuestionBody(projectId: q.projectId, sessionId: q.sessionId, at: q.at))
+        questions[q.sessionId] = nil
+        markRead(q.projectId, q.sessionId)
+    }
+
+    /// Clear a failed or parked outcome without sending anything.
+    func dismissOutcome(_ projectId: String, _ sessionId: String) async {
+        _ = try? await client?.post("/api/conversations/outcome/dismiss", ConversationRef(projectId: projectId, sessionId: sessionId))
+        updateConversation(projectId, sessionId) { $0.lastOutcome = nil }
+        markRead(projectId, sessionId)
+    }
+
+    func rename(_ projectId: String, _ sessionId: String, to title: String) async throws {
+        guard let client else { return }
+        let t = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))
+        guard !t.isEmpty else { return }
+        try await client.post("/api/conversations/rename", RenameBody(projectId: projectId, sessionId: sessionId, title: t))
+        updateConversation(projectId, sessionId) { $0.title = t }
+    }
+
+    func remove(_ projectId: String, _ sessionId: String) async throws {
+        guard let client else { return }
+        try await client.post("/api/conversations/remove", ConversationRef(projectId: projectId, sessionId: sessionId))
+        if let p = projects.firstIndex(where: { $0.id == projectId }) {
+            projects[p].conversations?.removeAll { $0.sessionId == sessionId }
+        }
+    }
+
+    // MARK: accounts, helpers, routing
+
+    func loadAccounts() async {
+        guard let client else { return }
+        do {
+            accounts = try await client.get("/api/accounts", as: [Account].self)
+            accountsError = nil
+        } catch {
+            accountsError = error.localizedDescription
+        }
+    }
+
+    /// Accounts that can serve a conversation of this provider.
+    func pool(_ provider: String) -> [Account] {
+        accounts.filter { ($0.provider ?? "claude") == provider }
+    }
+
+    func setHelpers(_ projectId: String, _ sessionId: String, _ h: Helpers) async throws {
+        guard let client else { return }
+        let body = HelpersBody(projectId: projectId, sessionId: sessionId, advisor: h.advisor == true, team: h.team == true,
+                               router: h.router ?? "", lean: h.lean ?? "medium")
+        let reply = try await client.post("/api/conversations/helpers", body, as: HelpersReply.self)
+        updateConversation(projectId, sessionId) { $0.helpers = reply.helpers ?? h; $0.decisionMaker = nil }
+    }
+
+    func routingPreview(_ projectId: String, _ sessionId: String) async -> RoutingPreview? {
+        try? await client?.get("/api/routing/preview", query: ["projectId": projectId, "sessionId": sessionId], as: RoutingPreview.self)
+    }
+
+    /// One-shot preference for this conversation's next turn; nil = automatic.
+    func setNextAccount(_ projectId: String, _ sessionId: String, _ account: String?) async throws {
+        try await client?.post("/api/routing/conversation", NextAccountBody(projectId: projectId, sessionId: sessionId, nextAccount: account))
+    }
+
+    func switchAccountNow(_ projectId: String, _ sessionId: String, _ account: String) async throws {
+        try await client?.post("/api/switch", SwitchBody(projectId: projectId, sessionId: sessionId, account: account))
+    }
+
+    // MARK: new chat / work
+
+    /// A new Chat; returns where its single conversation lives.
+    func newChat(provider: String, model: String, effort: String, account: String?) async throws -> (String, String) {
+        guard let client else { throw APIError(status: 0, message: "Not signed in.") }
+        let body = NewChatBody(requestId: UUID().uuidString.lowercased(), provider: provider,
+                               model: model.isEmpty ? nil : model, effort: effort.isEmpty ? nil : effort, account: account)
+        let chat = try await client.post("/api/chats", body, as: Project.self)
+        await refreshProjects()
+        guard let sid = chat.lastSessionId ?? chat.conversations?.first?.sessionId else {
+            throw APIError(status: 0, message: "The gateway made the chat but returned no conversation.")
+        }
+        return (chat.id, sid)
+    }
+
+    /// A new Work conversation through project spaces; nil when they are off
+    /// (then the first send creates it with `POST /api/sessions`).
+    func newWork(projectId: String, provider: String, model: String, effort: String, account: String?) async throws -> (String, String)? {
+        guard spacesEnabled, let client else { return nil }
+        let body = NewWorkBody(requestId: UUID().uuidString.lowercased(), provider: provider,
+                               model: model.isEmpty ? nil : model, effort: effort.isEmpty ? nil : effort, account: account)
+        let reply = try await client.post("/api/project-spaces/executions/\(projectId)/work", body, as: NewWorkReply.self)
+        await refreshProjects()
+        return (reply.projectId, reply.sessionId)
+    }
+
+    /// Chats take files by reference: upload first, then send `fileRefs`.
+    func uploadChatFiles(_ chatId: String, _ files: [PendingFile]) async throws -> [FileRef] {
+        guard let client, !files.isEmpty else { return [] }
+        let boundary = "x056-" + UUID().uuidString
+        var body = Data()
+        for f in files {
+            let name = f.name.replacingOccurrences(of: "\"", with: "")
+            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"files\"; filename=\"\(name)\"\r\nContent-Type: \(f.mime)\r\n\r\n".utf8))
+            body.append(f.data)
+            body.append(Data("\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)--\r\n".utf8))
+        var req = client.request("POST", "/api/chats/\(chatId)/files", timeout: 120)
+        req.httpBody = body
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.setValue(UUID().uuidString.lowercased(), forHTTPHeaderField: "x-upload-id")
+        let reply: ChatFilesReply = try await client.send(req)
+        return reply.files.map { FileRef(fileId: $0.id, versionId: $0.latestVersionId) }
+    }
+
+    // MARK: queue
+
+    func editQueued(_ projectId: String, _ id: String, prompt: String? = nil, paused: Bool? = nil, notBefore: Double? = nil) async throws {
+        try await client?.post("/api/queue/edit", QueueEditBody(projectId: projectId, id: id, prompt: prompt, paused: paused, notBefore: notBefore))
+    }
+
+    /// Move one item; the gateway wants the project's full order back.
+    func moveQueued(_ projectId: String, _ id: String, by offset: Int) async throws {
+        var ids = (queues[projectId] ?? []).map(\.id)
+        guard let i = ids.firstIndex(of: id) else { return }
+        let j = min(max(i + offset, 0), ids.count - 1)
+        guard i != j else { return }
+        ids.swapAt(i, j)
+        try await client?.post("/api/queue/reorder", QueueReorderBody(projectId: projectId, ids: ids))
+    }
+
+    nonisolated static func isoDate(_ s: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+    }
 
     /// Epoch ms of a project's newest conversation activity.
     func lastActivity(_ p: Project) -> Double { p.conversations?.map(\.recency).max() ?? 0 }
@@ -301,7 +529,21 @@ final class AppModel {
         async let q = try? client.get("/api/questions", as: [PendingQuestion].self)
         async let queue = try? client.get("/api/queue", as: [String: [QueueItem]].self)
         async let models = try? client.get("/api/models", as: ModelsResponse.self)
+        async let meta = try? client.get("/api/workspace/metadata", as: [String: ConversationMeta].self)
+        async let jev = try? client.get("/api/jev/status", as: JevStatus.self)
+        async let decisions = try? client.get("/api/decisions/status", as: DecisionsStatus.self)
+        async let settings = try? client.get("/api/settings", as: SettingsReply.self)
+        async let chats = try? client.get("/api/chats", as: EnabledReply.self)
+        async let spaces = try? client.get("/api/project-spaces", as: EnabledReply.self)
+        async let acc: Void = loadAccounts()
         _ = await p
+        _ = await acc
+        if let meta = await meta { conversationMeta = meta }
+        jevStatus = await jev
+        decisionsStatus = await decisions
+        if let m = await settings?.modelEffort { modelEffortDefaults = m }
+        chatsEnabled = await chats?.enabled ?? false
+        spacesEnabled = await spaces?.enabled ?? false
         if let a = await a { approvals = a.filter { $0.status == "pending" } }
         if let q = await q { questions = Dictionary(q.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new }) }
         if let queue = await queue { queues = queue }
@@ -418,23 +660,49 @@ final class AppModel {
             if let sid {
                 running.insert(sid)
                 questions[sid] = nil
-                if let pid { touch(pid, sid) }
+                if let pid {
+                    touch(pid, sid)
+                    updateConversation(pid, sid) { $0.lastOutcome = nil }
+                }
             }
         case "assistant_text":
             if let pid, let sid { touch(pid, sid) }
         case "session_done", "session_error", "conversation_settled":
             if let sid { running.remove(sid) }
-            if let pid, let sid, let status = d["status"]?.string, e.kind != "session_error" {
-                updateConversation(pid, sid) { $0.lastOutcome = Outcome(status: status, at: e.ts, reason: d["reason"]?.string) }
+            let pending = d["completionPending"]?.bool == true
+            if let pid, let sid, !pending {
+                if e.kind == "session_error" {
+                    updateConversation(pid, sid) { $0.lastOutcome = Outcome(status: "failed", at: e.ts, reason: d["message"]?.string) }
+                } else if let status = d["status"]?.string {
+                    updateConversation(pid, sid) { $0.lastOutcome = Outcome(status: status, at: e.ts, reason: d["reason"]?.string) }
+                }
             }
+            if let pid, let sid {
+                let status = d["status"]?.string
+                if e.kind == "session_error" || (e.kind == "session_done" && (status == "failed" || status == "parked")) {
+                    raiseUnread(pid, sid, .failed, at: e.ts)
+                } else if e.kind == "session_done" && status == "stopped" {
+                    markRead(pid, sid)
+                } else if e.kind == "conversation_settled", d["notificationSuppressed"]?.bool != true, d["notice"]?["tier"]?.string != "none" {
+                    raiseUnread(pid, sid, .done, at: e.ts)
+                }
+            }
+        case "cron_failed":
+            if let pid, let sid { raiseUnread(pid, sid, .failed, at: e.ts) }
+        case "delegate_report":
+            if let pid, let sid, d["notice"]?["tier"]?.string == "urgent" { raiseUnread(pid, sid, .question, at: e.ts) }
         case "background_state":
             if let sid {
                 if d["active"]?.bool == true { background.insert(sid) } else { background.remove(sid) }
             }
         case "question":
-            if let q = d.decode(PendingQuestion.self) { questions[q.sessionId] = q }
+            if let q = d.decode(PendingQuestion.self) {
+                questions[q.sessionId] = q
+                raiseUnread(q.projectId, q.sessionId, .question, at: e.ts)
+            }
         case "question_dismissed":
             if let sid { questions[sid] = nil }
+            if let pid, let sid { markRead(pid, sid) }
         case "queue":
             if let pid, let items = d["items"]?.decode([QueueItem].self) { queues[pid] = items }
         case "mcp_approval":
@@ -497,12 +765,8 @@ final class AppModel {
     /// Route a notification tap to its conversation.
     func open(projectId: String, sessionId: String?) {
         guard !projectId.isEmpty else { return }
-        tab = .projects
-        if let sessionId {
-            path = [.project(projectId), .conversation(projectId: projectId, sessionId: sessionId)]
-        } else {
-            path = [.project(projectId)]
-        }
+        tab = .home
+        homePath = [sessionId.map { .conversation(projectId: projectId, sessionId: $0) } ?? .project(projectId)]
     }
 
     /// A reply typed into a notification. Runs while the app may be in the background.
@@ -519,5 +783,16 @@ final class AppModel {
             effort: saved?.effort.flatMap { $0.isEmpty ? nil : $0 },
             requestId: UUID().uuidString.lowercased())
         _ = try? await client.post("/api/sessions/current/messages", body, as: SendReply.self)
+    }
+}
+
+/// Small JSON values in UserDefaults.
+enum Stored {
+    static func load<T: Decodable>(_ key: String) -> T? {
+        UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+    }
+
+    static func save<T: Encodable>(_ key: String, _ value: T) {
+        UserDefaults.standard.set(try? JSONEncoder().encode(value), forKey: key)
     }
 }

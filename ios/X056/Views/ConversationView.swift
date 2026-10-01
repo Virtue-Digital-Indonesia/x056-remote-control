@@ -5,11 +5,18 @@ struct ConversationView: View {
     @Environment(AppModel.self) private var app
     @State private var model: ConversationModel
     @State private var nearBottom = true
+    @State private var showTree = false
 
     private let bottomID = "bottom"
 
-    init(projectId: String, sessionId: String?) {
-        _model = State(initialValue: ConversationModel(projectId: projectId, sessionId: sessionId))
+    init(projectId: String, sessionId: String?, draftID: UUID? = nil) {
+        let model = ConversationModel(projectId: projectId, sessionId: sessionId)
+        if let draftID, let settings = AppModel.shared.draftSettings[draftID] {
+            model.draftModel = settings.model
+            model.draftEffort = settings.effort
+            model.draftAccount = settings.account
+        }
+        _model = State(initialValue: model)
     }
 
     var body: some View {
@@ -38,10 +45,13 @@ struct ConversationView: View {
                         }
                     }
                     if model.isRunning || model.isBackground {
-                        WorkingLine(activity: model.activity, background: model.isBackground)
+                        WorkingLine(activity: model.activity, background: model.isBackground, model: model.activeModel)
                     }
                     Color.clear.frame(height: 1).id(bottomID)
                 }
+                // A readable measure when iPhone Duo is open or on iPad.
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal)
                 .padding(.vertical, 12)
             }
@@ -77,7 +87,22 @@ struct ConversationView: View {
         .navigationSubtitle(model.project?.name ?? "")
         .toolbarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { PreferencesMenu(model: model) }
+            if let sid = model.sessionId {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Agents", systemImage: "point.3.connected.trianglepath.dotted") { showTree = true }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu("More", systemImage: "ellipsis") {
+                        if let url = app.panelURL(projectId: model.projectId, sessionId: sid, isChat: model.isChat) {
+                            Link(destination: url) { Label("Open in the panel", systemImage: "safari") }
+                        }
+                        Button("Copy conversation ID", systemImage: "number") { UIPasteboard.general.string = sid }
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showTree) {
+            if let sid = model.sessionId { AgentTreeView(projectId: model.projectId, sessionId: sid) }
         }
         .task { await model.load() }
         .onAppear {
@@ -136,11 +161,8 @@ struct MessageRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.red.opacity(0.08), in: .rect(cornerRadius: 14, style: .continuous))
                 .textSelection(.enabled)
-        case .advisor:
-            Label(row.text, systemImage: "sparkles")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(4)
+        case .card:
+            if let card = row.card { CardRow(card: card) }
         case .notice, .action:
             Text(row.text)
                 .font(.caption)
@@ -242,13 +264,14 @@ struct StepsRow: View {
 struct WorkingLine: View {
     let activity: String?
     let background: Bool
+    var model: String?
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "ellipsis")
                 .symbolEffect(.variableColor.iterative, options: .repeating)
                 .foregroundStyle(background ? Color.purple : Palette.clay)
-            Text(activity ?? (background ? "Working in the background" : "Working"))
+            Text(activity ?? (background ? "Working in the background" : model.map { "Working with \(ModelCatalog.displayName($0))" } ?? "Working"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -257,142 +280,7 @@ struct WorkingLine: View {
     }
 }
 
-// MARK: composer
-
-/// Everything that floats over the bottom of the conversation, in glass.
-struct ComposerArea: View {
-    let model: ConversationModel
-
-    var body: some View {
-        GlassEffectContainer(spacing: 10) {
-            VStack(spacing: 10) {
-                if let banner = model.banner {
-                    Label(banner, systemImage: "arrow.triangle.2.circlepath")
-                        .font(.footnote)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .glassEffect(.regular.tint(.orange.opacity(0.18)), in: .capsule)
-                }
-                if let error = model.sendError {
-                    Label(error, systemImage: "exclamationmark.circle")
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .glassEffect(.regular, in: .capsule)
-                }
-                if let q = model.question {
-                    QuestionCard(question: q, model: model)
-                }
-                if !model.queued.isEmpty {
-                    QueuePill(model: model)
-                }
-                Composer(model: model)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
-    }
-}
-
-struct Composer: View {
-    let model: ConversationModel
-    @State private var text = ""
-    @State private var picks: [PhotosPickerItem] = []
-    @State private var images: [UIImage] = []
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        let empty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && images.isEmpty
-        let working = model.isRunning || model.isBackground
-        VStack(alignment: .leading, spacing: 8) {
-            if !images.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack {
-                        ForEach(images.indices, id: \.self) { i in
-                            Image(uiImage: images[i])
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 60, height: 60)
-                                .clipShape(.rect(cornerRadius: 12, style: .continuous))
-                                .overlay(alignment: .topTrailing) {
-                                    Button("Remove photo", systemImage: "xmark.circle.fill") { images.remove(at: i) }
-                                        .labelStyle(.iconOnly)
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(.white, .black.opacity(0.6))
-                                        .offset(x: 5, y: -5)
-                                }
-                        }
-                    }
-                    .padding(.top, 6)
-                    .padding(.horizontal, 4)
-                }
-            }
-            HStack(alignment: .bottom, spacing: 8) {
-                // Chats take files through their own store, not inline attachments.
-                if !(model.project?.isChat ?? false) {
-                    PhotosPicker(selection: $picks, maxSelectionCount: 4, matching: .images) {
-                        Image(systemName: "plus")
-                            .font(.title3.weight(.medium))
-                            .frame(width: 44, height: 44)
-                    }
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .accessibilityLabel("Attach photos")
-                }
-                TextField(working ? "Queue a message" : "Message", text: $text, axis: .vertical)
-                    .lineLimit(1...8)
-                    .focused($focused)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .frame(minHeight: 44)
-                    .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22, style: .continuous))
-                    .accessibilityIdentifier("composer")
-                if working && empty {
-                    Button {
-                        Task { await model.stop() }
-                    } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.title3.weight(.semibold))
-                            .frame(width: 44, height: 44)
-                    }
-                    .glassEffect(.regular.tint((model.isBackground ? Color.purple : Color.red).opacity(0.85)).interactive(), in: .circle)
-                    .foregroundStyle(.white)
-                    .accessibilityLabel("Stop")
-                } else {
-                    Button {
-                        let t = text
-                        let imgs = images
-                        text = ""
-                        images = []
-                        Task { await model.send(t, images: imgs.compactMap { $0.jpegForUpload() }) }
-                    } label: {
-                        Image(systemName: "arrow.up")
-                            .font(.title3.weight(.semibold))
-                            .frame(width: 44, height: 44)
-                    }
-                    .glassEffect(.regular.tint(Palette.clay).interactive(), in: .circle)
-                    .foregroundStyle(.white)
-                    .disabled(empty)
-                    .opacity(empty ? 0.5 : 1)
-                    .accessibilityLabel("Send")
-                    .accessibilityIdentifier("send")
-                }
-            }
-        }
-        .animation(.snappy, value: working && empty)
-        .onChange(of: picks) { _, items in
-            guard !items.isEmpty else { return }
-            Task {
-                for item in items {
-                    if let data = try? await item.loadTransferable(type: Data.self), let img = UIImage(data: data) {
-                        images.append(img)
-                    }
-                }
-                picks = []
-            }
-        }
-    }
-}
+// MARK: question
 
 struct QuestionCard: View {
     let question: PendingQuestion
@@ -414,7 +302,7 @@ struct QuestionCard: View {
                     .foregroundStyle(.secondary)
             }
             if parts.count == 1 {
-                options(parts[0].options ?? []) { choice in Task { await model.send(choice, images: []) } }
+                options(parts[0].options ?? []) { choice in Task { await model.send(choice, files: []) } }
             } else {
                 ForEach(parts.indices, id: \.self) { i in
                     VStack(alignment: .leading, spacing: 6) {
@@ -424,7 +312,7 @@ struct QuestionCard: View {
                 }
                 Button("Send answers") {
                     let text = parts.indices.map { i in "\(i + 1). \(parts[i].question)\nAnswer: \(answers[i] ?? "")" }.joined(separator: "\n\n")
-                    Task { await model.send(text, images: []) }
+                    Task { await model.send(text, files: []) }
                 }
                 .buttonStyle(.glassProminent)
                 .disabled(answers.count < parts.count)
@@ -450,61 +338,90 @@ struct QuestionCard: View {
     }
 }
 
-/// "2 queued", with each queued message cancellable from the menu.
-struct QueuePill: View {
-    let model: ConversationModel
+
+/// A Jev pick, an advisor consultation, or a delegate report.
+struct CardRow: View {
+    let card: ChatCard
 
     var body: some View {
-        HStack {
-            Menu {
-                ForEach(model.queued) { item in
-                    Button(role: .destructive) {
-                        Task { await model.cancelQueued(item.id) }
-                    } label: {
-                        Label(String(item.text.prefix(60)), systemImage: "trash")
+        switch card {
+        case .decision(let d):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "wand.and.stars").foregroundStyle(Palette.clay)
+                    Text(d.backendName + (d.lean == "low" ? " · Low" : d.lean == "high" ? " · High" : ""))
+                        .fontWeight(.semibold)
+                    if d.error == nil || d.auto != nil, let m = d.ranModel {
+                        Text([ModelCatalog.displayName(m), d.ranEffort.map(ModelCatalog.effortLabel)].compactMap { $0 }.joined(separator: " · "))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Palette.clayWeak, in: .capsule)
+                            .foregroundStyle(Palette.clay)
+                    }
+                    Spacer(minLength: 4)
+                    if let ms = d.latencyMs {
+                        Text(String(format: "%.1f s", ms / 1000)).foregroundStyle(.tertiary)
                     }
                 }
-            } label: {
-                Label("\(model.queued.count) queued", systemImage: "tray.full")
-                    .font(.footnote.weight(.medium))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
+                Text(d.verdict).foregroundStyle(d.error == nil ? .secondary : Color.orange)
+                if !d.noteLine.isEmpty {
+                    Text(d.noteLine).font(.caption).foregroundStyle(.tertiary).lineLimit(3)
+                }
+                if let team = d.team, d.error == nil, let effort = team.effort {
+                    Text("Team: " + [team.model.map(ModelCatalog.displayName), ModelCatalog.effortLabel(effort)].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
-            .glassEffect(.regular.interactive(), in: .capsule)
-            Spacer()
+            .font(.footnote)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 14, style: .continuous))
+        case .advisor(let title, let detail):
+            VStack(alignment: .leading, spacing: 4) {
+                Label(title, systemImage: "person.badge.shield.checkmark").fontWeight(.medium)
+                if let detail, !detail.isEmpty {
+                    Text(detail).foregroundStyle(.secondary).lineLimit(6)
+                }
+            }
+            .font(.footnote)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 14, style: .continuous))
+        case .delegate(let role, let gate, let text):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Label("Delegate \(role)", systemImage: "person.2").fontWeight(.medium)
+                    Spacer()
+                    if let gate { GatePill(gate: gate) }
+                }
+                Text(text).foregroundStyle(.secondary).lineLimit(8)
+            }
+            .font(.footnote)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 14, style: .continuous))
+            .contextMenu { CopyButton(text: text) }
         }
     }
 }
 
-struct PreferencesMenu: View {
-    @Environment(AppModel.self) private var app
-    let model: ConversationModel
+/// How a delegate's report was routed.
+struct GatePill: View {
+    let gate: String
 
     var body: some View {
-        let provider = model.provider
-        let models = ModelCatalog.models(provider: provider, codex: app.codexModels)
-        let efforts = ModelCatalog.efforts(provider: provider, model: model.model, codex: app.codexModels)
-        Menu {
-            Picker(selection: Binding(get: { model.model }, set: { m in Task { await model.setPreferences(model: m, effort: model.effort) } })) {
-                ForEach(models, id: \.self) { Text($0.label).tag($0.value) }
-            } label: {
-                Label("Model", systemImage: "cpu")
-                Text(ModelCatalog.modelLabel(model.model, provider: provider, codex: app.codexModels))
-            }
-            .pickerStyle(.menu)
-            Picker(selection: Binding(get: { model.effort }, set: { e in Task { await model.setPreferences(model: model.model, effort: e) } })) {
-                ForEach(efforts, id: \.self) { Text(ModelCatalog.effortLabel($0)).tag($0) }
-            } label: {
-                Label("Effort", systemImage: "gauge.with.needle")
-                Text(ModelCatalog.effortLabel(model.effort))
-            }
-            .pickerStyle(.menu)
-            if let url = app.panelURL(projectId: model.projectId, sessionId: model.sessionId, isChat: model.project?.isChat ?? false) {
-                Divider()
-                Link(destination: url) { Label("Open in the panel", systemImage: "safari") }
-            }
-        } label: {
-            Label("Model and effort", systemImage: "slider.horizontal.3")
+        let (text, color): (String, Color) = switch gate {
+        case "needs_human": ("Needs you", .orange)
+        case "needs_orchestrator": ("Needs orchestrator", .blue)
+        case "blocked": ("Blocked", .red)
+        default: ("Done", Palette.ok)
         }
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .foregroundStyle(color)
+            .background(color.opacity(0.14), in: .capsule)
     }
 }

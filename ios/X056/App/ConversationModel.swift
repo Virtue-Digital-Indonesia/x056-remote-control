@@ -1,8 +1,16 @@
 import Foundation
 import Observation
 
+/// A card in the chat that is not a message: a Jev pick, an advisor
+/// consultation, a delegate report.
+enum ChatCard: Equatable {
+    case decision(JevDecision)
+    case advisor(title: String, detail: String?)
+    case delegate(role: String, gate: String?, text: String)
+}
+
 struct ChatRow: Identifiable, Equatable {
-    enum Role { case user, assistant, action, error, notice, advisor }
+    enum Role { case user, assistant, action, error, notice, card }
     let id = UUID()
     var role: Role
     var text: String
@@ -16,6 +24,7 @@ struct ChatRow: Identifiable, Equatable {
     /// An action whose tool call has not returned.
     var inFlight = false
     var toolUseId: String?
+    var card: ChatCard?
 }
 
 /// What the list draws: a row, or a run of consecutive tool calls folded together.
@@ -33,6 +42,8 @@ enum DisplayItem: Identifiable {
 
 @MainActor @Observable
 final class ConversationModel {
+    enum SendMode { case send, queue, steer }
+
     let projectId: String
     private(set) var sessionId: String?
 
@@ -46,10 +57,12 @@ final class ConversationModel {
     var activity: String?
     /// A supervisor line worth showing above the composer (failover, parked…).
     var banner: String?
-
-    /// Model/effort for a conversation not created yet.
+    /// The model the running turn's CLI resolved (`active_model`).
+    var activeModel: String?
+    /// Choices for a conversation not created yet.
     var draftModel = ""
     var draftEffort = ""
+    var draftAccount: String?
 
     @ObservationIgnored private var cursor: Int?
     @ObservationIgnored let app: AppModel
@@ -65,10 +78,20 @@ final class ConversationModel {
     var provider: String { conversation?.provider ?? project?.providerName ?? "claude" }
     var isRunning: Bool { sessionId.map { app.running.contains($0) } ?? false }
     var isBackground: Bool { sessionId.map { app.background.contains($0) && !app.running.contains($0) } ?? false }
+    var isWorking: Bool { isRunning || isBackground }
     var question: PendingQuestion? { sessionId.flatMap { app.questions[$0] } }
     var queued: [QueueItem] { sessionId.map { app.queued(projectId, $0) } ?? [] }
     var model: String { sessionId == nil ? draftModel : (conversation?.model ?? "") }
     var effort: String { sessionId == nil ? draftEffort : (conversation?.effort ?? "") }
+    var helpers: Helpers { conversation?.effectiveHelpers ?? Helpers() }
+    var routerOn: Bool { helpers.router != nil }
+    var isChat: Bool { project?.isChat ?? false }
+
+    /// The newest Jev / Decisions pick in this conversation.
+    var latestPick: JevDecision? {
+        for r in rows.reversed() { if case .decision(let d) = r.card { return d } }
+        return nil
+    }
 
     var items: [DisplayItem] {
         var out: [DisplayItem] = []
@@ -131,10 +154,10 @@ final class ConversationModel {
         case "assistant": return text.isEmpty ? nil : ChatRow(role: .assistant, text: text)
         case "action": return ChatRow(role: .action, text: text, detail: h.detail)
         case "error": return ChatRow(role: .error, text: text)
-        case "model": return ChatRow(role: .notice, text: "Model · \(text)")
+        case "model": return ChatRow(role: .notice, text: "Model: \(ModelCatalog.displayName(text))")
         case "command": return ChatRow(role: .notice, text: "/\(text)" + (h.args.map { " \($0)" } ?? ""))
         case "summary": return ChatRow(role: .notice, text: "Context compacted")
-        case "advisor": return ChatRow(role: .advisor, text: advisorText(h.advisor, fallback: text))
+        case "advisor": return card(h.advisor, fallback: text)
         default: return text.isEmpty ? nil : ChatRow(role: .notice, text: text)
         }
     }
@@ -151,22 +174,35 @@ final class ConversationModel {
         }
     }
 
-    static func advisorText(_ a: JSONValue?, fallback: String) -> String {
-        guard let a else { return fallback.isEmpty ? "Advisor" : fallback }
-        if a["helper"]?.string != nil {
-            let model = a["decision"]?["pickedModel"]?.string ?? a["decision"]?["model"]?.string
-            let effort = a["decision"]?["pickedEffort"]?.string ?? a["decision"]?["effort"]?.string
-            return (["Jev"] + [model, effort].compactMap { $0 }).joined(separator: " · ")
+    /// A journal row with an `advisor` payload: a Jev pick, a delegate
+    /// report, a ChatGPT advisor consult or a Claude advisor call.
+    static func card(_ a: JSONValue?, fallback: String) -> ChatRow? {
+        guard let a else { return fallback.isEmpty ? nil : ChatRow(role: .notice, text: fallback) }
+        if let helper = a["helper"]?.string, var d = a["decision"]?.decode(JevDecision.self) {
+            if d.backend == nil && helper == "openai" { d = d.with(backend: "openai") }
+            return ChatRow(role: .card, text: fallback, card: .decision(d))
         }
         if let d = a["delegate"], let role = d["role"]?.string {
-            return "Delegate \(role) · \(d["gate"]?.string ?? d["status"]?.string ?? "")"
+            return ChatRow(role: .card, text: fallback, card: .delegate(role: role, gate: d["gate"]?.string, text: d["text"]?.string ?? fallback))
         }
         if let verdict = a["verdict"]?.string {
-            let advice = a["advice"]?.string.map { " · \($0)" } ?? ""
-            return "Advisor · \(verdict)\(advice)"
+            return ChatRow(role: .card, text: fallback, card: .advisor(title: "Advisor: \(verdictLabel(verdict))", detail: a["advice"]?.string))
         }
-        if let status = a["status"]?.string { return "Advisor · \(status)" }
-        return fallback.isEmpty ? "Advisor" : fallback
+        if let status = a["status"]?.string {
+            let title = status == "reviewed" ? "Advisor reviewed this step" : status == "declined" ? "Advisor declined to advise" : "Advisor unavailable"
+            return ChatRow(role: .card, text: fallback, card: .advisor(title: title, detail: a["error"]?.string))
+        }
+        return fallback.isEmpty ? nil : ChatRow(role: .notice, text: fallback)
+    }
+
+    static func verdictLabel(_ v: String) -> String {
+        switch v {
+        case "proceed": return "proceed"
+        case "looks_good": return "looks good"
+        case "adjust": return "adjust"
+        case "concern": return "concern"
+        default: return v
+        }
     }
 
     // MARK: live events
@@ -177,6 +213,7 @@ final class ConversationModel {
         case "session_started":
             banner = nil
             activity = nil
+            activeModel = d["model"]?.string
             let text = d["displayPrompt"]?.string ?? d["prompt"]?.string ?? ""
             let reqId = d["requestId"]?.string
             if let i = rows.firstIndex(where: { $0.pending && ($0.requestId == reqId || $0.text == text) }) ?? rows.firstIndex(where: \.pending) {
@@ -190,6 +227,8 @@ final class ConversationModel {
             if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
                 rows.append(ChatRow(role: .assistant, text: text))
             }
+        case "active_model":
+            activeModel = d["model"]?.string ?? activeModel
         case "activity":
             guard let a = d.decode(ActivityEvent.self), a.parentToolUseId == nil else { return }
             let label = a.label ?? a.tool ?? "Tool"
@@ -200,6 +239,18 @@ final class ConversationModel {
                 rows.append(ChatRow(role: .action, text: label, detail: a.detail, failed: a.status == "error", inFlight: a.status == "start", toolUseId: a.toolUseId))
             }
             activity = a.status == "start" ? label : nil
+        case "jev_decision":
+            if let dec = d.decode(JevDecision.self) {
+                rows.append(ChatRow(role: .card, text: dec.noteLine, card: .decision(dec)))
+            }
+        case "advisor_call":
+            if d["phase"]?.string == "done", let row = Self.card(d, fallback: "") { rows.append(row) }
+        case "advisor_consult":
+            if let row = Self.card(d, fallback: "") { rows.append(row) }
+        case "delegate_report":
+            if let role = d["role"]?.string {
+                rows.append(ChatRow(role: .card, text: d["text"]?.string ?? "", card: .delegate(role: role, gate: d["gate"]?.string, text: d["text"]?.string ?? "")))
+            }
         case "session_done", "conversation_settled":
             activity = nil
             for i in rows.indices where rows[i].inFlight { rows[i].inFlight = false }
@@ -230,57 +281,87 @@ final class ConversationModel {
         let account = d["account"]?.string
         switch d["type"]?.string {
         case "failover": return "Switched account" + (d["from"]?.string.map { " from \($0)" } ?? "")
-        case "limit_detected": return "Usage limit on account \(account ?? "?")"
-        case "parked", "waiting_for_reset": return "Waiting for a usage reset"
-        case "model_fallback": return "Running on \(d["to"]?.string ?? "an older model") on account \(account ?? "?")"
+        case "limit_detected": return "Limit reached on account \(account ?? "?"), switching accounts"
+        case "parked": return "Every account is unavailable. The turn is parked."
+        case "waiting_for_reset": return "Waiting for an account reset. Stop cancels the wait."
+        case "model_fallback": return "Account \(account ?? "?") does not have \(d["from"]?.string ?? "that model") yet, ran on \(d["to"]?.string ?? "an older one")"
         case "auth_required": return "Account \(account ?? "?") needs a fresh sign-in"
-        case "turn_started": return nil
         default: return nil
         }
     }
 
     // MARK: actions
 
-    func send(_ text: String, images: [Data]) async {
+    /// Send, queue for after this turn, or steer into the running turn.
+    func send(_ text: String, files: [PendingFile], mode: SendMode = .send) async {
         guard let client = app.client else { return }
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty || !images.isEmpty else { return }
+        guard !prompt.isEmpty || !files.isEmpty else { return }
         sendError = nil
-        let requestId = UUID().uuidString.lowercased()
-        let uploads = images.enumerated().map { i, data in
-            UploadAttachment(name: "photo-\(i + 1).jpg", data: "data:image/jpeg;base64," + data.base64EncodedString())
+        // Steering carries no files; the gateway would queue them anyway.
+        if mode == .steer, files.isEmpty, let sessionId {
+            await steer(prompt, sessionId: sessionId, client: client)
+            return
         }
+        let requestId = UUID().uuidString.lowercased()
         rows.append(ChatRow(role: .user, text: prompt.isEmpty ? "Use the attached files." : prompt, pending: true, requestId: requestId))
         let rowId = rows[rows.count - 1].id
-        let effortValue = effort.isEmpty ? nil : effort
-        var body = SendBody(prompt: prompt, projectId: projectId, sessionId: sessionId,
-                            model: ModelCatalog.effectiveModel(model, provider: provider), effort: effortValue,
-                            requestId: requestId, attachments: uploads.isEmpty ? nil : uploads)
         do {
+            var body = SendBody(prompt: prompt, projectId: projectId, sessionId: sessionId, requestId: requestId)
+            // With Jev or Decisions on, Auto is sent empty so the picker
+            // decides; otherwise Auto means the house default model.
+            if routerOn && model.isEmpty {
+                body.model = ""
+                body.effort = ""
+            } else {
+                body.model = ModelCatalog.effectiveModel(model, provider: provider)
+                body.effort = effort.isEmpty ? nil : effort
+            }
+            if !files.isEmpty {
+                if isChat {
+                    body.fileRefs = try await app.uploadChatFiles(projectId, files)
+                } else {
+                    body.attachments = files.map(\.upload)
+                }
+            }
             let reply: SendReply
-            if sessionId == nil {
-                body.sessionId = nil
+            if mode == .queue || mode == .steer {
+                reply = try await client.post("/api/queue", body, as: SendReply.self)
+            } else if sessionId == nil {
+                body.account = draftAccount
                 reply = try await client.post("/api/sessions", body, as: SendReply.self)
                 if let sid = reply.sessionId {
                     sessionId = sid
                     app.running.insert(sid)
                     app.setVisible(projectId: projectId, sessionId: sid)
+                    app.setDraft(projectId, nil, "")
                     await app.refreshProjects()
                 }
             } else {
                 reply = try await client.post("/api/sessions/current/messages", body, as: SendReply.self)
             }
-            switch reply.status {
-            case "queued":
+            if mode != .send || reply.status == "queued" {
                 // The queue strip shows it now; the stream adds it when it runs.
                 rows.removeAll { $0.id == rowId }
-            case "failed", "cancelled":
+            } else if reply.status == "failed" || reply.status == "cancelled" {
                 markFailed(rowId, reply.error ?? "The gateway did not accept the message.")
-            default:
-                break
             }
         } catch {
             markFailed(rowId, error.localizedDescription)
+        }
+    }
+
+    private func steer(_ prompt: String, sessionId: String, client: APIClient) async {
+        do {
+            let body = SteerBody(projectId: projectId, sessionId: sessionId, prompt: prompt)
+            let reply = try await client.post("/api/steer", body, as: SteerReply.self)
+            if reply.steered == true {
+                rows.append(ChatRow(role: .user, text: prompt, sender: "Steered into the running turn"))
+            } else {
+                banner = "No live process to steer, so it was queued instead."
+            }
+        } catch {
+            sendError = error.localizedDescription
         }
     }
 
@@ -299,9 +380,8 @@ final class ConversationModel {
     }
 
     func dismissQuestion() async {
-        guard let q = question, let client = app.client else { return }
-        _ = try? await client.post("/api/questions/dismiss", DismissQuestionBody(projectId: q.projectId, sessionId: q.sessionId, at: q.at))
-        app.questions[q.sessionId] = nil
+        guard let q = question else { return }
+        await app.dismissQuestion(q)
     }
 
     func cancelQueued(_ id: String) async {
@@ -323,5 +403,22 @@ final class ConversationModel {
         } catch {
             sendError = error.localizedDescription
         }
+    }
+
+    func setHelpers(_ h: Helpers) async {
+        guard let sessionId else { return }
+        do {
+            try await app.setHelpers(projectId, sessionId, h)
+        } catch {
+            sendError = error.localizedDescription
+        }
+    }
+}
+
+extension JevDecision {
+    func with(backend: String) -> JevDecision {
+        JevDecision(at: at, backend: backend, model: model, effort: effort, pickedModel: pickedModel, pickedEffort: pickedEffort,
+                    modelConfidence: modelConfidence, effortConfidence: effortConfidence, notes: notes, lean: lean, auto: auto,
+                    baseModel: baseModel, baseEffort: baseEffort, latencyMs: latencyMs, error: error, team: team)
     }
 }
