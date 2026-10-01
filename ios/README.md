@@ -35,19 +35,13 @@ The UI flow answers the fixture's pending question. Restart the fixture before r
 
 ## TestFlight
 
-1. Set `DEVELOPMENT_TEAM` in `project.yml` to the paid team and run `xcodegen generate`. A Personal Team cannot sign the Push capability.
-2. Create the app in App Store Connect with bundle ID `id.val.x056`.
-3. Archive and upload:
+The app is on team `Z4NCYN9LKJ` (PT Virtue Digital Indonesia), bundle ID `id.val.x056`. Upload a build with:
 
 ```sh
-cd ios
-xcodebuild archive -project X056.xcodeproj -scheme X056 -configuration Release \
-  -destination 'generic/platform=iOS' -archivePath build/X056.xcarchive -allowProvisioningUpdates
-xcodebuild -exportArchive -archivePath build/X056.xcarchive \
-  -exportOptionsPlist ExportOptions.plist -exportPath build/export -allowProvisioningUpdates
+ios/scripts/testflight.sh
 ```
 
-`ExportOptions.plist` uploads straight to App Store Connect and bumps the build number when it is already taken.
+The script needs no registered device. Xcode's automatic signing archives with a Development profile, and that profile needs a device on the team. So the script archives unsigned, ad-hoc signs the app with its entitlements, and lets the export re-sign it for the App Store. `ExportOptions.plist` uploads straight to App Store Connect. Each run stamps its own build number, `YYYYMMDD.HHMM` in UTC, because App Store Connect rejects a build number it has seen before.
 
 ## Push
 
@@ -62,5 +56,6 @@ jq -n --arg keyId <KEY_ID> --arg teamId <TEAM_ID> --arg bundleId id.val.x056 \
 
 The gateway writes it to `state/secrets/apns.json` with mode 0600, and no route returns it. Then open Settings in the app and tap **Send a test notification**. It shows what APNs answered for each device.
 
+- Production uses Obscura's key (`8LC7A7XY77`, same team). An APNs key works for every app on its team.
 - A Debug build from Xcode registers as `sandbox`. A TestFlight build registers as `production`. One gateway serves both.
 - APNs answers `410` for an uninstalled app and `BadDeviceToken` for a token from the other environment. The gateway drops both, and the app registers again on its next launch.
