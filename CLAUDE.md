@@ -63,6 +63,23 @@ unchanged. Tests that touch the hidden controls must click `#prompt` first.
 Collapse on blur checks `relatedTarget` and holds on pointerdown, so a tap on
 send never lands on a moved button.
 
+**Formatting shortcuts (2026-10-01)**, ⌘ on a Mac and Ctrl elsewhere, never
+Alt, so AltGr still types: ⌘B bold, ⌘I italic, ⌘U underline, ⌘⇧C inline
+code, ⌘⇧X code block, ⌘⇧9 quote, ⌘⇧- rule, ⌘⇧8 bullets, ⌘⇧7 numbers.
+Each one toggles: press it again to remove the format. The transforms and the
+key table live in `server/public/composer-format.js`, which is pure, unit
+tested and served from the fixed static list. One table drives the handler,
+the `+` menu's "Formatting shortcuts" sheet, the help dialog and the
+screen-reader hint. The box stays a plain textarea holding Markdown source:
+contenteditable would break the padded list display, IME and the draft and
+send paths. So each action is ONE native `insertText`, and Ctrl/⌘Z undoes it
+in one step. Underline has no Markdown syntax, so it is `<u>…</u>`, and the
+chat renderer lets exactly a bare `<u>` through and nothing else. The handler
+calls `stopPropagation`, because the document handler would also read ⌘⇧8 as
+"jump to project 8". The model and effort popovers are ⌥M / ⌥E, untouched.
+Playwright proves that the page receives these keys. It cannot prove that a
+browser won't take one first, such as ⌘⇧C (Firefox inspector) or ⌘⇧- (zoom).
+
 ## There is a SECOND instance on this host (`/home/efran/x056-devs`)
 
 A dev-facing gateway for employed developers runs beside production on the same
