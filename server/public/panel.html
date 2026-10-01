@@ -167,6 +167,12 @@
   .modelmark b { color: var(--muted); font-weight: 600; }
   .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
   .msg.user .content { background: var(--user-bg); border-radius: 16px 16px 5px 16px; padding: 12px 16px; max-width: 82%; white-space: pre-wrap; word-break: break-word; }
+  .msg.user .content.md-user > :first-child { margin-top: 0; }
+  .msg.user .content.md-user > :last-child { margin-bottom: 0; }
+  .msg.user .content.md-user p { margin: 0 0 8px; }
+  .msg.user .content.md-user blockquote { margin: 0 0 8px; }
+  .msg.user .content.md-user hr { border: 0; border-top: 1px solid var(--border-strong); margin: 10px 0; }
+  .msg.user .content.md-user pre { white-space: pre; }
   .msg.assistant .content { word-break: break-word; }
   .content img.att { max-width: 280px; border-radius: 10px; border: 1px solid var(--border); margin-top: 8px; display: block; }
   .content .filechip { display: inline-flex; align-items: center; gap: 7px; margin-top: 8px; padding: 7px 11px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); text-decoration: none; font-size: 12.5px; max-width: 280px; }
@@ -469,6 +475,12 @@
   .qp-plus-menu { width: 280px; }
   .qp-plus-menu .helper-item > .ic { color: var(--muted); flex: none; }
   .qp-plus-menu .helper-item[hidden] { display: none; }
+  .qp-format-menu { width: 300px; }
+  .qp-format-menu .qp-fmt-list { margin: 0; padding: 2px 4px 4px; list-style: none; }
+  .qp-format-menu .qp-fmt-row { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 6px; border-radius: 8px; font-size: 13px; }
+  .qp-format-menu .qp-fmt-label { flex: 1 1 auto; min-width: 0; color: var(--text); }
+  .qp-format-menu .qp-fmt-sample { flex: none; font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; color: var(--muted); }
+  .qp-format-menu .qp-fmt-note { margin: 4px 10px 6px; font-size: 12px; line-height: 1.45; color: var(--muted); }
   .qp-kbd { flex: none; font: inherit; font-size: 11px; color: var(--faint); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
   #conversationSurface .composer .helper-btn { height: 34px; }
   #conversationSurface .composer .selects.qp-run { display: inline-flex; align-items: center; flex: 0 1 auto; width: auto; min-width: 0; height: 34px; margin: 0; padding: 0; }
@@ -1440,6 +1452,7 @@ main.atree-open .composer-wrap { display: none !important; }
 <script src="/control-room.js"></script>
 <script src="/terminal.js"></script>
 <script src="/agent-tree.js"></script>
+<script src="/composer-format.js"></script>
 <link rel="stylesheet" href="/rc-chat.css" />
 <script src="/rc-chat.js"></script>
 <link rel="stylesheet" href="/project-spaces.css" />
@@ -1568,8 +1581,11 @@ main.atree-open .composer-wrap { display: none !important; }
           <div class="helper-menu qp-plus-menu" id="composerPlusMenu" role="menu" aria-label="Add to the message" hidden>
             <button type="button" class="helper-item" role="menuitem" id="attachBtn"><svg class="ic sm"><use href="#i-paperclip"/></svg><span class="hi-text"><span class="hi-title">Attach files</span><span class="hi-desc">Any type. Drag, drop or paste works too.</span></span></button>
             <button type="button" class="helper-item" role="menuitem" id="tplBtn" title="insert a saved prompt template (Alt+T)"><svg class="ic sm"><use href="#i-snippet"/></svg><span class="hi-text"><span class="hi-title">Insert template</span><span class="hi-desc">A saved prompt, at the caret.</span></span><kbd class="qp-kbd" id="tplKbd">Alt+T</kbd></button>
+            <button type="button" class="helper-item" role="menuitem" id="composerFormatItem" aria-haspopup="dialog" aria-controls="composerFormatMenu"><svg class="ic sm"><use href="#i-snippet"/></svg><span class="hi-text"><span class="hi-title">Formatting shortcuts</span><span class="hi-desc">Bold, code, quote, lists and more.</span></span></button>
             <button type="button" class="helper-item" role="menuitem" id="composerRefItem" hidden><svg class="ic sm"><use href="#i-link"/></svg><span class="hi-text"><span class="hi-title">Reference a conversation</span><span class="hi-desc">Give this chat another conversation to read.</span></span></button>
           </div>
+          <!-- Read-only cheat sheet, built from ComposerFormat.SHORTCUTS. -->
+          <div class="helper-menu qp-plus-menu qp-format-menu" id="composerFormatMenu" role="dialog" aria-label="Formatting shortcuts" tabindex="-1" hidden></div>
           <input type="file" id="file" multiple hidden />
         </div>
         <!-- Helpers, combinable: advisor, agent team, and one model/effort picker. -->
@@ -2832,7 +2848,7 @@ main.atree-open .composer-wrap { display: none !important; }
     }).then(function () { if (button.isConnected) { button.disabled = false; button.removeAttribute('aria-busy'); } });
   }
   function renderInline(text) {
-    var frag = document.createDocumentFragment(), re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*\s][^*]*)\*)|(\[([^\]]+)\]\((<?[^)\n]+>?)\))|(https?:\/\/[^\s<>()\[\]]+)/g, last = 0, m;
+    var frag = document.createDocumentFragment(), re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*\s][^*]*)\*)|(\[([^\]]+)\]\((<?[^)\n]+>?)\))|(https?:\/\/[^\s<>()\[\]]+)|(<u>([^<>\n]+?)<\/u>)/g, last = 0, m;
     while ((m = re.exec(text))) {
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
       if (m[2]) { var c = document.createElement('code'); c.textContent = m[2]; frag.appendChild(c); }
@@ -2847,6 +2863,7 @@ main.atree-open .composer-wrap { display: none !important; }
           (function (button, path, label) { button.addEventListener('click', function () { downloadLocalReference(button, path, label); }); })(ref, target, m[8]); frag.appendChild(ref);
         } else frag.appendChild(document.createTextNode(m[0]));
       }
+      else if (m[12]) { var u = document.createElement('u'); u.appendChild(renderInline(m[12])); frag.appendChild(u); } // the one HTML tag allowed: underline has no Markdown syntax
       else if (m[10]) { // bare URL — autolink, keeping trailing punctuation as text
         var url = m[10], trail = '';
         var tm = /[.,;:!?]+$/.exec(url);
@@ -3052,7 +3069,12 @@ main.atree-open .composer-wrap { display: none !important; }
       var full = document.createElement('div'); full.className = 'delegate-digest-body'; full.appendChild(renderMarkdown(text));
       det.appendChild(sum); det.appendChild(full); content.appendChild(det);
     }
-    else content.appendChild(document.createTextNode(text));
+    else {
+      // Your own message renders the same Markdown as the replies (quote, rule,
+      // lists, code, bold/italic, the composer's <u>), sanitized the same way.
+      content.classList.add('md-user');
+      content.appendChild(renderMarkdown(String(text)));
+    }
     // atts: a single data URL (legacy), or an array of data URLs / {name,type,url}
     // objects. Images render as thumbnails; any other file as a download chip.
     var list = Array.isArray(atts) ? atts : (atts ? [atts] : []);
@@ -4910,9 +4932,10 @@ main.atree-open .composer-wrap { display: none !important; }
     { keys: ['Enter'], desc: 'Send message (queues if the conversation is busy)' },
     { keys: [K_CMD + 'Enter'], desc: 'Steer into the running turn — the model sees it now, not after' },
     { keys: [K_SH + 'Enter'], desc: 'New line in the message' },
+  ].concat(window.ComposerFormat ? window.ComposerFormat.SHORTCUTS.map(function (s) { return { keys: [window.ComposerFormat.keysFor(s, IS_MAC)], desc: s.label + ' in the message box' }; }) : [], [
     { keys: [K_CMD + '/'], desc: 'Show this shortcuts help' },
     { keys: ['Esc'], desc: 'Close a dialog, menu, or the quick switcher' },
-  ];
+  ]);
   // Shortcuts can be turned off entirely (they collide with browser/OS bindings
   // and with password managers for some people). Escape is deliberately NOT
   // covered: closing a modal/popover must always work, or the UI can trap you.
@@ -5034,7 +5057,8 @@ main.atree-open .composer-wrap { display: none !important; }
   }
   $('searchChatsBtn').addEventListener('click', function () { setNav(false); openPalette(); });
   $('searchShortcut').textContent = K_CMD + ' K';
-  $('composerHint').textContent = 'Enter to send · ' + K_CMD + '+Enter to steer · Shift+Enter for a new line · Paste or drop files';
+  var FMT_HINT = window.ComposerFormat ? ['bold', 'italic', 'code'].map(function (id) { var s = window.ComposerFormat.SHORTCUTS.find(function (x) { return x.id === id; }); return window.ComposerFormat.keysFor(s, IS_MAC) + ' ' + s.label.toLowerCase(); }).join(' · ') + ' · more under + · ' : '';
+  $('composerHint').textContent = 'Enter to send · ' + K_CMD + '+Enter to steer · Shift+Enter for a new line · ' + FMT_HINT + 'Paste or drop files';
   function openPalette() {
     var existing = document.querySelector('dialog[open] .palette .pal-input');
     if (existing) { existing.focus(); return; }
@@ -5591,6 +5615,26 @@ main.atree-open .composer-wrap { display: none !important; }
       var caret = Math.max(from, start + changed.length - original.length);
       editComposerRange(from, to, changed, caret);
     } else editComposerRange(from, to, changed, from, from + changed.length);
+  });
+  // Markdown formatting shortcuts (composer-format.js holds the transforms and
+  // the key table). The box stays plain Markdown; each action is ONE native
+  // insertText, so Cmd/Ctrl+Z undoes it in one step. Only a hardware keyboard
+  // sends Cmd/Ctrl with a letter, and composition (IME) is never touched.
+  function formatComposer(id) {
+    var F = window.ComposerFormat; if (!F) return;
+    var before = { value: promptEl.value, start: promptEl.selectionStart, end: promptEl.selectionEnd };
+    var next = F.apply(id, before, { toMarkdown: composerMarkdown, toDisplay: displayComposerLists });
+    if (next.value === before.value) { promptEl.setSelectionRange(next.start, next.end); return; }
+    var d = F.diff(before.value, next.value);
+    editComposerRange(d.from, d.to, d.text, next.start, next.end);
+  }
+  promptEl.addEventListener('keydown', function (e) {
+    var F = window.ComposerFormat;
+    if (!F || e.defaultPrevented || e.isComposing || e.keyCode === 229 || !shortcutsOn()) return;
+    var s = F.shortcutFor(e, IS_MAC); if (!s) return;
+    // stopPropagation too: the document handler would read Cmd+Shift+8 as "jump to project 8".
+    e.preventDefault(); e.stopPropagation();
+    formatComposer(s.id);
   });
 
   // ---- subagents ------------------------------------------------------------
@@ -6209,7 +6253,7 @@ main.atree-open .composer-wrap { display: none !important; }
   function composerHasContent() { return !!(promptEl && promptEl.value.trim()) || composerHasFiles(); }
   function composerMenuOpen() {
     var acct = $('sendAccountPicker');
-    return ['helperMenu', 'runMenu', 'composerPlusMenu', 'codexSlashMenu'].some(function (id) { var m = $(id); return m && !m.hidden; }) || !!(acct && acct.open);
+    return ['helperMenu', 'runMenu', 'composerPlusMenu', 'composerFormatMenu', 'codexSlashMenu'].some(function (id) { var m = $(id); return m && !m.hidden; }) || !!(acct && acct.open);
   }
   function composerRunning() { return !!(busyEl && busyEl.firstChild) || canSteer(); }
   function composerCaption() {
@@ -6292,7 +6336,7 @@ main.atree-open .composer-wrap { display: none !important; }
     var qpObs = new MutationObserver(syncComposer);
     qpObs.observe(attachRow, { childList: true });
     qpObs.observe(busyEl, { childList: true });
-    ['helperMenu', 'runMenu', 'composerPlusMenu', 'codexSlashMenu'].forEach(function (id) { if ($(id)) qpObs.observe($(id), { attributes: true, attributeFilter: ['hidden'] }); });
+    ['helperMenu', 'runMenu', 'composerPlusMenu', 'composerFormatMenu', 'codexSlashMenu'].forEach(function (id) { if ($(id)) qpObs.observe($(id), { attributes: true, attributeFilter: ['hidden'] }); });
     qpObs.observe($('helperBtn'), { attributes: true, attributeFilter: ['data-state'], childList: true, subtree: true, characterData: true });
     qpObs.observe(modelEl, { childList: true, subtree: true, characterData: true });
     qpObs.observe(effortEl, { childList: true, subtree: true, characterData: true });
@@ -6303,7 +6347,7 @@ main.atree-open .composer-wrap { display: none !important; }
   function plusMenu(open) {
     var menu = $('composerPlusMenu'), btn = $('composerPlusBtn');
     if (open === undefined) open = menu.hidden;
-    if (open) { helperMenu(false); runMenu(false); $('composerRefItem').hidden = !(document.body.classList.contains('rc-chat-active') && $('rcChatReference')); }
+    if (open) { helperMenu(false); runMenu(false); formatMenu(false); $('composerRefItem').hidden = !(document.body.classList.contains('rc-chat-active') && $('rcChatReference')); }
     menu.hidden = !open; btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) {
       var r = btn.getBoundingClientRect(), w = Math.min(280, window.innerWidth - 24);
@@ -6313,6 +6357,37 @@ main.atree-open .composer-wrap { display: none !important; }
       var first = menu.querySelector('.helper-item:not([hidden])'); if (first) first.focus();
     }
   }
+  // The formatting cheat sheet: the + menu's own position, one row per shortcut.
+  function formatMenu(open) {
+    var menu = $('composerFormatMenu'), btn = $('composerPlusBtn');
+    if (!menu) return;
+    if (!open) { if (!menu.hidden) menu.hidden = true; return; }
+    var F = window.ComposerFormat;
+    menu.textContent = '';
+    var head = document.createElement('div'); head.className = 'helper-head'; head.textContent = 'Formatting shortcuts'; menu.appendChild(head);
+    var list = document.createElement('ul'); list.className = 'qp-fmt-list';
+    (F ? F.SHORTCUTS : []).forEach(function (s) {
+      var row = document.createElement('li'); row.className = 'qp-fmt-row'; row.dataset.format = s.id;
+      var label = document.createElement('span'); label.className = 'qp-fmt-label'; label.textContent = s.label; row.appendChild(label);
+      var sample = document.createElement('code'); sample.className = 'qp-fmt-sample'; sample.textContent = s.sample; row.appendChild(sample);
+      var kbd = document.createElement('kbd'); kbd.className = 'qp-kbd'; kbd.textContent = F.keysFor(s, IS_MAC); row.appendChild(kbd);
+      list.appendChild(row);
+    });
+    menu.appendChild(list);
+    var note = document.createElement('p'); note.className = 'qp-fmt-note';
+    note.textContent = 'Press again to remove a format. Lists continue on Enter; Tab and ' + K_SH + (IS_MAC ? '' : '+') + 'Tab indent.';
+    menu.appendChild(note);
+    menu.hidden = false;
+    var r = btn.getBoundingClientRect(), w = Math.min(300, window.innerWidth - 24);
+    menu.style.left = Math.max(12, Math.min(r.left, window.innerWidth - w - 12)) + 'px';
+    menu.style.bottom = (window.innerHeight - r.top + 10) + 'px';
+    menu.style.maxHeight = Math.max(160, r.top - 22) + 'px';
+    menu.focus();
+  }
+  $('composerFormatItem').addEventListener('click', function (e) { e.stopPropagation(); plusMenu(false); formatMenu(true); });
+  $('composerFormatMenu').addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); formatMenu(false); promptEl.focus(); }
+  });
   $('composerPlusBtn').addEventListener('click', function (e) { e.stopPropagation(); plusMenu(); });
   $('attachBtn').addEventListener('click', function () { plusMenu(false); fileEl.click(); });
   $('tplBtn').addEventListener('click', function () { plusMenu(false); });
@@ -6324,8 +6399,8 @@ main.atree-open .composer-wrap { display: none !important; }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); plusMenu(false); $('composerPlusBtn').focus(); }
   });
   // Capture phase: the helpers button stops its click from bubbling.
-  document.addEventListener('click', function (e) { if (!$('composerPlusMenu').hidden && !e.target.closest('#composerPlusWrap')) plusMenu(false); }, true);
-  window.addEventListener('resize', function () { if (!$('composerPlusMenu').hidden) plusMenu(false); });
+  document.addEventListener('click', function (e) { if (!$('composerPlusMenu').hidden && !e.target.closest('#composerPlusWrap')) plusMenu(false); if (!$('composerFormatMenu').hidden && !e.target.closest('#composerFormatMenu')) formatMenu(false); }, true);
+  window.addEventListener('resize', function () { if (!$('composerPlusMenu').hidden) plusMenu(false); formatMenu(false); });
   $('composerStopBtn').addEventListener('click', function () { stopCurrentTurn(); });
   syncComposer();
   function handleCodexPanelCommand(text) {
