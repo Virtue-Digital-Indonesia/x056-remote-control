@@ -52,13 +52,18 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(project.waitForExistence(timeout: 15))
         snapshot(app, "2-projects")
 
-        // Usage bars: the fixture has one Claude account limited for an hour.
-        app.buttons["Accounts"].tap()
-        XCTAssertTrue(app.staticTexts["Accounts"].waitForExistence(timeout: 5))
+        // Activity: the fixture's pending question waits on you.
+        app.buttons["Activity"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Which landing page should we publish?"].waitForExistence(timeout: 10))
+        snapshot(app, "3-activity")
+
+        // Usage gauges: the fixture has one Claude account limited for an hour.
+        app.buttons["Accounts"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Personal workspace"].waitForExistence(timeout: 10))
         snapshot(app, "3-accounts")
-        app.buttons["Done"].tap()
 
+        app.buttons["Projects"].firstMatch.tap()
+        XCTAssertTrue(project.waitForExistence(timeout: 5))
         project.tap()
 
         let conversation = app.staticTexts["Build the new homepage"]
@@ -83,6 +88,34 @@ final class FlowTests: XCTestCase {
         // The question is cleared by the new turn.
         XCTAssertFalse(app.staticTexts["Which landing page should we publish?"].exists)
         snapshot(app, "6-reply")
+    }
+
+    /// The main screens in dark mode, signed in to the fixture.
+    func testScreensInDark() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-X056Appearance", "dark"]
+        app.launch()
+        if app.buttons["change-server"].waitForExistence(timeout: 3) {
+            app.terminate()
+            return XCTFail("run testSignInBrowseAndSend first: this test needs the fixture sign-in it leaves behind")
+        }
+        let project = app.staticTexts["Website refresh"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15))
+        snapshot(app, "dark-projects")
+        app.buttons["Activity"].firstMatch.tap()
+        snapshot(app, "dark-activity")
+        app.buttons["Projects"].firstMatch.tap()
+        project.tap()
+        let conversation = app.staticTexts["Build the new homepage"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+        snapshot(app, "dark-conversations")
+        conversation.tap()
+        // The fixture's seeded transcript (its fake CLI's live replies are
+        // never written there).
+        let seeded = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "The layout is ready to review")).firstMatch
+        XCTAssertTrue(seeded.waitForExistence(timeout: 10))
+        sleep(1)
+        snapshot(app, "dark-conversation")
     }
 
     /// The sign-in screen as it first opens, against the real gateway's

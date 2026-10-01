@@ -36,7 +36,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Sign-in")
                 } footer: {
-                    Text("A passkey signs you in with Face ID and syncs through iCloud Keychain. Passkeys you made in the panel work here too.")
+                    Text("A passkey signs you in with \(Biometry.name) and syncs through iCloud Keychain. Passkeys you made in the panel work here too.")
                 }
                 Section {
                     LabeledContent("This iPhone", value: authLabel)
@@ -102,7 +102,7 @@ struct SettingsView: View {
         defer { addingPasskey = false }
         do {
             try await app.addPasskey()
-            passkeyResult = "Passkey added. Next time, sign in with Face ID."
+            passkeyResult = "Passkey added. Next time, sign in with \(Biometry.name)."
             await refresh()
         } catch PasskeyError.cancelled {
             passkeyResult = nil

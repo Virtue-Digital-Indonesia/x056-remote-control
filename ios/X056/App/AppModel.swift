@@ -8,6 +8,10 @@ enum Route: Hashable {
     case draft(projectId: String, id: UUID)
 }
 
+enum AppTab: Hashable {
+    case projects, activity, accounts, search
+}
+
 enum Connection: Equatable {
     case offline
     case connecting
@@ -44,6 +48,8 @@ final class AppModel {
     /// Bumped on the `accounts` event; the accounts screen refetches on change.
     var accountsTick = 0
 
+    var tab: AppTab = .projects
+    /// The Projects tab's stack; notification taps write it.
     var path: [Route] = []
     /// The conversation on screen, so its own notifications don't banner.
     private(set) var visibleSessionId: String?
@@ -233,6 +239,47 @@ final class AppModel {
     }
 
     func isWorking(_ sessionId: String) -> Bool { running.contains(sessionId) || background.contains(sessionId) }
+
+    /// The project and conversation a session id belongs to.
+    func locate(_ sessionId: String) -> (project: Project, conversation: Conversation)? {
+        for p in projects {
+            if let c = p.conversations?.first(where: { $0.sessionId == sessionId }) { return (p, c) }
+        }
+        return nil
+    }
+
+    /// The panel's own link (`manager.conversationUrl`): /chat/<id> for a
+    /// chat, /?project=&session= for a project conversation.
+    func panelURL(projectId: String, sessionId: String?, isChat: Bool) -> URL? {
+        guard let server, var c = URLComponents(url: server, resolvingAgainstBaseURL: false) else { return nil }
+        if isChat { return server.appending(path: "chat/\(projectId)") }
+        c.path = "/"
+        c.queryItems = [URLQueryItem(name: "project", value: projectId)] + (sessionId.map { [URLQueryItem(name: "session", value: $0)] } ?? [])
+        return c.url
+    }
+
+    /// Questions and approvals: the Activity tab's badge.
+    var needsYouCount: Int { questions.count + approvals.count }
+
+    /// Epoch ms of a project's newest conversation activity.
+    func lastActivity(_ p: Project) -> Double { p.conversations?.map(\.recency).max() ?? 0 }
+
+    func decide(_ approval: McpApproval, approve: Bool) async throws {
+        guard let client else { return }
+        let body = DecideBody(id: approval.id, approve: approve, reviewedOperationId: approve ? approval.contextReview?.operationId : nil)
+        try await client.post("/api/mcp/approvals/decide", body)
+        approvals.removeAll { $0.id == approval.id }
+    }
+
+    /// Stop a conversation's turn, or interrupt its background work.
+    func stop(projectId: String, sessionId: String) async {
+        guard let client else { return }
+        do {
+            try await client.post("/api/sessions/current/stop", ConversationRef(projectId: projectId, sessionId: sessionId))
+        } catch let e as APIError where e.status == 409 {
+            _ = try? await client.post("/api/conversations/halt", HaltBody(projectId: projectId, sessionId: sessionId, dropQueued: false))
+        } catch {}
+    }
 
     // MARK: open conversations receive their events
 
@@ -450,6 +497,7 @@ final class AppModel {
     /// Route a notification tap to its conversation.
     func open(projectId: String, sessionId: String?) {
         guard !projectId.isEmpty else { return }
+        tab = .projects
         if let sessionId {
             path = [.project(projectId), .conversation(projectId: projectId, sessionId: sessionId)]
         } else {

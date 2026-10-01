@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// First screen. The app icon is the passkey button: press it, Face ID runs,
+/// First screen. The app icon is the passkey button: press it, Face ID or Touch ID runs,
 /// you are in. The token is the fallback, one tap away.
 struct LoginView: View {
     @Environment(AppModel.self) private var app
@@ -80,7 +80,7 @@ struct LoginView: View {
 
     private var caption: String {
         if let error { return error }
-        if busy == .passkey { return "Waiting for Face ID" }
+        if busy == .passkey { return "Waiting for \(Biometry.name)" }
         if let notice = app.signInNotice { return notice }
         if hasPasskeys == false { return "This gateway has no passkey yet. Sign in with the access token, then add one in Settings." }
         return "Press the key to use your passkey."

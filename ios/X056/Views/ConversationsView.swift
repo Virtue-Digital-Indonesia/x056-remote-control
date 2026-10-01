@@ -11,19 +11,44 @@ struct ConversationsView: View {
             NavigationLink(value: Route.conversation(projectId: projectId, sessionId: c.sessionId)) {
                 ConversationRow(conversation: c, projectId: projectId)
             }
+            .swipeActions(edge: .trailing) {
+                if app.isWorking(c.sessionId) {
+                    Button("Stop", systemImage: "stop.fill", role: .destructive) {
+                        Task { await app.stop(projectId: projectId, sessionId: c.sessionId) }
+                    }
+                }
+            }
+            .contextMenu {
+                if let url = app.panelURL(projectId: projectId, sessionId: c.sessionId, isChat: project?.isChat ?? false) {
+                    Link(destination: url) { Label("Open in the panel", systemImage: "safari") }
+                }
+                if app.isWorking(c.sessionId) {
+                    Button("Stop", systemImage: "stop.fill", role: .destructive) {
+                        Task { await app.stop(projectId: projectId, sessionId: c.sessionId) }
+                    }
+                }
+            }
         }
         .overlay {
             if convs.isEmpty {
-                ContentUnavailableView("No conversations", systemImage: "bubble.left", description: Text("Start one with the compose button."))
+                ContentUnavailableView {
+                    Label("No conversations", systemImage: "bubble.left.and.bubble.right")
+                } description: {
+                    Text("Start one to run a turn in \(project?.name ?? "this project").")
+                } actions: {
+                    NavigationLink("New conversation", value: Route.draft(projectId: projectId, id: UUID()))
+                        .buttonStyle(.glassProminent)
+                }
             }
         }
         .refreshable { await app.refreshProjects() }
         .navigationTitle(project?.name ?? "Project")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationSubtitle(project?.providerLabel ?? "")
+        .toolbarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: Route.draft(projectId: projectId, id: UUID())) {
-                    Image(systemName: "square.and.pencil")
+                    Label("New conversation", systemImage: "square.and.pencil")
                 }
             }
         }
@@ -34,30 +59,38 @@ struct ConversationRow: View {
     @Environment(AppModel.self) private var app
     let conversation: Conversation
     let projectId: String
+    var showProject = false
 
     var body: some View {
         let sid = conversation.sessionId
-        let running = app.running.contains(sid)
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
+        let state = WorkState.of(sid, in: app, outcome: conversation.lastOutcome)
+        let queued = app.queued(projectId, sid).count
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
                     .lineLimit(2)
-                HStack(spacing: 6) {
-                    if conversation.recency > 0 { Text(conversation.recency.relativeFromMillis) }
-                    if let account = app.runningAccounts[sid], running { Text("· account \(account)") }
-                    let queued = app.queued(projectId, sid).count
-                    if queued > 0 { Text("· \(queued) queued") }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text(detail(state: state, queued: queued))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            Spacer()
-            if app.questions[sid] != nil {
-                Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange)
-            } else if conversation.lastOutcome?.status == "failed", !running {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-            }
-            WorkingIndicator(running: running, background: app.background.contains(sid) && !running)
+            Spacer(minLength: 8)
+            StateSymbol(state: state)
+                .padding(.top, 2)
         }
+    }
+
+    private func detail(state: WorkState, queued: Int) -> String {
+        var parts: [String] = []
+        if showProject, let name = app.project(projectId)?.name { parts.append(name) }
+        if state == .running, let account = app.runningAccounts[conversation.sessionId] {
+            parts.append("Running on account \(account)")
+        } else if state == .background {
+            parts.append("Working in the background")
+        } else if conversation.recency > 0 {
+            parts.append(conversation.recency.relativeFromMillis)
+        }
+        if queued > 0 { parts.append("\(queued) queued") }
+        return parts.joined(separator: ", ")
     }
 }

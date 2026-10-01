@@ -1,3 +1,4 @@
+import LocalAuthentication
 import SwiftUI
 import UIKit
 
@@ -34,5 +35,20 @@ extension Color {
         self.init(UIColor { traits in
             UIColor(Color(hex: traits.userInterfaceStyle == .dark ? dark : light))
         })
+    }
+}
+
+
+/// "Face ID" on most iPhones, "Touch ID" on iPhone Duo.
+enum Biometry {
+    static var name: String {
+        let context = LAContext()
+        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+        switch context.biometryType {
+        case .faceID: return "Face ID"
+        case .touchID: return "Touch ID"
+        case .opticID: return "Optic ID"
+        default: return "your passcode"
+        }
     }
 }

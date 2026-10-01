@@ -126,10 +126,9 @@ private final class PasskeySheet: NSObject, ASAuthorizationControllerDelegate, A
     }
 
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow) ?? ASPresentationAnchor()
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        if let key = scenes.flatMap(\.windows).first(where: \.isKeyWindow) { return key }
+        return ASPresentationAnchor(windowScene: scenes[0])
     }
 }
 

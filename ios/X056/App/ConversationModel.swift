@@ -292,17 +292,10 @@ final class ConversationModel {
         sendError = message
     }
 
-    /// Stop the turn. With no turn running, interrupt background work instead
-    /// (the stop route answers 409 there) and keep the queue.
+    /// Stop the turn, or interrupt background work and keep the queue.
     func stop() async {
-        guard let sessionId, let client = app.client else { return }
-        do {
-            try await client.post("/api/sessions/current/stop", ConversationRef(projectId: projectId, sessionId: sessionId))
-        } catch let e as APIError where e.status == 409 {
-            _ = try? await client.post("/api/conversations/halt", HaltBody(projectId: projectId, sessionId: sessionId, dropQueued: false))
-        } catch {
-            sendError = error.localizedDescription
-        }
+        guard let sessionId else { return }
+        await app.stop(projectId: projectId, sessionId: sessionId)
     }
 
     func dismissQuestion() async {

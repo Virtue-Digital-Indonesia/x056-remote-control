@@ -22,7 +22,7 @@ struct X056App: App {
         WindowGroup {
             RootView()
                 .environment(app)
-                .tint(Color.accentColor)
+                .tint(Palette.clay)
                 .preferredColorScheme(Self.forcedScheme)
         }
         .onChange(of: scenePhase) { _, phase in
@@ -47,23 +47,54 @@ struct RootView: View {
     }
 }
 
+/// Native tabs. On iPhone Duo the system draws them, with each screen's
+/// toolbar items, in the vertical bar beside the content; on other iPhones
+/// they are the tab bar, and on iPad a sidebar.
 struct MainView: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
         @Bindable var app = app
-        NavigationStack(path: $app.path) {
-            ProjectsView()
-                .navigationDestination(for: Route.self) { route in
-                    switch route {
-                    case .project(let id):
-                        ConversationsView(projectId: id)
-                    case .conversation(let pid, let sid):
-                        ConversationView(projectId: pid, sessionId: sid)
-                    case .draft(let pid, _):
-                        ConversationView(projectId: pid, sessionId: nil)
-                    }
+        TabView(selection: $app.tab) {
+            Tab("Projects", systemImage: "folder", value: AppTab.projects) {
+                NavigationStack(path: $app.path) {
+                    ProjectsView().routes()
                 }
+            }
+            Tab("Activity", systemImage: "dot.radiowaves.left.and.right", value: AppTab.activity) {
+                NavigationStack {
+                    ActivityView().routes()
+                }
+            }
+            .badge(app.needsYouCount)
+            Tab("Accounts", systemImage: "gauge.with.dots.needle.67percent", value: AppTab.accounts) {
+                NavigationStack {
+                    AccountsView()
+                }
+            }
+            Tab(value: AppTab.search, role: .search) {
+                NavigationStack {
+                    SearchView().routes()
+                }
+            }
+        }
+        .tabViewStyle(.sidebarAdaptable)
+        .tabBarMinimizeBehavior(.onScrollDown)
+    }
+}
+
+extension View {
+    /// Every tab pushes the same screens.
+    func routes() -> some View {
+        navigationDestination(for: Route.self) { route in
+            switch route {
+            case .project(let id):
+                ConversationsView(projectId: id)
+            case .conversation(let pid, let sid):
+                ConversationView(projectId: pid, sessionId: sid)
+            case .draft(let pid, _):
+                ConversationView(projectId: pid, sessionId: nil)
+            }
         }
     }
 }
