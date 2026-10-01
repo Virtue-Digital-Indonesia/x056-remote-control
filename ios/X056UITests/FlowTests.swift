@@ -134,6 +134,137 @@ final class FlowTests: XCTestCase {
         snapshot(app, "dark-conversation")
     }
 
+    /// A long conversation and a rich reply, as the fixture serves them with
+    /// X056_TEST_RICH_REPLY=1: earlier messages load without moving what you
+    /// read, a step list drops below its header, a table renders, a question
+    /// batch wraps and takes written answers, sending follows to the end,
+    /// and scrolling back folds the composer away until Latest.
+    func testRichConversation() throws {
+        let app = signInToFixture()
+        app.buttons["Projects"].firstMatch.tap()
+        let project = app.staticTexts["Website refresh"]
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+        project.tap()
+        let conversation = app.staticTexts["Review accessibility findings"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+        conversation.tap()
+        let composer = app.textViews["composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Search"].isHittable, "no tabs or Search in a conversation")
+        let projects = try XCTUnwrap(api("GET", "/api/projects")?["projects"] as? [[String: Any]])
+        let site = try XCTUnwrap(projects.first { ($0["name"] as? String) == "Website refresh" })
+        let conv = try XCTUnwrap((site["conversations"] as? [[String: Any]])?.first { ($0["title"] as? String) == "Review accessibility findings" })
+        // A question left by an earlier run would sit over the conversation.
+        for q in apiList("/api/questions") where q["sessionId"] as? String == conv["sessionId"] as? String {
+            _ = api("POST", "/api/questions/dismiss", ["projectId": site["id"]!, "sessionId": conv["sessionId"]!, "at": q["at"]!])
+        }
+
+        // Earlier messages load above without moving what is on screen.
+        let earlier = app.buttons["Show earlier messages"]
+        for _ in 0..<25 where !(earlier.exists && earlier.isHittable) { app.swipeDown() }
+        // One more, so the button sits below the top bar (a tap up there
+        // is a tap on the status bar, which scrolls to the top), then let
+        // the swipes coast to a stop before measuring.
+        app.swipeDown()
+        sleep(2)
+        XCTAssertTrue(earlier.isHittable)
+        XCTAssertGreaterThan(earlier.frame.minY, app.navigationBars.firstMatch.frame.maxY)
+        let oldest = app.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "(#40)")).firstMatch
+        XCTAssertTrue(oldest.exists)
+        let before = oldest.frame.minY
+        earlier.tap()
+        sleep(2)
+        snapshot(app, "10-earlier-loaded")
+        XCTAssertEqual(oldest.frame.minY, before, accuracy: 2, "loading earlier messages must not move the screen")
+        app.swipeDown()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "(#39)")).firstMatch.waitForExistence(timeout: 5), "the earlier messages are above")
+
+        // Scrolling back folded the composer; Latest returns to the end.
+        let latest = app.buttons["Latest"]
+        // Folded: Latest and Write stand in for it. (XCUITest still reports
+        // the folded UIKit text view as hittable, so it is not asked.)
+        XCTAssertTrue(latest.exists)
+        XCTAssertTrue(app.buttons["Write"].isHittable)
+        latest.tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: latest)
+        wait(for: [gone], timeout: 5)
+        XCTAssertTrue(composer.isHittable)
+
+        // A turn from "the web" (no keyboard): steps, a table, two questions.
+        _ = api("POST", "/api/sessions/current/messages", ["prompt": "Run the checks.", "projectId": site["id"]!, "sessionId": conv["sessionId"]!])
+        XCTAssertTrue(app.staticTexts["Fixture response received."].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["Public specimen lookup"].waitForExistence(timeout: 5), "the table renders as cells")
+        XCTAssertTrue(app.staticTexts["What I need from you"].exists)
+        sleep(1)
+
+        // The question card fills the bottom of a phone: it folds to its
+        // header, and reading back folds it away with the composer.
+        XCTAssertTrue(app.staticTexts["2 questions"].waitForExistence(timeout: 10))
+        app.buttons["Hide questions"].tap()
+        XCTAssertTrue(app.buttons["Show questions"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Send answers"].exists)
+        app.swipeDown(velocity: .slow)
+        sleep(1)
+        XCTAssertTrue(app.buttons["Write"].waitForExistence(timeout: 5))
+
+        // The step list drops down below its header.
+        let steps = app.buttons["steps"].firstMatch
+        XCTAssertTrue(steps.waitForExistence(timeout: 10))
+        // Into view (an element tap scrolls to it, and opens it), closed
+        // again in place, then dragged a third of the way down the screen.
+        steps.tap()
+        sleep(1)
+        steps.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).tap()
+        sleep(1)
+        steps.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
+            .press(forDuration: 0.3, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.3)), withVelocity: .slow, thenHoldForDuration: 0.3)
+        sleep(1)
+        XCTAssertTrue(steps.isHittable, "steps header at \(steps.frame)")
+        let header = steps.frame
+        steps.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).tap()
+        let firstStep = app.staticTexts["Reading home.tsx"].firstMatch
+        XCTAssertTrue(firstStep.waitForExistence(timeout: 5))
+        sleep(1)
+        snapshot(app, "11-steps-open")
+        XCTAssertGreaterThanOrEqual(firstStep.frame.minY, steps.frame.maxY, "steps sit below their header")
+        XCTAssertEqual(steps.frame.minY, header.minY, accuracy: 1, "opening a step list must not move its header")
+
+        // The question batch: options wrap inside the card, and each
+        // question takes a written answer.
+        latest.tap()
+        XCTAssertTrue(app.buttons["Show questions"].waitForExistence(timeout: 5))
+        app.buttons["Show questions"].tap()
+        XCTAssertTrue(app.buttons["Send answers"].waitForExistence(timeout: 5))
+        sleep(1)
+        let screen = app.windows.firstMatch.frame
+        for label in ["Keep the hold until the source owner confirms", "Require verified templates before the demo"] {
+            let option = app.buttons[label]
+            XCTAssertTrue(option.exists, label)
+            XCTAssertLessThanOrEqual(option.frame.maxX, screen.maxX - 8, "\(label) runs past the card")
+        }
+        snapshot(app, "12-questions")
+        let send = app.buttons["Send answers"]
+        XCTAssertFalse(send.isEnabled)
+        let own = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Your answer: May I lift")).firstMatch
+        XCTAssertTrue(own.exists)
+        own.tap()
+        own.typeText("Only the catalogue checks")
+        sleep(1) // the keyboard settles; a tap during its rise misses
+        app.buttons["Accept summaries for the demo"].tap()
+        let ready = expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: send)
+        wait(for: [ready], timeout: 5)
+        send.tap()
+
+        // Sending follows to the end: the answer is on screen, no Latest.
+        let answer = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Answer: Only the catalogue checks")).firstMatch
+        XCTAssertTrue(answer.waitForExistence(timeout: 5))
+        sleep(1)
+        XCTAssertTrue(answer.isHittable, "the sent answer is in view")
+        XCTAssertFalse(latest.exists)
+        snapshot(app, "13-answer-sent")
+    }
+
     /// Read state is shared through the gateway: what the web marks shows on
     /// the phone, and the phone's reads reach the gateway. "The web" here is
     /// plain API calls to the fixture with its token.
@@ -169,6 +300,14 @@ final class FlowTests: XCTestCase {
 
     /// One JSON call to the fixture gateway, synchronously.
     private func api(_ method: String, _ path: String, _ body: [String: Any]? = nil) -> [String: Any]? {
+        request(method, path, body) as? [String: Any]
+    }
+
+    private func apiList(_ path: String) -> [[String: Any]] {
+        request("GET", path, nil) as? [[String: Any]] ?? []
+    }
+
+    private func request(_ method: String, _ path: String, _ body: [String: Any]?) -> Any? {
         var req = URLRequest(url: URL(string: server + path)!)
         req.httpMethod = method
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -177,9 +316,9 @@ final class FlowTests: XCTestCase {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         let done = DispatchSemaphore(value: 0)
-        nonisolated(unsafe) var out: [String: Any]?
+        nonisolated(unsafe) var out: Any?
         URLSession.shared.dataTask(with: req) { data, _, _ in
-            out = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            out = data.flatMap { try? JSONSerialization.jsonObject(with: $0) }
             done.signal()
         }.resume()
         _ = done.wait(timeout: .now() + 10)
@@ -206,7 +345,8 @@ final class FlowTests: XCTestCase {
     }
 
     private func snapshot(_ app: XCUIApplication, _ name: String) {
-        let shot = XCTAttachment(screenshot: app.screenshot())
+        let screenshot = app.screenshot()
+        let shot = XCTAttachment(screenshot: screenshot)
         shot.name = name
         shot.lifetime = .keepAlways
         add(shot)
@@ -214,6 +354,8 @@ final class FlowTests: XCTestCase {
         // host runs a watcher on this folder, ask it for a simctl screenshot.
         let dir = "/tmp/x056-shots"
         guard FileManager.default.fileExists(atPath: dir) else { return }
+        // XCTest's own capture, readable without the result bundle.
+        try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: "\(dir)/\(name)-xc.png"))
         let request = "\(dir)/\(name).request"
         FileManager.default.createFile(atPath: request, contents: nil)
         for _ in 0..<30 where FileManager.default.fileExists(atPath: request) { usleep(100_000) }

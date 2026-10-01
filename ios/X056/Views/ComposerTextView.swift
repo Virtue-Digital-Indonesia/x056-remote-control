@@ -39,6 +39,13 @@ struct PendingFile: Identifiable, Hashable {
 /// cannot take a pasted image or file. A paste of images or files becomes
 /// attachments; a paste of text longer than `longTextLimit` becomes a .txt
 /// attachment; anything else pastes as text.
+extension EnvironmentValues {
+    /// The composer is folded away. Its UIKit text view hides too: SwiftUI's
+    /// hiding on the container does not reach it, so it stayed in the
+    /// accessibility tree and kept the keyboard.
+    @Entry var composerFolded = false
+}
+
 struct ComposerTextView: UIViewRepresentable {
     @Binding var text: String
     var placeholder: String
@@ -65,6 +72,8 @@ struct ComposerTextView: UIViewRepresentable {
         view.placeholder = placeholder
         view.longTextLimit = longTextLimit
         view.onPaste = onPaste
+        view.isHidden = context.environment.composerFolded
+        if view.isHidden, view.isFirstResponder { view.resignFirstResponder() }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView view: PasteAwareTextView, context: Context) -> CGSize? {

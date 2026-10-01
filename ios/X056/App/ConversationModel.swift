@@ -11,7 +11,9 @@ enum ChatCard: Equatable {
 
 struct ChatRow: Identifiable, Equatable {
     enum Role { case user, assistant, action, error, notice, card }
-    let id = UUID()
+    /// Kept across history reloads (`keepingIDs`), so the list keeps its
+    /// layout and an open step list stays open.
+    var id = UUID()
     var role: Role
     var text: String
     var detail: String?
@@ -50,6 +52,8 @@ final class ConversationModel {
     var rows: [ChatRow] = []
     var loading = false
     var loadingOlder = false
+    /// Counts sends from this phone; the view follows to the end on each.
+    var sendCount = 0
     var loadError: String?
     var done = false
     var sendError: String?
@@ -127,7 +131,11 @@ final class ConversationModel {
         guard let sessionId, let client = app.client else { return }
         guard let page = try? await client.get("/api/conversations/history-page", query: ["projectId": projectId, "sessionId": sessionId, "limit": "80"], as: HistoryPage.self) else { return }
         let unsent = rows.filter { $0.pending || $0.failed }
-        rows = page.rows.compactMap(Self.row) + unsent
+        // Fresh ids for every row made the list drop each measured height
+        // and guess again: the last message ended under the composer, and
+        // scrolling to it sprang back.
+        let next = Self.keepingIDs(page.rows.compactMap(Self.row), from: rows.filter { !$0.pending && !$0.failed }) + unsent
+        if next != rows { rows = next }
         cursor = page.cursor
         done = page.done ?? true
     }
@@ -143,6 +151,22 @@ final class ConversationModel {
             done = page.done ?? true
         } catch {
             loadError = error.localizedDescription
+        }
+    }
+
+    /// A reloaded page's rows take the ids of the rows they repeat, matched
+    /// by role, text and detail in order.
+    static func keepingIDs(_ fresh: [ChatRow], from old: [ChatRow]) -> [ChatRow] {
+        func key(_ r: ChatRow) -> String { "\(r.role)|\(r.text)|\(r.detail ?? "")" }
+        var pool: [String: [UUID]] = [:]
+        for r in old { pool[key(r), default: []].append(r.id) }
+        return fresh.map { r in
+            var r = r
+            if var ids = pool[key(r)], !ids.isEmpty {
+                r.id = ids.removeFirst()
+                pool[key(r)] = ids
+            }
+            return r
         }
     }
 
@@ -298,6 +322,7 @@ final class ConversationModel {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty || !files.isEmpty else { return }
         sendError = nil
+        sendCount += 1
         // Steering carries no files; the gateway would queue them anyway.
         if mode == .steer, files.isEmpty, let sessionId {
             await steer(prompt, sessionId: sessionId, client: client)

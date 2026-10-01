@@ -46,6 +46,16 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         if case .prose(let text) = blocks[3] { #expect(text == "After") } else { Issue.record("after") }
     }
 
+    @Test func readsATable() {
+        let blocks = MarkdownText.blocks("Before\n\n| Item | Blocker |\n|---|:---:|\n| **Lookup** | Pending \\| waiting |\n| Scan |\nAfter")
+        guard blocks.count == 3, case .table(let header, let rows) = blocks[1] else {
+            Issue.record("expected prose, table, prose: \(blocks)")
+            return
+        }
+        #expect(header == ["Item", "Blocker"])
+        #expect(rows == [["**Lookup**", "Pending | waiting"], ["Scan"]])
+    }
+
     @Test func showsAnUnterminatedFenceWhileStreaming() {
         let blocks = MarkdownText.blocks("```\npartial")
         if case .code(_, let code) = blocks.last { #expect(code == "partial") } else { Issue.record("expected code") }
@@ -84,6 +94,14 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         m.apply(event("conversation_settled", #"{"sessionId":"s","status":"completed"}"#))
         #expect(m.rows.allSatisfy { !$0.inFlight })
         #expect(m.activity == nil)
+    }
+
+    @Test func aReloadKeepsTheRowsItRepeats() {
+        let old = [ChatRow(role: .user, text: "Fix it"), ChatRow(role: .action, text: "Reading a.ts"), ChatRow(role: .assistant, text: "Done.")]
+        let fresh = [ChatRow(role: .user, text: "Fix it"), ChatRow(role: .action, text: "Reading a.ts"), ChatRow(role: .assistant, text: "Done."), ChatRow(role: .user, text: "Fix it")]
+        let kept = ConversationModel.keepingIDs(fresh, from: old)
+        #expect(kept.prefix(3).map(\.id) == old.map(\.id))
+        #expect(kept[3].id == fresh[3].id, "a repeat beyond the old rows is a new row")
     }
 
     @Test func mapsHistoryRoles() {

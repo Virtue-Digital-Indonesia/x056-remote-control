@@ -86,11 +86,19 @@ struct ConfidenceMeter: View {
 struct FlowRow: Layout {
     var spacing: CGFloat = 8
 
+    /// Its natural size, but never wider than the row: a long item wraps
+    /// its own text instead of running past the edge.
+    private static func size(_ v: LayoutSubview, width: CGFloat) -> CGSize {
+        let ideal = v.sizeThatFits(.unspecified)
+        guard width.isFinite, ideal.width > width else { return ideal }
+        return v.sizeThatFits(ProposedViewSize(width: width, height: nil))
+    }
+
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0, maxX: CGFloat = 0
         for v in subviews {
-            let s = v.sizeThatFits(.unspecified)
+            let s = Self.size(v, width: width)
             if x > 0 && x + s.width > width { x = 0; y += rowH + spacing; rowH = 0 }
             x += s.width + spacing
             rowH = max(rowH, s.height)
@@ -102,7 +110,7 @@ struct FlowRow: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var x = bounds.minX, y = bounds.minY, rowH: CGFloat = 0
         for v in subviews {
-            let s = v.sizeThatFits(.unspecified)
+            let s = Self.size(v, width: bounds.width)
             if x > bounds.minX && x + s.width > bounds.maxX { x = bounds.minX; y += rowH + spacing; rowH = 0 }
             v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
             x += s.width + spacing

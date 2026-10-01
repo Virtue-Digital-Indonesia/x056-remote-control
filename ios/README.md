@@ -23,15 +23,17 @@ open X056.xcodeproj
 
 ## Test
 
-Unit tests and one UI flow run against the repo's fixture gateway, which has a fake CLI and seeded conversations:
+Unit tests and the UI flows run against the repo's fixture gateway, which has a fake CLI and seeded conversations. Start it from the repo root:
 
 ```sh
-X056_TEST_PORT=8768 node --import tsx test/browser/fixture.ts &
+X056_TEST_RICH_REPLY=1 X056_TEST_PORT=8768 node --import tsx test/browser/fixture.ts &
 cd ios && xcodebuild test -project X056.xcodeproj -scheme X056 \
-  -destination 'platform=iOS Simulator,name=<simulator>'
+  -destination 'platform=iOS Simulator,name=x056 tests'
 ```
 
-The UI flow answers the fixture's pending question. Restart the fixture before running it again.
+`X056_TEST_RICH_REPLY=1` gives each conversation 120 numbered messages (more than one history page) and makes the fake CLI's reply carry three tool steps, a Markdown table and a two-question batch. `testRichConversation` needs it; the other flows work either way.
+
+Run the UI tests on their own simulator: each one resets the app's sign-in. The flows answer the fixture's pending question, so restart the fixture before running them again.
 
 ## TestFlight
 

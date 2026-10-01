@@ -3,11 +3,62 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Everything that floats over the bottom of a conversation, in glass.
+/// Back to the newest message, and keep following it.
+struct LatestButton: View {
+    let working: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label {
+                Text("Latest")
+            } icon: {
+                if working { ProgressView().controlSize(.mini) } else { Image(systemName: "arrow.down") }
+            }
+        }
+        .buttonStyle(.glass)
+        .accessibilityHint("Scrolls to the newest message and keeps it in view")
+    }
+}
+
 struct ComposerArea: View {
     let model: ConversationModel
+    /// Folded while reading back through history.
+    @Binding var folded: Bool
+    var jumpToLatest: () -> Void = {}
     @State private var showQueue = false
 
     var body: some View {
+        VStack(spacing: 0) {
+            if folded {
+                HStack(spacing: 10) {
+                    Spacer()
+                    LatestButton(working: model.isWorking, action: jumpToLatest)
+                    Button { withAnimation(.snappy) { folded = false } } label: {
+                        Label("Write", systemImage: "square.and.pencil")
+                    }
+                    .buttonStyle(.glass)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            fullArea
+                // Still alive while folded (the draft and attached files stay),
+                // but taking no room: the history gets the screen.
+                .frame(maxHeight: folded ? 0 : nil, alignment: .top)
+                .clipped()
+                .opacity(folded ? 0 : 1)
+                .allowsHitTesting(!folded)
+                .accessibilityHidden(folded)
+                .environment(\.composerFolded, folded)
+        }
+        .frame(maxWidth: 800)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+        .sheet(isPresented: $showQueue) { QueueSheet(model: model) }
+    }
+
+    private var fullArea: some View {
         GlassEffectContainer(spacing: 10) {
             VStack(spacing: 10) {
                 if let banner = model.banner {
@@ -31,11 +82,6 @@ struct ComposerArea: View {
                 Composer(model: model, showQueue: $showQueue)
             }
         }
-        .frame(maxWidth: 800)
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
-        .sheet(isPresented: $showQueue) { QueueSheet(model: model) }
     }
 }
 
