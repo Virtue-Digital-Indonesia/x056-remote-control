@@ -269,3 +269,33 @@ describe('what the deploy actuator asks', () => {
     expect(liveWorkflowRuns(dirs)).toEqual([]);
   });
 });
+
+describe('failed workflow agents', () => {
+  // Real journals write {"type":"failed","key","agentId"} -- 134 of them in 20.
+  const journal = [
+    { type: 'started', agentId: 'ok1' },
+    { type: 'started', agentId: 'bad1' },
+    { type: 'started', agentId: 'busy' },
+    { type: 'result', agentId: 'ok1', result: 'x' },
+    { type: 'failed', key: 'v2:abc', agentId: 'bad1' },
+  ];
+
+  it('a failed line counts as finished, and is counted apart', () => {
+    const dirs = runOnDisk({ sessionId: 's1', runId: 'wf_fail', journal, agents: [{ id: 'ok1' }, { id: 'bad1' }, { id: 'busy' }] });
+    const [run] = listWorkflowRuns(dirs, 's1');
+    expect(run).toMatchObject({ started: 3, finished: 2, failed: 1, live: true });
+  });
+
+  it('a run whose only unfinished agents failed is complete, not live', () => {
+    const dirs = runOnDisk({ sessionId: 's1', runId: 'wf_done', journal: journal.filter((l) => l.agentId !== 'busy'), agents: [{ id: 'ok1' }, { id: 'bad1' }] });
+    expect(listWorkflowRuns(dirs, 's1')[0]).toMatchObject({ started: 2, finished: 2, live: false });
+  });
+
+  it('agents carry failed and a status; running only while the run is live', () => {
+    const dirs = runOnDisk({ sessionId: 's1', runId: 'wf_fail', journal, agents: [{ id: 'ok1' }, { id: 'bad1' }, { id: 'busy' }] });
+    const dir = workflowRunDir(dirs, 's1', 'wf_fail')!;
+    const live = Object.fromEntries(listWorkflowAgents(dir, true).map((a) => [a.agentId, [a.status, a.done, a.failed]]));
+    expect(live).toEqual({ ok1: ['done', true, false], bad1: ['failed', false, true], busy: ['running', false, false] });
+    expect(listWorkflowAgents(dir, false).find((a) => a.agentId === 'busy')!.status).toBe('unknown');
+  });
+});

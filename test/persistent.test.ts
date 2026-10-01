@@ -528,3 +528,77 @@ describe('steering picks the right process', () => {
     expect(p.injectMessage('s1', 'steer me')).toBe(false);
   });
 })
+
+describe('switching model and back does not reuse a stale process', () => {
+  // Claude's key includes the model, so sonnet -> opus -> sonnet used to find
+  // the FIRST sonnet process again -- one that never saw the opus turn.
+  it('model A, then B, then A spawns a fresh A process and kills the original', async () => {
+    let t = 1_000;
+    const { p, spawned } = pool({ maxSessions: 5, workingGraceMs: 100, now: () => t });
+    const h1 = p.startTurn(turn({ model: 'sonnet', prompt: 'one' }));
+    spawned[0].cli.result('a'); await h1.done;
+    t += 1_000;
+    const h2 = p.startTurn(turn({ model: 'opus', mode: 'resume', prompt: 'two' }));
+    spawned[1].cli.result('b'); await h2.done;
+    t += 1_000;
+    const h3 = p.startTurn(turn({ model: 'sonnet', mode: 'resume', prompt: 'three' }));
+    expect(spawned).toHaveLength(3);
+    expect(spawned[0].cli.killed).toBe(true);
+    expect(spawned[2].args).toContain('sonnet');
+    expect(spawned[2].args).toContain('--resume');
+    // The stale process never got the third prompt.
+    expect(spawned[0].cli.msgs().map((m) => m.message.content[0].text)).toEqual(['one']);
+    expect(spawned[2].cli.msgs().map((m) => m.message.content[0].text)).toEqual(['three']);
+    spawned[2].cli.result('c'); await h3.done;
+    p.shutdown();
+  });
+
+  it('switching A -> B destroys the idle A process when B spawns', async () => {
+    let t = 1_000;
+    const { p, spawned } = pool({ maxSessions: 5, workingGraceMs: 100, now: () => t });
+    const h1 = p.startTurn(turn({ model: 'sonnet' }));
+    spawned[0].cli.result('a'); await h1.done;
+    t += 1_000; // past the working grace: A is idle
+    p.startTurn(turn({ model: 'opus', mode: 'resume' }));
+    expect(spawned).toHaveLength(2);
+    expect(spawned[0].cli.killed).toBe(true);
+    expect(p.stats().sessions).toBe(1);
+    p.shutdown();
+  });
+
+  it('leaves a working A process alone at B spawn, and still never reuses it', async () => {
+    let t = 1_000;
+    const { p, spawned } = pool({ maxSessions: 5, workingGraceMs: 100, now: () => t });
+    const h1 = p.startTurn(turn({ model: 'sonnet' }));
+    spawned[0].cli.result('a'); await h1.done;
+    t += 50; // A still within its working grace
+    const h2 = p.startTurn(turn({ model: 'opus', mode: 'resume' }));
+    expect(spawned[0].cli.killed).toBe(false);
+    spawned[1].cli.result('b'); await h2.done;
+    // A keeps doing background work while the conversation returns to sonnet.
+    spawned[0].cli.emit({ type: 'assistant', message: { content: [] } });
+    const h3 = p.startTurn(turn({ model: 'sonnet', mode: 'resume', prompt: 'three' }));
+    expect(spawned).toHaveLength(3);
+    expect(spawned[0].cli.killed).toBe(false); // background work survives
+    expect(spawned[0].cli.msgs().some((m) => m.message?.content?.[0]?.text === 'three')).toBe(false);
+    expect(spawned[2].cli.msgs().map((m) => m.message.content[0].text)).toEqual(['three']);
+    spawned[2].cli.result('c'); await h3.done;
+    // Still tracked: shutdown reaches the retired process.
+    p.shutdown();
+    expect(spawned[0].cli.killed).toBe(true);
+  });
+
+  it('same model on consecutive turns still reuses one process', async () => {
+    let t = 1_000;
+    const { p, spawned } = pool({ maxSessions: 5, workingGraceMs: 100, now: () => t });
+    for (const prompt of ['one', 'two', 'three']) {
+      const h = p.startTurn(turn({ model: 'sonnet', mode: prompt === 'one' ? 'new' : 'resume', prompt }));
+      spawned[0].cli.result(prompt); await h.done;
+      t += 1_000;
+    }
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].cli.killed).toBe(false);
+    expect(spawned[0].cli.msgs().map((m) => m.message.content[0].text)).toEqual(['one', 'two', 'three']);
+    p.shutdown();
+  });
+});

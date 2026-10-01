@@ -2,6 +2,7 @@ import { createHash, createPrivateKey, sign, type KeyObject } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { connect, type ClientHttp2Session } from 'node:http2';
 import { join } from 'node:path';
+import type { Notice } from './notices.js';
 
 /**
  * Apple Push (APNs) for the native iOS app, beside the panel's Web Push.
@@ -20,15 +21,12 @@ export interface ApnsConfig { keyId: string; teamId: string; bundleId: string; k
 
 export interface ApnsDevice { token: string; env: ApnsEnv; name?: string; at: number }
 
-export interface ApnsAlert {
-  title: string;
-  body: string;
-  kind: string;
-  projectId: string;
-  sessionId?: string;
-  notificationId?: string;
-  url?: string;
-}
+/** What APNs needs from a notice (server/notices.ts). */
+export type ApnsAlert = Pick<Notice, 'title' | 'body' | 'kind'> & Partial<Pick<Notice, 'projectId' | 'sessionId' | 'id' | 'link' | 'tag'>>;
+
+/** An iPhone's key for push settings and presence (server/presence.ts deviceKey),
+ *  in the same namespace as a browser's push endpoint. */
+export function apnsEndpoint(token: string): string { return 'apns:' + token.toLowerCase(); }
 
 export interface ApnsReply { status: number; reason?: string }
 
@@ -43,9 +41,6 @@ const HOSTS: Record<ApnsEnv, string> = {
 /** Apple rejects a provider token older than an hour and throttles one
  *  refreshed more often than every 20 minutes. */
 const JWT_TTL_MS = 40 * 60_000;
-
-/** Kinds the app can answer from the notification itself (a text reply). */
-const REPLY_KINDS = new Set(['question', 'session_done', 'session_error', 'conversation_settled', 'turn_orphaned', 'delegate_report']);
 
 export const TOKEN_RE = /^[0-9a-f]{64,200}$/i;
 
@@ -119,6 +114,8 @@ export class ApnsService {
 
   hasTargets(): boolean { return this.devices.length > 0 && this.configured; }
 
+  tokens(): string[] { return this.devices.map((d) => d.token); }
+
   register(token: string, env: ApnsEnv, name?: string): void {
     if (!TOKEN_RE.test(token)) throw new Error('invalid device token');
     if (env !== 'production' && env !== 'sandbox') throw new Error('env must be production or sandbox');
@@ -150,10 +147,14 @@ export class ApnsService {
     this.jwt = null;
   }
 
-  async send(alert: ApnsAlert): Promise<Array<{ token: string; env: ApnsEnv } & ApnsReply>> {
+  /** Send to every device, or to `only` those tokens (PushService picks them). */
+  async send(alert: ApnsAlert, only?: string[]): Promise<Array<{ token: string; env: ApnsEnv } & ApnsReply>> {
     if (!this.hasTargets()) return [];
+    const pick = only ? new Set(only.map((t) => t.toLowerCase())) : null;
+    const devices = pick ? this.devices.filter((d) => pick.has(d.token)) : this.devices;
+    if (!devices.length) return [];
     const body = JSON.stringify(this.payload(alert));
-    const results = await Promise.all(this.devices.map(async (d) => ({ token: d.token, env: d.env, ...(await this.post(d, alert, body)) })));
+    const results = await Promise.all(devices.map(async (d) => ({ token: d.token, env: d.env, ...(await this.post(d, alert, body)) })));
     // 410 = the app was uninstalled; 400 BadDeviceToken = a token from the
     // other environment or a mangled one. The app re-registers on launch.
     const dead = results.filter((r) => r.status === 410 || (r.status === 400 && r.reason === 'BadDeviceToken')).map((r) => r.token);
@@ -181,9 +182,10 @@ export class ApnsService {
       'apns-push-type': 'alert',
       'apns-priority': '10',
     };
-    // A replayed terminal event replaces the banner rather than stacking a second
-    // one. Apple caps the id at 64 bytes, so hash ours.
-    if (alert.notificationId) h['apns-collapse-id'] = createHash('sha256').update(alert.notificationId).digest('hex').slice(0, 32);
+    // Same replacement rule as the panel's notification tag: one banner per
+    // conversation, one per urgent item. Apple caps the id at 64 bytes, so hash.
+    const collapse = alert.tag || alert.id;
+    if (collapse) h['apns-collapse-id'] = createHash('sha256').update(collapse).digest('hex').slice(0, 32);
     return h;
   }
 
@@ -193,12 +195,13 @@ export class ApnsService {
         alert: { title: alert.title, body: alert.body },
         sound: 'default',
         'thread-id': alert.sessionId || alert.projectId || 'x056',
-        ...(REPLY_KINDS.has(alert.kind) && alert.sessionId ? { category: 'X056_REPLY' } : {}),
+        // Any notice about a conversation can be answered from the banner.
+        ...(alert.sessionId ? { category: 'X056_REPLY' } : {}),
       },
       kind: alert.kind,
-      projectId: alert.projectId,
+      projectId: alert.projectId ?? '',
       ...(alert.sessionId ? { sessionId: alert.sessionId } : {}),
-      ...(alert.url ? { url: alert.url } : {}),
+      ...(alert.link ? { url: alert.link } : {}),
     };
   }
 

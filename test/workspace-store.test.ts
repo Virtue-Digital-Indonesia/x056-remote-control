@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ArtifactStore, DeliveryStore, writeState } from '../server/workspace-store.js';
 import { SessionManager } from '../server/manager.js';
+import { gatewayDb, putReceipt } from '../server/gateway-db.js';
 import { ProjectRegistry } from '../server/projects.js';
 const dir = () => mkdtempSync(join(tmpdir(), 'x056-workspace-test-'));
 describe('persistent artifacts', () => {
@@ -113,9 +114,8 @@ describe('message receipts', () => {
     ).toThrow();
     expect(store.get(body.requestId)?.status).toBe('failed');
     expect(store.run(body, () => ({ sessionId: 's' })).status).toBe('accepted');
-    const rows = store.all();
-    rows[body.requestId].status = 'processing';
-    writeState(join(root, 'message-receipts.json'), rows);
+    // Simulate a crash mid-dispatch: the durable row still says processing.
+    putReceipt(gatewayDb(root), { ...store.get(body.requestId)!, status: 'processing' });
     const reopened = new DeliveryStore(root),
       send = vi.fn();
     expect(reopened.run(body, send).status).toBe('uncertain');

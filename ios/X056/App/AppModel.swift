@@ -44,7 +44,8 @@ final class AppModel {
 
     var path: [Route] = []
     /// The conversation on screen, so its own notifications don't banner.
-    var visibleSessionId: String?
+    private(set) var visibleSessionId: String?
+    private(set) var visibleProjectId: String?
 
     var pushError: String?
 
@@ -52,6 +53,14 @@ final class AppModel {
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var open: [ObjectIdentifier: ConversationModel] = [:]
+    @ObservationIgnored private var presenceTask: Task<Void, Never>?
+    /// This install's presence id; the gateway keeps one entry per client.
+    @ObservationIgnored private let clientId: String = {
+        if let id = UserDefaults.standard.string(forKey: "presenceClientId") { return id }
+        let id = "ios-" + UUID().uuidString.lowercased()
+        UserDefaults.standard.set(id, forKey: "presenceClientId")
+        return id
+    }()
 
     private init() {
         #if DEBUG
@@ -98,6 +107,7 @@ final class AppModel {
             _ = try? await client.post("/api/push/apns/unregister", ApnsUnregisterBody(token: device))
         }
         disconnect()
+        stopPresence()
         Keychain.delete("token")
         token = nil
         projects = []
@@ -115,10 +125,49 @@ final class AppModel {
     func enterForeground() {
         guard isSignedIn else { return }
         connect()
+        startPresence()
     }
 
     func enterBackground() {
         disconnect()
+        stopPresence()
+    }
+
+    // MARK: presence
+
+    /// Tell the gateway what is on screen, like an open panel does
+    /// (`POST /api/presence`, 30 s TTL). It then skips pushes for the
+    /// conversation being read, and while the app is in front, this iPhone is
+    /// "the device you are at" and the others stay quiet for non-urgent notices.
+    func setVisible(projectId: String?, sessionId: String?) {
+        guard projectId != visibleProjectId || sessionId != visibleSessionId else { return }
+        visibleProjectId = projectId
+        visibleSessionId = sessionId
+        if presenceTask != nil { Task { await postPresence(visible: true) } }
+    }
+
+    private func startPresence() {
+        presenceTask?.cancel()
+        presenceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.postPresence(visible: true)
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+    }
+
+    private func stopPresence() {
+        presenceTask?.cancel()
+        presenceTask = nil
+        Task { await postPresence(visible: false) }
+    }
+
+    private func postPresence(visible: Bool) async {
+        guard let client else { return }
+        let body = PresenceBody(clientId: clientId, projectId: visibleProjectId, sessionId: visibleSessionId,
+                                visible: visible, endpoint: Push.deviceToken.map { "apns:" + $0.lowercased() })
+        // An older gateway has no presence route: nothing to do about it.
+        _ = try? await client.post("/api/presence", body)
     }
 
     // MARK: lookups

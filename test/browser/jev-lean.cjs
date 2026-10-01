@@ -28,11 +28,13 @@ const TOKEN = 'browser-fixture-token-0123456789';
     await page.goto(base); await page.waitForSelector('.cr-task');
     await page.locator('.cr-task').filter({ hasText: 'Build the new homepage' }).first().click();
     await page.waitForFunction(() => !document.getElementById('helperBtn').disabled);
+    await page.locator('#prompt').click(); // the composer rests as one line; focus opens its controls
     await page.locator('#helperBtn').click();
     await page.waitForFunction(() => !document.querySelector('#helperMenu [data-value=jev]').disabled);
     return { page, errors };
   };
   const onScreen = async (page, vp) => {
+    await page.waitForTimeout(300); // phones open it as a sheet that slides up
     const box = await page.locator('#helperMenu').boundingBox();
     assert.ok(box && box.y >= 0 && box.x >= 0 && box.x + box.width <= vp.width && box.y + box.height <= vp.height, 'menu fully visible at ' + vp.width);
     const lean = await page.locator('#helperLean').boundingBox();
@@ -49,14 +51,14 @@ const TOKEN = 'browser-fixture-token-0123456789';
   await page.locator('#helperMenu [data-value=jev]').click(); await saved(page);
   assert.equal(await lean.isVisible(), true, 'lean shown once Jev is on');
   assert.equal(await page.locator('#helperLean [data-lean=medium]').getAttribute('aria-checked'), 'true');
-  assert.equal(await page.locator('#helperLeanCap').textContent(), 'Balanced');
+  assert.equal(await page.locator('#helperLeanCap').textContent(), 'Balanced between cost and result.');
   assert.equal(await page.locator('#helperLabel').textContent(), 'Jev');
   // Keyboard: Right from Medium moves to High and saves it.
   await page.locator('#helperLean [data-lean=medium]').focus();
   await page.keyboard.press('ArrowRight'); await saved(page);
   assert.equal(await page.locator('#helperLean [data-lean=high]').getAttribute('aria-checked'), 'true');
   assert.equal(await page.evaluate(() => document.activeElement.dataset.lean), 'high');
-  assert.equal(await page.locator('#helperLeanCap').textContent(), 'Stronger models, more effort');
+  assert.equal(await page.locator('#helperLeanCap').textContent(), 'Errs toward the best result.');
   assert.equal((await helpersNow()).lean, 'high');
   assert.equal(await page.locator('#helperLabel').textContent(), 'Jev · High');
   assert.equal(await page.locator('#helperMenu').isVisible(), true, 'arrow keys did not close the menu');
@@ -78,7 +80,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
   // Low, then "Your choice" hides the row; Escape closes the menu from the lean control.
   await page.locator('#helperLean [data-lean=low]').click(); await saved(page);
   assert.equal(await page.locator('#helperLabel').textContent(), 'Advisor · Jev · Low');
-  assert.equal(await page.locator('#helperLeanCap').textContent(), 'Cheaper models, less effort');
+  assert.equal(await page.locator('#helperLeanCap').textContent(), 'Errs toward cheaper models and lower effort.');
   await page.locator('#helperLean [data-lean=low]').focus();
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('#helperMenu').isHidden(), true, 'Escape closes the menu');

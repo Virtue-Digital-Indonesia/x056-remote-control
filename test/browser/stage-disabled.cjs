@@ -1,0 +1,23 @@
+const assert=require('node:assert/strict');const {chromium}=require('/usr/local/lib/node_modules/playwright');const base=process.argv[2]||'http://127.0.0.1:8798';
+(async()=>{const b=await chromium.launch({args:['--no-sandbox']});try{
+const c=await b.newContext({viewport:{width:1440,height:900}});await c.addInitScript(()=>{localStorage.setItem('x056_token','browser-fixture-token-0123456789');});
+const p=await c.newPage(),errors=[];p.on('pageerror',e=>errors.push(e.message));
+await p.goto(base+'/home');await p.locator('body.rc-workspace-ready').waitFor();
+await p.locator('#crNotifications').click();await p.locator('.rc-notification-item').first().click();await p.locator('#prompt').waitFor();
+await p.locator('#stageToggle').waitFor({state:'visible'});await p.screenshot({path:'/tmp/stage-on.png'});
+const lift=()=>p.evaluate(()=>getComputedStyle(document.querySelector('#conversationSurface .composer-wrap')).paddingBottom);
+const lifted=await lift();
+await p.evaluate(()=>{});await p.locator('#sidebarSettings').click();await p.locator('#stageVisible').uncheck();
+await p.keyboard.press('Escape');
+await p.waitForFunction(()=>document.body.dataset.stageHidden==='true');
+assert.equal(await p.locator('#stageRestore').count(),0,'no Conversations button in DOM');
+assert(!await p.locator('#stageToggle').isVisible(),'bubble hidden');
+assert.equal(await p.evaluate(()=>document.body.dataset.stageCoversRuns),'false');
+const hidden=await lift();
+assert(parseFloat(hidden)<80,'no desktop lift when disabled: '+hidden);
+await p.screenshot({path:'/tmp/stage-off.png'});
+await p.locator('#sidebarSettings').click();await p.locator('#stageVisible').check();await p.keyboard.press('Escape');
+await p.waitForFunction(()=>document.body.dataset.stageHidden==='false');
+await p.locator('#stageToggle').waitFor({state:'visible'});
+console.log('lift on/off',lifted,hidden);assert.deepEqual(errors,[]);console.log('stage-disabled: PASS');
+}finally{await b.close();}})().catch(e=>{console.error(e);process.exit(1);});

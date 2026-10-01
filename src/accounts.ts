@@ -255,6 +255,8 @@ export class AccountRegistry {
       reasons.push(...(context.capabilityBlocks?.[name] ?? []));
       if (state.kind === 'unauthenticated' || getAdapter(provider).hasCredentials?.(a.configDir) === false)
         reasons.push('Sign-in required');
+      const notReady = getAdapter(provider).notReadyReason?.(a.configDir);
+      if (notReady) reasons.push(notReady);
       if (state.kind === 'limited') reasons.push('Usage limit has not reset');
       const load = busy[name] || 0;
       if (a.maxConcurrent && load >= a.maxConcurrent) reasons.push('Concurrent-task limit reached');

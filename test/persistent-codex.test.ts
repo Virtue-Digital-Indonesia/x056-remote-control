@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PersistentTurns } from '../src/persistent.js';
-import { CodexTransport, mapItem } from '../src/persistent-codex.js';
+import { CodexTransport, mapItem, WRITER_RETRIES, WRITER_RETRY_MS } from '../src/persistent-codex.js';
 import { codexAdapter, captureSessionId, classifyCodexEvent } from '../src/adapters/codex.js';
 import type { TurnOptions } from '../src/turn.js';
 import type { RawEvent } from '../src/types.js';
@@ -162,6 +162,14 @@ describe('codex persistent: handshake', () => {
     expect(f.sent('thread/start')).toHaveLength(0);
     expect(f.sent('thread/resume')[0].params).toMatchObject({ threadId: '019f9220-old' });
     expect(f.sent('turn/start')[0].params).toMatchObject({ threadId: '019f9220-old' });
+  });
+
+  // Without it the reply carries the thread's whole history as one line:
+  // 1.8 MB for a 7 MB thread (4 KB with it), hundreds of MB for the UAT one.
+  it('resumes without the history: excludeTurns', () => {
+    const { p, spawned } = pool();
+    p.startTurn(turn({ mode: 'resume', sessionId: 'thr_big' }));
+    expect(spawned[0].sent('thread/resume')[0].params).toMatchObject({ threadId: 'thr_big', excludeTurns: true });
   });
 
   it('passes model and effort on turn/start, and MCP wiring on thread/start', () => {
@@ -379,15 +387,16 @@ describe('codex persistent: identity and a failed handshake', () => {
   // The process whose handshake failed stayed in the pool, never ready; the
   // next turn keyed to it and parked its prompt forever -- "working…" with no
   // output, until someone killed the process by hand.
-  // What actually happened live: the refusal ("already has an active writer")
-  // arrived after the turn was wired, so it went through the turn's sink and
-  // settled the turn -- and the process stayed. This is that path.
+  // What actually happened live: the refusal arrived after the turn was wired,
+  // so it went through the turn's sink and settled the turn -- and the process
+  // stayed. This is that path. (It was "already has an active writer", which
+  // is now retried first: see "one writer per thread".)
   it('drops the process when the refusal arrives AFTER the turn is wired', async () => {
     const { p, spawned } = pool({ deferThread: true });
     const h1 = p.startTurn(turn({ mode: 'resume', sessionId: 'thr_busy' }));
     const f = spawned[0];
     expect(f.sent('turn/start')).toHaveLength(0); // prompt parked behind the handshake
-    f.answerThread('thread-store conflict: thread thr_busy already has an active writer');
+    f.answerThread('thread-store conflict: thread thr_busy could not be loaded');
     const exit1 = await Promise.race([h1.done, new Promise<'hung'>((r) => setTimeout(() => r('hung'), 500))]);
     expect(exit1).not.toBe('hung');
     expect(f.killed).toBe(true);
@@ -409,6 +418,96 @@ describe('codex persistent: identity and a failed handshake', () => {
     expect(spawned).toHaveLength(2);
     const exit = await Promise.race([h2.done, new Promise<'hung'>((r) => setTimeout(() => r('hung'), 500))]);
     expect(exit).not.toBe('hung');
+  });
+});
+
+describe('the pool reads a stream in linear time', () => {
+  // A 20 MB line in 64 KB pieces: re-splitting the growing buffer on every
+  // piece is quadratic (the live gateway spent 94% of its CPU there). Linear
+  // reading takes a few ms; the old way took seconds.
+  it('parses one huge line that arrives in many chunks, quickly', async () => {
+    const { p, spawned } = pool({ deferThread: true, threadId: 'thr_huge' });
+    const c = collect();
+    const h = p.startTurn(turn({ mode: 'resume', sessionId: 'thr_huge', onEvent: c.onEvent }));
+    const f = spawned[0];
+    const id = f.sent('thread/resume')[0].id;
+    const big = Buffer.from(JSON.stringify({ id, result: { thread: { id: 'thr_huge', turns: [{ blob: 'x'.repeat(20 * 1024 * 1024) }] } } }) + '\n');
+    const started = Date.now();
+    for (let i = 0; i < big.length; i += 64 * 1024) f.child.stdout.emit('data', big.subarray(i, i + 64 * 1024));
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(f.sent('turn/start')).toHaveLength(1); // the handshake line was read whole
+    f.complete(); await h.done;
+  });
+
+  it('keeps a multi-byte character that straddles two chunks', async () => {
+    const { p, spawned } = pool();
+    const c = collect();
+    const h = p.startTurn(turn({ onEvent: c.onEvent }));
+    const f = spawned[0];
+    const line = Buffer.from(JSON.stringify({ method: 'item/completed', params: { threadId: 'thr_new', turnId: 'turn_1', item: { type: 'agentMessage', id: 'm1', text: 'selesai ✅ 👍' } } }) + '\n');
+    const cut = line.indexOf(Buffer.from('✅')) + 1; // inside the 3-byte character
+    f.child.stdout.emit('data', line.subarray(0, cut));
+    f.child.stdout.emit('data', line.subarray(cut));
+    f.complete(); await h.done;
+    const msg = c.ev.find((e) => e.type === 'item.completed' && (e.item as { type?: string })?.type === 'agent_message');
+    expect((msg?.item as { text?: string })?.text).toBe('selesai ✅ 👍');
+  });
+});
+
+describe('codex persistent: one writer per thread', () => {
+  afterEach(() => { vi.useRealTimers(); });
+  // Codex holds a thread's writer lock (thread-writer-locks/<id>.lock) for the
+  // life of the app-server that opened it. A helper toggle changes the
+  // identity, a new process spawned, and the old one -- still inside its
+  // working grace -- kept the lock: every turn after failed in 400 ms with
+  // "already has an active writer". Seen live 2026-09-30.
+  it('kills the conversation\'s other process before spawning one with a new identity', async () => {
+    const { p, spawned } = pool({ threadId: 'thr_one' });
+    const h1 = p.startTurn(turn({ conversationId: 'conv-1', appendSystemPrompt: 'team off' }));
+    spawned[0].complete(); await h1.done;
+    expect(p.workingSessions().map((w) => w.sessionId)).toContain('conv-1'); // still in its grace
+    p.startTurn(turn({ conversationId: 'conv-1', appendSystemPrompt: 'team on', mode: 'resume', sessionId: 'thr_one' }));
+    expect(spawned).toHaveLength(2);
+    expect(spawned[0].killed).toBe(true);
+  });
+
+  it('leaves other conversations alone', async () => {
+    const { p, spawned } = pool();
+    const h1 = p.startTurn(turn({ conversationId: 'conv-a' }));
+    spawned[0].complete(); await h1.done;
+    p.startTurn(turn({ conversationId: 'conv-b' }));
+    expect(spawned[0].killed).toBe(false);
+  });
+
+  it('retries a resume refused by a lock that is still being released', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const { p, spawned } = pool({ deferThread: true, threadId: 'thr_locked' });
+    const c = collect();
+    const h = p.startTurn(turn({ mode: 'resume', sessionId: 'thr_locked', onEvent: c.onEvent }));
+    const f = spawned[0];
+    f.answerThread('thread thr_locked already has an active writer');
+    expect(c.ev.some((e) => e.type === 'thread.failed')).toBe(false);
+    vi.advanceTimersByTime(WRITER_RETRY_MS);
+    expect(f.sent('thread/resume')).toHaveLength(2);
+    f.answerThread();
+    expect(f.sent('turn/start')).toHaveLength(1);
+    f.complete();
+    expect((await h.done).code).toBe(0);
+    expect(f.killed).toBe(false);
+  });
+
+  it('gives up after a few tries: a holder that outlives them is real', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const { p, spawned } = pool({ deferThread: true });
+    const c = collect();
+    const h = p.startTurn(turn({ mode: 'resume', sessionId: 'thr_held', onEvent: c.onEvent }));
+    const f = spawned[0];
+    for (let i = 0; i < WRITER_RETRIES; i++) { f.answerThread('thread thr_held already has an active writer'); vi.advanceTimersByTime(WRITER_RETRY_MS); }
+    f.answerThread('thread thr_held already has an active writer');
+    await h.done;
+    expect(f.sent('thread/resume')).toHaveLength(WRITER_RETRIES + 1);
+    expect(c.ev.find((e) => e.type === 'error')).toMatchObject({ message: expect.stringContaining('active writer') });
+    expect(f.killed).toBe(true);
   });
 });
 

@@ -49,6 +49,20 @@ Sessions started through the panel run **inside the Docker container** this repo
 - **You CAN screenshot** to eyeball UI work: a headless Chromium (Playwright) is baked into the image at `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`. Start the project's dev server, then `node /app/scripts/shot.cjs <url> <out.png> [width] [height]` and Read the PNG. Any project's own Playwright/Puppeteer also finds the browser via that env var. (Requires a container built after this note — if `shot.cjs` says playwright not found, the image predates it; commit + request a deploy.)
 - **Toolchains baked into the image** (so any project builds, not just Node): Go (`GOTOOLCHAIN=auto`), Java 17 + Maven (Gradle via each project's `./gradlew`), Python 3 with pip/venv (system Python is PEP-668 externally-managed — always work in a venv), PHP + Composer, plus gcc/make/git/ripgrep/jq. `git push` over SSH works to GitHub, the VPN host `192.168.83.20` (`ssh ocr`), and the gateway host `ssh valbox` (dedicated keys in `state/ssh/`).
 
+## Composer: the quiet pill (2026-09-30)
+
+The owner chose draft D ("quiet until you type" + "one pill"). At rest the
+composer is one line with send and a faded caption of model · effort ·
+helpers; focus, text, files, a saved draft or an open menu open it into the
+pill: `+` (attach, template, reference), the helpers chip, ONE chip holding
+the two native `#model` / `#effort` selects (kept native on purpose: phones
+get the OS picker and tests use `selectOption`), send. While a turn runs an
+empty box's send is Stop; with content it is Steer + Queue. Status, account
+chip and delivery dot share the quiet line under it. All element ids are
+unchanged. Tests that touch the hidden controls must click `#prompt` first.
+Collapse on blur checks `relatedTarget` and holds on pointerdown, so a tap on
+send never lands on a moved button.
+
 ## There is a SECOND instance on this host (`/home/efran/x056-devs`)
 
 A dev-facing gateway for employed developers runs beside production on the same
@@ -282,6 +296,36 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   conversation collided with itself on its second turn, four times in a row,
   live, while the idle first process sat in the pool holding the thread.
   Steer, interrupt and the working indicator look entries up by the same id.
+- **Switching a Claude model and back must not reuse the first process.**
+  Model is identity, so sonnet -> opus spawns a second process; opus ->
+  sonnet then found the FIRST one by key, whose context never saw the opus
+  turns. A process is stale once a sibling of the same conversation started a
+  turn after it (`isStale`): it is never reused -- destroyed if idle, moved to
+  a `#retired:N` key if still working -- and a new spawn destroys its idle
+  siblings (`retireSiblings`). Jev on Auto made this routine.
+- **A Codex thread takes ONE writer, so a Codex conversation gets one
+  process.** codex 0.159 holds `<CODEX_HOME>/thread-writer-locks/<thread>.lock`
+  (an flock) for the life of the app-server that opened the thread. A helper
+  toggle changes the identity (team/advisor -> system prompt, `codexConfig`),
+  so a new process spawned while the old one, still inside its working grace,
+  held the lock: every turn failed in 400 ms with "thread ... already has an
+  active writer" (seen live 2026-09-30, twice, 22 s apart). The Codex
+  transport is `singleWriter`: before a spawn, every other process of that
+  conversation is killed, working or not (an account switch included, where
+  the locks are in different homes but the rollout is the same file). A
+  killed process can hold its lock for a moment, so a resume refused that way
+  is retried (`WRITER_RETRIES` x `WRITER_RETRY_MS`, 5 x 1 s) before it fails.
+- **Resume WITHOUT the history, and read the stream in linear time.**
+  `thread/resume` puts the thread's whole history in `thread.turns` unless
+  `excludeTurns: true` (1.8 MB reply for a 7 MB thread, 4 KB with it); the
+  gateway only reads the id. For the 802 MB UAT thread that was hundreds of
+  MB on ONE line, and `onData` re-split its growing buffer on every 64 KB
+  chunk -- quadratic -- so the gateway spent 94% of its CPU there and every
+  request, helper toggles included, took 4-8 s (CPU-profiled live via
+  `kill -USR1` + the inspector, 2026-09-30). Every new Codex process on a big
+  thread (deploy, helper toggle, failover) re-triggered it. Now resume sends
+  `excludeTurns`, and `onData` splits only a chunk that holds a newline, with
+  a `StringDecoder` so a multi-byte character across two chunks survives.
 - **A failed handshake frees its slot.** A Codex process whose thread could
   not be opened is alive but can never take a prompt; left in the pool it
   swallowed the NEXT turn (parked as `pendingPrompt`, five minutes of
@@ -353,13 +397,29 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   'running'` in the account's `state_5.sqlite` with no process behind it; every
   later start waited 30 s for that phantom and exited 1, so each turn on the
   account failed after exactly 30 s with `error: null` and the panel showed
-  "Not checked · Usage temporarily unavailable". Seen live on account `j`.
-  Onboarding now runs `codex migrate-rollouts --apply` for the new home,
-  detached, before the account is routable, so the index completes outside any
-  turn's timeout. Manual repair for a wedged home: pause the account, move its
-  `*.sqlite*` files aside (they hold nothing for an account with no turns), run
-  `CODEX_HOME=<dir> codex migrate-rollouts --apply`, confirm `codex app-server`
-  answers `initialize` within a second, unpause.
+  "Not checked · Usage temporarily unavailable". Seen live on account `j`,
+  and again on `g` after a re-login (2026-09-30): 3.5 GB, 205 threads.
+  **The app-server answers nothing, `initialize` included, until the index is
+  done** -- measured in a scratch home: 224 s -- and each killed start begins
+  it again (`backfill_state = running`, no watermark). `prepareCodexHome`
+  (`server/codex-sessions.ts`) holds ONE app-server open until `initialize`
+  answers, then closes stdin so it exits on its own; meanwhile the router
+  skips the account (`notReadyReason`, "Indexing the shared session store").
+  Onboarding runs it, and boot runs it for any home whose newest
+  `state_N.sqlite` says the backfill is unfinished (`codexHomeIndexed`), so a
+  swap mid-index heals itself. It used to be `codex migrate-rollouts --apply`,
+  which on 0.159 is a different migration (legacy sessions to paginated
+  history) and never finished this index.
+  **A killed start leaves a phantom that blocks every later one**, the
+  preparing app-server included: "state db backfill is running ... waiting up
+  to 30s" then "timed out waiting for state db backfill ... (status:
+  running)", exit 1 (reproduced from g's state in a scratch home -- the first
+  boot-time prepare died exactly so). So a home whose index is unfinished gets
+  its `state_N.sqlite*` set aside (`setAsideCodexState`, renamed
+  `.unfinished-<ts>`, the other sqlite files untouched) before the prepare:
+  it has never served a turn, so the file holds only a partial index. The
+  likely phantom-maker, the 15 s usage probe (`fetchUsage`, which spawns an
+  app-server and kills it), now refuses a home that is indexing.
 - **A thread whose first turn died has an id but no history, and used to wedge
   the conversation.** `thread/start` assigns the id at once but writes no
   rollout until a turn runs, so a 401, a limit or a swap on the first turn
@@ -414,7 +474,8 @@ the thread they come from uses them together, and so do we now.
 - **Agent team** (`server/team.ts`) is that thread's tree: the main session
   (its own model/effort) plans and decides; **explorer** (reads code,
   read-only), **worker** (bounded edit + tests) and **researcher** (docs,
-  read-only) do the legwork at effort **medium**; the advisor is on call if
+  read-only) do the legwork at effort **medium** (or what the picker names
+  for the turn, below); the advisor is on call if
   on (Claude subagents inherit it); small forks go to the fork layer.
   Nothing is installed into an account. Claude gets the three on argv
   (`--agents` JSON, Opus, part of the process identity so toggling respawns
@@ -423,7 +484,46 @@ the thread they come from uses them together, and so do we now.
   and `worker` roles, so it gets `agents.default_subagent_reasoning_effort =
   "medium"` as thread config (`TurnOptions.codexConfig`, `-c` on the one-shot
   path) and a `default` agent briefed as researcher. Both get the team
-  instructions appended to the system prompt.
+  instructions appended to the system prompt. **The brief says WHEN, not just
+  how**: a Codex chat with the team on ran a 28-command turn alone
+  (2026-09-30), its brief delivered, after 218 solo turns. It now names the
+  triggers (unread code -> explorers in parallel, a multi-file change -> a
+  worker per part, outside docs -> researcher), says it holds even if earlier
+  turns worked alone, and asks for one line naming the spawns (or why none)
+  before the first command. Still a prompt: nothing in the gateway forces a
+  spawn. **Codex overrides the brief**: 0.159 follows it with its own
+  developer message (`<multi_agent_mode>`: "Any earlier instruction enabling
+  proactive multi-agent delegation no longer applies. Do not spawn sub-agents
+  unless the user ... explicitly ask[s]"), lifted only at effort `ultra` --
+  0 spawns in 28 team turns across three chats (2026-10-01). So every Codex
+  turn with the team on carries an explicit ask in the USER message
+  (`teamTurnLine('codex')`, picker or not): delegate per the brief, or do a
+  genuinely small turn (one command, a known one-file edit, a single deploy,
+  a direct answer) alone and say why. Claude gets the line only with a pick.
+- **With a picker on, it also picks the TEAM's model and effort per turn**
+  (2026-09-30): two more questions in the same call (`subagent_model`,
+  `subagent_effort`, written whole per lean like the main ones; model only
+  when there is a choice), for Jev and OpenAI Decisions alike.
+  `applySubagentPolicy` uses the same lean bars, measured from the team's
+  own base -- Claude Opus/medium, Codex the main session's model this turn
+  at medium -- with no switching gap and no Auto; a missing, off-list, weak
+  or (Codex) not-offered pick keeps the base. Candidates: the main pick's
+  model list; efforts low/medium/high on Claude, up to xhigh on Codex.
+  **The choice rides in the turn's MESSAGE**, one line before the sender
+  marker (`[Agent team this turn: ...]`, `teamTurnLine` + `withTeamLine`),
+  never in the system prompt, `--agents` or `codexConfig`: those are process
+  identity, and a per-turn value there would respawn every turn (Claude
+  losing its prompt cache, Codex the kill-then-resume single-writer path).
+  Codex's `spawn_agent` takes `model` and `reasoning_effort` per call.
+  Claude's Agent tool takes `model` per call but no effort, so `--agents`
+  defines each role three times -- `explorer` (medium), `explorer-low`,
+  `explorer-high`, same for worker and researcher -- constant JSON, and the
+  line names the variant. `stripTeamLine` removes it wherever a prompt is
+  read back (history readers, `cleanMemorySource`: titles, memory,
+  `previousRequest`). No line when the picker is off or failed: medium, as
+  before. The decision row carries `team`; the chat card shows "Team ·
+  Sonnet · High", the terminal `team sonnet · high`, the agent tree the
+  picked model · effort and "Jev NN%".
 - **Fork layer**: the x056 MCP tool `quick_decision {question, options[2-6],
   context}` -> `POST /api/jev/fork` -> Jev (or OpenAI Decisions when that is
   the picker) as ONE choice question. `confidence >= 0.75`
@@ -466,37 +566,66 @@ the thread they come from uses them together, and so do we now.
   post-turn "concern" is ONE queued follow-up from sender kind `advisor`, and
   an advisor-started turn is never reviewed again, so they cannot loop.
   ~9 s and ~14.5k tokens per consultation (mostly Codex's own instructions).
+  **With autopilot on** (2026-10-01): each turn's verdict (stop phrase,
+  budget, pause on failure) is applied to THAT turn's result after
+  `session_done`, even when a queued message drains next, so an advisor
+  follow-up cannot hide a stop phrase. Autopilot waits for the turn's
+  `done` review (`run.pendingAdvice`, cap `advisorWaitMs` 60 s), so a concern
+  is queued and drains before the next step. A step is spent when its prompt
+  is SENT, never on a tick that found the conversation busy. A plan/stuck
+  steer lands only in the turn that produced it (else `too-late`), and an
+  advisor steer is not human: it keeps the relay chain and self-message brake.
 - **Jev** (TypeSafe AI's System One model, `server/jev.ts`) picks model and
   effort per turn, both providers: one HTTPS call (~0.3 s, ~$0.00003) inside
   the async run, so sending never waits. Applied to that turn only, never over
-  the user's saved choice: effort at >=60% confidence, model at >=80%, and a
+  the user's saved choice: effort at >=50% confidence, model at >=60%, and a
   Claude model switch at most every 3 turns (it respawns the process and drops
-  the prompt cache). A pick is weighed against what THIS turn runs with
+  the prompt cache; returning to the saved model counts as a switch too).
+  **The bars are on Jev's confidence scale**, which runs ~0.15 below its top
+  probability (0.54 for a 0.69 pick is typical). The first bars (60/80/90%)
+  were written as if it were a probability: over the first 24 live picks the
+  model confidence never passed 0.70, so no model ever moved (0/24) and
+  effort moved 6 times. Rescaled 2026-09-30. A pick is weighed against what THIS turn runs with
   otherwise -- the saved choice -- never against the previous pick: doing
   that called a 71% "medium" "unchanged" and the turn ran on the saved xhigh
   (seen live 2026-09-30). Staying on a model a pick already moved to is not a
-  switch, so it needs only the 60% bar. **Going LOWER needs more**: effort
-  below the turn's own >= 80%, a cheaper model >= 90% (`effortDownMin`,
+  switch, so it needs only the 50% bar. **Going LOWER needs more**: effort
+  below the turn's own >= 65%, a cheaper model >= 65% (`effortDownMin`,
   `modelDownMin`) -- a wrong downgrade costs quality and a human round trip, a
-  wrong upgrade only tokens.
+  wrong upgrade only tokens. At 60-65% the live downgrades were a mix of right
+  (a scheduled status check -> haiku 59%) and wrong (a feature build ->
+  sonnet 60%), which is where the down bar sits.
+- **Auto model / Auto effort with a picker on = the picker decides**, with no
+  confidence bar (`JevDecisionInput.auto`, `(auto)` in the notes). The panel
+  sends Auto as `''` instead of resolving it to its house default (else Jev
+  would only ever see Sonnet) and labels it "Jev picks" (short: a phone gives
+  each select ~100px); the
+  conversation stays saved as Auto. A turn starts from what the last routed
+  turn ran on, else the house default (`AUTO_MODEL`: sonnet /
+  gpt-5.6-terra), and a failed or missing pick runs on that -- never on the
+  CLI's own default, which is the frontier model. The Claude switching gap
+  still holds on Auto; the lean still changes the questions. With no picker,
+  Auto is unchanged (the panel sends the house default). A conversation that
+  used Auto before 2026-09-30 is saved as `sonnet`, because that is what the
+  panel sent: reselect Auto on it.
 - **Lean** (`helpers.lean`, the Low / Medium / High control under the picker;
   absent = medium): which way the picker errs. It changes only the up/down bars
-  (`LEAN_BARS` -- low: effort up 80% / down 60%, model up 90% / down 80%;
-  high: effort up 60% / down 90%, model up 70% / down 95%; medium = the bars
-  above, byte-identical notes) and swaps both questions for a Low / High
+  (`LEAN_BARS` -- low: effort up 65% / down 45%, model up 75% / down 55%;
+  high: effort up 45% / down 75%, model up 50% / down 80%; medium = the bars
+  above; no effect on Auto) and swaps both questions for a Low / High
   version written whole (`effortQuestion` / `modelQuestion`: COST EFFICIENCY
   vs BEST RESULT), for Jev and OpenAI Decisions alike. Appending a sentence
   instead contradicted "prefer the cheapest model" and barely moved Jev;
   written whole, live 2026-09-30: High took Opus from 4% to 49% on a
   refactor and 11% to 69% on "yes, go ahead" after a big task; Low took a
   refactor's effort from high 58% to medium 65% but left the big-task
-  follow-up at high 90%. With **Auto effort** (none saved) up and down are
+  follow-up at high 90%. With no effort saved (and not on Auto) up and down are
   measured from what the CLI runs with (`baselineEffort`:
   `CLAUDE_DEFAULT_EFFORT` -- opus/Opus 5.5 medium, sonnet/Sonnet 5 and fable
   high, per the model-config docs and the aliases seen in real transcripts;
-  Codex: the model's catalog `defaultEffort`), or Low would need 80% even to
-  pick `low`. A move the ranks cannot place (Fable, an
-  unknown Codex slug) keeps the plain 80% bar; the "model stays" rule and the
+  Codex: the model's catalog `defaultEffort`), or Low would need the raise
+  bar even to pick `low`. A move the ranks cannot place (Fable, an
+  unknown Codex slug) keeps the plain 60% bar; the "model stays" rule and the
   Claude switching gap are not relaxed; forks and the delegate gate ignore it;
   Fable is still never a candidate. Kept while the picker is off; the panel
   sends it on every full-set save (else toggling Advisor would wipe it);
@@ -600,10 +729,30 @@ only), and Jev gates which reports wake the orchestrator.
 
 The view of a conversation's whole working setup the owner asked for
 ("where is the fork layer?" -- it had only been terminal lines): the main
-session (model/effort this turn, Jev pick marked), the advisor column, the Jev
-fork layer, the workers (agent-team subagents / Codex children, and
-delegates), and a pipeline log. Its own header button beside the terminal
-button (⋯ menu on phones); the two views are mutually exclusive.
+session (model/effort this turn, Jev pick marked), the advisor, the Jev fork
+layer, the workers (agent-team subagents / Codex children), delegates,
+Workflow runs, and a pipeline log.
+
+- **Two views (2026-09-30, the owner chose draft E of the redesign).** The
+  header button (⋯ menu on phones, Activity -> Agent tree, `/agent`) opens a
+  **docked outline** to the RIGHT of the chat -- chat and composer stay
+  usable, resizable 320-560 px. An indented tree with drawn guide lines, one
+  **turn** at a time (stepper "Turn N · now"), running nodes first, an
+  "Earlier turns" fold that expands in place. Clicking any node opens ITS
+  history in a second column (drill-in with back on narrow frames):
+  subagent / Codex child / workflow agent -> Conversation, Brief, Result;
+  delegate -> reports, transcript, message box, Stop; advisor -> consultations
+  (Claude: calls only, the advice is encrypted); Jev -> forks and picks; main
+  -> the conversation's and its agents' cost (what the retired popup showed).
+  **Expand** swaps in the old console-style tree over the WHOLE conversation,
+  composer hidden too; only that expanded view is exclusive with the terminal
+  view -- the docked pane may sit beside it.
+- **The owner's four rules** hold in both views: "done" only with a real
+  result (see the status contract under Subagents); working first; the
+  earlier fold expands; only what was active or used in the turn.
+- **Retired with it:** the floating Agents island (`#wfIsland`, `#chatAgents`)
+  and the "Cost & subagents" popup (`#subPop`). Chat rows that name a
+  subagent still open the agent reader (`openSubShell`).
 
 - **`GET /api/conversations/agent-tree`** does cheap reads only: helpers,
   delegate roster, log TAILS (`tailJsonl`, last 512 KB), turn results, the
@@ -612,6 +761,16 @@ button (⋯ menu on phones); the two views are mutually exclusive.
   at a 5 s poll -- the view reads `conversations/subagents` itself, only while
   open and something runs, and keeps this turn's workers (`turnStartedAt`:
   the running turn's start, else the journal's last prompt), folding the rest.
+- **`turns`** (last 50, oldest first: `n`, `messageId`, `startedAt`,
+  `endedAt`, `prompt`, `running`) come from the conversation journal's
+  `user` rows, so both providers and reloads work. A turn ends where the
+  next starts; the last one is open while it runs, else ends at the first
+  recorded end after it (`session_done` / `session_error` timestamps, kept in
+  a `.ends.json` beside the journal because `merge()` hands every journal row
+  to the chat), else the latest Claude result or journal row. Slash-command
+  turns are not journalled, so they are not turns here. Membership is
+  `inTurn(node, turn)`: started before the turn ended, AND running or ended
+  (else last written) at or after it began.
 - **The delegate report gate is not a fork**: it shares the fork log
   (`report gate · <role>`) and is returned apart as `gates`.
 - **Claude's advisor has no checkpoints to light**: it is model-driven and
@@ -648,14 +807,33 @@ CLI writes each subagent a complete transcript of its own:
   finished turn reads exactly like a running one.
 - `toolUseId` ties a subagent back to the Task call in the parent; `spawnDepth`
   is 1 for one the conversation spawned, 2+ for one another subagent spawned.
-- `src/adapters/subagents.ts` lists and reads them; the panel's ✨ topbar button
-  opens "Cost & subagents", and each row opens its own shell. `agentId` is matched
+- `src/adapters/subagents.ts` lists and reads them; the Agent tree lists them
+  per turn and opens each one's history (the old "Cost & subagents" popup is
+  retired). `agentId` is matched
   against the directory listing before use — it arrives from a query string, and
   pasting it into a path would let `../` escape the session.
 - **Status comes from a Task's `tool_result`, not from mtime.** A `tool_use` and
   its later `tool_result` bracket the subagent, so a missing result means it
   never came back — running if the turn is live, stopped if it is not. Guessing
   from file mtime calls a subagent that is thinking hard "finished".
+- **A background agent's `tool_result` is only its launch ack** ("Async agent
+  launched…", `toolUseResult.status: async_launched`), and every one of them
+  used to read ✓ done the moment it started. It ends in a later
+  `<task-notification>` (`<task-id>` = agentId, `<tool-use-id>`, `<status>`
+  completed / failed / killed / stopped / running, `<result>`), written up to
+  three times -- a `queue-operation` enqueue, a `queued_command` attachment
+  and a `user` message; only those three shapes count, since grep output and
+  prose quote the tag too. A `stopped` one may carry no tool-use-id, so the
+  ack's agentId is kept to match it. `claudeSubagentStatus`
+  (`server/agent-tree.ts`) sets the contract: `running` (the process's
+  `subagentRunning` says so, or an async agent not yet notified with a fresh
+  transcript -- a finished parent turn is exactly when these keep going),
+  `done` (a real result), `failed` (is_error, notification failed/killed),
+  `stopped` ("[Request interrupted", notification stopped, or no result and
+  not running), `ended` (finished, empty), `unknown`. Rows carry
+  `parentAgentId` from a depth >= 2 meta; times stay epoch ms. Verified on
+  this repo's own orchestrating transcript: 61 async agents, 58 done at their
+  notification (45 s to 24 min after launch), 3 still running.
 - **A nested subagent's result is in its SPAWNER's transcript, not the parent's**,
   and nesting is the common case: a real security scan here produced 90
   subagents, 80 of them depth 2 or 3. Reading only the parent reported all 80 as
@@ -681,8 +859,10 @@ CLI writes each subagent a complete transcript of its own:
   session_meta is read once per file for the life of the process, the store is
   scanned once per request (memo cleared on `setImmediate`), and
   `subagentStatus` folds only the bytes appended since its last call.
+  `task_complete` is done only with a `last_agent_message`; empty is `ended`,
+  and an `event_msg` `error` since `task_started` makes it `failed`.
 
-## Workflow runs have their own island (`src/adapters/workflows.ts`)
+## Workflow runs (`src/adapters/workflows.ts`)
 
 A `Workflow` call writes its agents beside the session in a directory per RUN,
 using the **same file shapes as an ordinary subagent** — so nothing about
@@ -703,7 +883,11 @@ reading them is new:
   phases it DECLARED — read out of the script's `meta` literal, which the tool
   requires to be pure, so it is pattern-matched rather than evaluated — and each
   agent is named by the head of its own prompt (`cachedBrief`).
-- **Progress is the journal**, not mtime: `started` minus `result` per agentId.
+- **Progress is the journal**, not mtime: `started` minus finished per agentId,
+  where finished is a `result` OR a `failed` line (`{type:'failed', key,
+  agentId}`). Ignoring `failed` left 10 of 15 real runs that had one
+  "incomplete" forever. Runs carry `failed` and `live`; agents `failed` and
+  `status` (running only while the run is live).
 - **But liveness is NOT the journal.** It only gains a line when an agent STARTS
   or RETURNS, and the run directory's mtime only moves when a file is added, so
   three agents each thinking for ten minutes touch neither — a working run read
@@ -715,11 +899,9 @@ reading them is new:
   for. A run counts as live only if it is also moving (5 min).
 - The accounts share one `projects/` tree, so every run is reachable through
   every configDir — dedupe by runId or one run lists three times.
-- It **floats** over the chat rather than taking a column: a run is glanced at
-  and dismissed, and permanently narrowing the conversation costs more than it
-  gives. Because it covers content it opens on its own only while a run is
-  MOVING; a finished one stays behind the topbar button (its own `#i-fanout`
-  icon — `#i-repeat` is autopilot's).
+- Runs are shown in the **Agent tree** (a "Workflow run" branch whose agents
+  open their own history via `workflow-history`). The floating island that
+  used to show them was retired on 2026-09-30.
 - `runId` and `agentId` both arrive from a query string and are matched against
   the directory listing before reaching a path.
 
@@ -729,8 +911,9 @@ Every assistant entry carries `message.usage` and `message.model`, so what a
 conversation or a subagent spent is **recorded, not estimated**. One incremental
 pass collects both that and the Task outcomes above.
 
-- **Scanning is incremental and cached** (`state/transcript-stats.json`, keyed by
-  path, holding a byte offset + running totals). Transcripts here reach 627MB;
+- **Scanning is incremental and cached** (`transcript_stats` in
+  `state/gateway.sqlite`, one row per path, holding a byte offset + running
+  totals; only entries that changed are written). Transcripts here reach 627MB;
   re-reading one per request is not an option.
 - Totals are for the **whole file**, always read from byte 0. A 627MB transcript
   takes 10.3s at ~61MB/s, which cannot happen inside one request, so it is read
@@ -742,12 +925,45 @@ pass collects both that and the Task outcomes above.
   with 30ms remaining cannot overshoot the budget.
 - The cache is **versioned** (`CACHE_VERSION`). v1 entries began mid-file under
   an older tail cap, so their totals are not whole-file numbers and are
-  discarded rather than shown as if they were.
+  discarded rather than shown as if they were. v4 (2026-09-30) re-reads
+  everything once so the async-agent fold above covers old transcripts.
 - Dollars are **API list price for the same work**, not what Max billed (it is a
   flat subscription). An unpriced model is NAMED rather than blanking the figure;
   `<synthetic>` carries no tokens and is skipped.
 
-## Conversations messaging each other is BOUNDED
+## Gateway SQLite (`state/gateway.sqlite`)
+
+The busiest whole-file JSON stores moved here (2026-10-01): each used to be
+rewritten, and mostly re-parsed, on every change.
+
+| table | was | notes |
+|---|---|---|
+| `transcript_stats` | `transcript-stats.json` (4.3 MB rewrite per scan) | per-path upsert of changed entries; old `CACHE_VERSION` rows and vanished transcripts dropped at load |
+| `routing_history` | `routing-history.json` (2 fsyncs per routing event) | newest 3000 kept |
+| `message_receipts` | `message-receipts.json` | 30 days or the newest 5000, whichever is more |
+| `artifacts` | `artifacts.json` (re-parsed on every list/add) | `seq` = library order; `removed` stays a soft flag |
+
+- `server/sqlite.ts` is the helper (WAL, `synchronous=NORMAL`, versioned
+  migrations, refuses a newer `user_version`); `server/gateway-db.ts` holds ONE
+  connection per state dir, which every store fetches per operation (the
+  manager builds `RoutingState`/`ArtifactStore` per call). Closed on SIGTERM
+  and `onModuleDestroy`; the next access reopens it.
+- **Import / rollback rule.** At every open, an old JSON file that is present
+  is imported in one transaction (upsert by key, the file wins), then renamed
+  `<name>.migrated-<ts>` and kept. Rollback = rename it back and run the
+  previous image (writes made since then stay only in the database). A file
+  that does not parse at all is LEFT IN PLACE, logged, and not imported: the
+  table is used as is. For receipts that means a request id known only to the
+  broken file loses its duplicate-send guard. Only the rebuildable stats cache
+  is set aside as `.corrupt-<ts>`. `legacy_imports` records each import.
+- The offline backup/restore and recovery report (`project-spaces-recovery.ts`)
+  include it as a database; the report reads `artifacts` read-only through
+  SQLite, plus a legacy `artifacts.json` not yet imported.
+- **`projects.json` deliberately stays JSON for now**: the recovery and
+  migration tools fingerprint and read it raw, and ~114 call sites go through
+  the registry.
+
+
 
 `send_message` lets one conversation drive another, which is also how two of them
 get stuck: A asks B to debug something, B reports back, A asks a follow-up, and
@@ -773,6 +989,54 @@ gateway, not asked for in a prompt.
   any message the conversation did not send itself.
 
 Both counters are in memory. A restart re-earns them, deliberately.
+
+## Notifications (`server/notices.ts`, 2026-10-01)
+
+Three live days had pushed ~500 "finished - tap to continue" to both phones,
+most of them relays and cron, while an approval, a parked turn and a failed
+cron job pushed nothing. Now ONE function decides:
+`noticeFor(event, ctx) -> { tier, category, title, body, link, tag, id }`.
+The manager attaches it to each event as `notice`, so the push, the bell, the
+sidebar dots and the desktop fallback all use the same words. Change copy or
+tiers THERE, and keep `test/notices.test.ts` in step.
+
+- **Tiers.** `urgent` (pushed even for automated turns): a question, an MCP
+  approval while pending, a delegate `needs_human`, a parked turn with no
+  reason (every account out) or `waiting_for_reset`, a failed turn (any
+  origin but advisor/autopilot, which are `normal`), `cron_failed`.
+  `normal`: a turn a HUMAN started that ran >= `LONG_TURN_MS` (45 s), an
+  autopilot run's end (one per run, "after N steps"), a parked turn, the
+  restart notice. `quiet` (bell + dot, no push): short turns, relays, cron,
+  delegate wakes, advisor follow-ups, delegate progress, a failover that
+  worked. `none`: stopped turns, autopilot steps, per-conversation
+  `turn_orphaned` (collapsed into ONE `restart_interrupted` per boot, id
+  `restart:<bootAt>`).
+- **Origin** = the sender kind of the turn's request (`originOf`: none ->
+  human, automation -> cron, conversation/mcp -> relay, ...), carried with
+  `turnStartedAt`/`durationMs` on `session_done`, so it reaches
+  `conversation_settled` through the completion gate unchanged.
+- **Words.** Title = the conversation title, never "New chat" alone ("New
+  chat · {project}"), 60 chars on a word. Body = `{project} · {provider}` on
+  its own first line for a Work project, then what happened: duration + the
+  cleaned reply (a closing question leads), the failure in plain words, the
+  question, the approval preview. Tag `x056-conv-<sid>` (newer replaces
+  older) or `x056-urgent-<id>`.
+- **Presence.** Safari shows every push, so the gateway decides: the panel
+  `POST /api/presence {clientId, projectId, sessionId, visible, endpoint}`
+  on change and every 15 s while visible (30 s TTL, `server/presence.ts`).
+  Nothing is pushed for a conversation some visible panel is showing; while
+  any panel is visible, non-urgent pushes go only to that device.
+- **Per device** (`push_settings`, keyed by a hash of the push endpoint):
+  "Needs you" always on; "Finished long turns I started" (default on);
+  "Automation and background" (default off: relays/cron/delegates stay
+  quiet; on: pushed); quiet hours in the device's own zone, urgent included.
+  `GET/POST /api/push/settings`, `POST /api/push/test` (this device only).
+  Panel: Settings > Notifications (`/settings/notifications`).
+- **Sent ids** live in `push_sent` (gateway.sqlite migration 3, 7 days), so
+  a deploy does not resend. Pending questions older than 3 days are
+  `stale` (still answerable, not counted by the bell); 14 days are purged at
+  boot. The tab title shows "(N) " for what needs you; the app badge is the
+  bell count.
 
 ## Scheduled tasks (cron)
 

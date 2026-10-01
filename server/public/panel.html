@@ -58,7 +58,7 @@
 
   :where(button, a, select, input, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   button, select, .attach, .proj, .conv { transition: background-color .15s, border-color .15s, color .15s; }
-  :where(.side-scroll, .scroll, .wf-body, .pop) { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+  :where(.side-scroll, .scroll, .pop) { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
   /* sidebar */
   aside { background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
@@ -137,38 +137,6 @@
 
   /* main */
   main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-  /* The workflow island floats OVER the chat rather than taking a column of its
-     own: a run is something you glance at and dismiss, and permanently
-     narrowing the conversation to carry it costs more than it gives. */
-  #wfIsland { position: fixed; right: 16px; top: 76px; width: 330px; max-height: calc(100dvh - 160px);
-    background: var(--bg); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow);
-    display: flex; flex-direction: column; min-height: 0; overflow: hidden; z-index: 30; }
-  #wfIsland[hidden] { display: none; }
-  .wf-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); flex: none; }
-  .wf-head .t { flex: 1; font-weight: 600; font-size: 13px; }
-  .wf-body { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-  .wf-run { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); overflow: hidden; }
-  .wf-run.live { border-color: var(--bgwork); }
-  .wf-top { padding: 9px 11px; cursor: pointer; }
-  .wf-top:hover { background: var(--surface-2); }
-  .wf-nm { font-weight: 600; font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
-  .wf-nm .rspin { width: 10px; height: 10px; flex: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--bgwork); animation: spin .7s linear infinite; }
-  .wf-desc { font-size: 11.5px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wf-phases { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-  .wf-ph { font-size: 10.5px; color: var(--muted); background: var(--surface-2); border-radius: 20px; padding: 1px 8px; }
-  .wf-meter { height: 4px; border-radius: 3px; background: var(--surface-3); margin-top: 8px; overflow: hidden; }
-  .wf-meter i { display: block; height: 100%; background: var(--bgwork); border-radius: 3px; }
-  .wf-run.done .wf-meter i { background: var(--ok); }
-  .wf-run.stalled .wf-meter i { background: var(--faint); }
-  .wf-run.stalled .wf-count { color: var(--amber); }
-  .wf-count { font-size: 11px; color: var(--faint); margin-top: 5px; }
-  .wf-agents { border-top: 1px solid var(--border); max-height: 320px; overflow-y: auto; }
-  .wf-ag { display: flex; align-items: center; gap: 7px; padding: 6px 11px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
-  .wf-ag:hover { background: var(--surface-2); color: var(--text); }
-  .wf-ag .st { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--bgwork); }
-  .wf-ag.fin .st { background: var(--ok); }
-  .wf-ag .lb { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wf-empty { font-size: 12px; color: var(--faint); padding: 14px; text-align: center; }
   .topbar { display: flex; align-items: center; gap: 10px; height: 64px; padding: 0 24px; border-bottom: 1px solid var(--border); flex: none; }
   .project-heading { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
   .topbar .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -455,6 +423,113 @@
   .send:hover { filter: brightness(1.05); }
   .send:disabled { opacity: .4; }
 
+  /* ---- composer: the quiet pill ----
+     At rest (unfocused, empty, no files, no menu) it is ONE line: the textarea
+     and send, with a quiet status line under it. Focused, holding text or files,
+     or with a menu open (.composer-wrap[data-qp-open]) it opens into the pill:
+     text on top, then + / helpers / model·effort / send. Send sits bottom-right
+     in both, so a collapse on blur never moves it under a tap.
+     #conversationSurface prefixes every rule: control-room.css and workspace.css
+     load later and restyle `.focus-main .composer` for each presentation mode. */
+  #conversationSurface .composer-wrap .composer { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "badge prompt send"; align-items: end; column-gap: 8px; max-width: 780px; margin: 0 auto; padding: 6px 6px 6px 18px; background: var(--surface-2); border: 1px solid transparent; border-radius: 24px; box-shadow: none; overflow: visible; transition: border-color .15s; }
+  #conversationSurface .composer-wrap .composer:focus-within { border-color: var(--border-strong); box-shadow: none; }
+  #conversationSurface .composer-wrap[data-qp-open] .composer { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "att att" "prompt prompt" "bar send"; padding: 10px 6px 6px 8px; border-color: var(--border-strong); }
+  #conversationSurface .composer #prompt { grid-area: prompt; min-height: 24px; padding: 7px 0; font-size: 15px; line-height: 1.5; }
+  #conversationSurface .composer-wrap[data-qp-open] #prompt { padding: 4px 10px 8px; }
+  #conversationSurface .composer #attachRow, #conversationSurface .composer #attachRow.show { display: none; grid-area: att; padding: 0 4px 10px; }
+  #conversationSurface .composer-wrap[data-qp-open] #attachRow.show { display: flex; }
+  #conversationSurface .composer .bar { display: none; grid-area: bar; align-items: center; flex-wrap: nowrap; gap: 4px; padding: 0; min-width: 0; }
+  #conversationSurface .composer-wrap[data-qp-open] .composer .bar { display: flex; }
+  #conversationSurface .composer .bar .sp { flex: 1 1 0; min-width: 0; }
+  .qp-badge { grid-area: badge; align-self: center; display: inline-flex; align-items: center; gap: 3px; height: 38px; margin-left: -8px; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+  .qp-badge[hidden], #conversationSurface .composer-wrap[data-qp-open] .qp-badge { display: none; }
+  .qp-badge .ic { width: 15px; height: 15px; }
+  .qp-send { grid-area: send; display: flex; align-items: center; gap: 6px; }
+  #conversationSurface .qp-send .send { width: 38px; height: 38px; min-width: 38px; min-height: 38px; padding: 0; border-radius: 50%; background: var(--surface-3); color: var(--faint); flex: none; transition: background .15s, color .15s; }
+  #conversationSurface .qp-send .send[hidden] { display: none; }
+  #conversationSurface .composer-wrap[data-qp-content] .qp-send #sendBtn { background: var(--accent); color: var(--on-accent); }
+  /* Three ids: control-room.css pins #conversationSurface #sendBtn/#steerBtn to a 36px circle. */
+  #conversationSurface #composerSend #sendBtn { box-sizing: border-box; width: 38px; height: 38px; min-width: 38px; max-width: 38px; max-height: 38px; flex: 0 0 38px; }
+  #conversationSurface #composerSend #steerBtn { box-sizing: border-box; height: 38px; min-height: 38px; max-height: 38px; min-width: 38px; max-width: none; flex: none; aspect-ratio: auto; }
+  #conversationSurface #composerSend #steerBtn[hidden], #conversationSurface #composerSend #sendBtn[hidden] { display: none; }
+  #conversationSurface .qp-send #steerBtn { width: auto; display: inline-flex; align-items: center; gap: 6px; padding: 0 14px 0 12px; border-radius: 999px; background: var(--bgwork); color: var(--on-accent); margin: 0; font: inherit; font-size: 13px; font-weight: 600; }
+  #conversationSurface .qp-send #steerBtn[hidden] { display: none; }
+  #conversationSurface .qp-send .qp-stop { position: relative; background: transparent; color: var(--text); }
+  #conversationSurface .qp-send .qp-stop:hover { background: var(--surface-3); filter: none; }
+  .qp-stop .ic { fill: currentColor; stroke: none; width: 13px; height: 13px; }
+  .qp-ring { position: absolute; inset: 0; width: 100%; height: 100%; animation: spin 1.4s linear infinite; }
+  .qp-ring circle { fill: none; stroke: var(--border-strong); stroke-width: 2; }
+  .qp-ring .qp-ring-arc { stroke: var(--accent); stroke-dasharray: 28 89; stroke-linecap: round; }
+  .qp-stop.bg .qp-ring-arc { stroke: var(--bgwork); }
+  /* + menu, helpers and the model·effort chip share one height. */
+  .qp-plus { position: relative; display: inline-flex; flex: none; }
+  .qp-plus-btn { display: inline-grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--border-strong); border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+  .qp-plus-btn:hover, .qp-plus-btn[aria-expanded=true] { background: var(--surface-3); color: var(--text); }
+  .qp-plus-btn .ic { width: 16px; height: 16px; }
+  .qp-plus-menu { width: 280px; }
+  .qp-plus-menu .helper-item > .ic { color: var(--muted); flex: none; }
+  .qp-plus-menu .helper-item[hidden] { display: none; }
+  .qp-kbd { flex: none; font: inherit; font-size: 11px; color: var(--faint); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+  #conversationSurface .composer .helper-btn { height: 34px; }
+  #conversationSurface .composer .selects.qp-run { display: inline-flex; align-items: center; flex: 0 1 auto; width: auto; min-width: 0; height: 34px; margin: 0; padding: 0; }
+  .qp-native { display: none !important; }
+  .qp-run-btn { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; height: 34px; padding: 0 9px 0 11px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; }
+  .qp-run-btn:hover, .qp-run-btn[aria-expanded=true] { background: var(--surface-3); color: var(--text); }
+  .qp-run-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .qp-run-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .qp-chev { flex: none; width: 13px; height: 13px; transition: transform .15s; }
+  [aria-expanded=true] > .qp-chev { transform: rotate(180deg); }
+  /* The quiet line: live status or the run setup left, account + delivery right. */
+  #conversationSurface .composer-wrap .composer-footer { max-width: 780px; margin: 6px auto 0; padding: 0 8px 0 16px; border-top: 0; display: flex; align-items: center; gap: 10px; min-height: 26px; min-width: 0; font-size: 12px; color: var(--faint); }
+  .composer-status { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+  /* The account chip keeps its width; a long running status shrinks first. */
+  #conversationSurface .composer-wrap .composer-footer .send-account-chip { flex: 0 0 auto; max-width: 62%; }
+  #conversationSurface .composer-status #busy .tasks, #conversationSurface .composer-status #busy .bmeta { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #conversationSurface .composer-status #busy { max-width: none; margin: 0; padding: 0; flex: 0 1 auto; min-width: 0; font-size: 12px; gap: 7px; }
+  #conversationSurface .composer-status #busy .spin { width: 11px; height: 11px; border-width: 1.7px; }
+  #conversationSurface .composer-status #busy .stopbtn { margin-left: 4px; padding: 1px 8px; font-size: 11px; }
+  #conversationSurface .composer-wrap:not([data-qp-content]) #busy .stopbtn { display: none; }
+  .qp-caption { flex: 0 1 auto; min-width: 0; margin-left: -4px; padding: 2px 4px; border: 0; border-radius: 6px; background: transparent; color: var(--faint); font: inherit; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  .qp-caption:hover { color: var(--text); background: var(--surface-2); }
+  .qp-caption:empty, #conversationSurface .composer-wrap[data-qp-open] .qp-caption, #conversationSurface .composer-wrap[data-qp-run] .qp-caption { display: none; }
+  #conversationSurface .composer-status #runningAccountLabel { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #conversationSurface .composer-footer .send-account-chip { flex: 0 1 auto; width: auto; max-width: 48%; min-height: 24px; margin: 0; padding: 2px 4px; border: 0; border-radius: 6px; font-size: 12px; }
+  #conversationSurface .composer-footer .send-account-chip:hover { background: var(--surface-2); }
+  #conversationSurface .composer-footer .send-account-chip small { display: none; }
+  #conversationSurface .composer-footer .send-account-chip > .ic:last-child { margin-left: 2px; }
+  #conversationSurface .composer-footer #deliveryStrip { flex: none; margin: 0; max-width: 40%; }
+  #conversationSurface .composer-wrap:not([data-qp-open]) .composer-footer #deliveryStrip button span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #conversationSurface .composer-wrap .composer-hint { position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  /* The desktop conversation stage floats bottom-right (bottom 22px, a 52px
+     bubble, its caption beside it): lift the pill and its quiet line above that
+     band so the caption never sits on send, the account or the delivery dot.
+     Wider screens keep the caption clear of the 780px pill anyway. */
+  @media (min-width: 851px) and (max-width: 1700px) {
+    body:not([data-stage-hidden=true]):not(.rc-chat-active):has(#conversationStage .stage-item) #conversationSurface .composer-wrap { padding-bottom: 80px; }
+  }
+  @media (max-width: 720px) {
+    #conversationSurface .composer-wrap { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+    #conversationSurface .composer #prompt { font-size: 16px; }
+    .qp-run-btn { padding: 0 7px 0 9px; }
+    #conversationSurface .qp-send #steerBtn { padding: 0 12px 0 11px; }
+    #conversationSurface .composer-wrap .composer-footer { padding: 0 4px 0 12px; gap: 6px; }
+    /* The account's name is what matters on a phone; "Send with" is in the title. */
+    #conversationSurface .composer-footer .send-account-chip > span { font-size: 0; }
+    #conversationSurface .composer-footer .send-account-chip > span strong { font-size: 12px; }
+  }
+  @media (max-width: 420px) {
+    /* A phone gives the chip ~170px: the model keeps its name, effort its word. */
+    #conversationSurface .composer .selects.qp-run { max-width: 190px; }
+    #conversationSurface .composer-footer .send-account-chip { max-width: 62%; }
+    #conversationSurface .composer .helper-btn[data-state=on] .helper-label { max-width: 64px; }
+    #conversationSurface .qp-send .qp-steer-label { display: none; }
+    #conversationSurface #composerSend #steerBtn { width: 38px; padding: 0; justify-content: center; }
+  }
+  @media (max-width: 360px) {
+    #conversationSurface .composer .selects.qp-run { max-width: 150px; }
+    #conversationSurface .composer .bar { gap: 2px; }
+  }
+
   .pop { position: absolute; bottom: 62px; left: 12px; width: 288px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; z-index: 30; }
   .pop[hidden] { display: none; }
   .pop h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--faint); margin: 2px 4px 10px; }
@@ -503,10 +578,6 @@
   .plug-foot code { background: var(--surface-3); padding: 1px 5px; border-radius: 5px; font-size: 10.5px; }
   .plug-empty { font-size: 12px; color: var(--faint); padding: 6px 2px; }
   /* Scheduled tasks */
-  /* The count badge is informational, not an alert like the approvals one. */
-  .subBadge { background: var(--accent); }
-  .subfilter { display: flex; align-items: center; gap: 7px; margin: 0 2px 8px; font-size: 11.5px; color: var(--muted); cursor: pointer; user-select: none; }
-  .subfilter input { margin: 0; accent-color: var(--accent); }
   .subr.col { display: block; }
   .sst { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border-radius: 999px; padding: 1px 7px; flex: none; }
   .sst.running { background: var(--accent); color: var(--on-accent); }
@@ -813,10 +884,6 @@
   .more-item { display: flex; align-items: center; gap: 11px; padding: 10px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; color: var(--text); background: none; border: none; width: 100%; text-align: left; }
   .more-item:hover { background: var(--surface-2); }
   .more-item .ic { color: var(--muted); flex: none; }
-  @media (max-width: 760px) {
-    /* No room to float beside the chat; sit it against the edges instead. */
-    #wfIsland { left: 12px; right: 12px; width: auto; top: 56px; max-height: 60dvh; }
-  }
   @media (max-width: 720px) {
     body { grid-template-columns: 1fr; }
     .hamburger { display: inline-grid; place-items: center; }
@@ -832,12 +899,12 @@
        lives only on the .nav-open rule — on the base rule its blur radius peeked
        past the -100% translated edge as a permanent dark sliver down the left
        side of the screen even while the drawer was closed. */
-    body > aside:not(#wfIsland) {
+    body > aside {
       position: fixed; top: 0; left: 0; bottom: 0; width: 84%; max-width: 300px; z-index: 60;
       transform: translateX(-100%); transition: transform .22s ease;
       padding-top: env(safe-area-inset-top);
     }
-    body.nav-open > aside:not(#wfIsland) { transform: translateX(0); box-shadow: 2px 0 24px rgba(0,0,0,.3); }
+    body.nav-open > aside { transform: translateX(0); box-shadow: 2px 0 24px rgba(0,0,0,.3); }
     /* iOS Safari auto-zooms the page on focus if the control's font-size is
        under 16px — bump these to 16px on mobile to stop the zoom-in-while-typing. */
     textarea, select, .pk-search { font-size: 16px; }
@@ -1018,6 +1085,240 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
 .at-log .t { color: var(--at-faint); font-variant-numeric: tabular-nums; } .at-log .g { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .at-log .x { overflow-wrap: anywhere; }
 .at-log .sub .g { color: var(--at-sub); } .at-log .jev .g { color: var(--at-jev); } .at-log .adv .g { color: var(--at-adv); } .at-log .gate .g, .at-log .dg .g { color: var(--at-dg); }
 .at-log li.none { display: block; color: var(--at-faint); }
+/* Agent tree, docked beside the chat (agent-tree.js, #agentPane), and the additions the
+   expanded console view (agent-tree.js) needs. Panel tokens only; role and
+   status colours are defined here for both themes. */
+#agentPane {
+  --ap-main: #c2410c; --ap-sub: #2563eb; --ap-jev: #15803d; --ap-adv: #7c3aed; --ap-dg: #0e7490;
+  --ap-stop: #475569; --ap-ended: #be185d;
+}
+html[data-theme="dark"] #agentPane {
+  --ap-main: #f0a57a; --ap-sub: #79a8ff; --ap-jev: #7ee2a0; --ap-adv: #c9a7ff; --ap-dg: #56d4dd;
+  --ap-stop: #a5b4c8; --ap-ended: #f9a8d4;
+}
+#agentPane { position: relative; flex: none; width: 420px; min-width: 0; min-height: 0; display: flex; flex-direction: column;
+  background: var(--bg); color: var(--text); border-left: 1px solid var(--border); font-family: var(--font); font-size: 13px; line-height: 1.45; }
+#agentPane[hidden] { display: none; }
+#agentPane.ap-sheet { position: absolute; inset: 0 0 0 auto; width: 100%; z-index: 20; border-left: 0; }
+#agentPane .ic { width: 15px; height: 15px; }
+
+/* Resize handle on the left edge. */
+.ap-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 3; }
+.ap-grip::after { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px; background: transparent; transition: background .12s; }
+.ap-grip:hover::after, .ap-grip:focus-visible::after, .ap-resizing .ap-grip::after { background: var(--link); }
+.ap-grip:focus-visible { outline: none; }
+.ap-sheet .ap-grip { display: none; }
+.ap-resizing { user-select: none; }
+
+.ap-head { display: flex; align-items: center; gap: 7px; min-height: 52px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--border); flex: none; min-width: 0; }
+.ap-hicon { display: grid; place-items: center; color: var(--muted); }
+.ap-title { font-weight: 600; font-size: 13px; white-space: nowrap; }
+.ap-sp { flex: 1; min-width: 0; }
+.ap-live { font-size: 11px; color: var(--faint); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ap-live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.ap-live.on { color: var(--bgwork); } .ap-live.on::before { background: var(--bgwork); }
+.ap-ib { display: grid; place-items: center; width: 30px; height: 30px; flex: none; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; padding: 0; }
+.ap-ib:hover { background: var(--surface-2); color: var(--text); }
+.ap-ib:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.ap-ib:disabled { opacity: .35; cursor: default; background: transparent; }
+.ap-turn { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 9px; height: 30px; padding: 0 1px; flex: none; }
+.ap-turn[hidden] { display: none; }
+.ap-turn .ap-ib { width: 26px; height: 26px; border-radius: 7px; }
+.ap-turn-l { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 4px; }
+.ap-tnote { display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; font-size: 12px; color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--border); flex: none; }
+.ap-tnote[hidden] { display: none; }
+.ap-tnote .ic { margin-top: 2px; flex: none; }
+.ap-tnote span { flex: 1; min-width: 0; }
+.ap-link { border: 0; background: none; color: var(--link); font: inherit; font-size: 12px; cursor: pointer; padding: 0; white-space: nowrap; }
+.ap-link:hover { text-decoration: underline; }
+
+.ap-cols { flex: 1; min-height: 0; display: flex; }
+.ap-outline { flex: 1; min-width: 0; overflow: auto; padding: 8px 6px 16px 8px; scrollbar-width: thin; overscroll-behavior: contain; }
+.ap-wide .ap-outline { flex: 0 0 var(--ap-outline-w, 420px); border-right: 1px solid var(--border); }
+.ap-drill .ap-outline { display: none; }
+.ap-hist { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.ap-hist[hidden] { display: none; }
+.ap-empty { color: var(--muted); margin: 10px 4px; line-height: 1.55; font-size: 12.5px; }
+
+/* ---- the outline: guide lines are borders, one per level ---- */
+.ap-ul { list-style: none; margin: 0; padding: 0; }
+.ap-ul .ap-ul { margin-left: 12px; }
+.ap-li { position: relative; }
+.ap-ul .ap-ul > .ap-li { padding-left: 16px; }
+.ap-ul .ap-ul > .ap-li::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; border-left: 1.5px solid color-mix(in srgb, var(--c) 42%, var(--border)); }
+.ap-ul .ap-ul > .ap-li::after { content: ""; position: absolute; left: 0; top: 18px; width: 13px; border-top: 1.5px solid color-mix(in srgb, var(--c) 42%, var(--border)); }
+.ap-ul .ap-ul > .ap-li:last-child::before { bottom: auto; height: 18px; width: 13px; border-bottom: 1.5px solid color-mix(in srgb, var(--c) 42%, var(--border)); border-bottom-left-radius: 7px; }
+.ap-ul .ap-ul > .ap-li:last-child::after { display: none; }
+.ap-root > .ap-li + .ap-li { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.ap-row { display: flex; align-items: flex-start; gap: 6px; padding: 5px 8px 5px 2px; border-radius: 9px; cursor: pointer; min-width: 0; border: 1px solid transparent; font-size: 12.5px; }
+.ap-row:hover { background: var(--surface-2); }
+.ap-row:focus { outline: none; }
+.ap-row:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.ap-row[aria-selected=true] { background: color-mix(in srgb, var(--c) 11%, var(--bg)); border-color: color-mix(in srgb, var(--c) 50%, transparent); }
+.ap-noterow { cursor: default; color: var(--muted); }
+.ap-noterow:hover { background: transparent; }
+.ap-chev { display: grid; place-items: center; width: 18px; height: 22px; flex: none; color: var(--muted); border-radius: 5px; }
+.ap-chev[data-tog]:hover { background: var(--surface-3); color: var(--text); }
+.ap-chev .ic { width: 14px; height: 14px; transition: transform .15s; }
+.ap-row[aria-expanded=true] > .ap-chev .ic { transform: rotate(90deg); }
+.ap-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--faint)); flex: none; margin-top: 7px; }
+.ap-dot.sq { border-radius: 2px; }
+.ap-ico { display: grid; place-items: center; height: 22px; flex: none; }
+.ap-ico .ic { width: 14px !important; height: 14px !important; color: var(--c); }
+.ap-tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; padding-top: 2px; }
+.ap-l1 { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 19px; }
+.ap-l1 b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ap-l2 { display: flex; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
+.ap-brief { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-bits { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; margin-left: auto; }
+.ap-pick { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 550; color: var(--ap-jev); background: color-mix(in srgb, var(--ap-jev) 14%, transparent); white-space: nowrap; flex: none; }
+.ap-gate { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 550; white-space: nowrap; flex: none; }
+.ap-gate-needs { color: var(--amber); background: var(--amber-bg); }
+.ap-gate-link { color: var(--link); background: color-mix(in srgb, var(--link) 13%, transparent); }
+.ap-gate-done { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); }
+.ap-gate-failed { color: var(--err); background: var(--err-bg); }
+.ap-gate-idle { color: var(--muted); background: var(--surface-2); }
+.ap-verdict { font-size: 11px; font-weight: 550; color: var(--muted); white-space: nowrap; flex: none; }
+.ap-verdict.sharp { color: var(--ap-jev); } .ap-verdict.warn { color: var(--amber); } .ap-verdict.err { color: var(--err); }
+
+/* ---- status: glyph + colour + words, one per value ---- */
+.ap-st { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 550; white-space: nowrap; flex: none; color: var(--muted); }
+.ap-st-run { color: var(--bgwork); } .ap-st-needs { color: var(--amber); } .ap-st-done { color: var(--ok); }
+.ap-st-ended { color: var(--ap-ended); } .ap-st-stopped { color: var(--ap-stop); } .ap-st-failed { color: var(--err); }
+.ap-st-unknown { color: var(--faint); } .ap-st-idle { color: var(--muted); }
+.ap-g { display: inline-grid; place-items: center; width: 12px; height: 12px; flex: none; box-sizing: border-box; }
+.ap-g .ic { width: 13px !important; height: 13px !important; stroke-width: 2.4; }
+.ap-g-run { border-radius: 50%; border: 1.8px solid currentColor; border-right-color: transparent; animation: ap-rot .8s linear infinite; color: var(--bgwork); }
+.ap-g-needs { width: 13px; height: 13px; border-radius: 50%; background: var(--amber); color: var(--bg); font-size: 9.5px; font-weight: 800; line-height: 1; }
+.ap-g-stopped { width: 9px; height: 9px; border-radius: 2px; background: currentColor; }
+.ap-g-ended { border-radius: 50%; border: 1.5px solid currentColor; position: relative; }
+.ap-g-ended::after { content: ""; position: absolute; left: 2px; right: 2px; top: 50%; border-top: 1.5px solid currentColor; transform: translateY(-50%) rotate(-45deg); }
+.ap-g-unknown { border-radius: 50%; border: 1.5px dotted currentColor; }
+.ap-g-idle { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; }
+@keyframes ap-rot { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ap-g-run { animation: none; border-right-color: currentColor; border-style: dashed; } }
+
+/* ---- a node's history ---- */
+.ap-hwrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.ap-slide { animation: ap-in .16s ease-out; }
+@keyframes ap-in { from { transform: translateX(14px); opacity: .4; } }
+.ap-hh { display: flex; align-items: center; gap: 8px; padding: 9px 8px 9px 12px; border-bottom: 1px solid var(--border); flex: none; min-width: 0; }
+.ap-hh > .ap-dot { margin-top: 0; }
+.ap-hm { flex: 1; min-width: 0; }
+.ap-hn { font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; line-height: 1.3; }
+.ap-hmeta { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.ap-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); margin: 0; border-bottom: 1px solid var(--border); flex: none; overflow: hidden; }
+.ap-stats div { padding: 7px 10px; min-width: 0; box-shadow: 1px 1px 0 0 var(--border); }
+.ap-stats dt { font-size: 11px; color: var(--muted); }
+.ap-stats dd { margin: 1px 0 0; font-size: 12.5px; font-weight: 550; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.ap-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); flex: none; }
+.ap-tabs button { border: 0; background: transparent; padding: 7px 10px 8px; font: inherit; font-size: 12.5px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 6px 6px 0 0; cursor: pointer; }
+.ap-tabs button:hover { color: var(--text); }
+.ap-tabs button[aria-selected=true] { color: var(--text); font-weight: 550; border-bottom-color: var(--c); }
+.ap-tabs button:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.ap-hbody { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 14px; scrollbar-width: thin; overscroll-behavior: contain; }
+#agentPane .ap-rows.thread { max-width: none; padding: 0; margin: 0; width: auto; font-size: 13px; }
+#agentPane .ap-rows .msg { font-size: 13px; line-height: 1.6; }
+.ap-older { display: block; margin: 0 auto 8px; }
+.ap-working { display: flex; align-items: center; gap: 7px; color: var(--bgwork); font-size: 12px; margin: 8px 2px; }
+.ap-doc { line-height: 1.55; overflow-wrap: anywhere; }
+.ap-doc p { margin: 0 0 8px; }
+.ap-faint { color: var(--faint); font-size: 11.5px; }
+.ap-note { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 10px; padding: 8px 10px; margin: 0 0 10px; line-height: 1.5; }
+.ap-note .ic { margin-top: 2px; flex: none; }
+.ap-sect { font-size: 11.5px; font-weight: 600; color: var(--muted); margin: 12px 2px 6px; text-transform: none; }
+.ap-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ap-card { border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; font-size: 12.5px; }
+.ap-card p { margin: 5px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
+.ap-fch { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ap-fch time { font-family: var(--mono); font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.ap-fch b { font-weight: 550; min-width: 0; overflow-wrap: anywhere; flex: 1; }
+.ap-opts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.ap-opt { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.ap-opt.on { border-color: color-mix(in srgb, var(--ap-jev) 55%, transparent); color: var(--ap-jev); background: color-mix(in srgb, var(--ap-jev) 10%, transparent); }
+.ap-opt .ic { width: 11px !important; height: 11px !important; }
+.ap-fconf { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.ap-bar { position: relative; flex: 1; height: 6px; border-radius: 4px; background: var(--surface-3); overflow: visible; }
+.ap-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--ap-main); }
+.ap-bar.sharp i { background: var(--ap-jev); }
+.ap-bar em { position: absolute; left: 75%; top: -3px; bottom: -3px; border-left: 1.5px solid var(--text); opacity: .5; }
+.ap-report + .ap-hbody { margin-top: 10px; border-top: 1px solid var(--border); }
+.ap-report { margin: 10px 12px 0; border: 1px solid color-mix(in srgb, var(--c) 45%, var(--border)); border-radius: 10px; padding: 8px 10px; flex: none; }
+.ap-report p { margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.ap-rph { display: flex; align-items: center; gap: 8px; }
+.ap-raw { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.ap-r { display: grid; grid-template-columns: 58px 14px minmax(0, 1fr); gap: 6px; padding: 3px 0; align-items: start; }
+.ap-r time { font-family: var(--mono); font-size: 10.5px; color: var(--faint); padding-top: 2px; }
+.ap-rg { text-align: center; font-size: 12px; color: var(--muted); }
+.ap-rx { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; }
+.ap-r-tool .ap-rx, .ap-r-result .ap-rx, .ap-r-err .ap-rx { font-family: var(--mono); font-size: 11.5px; }
+.ap-r-tool .ap-rg { color: var(--c); } .ap-r-result .ap-rx { color: var(--muted); } .ap-r-err .ap-rx { color: var(--err); }
+.ap-r-think .ap-rx { color: var(--muted); font-style: italic; }
+.ap-r-user .ap-rx { background: var(--user-bg); border-radius: 8px; padding: 3px 8px; }
+.ap-send { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); flex: none; flex-wrap: wrap; }
+.ap-send input { flex: 1 1 140px; min-width: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; padding: 7px 10px; }
+.ap-btn { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 9px; padding: 6px 10px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.ap-btn:hover:not(:disabled) { background: var(--surface-2); }
+.ap-btn:disabled { opacity: .45; cursor: default; }
+.ap-btn.pri { background: var(--text); color: var(--bg); border-color: var(--text); }
+.ap-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.ap-turnrow { padding: 0; }
+.ap-turnbtn { display: flex; align-items: baseline; gap: 8px; width: 100%; border: 0; background: none; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; padding: 7px 10px; border-radius: 10px; cursor: pointer; min-width: 0; }
+.ap-turnbtn:hover { background: var(--surface-2); }
+.ap-turnbtn time { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+.ap-turnbtn .ap-faint { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Narrow frames: the stats wrap to two rows instead of truncating. */
+/* Jev picks and forks: compact cards */
+.ap-jc { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; }
+.ap-jc > .ap-fch { align-items: center; flex-wrap: nowrap; }
+.ap-jc .ap-sp { flex: 1; }
+.ap-jc .ap-fconf { margin: 0; flex: 0 0 auto; width: 120px; }
+.ap-jc .ap-opts { margin: 0; }
+.ap-jc .ap-pc { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+.ap-pickline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12.5px; overflow-wrap: anywhere; }
+.ap-pickline b { font-weight: 550; }
+.ap-clampw { min-width: 0; }
+.ap-clamp { font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--n, 3); line-clamp: var(--n, 3); overflow: hidden; }
+.ap-clamp.open { display: block; -webkit-line-clamp: unset; line-clamp: unset; }
+.ap-more { font-size: 11.5px; margin-top: 2px; padding: 0; }
+.ap-rmd { font-size: 12.5px; line-height: 1.5; }
+.ap-rmd > :last-child { margin-bottom: 0; }
+.ap-rmd pre { overflow: auto; max-width: 100%; }
+.ap-report .ap-rmd { margin-top: 6px; max-height: 14em; overflow: auto; }
+@media (max-width: 650px) {
+  .ap-head { padding-left: 10px; gap: 4px; }
+  .ap-live { display: none; }
+}
+
+/* The pinned-conversation stage floats bottom-right; keep it off the pane. */
+body:has(#agentPane:not([hidden]):not(.ap-sheet)) #conversationStage { right: calc(var(--agent-pane-w, 420px) + 22px); }
+body:has(#agentPane.ap-sheet:not([hidden])) #conversationStage { display: none !important; }
+#conversationSurface.ap-narrow-chat .topbar #chatActivity > span, #conversationSurface.ap-narrow-chat .topbar #autopilotBtn > span { display: none; }
+/* ---- the reader's header knows "ended" too ---- */
+.agent-status.ended { color: #be185d; background: transparent; }
+html[data-theme="dark"] .agent-status.ended { color: #f9a8d4; }
+.agent-status.stopped { color: #475569; background: transparent; }
+html[data-theme="dark"] .agent-status.stopped { color: #a5b4c8; }
+
+/* ---- the expanded console view: it takes the whole conversation's place ---- */
+main.atree-open .composer-wrap { display: none !important; }
+.atree .at-collapse { margin-left: 0; }
+.at-card.ended .at-card-status { color: #f9a8d4; } .at-card.unknown .at-card-status { color: var(--at-faint); }
+.at-card.stopped .at-card-status { color: #a5b4c8; }
+.at-earlier { margin-top: 10px; width: 100%; max-width: 760px; display: flex; flex-direction: column; align-items: center; }
+.at-earlier-btn { font: inherit; font-size: 11.5px; color: var(--at-muted); background: transparent; border: 1px dashed var(--at-line); padding: 3px 12px; cursor: pointer; }
+.at-earlier-btn:hover, .at-earlier-btn:focus-visible { color: #e6edf3; border-color: var(--at-sub); outline: none; }
+.at-eg { width: 100%; margin-top: 10px; text-align: left; }
+.at-egh { color: var(--at-muted); font-size: 11.5px; padding: 0 0 4px; border-bottom: 1px solid #222a35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-eg-list { list-style: none; margin: 4px 0 0; padding: 0 0 0 10px; border-left: 1px dashed var(--at-line); display: flex; flex-direction: column; gap: 2px; }
+.at-er-btn { width: 100%; display: grid; grid-template-columns: minmax(80px, auto) minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 3px 8px; border: 0; background: transparent; color: #d6dde6; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.at-er-btn:hover, .at-er-btn:focus-visible { background: #161b22; outline: none; }
+.at-er-btn .role { font-weight: 700; color: #e6edf3; } .at-er-btn .desc { color: var(--at-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atree .st-run { color: var(--at-adv); } .atree .st-done { color: var(--at-jev); } .atree .st-ended { color: #f9a8d4; } .atree .st-stopped { color: #a5b4c8; }
+.atree .st-failed { color: var(--at-err); } .atree .st-needs { color: var(--at-warn); } .atree .st-unknown, .atree .st-idle { color: var(--at-faint); }
+.at-node.wf { border-color: var(--at-sub); text-align: left; align-items: stretch; width: min(560px, 100%); }
+.at-node.wf .at-node-title > span:first-child { color: var(--at-sub); }
+.at-node.wf .at-dg-btn { cursor: default; grid-template-columns: minmax(0, 1fr) auto auto; }
 @media (max-width: 650px) {
   .at-body { padding: 12px 12px 24px; }
   .at-legend { justify-content: flex-start; gap: 4px 14px; }
@@ -1042,30 +1343,54 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
 .helper-label { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .helper-head.sub { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
 .helper-label { font-weight: 600; letter-spacing: .1px; }
-.helper-menu { position: fixed; z-index: 160; width: 300px; max-width: calc(100vw - 24px); overflow-y: auto; overscroll-behavior: contain; padding: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); }
+.helper-menu { position: fixed; z-index: 160; width: 320px; max-width: calc(100vw - 24px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); animation: cp-in .14s ease-out; }
+@keyframes cp-in { from { opacity: 0; transform: translateY(4px); } }
 .helper-menu[hidden] { display: none; }
-.helper-head { padding: 8px 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--faint); }
-.helper-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 10px; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.helper-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px 5px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.helper-head.sub { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); font-weight: 500; font-size: 12px; }
+.helper-hint { font-weight: 400; font-size: 12px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.helper-hint .ic { width: 12px; height: 12px; flex: none; }
+.helper-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 9px; background: transparent; color: var(--text); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; }
 .helper-item:hover:not(:disabled), .helper-item:focus-visible { background: var(--surface-2); outline: none; }
+.helper-item:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .helper-item:disabled { opacity: .5; cursor: default; }
-.hi-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.hi-title { font-size: 13.5px; font-weight: 600; }
-.hi-desc { font-size: 12px; line-height: 1.4; color: var(--muted); }
+.hi-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; line-height: 1.3; }
+.hi-title { font-weight: 500; }
+.hi-desc { font-size: 12px; line-height: 1.35; color: var(--muted); }
+.hi-desc:empty { display: none; }
 .hi-tag { margin-left: 6px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-size: 10.5px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; vertical-align: 1px; }
-.hi-check { flex: none; color: var(--accent); visibility: hidden; }
-/* The picker's lean, Low / Medium / High: shown only while a picker is on. */
-.helper-lean { margin: 2px 0 2px; padding: 8px 10px 10px; }
-.helper-lean[hidden] { display: none; }
-.lean-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
-.lean-title { font-size: 12.5px; font-weight: 600; color: var(--text); flex: none; }
-.lean-cap { font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lean-seg-group { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 3px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
-.lean-seg { height: 26px; padding: 0 6px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s; }
-.lean-seg:hover:not([aria-checked=true]) { color: var(--text); }
-.lean-seg[aria-checked=true] { background: var(--bg); color: var(--accent); font-weight: 600; box-shadow: 0 0 0 1px var(--border), 0 1px 2px color-mix(in srgb, var(--text) 12%, transparent); }
-.lean-seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.helper-menu[aria-busy=true] .lean-seg { cursor: progress; }
+.hi-check { flex: none; width: 16px; height: 16px; color: var(--text); visibility: hidden; stroke-width: 2.2; }
 .helper-item[aria-checked=true] .hi-check { visibility: visible; }
+.hi-box { width: 16px; height: 16px; flex: none; border: 1.5px solid var(--border-strong); border-radius: 5px; display: grid; place-items: center; }
+.hi-box .ic { width: 12px; height: 12px; stroke-width: 3; visibility: hidden; }
+.helper-item[aria-checked=true] .hi-box { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.helper-item[aria-checked=true] .hi-box .ic { visibility: visible; }
+.helper-lean { margin: 0; padding: 8px 10px 2px; }
+.helper-lean[hidden] { display: none; }
+.lean-top { display: flex; align-items: center; gap: 10px; }
+.lean-title { font-size: 12.5px; color: var(--muted); flex: none; }
+.lean-top .lean-seg-group { flex: 1; }
+.lean-cap { margin: 6px 0 6px; font-size: 12px; line-height: 1.4; color: var(--faint); }
+.lean-seg-group, .cp-seg { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 10px; background: var(--surface-2); }
+.lean-seg, .cp-seg button { flex: 1 1 auto; height: 27px; padding: 0 7px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s; }
+.lean-seg:hover:not([aria-checked=true]), .cp-seg button:hover:not([aria-checked=true]) { color: var(--text); }
+.lean-seg[aria-checked=true], .cp-seg button[aria-checked=true] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--border-strong), 0 1px 2px #0000001a; }
+.lean-seg:focus-visible, .cp-seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.helper-menu[aria-busy=true] .lean-seg { cursor: progress; }
+/* The model · effort popover: rows from the hidden #model, a segment from #effort. */
+.run-menu { width: 360px; }
+.run-menu .cp-seg button { padding: 0 6px; }
+.run-menu .cp-pad { padding: 2px 6px 6px; }
+.run-menu .cp-prov-seg { margin: 0 6px 4px; }
+.run-menu .helper-item[aria-checked=true] .hi-title { font-weight: 600; }
+.run-menu .hi-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Phones: every composer popover is a bottom sheet. */
+@media (max-width: 720px) {
+  .helper-menu:not(.qp-plus-menu) { left: 8px !important; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)) !important; width: auto; max-width: none; border-radius: 18px; padding: 8px 6px; animation: cp-sheet .22s cubic-bezier(.2,.8,.2,1); }
+  @keyframes cp-sheet { from { opacity: 0; transform: translateY(24px); } }
+  .helper-item { padding: 10px 10px; }
+  body.qp-menu-open #conversationStage { visibility: hidden; }
+}
 
 /* ---- advisor card (chat) ---- */
 .advcard { box-sizing: border-box; width: 100%; max-width: min(780px, 100%); margin: 12px auto; padding: 14px 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 16px; }
@@ -1176,6 +1501,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   <symbol id="i-insert" viewBox="0 0 24 24"><path d="M9 10l-5 5 5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
   <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M10 14h4"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-4 4 3 3m-6-1 2.5 2.5"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M19.44 7.85c-.05.32.06.65.29.88l1.56 1.56c.47.47.71 1.09.71 1.71s-.24 1.23-.71 1.7l-1.6 1.61a.98.98 0 0 1-.84.28c-.47-.07-.8-.48-.97-.93a2.5 2.5 0 1 0-3.21 3.22c.44.16.85.5.92.97a.98.98 0 0 1-.28.84l-1.6 1.6c-.48.48-1.1.71-1.71.71s-1.23-.23-1.7-.7l-1.57-1.57a1.03 1.03 0 0 0-.88-.29c-.49.07-.84.5-1.02.97a2.5 2.5 0 1 1-3.24-3.24c.46-.18.9-.53.97-1.02a1.03 1.03 0 0 0-.29-.88L2.7 13.7A2.4 2.4 0 0 1 2 12c0-.62.24-1.23.71-1.7l1.52-1.53c.24-.24.58-.35.92-.3.51.08.87.53 1.07 1.01a2.5 2.5 0 1 0 3.26-3.26c-.48-.2-.93-.56-1.01-1.07-.05-.34.06-.68.3-.92l1.53-1.52A2.4 2.4 0 0 1 12 2c.62 0 1.23.24 1.7.71l1.57 1.57c.23.23.56.33.88.29.49-.08.84-.5 1.02-.97a2.5 2.5 0 1 1 3.24 3.24c-.47.18-.9.53-.97 1.02Z"/></symbol>
@@ -1201,7 +1527,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     <span id="dot" class="off" title="connection"></span>
     <button class="ico" id="notifyBtn" title="enable phone/desktop notifications"><svg class="ic"><use href="#i-bell"/></svg></button>
     <button class="ico" id="mcpApprovalsBtn" title="AI cross-conversation send requests awaiting your approval" hidden><svg class="ic"><use href="#i-inbox"/></svg><span class="mcpBadge" id="mcpApprovalsBadge"></span></button>
-    <button class="ico" id="subagentsBtn" title="subagents this conversation spawned" hidden><svg class="ic"><use href="#i-users"/></svg><span class="mcpBadge subBadge" id="subagentsBadge"></span></button>
     <button class="ico" id="autopilotBtn" title="autopilot — gateway keeps the work going across turns/restarts"><svg class="ic"><use href="#i-repeat"/></svg></button>
     <button class="ico" id="resumeBtn" title="resume an existing session"><svg class="ic"><use href="#i-history"/></svg></button>
     <button class="ico" id="defaultsBtn" title="default effort per model"><svg class="ic"><use href="#i-gear"/></svg></button>
@@ -1209,7 +1534,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     <button class="ico" id="mcpSrvBtn" title="MCP servers"><svg class="ic"><use href="#i-terminal"/></svg></button>
     <button class="ico" id="cronBtn" title="Scheduled tasks"><svg class="ic"><use href="#i-alarm"/></svg></button>
     <button class="ico" id="passkeyBtn" title="passkeys (Face ID / Touch ID login)"><svg class="ic"><use href="#i-key"/></svg></button>
-    <button class="ico" id="wfBtn" hidden title="workflow runs in this conversation"><svg class="ic"><use href="#i-fanout"/></svg><span class="mcpBadge" id="wfBadge" hidden></span></button>
     <button class="ico" id="termBtn" title="terminal view: the whole session, raw"><svg class="ic"><use href="#i-console"/></svg></button>
     <button class="ico" id="atreeBtn" title="agent tree: main session, advisor, forks and workers"><svg class="ic"><use href="#i-tree"/></svg></button>
     <button class="ico" id="shortcutsBtn" title="keyboard shortcuts (⌘/)"><svg class="ic"><use href="#i-keyboard"/></svg></button>
@@ -1224,20 +1548,60 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     <div id="mcpApprovalBar"></div>
     <div id="autopilotBar"></div>
     <div id="otherRuns"></div>
-    <div id="busy"></div>
     <div id="delegatesBar" hidden></div>
     <div id="queueBar"></div>
-    <div class="composer">
+    <!-- One pill: quiet (one line) until it is focused, holds text or files, or
+         has a menu open; then it opens into + / helpers / model·effort / send. -->
+    <div class="composer" id="composerBox">
       <div id="attachRow"></div>
+      <button type="button" class="qp-badge" id="composerAttachBadge" hidden></button>
       <!-- autocomplete/name kill the mobile AutoFill Contact card: without them
            iOS and Android treat a lone text field as a form input, and the name
            is deliberately non-contact-shaped so the heuristics match nothing.
            autocorrect/spellcheck/autocapitalize stay ON — they drive the
            keyboard's word suggestions, which are wanted when typing prose and
            are a SEPARATE mechanism from AutoFill. -->
-      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" data-form-type="other" aria-label="Message" aria-describedby="composerHint" placeholder="Message x056…"></textarea>
+      <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" data-form-type="other" aria-label="Message" aria-describedby="composerHint" placeholder="Ask anything"></textarea>
       <div class="bar">
-        <div class="selects">
+        <div class="qp-plus" id="composerPlusWrap">
+          <button type="button" class="qp-plus-btn" id="composerPlusBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="composerPlusMenu" aria-label="Add files, a template or a reference" title="Add files, a template or a reference"><svg class="ic sm"><use href="#i-plus"/></svg></button>
+          <div class="helper-menu qp-plus-menu" id="composerPlusMenu" role="menu" aria-label="Add to the message" hidden>
+            <button type="button" class="helper-item" role="menuitem" id="attachBtn"><svg class="ic sm"><use href="#i-paperclip"/></svg><span class="hi-text"><span class="hi-title">Attach files</span><span class="hi-desc">Any type. Drag, drop or paste works too.</span></span></button>
+            <button type="button" class="helper-item" role="menuitem" id="tplBtn" title="insert a saved prompt template (Alt+T)"><svg class="ic sm"><use href="#i-snippet"/></svg><span class="hi-text"><span class="hi-title">Insert template</span><span class="hi-desc">A saved prompt, at the caret.</span></span><kbd class="qp-kbd" id="tplKbd">Alt+T</kbd></button>
+            <button type="button" class="helper-item" role="menuitem" id="composerRefItem" hidden><svg class="ic sm"><use href="#i-link"/></svg><span class="hi-text"><span class="hi-title">Reference a conversation</span><span class="hi-desc">Give this chat another conversation to read.</span></span></button>
+          </div>
+          <input type="file" id="file" multiple hidden />
+        </div>
+        <!-- Helpers, combinable: advisor, agent team, and one model/effort picker. -->
+        <div class="helper" id="helperWrap">
+          <button type="button" class="helper-btn" id="helperBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="helperMenu"><svg class="ic sm"><use href="#i-sparkles"/></svg><span class="helper-label" id="helperLabel"></span></button>
+          <div class="helper-menu" id="helperMenu" role="menu" aria-label="Helpers for the next turns" hidden>
+            <div class="helper-head">Helpers <span class="helper-hint">for the next turns</span></div>
+            <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="advisor"><span class="hi-box" aria-hidden="true"><svg class="ic"><use href="#i-check"/></svg></span><span class="hi-text"><span class="hi-title">Advisor</span><span class="hi-desc" id="helperAdvisorDesc"></span></span></button>
+            <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="team"><span class="hi-box" aria-hidden="true"><svg class="ic"><use href="#i-check"/></svg></span><span class="hi-text"><span class="hi-title">Agent team</span><span class="hi-desc" id="helperTeamDesc"></span></span></button>
+            <div class="helper-head sub">Model &amp; effort</div>
+            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value=""><span class="hi-text"><span class="hi-title">Your choice</span><span class="hi-desc">The model and effort in the composer.</span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="jev"><span class="hi-text"><span class="hi-title">Jev</span><span class="hi-desc" id="helperJevDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="decisions"><span class="hi-text"><span class="hi-title">OpenAI Decisions <span class="hi-tag">preview</span></span><span class="hi-desc" id="helperDecisionsDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <div class="helper-lean" id="helperLean" hidden>
+              <div class="lean-top"><span class="lean-title" id="helperLeanTitle">Lean</span>
+              <div class="lean-seg-group" role="group" aria-labelledby="helperLeanTitle" aria-describedby="helperLeanCap">
+                <button type="button" class="lean-seg" role="menuitemradio" data-lean="low" aria-checked="false">Low</button>
+                <button type="button" class="lean-seg" role="menuitemradio" data-lean="medium" aria-checked="true">Medium</button>
+                <button type="button" class="lean-seg" role="menuitemradio" data-lean="high" aria-checked="false">High</button>
+              </div></div>
+              <p class="lean-cap" id="helperLeanCap"></p>
+            </div>
+          </div>
+        </div>
+        <span class="sp"></span>
+        <!-- Model · effort: ONE chip opening a popover. The native selects stay
+             the source of truth (hidden): the popover reads their options when
+             it opens and writes back with .value + a 'change' event, so every
+             per-provider refill, save and label keeps working unchanged. -->
+        <div class="selects qp-run" id="composerRunChip">
+          <button type="button" class="qp-run-btn" id="runChip" aria-haspopup="dialog" aria-expanded="false" aria-controls="runMenu"><span class="qp-run-label" id="runChipLabel"></span><svg class="ic sm qp-chev" aria-hidden="true"><use href="#i-down"/></svg></button>
+          <div class="qp-native" hidden>
           <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
             <option value="claude">Claude</option><option value="codex">ChatGPT</option>
           </select><span class="provlock" id="providerLock" hidden></span></div>
@@ -1251,47 +1615,30 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
           <div class="select"><select id="effort" title="effort">
             <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option><option value="ultracode">Ultracode</option>
           </select></div>
-        </div>
-        <!-- Helpers, combinable: advisor, agent team, and one model/effort picker. -->
-        <div class="helper" id="helperWrap">
-          <button type="button" class="helper-btn" id="helperBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="helperMenu"><svg class="ic sm"><use href="#i-sparkles"/></svg><span class="helper-label" id="helperLabel"></span></button>
-          <div class="helper-menu" id="helperMenu" role="menu" aria-label="Helpers for the next turns" hidden>
-            <div class="helper-head">Helpers for the next turns</div>
-            <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="advisor"><span class="hi-text"><span class="hi-title">Advisor</span><span class="hi-desc" id="helperAdvisorDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="team"><span class="hi-text"><span class="hi-title">Agent team</span><span class="hi-desc" id="helperTeamDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <div class="helper-head sub">Model &amp; effort for each turn</div>
-            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value=""><span class="hi-text"><span class="hi-title">Your choice</span><span class="hi-desc">The model and effort in the composer.</span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="jev"><span class="hi-text"><span class="hi-title">Jev</span><span class="hi-desc" id="helperJevDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="decisions"><span class="hi-text"><span class="hi-title">OpenAI Decisions <span class="hi-tag">preview</span></span><span class="hi-desc" id="helperDecisionsDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <div class="helper-lean" id="helperLean" hidden>
-              <div class="lean-top"><span class="lean-title" id="helperLeanTitle">Lean</span><span class="lean-cap" id="helperLeanCap"></span></div>
-              <div class="lean-seg-group" role="group" aria-labelledby="helperLeanTitle" aria-describedby="helperLeanCap">
-                <button type="button" class="lean-seg" role="menuitemradio" data-lean="low" aria-checked="false">Low</button>
-                <button type="button" class="lean-seg" role="menuitemradio" data-lean="medium" aria-checked="true">Medium</button>
-                <button type="button" class="lean-seg" role="menuitemradio" data-lean="high" aria-checked="false">High</button>
-              </div>
-            </div>
           </div>
+          <div class="helper-menu run-menu" id="runMenu" role="dialog" aria-label="Model and effort" hidden></div>
         </div>
-        <button class="attach" id="tplBtn" title="insert a saved prompt template (Alt+T)"><svg class="ic sm"><use href="#i-snippet"/></svg></button>
-      <label class="attach" title="attach files (any type — drag &amp; drop or paste too)"><svg class="ic sm"><use href="#i-paperclip"/></svg><input type="file" id="file" multiple hidden /></label>
-        <span class="sp"></span>
-        <button class="send steer" id="steerBtn" hidden title="steer into the running turn (Ctrl+Enter) — the model sees it immediately instead of after the turn"><svg class="ic sm"><use href="#i-zap"/></svg></button>
+      </div>
+      <!-- Bottom-right in BOTH states, so collapsing on blur never moves it
+           between a tap's mousedown and its click. -->
+      <div class="qp-send" id="composerSend">
+        <button class="send steer" id="steerBtn" hidden title="steer into the running turn (Ctrl+Enter) — the model sees it immediately instead of after the turn"><svg class="ic sm"><use href="#i-zap"/></svg><span class="qp-steer-label">Steer</span></button>
         <button class="send" id="sendBtn" title="send"><svg class="ic sm"><use href="#i-up"/></svg></button>
+        <button type="button" class="send qp-stop" id="composerStopBtn" hidden aria-label="Stop this turn" title="Stop this turn"><svg class="qp-ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18.5"/><circle class="qp-ring-arc" cx="20" cy="20" r="18.5"/></svg><svg class="ic sm"><use href="#i-stop"/></svg></button>
+      </div>
+    </div>
+    <!-- The quiet line under the pill: status (or the run setup) on the left,
+         the account and the delivery dot on the right. control-room.js adds
+         #sendAccountChip, #deliveryStrip and #runningAccountLabel to it. -->
+    <div class="composer-footer" id="composerFooter">
+      <div class="composer-status" id="composerStatus">
+        <div id="busy"></div>
+        <button type="button" class="qp-caption" id="composerCaption" title="Change model and effort"></button>
       </div>
     </div>
     <div class="composer-hint" id="composerHint">Enter to send · Shift+Enter for a new line · Paste or drop files</div>
   </div>
 </main>
-<aside id="wfIsland" aria-labelledby="wfTitle" hidden>
-  <div class="wf-head">
-    <svg class="ic sm" aria-hidden="true"><use href="#i-fanout"/></svg>
-    <span class="t" id="wfTitle">Workflows</span>
-    <span id="wfSummary"></span>
-    <button class="ico" id="wfCloseBtn" aria-label="Close workflows" title="Close workflows"><svg class="ic sm"><use href="#i-x"/></svg></button>
-  </div>
-  <div class="wf-body" id="wfBody"></div>
-</aside>
 
 <div class="backdrop" id="backdrop" hidden></div>
 <div class="pop" id="quotaPop" hidden><h2>accounts</h2><div class="acct-tabs" id="acctTabs" hidden></div><div id="acctScopeNote" class="acct-scope" hidden></div><div id="accounts"></div><div class="pop-footer"><button class="send ghost" id="addAcctBtn" style="width:100%;">+ Add account</button><button class="send" id="switchAcctBtn" style="width:100%; margin-top:6px;">Force-switch active account</button></div></div>
@@ -1372,14 +1719,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     </div>
   </div>
   <div class="plug-foot">Changes apply to the next turn. Invoke a plugin command by sending it as a message, e.g. <code>/claude-security scan my branch</code>.</div>
-</div>
-<div class="pop" id="subPop" hidden>
-  <h2>Conversation activity</h2>
-  <p class="agent-intro">Follow delegated work and open each agent’s conversation.</p>
-  <div id="selfCost"></div>
-  <div class="agent-tools"><div class="agent-filters" role="group" aria-label="Filter agents"><button data-agent-filter="all" class="selected">All agents</button><button data-agent-filter="running">Running</button><button data-agent-filter="done">Finished</button><button data-agent-filter="issues">Needs attention</button></div><label class="agent-search"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><input id="agentSearch" type="search" placeholder="Find an agent…" aria-label="Find an agent"></label></div>
-  <div id="agentListStatus" role="status"></div><div id="subList"></div>
-  <footer class="agent-footer"><span>Usage estimates use standard API rates.</span><button class="cr-text-button" id="allUsageBtn">Project cost breakdown →</button></footer>
 </div>
 <div class="pop" id="tplPop" hidden style="top:auto; bottom:96px; right:12px; left:auto; width:400px; max-height:70vh; overflow:auto;">
   <h2>Prompt templates</h2>
@@ -1561,7 +1900,31 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   // instead of being silently pinned to whatever it resolved to on day one.
   function effectiveModel() {
     if (modelEl.value) return modelEl.value;
+    if (pickerName()) return '';
     return AUTO_MODEL[currentProvider()] || '';
+  }
+  // With Jev (or OpenAI Decisions) on, Auto is the picker's call, so it is SENT
+  // as Auto ('') instead of the house default -- resolved here, the picker
+  // would only ever have seen Sonnet. The server falls back to the house
+  // default when a pick fails.
+  function pickerName() {
+    if (pendingNew || !lastSessionId || typeof helperFor !== 'function') return '';
+    var h = helperFor(currentProjectId);
+    return !h.conv ? '' : h.helpers.router === 'jev' ? 'Jev' : h.helpers.router === 'decisions' ? 'OpenAI' : '';
+  }
+  function putModelEffort(b) {
+    var auto = !!pickerName(), m = effectiveModel();
+    if (m || auto) b.model = m;
+    if (effortEl.value || auto) b.effort = effortEl.value;
+    return b;
+  }
+  // The Auto rows name who decides: the picker, or the house default. Short,
+  // because a phone gives each select ~100px ("Auto (Sonnet)" is the most
+  // that fits).
+  function syncAutoLabels() {
+    var who = pickerName(), mo = modelEl.querySelector('option[value=""]'), eo = effortEl.querySelector('option[value=""]');
+    if (mo) { if (!mo.dataset.base) mo.dataset.base = mo.textContent; mo.textContent = who ? who + ' picks' : mo.dataset.base; }
+    if (eo) { if (!eo.dataset.base) eo.dataset.base = eo.textContent; eo.textContent = who ? who + ' picks' : eo.dataset.base; }
   }
   var CLAUDE_EFFORT_OPTS = [].slice.call(effortEl.options).map(function (o) { return { value: o.value, label: o.textContent }; });
   var providerModels = {}; // { codex: [{slug,label,efforts,defaultEffort,…}] }
@@ -1572,6 +1935,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     // successor still rolling out (GPT-6.1-Sol reached one plan first) is not
     // in the list yet, and its predecessor must stay selected until it is.
     var line = modelLine(value);
+    syncAutoLabels();
     for (var i = line.length - 1; i >= 0; i--) { modelEl.value = line[i]; if (modelEl.value === line[i]) return; }
     modelEl.value = ''; // stale/unknown model → Auto
   }
@@ -1603,6 +1967,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     opts.forEach(function (o) { var e = document.createElement('option'); e.value = o.value; e.textContent = o.label; effortEl.appendChild(e); });
     effortEl.value = value;
     if (effortEl.value !== value) effortEl.value = ''; // this model doesn't support the previous choice → Auto
+    syncAutoLabels();
   }
   // Codex publishes each model's OWN supported reasoning levels (e.g. gpt-5.6-sol
   // goes up to "ultra" — Claude has no such level; gpt-5.5/5.4 top out at "xhigh",
@@ -2144,7 +2509,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   }
   // ---- helpers: advisor + agent team + a model/effort picker (Jev or OpenAI Decisions) ----
   var jevStatus = null, decisionsStatus = null;
-  var ADVISOR_NAMES = { opus: 'Opus', fable: 'Fable', sonnet: 'Sonnet' };
+  var ADVISOR_NAMES = { opus: 'Opus', fable: 'Fable', sonnet: 'Sonnet', haiku: 'Haiku' };
   function advisorModelName(m) {
     if (!m) return '';
     if (ADVISOR_NAMES[m]) return ADVISOR_NAMES[m];
@@ -2166,7 +2531,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   }
   // The picker's lean: 'low' | 'high', absent = medium (balanced).
   var LEAN_NAMES = { low: 'Low', medium: 'Medium', high: 'High' };
-  var LEAN_CAPS = { low: 'Cheaper models, less effort', medium: 'Balanced', high: 'Stronger models, more effort' };
+  var LEAN_CAPS = { low: 'Errs toward cheaper models and lower effort.', medium: 'Balanced between cost and result.', high: 'Errs toward the best result.' };
   function leanOf(h) { return h && (h.lean === 'low' || h.lean === 'high') ? h.lean : 'medium'; }
   function helperNames(h) {
     var lean = leanOf(h), router = h.router === 'jev' ? 'Jev' : h.router === 'decisions' ? 'Decisions' : '';
@@ -2199,6 +2564,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       var k = it.dataset.kind, v = k === 'router' ? (on.router || '') === it.dataset.value : !!on[k];
       it.setAttribute('aria-checked', v ? 'true' : 'false');
     });
+    syncAutoLabels();
     var lean = leanOf(on);
     $('helperLean').hidden = !on.router;
     $('helperLeanCap').textContent = LEAN_CAPS[lean];
@@ -2211,15 +2577,9 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   function helperMenu(open) {
     var menu = $('helperMenu'), btn = $('helperBtn');
     if (open === undefined) open = menu.hidden;
+    if (open && typeof runMenu === 'function') runMenu(false);
     menu.hidden = !open; btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    // Fixed, placed from the button: the composer clips anything that overflows it.
-    if (open) {
-      var r = btn.getBoundingClientRect(), w = Math.min(300, window.innerWidth - 24);
-      menu.style.left = Math.max(12, Math.min(r.left, window.innerWidth - w - 12)) + 'px';
-      menu.style.bottom = (window.innerHeight - r.top + 10) + 'px';
-      // A short screen scrolls the menu rather than pushing it off the top.
-      menu.style.maxHeight = Math.max(160, r.top - 22) + 'px';
-    }
+    if (open) placeComposerMenu(menu, btn, 320, false);
     if (open) { refreshJevStatus(); var sel = menu.querySelector('[aria-checked=true]') || menu.querySelector('.helper-item'); if (sel) sel.focus(); }
   }
   // One click changes one helper; the menu stays open so several can be set.
@@ -2843,7 +3203,8 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     if (pendingNew || !currentProjectId || !lastSessionId) return false;
     return isSessionRunning(currentProjectId, lastSessionId) || isSessionBackground(currentProjectId, lastSessionId);
   }
-  function syncSteerBtn() { var b = $('steerBtn'); if (b) { b.hidden = !canSteer(); b.title = pendingFiles?.length ? 'Queue message and files after this turn' : 'Steer the running turn'; b.setAttribute('aria-label',pendingFiles?.length ? 'Queue message and files' : 'Steer'); } }
+  // Steer shows only with something to steer: an empty box's button is Stop.
+  function syncSteerBtn() { queueComposerSync(); var b = $('steerBtn'); if (b) { b.hidden = !canSteer() || !composerHasContent(); b.title = pendingFiles?.length ? 'Queue message and files after this turn' : 'Steer the running turn'; b.setAttribute('aria-label',pendingFiles?.length ? 'Queue message and files' : 'Steer'); } syncComposer(); }
   /** Put the amber spinner on an existing sidebar row without re-rendering the
    *  whole list (the 20s project poll rebuilds it authoritatively anyway). */
   function markConvBg(pid, sid) {
@@ -2868,6 +3229,15 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       delete runningSessionIds[pid][sid];
       if (Object.keys(runningSessionIds[pid]).length === 0) { delete runningSessionIds[pid]; delete runningProjects[pid]; }
     }
+    queueComposerSync();
+  }
+  // Run state changes without touching the composer's DOM (a turn opened mid-way,
+  // autopilot, a queued send, background work), so Stop has to be re-checked here.
+  var composerSyncQueued = false;
+  function queueComposerSync() {
+    if (composerSyncQueued) return;
+    composerSyncQueued = true;
+    setTimeout(function () { composerSyncQueued = false; if (typeof syncComposer === 'function') syncComposer(); }, 0);
   }
   var acctNames = {}; // registry name (a/b) -> display name
   // Per CONVERSATION (viewKey), not per project: sibling conversations run at
@@ -2884,6 +3254,14 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   // user isn't currently viewing (a question, a failed turn, or a finished turn).
   // Keyed by project+conversation (viewKey); a project row aggregates its convos.
   var convNotif = {}; // 'pid::sessionId' -> 'question' | 'failed' | 'done'
+  // The latest notice per conversation (server/notices.ts): the bell dialog,
+  // the desktop fallback and the push all use these same words.
+  var convNotice = {}; // 'pid::sessionId' -> { notice, ts }
+  var restartNotice = null;
+  // A reload replays the server's buffer, restart notice included: remember
+  // which restart was dismissed, as qSeen does for questions.
+  function restartSeen() { try { return localStorage.getItem('x056_restart_seen') || ''; } catch (e) { return ''; } }
+  function dismissRestart() { if (restartNotice) { try { localStorage.setItem('x056_restart_seen', restartNotice.bootAt); } catch (e) {} } restartNotice = null; }
   // The SSE cursor (lastSeq) intentionally resets to 0 on every page load, so a
   // refresh replays the server's full event buffer and no notification from
   // while the tab was closed gets lost. But that means the events for a
@@ -3042,6 +3420,8 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     var mine = !data.projectId || data.projectId === currentProjectId;
     var sid = data.sessionId;
     var mineConvo = mine && (!sid || sid === lastSessionId);
+    if (data.notice && data.notice.tier && data.notice.tier !== 'none') onNotice(kind, data, pid, sid);
+    if (kind === 'cron_failed' || kind === 'restart_interrupted') return;
     if (kind === 'background_state') {
       var bg = bgSessionIds[pid] = bgSessionIds[pid] || {};
       if (data.active) bg[sid] = true; else delete bg[sid];
@@ -3052,7 +3432,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       return;
     }
     if (kind === 'conversation_settled') {
-      if (!data.notificationSuppressed && (!mineConvo || (controlRoom && !controlRoom.isOpen()))) setConvNotif(pid, sid, 'done');
+      if (!data.notificationSuppressed && !(data.notice && data.notice.tier === 'none') && (!mineConvo || (controlRoom && !controlRoom.isOpen()))) setConvNotif(pid, sid, 'done');
       return;
     }
     if (kind === 'turn_state') {
@@ -3162,14 +3542,13 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       if (sid) pendingQ[sid] = Object.assign({}, data, { projectId: pid, sessionId: sid, at: qAt });
       showQuestion(pid, data);
       if (mineConvo && (!controlRoom || controlRoom.isOpen())) markQuestionSeen(pid, sid, qAt); // you're looking at it
-      else { setConvNotif(pid, sid, 'question'); notify('Assistant has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80), data); }
+      else setConvNotif(pid, sid, 'question');
     }
     else if (kind === 'autopilot') {
       // Autopilot is per-conversation now — keyed by the run's sessionId, not
       // the project. The bar shows only for the conversation actually on screen.
       if (sid) { if (data.active) apState[sid] = data.remaining; else delete apState[sid]; }
       if (mineConvo) renderAutopilot();
-      if (!data.active && data.reason === 'done' && !mineConvo) notify('Autopilot done', (projCache[pid] ? projCache[pid].name : 'a project') + ' finished its task', data);
     }
     else if (kind === 'queue') {
       queueState[pid] = Array.isArray(data.items) ? data.items : [];
@@ -3227,14 +3606,24 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     head.appendChild(icon('sparkles', 'sm'));
     var name = document.createElement('span'); name.className = 'advname'; name.textContent = (a.helper === 'openai' ? 'OpenAI Decisions' : 'Jev') + (x.lean === 'low' || x.lean === 'high' ? ' · ' + LEAN_NAMES[x.lean] : ''); head.appendChild(name);
     var ranModel = x.model || x.baseModel, ranEffort = x.effort || x.baseEffort;
-    if (!x.error && (ranModel || ranEffort)) {
+    // On Auto the pick IS the choice, and a failed one still ran on the Auto
+    // baseline (the last turn's model, else the house default).
+    var auto = !!(x.auto && (x.auto.model || x.auto.effort));
+    if ((!x.error || auto) && (ranModel || ranEffort)) {
       var chip = document.createElement('span'); chip.className = 'advmodel';
       chip.textContent = [ranModel && advisorModelName(ranModel), ranEffort && (EFFORT_NAMES[ranEffort] || ranEffort)].filter(Boolean).join(' · ');
       chip.title = 'What this turn ran on';
       head.appendChild(chip);
     }
+    // The agent team's subagents this turn, when the team is on.
+    if (!x.error && x.team && x.team.effort) {
+      var tchip = document.createElement('span'); tchip.className = 'advmodel';
+      tchip.textContent = ['Team', x.team.model && advisorModelName(x.team.model), EFFORT_NAMES[x.team.effort] || x.team.effort].filter(Boolean).join(' · ');
+      tchip.title = 'What the agent team\'s subagents use this turn';
+      head.appendChild(tchip);
+    }
     var meta = document.createElement('span'); meta.className = 'advmeta';
-    meta.textContent = x.error ? 'No pick' : (x.model || x.effort ? 'Changed this turn' : 'Kept your choice') + (x.latencyMs ? ' · ' + (x.latencyMs / 1000).toFixed(1) + ' s' : '');
+    meta.textContent = x.error ? (auto ? 'No pick · Auto fallback' : 'No pick') : (auto ? 'Auto · its pick' : x.model || x.effort ? 'Changed this turn' : 'Kept your choice') + (x.latencyMs ? ' · ' + (x.latencyMs / 1000).toFixed(1) + ' s' : '');
     head.appendChild(meta);
     d.appendChild(head);
     var note = document.createElement('div'); note.className = 'advnote';
@@ -3417,7 +3806,9 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
         if (q.sessionId === lastSessionId && (!controlRoom || controlRoom.isOpen())) {
           showQuestion(q.projectId, q);
           markQuestionSeen(q.projectId, q.sessionId, q.at);
-        } else if (!questionAlreadySeen(q.projectId, q.sessionId, q.at)) {
+        } else if (!q.stale && !questionAlreadySeen(q.projectId, q.sessionId, q.at)) {
+          // A question days old is still answerable in its conversation, but
+          // it no longer lights the bell.
           setConvNotif(q.projectId, q.sessionId, 'question');
         }
       });
@@ -3659,20 +4050,31 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   function loadQueue() { return api('/api/queue').then(function (r) { return r.json(); }).then(function (m) { queueState = m || {}; renderQueue(); }).catch(function () {}); }
 
   // ---- browser notifications ----
+  // The open page is only a fallback for a device with no push subscription;
+  // the words are the event's notice, the same ones a push would carry.
   var localNotificationIds = new Set();
-  function notify(title, body, data) {
-    // Web Push owns delivery when registered. The open page is only a fallback.
+  function viewingConv(pid, sid) { return !!sid && pid === currentProjectId && sid === lastSessionId && (!controlRoom || controlRoom.isOpen()); }
+  function onNotice(kind, data, pid, sid) {
+    var n = data.notice;
+    if (n.kind === 'restart_interrupted') { if (restartSeen() !== String(data.bootAt)) restartNotice = { notice: n, ts: data.ts || new Date().toISOString(), bootAt: String(data.bootAt) }; }
+    else if (sid && !viewingConv(pid, sid)) convNotice[viewKey(pid, sid)] = { notice: n, ts: data.ts || new Date().toISOString() };
+    if (kind === 'cron_failed' && sid) setConvNotif(pid, sid, 'failed');
+    if (kind === 'delegate_report' && n.tier === 'urgent' && sid) setConvNotif(pid, sid, 'question');
+    // Only what just happened: a reload replays the server's whole buffer.
+    var at = Date.parse(data.ts || '');
+    if ((n.tier === 'urgent' || n.tier === 'normal') && !(viewingConv(pid, sid) && !document.hidden) && (!isFinite(at) || Date.now() - at < 60000)) notify(n, data);
+  }
+  function notify(n, data) {
     data = data || {};
-    if (data.notificationSuppressed) return;
-    var id = data.notificationId || data.requestId || data.at;
-    var key = id ? [data.projectId, data.sessionId, id, title].join(':') : '';
+    if (data.notificationSuppressed || !n || !n.title) return;
+    var key = n.id || n.tag || '';
     if (key && localNotificationIds.has(key)) return;
     if (key) { localNotificationIds.add(key); if (localNotificationIds.size > 500) localNotificationIds.delete(localNotificationIds.values().next().value); }
     function show() {
       try {
         if (!('Notification' in window) || Notification.permission !== 'granted') return;
         // Never request permission in response to a task event.
-        new Notification(title, { body: body, tag: key || undefined, renotify: false });
+        new Notification(n.title, { body: n.body || '', tag: n.tag || undefined, renotify: false, data: { url: n.link || '' } });
       } catch (e) {}
     }
     Promise.resolve(swReady).then(function (reg) {
@@ -3703,6 +4105,39 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       .then(function (r) { swReg = r; markBell(); return (Notification.permission === 'granted' ? postSubscription(r).catch(function () {}) : Promise.resolve()).then(function () { return r; }); })
       .catch(function () { return null; });
   }
+  // This device's push endpoint: the key for its settings and its presence.
+  var pushEndpoint = null;
+  function currentEndpoint() {
+    return Promise.resolve(swReady).then(function (reg) {
+      if (!reg || !reg.pushManager || !reg.pushManager.getSubscription) return null;
+      return reg.pushManager.getSubscription().then(function (sub) { pushEndpoint = sub && sub.endpoint || null; return pushEndpoint; });
+    }).catch(function () { return null; });
+  }
+  var pushApi = {
+    supported: pushSupported,
+    permission: function () { return ('Notification' in window) ? Notification.permission : 'unsupported'; },
+    endpoint: currentEndpoint,
+    enable: function () { return enablePush().then(currentEndpoint); },
+    settings: function () {
+      return currentEndpoint().then(function (ep) {
+        if (!ep) return null;
+        return api('/api/push/settings?endpoint=' + encodeURIComponent(ep)).then(function (r) { return r.json(); });
+      });
+    },
+    saveSettings: function (patch) {
+      return currentEndpoint().then(function (ep) {
+        if (!ep) throw new Error('Turn on notifications on this device first.');
+        try { patch = Object.assign({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, patch); } catch (e) {}
+        return api('/api/push/settings', { method: 'POST', body: JSON.stringify({ endpoint: ep, settings: patch }) }).then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.message || 'Could not save'); return d; }); });
+      });
+    },
+    test: function () {
+      return currentEndpoint().then(function (ep) {
+        if (!ep) throw new Error('Turn on notifications on this device first.');
+        return api('/api/push/test', { method: 'POST', body: JSON.stringify({ endpoint: ep }) }).then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.message || 'Could not send'); return d; }); });
+      });
+    },
+  };
   // Subscribe with the server's VAPID key (reusing any existing subscription) and
   // register it server-side. Used by both the button and the silent boot path.
   function postSubscription(reg) {
@@ -3716,8 +4151,8 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     });
   }
   function enablePush() {
-    if (!pushSupported()) { addSys('this browser can’t do push notifications (on iOS, Add to Home Screen first)', 'banner'); return; }
-    Notification.requestPermission().then(function (perm) {
+    if (!pushSupported()) { addSys('this browser can’t do push notifications (on iOS, Add to Home Screen first)', 'banner'); return Promise.resolve(); }
+    return Notification.requestPermission().then(function (perm) {
       if (perm !== 'granted') { addSys('notifications not allowed', 'banner'); markBell(); return; }
       return (swReg ? Promise.resolve(swReg) : registerSW()).then(function (reg) {
         if (!reg) { addSys('service worker unavailable', 'banner'); return; }
@@ -3727,6 +4162,33 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   }
   $('notifyBtn').addEventListener('click', enablePush);
   var swReady = registerSW(); // register on boot; silently re-subscribes if already granted
+
+  // ---- presence: what this panel has on screen. The gateway skips the push
+  // for the conversation you are reading and, for anything not urgent, the
+  // devices you are not at (Safari shows every push, so the service worker
+  // cannot decide that). Sent on change and every 15 s while visible.
+  var presenceId = (function () { try { var v = sessionStorage.getItem('x056_presence_id'); if (!v) { v = Math.random().toString(36).slice(2) + Date.now().toString(36); sessionStorage.setItem('x056_presence_id', v); } return v; } catch (e) { return 'p' + Math.random().toString(36).slice(2); } })();
+  var presenceKey = '', presenceAt = 0;
+  function reportPresence(force, leaving) {
+    var visible = !leaving && !document.hidden;
+    var open = !!lastSessionId && (!controlRoom || controlRoom.isOpen());
+    var key = [visible, currentProjectId || '', open ? lastSessionId : '', pushEndpoint || ''].join('|');
+    var now = Date.now();
+    if (!force && key === presenceKey && (!visible || now - presenceAt < 15000)) return;
+    presenceKey = key; presenceAt = now;
+    try {
+      api('/api/presence', { method: 'POST', keepalive: true,
+        body: JSON.stringify({ clientId: presenceId, projectId: currentProjectId || null, sessionId: open ? lastSessionId : null, visible: visible, endpoint: pushEndpoint }) }).catch(function () {});
+    } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', function () { reportPresence(true); });
+  window.addEventListener('focus', function () { reportPresence(true); });
+  window.addEventListener('blur', function () { reportPresence(true); });
+  window.addEventListener('pagehide', function () { reportPresence(true, true); });
+  // Cheap local check each second; the request goes out only on a change or
+  // every 15 s while visible.
+  setInterval(function () { reportPresence(false); }, 1000);
+  currentEndpoint().then(function () { reportPresence(true); });
   // Notification tap (from the service worker) → open that project.
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', function (e) {
@@ -4324,7 +4786,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     // then its active/selected model and provider. Live state belongs in the
     // running indicator, so it is not repeated here.
     var vk = viewKey(currentProjectId, lastSessionId);
-    var model = modelLabel(activeModel[vk] || effectiveModel());
+    var model = modelLabel(activeModel[vk] || effectiveModel()) || (pickerName() ? pickerName() + ' picks' : '');
     var effort = activeEffort[vk];
     if (effort === undefined) effort = effortEl.value;
     acctPlan.textContent = [model, effortLabel(effort), plan].filter(Boolean).join(' · ');
@@ -4564,7 +5026,12 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     return out;
   }
   function jumpToProject(idx) { var ps = orderedProjects(); if (idx >= 0 && idx < ps.length && ps[idx].id !== currentProjectId) switchProject(ps[idx]); }
-  function openSelect(el) { if (!el) return; el.focus(); try { if (el.showPicker) el.showPicker(); } catch (e) {} }
+  function openSelect(el) {
+    if (!el) return;
+    // #model / #effort are hidden behind the model · effort popover.
+    if (el === modelEl || el === effortEl) { runMenu(true, el === effortEl ? 'effort' : 'model'); return; }
+    revealComposer(el); el.focus(); try { if (el.showPicker) el.showPicker(); } catch (e) {}
+  }
   $('searchChatsBtn').addEventListener('click', function () { setNav(false); openPalette(); });
   $('searchShortcut').textContent = K_CMD + ' K';
   $('composerHint').textContent = 'Enter to send · ' + K_CMD + '+Enter to steer · Shift+Enter for a new line · Paste or drop files';
@@ -4683,9 +5150,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       if (closeTopModal()) { e.preventDefault(); return; }
       if (window.rcChat?.closePanel?.()) { e.preventDefault(); return; }
       if (!backdrop.hidden) { e.preventDefault(); closeAllPops(); return; }
-      if ($('wfIsland').getClientRects().length && !document.querySelector('dialog[open],:popover-open')) {
-        e.preventDefault(); $('wfCloseBtn').click(); ($('chatAgents') && !$('chatAgents').hidden ? $('chatAgents') : $('chatActivity') || $('wfBtn')).focus(); return;
-      }
       if (document.body.classList.contains('nav-open')) { e.preventDefault(); setNav(false); return; }
       return;
     }
@@ -4843,11 +5307,6 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       // The subagent list belongs to THIS conversation, so it is refetched with
       // its history rather than carried over from whatever was on screen before.
       refreshSubagents();
-      // Same for workflow runs, and the expansion must reset too: run ids do not
-      // collide, but an open agent list from the previous conversation would sit
-      // there unrefreshed until it happened to be clicked.
-      wfOpenRun = null; wfAgents = {}; wfHidden = false; wfShown = false; wfAgentLimit = 6;
-      loadWorkflows();
     }).catch(function (err) { if(reportErrors===true)throw err; });
   }
 
@@ -4996,7 +5455,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -5010,7 +5469,9 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   }
 
   // ---- composer ----
-  function autogrow() { promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + 'px'; }
+  // Every programmatic write to the box (draft restore, clear after send) ends
+  // here, so this is also where the quiet pill learns the box changed.
+  function autogrow() { syncComposer(); promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + 'px'; }
   if (window.ResizeObserver) {
     var promptWidth = 0;
     new ResizeObserver(function (entries) {
@@ -5213,50 +5674,30 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     box.replaceChildren(fragment);
   }
 
-  $('allUsageBtn').addEventListener('click', function () { closeAllPops(); controlRoom.showCosts(); });
-
-  function renderSubBadge() {
-    var btn = $('subagentsBtn'), badge = $('subagentsBadge');
-    if (!btn) return;
-    // Shown whenever there is anything to report — the conversation's own cost
-    // counts, so this is no longer hidden just because nothing was delegated.
-    btn.hidden = subMetas.length === 0 && !subSelf;
-    badge.textContent = subMetas.length ? String(subMetas.length) : '';
-    var running = subMetas.filter(function (m) { return m.status === 'running'; }).length;
-    badge.dataset.running = running ? String(running) : '';
-    btn.title = 'cost' + (subMetas.length ? ' & ' + subMetas.length + ' subagent(s)' + (running ? ', ' + running + ' running' : '') : '')
-      + (subSelf && subSelf.cost ? ' · ' + costLabel(subSelf.cost) : '');
+  /** Listeners for a fresh subagent list: the agent tree reads the same list
+   *  rather than polling the endpoint a second time. */
+  var subWatchers = [];
+  function onSubagents(fn) { subWatchers.push(fn); }
+  function subagentsChanged() {
     // Chat rows that name a subagent become links once the list can resolve them.
     markSubagentRows();
-  }
-
-  /** The conversation's own token spend, above the subagents it paid for. */
-  function renderSelfCost() {
-    var box = $('selfCost'); box.textContent = '';
-    var running=subMetas.filter(function(m){return m.status==='running';}).length;
-    var agentTokens=subMetas.reduce(function(n,m){var u=m.usage||{};return n+(u.input||0)+(u.output||0)+(u.cacheRead||0)+(u.cacheWrite||0);},0);
-    var values=[['Agents',String(subMetas.length)],['Running',String(running)],['Agent tokens',agentTokens?fmtTok(agentTokens):'—'],['Conversation cost',subSelf?costLabel(subSelf.cost)||'—':'—']];
-    values.forEach(function(v){var d=document.createElement('div');d.className='agent-stat';var label=document.createElement('span');label.textContent=v[0];var value=document.createElement('strong');value.textContent=v[1];d.appendChild(label);d.appendChild(value);box.appendChild(d);});
-    if(subSelf && (subSelf.partial || unpricedNote(subSelf.cost))){var note=document.createElement('p');note.className='agent-usage-note';note.textContent=subSelf.partial?'Usage is still being scanned.':unpricedNote(subSelf.cost);box.appendChild(note);}
+    subWatchers.forEach(function (fn) { try { fn(subMetas, subSelf); } catch (e) {} });
   }
 
   function refreshSubagents() {
     var pid = currentProjectId, sid = lastSessionId;
     var context = (pid || '') + ':' + (sid || '');
-    if (context !== subContext) { subContext=context; subMetas=[]; subSelf=null; renderSubBadge(); renderWorkflows(); }
-    if (!pid || !sid) { subMetas = []; subSelf = null; renderSubBadge(); return Promise.resolve(); }
+    if (context !== subContext) { subContext=context; subMetas=[]; subSelf=null; subagentsChanged(); }
+    if (!pid || !sid) { subMetas = []; subSelf = null; subagentsChanged(); return Promise.resolve(); }
     return api('/api/conversations/subagents?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid))
       .then(function (r) { return r.json().then(function(data){if(!r.ok)throw new Error(data.message||'Could not load agents');return data;}); })
       .then(function (d) {
         if (currentProjectId !== pid || lastSessionId !== sid) return; // switched while loading
-        $('agentListStatus').textContent='';agentListSignature='';
         subMetas = (d && d.subagents) || [];
         subSelf = (d && d.self) || null;
-        renderSubBadge();
-        renderWorkflows();
-        if (!$('subPop').hidden) { renderSelfCost(); renderSubList(); }
+        subagentsChanged();
       })
-      .catch(function (e) { if(currentProjectId===pid&&lastSessionId===sid)$('agentListStatus').textContent=e.message; });
+      .catch(function () {});
   }
 
   /** Match "Subagent: <description>" activity rows to a known subagent. The
@@ -5282,268 +5723,10 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     }
   }
 
-  var agentFilter='all',agentLimit=30,agentListSignature='';
-  var agentStatusLabels={running:'Running',done:'Finished',failed:'Failed',stopped:'Stopped',unknown:'Status unknown'};
+  // Every status the server reports has its own words; "ended" is a subagent
+  // whose turn finished without its result coming back -- never "done".
+  var agentStatusLabels={running:'Running',done:'Finished',failed:'Failed',stopped:'Stopped',ended:'Ended · no result',unknown:'Status unknown'};
   function agentName(m){return m.description || (m.agentType==='codex-subagent'?'Codex agent':m.agentType) || 'Agent';}
-  $('agentSearch').addEventListener('input',function(){agentLimit=30;renderSubList();});
-  document.querySelectorAll('[data-agent-filter]').forEach(function(b){b.addEventListener('click',function(){agentFilter=b.dataset.agentFilter;agentLimit=30;renderSubList();});});
-  function renderSubList() {
-    var list=$('subList'),query=$('agentSearch').value.trim().toLowerCase();
-    document.querySelectorAll('[data-agent-filter]').forEach(function(b){b.classList.toggle('selected',b.dataset.agentFilter===agentFilter);b.setAttribute('aria-pressed',String(b.dataset.agentFilter===agentFilter));});
-    var rank={running:0,unknown:1,failed:2,stopped:3,done:4};
-    var shown=subMetas.filter(function(m){return (agentFilter==='all'||agentFilter===m.status||agentFilter==='issues'&&['failed','stopped','unknown'].includes(m.status))&&(!query||[agentName(m),m.agentType,m.agentId,m.spawnedBy].join(' ').toLowerCase().includes(query));}).sort(function(a,b){return (rank[a.status]??5)-(rank[b.status]??5)||(b.startedAt||0)-(a.startedAt||0);});
-    var signature=JSON.stringify([shown.slice(0,agentLimit),agentLimit,query,agentFilter]);if(signature===agentListSignature)return;agentListSignature=signature;
-    var focused=document.activeElement&&document.activeElement.dataset.agent;list.textContent='';
-    $('agentListStatus').textContent=shown.length?Math.min(agentLimit,shown.length)+' of '+shown.length+' agents':'';
-    if(!shown.length){var empty=document.createElement('div');empty.className='agent-empty';empty.textContent=subMetas.length?'No agents match this view.':'No delegated work yet. Agents will appear here when this conversation uses them.';list.appendChild(empty);return;}
-    shown.slice(0,agentLimit).forEach(function(m){
-      var row=document.createElement('button');row.type='button';row.className='agent-row';row.dataset.agent=m.agentId;
-      var avatar=document.createElement('span');avatar.className='agent-avatar '+(m.status||'unknown');avatar.appendChild(icon('sparkles','sm'));row.appendChild(avatar);
-      var copy=document.createElement('span');copy.className='agent-copy';var title=document.createElement('strong');title.textContent=agentName(m);copy.appendChild(title);
-      var meta=document.createElement('small');var bits=[];if(m.agentType&&m.agentType!=='codex-subagent')bits.push(m.agentType);if(m.spawnDepth>1)bits.push(m.spawnedBy?'via '+m.spawnedBy:'Nested agent · level '+m.spawnDepth);var duration=fmtDur(m.startedAt,m.endedAt);if(duration&&m.status!=='unknown'&&m.status!=='stopped')bits.push(duration);if(m.usage)bits.push(fmtTok((m.usage.input||0)+(m.usage.output||0)+(m.usage.cacheRead||0)+(m.usage.cacheWrite||0))+' tokens');meta.textContent=bits.join(' · ');copy.appendChild(meta);row.appendChild(copy);
-      var side=document.createElement('span');side.className='agent-row-side';var status=document.createElement('span');status.className='agent-status '+(m.status||'unknown');status.textContent=agentStatusLabels[m.status]||'Status unknown';side.appendChild(status);var cost=document.createElement('small');cost.textContent=(costLabel(m.cost)||(m.usage?'Cost unavailable':'Usage unavailable'))+(m.partial?' · Updating':'');side.appendChild(cost);row.appendChild(side);row.appendChild(icon('right','sm'));
-      row.addEventListener('click',function(){openSubShell(m);});list.appendChild(row);
-    });
-    if(shown.length>agentLimit){var more=document.createElement('button');more.className='cr-load-more';more.textContent='Show '+Math.min(30,shown.length-agentLimit)+' more agents';more.onclick=function(){agentLimit+=30;renderSubList();};list.appendChild(more);}
-    if(focused){var target=Array.from(list.querySelectorAll('[data-agent]')).find(function(n){return n.dataset.agent===focused;});if(target)target.focus({preventScroll:true});}
-  }
-
-  // ---- workflow island -------------------------------------------------
-  // A workflow's agents are written in exactly the shape a plain subagent uses,
-  // so each one opens in the same shell. What is NOT on disk is the `label` and
-  // `phase` passed to agent() — neither the journal nor the meta file carries
-  // them — so a run shows the phases it DECLARED and each agent is named by the
-  // head of its own prompt.
-  var wfRuns = [];            // runs for the viewed conversation
-  var wfOpenRun = null;       // runId whose agent list is expanded
-  var wfAgents = {};          // runId -> agents (only the expanded one is fetched)
-  var wfHidden = false;       // the operator closed it; don't reopen on poll
-  var wfShown = false;        // the operator opened it explicitly; keep it open
-  var wfAgentLimit = 6;
-  var wfPoll = null;
-  /**
-   * Hide runs that are neither moving nor recent. On by default, matching the
-   * subagent list: a conversation accumulates runs forever, and the ones worth
-   * a floating card are the live ones plus whatever just finished.
-   *
-   * "Recent" rather than "not finished" so a run that returned a minute ago
-   * does not vanish while it is still being read.
-   */
-  var WF_HIDE_KEY = 'x056_wf_hide';
-  var WF_RECENT_MS = 30 * 60_000;
-  var wfHideOld = lsGet(WF_HIDE_KEY) !== 'off';
-  function wfIsCurrent(r) {
-    if (wfLive(r)) return true;
-    var at = r.updatedAt || r.startedAt || 0;
-    return at > 0 && Date.now() - at < WF_RECENT_MS;
-  }
-
-  // An incomplete run is not necessarily a running one: a container swap, a
-  // stop or a crash leaves it short of its agents forever, and "0 / 4 agents ·
-  // running" on a run that died hours ago is exactly the phantom-busy lie the
-  // conversation strip was fixed for. Require recent movement too.
-  var WF_STALE_MS = 5 * 60 * 1000;
-  function wfLive(r) {
-    if (r.started <= r.finished) return false;
-    if (!r.updatedAt) return false;
-    return (Date.now() - r.updatedAt) < WF_STALE_MS;
-  }
-  function wfStalled(r) { return r.started > r.finished && !wfLive(r); }
-
-  function loadWorkflows() {
-    if (!currentProjectId || !lastSessionId || pendingNew) { wfRuns = []; renderWorkflows(); return Promise.resolve(); }
-    var pid = currentProjectId, sid = lastSessionId;
-    var q = '/api/conversations/workflows?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid);
-    if (wfOpenRun) q += '&runId=' + encodeURIComponent(wfOpenRun);
-    return api(q).then(function (r) { return r.json(); }).then(function (m) {
-      // The conversation may have been switched while this was in flight.
-      if (currentProjectId !== pid || lastSessionId !== sid) return;
-      if (wfOpenRun && m && m.agents) {
-        wfAgents[wfOpenRun] = m.agents;
-        // Asking for one run returns only that run, so keep the full list and
-        // refresh the single entry rather than collapsing the island to one row.
-        var one = (m.runs || [])[0];
-        if (one) wfRuns = wfRuns.map(function (x) { return x.runId === one.runId ? one : x; });
-      } else {
-        wfRuns = (m && m.runs) || [];
-      }
-      renderWorkflows();
-    }).catch(function () {});
-  }
-
-  function renderWorkflows() {
-    var btn = $('wfBtn'), badge = $('wfBadge'), island = $('wfIsland');
-    var live = wfRuns.filter(wfLive).length;
-    var liveAgents = subMetas.filter(function(m){return m.status==='running';}).length;
-    btn.hidden = wfRuns.length === 0;
-    badge.hidden = live === 0;
-    badge.textContent = String(live);
-    $('wfSummary').textContent = live + liveAgents ? (live + liveAgents) + ' running' : '';
-    $('wfTitle').textContent = liveAgents ? (wfRuns.length ? 'Agents & workflows' : 'Agents') : 'Workflows';
-    $('wfCloseBtn').setAttribute('aria-label','Close '+$('wfTitle').textContent.toLowerCase());
-    $('wfCloseBtn').title = $('wfCloseBtn').getAttribute('aria-label');
-    // As a column it could sit open harmlessly; floating over the chat it
-    // cannot, so it opens on its own only when something is actually MOVING.
-    // A finished run stays one click away on the topbar button.
-    var show = (wfRuns.length > 0 || liveAgents > 0) && !wfHidden && (wfShown || live > 0 || liveAgents > 0);
-    island.hidden = !show;
-    if ($('chatAgents')) $('chatAgents').setAttribute('aria-expanded',String(show));
-    if (!show) return;
-
-    var body = $('wfBody'), scrollTop = body.scrollTop;
-    var focused = body.contains(document.activeElement) ? document.activeElement.dataset.wfFocus : null;
-    body.textContent = '';
-    renderFloatingAgents(body);
-    var shownRuns = wfHideOld ? wfRuns.filter(wfIsCurrent) : wfRuns;
-    var hiddenRuns = wfRuns.length - shownRuns.length;
-    if (!shownRuns.length && !liveAgents) {
-      var e = document.createElement('div'); e.className = 'wf-empty';
-      e.textContent = wfRuns.length
-        ? 'Nothing running. ' + wfRuns.length + ' older run' + (wfRuns.length === 1 ? '' : 's') + ' hidden.'
-        : 'No workflow runs in this conversation yet.';
-      body.appendChild(e);
-    }
-    shownRuns.forEach(function (r) {
-      var live1 = wfLive(r), stalled = wfStalled(r);
-      var card = document.createElement('div');
-      card.className = 'wf-run' + (live1 ? ' live' : stalled ? ' stalled' : ' done');
-
-      var expanded = wfOpenRun === r.runId;
-      var top = document.createElement('button'); top.type = 'button'; top.className = 'wf-top';
-      top.dataset.wfFocus = 'run:' + r.runId;
-      top.setAttribute('aria-expanded', String(expanded));
-      var nm = document.createElement('span'); nm.className = 'wf-nm';
-      if (live1) { var sp = document.createElement('span'); sp.className = 'rspin'; nm.appendChild(sp); }
-      var nt = document.createElement('span');
-      nt.textContent = r.name || r.runId;
-      nm.appendChild(nt);
-      var chevron = document.createElement('span'); chevron.className = 'wf-chevron'; chevron.setAttribute('aria-hidden', 'true');
-      chevron.textContent = '›'; nm.appendChild(chevron); top.appendChild(nm);
-
-      // A run launched by NAME (a saved workflow) stores no script, so there is
-      // no meta to read. Say so, rather than leaving a bare id that reads like
-      // the panel failed to render something.
-      var desc = r.description || (r.name ? '' : 'ran from a saved workflow — no script stored');
-      if (desc) {
-        var d = document.createElement('span'); d.className = 'wf-desc';
-        d.textContent = desc; d.title = desc; top.appendChild(d);
-      }
-      if (expanded && r.phases && r.phases.length) {
-        var ph = document.createElement('span'); ph.className = 'wf-phases';
-        r.phases.forEach(function (p) {
-          var t = document.createElement('span'); t.className = 'wf-ph';
-          t.textContent = p.title; if (p.detail) t.title = p.detail;
-          ph.appendChild(t);
-        });
-        top.appendChild(ph);
-      }
-      var meter = document.createElement('span'); meter.className = 'wf-meter';
-      var fill = document.createElement('i');
-      fill.style.width = (r.started ? Math.round((r.finished / r.started) * 100) : 0) + '%';
-      meter.appendChild(fill); top.appendChild(meter);
-
-      var c = document.createElement('span'); c.className = 'wf-count';
-      c.textContent = r.finished + ' of ' + r.started + ' agents completed'
-        + (live1 ? ' · running' : stalled ? ' · stopped before finishing' : '');
-      top.appendChild(c);
-
-      top.addEventListener('click', function () {
-        wfOpenRun = wfOpenRun === r.runId ? null : r.runId;
-        renderWorkflows();
-        if (wfOpenRun) loadWorkflows();
-      });
-      card.appendChild(top);
-
-      if (wfOpenRun === r.runId) {
-        var list = document.createElement('div'); list.className = 'wf-agents';
-        var ags = wfAgents[r.runId] || [];
-        if (!ags.length) {
-          var le = document.createElement('div'); le.className = 'wf-empty'; le.textContent = 'loading agents…';
-          list.appendChild(le);
-        }
-        ags.forEach(function (a) {
-          var row = document.createElement('button'); row.type = 'button'; row.className = 'wf-ag' + (a.done ? ' fin' : '');
-          row.dataset.wfFocus = 'agent:' + r.runId + ':' + a.agentId;
-          var st = document.createElement('span'); st.className = 'st'; row.appendChild(st);
-          var lb = document.createElement('span'); lb.className = 'lb';
-          lb.textContent = a.brief || a.agentId;
-          lb.title = a.brief || '';
-          row.appendChild(lb);
-          row.addEventListener('click', function () { openWorkflowShell(r, a); });
-          list.appendChild(row);
-        });
-        card.appendChild(list);
-      }
-      body.appendChild(card);
-    });
-
-    // The control only earns its space when it is actually holding something
-    // back -- with two live runs there is nothing to hide.
-    if (hiddenRuns > 0 || !wfHideOld) {
-      var f = document.createElement('label'); f.className = 'subfilter';
-      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = wfHideOld;
-      cb.dataset.wfFocus = 'filter';
-      cb.addEventListener('change', function () {
-        wfHideOld = cb.checked; lsSet(WF_HIDE_KEY, wfHideOld ? 'on' : 'off'); renderWorkflows();
-      });
-      var tx = document.createElement('span');
-      tx.textContent = wfHideOld
-        ? 'Hide older runs (' + hiddenRuns + ')'
-        : 'Hide older runs';
-      f.appendChild(cb); f.appendChild(tx);
-      f.title = 'hides runs that stopped moving more than 30 minutes ago';
-      body.appendChild(f);
-    }
-    if (focused) Array.from(body.querySelectorAll('[data-wf-focus]')).find(function (node) { return node.dataset.wfFocus === focused; })?.focus({preventScroll:true});
-    body.scrollTop = scrollTop;
-  }
-
-  function renderFloatingAgents(body) {
-    var agents=subMetas.filter(function(m){return m.status==='running';}).sort(function(a,b){return (b.startedAt||0)-(a.startedAt||0);});
-    if (!agents.length) return;
-    var group=document.createElement('div');group.className='wf-agent-group';
-    agents.slice(0,wfAgentLimit).forEach(function(m){
-      var row=document.createElement('button');row.type='button';row.className='wf-agent-row';row.dataset.agent=m.agentId;row.dataset.wfFocus='agent:'+m.agentId;
-      var state=document.createElement('span');state.className='wf-agent-state '+(m.status||'unknown');state.setAttribute('aria-hidden','true');state.appendChild(icon(m.status==='done'?'check':m.status==='failed'?'x':'sparkles','sm'));row.appendChild(state);
-      var copy=document.createElement('span');copy.className='wf-agent-copy';var name=document.createElement('strong');name.textContent=agentName(m);name.title=agentName(m);copy.appendChild(name);
-      var meta=document.createElement('small');var details=[agentStatusLabels[m.status]||'Status unknown'];var duration=fmtDur(m.startedAt,m.endedAt);if(duration&&['running','done'].includes(m.status))details.push(duration);meta.textContent=details.join(' · ');copy.appendChild(meta);row.appendChild(copy);row.appendChild(icon('right','sm'));
-      row.addEventListener('click',function(){openSubShell(m);});group.appendChild(row);
-    });
-    if(agents.length>wfAgentLimit){var more=document.createElement('button');more.type='button';more.className='wf-agents-more';more.dataset.wfFocus='more-agents';more.textContent='Show '+(agents.length-wfAgentLimit)+' more agents';more.addEventListener('click',function(){wfAgentLimit+=12;renderWorkflows();});group.appendChild(more);}
-    body.appendChild(group);
-  }
-
-  /** A workflow agent's transcript, in the same shell a plain subagent uses. */
-  function openWorkflowShell(run, a) {
-    return openSubShell(Object.assign({},a,{status:a.done?'done':'unknown',description:a.description||a.agentType}),run);
-  }
-
-  $('wfCloseBtn').addEventListener('click', function () { wfHidden = true; wfShown = false; renderWorkflows(); });
-  // A floating card that only closes by its own X is a card you fight. Dismiss
-  // on any click outside it -- but not the topbar button (which toggles), and
-  // not while an agent shell is open on top of it, where an outside click
-  // belongs to the modal.
-  document.addEventListener('mousedown', function (e) {
-    var island = $('wfIsland');
-    if (!island.getClientRects().length) return;
-    if (island.contains(e.target) || $('wfBtn').contains(e.target) || $('chatAgents')?.contains(e.target)) return;
-    if (modalStack.length) return; // an agent shell is on top; the click is its own
-    wfHidden = true; wfShown = false; renderWorkflows();
-  });
-  $('wfBtn').addEventListener('click', function () {
-    var open = !$('wfIsland').hidden;
-    wfShown = !open; wfHidden = open;
-    renderWorkflows();
-    if (wfShown) loadWorkflows();
-  });
-
-  // A run appends to its journal as agents finish, and nothing pushes that to
-  // the panel, so the island polls while anything is live. Idle conversations
-  // cost one request per switch, not a timer.
-  function wfTick() {
-    if (wfRuns.some(wfLive) || wfOpenRun) loadWorkflows();
-  }
-  wfPoll = setInterval(wfTick, 4000);
 
   /** Agent reader: summary tabs, incremental history, and explicit follow mode. */
   function openSubShell(m, workflow) {
@@ -5585,17 +5768,13 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     }).then(function(v){alive=false;delete subShells[shellKey];return v;});
   }
 
-  $('subagentsBtn').addEventListener('click', function () { openPop($('subPop')); renderSelfCost(); renderSubList(); refreshSubagents(); });
-
   // A running turn spawns and feeds subagents; poll while one is live so the
   // count, the list and any open shell all move on their own.
   setInterval(function () {
     var shellOpen = Object.keys(subShells).length > 0;
     var agentsRunning = subMetas.some(function(m){return m.status === 'running';});
-    if (!active && !agentsRunning && !shellOpen && $('subPop').hidden) return;
+    if (!active && !agentsRunning && !shellOpen) return;
     refreshSubagents();
-    // Scanning every conversation is driven by ITS OWN modal now — opening the
-    // subagent popover should not start 400ms of reading behind it.
     for (var id in subShells) subShells[id]();
   }, 5000);
 
@@ -5827,7 +6006,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     for (var i = 0; i < e.dataTransfer.files.length; i++) addFile(e.dataTransfer.files[i]);
   });
 
-  function queueBody(text) { var b = { projectId: currentProjectId, sessionId: lastSessionId, prompt: text }; var m = effectiveModel(); if (m) b.model = m; if (effortEl.value) b.effort = effortEl.value; return b; }
+  function queueBody(text) { return putModelEffort({ projectId: currentProjectId, sessionId: lastSessionId, prompt: text }); }
   /** Push the prompt into whatever the conversation is doing RIGHT NOW. The
    *  server queues it instead if the process turns out to be gone, so the
    *  message is never lost -- the response says which happened. */
@@ -5850,8 +6029,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     // wrong thread and destroyed that thread's unsent draft.
     var pid = currentProjectId, sid = lastSessionId, steerDraft=promptEl.value;
     var body = { projectId: pid, sessionId: sid, prompt: text };
-    var m = effectiveModel(); if (m) body.model = m;
-    if (effortEl.value) body.effort = effortEl.value; // matters on the queue fallback
+    putModelEffort(body); // the effort matters on the queue fallback
     var steerTicket;
     try {steerTicket=await prepareDelivery('/api/steer',body);}catch(e){steerInFlight=false;addSys(e.message,'banner');return;}
     var stillHere = function () { return currentProjectId === pid && lastSessionId === sid; };
@@ -5895,6 +6073,261 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
   promptEl.addEventListener('input',updateSlashMenu);
   promptEl.addEventListener('keydown',function(e){if(slashMenu.hidden)return;if(e.key==='Escape'){slashMenu.hidden=true;e.preventDefault();e.stopPropagation();}else if(e.key==='ArrowUp'||e.key==='ArrowDown'){var buttons=slashMenu.querySelectorAll('button');if(buttons.length){e.preventDefault();buttons[e.key==='ArrowUp'?buttons.length-1:0].focus();}}},true);
   slashMenu.addEventListener('keydown',function(e){var buttons=Array.prototype.slice.call(slashMenu.querySelectorAll('button')),i=buttons.indexOf(document.activeElement);if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();buttons[(i+(e.key==='ArrowDown'?1:buttons.length-1))%buttons.length].focus();}if(e.key==='Escape'){e.stopPropagation();slashMenu.hidden=true;promptEl.focus();}});
+
+  // ---- model · effort popover (the One pill draft) -------------------------
+  // The hidden #model / #effort selects stay the truth: rows and segments are
+  // read from their CURRENT options every time the popover renders (they are
+  // refilled per provider and per Codex catalog), and a pick writes back with
+  // .value + a bubbling 'change', so saving, labels and refills run unchanged.
+  var runMenuEl = $('runMenu'), runChipEl = $('runChip'), runMenuSig = '', runMenuOpening = false;
+  var MODEL_DESC = {
+    fable: 'Frontier model, for the hardest problems',
+    opus: 'Deep reasoning for long, multi-step work',
+    sonnet: 'Balanced and quick, the everyday choice',
+    haiku: 'Fastest and cheapest, for small edits',
+    'gpt-6-astra': 'Strongest, for long multi-step work',
+    'gpt-6.1-sol': 'Newest frontier model, rolling out by plan',
+    'gpt-5.6-terra': 'Fast and balanced, the house default'
+  };
+  var EFFORT_SHORT = { low: 'Low', medium: 'Med', high: 'High', xhigh: 'X-high', max: 'Max', ultra: 'Ultra', ultracode: 'Ultracode' };
+  function escHtml(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function modelDescription(v, prov) {
+    if (prov === 'codex') {
+      var m = (providerModels.codex || []).filter(function (x) { return x.slug === v; })[0];
+      if (m && m.description) return m.description;
+    }
+    return MODEL_DESC[v] || '';
+  }
+  function runChipText() {
+    var opt = function (sel) { var o = sel && sel.options[sel.selectedIndex]; return o ? o.textContent.trim() : ''; };
+    var m = opt(modelEl), e = opt(effortEl);
+    return m && m === e ? m : [m, e].filter(Boolean).join(' · ');
+  }
+  // Fixed, placed from its anchor: the composer clips anything that overflows
+  // it. Phones get a bottom sheet from CSS, so no inline position there.
+  function placeComposerMenu(menu, anchor, width, alignRight) {
+    if (window.innerWidth <= 720) { menu.style.left = ''; menu.style.bottom = ''; menu.style.maxHeight = Math.round(window.innerHeight * 0.8) + 'px'; return; }
+    var r = anchor.getBoundingClientRect(), w = Math.min(width, window.innerWidth - 24);
+    var left = alignRight ? r.right - w : r.left;
+    menu.style.left = Math.max(12, Math.min(left, window.innerWidth - w - 12)) + 'px';
+    menu.style.bottom = (window.innerHeight - r.top + 10) + 'px';
+    // A short screen scrolls the menu rather than pushing it off the top.
+    menu.style.maxHeight = Math.max(160, r.top - 22) + 'px';
+  }
+  function renderRunMenu(force) {
+    if (!runMenuEl || runMenuEl.hidden) return;
+    var prov = currentProvider(), who = pickerName(), house = autoModelLabel(prov).replace(/^Auto \((.*)\)$/, '$1');
+    var item = function (kind, v, checked, title, desc) {
+      return '<button type="button" class="helper-item" role="menuitemradio" data-run="' + kind + '" data-value="' + escHtml(v) + '" aria-checked="' + (checked ? 'true' : 'false') + '"><span class="hi-text"><span class="hi-title">' + escHtml(title) + '</span>' + (desc ? '<span class="hi-desc" title="' + escHtml(desc) + '">' + escHtml(desc) + '</span>' : '') + '</span><svg class="ic sm hi-check" aria-hidden="true"><use href="#i-check"/></svg></button>';
+    };
+    var seg = function (kind, label, opts, cur) {
+      return '<div class="cp-seg" role="radiogroup" aria-label="' + label + '">' + opts.map(function (o) {
+        var on = o[0] === cur;
+        return '<button type="button" role="radio" data-run="' + kind + '" data-value="' + escHtml(o[0]) + '" aria-checked="' + on + '" tabindex="' + (on ? 0 : -1) + '"' + (o[2] ? ' title="' + escHtml(o[2]) + '" aria-label="' + escHtml(o[2]) + '"' : '') + '>' + escHtml(o[1]) + '</button>';
+      }).join('') + '</div>';
+    };
+    var html = '';
+    var canPickProvider = providerWrap && !providerWrap.hidden && !providerWrap.classList.contains('locked');
+    if (canPickProvider) {
+      html += '<div class="helper-head">Provider <span class="helper-hint">until the first message</span></div><div class="cp-prov-seg">'
+        + seg('provider', 'Provider', [].slice.call(providerEl.options).map(function (o) { return [o.value, o.textContent.trim()]; }), providerEl.value) + '</div>';
+    }
+    var hint = prov === 'codex' ? 'catalog of your ChatGPT accounts' : (PROV_LABEL[prov] || prov);
+    html += '<div class="helper-head' + (canPickProvider ? ' sub' : '') + '">Model <span class="helper-hint">' + (canPickProvider ? '' : '<svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg>') + escHtml(hint) + '</span></div><div role="menu" aria-label="Model">';
+    [].slice.call(modelEl.options).forEach(function (o) {
+      var v = o.value, on = modelEl.value === v;
+      if (!v) html += item('model', '', on, who ? who + ' picks' : 'Auto', who ? 'Chosen per turn, starting from ' + house : 'House default, ' + house);
+      else html += item('model', v, on, o.textContent.trim(), modelDescription(v, prov));
+    });
+    html += '</div><div class="helper-head sub">Effort</div><div class="cp-pad">'
+      + seg('effort', 'Effort', [].slice.call(effortEl.options).map(function (o) {
+        var v = o.value;
+        if (!v) return ['', who || 'Auto', who ? who + ' picks the effort' : 'Auto effort'];
+        return [v, EFFORT_SHORT[v] || o.textContent.trim(), o.textContent.trim()];
+      }), effortEl.value) + '</div>';
+    if (html === runMenuSig && !force) return;
+    runMenuSig = html;
+    var f = document.activeElement, fk = f && runMenuEl.contains(f) ? [f.dataset.run, f.dataset.value] : null;
+    runMenuEl.innerHTML = html;
+    if (fk) { var n = runMenuEl.querySelector('[data-run="' + fk[0] + '"][data-value="' + CSS.escape(fk[1] || '') + '"]'); if (n) n.focus({ preventScroll: true }); }
+  }
+  function runMenu(open, focusWhat) {
+    if (!runMenuEl) return;
+    if (open === undefined) open = runMenuEl.hidden;
+    // Opened by a click elsewhere (the caption, send running /model): that same
+    // click reaching the document must not close it again.
+    if (open) { helperMenu(false); revealComposer(runChipEl); runMenuOpening = true; setTimeout(function () { runMenuOpening = false; }, 0); }
+    runMenuEl.hidden = !open; runChipEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (!open) return;
+    renderRunMenu(true);
+    placeComposerMenu(runMenuEl, runChipEl, 360, true);
+    var sel = focusWhat === 'effort' ? runMenuEl.querySelector('[data-run=effort][aria-checked=true]') : runMenuEl.querySelector('[data-run=model][aria-checked=true]');
+    (sel || runMenuEl.querySelector('button')).focus({ preventScroll: true });
+  }
+  function pickRun(kind, value) {
+    var el = kind === 'model' ? modelEl : kind === 'effort' ? effortEl : providerEl;
+    if (!el || el.value === value) return;
+    el.value = value;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    renderRunMenu();
+  }
+  runChipEl.addEventListener('click', function (e) { e.stopPropagation(); runMenu(); });
+  runMenuEl.addEventListener('click', function (e) { var b = e.target.closest('[data-run]'); if (b && !b.disabled) pickRun(b.dataset.run, b.dataset.value); });
+  runMenuEl.addEventListener('keydown', function (e) {
+    var segBtn = e.target.closest && e.target.closest('.cp-seg button');
+    if (segBtn && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End')) {
+      e.preventDefault();
+      var segs = [].slice.call(segBtn.parentNode.querySelectorAll('button')), j = segs.indexOf(segBtn);
+      j = e.key === 'Home' ? 0 : e.key === 'End' ? segs.length - 1 : Math.max(0, Math.min(segs.length - 1, j + (e.key === 'ArrowRight' ? 1 : -1)));
+      pickRun(segs[j].dataset.run, segs[j].dataset.value);
+      var n = runMenuEl.querySelector('[data-run="' + segs[j].dataset.run + '"][data-value="' + CSS.escape(segs[j].dataset.value) + '"]'); if (n) n.focus();
+      return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      // Up/Down walk the rows; each segmented control is one stop (its checked segment).
+      e.preventDefault();
+      var items = [].slice.call(runMenuEl.querySelectorAll('.helper-item:not([disabled]), .cp-seg button[aria-checked=true]')), i = items.indexOf(document.activeElement);
+      var nx = items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]; if (nx) nx.focus();
+    } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); runMenu(false); runChipEl.focus(); }
+  });
+  // composedPath, not closest(): a pick re-renders the rows, so by the time the
+  // click reaches the document its target is detached from the popover.
+  document.addEventListener('click', function (e) { if (runMenuEl.hidden || runMenuOpening) return; var path = e.composedPath(); if (path.indexOf(runMenuEl) < 0 && path.indexOf(runChipEl) < 0) runMenu(false); });
+  window.addEventListener('resize', function () { if (!runMenuEl.hidden) placeComposerMenu(runMenuEl, runChipEl, 360, true); });
+  [modelEl, effortEl, providerEl].forEach(function (el) { if (el) el.addEventListener('change', function () { renderRunMenu(); }); });
+  if (window.MutationObserver) {
+    var runObs = new MutationObserver(function () { renderRunMenu(); });
+    [modelEl, effortEl].forEach(function (el) { runObs.observe(el, { childList: true, subtree: true, characterData: true }); });
+  }
+  // ---- the quiet pill ------------------------------------------------------
+  // One line at rest; open (data-qp-open on .composer-wrap) while focus is in
+  // it, it holds text or files, or one of its menus is open. Only the CSS
+  // differs between the two: every control keeps its element and listeners.
+  var composerWrap = document.querySelector('.composer-wrap'), composerBox = $('composerBox');
+  var qpHold = false, qpHoldTimer = null, qpForce = false;
+  function composerHasFiles() { return !!(attachRow && attachRow.querySelector('.chip')); }
+  function composerHasContent() { return !!(promptEl && promptEl.value.trim()) || composerHasFiles(); }
+  function composerMenuOpen() {
+    var acct = $('sendAccountPicker');
+    return ['helperMenu', 'runMenu', 'composerPlusMenu', 'codexSlashMenu'].some(function (id) { var m = $(id); return m && !m.hidden; }) || !!(acct && acct.open);
+  }
+  function composerRunning() { return !!(busyEl && busyEl.firstChild) || canSteer(); }
+  function composerCaption() {
+    var opt = function (sel) { var o = sel && sel.options[sel.selectedIndex]; return o ? o.textContent.trim() : ''; };
+    var m = opt(modelEl), e = opt(effortEl);
+    // Both on Auto with a picker read "Jev picks": say it once, and do not
+    // name the picker again among the helpers.
+    var parts = m && m === e ? [m + ' model and effort'] : [m, e].filter(Boolean);
+    var hb = $('helperBtn'), hl = $('helperLabel');
+    if (hb && hb.dataset.state === 'on' && hl) {
+      hl.textContent.split(' · ').map(function (s) { return s.trim(); }).filter(function (h) { return h && !(parts[0] || '').startsWith(h + ' '); }).forEach(function (h) { parts.push(h); });
+    }
+    return parts.join(' · ');
+  }
+  function syncComposer() {
+    if (!composerWrap || !composerBox) return;
+    var a = document.activeElement, running = composerRunning(), content = composerHasContent();
+    var open = qpForce || qpHold || !!(a && a !== document.body && composerBox.contains(a)) || promptEl.value.length > 0 || composerHasFiles() || composerMenuOpen();
+    composerWrap.toggleAttribute('data-qp-open', open);
+    // Phones show composer menus as bottom sheets; the floating stage bubble sits over them.
+    document.body.classList.toggle('qp-menu-open', composerMenuOpen());
+    composerWrap.toggleAttribute('data-qp-run', running);
+    composerWrap.toggleAttribute('data-qp-content', content);
+    var bg = !active && isSessionBackground(currentProjectId, lastSessionId);
+    var stop = $('composerStopBtn'), steerB = $('steerBtn');
+    if (steerB) steerB.hidden = !canSteer() || !content;
+    if (stop) {
+      stop.hidden = !running || content;
+      stop.classList.toggle('bg', bg);
+      var st = bg ? 'Interrupt the background work (keeps the session)' : 'Stop this turn';
+      stop.title = st; stop.setAttribute('aria-label', st);
+    }
+    sendBtn.hidden = running && !content;
+    var keys = 'Enter · Shift+Enter for a new line' + (typeof K_CMD === 'string' ? ' · ' + K_CMD + '+Enter steers a running turn' : '');
+    sendBtn.title = running ? 'Queue for after this turn · ' + keys : 'Send · ' + keys;
+    sendBtn.setAttribute('aria-label', running ? 'Queue for after this turn' : 'Send');
+    var n = attachRow ? attachRow.querySelectorAll('.chip').length : 0, badge = $('composerAttachBadge');
+    if (badge) {
+      badge.hidden = !n;
+      if (n && badge.dataset.n !== String(n)) {
+        badge.dataset.n = String(n); badge.textContent = ''; badge.appendChild(icon('paperclip', 'sm'));
+        badge.appendChild(document.createTextNode(String(n)));
+        badge.title = n + ' file' + (n > 1 ? 's' : '') + ' attached'; badge.setAttribute('aria-label', badge.title);
+      }
+    }
+    var rl = $('runChipLabel'), rt = runChipText();
+    if (rl && rl.textContent !== rt) { rl.textContent = rt; runChipEl.setAttribute('aria-label', 'Model and effort: ' + rt); runChipEl.title = 'Model and effort: ' + rt; }
+    var cap = $('composerCaption');
+    if (cap) { var c = composerCaption(); if (cap.textContent !== c) { cap.textContent = c; cap.setAttribute('aria-label', 'Model and effort: ' + c); } }
+    promptEl.placeholder = open && running ? 'Ask anything to queue or steer' : open && currentProvider() === 'codex' ? 'Ask anything, or type / for commands' : 'Ask anything';
+  }
+  /** Open the pill before focusing a control that only shows when it is open
+   *  (a shortcut or /model opening #model while the box is at rest). */
+  function revealComposer(el) {
+    if (!composerBox || !composerBox.contains(el)) return;
+    qpForce = true; syncComposer(); qpForce = false;
+  }
+  composerBox.addEventListener('focusin', syncComposer);
+  document.addEventListener('x056:composer-menu', function () { syncComposer(); });
+  // A tap on the account chip under an OPEN pill must not fold it on the way to
+  // opening the account popover (which then holds it open itself).
+  var qpFooter = $('composerFooter');
+  if (qpFooter) qpFooter.addEventListener('pointerdown', function () { if (!composerWrap.hasAttribute('data-qp-open')) return; qpHold = true; clearTimeout(qpHoldTimer); qpHoldTimer = setTimeout(releaseHold, 1200); });
+  // Collapse on a later tick and only if focus really left: a click on + or
+  // send moves focus INSIDE the pill, which must not fold it under the pointer.
+  composerBox.addEventListener('focusout', function () { setTimeout(syncComposer, 0); });
+  // iOS does not focus a tapped button, so focusout sees no relatedTarget: hold
+  // the pill open from pointerdown until that tap's click has run.
+  function releaseHold() { if (!qpHold) return; clearTimeout(qpHoldTimer); setTimeout(function () { qpHold = false; syncComposer(); }, 0); }
+  composerBox.addEventListener('pointerdown', function () { qpHold = true; clearTimeout(qpHoldTimer); qpHoldTimer = setTimeout(releaseHold, 1200); });
+  document.addEventListener('click', releaseHold, true);
+  document.addEventListener('pointercancel', releaseHold, true);
+  // A click on the pill's padding lands in the box, as a click on a field would.
+  composerBox.addEventListener('click', function (e) { if (e.target === composerBox) promptEl.focus(); });
+  promptEl.addEventListener('input', syncComposer);
+  $('composerAttachBadge').addEventListener('click', function () { promptEl.focus(); });
+  $('composerCaption').addEventListener('click', function () { runMenu(true); });
+  [modelEl, effortEl, providerEl].forEach(function (el) { if (el) el.addEventListener('change', syncComposer); });
+  if (window.MutationObserver) {
+    var qpObs = new MutationObserver(syncComposer);
+    qpObs.observe(attachRow, { childList: true });
+    qpObs.observe(busyEl, { childList: true });
+    ['helperMenu', 'runMenu', 'composerPlusMenu', 'codexSlashMenu'].forEach(function (id) { if ($(id)) qpObs.observe($(id), { attributes: true, attributeFilter: ['hidden'] }); });
+    qpObs.observe($('helperBtn'), { attributes: true, attributeFilter: ['data-state'], childList: true, subtree: true, characterData: true });
+    qpObs.observe(modelEl, { childList: true, subtree: true, characterData: true });
+    qpObs.observe(effortEl, { childList: true, subtree: true, characterData: true });
+  }
+  // Safety net for run-state paths no hook covers: cheap attribute toggles only.
+  setInterval(function () { if (!document.hidden) syncComposer(); }, 1000);
+  // The + menu: attach, a template, and (chat mode) a conversation reference.
+  function plusMenu(open) {
+    var menu = $('composerPlusMenu'), btn = $('composerPlusBtn');
+    if (open === undefined) open = menu.hidden;
+    if (open) { helperMenu(false); runMenu(false); $('composerRefItem').hidden = !(document.body.classList.contains('rc-chat-active') && $('rcChatReference')); }
+    menu.hidden = !open; btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      var r = btn.getBoundingClientRect(), w = Math.min(280, window.innerWidth - 24);
+      menu.style.left = Math.max(12, Math.min(r.left, window.innerWidth - w - 12)) + 'px';
+      menu.style.bottom = (window.innerHeight - r.top + 10) + 'px';
+      menu.style.maxHeight = Math.max(160, r.top - 22) + 'px';
+      var first = menu.querySelector('.helper-item:not([hidden])'); if (first) first.focus();
+    }
+  }
+  $('composerPlusBtn').addEventListener('click', function (e) { e.stopPropagation(); plusMenu(); });
+  $('attachBtn').addEventListener('click', function () { plusMenu(false); fileEl.click(); });
+  $('tplBtn').addEventListener('click', function () { plusMenu(false); });
+  $('tplKbd').textContent = K_ALT + '+T';
+  $('composerRefItem').addEventListener('click', function () { plusMenu(false); var b = $('rcChatReference'); if (b) b.click(); });
+  $('composerPlusMenu').addEventListener('keydown', function (e) {
+    var items = Array.prototype.slice.call(this.querySelectorAll('.helper-item:not([hidden])')), i = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); plusMenu(false); $('composerPlusBtn').focus(); }
+  });
+  // Capture phase: the helpers button stops its click from bubbling.
+  document.addEventListener('click', function (e) { if (!$('composerPlusMenu').hidden && !e.target.closest('#composerPlusWrap')) plusMenu(false); }, true);
+  window.addEventListener('resize', function () { if (!$('composerPlusMenu').hidden) plusMenu(false); });
+  $('composerStopBtn').addEventListener('click', function () { stopCurrentTurn(); });
+  syncComposer();
   function handleCodexPanelCommand(text) {
     if (currentProvider() !== 'codex' || !/^\//.test(text)) return false;
     if(pendingFiles.length){uiAlert({title:'Command has attachments',message:'Remove the attachments before running a slash command, or send a regular message with the files.'});return true;}
@@ -5904,10 +6337,10 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     promptEl.value='';saveDraft();autogrow();slashMenu.hidden=true;
     if(command==='new')newConversation(currentProjectId);
     else if(command==='resume')openSessions();
-    else if(command==='model'){modelEl.focus();if(modelEl.showPicker)try{modelEl.showPicker();}catch{}}
+    else if(command==='model')openSelect(modelEl);
     else if(command==='status')controlRoom.showAccounts();
     else if(command==='cost')controlRoom.showCosts();
-    else if(command==='agent')$('subagentsBtn').click();
+    else if(command==='agent'){if(agentTree)agentTree.show();}
     return true;
   }
   var deliveryRecords=new Map(), deliveryDb=null, deliveryPreparing=false, deliveryPanel=null;
@@ -6158,7 +6591,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
       return;
     }
     var files = pendingFiles.slice(), sentFileList=pendingFiles;
-    var body = { prompt: text }; if((pendingNew||!lastSessionId)&&composerAccounts[composerAccountKey()])body.account=composerAccounts[composerAccountKey()]; var m = effectiveModel(); if (m) body.model = m; if (effortEl.value) body.effort = effortEl.value;
+    var body = { prompt: text }; if((pendingNew||!lastSessionId)&&composerAccounts[composerAccountKey()])body.account=composerAccounts[composerAccountKey()]; putModelEffort(body);
     addFilePayload(body, files);
     if (currentProjectId) body.projectId = currentProjectId; // target the viewed project explicitly
     var useNew = pendingNew || !lastSessionId; var path = useNew ? '/api/sessions' : '/api/sessions/current/messages';
@@ -6462,7 +6895,10 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     promptText: ()=>promptEl.value,
     setComposerAccount: function(name){composerAccounts[composerAccountKey()]=name;},
     markRead: function () { clearConvNotif(currentProjectId,lastSessionId); },
-    state: function () { var vk=viewKey(currentProjectId,lastSessionId),effort=activeEffort[vk]; return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, views: views, provider:currentProvider(), model:effectiveModel(), effort:effort===undefined?effortEl.value:effort, composerAccount:composerAccounts[composerAccountKey()]||null, runningAccount:activeAccount[vk] || null }; },
+    markAllRead: function () { Object.keys(convNotif).forEach(function (k) { var i = k.indexOf('::'); clearConvNotif(k.slice(0, i), k.slice(i + 2)); }); Object.keys(pendingQ).forEach(function (sid) { var q = pendingQ[sid]; if (q && q.stale) markQuestionSeen(q.projectId, sid, q.at); }); dismissRestart(); applyNotifs(); },
+    clearRestartNotice: function () { dismissRestart(); applyNotifs(); },
+    push: pushApi,
+    state: function () { var vk=viewKey(currentProjectId,lastSessionId),effort=activeEffort[vk]; return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, notices: convNotice, restartNotice: restartNotice, views: views, provider:currentProvider(), model:effectiveModel(), effort:effort===undefined?effortEl.value:effort, composerAccount:composerAccounts[composerAccountKey()]||null, runningAccount:activeAccount[vk] || null }; },
     select: function (pid, sid) {
       if (pid === currentProjectId) return Promise.resolve(switchConversation(pid, sid));
       // Select the target conversation before switching project, then the existing
@@ -6480,6 +6916,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     insertPrompt: function (text) { promptEl.value = text; autogrow(); saveDraft(); promptEl.focus(); },
     toggleTerminal: function () { if (terminalView) terminalView.toggle(); },
     toggleAgentTree: function () { if (agentTree) agentTree.toggle(); },
+    showAgentTree: function () { if (agentTree) agentTree.show(); },
     attachSaved: function (pid, sid, file) {
       var key = filesKeyFor(pid,sid), list = pendingFilesByConv[key] || (pendingFilesByConv[key] = []);
       if (!list.some(function(f){return f.fileId===file.fileId && f.versionId===file.versionId;})) list.push(file);
@@ -6492,17 +6929,33 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
     api: api,
     current: function () { return pendingNew || !currentProjectId || !lastSessionId ? null : { projectId: currentProjectId, sessionId: lastSessionId }; },
     notify: function (m) { if (controlRoom) controlRoom.notify(m); else addSys(m, 'banner'); },
-    onOpen: function () { if (agentTree && agentTree.isOpen()) agentTree.close(); },
+    // The docked agent tree may sit beside the terminal; only its expanded view takes the same place.
+    onOpen: function () { if (agentTree && agentTree.isExpanded()) agentTree.collapse(); },
   }) : null;
   $('termBtn').addEventListener('click', function () { if (terminalView) terminalView.toggle(); });
-  // The agent tree takes the chat's place like the terminal; only one of them is open.
+  // The agent tree docks beside the chat; its expanded view takes the whole
+  // conversation's place like the terminal, and only one of those two is open.
   agentTree = typeof window.createAgentTree === 'function' ? window.createAgentTree({
     api: api,
     current: function () { return pendingNew || !currentProjectId || !lastSessionId ? null : { projectId: currentProjectId, sessionId: lastSessionId }; },
+    provider: function () { return currentProvider(); },
     notify: function (m) { if (controlRoom) controlRoom.notify(m); else addSys(m, 'banner'); },
-    onOpen: function () { if (terminalView && terminalView.isOpen()) terminalView.close(); },
+    onExpand: function () { if (terminalView && terminalView.isOpen()) terminalView.close(); },
     openSubagent: function (meta) { openSubShell(meta); },
     openDelegate: function (id, role) { if (terminalView) terminalView.showDelegate(id, role); },
+    openTerminal: function () { if (terminalView && !terminalView.isOpen()) terminalView.toggle(); },
+    // One reader of conversations/subagents: the panel's own list, shared.
+    subagents: function () { return subMetas; },
+    subagentSelf: function () { return subSelf; },
+    showCosts: function () { controlRoom.showCosts(); },
+    onSubagents: onSubagents,
+    refreshSubagents: function () { return refreshSubagents(); },
+    renderRows: function (box, rows, provider) { renderRowsInto(box, rows, provider); },
+    renderMarkdown: function (text) { return renderMarkdown(String(text || '')); },
+    fmtTok: fmtTok, costLabel: costLabel, fmtDur: fmtDur,
+    messageDelegate: function (id, text) { return delegateCall('/api/delegates/followup', { id: id, message: text, fromHuman: true }); },
+    stopDelegate: function (id) { return delegateCall('/api/delegates/stop', { id: id }); },
+    scrollChat: function () { if (typeof down === 'function') down(); },
   }) : null;
   $('atreeBtn').addEventListener('click', function () { if (agentTree) agentTree.toggle(); });
   // Static assets can update before the gateway swaps to their matching build.

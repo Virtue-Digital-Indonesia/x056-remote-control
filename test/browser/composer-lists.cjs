@@ -54,7 +54,8 @@ const base = process.argv[2] || 'http://127.0.0.1:8767';
   await prompt.evaluate(el => { const data = new DataTransfer(); data.setData('text/plain', '- Pasted\n  1. Nested number'); el.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data })); });
   assert.equal(await prompt.inputValue(), '  • Pasted\n    1. Nested number', 'Pasted Markdown keeps nesting');
   await prompt.fill('  • First\n    • Nested\n  1. Numbered');
-  await page.reload(); await page.locator('.cr-task').filter({ hasText: 'Build the new homepage' }).click();
+  await page.waitForTimeout(200); await page.reload(); await page.locator('#prompt').waitFor(); // the reload reopens the conversation from its URL
+  await page.waitForFunction(() => document.querySelector('#prompt').value);
   assert.equal(await prompt.inputValue(), '  • First\n    • Nested\n  1. Numbered', 'Draft round trip preserves visible indentation');
   await page.waitForFunction(() => { const el = document.querySelector('#prompt'); return el.clientHeight >= el.scrollHeight; });
   await prompt.screenshot({ path: '/tmp/composer-list-indentation.png' });

@@ -1,6 +1,12 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { createRequire } from 'node:module';
+import type { DatabaseSync as SQLiteDatabase } from 'node:sqlite';
+import { codexHomePreparing, markCodexHomePreparing } from '../src/codex-home.js';
+import { codexAppServerArgs } from '../src/codex-marketplace-args.js';
+
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: typeof SQLiteDatabase };
 
 /**
  * One rollout store for every Codex account.
@@ -91,30 +97,99 @@ function mergeInto(from: string, to: string): { moved: number; skipped: number }
 }
 
 /**
- * Runs Codex's one-time index of the shared store for a NEW home, outside any
- * turn's timeout. The first `codex app-server` in a fresh CODEX_HOME performs a
- * "state db backfill" over everything under `sessions/`, which after linking is
- * the whole gateway store (1.6 GB on 2026-09-17). The gateway's spawn timeouts
- * killed that part-way and left `backfill_state = running` with no process
- * behind it; every later start waited 30 s for the phantom and exited 1, so the
- * account failed every turn after exactly 30 s. `codex migrate-rollouts --apply`
- * is the CLI's own way to complete that index; it is fire-and-forget here and
- * only logged, so onboarding never blocks on it and a missing binary is harmless.
+ * Whether a Codex home has finished its one-time index of the shared store:
+ * `backfill_state.status` in its newest `state_N.sqlite`. undefined when that
+ * cannot be told (never started, or a schema this does not know), so a caller
+ * only acts on a definite "no".
  */
-export function prepareCodexHome(configDir: string, codexPath = 'codex'): void {
-  let child: ReturnType<typeof spawn>;
+export function codexHomeIndexed(configDir: string): boolean | undefined {
+  let db: string | undefined;
   try {
-    child = spawn(codexPath, ['migrate-rollouts', '--apply', '--max-mib-per-second', '64'], {
-      env: { ...process.env, CODEX_HOME: configDir },
-      stdio: 'ignore',
-      detached: true,
-    });
-  } catch (err) {
-    console.warn(`[codex-sessions] ${configDir}: could not start the rollout index (${(err as Error).message})`);
-    return;
+    db = readdirSync(configDir).filter((f) => /^state_\d+\.sqlite$/.test(f))
+      .sort((a, b) => Number(b.slice(6, -7)) - Number(a.slice(6, -7)))[0];
+  } catch { return undefined; }
+  if (!db) return undefined;
+  try {
+    const conn = new DatabaseSync(join(configDir, db), { readOnly: true });
+    try {
+      const row = conn.prepare('select status from backfill_state').get() as { status?: string } | undefined;
+      return row ? row.status === 'complete' : undefined;
+    } finally { conn.close(); }
+  } catch { return undefined; }
+}
+
+/** Renames a home's `state_N.sqlite` (and its -wal/-shm) out of the way, kept
+ *  for a look later, so the next start builds the index from scratch. */
+export function setAsideCodexState(configDir: string): string[] {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-'), moved: string[] = [];
+  let files: string[] = [];
+  try { files = readdirSync(configDir).filter((f) => /^state_\d+\.sqlite(-wal|-shm)?$/.test(f)); } catch { return moved; }
+  for (const f of files) {
+    try { renameSync(join(configDir, f), join(configDir, `${f}.unfinished-${stamp}`)); moved.push(f); } catch { /* leave it */ }
   }
+  if (moved.length) console.log(`[codex-sessions] ${configDir}: unfinished index set aside (${moved.join(', ')})`);
+  return moved;
+}
+
+/**
+ * Runs Codex's one-time index of the shared store for a home, outside any
+ * turn's timeout, and keeps the account out of routing until it is done.
+ *
+ * The first `codex app-server` in a CODEX_HOME performs a "state db backfill"
+ * over everything under `sessions/` -- after linking, the whole gateway store
+ * -- and answers nothing, `initialize` included, until it has finished
+ * (measured 2026-09-30: 3.5 GB, 205 threads, 224 s). The 30 s turn handshake
+ * killed it part-way every time, so the account failed every turn after
+ * exactly 30 s with exit 1 and no message, and each start began the index
+ * again (`backfill_state = running`, no watermark). Seen on `j` (2026-09-17)
+ * and on `g` after a re-login (2026-09-30).
+ *
+ * So one app-server is held open until `initialize` answers -- which is the
+ * index being complete -- and then let go with stdin closed, so it exits on
+ * its own rather than being killed around a token refresh. It used to be
+ * `codex migrate-rollouts --apply`, which on 0.159 is a different migration
+ * (legacy sessions to paginated history) and never finished this index.
+ */
+export function prepareCodexHome(configDir: string, codexPath = 'codex', timeoutMs = 20 * 60_000): Promise<boolean> {
+  if (codexHomePreparing(configDir)) return Promise.resolve(false);
+  markCodexHomePreparing(configDir, true);
+  // "running" with nobody running it -- a start killed part-way -- makes every
+  // later start, this one included, wait 30 s for it and exit 1: "timed out
+  // waiting for state db backfill ... (status: running)" (reproduced from g's
+  // state, 2026-09-30). A home that never finished its index has never served
+  // a turn, so that file holds nothing but the partial index: set it aside.
+  if (codexHomeIndexed(configDir) === false) setAsideCodexState(configDir);
   const started = Date.now();
-  child.on('error', (err) => console.warn(`[codex-sessions] ${configDir}: rollout index failed to start (${err.message})`));
-  child.on('exit', (code) => console.log(`[codex-sessions] ${configDir}: rollout index ${code === 0 ? 'complete' : 'exited ' + code} after ${Math.round((Date.now() - started) / 1000)}s`));
-  child.unref();
+  return new Promise((done) => {
+    let settled = false, answered = false, buf = '';
+    let child: ChildProcess | undefined;
+    const finish = (ok: boolean, why: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      markCodexHomePreparing(configDir, false);
+      console.log(`[codex-sessions] ${configDir}: rollout index ${ok ? 'complete' : why} after ${Math.round((Date.now() - started) / 1000)}s`);
+      done(ok);
+    };
+    const kill = () => { try { if (child?.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } };
+    const timer = setTimeout(() => { kill(); finish(false, 'timed out'); }, timeoutMs);
+    timer.unref?.();
+    try {
+      child = spawn(codexPath, codexAppServerArgs(configDir), { env: { ...process.env, CODEX_HOME: configDir }, stdio: ['pipe', 'pipe', 'ignore'], detached: true });
+    } catch (err) { finish(false, 'could not start (' + (err as Error).message + ')'); return; }
+    child.on('error', (err) => finish(false, 'failed to start (' + err.message + ')'));
+    child.on('exit', (code) => finish(answered, 'exited ' + code));
+    child.stdout?.on('data', (d: Buffer) => {
+      buf += d.toString();
+      const lines = buf.split('\n'); buf = lines.pop() ?? '';
+      if (answered || !lines.some((l) => { try { return (JSON.parse(l) as { id?: unknown }).id === 1; } catch { return false; } })) return;
+      answered = true;
+      // Done: close stdin and let it exit by itself; kill it only if it lingers.
+      try { child?.stdin?.end(); } catch { /* gone */ }
+      setTimeout(() => { kill(); finish(true, ''); }, 15_000).unref?.();
+    });
+    child.stdin?.on('error', () => { /* a dead pipe */ });
+    child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'x056-index', version: '1' } } }) + '\n');
+    child.unref();
+  });
 }

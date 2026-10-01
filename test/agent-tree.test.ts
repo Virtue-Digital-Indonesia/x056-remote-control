@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { AccountRegistry } from '../src/accounts.js';
 import type { RunSessionOptions, SessionResult } from '../src/failover.js';
 import { SessionManager } from '../server/manager.js';
-import { ClaudeAdvisorLog, forkSummary, isGate, mainRun, tailJsonl } from '../server/agent-tree.js';
+import { ClaudeAdvisorLog, forkSummary, isGate, mainRun, tailJsonl, teamRun } from '../server/agent-tree.js';
 import type { ForkDecision, JevDecision } from '../server/jev.js';
 
 const dirs: string[] = [];
@@ -14,6 +14,18 @@ const temp = () => { const d = mkdtempSync(join(tmpdir(), 'x056-tree-')); dirs.p
 const fork = (question: string, verdict: 'sharp' | 'split', at = '2026-09-30T10:00:00Z'): ForkDecision => ({ at, sessionId: 's', backend: 'jev', question, options: ['a', 'b'], choice: 'a', confidence: verdict === 'sharp' ? 0.9 : 0.5, verdict, latencyMs: 300 });
 
 describe('agent tree pieces', () => {
+  it('shows the team\'s picked model and effort for this turn, else the fixed default', () => {
+    const pick = (at: string, team?: JevDecision['team'], extra: Partial<JevDecision> = {}): JevDecision => ({ at, sessionId: 's', provider: 'claude', notes: [], latencyMs: 1, ...(team ? { team } : {}), ...extra });
+    const t = { model: 'sonnet', effort: 'high', base: { model: 'opus', effort: 'medium' }, pickedModel: 'sonnet', pickedEffort: 'high', modelConfidence: 0.7, effortConfidence: 0.62 };
+    const roles = ['explorer', 'worker', 'researcher'];
+    expect(teamRun('claude', [pick('2026-09-30T10:00:00Z', t)], '2026-09-30T09:59:00Z')).toEqual({ model: 'sonnet', effort: 'high', pickedBy: 'jev', confidence: 0.62, roles });
+    // An older turn's pick does not describe this turn; a failed one never does.
+    expect(teamRun('claude', [pick('2026-09-30T10:00:00Z', t)], '2026-09-30T11:00:00Z')).toEqual({ model: 'opus', effort: 'medium', roles });
+    expect(teamRun('claude', [pick('2026-09-30T10:00:00Z', t, { error: 'x' })], undefined)).toEqual({ model: 'opus', effort: 'medium', roles });
+    expect(teamRun('codex', [pick('2026-09-30T10:00:00Z', { effort: 'xhigh', base: { effort: 'medium' }, pickedEffort: 'xhigh', effortConfidence: 0.8 }, { backend: 'openai' })], undefined))
+      .toEqual({ effort: 'xhigh', pickedBy: 'openai', confidence: 0.8, roles: ['explorer', 'worker', 'default'] });
+  });
+
   it('reads only the tail of a log, skipping a line the window cut', () => {
     const f = join(temp(), 'log.jsonl');
     for (let i = 0; i < 200; i++) appendFileSync(f, JSON.stringify({ i, pad: 'x'.repeat(50) }) + '\n');
@@ -88,6 +100,10 @@ describe('SessionManager.agentTree', () => {
     expect(t.forks).toMatchObject({ total: 2, sharp: 1, split: 1 });
     expect(t.gates.map((g) => g.question)).toEqual(['report gate · backend']);
     expect(t.delegates.map((d) => d.role)).toEqual(['backend']);
+    // One gateway turn, finished: its end is the recorded session_done.
+    expect(t.turns).toHaveLength(1);
+    expect(t.turns[0]).toMatchObject({ n: 1, prompt: 'orchestrate', running: false });
+    expect(t.turns[0].endedAt! >= t.turns[0].startedAt).toBe(true);
     // Helpers off: nothing claims to be on.
     mgr.setHelpers(p.id, sid, {});
     expect(mgr.agentTree(p.id, sid)).toMatchObject({ advisor: { on: false }, team: null });

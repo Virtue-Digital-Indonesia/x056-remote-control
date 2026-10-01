@@ -55,6 +55,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
       assert.equal(over, false, 'card content overflows at ' + vp.width + 'px');
     }
     // The helper menu opens fully on screen, works from the keyboard, and closes on Escape.
+    await page.locator('#prompt').click(); // the composer rests as one line; focus opens its controls
     await page.locator('#helperBtn').click();
     const box = await page.locator('#helperMenu').boundingBox();
     assert.ok(box && box.y >= 0 && box.x >= 0 && box.x + box.width <= vp.width && box.height > 150, 'menu fully visible');

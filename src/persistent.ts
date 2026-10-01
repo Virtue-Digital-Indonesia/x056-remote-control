@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { RawEvent } from './types.js';
 import type { TurnExit, TurnHandle, TurnOptions } from './turn.js';
@@ -49,6 +50,8 @@ export interface PersistentOptions {
 interface Live {
   key: string;
   child: ChildProcess;
+  /** Turns stdout bytes into text without splitting a multi-byte character. */
+  decoder?: StringDecoder;
   sessionId: string;
   /** A turn is in flight; the pool must not hand this process to another. */
   busy: boolean;
@@ -108,6 +111,7 @@ export class PersistentTurns {
   private readonly now: () => number;
   private readonly transport: Transport;
   private sweeper: ReturnType<typeof setInterval> | null = null;
+  private retiredSeq = 0;
 
   constructor(private readonly opts: PersistentOptions = {}) {
     this.idleTtlMs = opts.idleTtlMs ?? 30 * 60_000;
@@ -268,14 +272,66 @@ export class PersistentTurns {
     // fail loudly rather than corrupt a session.
     if (entry?.busy) return deadHandle(`persistent session already running a turn: ${o.sessionId}`);
 
+    // A conversation that switched model (sonnet -> opus -> sonnet) finds its
+    // FIRST process again under this key -- but that process never saw the turns
+    // that ran on the other one, and would answer from a stale context. Any
+    // sibling of the same conversation that started a turn more recently makes
+    // this entry stale: never reuse it; spawn fresh, which resumes from the
+    // transcript.
+    if (entry && this.isStale(entry)) {
+      if (this.working(entry) && !this.transport.singleWriter) {
+        // Still doing background work: move it off the key rather than kill it.
+        // It stays in the pool (sweep, eviction and shutdown still reach it,
+        // interrupt still hits it), is found by no key lookup, and loses every
+        // steer to the new process on lastTurnStart. Once quiet it is retired
+        // like any other stale sibling.
+        this.live.delete(key);
+        entry.key = `${key}#retired:${++this.retiredSeq}`;
+        this.live.set(entry.key, entry);
+      } else {
+        this.destroy(entry);
+      }
+      entry = undefined;
+    }
+
     if (!entry) {
+      // A single-writer thread: the new process cannot open it while any other
+      // process of this conversation lives -- a helper toggle (new identity)
+      // or an account switch left the old one holding it, and every turn after
+      // failed in 400 ms. Kill them first; the old one's background work is on
+      // a configuration the conversation has left.
+      if (this.transport.singleWriter) {
+        const conv = o.conversationId ?? o.sessionId;
+        for (const e of [...this.live.values()]) if (e.sessionId === conv) this.destroy(e);
+      }
       const made = this.spawn(o, key);
       if ('error' in made) return deadHandle(made.error);
       entry = made.entry;
       this.live.set(key, entry);
+      this.retireSiblings(entry);
       this.evictOverCap(entry);
     }
     return this.runOn(entry, o);
+  }
+
+  /** Has another process of this conversation started a turn after this one? */
+  private isStale(entry: Live): boolean {
+    for (const e of this.live.values()) {
+      if (e !== entry && e.sessionId === entry.sessionId && !e.exited && e.lastTurnStart > entry.lastTurnStart) return true;
+    }
+    return false;
+  }
+
+  /**
+   * A new process for a conversation makes its other processes stale: they
+   * hold a context the new one is about to move past. Idle ones go now; a
+   * working one is left to finish its background work (isStale keeps it from
+   * ever being reused).
+   */
+  private retireSiblings(fresh: Live): void {
+    for (const e of [...this.live.values()]) {
+      if (e !== fresh && e.sessionId === fresh.sessionId && !this.working(e)) this.destroy(e);
+    }
   }
 
   private spawn(o: TurnOptions, key: string): { entry: Live } | { error: string } {
@@ -314,8 +370,15 @@ export class PersistentTurns {
     // ANY output means this process is doing something, turn or no turn. This is
     // what keeps eviction from killing a session that only looks idle.
     entry.lastOutput = this.now();
-    entry.st.buf += d.toString();
-    const lines = entry.st.buf.split('\n');
+    // Only a chunk that ends a line is split. Appending to the partial line and
+    // re-splitting the whole buffer on every chunk was quadratic: a Codex
+    // thread/resume sent the 802 MB UAT thread's history as ONE line, in 64 KB
+    // pieces, and the gateway spent 94% of its CPU re-scanning it -- every
+    // request took 4-8 s (profiled live, 2026-09-30). The decoder keeps a
+    // multi-byte character that straddles two chunks whole.
+    const chunk = (entry.decoder ??= new StringDecoder('utf8')).write(d);
+    if (!chunk.includes('\n')) { entry.st.buf += chunk; return; }
+    const lines = (entry.st.buf + chunk).split('\n');
     entry.st.buf = lines.pop() ?? '';
     for (const line of lines) {
       if (!line.trim().startsWith('{')) continue;

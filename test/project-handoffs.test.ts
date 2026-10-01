@@ -7,6 +7,13 @@ import { AccountRegistry } from '../src/accounts.js';
 import { SessionManager } from '../server/manager.js';
 import type { ProjectHandoffInput } from '../server/project-handoffs.js';
 import { DeliveryStore } from '../server/workspace-store.js';
+import { closeGatewayDb, gatewayDb, putReceipt } from '../server/gateway-db.js';
+
+/** Simulate a crash mid-dispatch: the durable receipt still says processing. */
+function markProcessing(stateDir: string, id: string) {
+  const db = gatewayDb(stateDir), row = db.prepare('SELECT data FROM message_receipts WHERE request_id=?').get(id);
+  putReceipt(db, { ...JSON.parse(String(row!.data)), status: 'processing' });
+}
 
 const managers: SessionManager[] = [];
 afterEach(() => { for (const m of managers.splice(0)) m.onModuleDestroy(); vi.restoreAllMocks(); });
@@ -23,10 +30,14 @@ function fixture() {
   return { root, stateDir, opts, m, p, work, chat, input, calls };
 }
 describe('Project Chat and Work handoffs', () => {
-  it('refuses a damaged delivery journal without overwriting receipts or dispatching again', () => {
+  it('leaves a damaged legacy delivery journal in place for repair, logs it, and does not dispatch', () => {
     const f = fixture(), path = join(f.stateDir, 'message-receipts.json');
-    writeFileSync(path, '{damaged');
-    expect(() => new DeliveryStore(f.stateDir)).toThrow('repair');
+    closeGatewayDb(f.stateDir); writeFileSync(path, '{damaged');
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => new DeliveryStore(f.stateDir)).not.toThrow();
+      expect(log.mock.calls.flat().join(' ')).toMatch(/message-receipts\.json did not parse/);
+    } finally { log.mockRestore(); }
     expect(readFileSync(path, 'utf8')).toBe('{damaged'); expect(f.calls).toHaveLength(0);
   });
   it('reuses one target and initial message with exact memory and file versions', async () => {
@@ -69,8 +80,7 @@ describe('Project Chat and Work handoffs', () => {
     const f = fixture(), op = f.m.projectHandoffs().run(f.input); f.m.onModuleDestroy();
     const journalPath = join(f.stateDir, 'project-handoffs.json'), journal = JSON.parse(readFileSync(journalPath, 'utf8'));
     journal.operations[op.id].status = 'prepared'; writeFileSync(journalPath, JSON.stringify(journal));
-    const receiptPath = join(f.stateDir, 'message-receipts.json'), receipts = JSON.parse(readFileSync(receiptPath, 'utf8'));
-    receipts[op.id].status = 'processing'; writeFileSync(receiptPath, JSON.stringify(receipts));
+    markProcessing(f.stateDir, op.id);
     const restarted = new SessionManager(f.opts); managers.push(restarted); restarted.setProjectAutomationPauser(() => {});
     expect(restarted.projectHandoffs().run(f.input)).toMatchObject({ target: op.target, status: 'queued' });
     expect(restarted.queues()[f.work.id]).toHaveLength(1);
@@ -79,8 +89,7 @@ describe('Project Chat and Work handoffs', () => {
   it('does not duplicate an uncertain dispatch with no durable queue evidence', () => {
     const f = fixture(), op = f.m.projectHandoffs().run(f.input); f.m.onModuleDestroy();
     writeFileSync(join(f.stateDir, 'queues.json'), '{}');
-    const path = join(f.stateDir, 'message-receipts.json'), receipts = JSON.parse(readFileSync(path, 'utf8'));
-    receipts[op.id].status = 'processing'; writeFileSync(path, JSON.stringify(receipts));
+    markProcessing(f.stateDir, op.id);
     const restarted = new SessionManager(f.opts); managers.push(restarted); restarted.setProjectAutomationPauser(() => {});
     expect(restarted.projectHandoffs().run(f.input)).toMatchObject({ status: 'uncertain', target: op.target });
     expect(restarted.queues()[f.work.id]).toBeUndefined(); expect(f.calls).toHaveLength(0);

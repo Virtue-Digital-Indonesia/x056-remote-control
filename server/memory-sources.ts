@@ -1,4 +1,4 @@
-import { readMessageSender } from '../src/message-sender.js';
+import { readMessageSender, stripTeamLine } from '../src/message-sender.js';
 import { createHash } from 'node:crypto';
 import { stripMemoryContext } from '../src/memory-context.js';
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -11,7 +11,7 @@ import type { SessionManager } from './manager.js';
 import type { MemoryStore } from './memory-store.js';
 
 export function cleanMemorySource(raw: string) {
-  return stripAskInstructions(stripAsk(stripMemoryContext(readMessageSender(raw).text)))
+  return stripAskInstructions(stripAsk(stripMemoryContext(stripTeamLine(readMessageSender(raw).text))))
     .replace(
       /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g,
       '[private key removed]',

@@ -11,7 +11,13 @@ import type { TurnOptions } from '../src/turn.js';
 import { SessionManager } from '../server/manager.js';
 import { helpersOf } from '../server/projects.js';
 import { JevService, JEV_POLICY, checkFork, type JevDecision } from '../server/jev.js';
-import { claudeTeamAgents, codexTeamConfig, teamInstructions } from '../server/team.js';
+import { claudeTeamAgents, codexTeamConfig, teamInstructions, teamTurnLine } from '../server/team.js';
+import { readMessageSender, stripTeamLine, withMessageSender, withTeamLine } from '../src/message-sender.js';
+import { withMemoryContext } from '../src/memory-context.js';
+import { withAskInstructions } from '../src/question.js';
+import { cleanMemorySource } from '../server/memory-sources.js';
+import { readSessionHistory } from '../server/history.js';
+import { codexAdapter } from '../src/adapters/codex.js';
 
 const dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -19,14 +25,20 @@ const temp = () => { const d = mkdtempSync(join(tmpdir(), 'x056-team-')); dirs.p
 const turn = (over: Partial<TurnOptions> = {}): TurnOptions => ({ configDir: '/cfg/a', cwd: '/w', sessionId: 's-00000001', conversationId: 's-00000001', mode: 'new', prompt: 'hi', ...over } as TurnOptions);
 
 describe('the team tree', () => {
-  it('gives Claude explorer, worker and researcher on Opus at medium effort, read-only where it should be', () => {
+  it('gives Claude explorer, worker and researcher on Opus at three efforts, read-only where it should be', () => {
     const agents = JSON.parse(claudeTeamAgents());
-    expect(Object.keys(agents)).toEqual(['explorer', 'worker', 'researcher']);
-    for (const a of Object.values(agents) as { model: string; effort: string; description: string; prompt: string }[]) {
-      expect(a).toMatchObject({ model: 'opus', effort: 'medium' });
+    expect(Object.keys(agents)).toEqual(['explorer', 'explorer-low', 'explorer-high', 'worker', 'worker-low', 'worker-high', 'researcher', 'researcher-low', 'researcher-high']);
+    for (const [name, a] of Object.entries(agents) as [string, { model: string; effort: string; description: string; prompt: string; disallowedTools?: string[] }][]) {
+      const [role, effort = 'medium'] = name.split('-');
+      expect(a).toMatchObject({ model: 'opus', effort });
       expect(a.description.length).toBeGreaterThan(40);
-      expect(a.prompt.length).toBeGreaterThan(40);
+      // A variant is its role, with the same prompt and the same tool limits.
+      expect(a.prompt).toBe(agents[role].prompt);
+      expect(a.disallowedTools).toEqual(agents[role].disallowedTools);
     }
+    expect(agents['worker-high'].description).toMatch(/high effort/);
+    // Constant: it is process identity, so a per-turn value would respawn.
+    expect(claudeTeamAgents()).toBe(claudeTeamAgents());
     // Denylist, not allowlist: an allowlist would strip quick_decision and codegraph.
     expect(agents.explorer.disallowedTools).toEqual(['Edit', 'Write', 'NotebookEdit']);
     expect(agents.researcher.disallowedTools).toEqual(['Edit', 'Write', 'NotebookEdit']);
@@ -42,6 +54,68 @@ describe('the team tree', () => {
     expect(claude).toMatch(/Consult the advisor/);
     expect(teamInstructions('claude', { advisor: false, forks: false })).not.toMatch(/quick_decision|advisor/);
     expect(teamInstructions('codex', { advisor: true, forks: true })).toMatch(/spawn_agent: agent_type "explorer"/);
+    // When, not just how: a brief that only named the roles was ignored.
+    for (const provider of ['claude', 'codex'] as const) {
+      const brief = teamInstructions(provider, { advisor: false, forks: false });
+      expect(brief).toMatch(/Spawn instead of doing it yourself when/);
+      expect(brief).toMatch(/even if earlier turns in this conversation worked alone/);
+      expect(brief).toMatch(/Before the first command of a multi-step task/);
+      // The per-turn pick is read from the message, else medium.
+      expect(brief).toMatch(/"\[Agent team this turn: \.\.\.\]" line[\s\S]*otherwise[^.]*medium/);
+    }
+  });
+
+  // Codex overrides our brief with its own "do not spawn unless the user
+  // explicitly asks"; the ask must ride in every team turn's message, picker or not.
+  it('Codex: an explicit ask on every team turn, with room for a solo turn', () => {
+    const line = teamTurnLine('codex')!;
+    expect(line).toMatch(/^\[Agent team this turn: I am asking you to delegate/);
+    expect(line).toMatch(/small enough to do alone/);
+    expect(line).not.toMatch(/picked by/);
+    expect(line.includes('\n')).toBe(false);
+    expect(teamTurnLine('claude')).toBeUndefined();
+    expect(stripTeamLine(withTeamLine('deploy it', line))).toBe('deploy it');
+  });
+
+  it('names this turn\'s team model and effort in one line, per provider', () => {
+    expect(teamTurnLine('codex', { model: 'gpt-6-astra', effort: 'high' }, 'jev'))
+      .toMatch(/^\[Agent team this turn: I am asking you to delegate .*passing model "gpt-6-astra" and reasoning_effort "high" on every spawn_agent call \(picked by Jev\)\. If the turn is small enough to do alone .*say why in one line\.\]$/);
+    expect(teamTurnLine('codex', { effort: 'xhigh' }, 'openai')).toMatch(/passing reasoning_effort "xhigh" on every spawn_agent call \(picked by OpenAI Decisions\)/);
+    expect(teamTurnLine('claude', { model: 'sonnet', effort: 'high' }, 'jev'))
+      .toBe('[Agent team this turn: call the Agent tool with model "sonnet" and subagent_type explorer-high, worker-high or researcher-high. Picked by Jev.]');
+    // Medium is the plain names.
+    expect(teamTurnLine('claude', { model: 'opus', effort: 'medium' }, 'openai'))
+      .toBe('[Agent team this turn: call the Agent tool with model "opus" and subagent_type explorer, worker or researcher. Picked by OpenAI Decisions.]');
+    expect(teamTurnLine('claude', { model: 'haiku', effort: 'low' })).toMatch(/explorer-low, worker-low or researcher-low/);
+    // Every name the line gives exists in the definitions.
+    const agents = JSON.parse(claudeTeamAgents());
+    for (const e of ['low', 'medium', 'high']) for (const n of teamTurnLine('claude', { model: 'opus', effort: e })!.match(/(explorer|worker|researcher)(-\w+)?/g)!) expect(agents[n]).toBeDefined();
+  });
+
+  it('keeps the line out of every prompt the gateway reads back, and the sender marker last', () => {
+    const sender = { kind: 'conversation' as const, projectId: 'p', sessionId: 's', messageId: 'm1' };
+    const line = teamTurnLine('claude', { model: 'sonnet', effort: 'high' });
+    const sent = withTeamLine(withMessageSender(withMemoryContext(withAskInstructions('fix the login bug'), 'ctx'), sender), line);
+    expect(sent).toContain(line);
+    expect(readMessageSender(sent).sender).toEqual(sender);
+    expect(cleanMemorySource(sent)).toBe('fix the login bug');
+    const plain = withTeamLine('fix it', line);
+    expect(plain).toBe('fix it\n\n' + line);
+    expect(stripTeamLine(plain)).toBe('fix it');
+    // A slash command reaches the CLI byte for byte.
+    expect(withTeamLine('/compact', line)).toBe('/compact');
+    // History rows (what decisionContext's previousRequest is read from).
+    const configDir = mkdtempSync(join(tmpdir(), 'x056-team-hist-')); dirs.push(configDir);
+    mkdirSync(join(configDir, 'projects', '-p'), { recursive: true });
+    writeFileSync(join(configDir, 'projects', '-p', 'sid-team.jsonl'), [{ type: 'user', message: { role: 'user', content: sent } }, { type: 'user', message: { role: 'user', content: plain } }].map((l) => JSON.stringify(l)).join('\n') + '\n');
+    const rows = readSessionHistory([configDir], 'sid-team');
+    expect(rows.map((r) => r.text)).toEqual(['fix the login bug', 'fix it']);
+    for (const r of rows) expect(cleanMemorySource(r.text)).not.toContain('Agent team this turn');
+    const codexLine = teamTurnLine('codex', { model: 'gpt-6-astra', effort: 'high' });
+    const cx = mkdtempSync(join(tmpdir(), 'x056-team-cx-')); dirs.push(cx);
+    const day = join(cx, 'sessions', '2026', '09', '30'); mkdirSync(day, { recursive: true });
+    writeFileSync(join(day, 'rollout-2026-09-30T00-00-00-t-team.jsonl'), JSON.stringify({ timestamp: '2026-09-30T00:00:00.000Z', type: 'event_msg', payload: { type: 'user_message', message: withTeamLine('map the auth flow', codexLine) } }) + '\n');
+    expect(codexAdapter.readHistory!([cx], 't-team', 10).map((r) => r.text)).toEqual(['map the auth flow']);
   });
 
   it('puts the agents on Claude argv and keys the process on them', () => {
@@ -123,6 +197,64 @@ describe('helpers combine', () => {
     expect(calls[2].subagents).toBeUndefined();
     expect(calls[2].advisor).toBeUndefined();
     expect(calls[2].appendSystemPrompt).not.toMatch(/AGENT TEAM/);
+  });
+
+  it('names the picked team model/effort in the turn prompt only when the team and a picker are on', async () => {
+    const { mgr, calls, dir } = fixture();
+    const p = mgr.createProject('P', dir);
+    const sid = mgr.start('first', undefined, { model: 'opus', effort: 'high' }, p.id);
+    await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
+    const team = { model: 'sonnet', effort: 'high', base: { model: 'opus', effort: 'medium' }, pickedModel: 'sonnet', pickedEffort: 'high', modelConfidence: 0.7, effortConfidence: 0.6 };
+    const decide = vi.spyOn(mgr.jev(), 'decide').mockImplementation(async (s) => ({ at: 't', sessionId: s, provider: 'claude', notes: [], latencyMs: 1, team } as JevDecision));
+    const line = teamTurnLine('claude', team, 'jev');
+    // Picker and team on: the line rides in the message; identity stays fixed.
+    mgr.setHelpers(p.id, sid, { router: 'jev', team: true });
+    mgr.continueSession(p.id, sid, 'second', {});
+    await waitFor(() => calls.length === 2);
+    expect(decide.mock.calls[0][1].team).toMatchObject({ baseModel: 'opus', baseEffort: 'medium' });
+    expect(Object.keys(decide.mock.calls[0][1].team!.efforts)).toEqual(['low', 'medium', 'high']);
+    expect(calls[1].prompt).toContain(line);
+    expect(calls[1].subagents).toBe(claudeTeamAgents());
+    expect(calls[1].appendSystemPrompt).not.toContain(line);
+    await waitFor(() => !mgr.snapshot().running);
+    // Picker without the team: no team questions, no line.
+    mgr.setHelpers(p.id, sid, { router: 'jev' });
+    mgr.continueSession(p.id, sid, 'third', {});
+    await waitFor(() => calls.length === 3);
+    expect(decide.mock.calls[1][1].team).toBeUndefined();
+    expect(calls[2].prompt).not.toContain('Agent team this turn');
+    await waitFor(() => !mgr.snapshot().running);
+    // Team without a picker, or a failed pick: today's fixed medium, no line.
+    mgr.setHelpers(p.id, sid, { team: true });
+    mgr.continueSession(p.id, sid, 'fourth', {});
+    await waitFor(() => calls.length === 4);
+    expect(calls[3].prompt).not.toContain('Agent team this turn');
+    await waitFor(() => !mgr.snapshot().running);
+    decide.mockImplementation(async (s) => ({ at: 't', sessionId: s, provider: 'claude', notes: [], latencyMs: 1, error: 'Jev unreachable' } as JevDecision));
+    mgr.setHelpers(p.id, sid, { router: 'jev', team: true });
+    mgr.continueSession(p.id, sid, 'fifth', {});
+    await waitFor(() => calls.length === 5);
+    expect(calls[4].prompt).not.toContain('Agent team this turn');
+  });
+
+  // Codex overrides the brief unless the USER asks, so with the team on every
+  // Codex turn carries the explicit ask -- with no picker too. Claude does not.
+  it('asks a Codex conversation to delegate on every team turn, picker or not', async () => {
+    const dir = temp(), stateDir = join(dir, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'd', configDir: '/cfg/d', provider: 'codex' }]);
+    const calls: RunSessionOptions[] = [];
+    const runSessionFn = (async (o: RunSessionOptions) => { calls.push(o); return { status: 'completed', finalAccount: 'd', failovers: 0 } as SessionResult; }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+    const p = mgr.createProject('CX', dir, 'codex');
+    const sid = mgr.start('first', undefined, undefined, p.id);
+    await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
+    expect(calls[0].prompt).not.toContain('Agent team this turn');
+    mgr.setHelpers(p.id, sid, { team: true });
+    mgr.continueSession(p.id, sid, 'deploy it', {});
+    await waitFor(() => calls.length === 2 && !mgr.snapshot().running);
+    expect(calls[1].prompt).toContain(teamTurnLine('codex')!);
+    expect(calls[1].appendSystemPrompt).not.toContain('I am asking you to delegate');
   });
 
   it('refuses a picker with no key, and forks without the team or a backend', async () => {

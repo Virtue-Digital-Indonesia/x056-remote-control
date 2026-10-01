@@ -78,11 +78,11 @@ struct ConversationView: View {
         .task { await model.load() }
         .onAppear {
             app.attach(model)
-            app.visibleSessionId = model.sessionId
+            app.setVisible(projectId: model.projectId, sessionId: model.sessionId)
         }
         .onDisappear {
             app.detach(model)
-            if app.visibleSessionId == model.sessionId { app.visibleSessionId = nil }
+            if app.visibleSessionId == model.sessionId { app.setVisible(projectId: nil, sessionId: nil) }
         }
     }
 }

@@ -324,4 +324,12 @@ struct ApnsUnregisterBody: Encodable, Sendable {
     let token: String
 }
 
+struct PresenceBody: Encodable, Sendable {
+    let clientId: String
+    let projectId: String?
+    let sessionId: String?
+    let visible: Bool
+    let endpoint: String?
+}
+
 struct Empty: Encodable, Sendable {}

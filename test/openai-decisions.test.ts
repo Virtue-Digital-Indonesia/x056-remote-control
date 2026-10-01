@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JevService, type JevDecisionInput } from '../server/jev.js';
+import { teamCandidates } from '../server/decision-maker.js';
 import { decisionsAnswers, decisionsRequest, OpenAIDecisionsService } from '../server/openai-decisions.js';
 
 const dirs: string[] = [];
@@ -19,6 +20,25 @@ const input: JevDecisionInput = {
 };
 const reply = (status: number, body: unknown, seen?: { url?: string; init?: RequestInit }) =>
   (async (url: string, init?: RequestInit) => { if (seen) { seen.url = url; seen.init = init; } return new Response(JSON.stringify(body), { status }); }) as unknown as typeof fetch;
+
+describe('OpenAI Decisions picks the agent team like Jev', () => {
+  it('asks the same team questions and lands on the same team pick', async () => {
+    const withTeam: JevDecisionInput = { ...input, lean: 'low', team: teamCandidates('codex', input.models) };
+    const body = decisionsRequest(withTeam) as { questions: { id: string; instructions: string; options: { value: string }[] }[] };
+    expect(body.questions.map((q) => q.id)).toEqual(['effort', 'model', 'subagent_model', 'subagent_effort']);
+    expect(body.questions[3].options.map((o) => o.value)).toEqual(['low', 'medium', 'high']);
+    expect(body.questions.every((q) => /COST EFFICIENCY/.test(q.instructions))).toBe(true);
+    const answers = { effort: { choice: 'medium', confidence: 0.9 }, subagent_model: { choice: 'gpt-6-luna', confidence: 0.8 }, subagent_effort: { choice: 'low', confidence: 0.8 } };
+    const dir = state('sk-test');
+    mkdirSync(join(dir, 'secrets'), { recursive: true }); writeFileSync(join(dir, 'secrets', 'typesafe.json'), JSON.stringify({ apiKey: 'k' }));
+    const jev = new JevService(dir, reply(200, { answers, usage: { input_tokens: 5 } }));
+    const openai = new OpenAIDecisionsService(dir, jev, reply(200, { answers: Object.entries(answers).map(([id, a]) => ({ id, ...a })), usage: { input_tokens: 5 } }));
+    const a = await jev.decide('s-00000011', withTeam), b = await openai.decide('s-00000012', withTeam);
+    expect(a.team).toEqual({ model: 'gpt-6-luna', effort: 'low', base: { model: 'gpt-6.1-sol', effort: 'medium' }, pickedModel: 'gpt-6-luna', pickedEffort: 'low', modelConfidence: 0.8, effortConfidence: 0.8 });
+    expect(b.team).toEqual(a.team);
+    expect(b.backend).toBe('openai');
+  });
+});
 
 describe('OpenAI Decisions request and reply mapping', () => {
   it('asks the effort question always and the model question when there is a choice', () => {

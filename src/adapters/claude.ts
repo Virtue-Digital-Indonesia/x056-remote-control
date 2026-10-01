@@ -1,4 +1,4 @@
-import { readMessageSender } from '../message-sender.js';
+import { readMessageSender, stripTeamLine } from '../message-sender.js';
 import { toolImagePaths } from '../artifact-references.js';
 import { stripMemoryContext } from '../memory-context.js';
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
@@ -102,9 +102,11 @@ function activeModel(e: RawEvent): string | undefined {
   return typeof model === 'string' ? model : undefined;
 }
 
-/** The assistant's displayable text blocks on an assistant event. */
+/** The MAIN session's displayable text blocks on an assistant event. A
+ *  subagent's messages carry `parent_tool_use_id`; they live in its own
+ *  transcript, so showing them here put text in the chat that a reload lost. */
 function assistantText(e: RawEvent): string[] {
-  if (e.type !== 'assistant') return [];
+  if (e.type !== 'assistant' || e.parent_tool_use_id != null) return [];
   const content = (e.message as { content?: unknown } | undefined)?.content;
   if (!Array.isArray(content)) return [];
   const out: string[] = [];
@@ -353,7 +355,7 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
       const qt = textFromContent(att.prompt).trim();
       if (qt === '') continue;
       const attributed = readMessageSender(qt);
-      const shownQ = stripAskInstructions(stripMemoryContext(attributed.text));
+      const shownQ = stripAskInstructions(stripMemoryContext(stripTeamLine(attributed.text)));
       if (shownQ === '') continue;
       out.push({ role: 'user', text: shownQ, ...(attributed.sender ? { sender: attributed.sender } : {}), ts: typeof entry.timestamp === 'string' ? entry.timestamp : undefined });
       offsets.push(at);
@@ -430,7 +432,7 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
     // messages carry the raw <<<ASK>>> block — strip both so neither leaks into
     // the rendered transcript on reload. Drop a message that was only an ASK.
     const attributed = type === 'user' ? readMessageSender(text) : { text };
-    const shown = type === 'user' ? stripAskInstructions(stripMemoryContext(attributed.text)) : stripAsk(text);
+    const shown = type === 'user' ? stripAskInstructions(stripMemoryContext(stripTeamLine(attributed.text))) : stripAsk(text);
     if (shown === '') continue;
     out.push({ role: type, text: shown, ...(attributed.sender ? { sender: attributed.sender } : {}), ts }); offsets.push(at);
   }

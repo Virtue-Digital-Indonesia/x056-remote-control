@@ -2,18 +2,19 @@ import { codexTurnForAccount, currentCodexPrefs } from '../src/codex-model-polic
 import { currentClaudeModel } from '../src/claude-model-policy.js';
 import { checkFork, JEV_POLICY, JevService, type DecisionContext, type ForkDecision, type ForkInput, type JevDecision } from './jev.js';
 import { OpenAIDecisionsService } from './openai-decisions.js';
-import { claudeTeamAgents, codexTeamConfig, teamInstructions } from './team.js';
-import { ClaudeAdvisorLog, forkSummary, mainRun, tailJsonl } from './agent-tree.js';
+import { claudeTeamAgents, codexTeamConfig, teamInstructions, teamTurnLine, TEAM_EFFORT } from './team.js';
+import { ClaudeAdvisorLog, buildTurns, forkSummary, mainRun, tailJsonl, teamRun } from './agent-tree.js';
 import { checkBrief, checkRole, decideGate, delegateInstructions, DelegateStore, digest, GATE_OPTIONS, GATE_QUESTION, gateState, MAX_DELEGATES, reportKey, ROUND_LIMIT, shouldWake, type Delegate, type DelegateReport } from './delegates.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
 import { findRollout } from '../src/adapters/codex.js';
-import { advisorFor, CLAUDE_DEFAULT_EFFORT, jevCandidates } from './decision-maker.js';
+import { advisorFor, AUTO_MODEL, CLAUDE_DEFAULT_EFFORT, jevCandidates, teamCandidates } from './decision-maker.js';
 import { CodexAdvisor, TurnWatcher, type AdvisorConsult, type AdvisorTrigger } from './codex-advisor.js';
 import { TurnResults } from './turn-results.js';
 import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
-import { withMessageSender, type MessageSender } from '../src/message-sender.js';
+import { withMessageSender, withTeamLine, type MessageSender } from '../src/message-sender.js';
 import { CompletionGate } from './completion-gate.js';
+import { noticeFor, originOf, NOTICE_KINDS, type Notice } from './notices.js';
 import { FileStore, type FileReference } from './file-store.js';
 import { DOCUMENT_SKILL } from './documents.js';
 import type { ChatCapabilities } from './chat-capabilities.js';
@@ -38,7 +39,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { AccountRegistry, type RoutingStrategy, type AccountRouteContext } from '../src/accounts.js';
-import { shareCodexSessions, prepareCodexHome } from './codex-sessions.js';
+import { shareCodexSessions, prepareCodexHome, codexHomeIndexed } from './codex-sessions.js';
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { getAdapter } from '../src/adapters/registry.js';
@@ -51,6 +52,7 @@ import type { TurnHandle, TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
 import { parseQuestion, stripAsk, stripAskInstructions, withAskInstructions } from '../src/question.js';
+import { closeAllGatewayDbs, closeGatewayDb, gatewayDb } from './gateway-db.js';
 
 export interface GatewayEvent {
   seq: number;
@@ -90,6 +92,9 @@ export interface SessionManagerOptions {
   manageProcessSignals?: boolean;
   /** Delay before a gateway-driven autopilot continuation (ms). */
   autopilotIntervalMs?: number;
+  /** How long autopilot waits for a turn's pending ChatGPT-advisor `done`
+   *  review before it schedules the next step anyway (ms, default 60 000). */
+  advisorWaitMs?: number;
   /** Where the user's interactive `claude` transcripts live (read-only mount).
    *  Defaults to ~/.claude/projects. */
   interactiveProjectsDir?: string;
@@ -266,7 +271,20 @@ interface ActiveRun {
   nextChoice?: ConversationRoute;
   actualModel?:string;
   account?: string; // the account this turn is currently running on (from turn_started)
+  /** The ChatGPT advisor's `done` review of THIS turn, while it runs. Autopilot
+   *  waits for it, so a concern is queued (and drains) before the next step. */
+  pendingAdvice?: Promise<unknown>;
 }
+
+/** Steps an autopilot run has taken, when it knows the budget it began with. */
+function autopilotSteps(ap: { remaining: number; count?: number }): { steps?: number } {
+  return typeof ap.count === 'number' ? { steps: Math.max(0, ap.count - ap.remaining) } : {};
+}
+
+/** A question nobody answered in this long stops lighting the bell... */
+const QUESTION_STALE_MS = 3 * 24 * 3600_000;
+/** ...and after this long it is dropped at boot. */
+const QUESTION_PURGE_MS = 14 * 24 * 3600_000;
 
 /** A short conversation title from the opening prompt (first non-empty line,
  *  minus the appended ASK convention and any image-attachment marker). */
@@ -387,6 +405,7 @@ export class SessionManager {
     for (const pool of this.pools()) pool.shutdown();
     this.sharedMemory?.documents.close();
     this.fileStore?.close(); this.titleWorker?.close();
+    closeGatewayDb(this.opts.stateDir);
   }
   private titleWorker?: ConversationTitles;
   titles(): ConversationTitles {
@@ -490,6 +509,9 @@ export class SessionManager {
 
   constructor(private readonly opts: SessionManagerOptions) {
     mkdirSync(opts.stateDir, { recursive: true });
+    // Open (migrate, import legacy JSON) before anything reads those stores,
+    // the boot-time recovery report included.
+    gatewayDb(opts.stateDir);
     this.migrateProjects();
     this.projects().migrateConversations();
     if (this.projectSpacesEnabled()) this.legacySpaceReviewRequired = inspectSpaceMigration(opts.stateDir).requiresReview;
@@ -513,6 +535,7 @@ export class SessionManager {
         // Idle persistent processes have no run to abort, so they would outlive
         // the gateway as orphans across every container swap.
         for (const p of this.pools()) p.shutdown();
+        closeAllGatewayDbs();
         process.exit(130);
       };
       process.on('SIGTERM', onTerm);
@@ -535,8 +558,16 @@ export class SessionManager {
       const r = shareCodexSessions(this.opts.stateDir, a);
       if (r.error) console.warn(`[codex-sessions] ${a.name}: ${r.error}`);
       else if (r.linked) console.log(`[codex-sessions] ${a.name}: sessions/ -> shared store (${r.moved} rollout(s) moved, ${r.skipped} already there)`);
+      // An index a swap or a crash cut short: finish it before routing there.
+      if (codexHomeIndexed(a.configDir) === false) {
+        console.log(`[codex-sessions] ${a.name}: rollout index unfinished; building it before routing there`);
+        void prepareCodexHome(a.configDir);
+      }
     }
   }
+
+  /** This process's start: the id of its restart notice. */
+  private readonly bootAt = new Date().toISOString();
 
   private get inflightDir(): string {
     return join(this.opts.stateDir, 'inflight');
@@ -552,6 +583,7 @@ export class SessionManager {
     } catch {
       return;
     }
+    const orphaned: { projectId: string; sessionId: string | null }[] = [];
     for (const f of files) {
       const path = join(this.inflightDir, f);
       try {
@@ -567,11 +599,16 @@ export class SessionManager {
           prompt: m.prompt ?? null,
           startedAt: m.startedAt ?? null,
         });
+        orphaned.push({ projectId: opid, sessionId: m.sessionId ?? null });
       } catch {
         // corrupt marker — ignore
       }
       rmSync(path, { force: true });
     }
+    // ONE notice for the restart, not one per conversation: the resume cards
+    // above are per conversation, the buzz is not. The id is the boot time,
+    // so it is sent once per restart.
+    if (orphaned.length) this.emit('restart_interrupted', { count: orphaned.length, bootAt: this.bootAt, sessions: orphaned });
   }
 
   private writeMarker(pid: string, sessionId: string, cwd: string, prompt: string): void {
@@ -605,12 +642,12 @@ export class SessionManager {
   // carrying its projectId so the loop can resume that exact session. A project
   // can have several conversations, only some on autopilot — arming one must not
   // arm the others.
-  private loadAutopilot(): Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string }> {
+  private loadAutopilot(): Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string; count?: number }> {
     try {
       const m = JSON.parse(readFileSync(this.autopilotFile, 'utf8')) as Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId?: string }>;
       // Migrate legacy project-keyed entries (no projectId field) to session-keyed:
       // the key WAS the projectId, so resume the project's current conversation.
-      const out: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string }> = {};
+      const out: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string; count?: number }> = {};
       for (const [key, v] of Object.entries(m)) {
         if (v.projectId) { out[key] = v as typeof out[string]; continue; }
         const proj = this.projects().get(key); // legacy key = projectId
@@ -622,7 +659,7 @@ export class SessionManager {
       return {};
     }
   }
-  private saveAutopilot(map: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string }>): void {
+  private saveAutopilot(map: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string; count?: number }>): void {
     writeState(this.autopilotFile, map);
   }
 
@@ -637,8 +674,11 @@ export class SessionManager {
     if (!sessionId) throw new Error('no conversation selected');
     if (this.projectSpacesEnabled() && !this.assertExecutionAllowed(projectId, sessionId).conversations?.some(c => c.sessionId === sessionId)) throw new Error('Conversation unavailable');
     const map = this.loadAutopilot();
+    const count = Math.max(1, Math.min(500, Math.floor(opts.count)));
     map[sessionId] = {
-      remaining: Math.max(1, Math.min(500, Math.floor(opts.count))),
+      remaining: count,
+      // The budget it started with: "finished after N steps" is count - remaining.
+      count,
       prompt: opts.prompt?.trim() || this.DEFAULT_AUTOPILOT_PROMPT,
       stopPhrase: opts.stopPhrase?.trim() || 'AUTOPILOT_DONE',
       projectId,
@@ -666,7 +706,7 @@ export class SessionManager {
     if (!ap || ap.paused) return;
     ap.paused = true; ap.pauseReason = reason; this.saveAutopilot(map);
     const timer = this.autopilotTimers.get(sessionId); if (timer) { clearTimeout(timer); this.autopilotTimers.delete(sessionId); }
-    this.emit('autopilot', { projectId: ap.projectId, sessionId, active: false, remaining: ap.remaining, reason });
+    this.emit('autopilot', { projectId: ap.projectId, sessionId, active: false, remaining: ap.remaining, reason, ...autopilotSteps(ap) });
   }
   resumeProjectAutopilot(projectId: string, sessionId: string, expectedMembershipRevision: number): void {
     const p = this.assertExecutionAllowed(projectId, sessionId), map = this.loadAutopilot(), ap = map[sessionId];
@@ -693,44 +733,82 @@ export class SessionManager {
     return out;
   }
 
-  /** After a completed turn, decide whether the gateway should auto-continue
-   *  THIS conversation — each conversation drives its own autopilot loop. */
-  private maybeAutopilot(pid: string, sessionId: string, res: SessionResult): void {
+  /** After a turn, apply ITS verdict to this conversation's autopilot: pause on
+   *  a non-completed turn, disarm on the stop phrase or an empty budget.
+   *  Called for EVERY turn, before anything else is scheduled -- a queued
+   *  message (an advisor follow-up included) that drains after this turn must
+   *  not hide its stop phrase or its failure. Returns whether autopilot may go on. */
+  private evaluateAutopilot(pid: string, sessionId: string, res: SessionResult): boolean {
     const map = this.loadAutopilot();
     const ap = map[sessionId];
-    if (!ap || ap.paused) return;
+    if (!ap || ap.paused) return false;
     // Only continue on a clean completion; park/error pauses (state kept so the
     // user or a later trigger can resume) but stops the auto-loop.
     if (res.status !== 'completed') {
       this.pauseAutopilot(sessionId, res.status);
-      return;
+      return false;
     }
     if (typeof res.resultText === 'string' && res.resultText.includes(ap.stopPhrase)) {
-      delete map[sessionId]; this.saveAutopilot(map);
-      this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'done' });
-      return;
+      this.disarmAutopilot(pid, sessionId, 'done');
+      return false;
     }
     if (ap.remaining <= 0) {
-      delete map[sessionId]; this.saveAutopilot(map);
-      this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'exhausted' });
-      return;
+      this.disarmAutopilot(pid, sessionId, 'exhausted');
+      return false;
     }
-    // This continuation consumes one of the allotted steps.
-    ap.remaining -= 1;
-    map[sessionId] = ap; this.saveAutopilot(map);
-    this.emit('autopilot', { projectId: pid, sessionId, active: true, remaining: ap.remaining });
-    this.scheduleAutopilot(sessionId, ap.prompt);
+    return true;
+  }
+  private disarmAutopilot(pid: string, sessionId: string, reason: string): void {
+    const map = this.loadAutopilot();
+    const steps = map[sessionId] ? autopilotSteps(map[sessionId]) : {};
+    if (map[sessionId]) { delete map[sessionId]; this.saveAutopilot(map); }
+    const t = this.autopilotTimers.get(sessionId);
+    if (t) { clearTimeout(t); this.autopilotTimers.delete(sessionId); }
+    this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason, ...steps });
   }
 
-  private scheduleAutopilot(sessionId: string, prompt: string): void {
+  /** After a turn whose queue had nothing: wait for that turn's pending advisor
+   *  review (capped), let a concern it queued drain first, else schedule the
+   *  next step. */
+  private async continueAutopilotAfter(pid: string, sessionId: string, run: ActiveRun): Promise<void> {
+    if (run.pendingAdvice) {
+      let cap: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        run.pendingAdvice.catch(() => {}),
+        new Promise<void>((r) => { cap = setTimeout(r, this.opts.advisorWaitMs ?? 60_000); cap.unref?.(); }),
+      ]);
+      clearTimeout(cap);
+    }
+    if (this.destroyed) return;
+    const ap = this.loadAutopilot()[sessionId];
+    if (!ap || ap.paused) return;
+    // The advisor's follow-up is a queued message, and a queued message always
+    // beats autopilot; the drained turn's own result schedules the next step.
+    if (this.maybeDrainQueue(pid, sessionId)) return;
+    // No busy check here: without a pending review this runs inside the result
+    // handler, while the finished run is still in the map. The timer checks.
+    this.emit('autopilot', { projectId: pid, sessionId, active: true, remaining: ap.remaining });
+    this.scheduleAutopilot(sessionId, ap.prompt, { spend: true });
+  }
+
+  /** Arm the continuation timer. A step is SPENT only when its prompt is
+   *  actually sent (`spend`): a tick that finds the conversation busy (a queued
+   *  message drained in the gap) costs nothing, and the busy turn's result
+   *  re-arms it. Re-arming, pausing or stopping never loses a paid step. */
+  private scheduleAutopilot(sessionId: string, prompt: string, opts: { spend?: boolean } = {}): void {
     const existing = this.autopilotTimers.get(sessionId);
     if (existing) clearTimeout(existing);
     // Deferred so the finished run is out of the map before we continue.
     const t = setTimeout(() => {
       this.autopilotTimers.delete(sessionId);
-      const ap = this.loadAutopilot()[sessionId];
+      const map = this.loadAutopilot(), ap = map[sessionId];
       if (!ap || ap.paused) return; // stopped meanwhile
-      if (this.sessionBusy(sessionId)) return; // this conversation is running; skip this tick
+      if (this.sessionBusy(sessionId)) return; // running; its result re-arms this
+      if (opts.spend) {
+        if (ap.remaining <= 0) return;
+        ap.remaining -= 1; this.saveAutopilot(map);
+        this.emit('autopilot', { projectId: ap.projectId, sessionId, active: true, remaining: ap.remaining });
+      }
       try {
         this.continueSession(ap.projectId, sessionId, prompt, { sender: { kind: 'autopilot' } });
       } catch {
@@ -1124,8 +1202,9 @@ export class SessionManager {
     // Before the first turn, so even that one's thread lands in the shared store.
     const shared = shareCodexSessions(this.opts.stateDir, { name, configDir: dir });
     if (shared.error) console.warn(`[codex-sessions] ${name}: ${shared.error}`);
-    // The linked store is large; let Codex index it now, not inside the first turn.
-    prepareCodexHome(dir);
+    // The linked store is large; let Codex index it now, not inside the first
+    // turn. The router skips the account until it is done.
+    void prepareCodexHome(dir);
     reg.add(name, dir, 'codex');
     try { this.opts.onAccountAdded?.({ name, configDir: dir, provider: 'codex' }); } catch { /* never block onboarding */ }
     this.emitAccounts();
@@ -1554,6 +1633,13 @@ export class SessionManager {
     const main = mainRun({ model: conv.model, effort: conv.effort }, picks, turnStartedAt);
     const results = this.turnResults().list(sid) as { at?: string; durationMs?: number; numTurns?: number; totalCostUsd?: number }[];
     const last = results.at(-1);
+    // Per-turn view: the journal's prompts, bounded by the recorded turn
+    // ends; older turns (before ends were recorded) fall back to the latest
+    // thing known to have happened -- a Claude result, or any journal row.
+    const journal = new ConversationJournal(this.opts.stateDir).turnSource(pid, sid);
+    const fallbackEnd = [last?.at, journal.rows.at(-1)?.ts].filter((t): t is string => !!t && Number.isFinite(Date.parse(t)))
+      .sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1);
+    const turns = buildTurns(journal.rows, journal.ends, running, fallbackEnd);
     const codexAdvisorModel = () => {
       const offered = getAdapter('codex').listModels?.(this.registry().list().filter((a) => a.provider === 'codex').map((a) => a.configDir)) ?? [];
       return offered.find((m) => /astra/i.test(m.slug))?.slug ?? 'gpt-6-astra';
@@ -1568,11 +1654,12 @@ export class SessionManager {
       provider, helpers, turnStartedAt: turnStartedAt ?? null,
       main: { ...main, running, background, lastTurn: last ? { at: last.at, durationMs: last.durationMs, steps: last.numTurns, costUsd: last.totalCostUsd } : null },
       advisor,
-      team: helpers.team ? { effort: 'medium', model: provider === 'claude' ? 'opus' : undefined, roles: provider === 'claude' ? ['explorer', 'worker', 'researcher'] : ['explorer', 'worker', 'default'] } : null,
+      team: helpers.team ? teamRun(provider, picks, turnStartedAt) : null,
       forks: { total: forks.total, sharp: forks.sharp, split: forks.split, recent: forks.recent },
       gates: forks.gates,
       picks: picks.slice(-8),
       delegates: this.listDelegates(pid, sid),
+      turns,
     };
   }
 
@@ -1580,7 +1667,7 @@ export class SessionManager {
    *  mid-turn "adjust" is steered into the running turn; a post-turn "concern"
    *  becomes ONE queued follow-up from the Advisor (whose own turn is never
    *  reviewed again, so the two cannot loop). */
-  private async runCodexAdvisor(pid: string, sid: string, trigger: AdvisorTrigger, transcript: string, account: string | undefined, mainModel?: string): Promise<AdvisorConsult> {
+  private async runCodexAdvisor(pid: string, sid: string, trigger: AdvisorTrigger, transcript: string, account: string | undefined, mainModel?: string, isCurrentTurn: () => boolean = () => this.runs.has(sid)): Promise<AdvisorConsult> {
     const codexAccounts = this.registry().list().filter((a) => a.provider === 'codex');
     const acct = codexAccounts.find((a) => a.name === account) ?? codexAccounts.find((a) => a.state?.kind === 'ok') ?? codexAccounts[0];
     const offered = getAdapter('codex').listModels?.(codexAccounts.map((a) => a.configDir)) ?? [];
@@ -1590,7 +1677,8 @@ export class SessionManager {
     else c = await this.codexAdvisor().consult(sid, { trigger, transcript, mainModel, model, effort: 'high', configDir: acct.configDir, account: acct.name });
     if (!c.error && (c.verdict === 'adjust' || c.verdict === 'concern')) {
       const note = `[Advisor · ${model}] ${c.advice}`;
-      if (trigger !== 'done') c.delivered = this.runs.has(sid) && this.steerSession(pid, sid, note) ? 'steered' : 'too-late';
+      // An advisor steer is not human: it keeps the relay and self brakes.
+      if (trigger !== 'done') c.delivered = isCurrentTurn() && this.steerSession(pid, sid, note, { humanOrigin: false }) ? 'steered' : 'too-late';
       else {
         try {
           this.enqueue(pid, { sessionId: sid, sender: { kind: 'advisor', projectName: model }, text: `The advisor (${model}) reviewed your work before you called it done:\n\n${c.advice}\n\nAddress this, or say briefly why it does not apply.` });
@@ -1924,8 +2012,9 @@ export class SessionManager {
    *  called a pick "unchanged" that the turn did not have, and the turn ran on
    *  the saved effort instead (seen live: medium at 71% became xhigh). The
    *  store is shared by both backends, so the switching gap counts either. */
-  private async decideModelEffort(backend: 'jev' | 'decisions', pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string, sender?: MessageSender): Promise<JevDecision> {
-    const previousModel = this.jev().decisions(sid).at(-1)?.model;
+  private async decideModelEffort(backend: 'jev' | 'decisions', pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string, sender?: MessageSender, withTeam = false): Promise<JevDecision> {
+    const history = this.jev().decisions(sid);
+    const previousModel = history.at(-1)?.model;
     const context = this.decisionContext(pid, sid, sender);
     const codexModels = provider === 'codex'
       ? (getAdapter('codex').listModels?.(this.registry().list().filter((a) => a.provider === 'codex').map((a) => a.configDir)) ?? [])
@@ -1933,9 +2022,21 @@ export class SessionManager {
     const { models, efforts } = jevCandidates(provider, codexModels);
     const title = this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)?.title;
     const lean = helpersOf(this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)).lean;
+    // Auto model / Auto effort: the pick decides. The model a turn starts from
+    // (and falls back to if the pick fails) is what the last routed turn ran
+    // on, else the house default -- never the CLI's own default, which is the
+    // frontier model.
+    const auto = { model: !model, effort: !effort };
+    const offered = (id?: string) => !!id && models.some((c) => c.id === id);
+    const last = history.at(-1), lastRan = last ? last.model ?? last.baseModel : undefined;
+    // An unreadable Codex catalog lists nothing; the house default still holds.
+    const house = AUTO_MODEL[provider];
+    const current = model || (offered(lastRan) ? lastRan : !models.length || offered(house) ? house : undefined);
     // "Auto effort": measure up and down from what the CLI would run with.
-    const baselineEffort = effort ? undefined : provider === 'codex' ? codexModels.find((m) => m.slug === model)?.defaultEffort : model ? CLAUDE_DEFAULT_EFFORT[model] : undefined;
-    const input = { provider, prompt, title, currentModel: model, currentEffort: effort, previousModel, models, efforts, context, ...(lean ? { lean } : {}), ...(baselineEffort ? { baselineEffort } : {}) };
+    const baselineEffort = effort ? undefined : provider === 'codex' ? codexModels.find((m) => m.slug === current)?.defaultEffort : current ? CLAUDE_DEFAULT_EFFORT[current] : undefined;
+    // The agent team on: its subagents' model/effort too, in the same call.
+    const team = withTeam ? teamCandidates(provider, models, TEAM_EFFORT) : undefined;
+    const input = { provider, prompt, title, currentModel: current, currentEffort: effort, previousModel, models, efforts, context, auto, ...(lean ? { lean } : {}), ...(baselineEffort ? { baselineEffort } : {}), ...(team ? { team } : {}) };
     return backend === 'decisions' ? this.openaiDecisions().decide(sid, input) : this.jev().decide(sid, input);
   }
   /** A generated title for this CHAT is queued or being written right now. */
@@ -1943,6 +2044,31 @@ export class SessionManager {
     const p = this.projects().get(pid);
     if (p?.kind !== 'chat' || p.conversations?.find((c) => c.sessionId === sid)?.titleOrigin !== 'temporary') return false;
     try { return this.titles().list(pid, sid).some((j) => j.status === 'waiting' || j.status === 'generating'); } catch { return false; }
+  }
+  /** What people are told about this event (server/notices.ts), with the
+   *  conversation's current title. Public so a push that waited for a chat's
+   *  title can ask again. */
+  noticeOf(kind: string, data: Record<string, unknown>, at?: string): Notice | null {
+    if (!NOTICE_KINDS.has(kind) || (kind === 'supervisor' && data.type !== 'failover' && data.type !== 'waiting_for_reset')) return null;
+    try {
+      let pid = typeof data.projectId === 'string' ? data.projectId : undefined;
+      let sid = typeof data.sessionId === 'string' ? data.sessionId : undefined;
+      // An approval is about the conversation that wants to send.
+      if (kind === 'mcp_approval') {
+        const from = data.sender as MessageSender | undefined;
+        pid = from?.projectId; sid = from?.sessionId;
+      }
+      const p = pid ? this.projects().get(pid) : undefined;
+      const c = sid ? p?.conversations?.find((x) => x.sessionId === sid) : undefined;
+      return noticeFor(kind, data, {
+        conversationTitle: p?.kind === 'chat' ? (c?.title || p.name) : c?.title,
+        projectName: p?.name,
+        projectKind: p?.kind,
+        provider: c?.provider ?? p?.provider ?? (p ? 'claude' : undefined),
+        link: pid && sid ? this.conversationUrl(pid, sid) : pid ? '/?project=' + encodeURIComponent(pid) : '/',
+        at: at ?? (typeof data.at === 'string' ? data.at : undefined),
+      });
+    } catch { return null; }
   }
   conversationUrl(pid: string, sid: string): string {
     const p = this.projects().get(pid);
@@ -2526,7 +2652,17 @@ export class SessionManager {
         } else this.completions.cancel(sid);
       }
     }
-    const e: GatewayEvent = { seq: ++this.seq, ts: new Date().toISOString(), kind, data };
+    const ts = new Date().toISOString();
+    // A turn whose background work kept the conversation busy settles later
+    // than it ended: "how long did my work take" is measured to the settle.
+    if (kind === 'conversation_settled' && typeof data.turnStartedAt === 'string' && Number.isFinite(Date.parse(data.turnStartedAt))) data = { ...data, durationMs: Date.parse(ts) - Date.parse(data.turnStartedAt) };
+    // The notice (tier + words) rides on the event itself, so the push, the
+    // bell, the sidebar dot and the desktop fallback all say the same thing.
+    if (NOTICE_KINDS.has(kind)) {
+      const notice = this.noticeOf(kind, data, ts);
+      if (notice) data = { ...data, notice };
+    }
+    const e: GatewayEvent = { seq: ++this.seq, ts, kind, data };
     try { new ConversationJournal(this.opts.stateDir).record(kind, data, e.ts); } catch (error) { console.error('Could not persist conversation event', error); }
     this.buffer.push(e);
     if (this.buffer.length > BUFFER_MAX) this.buffer.splice(0, this.buffer.length - BUFFER_MAX);
@@ -2719,6 +2855,13 @@ export class SessionManager {
       const raw = JSON.parse(readFileSync(this.questionsFile, 'utf8')) as Record<string, PendingQuestion>;
       if (raw && typeof raw === 'object') for (const [sid, q] of Object.entries(raw)) this.pendingQuestions.set(sid, q);
     } catch { /* none on disk yet */ }
+    // A question two weeks old is not waiting on anyone any more.
+    let purged = false;
+    for (const [sid, q] of this.pendingQuestions) {
+      const at = Date.parse(q.at);
+      if (Number.isFinite(at) && Date.now() - at > QUESTION_PURGE_MS) { this.pendingQuestions.delete(sid); purged = true; }
+    }
+    if (purged) this.savePendingQuestions();
   }
   private savePendingQuestions(): void {
     try {
@@ -2849,7 +2992,22 @@ export class SessionManager {
 
   /** Unanswered questions across all conversations — the panel hydrates from
    *  this so a refresh/reconnect/restart restores the cards. */
-  listPendingQuestions(): PendingQuestion[] { return [...this.pendingQuestions.values()]; }
+  /** Pending questions; one older than 3 days is `stale`: still answerable in
+   *  its conversation, but no longer counted by the bell. */
+  listPendingQuestions(): (PendingQuestion & { stale?: boolean })[] {
+    const now = Date.now();
+    return [...this.pendingQuestions.values()].map((q) => {
+      const at = Date.parse(q.at);
+      return Number.isFinite(at) && now - at > QUESTION_STALE_MS ? { ...q, stale: true } : q;
+    });
+  }
+
+  /** A scheduled task could not deliver its prompt: urgent, it will not
+   *  retry on its own. */
+  reportCronFailure(job: { id: string; projectId: string; sessionId?: string; label?: string; prompt: string }, reason: string): void {
+    const name = job.label?.trim() || cleanMemorySource(job.prompt).split('\n').find((l) => l.trim())?.trim().slice(0, 60) || 'A scheduled task';
+    this.emit('cron_failed', { projectId: job.projectId, ...(job.sessionId ? { sessionId: job.sessionId } : {}), jobId: job.id, name, reason, at: new Date().toISOString() });
+  }
 
   /** Dismissing is a UI decision, never a reply or a new turn. The timestamp
    * protects a newer question from a click on an older card in another tab. */
@@ -2979,6 +3137,9 @@ export class SessionManager {
     const sender = runOpts?.sender && !prompt.trimStart().startsWith('/') ? { ...runOpts.sender, messageId: runOpts.sender.messageId || randomUUID() } : undefined;
     turnPrompt = withMessageSender(turnPrompt, sender);
     const sourcePrompt=prompt;
+    // Who started this turn, for the notice policy. Read from the request,
+    // not `sender`, which is dropped for slash commands.
+    const origin = originOf(runOpts?.sender);
     const autopilot = this.loadAutopilot()[sessionId];
     // Keep the turn's notification ownership even if autopilot is disabled later.
     const run: ActiveRun = { startedAt: new Date().toISOString(), sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId, suppressCompletion: sender?.kind === 'autopilot' || (!!autopilot && !autopilot.paused) };
@@ -2988,6 +3149,7 @@ export class SessionManager {
     // conversations running at once, and each conversation's activity/messages
     // must land only in its own view, not whatever's currently on screen.
     const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { sessionId, requestId: memoryRequestId, ...data, projectId: pid });
+    const turnMeta = () => ({ origin, turnStartedAt: run.startedAt, durationMs: Date.now() - Date.parse(run.startedAt!) });
     try {
       const runFn = this.opts.runSessionFn ?? runSession;
       let fileAccount: string | undefined;
@@ -3037,16 +3199,27 @@ export class SessionManager {
       const router = helpers.router;
       const runWith: typeof runFn = router
         ? (async (o: Parameters<typeof runFn>[0]) => {
-            const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort, sender);
+            const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort, sender, !!team);
             emit('jev_decision', d as unknown as Record<string, unknown>);
-            return runFn({ ...o, ...(d.model ? { model: d.model } : {}), ...(d.effort ? { effort: d.effort } : {}) });
+            // On Auto a failed pick still runs on the Auto baseline it started from.
+            const useModel = d.model ?? (d.auto?.model ? d.baseModel : undefined);
+            // The team's pick rides in THIS turn's message, never in the system
+            // prompt or --agents (process identity: it would respawn per turn).
+            const teamLine = team ? teamTurnLine(adapter.id, d.team && !d.error ? d.team : undefined, d.backend === 'openai' ? 'openai' : 'jev') : undefined;
+            return runFn({ ...o, ...(teamLine ? { prompt: withTeamLine(o.prompt, teamLine) } : {}), ...(useModel ? { model: useModel } : {}), ...(d.effort ? { effort: d.effort } : {}) });
           }) as typeof runFn
-        : runFn;
+        // No picker: Codex still needs the explicit ask (see teamTurnLine).
+        : team && adapter.id === 'codex'
+          ? ((o: Parameters<typeof runFn>[0]) => runFn({ ...o, prompt: withTeamLine(o.prompt, teamTurnLine('codex')) })) as typeof runFn
+          : runFn;
       if (advisor) emit('advisor_state', { advisor, model: model ?? null });
       // ChatGPT has no advisor of its own; the gateway watches the turn.
       const watcher = helpers.advisor && adapter.id === 'codex'
         ? new TurnWatcher(cleanMemorySource(prompt), (trigger, transcript) => {
-            void this.runCodexAdvisor(pid, sessionId, trigger, transcript, run.account, model).catch(() => {});
+            // Advice belongs to the turn that produced it: steered only while
+            // THIS run is the live one, never into a later turn.
+            const consult = this.runCodexAdvisor(pid, sessionId, trigger, transcript, run.account, model, () => this.runs.get(sessionId) === run).catch(() => {});
+            if (trigger === 'done') run.pendingAdvice = consult;
           }, { reviewDone: sender?.kind !== 'advisor' })
         : undefined;
       void runWith({
@@ -3189,14 +3362,19 @@ export class SessionManager {
             this.savePendingQuestions();
             emit('question', pending);
           }
-          emit('session_done', { sessionId, ...res });
+          emit('session_done', { sessionId, ...res, ...turnMeta() });
           if (res.status === 'completed') {
             try { this.titles().observe(pid, sessionId, sourcePrompt, res.resultText || ''); }
             catch (error) { console.warn('[titles] Could not queue title:', (error as Error).message); }
           }
+          // THIS turn's verdict (stop phrase, budget, pause on failure) applies
+          // every time, drained or not -- after session_done, so its
+          // notification still sees the autopilot that owned the turn, and
+          // before the drained item starts (that waits 400 ms).
+          const goOn = this.evaluateAutopilot(pid, sessionId, res);
           // Only when the queue had nothing — autopilot must never jump ahead of
           // a real message, and it resumes by itself once the queue empties.
-          if (!drained) this.maybeAutopilot(pid, sessionId, res);
+          if (!drained && goOn) void this.continueAutopilotAfter(pid, sessionId, run).catch(() => {});
         })
         .catch((err: unknown) => {
           if (this.destroyed) return;
@@ -3205,13 +3383,13 @@ export class SessionManager {
             this.lastResults.set(pid, stopped);
             if (this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
             this.projects().recordOutcome(pid, sessionId, { status: 'stopped', at: new Date().toISOString(), reason: stopped.reason });
-            emit('session_done', { ...stopped });
+            emit('session_done', { ...stopped, ...turnMeta() });
             return;
           }
           if(err instanceof MemoryReferenceConflict)this.pauseAutopilot(sessionId,(err as Error).message);
           if (this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
           this.projects().recordOutcome(pid, sessionId, {status:'failed', at:new Date().toISOString(), reason:(err as Error).message});
-          emit('session_error', { sessionId, message: (err as Error).message });
+          emit('session_error', { sessionId, message: (err as Error).message, ...turnMeta() });
           this.pauseAutopilot(sessionId, 'failed');
         })
         .finally(() => {
@@ -3598,13 +3776,15 @@ export class SessionManager {
    * the token did not already open. Bounding AI-origin traffic properly would
    * mean a separate credential, which is a bigger change than this.
    */
-  steerSession(projectId: string, sessionId: string, text: string): boolean {
+  steerSession(projectId: string, sessionId: string, text: string, opts: { humanOrigin?: boolean } = {}): boolean {
     if (!this.pools().length) return false;
     const conv = this.projects().conversations(projectId).find((c) => c.sessionId === sessionId);
     if (!conv) return false;
     if (!this.pools().some((p) => p.injectMessage(sessionId, text))) return false;
-    // A steer is human-origin, so it resets the same counters a panel message
-    // does -- otherwise steering an exhausted pair would leave the brakes on.
+    // A panel steer is human-origin, so it resets the same counters a panel
+    // message does -- otherwise steering an exhausted pair would leave the
+    // brakes on. The gateway's own steers (the ChatGPT advisor) are not.
+    if (opts.humanOrigin === false) return true;
     this.clearSelfQueueStreak(sessionId);
     this.clearRelayChain(sessionId);
     return true;

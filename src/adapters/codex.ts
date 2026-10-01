@@ -1,5 +1,6 @@
 import { supersededCodexModel } from '../codex-model-policy.js';
-import { readMessageSender } from '../message-sender.js';
+import { CODEX_INDEXING_REASON, codexHomePreparing } from '../codex-home.js';
+import { readMessageSender, stripTeamLine } from '../message-sender.js';
 import { toolImagePaths } from '../artifact-references.js';
 import { stripMemoryContext } from '../memory-context.js';
 import { spawn } from 'node:child_process';
@@ -475,7 +476,7 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
       const kind = firstStr(item.type);
       if (kind === 'UserMessage' || kind === 'userMessage') {
         const attributed = readMessageSender(itemText(item).trim());
-        const shown = stripAskInstructions(stripMemoryContext(attributed.text));
+        const shown = stripAskInstructions(stripMemoryContext(stripTeamLine(attributed.text)));
         const userKey = JSON.stringify(attributed.sender || null) + shown;
         if (shown && userKey !== lastUser) { push({ role: 'user', text: shown, ...(attributed.sender ? { sender: attributed.sender } : {}), ts }, at); lastUser = userKey; }
       } else if (kind === 'AgentMessage' || kind === 'agentMessage') {
@@ -487,7 +488,7 @@ function parseRollout(input: RawLine[], keepFrom: number): { rows: HistoryEntry[
       // Command/patch items are already rendered from response_item above.
     } else if (payload.type === 'user_message' && typeof payload.message === 'string') {
       const attributed = readMessageSender(payload.message.trim());
-      const shown = stripAskInstructions(stripMemoryContext(attributed.text));
+      const shown = stripAskInstructions(stripMemoryContext(stripTeamLine(attributed.text)));
       const userKey = JSON.stringify(attributed.sender || null) + shown;
       if (shown && userKey !== lastUser) { push({ role: 'user', text: shown, ...(attributed.sender ? { sender: attributed.sender } : {}), ts }, at); lastUser = userKey; }
     } else if (payload.type === 'agent_message' && typeof payload.message === 'string') {
@@ -568,6 +569,10 @@ function listModels(configDirs: string[]): ProviderModel[] {
  * controller's existing 90s quota cache absorbs (same policy as Claude's poll).
  */
 function fetchUsage(configDir: string): Promise<Usage> {
+  // An app-server started in a home that is still indexing either waits on the
+  // index or, worse, starts it -- and this probe kills it at 15 s, which is
+  // how a home is left with a "running" index nobody runs.
+  if (codexHomePreparing(configDir)) return Promise.reject(new Error(CODEX_INDEXING_REASON));
   return new Promise((resolvePromise, reject) => {
     const child = spawn('codex', codexAppServerArgs(configDir), {
       env: { ...process.env, CODEX_HOME: configDir },
@@ -827,18 +832,27 @@ function foldOutcomeLine(out: SubagentOutcome, line: string): void {
   let d: Record<string, unknown>;
   try { d = JSON.parse(line) as Record<string, unknown>; } catch { return; }
   const p = asObj(d.payload);
+  const at = Date.parse(String(d.timestamp ?? ''));
   if (d.type === 'event_msg' && p.type === 'task_started') {
-    out.done = false; out.status = 'running'; out.result = undefined; out.endedAt = undefined;
-    const ts = Date.parse(String(d.timestamp ?? ''));
-    if (Number.isFinite(ts)) out.startedAt = ts;
+    out.done = false; out.status = 'running'; out.result = undefined; out.endedAt = undefined; out.error = undefined;
+    if (Number.isFinite(at)) out.startedAt = at;
+  } else if (d.type === 'event_msg' && p.type === 'error') {
+    // An error inside the task: whatever task_complete follows, it did not
+    // finish cleanly. Cleared by the next task_started.
+    out.error = firstStr(p.message) || 'error';
   } else if (d.type === 'event_msg' && (p.type === 'turn_aborted' || p.type === 'task_failed')) {
     out.done = false; out.status = p.type === 'task_failed' ? 'failed' : 'stopped';
+    if (Number.isFinite(at)) out.endedAt = at;
   } else if (d.type === 'event_msg' && p.type === 'task_complete') {
-    out.done = true; out.status = 'done';
     out.result = firstStr(p.last_agent_message) || undefined;
+    // Complete is not done: a folded error means it failed, and a complete
+    // with nothing to hand back produced no result ('ended').
+    out.status = out.error ? 'failed' : out.result ? 'done' : 'ended';
+    out.done = out.status === 'done';
     const s = p.started_at, c = p.completed_at;
     if (typeof s === 'number') out.startedAt = s * 1000;
     if (typeof c === 'number') out.endedAt = c * 1000;
+    else if (Number.isFinite(at)) out.endedAt = at;
   } else if (d.type === 'event_msg' && p.type === 'token_count') {
     const t = asObj(asObj(p.info).total_token_usage);
     if (typeof t.input_tokens === 'number') {
@@ -975,6 +989,7 @@ export const codexAdapter: ProviderAdapter = {
   readIdentity,
   listModels,
   hasCredentials,
+  notReadyReason: (configDir: string) => (codexHomePreparing(configDir) ? CODEX_INDEXING_REASON : undefined),
   activeModel,
   listSubagents,
   subagentStatus,

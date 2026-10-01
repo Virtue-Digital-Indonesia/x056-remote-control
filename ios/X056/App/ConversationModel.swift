@@ -264,7 +264,7 @@ final class ConversationModel {
                 if let sid = reply.sessionId {
                     sessionId = sid
                     app.running.insert(sid)
-                    app.visibleSessionId = sid
+                    app.setVisible(projectId: projectId, sessionId: sid)
                     await app.refreshProjects()
                 }
             } else {

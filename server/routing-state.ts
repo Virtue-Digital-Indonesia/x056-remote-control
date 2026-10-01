@@ -1,6 +1,8 @@
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readState, writeState } from './workspace-store.js';
+import { gatewayDb, putRoute, trimRoutingHistory } from './gateway-db.js';
+import { transaction } from './sqlite.js';
 import type { AccountRouteContext } from '../src/accounts.js';
 export interface ConversationRoute {
   lockedAccount?: string;
@@ -47,15 +49,20 @@ export class RoutingState {
     const p = this.get(pid, sid);
     return { lockedAccount: p.lockedAccount, preferredAccount: p.nextAccount, useReserve: p.useReserve };
   }
+  /** Newest first, at most ROUTING_HISTORY_CAP rows (gateway.sqlite). */
   history(pid?: string, sid?: string): RouteRecord[] {
-    return readState<RouteRecord[]>(join(this.state, 'routing-history.json'), []).filter(
-      (x) => (!pid || x.projectId === pid) && (!sid || x.sessionId === sid),
-    );
+    const where = [pid && 'project_id=?', sid && 'session_id=?'].filter(Boolean);
+    return gatewayDb(this.state)
+      .prepare(`SELECT data FROM routing_history${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY id DESC`)
+      .all(...[pid, sid].filter((x): x is string => !!x))
+      .map((r) => JSON.parse(String(r.data)) as RouteRecord);
   }
   record(row: Omit<RouteRecord, 'id' | 'at'>) {
-    const rows = this.history();
-    rows.unshift({ ...row, id: randomUUID(), at: new Date().toISOString() });
-    writeState(join(this.state, 'routing-history.json'), rows.slice(0, 3000));
+    const db = gatewayDb(this.state);
+    transaction(db, () => {
+      putRoute(db, { ...row, id: randomUUID(), at: new Date().toISOString() });
+      trimRoutingHistory(db);
+    });
   }
   links(): HandoffLink[] {
     return readState(join(this.state, 'provider-handoffs.json'), []);

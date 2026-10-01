@@ -1,5 +1,5 @@
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
+import { gatewayDb, transaction } from './gateway-db.js';
 
 /**
  * Token totals and Task outcomes, read straight out of a transcript.
@@ -34,13 +34,26 @@ export interface TokenUsage {
 export interface TaskOutcome {
   toolUseId: string;
   description: string;
-  /** True once the parent recorded a tool_result for it. */
+  /** True once it FINISHED: a sync tool_result, or an async agent's
+   *  terminal task-notification. An async launch ack is not an ending. */
   done: boolean;
+  /** How it finished, once `done`; `running` for an async agent a
+   *  notification says is going again. Absent = no verdict yet. */
+  outcome?: 'running' | 'done' | 'failed' | 'stopped' | 'ended';
+  /** Launched with run_in_background: its tool_result was only the ack. */
+  async?: boolean;
+  /** The subagent's own id, from the async ack (a `stopped` notification
+   *  can name only this, not the tool_use id). */
+  agentId?: string;
   /** What it handed back, truncated. Absent while it is still running. */
   result?: string;
   isError?: boolean;
   startedAt?: string;
   endedAt?: string;
+  /** Status + result of the last notification folded in: the same event is
+   *  written up to three times (enqueue, attachment, user), a re-notify of a
+   *  resumed agent differs. */
+  noteKey?: string;
 }
 
 export interface TranscriptStats {
@@ -137,33 +150,60 @@ const SCAN_BUDGET = 24 * 1024 * 1024;
  * (the old 32MB tail cap), so their totals are not comparable with these and
  * are discarded rather than shown as if they were whole-file numbers.
  */
-const CACHE_VERSION = 3;
+const CACHE_VERSION = 4; // v4: async acks are not endings; task-notifications fold in
 const CHUNK = 4 * 1024 * 1024;
 const MAX_RESULT_CHARS = 4000;
 const MAX_TASKS = 400;
 const SUBAGENT_TOOLS = new Set(['Task', 'Agent']);
+
+/** Only a definite ENOENT counts as gone: a mount that is briefly
+ *  unreadable must not wipe the cache. */
+function gone(path: string): boolean {
+  try { statSync(path); return false; } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT'; }
+}
 
 export class TranscriptStatsReader {
   private cache = new Map<string, CacheEntry>();
 
   constructor(private readonly stateDir: string) { this.load(); }
 
-  private get file(): string { return join(this.stateDir, 'transcript-stats.json'); }
+  /** Paths whose entry changed since the last save: only those are written. */
+  private dirty = new Set<string>();
 
+  /**
+   * Load the cache from `transcript_stats` in gateway.sqlite. Rows written
+   * under another CACHE_VERSION are deleted (their totals mean something
+   * else), and so are rows whose transcript no longer exists: the table would
+   * otherwise only ever grow.
+   */
   private load(): void {
     try {
-      const raw = JSON.parse(readFileSync(this.file, 'utf8')) as { v?: number; entries?: Record<string, CacheEntry> };
-      if (raw?.v !== CACHE_VERSION || !raw.entries) return; // older shape: rescan
-      for (const [k, v] of Object.entries(raw.entries)) this.cache.set(k, v);
-    } catch { /* first run */ }
+      const db = gatewayDb(this.stateDir), drop: string[] = [];
+      for (const row of db.prepare('SELECT path, version, data FROM transcript_stats').all()) {
+        const path = String(row.path);
+        if (Number(row.version) !== CACHE_VERSION || gone(path)) { drop.push(path); continue; }
+        try { this.cache.set(path, JSON.parse(String(row.data)) as CacheEntry); } catch { drop.push(path); }
+      }
+      if (drop.length) {
+        const del = db.prepare('DELETE FROM transcript_stats WHERE path=?');
+        transaction(db, () => { for (const p of drop) del.run(p); });
+      }
+    } catch { /* first run, or no database: every transcript is rescanned */ }
   }
 
+  /** Upsert the changed entries, in one transaction. */
   private save(): void {
+    if (!this.dirty.size) return;
     try {
-      mkdirSync(dirname(this.file), { recursive: true });
-      const tmp = `${this.file}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ v: CACHE_VERSION, entries: Object.fromEntries(this.cache) }));
-      renameSync(tmp, this.file);
+      const db = gatewayDb(this.stateDir);
+      const put = db.prepare('INSERT INTO transcript_stats(path, version, data) VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET version=excluded.version, data=excluded.data');
+      transaction(db, () => {
+        for (const path of this.dirty) {
+          const entry = this.cache.get(path);
+          if (entry) put.run(path, CACHE_VERSION, JSON.stringify(entry));
+        }
+      });
+      this.dirty.clear();
     } catch { /* the cache is an optimisation; losing it only costs a rescan */ }
   }
 
@@ -192,6 +232,7 @@ export class TranscriptStatsReader {
     entry.scanned = end;
     entry.partial = end < size;
     this.cache.set(path, entry);
+    this.dirty.add(path);
     this.save();
     return strip(entry);
   }
@@ -262,9 +303,14 @@ export class TranscriptStatsReader {
       const m = /"tool_use_id":"([^"]+)"/.exec(line);
       hasResult = !!(m && entry.tasks[m[1]]);
     }
-    if (!hasUsage && !hasTask && !hasResult) return;
+    // An async agent ends in a <task-notification>, delivered as a queue
+    // enqueue, a queued_command attachment and a user message. Only lines
+    // naming a task we track are worth parsing.
+    const hasNote = !hasUsage && !hasTask && !hasResult && line.includes('<task-notification>') && this.noteTargets(entry, line);
+    if (!hasUsage && !hasTask && !hasResult && !hasNote) return;
     let d: Record<string, unknown>;
     try { d = JSON.parse(line) as Record<string, unknown>; } catch { return; }
+    if (hasNote || (d.type === 'user' && line.includes('<task-notification>'))) this.foldNotifications(entry, d);
     if (hasCodex) {
       const p = (d.payload ?? {}) as Record<string, unknown>;
       if (d.type === 'turn_context' && typeof p.model === 'string') entry.codexModel = p.model;
@@ -331,13 +377,97 @@ export class TranscriptStatsReader {
         const id = String(b.tool_use_id ?? '');
         const task = id && entry.tasks[id];
         if (!task) continue; // a result for some other tool — not ours to keep
+        const text = resultText(b.content);
+        const tur = (d.toolUseResult ?? {}) as Record<string, unknown>;
+        if (/^\s*Async agent launched/.test(text) || tur.status === 'async_launched' || tur.isAsync === true) {
+          // run_in_background: the result is only the launch ack. The agent
+          // ends later, in a <task-notification>. The ack text asks never to be
+          // quoted, so it is not kept as the result.
+          task.async = true;
+          task.done = false;
+          task.outcome = undefined;
+          const aid = typeof tur.agentId === 'string' ? tur.agentId : /agentId:\s*([A-Za-z0-9_-]+)/.exec(text)?.[1];
+          if (aid) task.agentId = aid;
+          continue;
+        }
         task.done = true;
         task.endedAt = ts;
         task.isError = b.is_error === true ? true : undefined;
-        task.result = resultText(b.content).slice(0, MAX_RESULT_CHARS);
+        task.result = text.slice(0, MAX_RESULT_CHARS);
+        // An interrupt comes back as an error result, but it is a stop.
+        task.outcome = /^\s*\[Request interrupted/.test(text) ? 'stopped' : task.isError ? 'failed' : text.trim() ? 'done' : 'ended';
       }
     }
   }
+
+  /** Cheap raw-text test: does this line name a task we track? */
+  private noteTargets(entry: CacheEntry, line: string): boolean {
+    for (const m of line.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>/g)) if (entry.tasks[m[1]]) return true;
+    for (const m of line.matchAll(/<task-id>([^<]+)<\/task-id>/g)) {
+      for (const t of Object.values(entry.tasks)) if (t.agentId === m[1]) return true;
+    }
+    return false;
+  }
+
+  /** Fold every <task-notification> of one entry into the task it names. */
+  private foldNotifications(entry: CacheEntry, d: Record<string, unknown>): void {
+    const text = noteText(d);
+    if (!text) return;
+    const ts = typeof d.timestamp === 'string' ? d.timestamp : undefined;
+    for (const m of text.matchAll(NOTE)) {
+      const body = m[1];
+      const toolUseId = tag(body, 'tool-use-id');
+      const agentId = tag(body, 'task-id');
+      const task = (toolUseId && entry.tasks[toolUseId]) || (agentId ? Object.values(entry.tasks).find((t) => t.agentId === agentId) : undefined);
+      if (!task) continue; // a background shell, or a task evicted from the cache
+      const status = tag(body, 'status') ?? '';
+      const result = tag(body, 'result') ?? '';
+      const key = status + '\0' + result.slice(0, 2000);
+      if (task.noteKey === key) continue; // the same event, delivered again
+      task.noteKey = key;
+      task.async = true;
+      if (agentId && !task.agentId) task.agentId = agentId;
+      if (status === 'running') {
+        task.done = false; task.outcome = 'running'; task.endedAt = undefined; task.isError = undefined;
+        continue;
+      }
+      const outcome = status === 'completed' ? (result || tag(body, 'summary') ? 'done' : 'ended')
+        : status === 'failed' || status === 'killed' ? 'failed'
+        : status === 'stopped' ? 'stopped' : undefined;
+      if (!outcome) continue;
+      task.done = true;
+      task.outcome = outcome;
+      task.endedAt = ts;
+      task.isError = outcome === 'failed' ? true : undefined;
+      task.result = (result || tag(body, 'summary') || '').slice(0, MAX_RESULT_CHARS) || undefined;
+    }
+  }
+}
+
+const NOTE = /<task-notification>([\s\S]*?)<\/task-notification>/g;
+const tag = (body: string, name: string): string | undefined => {
+  const m = new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(body);
+  return m ? m[1].trim() : undefined;
+};
+
+/** The notification-bearing text of an entry, or '' when it is not one of the
+ *  three shapes a notification is delivered in. Everything else that contains
+ *  the tag -- a tool_result from a grep, an edited file, the model's own prose
+ *  -- is quoting one, not receiving it. */
+function noteText(d: Record<string, unknown>): string {
+  if (d.type === 'queue-operation') return d.operation === 'enqueue' && typeof d.content === 'string' ? d.content : '';
+  if (d.type === 'attachment') {
+    const a = (d.attachment ?? {}) as Record<string, unknown>;
+    return a.type === 'queued_command' && typeof a.prompt === 'string' ? a.prompt : '';
+  }
+  if (d.type === 'user') {
+    const c = (d.message as { content?: unknown } | undefined)?.content;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c) && !c.some((b) => (b as { type?: string } | null)?.type === 'tool_result')) {
+      return c.map((b) => ((b as { type?: string } | null)?.type === 'text' ? String((b as { text?: unknown }).text ?? '') : '')).join('\n');
+    }
+  }
+  return '';
 }
 
 function num(v: unknown): number { return typeof v === 'number' && isFinite(v) ? v : 0; }

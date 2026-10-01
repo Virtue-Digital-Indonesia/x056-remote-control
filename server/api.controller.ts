@@ -21,6 +21,7 @@ import {
   Get,
   HttpCode,
   Inject,
+  Optional,
   Post,
   Query,
   Req,
@@ -40,6 +41,7 @@ import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { TEMPLATES, TemplateStore } from './templates.js';
 import { TRANSCRIPT_STATS, TranscriptStatsReader, estimateCost } from './transcript-stats.js';
+import { claudeSubagentStatus } from './agent-tree.js';
 import type { ProviderId } from '../src/provider.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles } from '../src/adapters/subagents.js';
@@ -51,7 +53,8 @@ import { readRawEntry, readRawPage } from './raw-transcript.js';
 import { McpServerManager, REDACTED_RE, redactSpec, restoreRedacted, type McpServerSpec } from './mcp-servers.js';
 import type { HistoryEntry } from './history.js';
 import { withAskInstructions } from '../src/question.js';
-import type { PushService } from './push.js';
+import type { PushService, DeviceSettings } from './push.js';
+import { Presence, type PresenceReport } from './presence.js';
 import type { ApnsConfig, ApnsEnv, ApnsService } from './apns.js';
 import type { WebAuthnService, SessionStore } from './webauthn.js';
 import { Public, readCookie } from './auth.guard.js';
@@ -128,6 +131,7 @@ function hasAttachments(body: SendBody): boolean {
 // they rely only on `experimentalDecorators`, which esbuild does support.
 export const STATE_DIR = Symbol('x056-state-dir');
 export const PUSH_SERVICE = Symbol('x056-push-service');
+export const PRESENCE = Symbol('x056-presence');
 export const WEBAUTHN_SERVICE = Symbol('x056-webauthn-service');
 export const SESSION_STORE = Symbol('x056-session-store');
 export const PLUGIN_MANAGER = Symbol('x056-plugin-manager');
@@ -168,6 +172,8 @@ export class ApiController {
     @Inject(DESIGN_CONSENT) private readonly designConsent: DesignConsentGranter,
     @Inject(TEMPLATES) private readonly templates: TemplateStore,
     @Inject(TRANSCRIPT_STATS) private readonly stats: TranscriptStatsReader,
+    // Optional so a controller built by hand (tests) still works.
+    @Optional() @Inject(PRESENCE) private readonly presence: Presence = new Presence(),
   ) {
     this.loadQuotaCache();
     this.deliveries=manager.deliveries();
@@ -879,7 +885,7 @@ export class ApiController {
           const usageStats = file ? this.stats.statsFor(file, 256 * 1024) : null;
           const fresh = s.updatedAt != null && Date.now() - s.updatedAt < LIVE_SUBAGENT_MS;
           const live = this.manager.subagentRunning(sessionId, s.agentId);
-          const status = live === true ? 'running' : st?.done ? 'done' : st?.status === 'stopped' || st?.status === 'failed' ? st.status : live === undefined && running && fresh && st?.status === 'running' ? 'running' : 'unknown';
+          const status = live === true ? 'running' : st?.status === 'failed' || st?.status === 'ended' || st?.status === 'stopped' ? st.status : st?.done ? 'done' : live === undefined && running && fresh && st?.status === 'running' ? 'running' : 'unknown';
           return {
             ...s, status,
             startedAt: st?.startedAt ?? s.startedAt,
@@ -936,9 +942,8 @@ export class ApiController {
         // long tool call, and calling that one "stopped" is the worse mistake.
         // An abandoned one is hours stale, not minutes.
         const fresh = s.updatedAt != null && Date.now() - s.updatedAt < LIVE_SUBAGENT_MS;
-        const status = task?.done ? (task.isError ? 'failed' : 'done')
-          : task ? (running && fresh ? 'running' : 'stopped')
-          : running && fresh ? 'running' : 'unknown';
+        const live = this.manager.subagentRunning(sessionId, s.agentId);
+        const status = claudeSubagentStatus(task, live, running, fresh);
         return {
           ...s,
           status,
@@ -1013,7 +1018,7 @@ export class ApiController {
       const one = runs.find((r) => r.runId === runId);
       if (!one) return { runs: [], agents: [] };
       const { dir, ...rest } = one;
-      return { runs: [rest], agents: listWorkflowAgents(dir) };
+      return { runs: [rest], agents: listWorkflowAgents(dir, one.live) };
     } catch {
       return { runs: [] };
     }
@@ -1927,6 +1932,41 @@ export class ApiController {
     return { ok: true };
   }
 
+  /** This device's notification settings, keyed by its push endpoint. */
+  @Get('push/settings')
+  pushSettings(@Query('endpoint') endpoint?: string): DeviceSettings & { subscribed: boolean } {
+    if (!endpoint) throw new BadRequestException('endpoint required');
+    return { ...this.push.settings(endpoint), subscribed: this.push.subscribed(endpoint) };
+  }
+
+  @Post('push/settings')
+  @HttpCode(200)
+  savePushSettings(@Body() body: { endpoint?: string; settings?: Partial<DeviceSettings> }): DeviceSettings {
+    if (!body?.endpoint || typeof body.endpoint !== 'string') throw new BadRequestException('endpoint required');
+    try { return this.push.saveSettings(body.endpoint, body.settings ?? {}); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** A test push to THIS device only. */
+  @Post('push/test')
+  @HttpCode(200)
+  async pushTest(@Body() body: { endpoint?: string }): Promise<{ sent: boolean }> {
+    if (!body?.endpoint) throw new BadRequestException('endpoint required');
+    const sent = await this.push.test(body.endpoint);
+    if (!sent) throw new BadRequestException('This device is not subscribed to notifications');
+    return { sent };
+  }
+
+  /** An open panel says what it has on screen (every 15 s while visible),
+   *  so pushes skip the conversation you are reading and, for anything not
+   *  urgent, the devices you are not at. */
+  @Post('presence')
+  @HttpCode(200)
+  reportPresence(@Body() body: PresenceReport): { ok: boolean } {
+    try { this.presence.update(body); return { ok: true }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
   /** The native iOS app: register its APNs device token. `env` is the APNs host
    *  the build talks to (Xcode Debug = sandbox, TestFlight = production). */
   @Get('push/apns')
@@ -1972,7 +2012,7 @@ export class ApiController {
   @HttpCode(200)
   async apnsTest(): Promise<{ configured: boolean; results: Awaited<ReturnType<ApnsService['send']>> }> {
     if (!this.push.apns?.configured) return { configured: false, results: [] };
-    const results = await this.push.apns.send({ title: 'x056', body: 'Test notification from the gateway.', kind: 'test', projectId: '' });
+    const results = await this.push.apns.send({ title: 'x056 test notification', body: 'Notifications reach this iPhone.', kind: 'test', tag: 'x056-test' });
     return { configured: true, results };
   }
 

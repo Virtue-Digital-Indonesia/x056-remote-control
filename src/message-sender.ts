@@ -28,3 +28,21 @@ export function readMessageSender(text: string): { text: string; sender?: Messag
     return { text: text.slice(0, index), sender };
   } catch { return { text }; }
 }
+
+/**
+ * The agent team's per-turn line ("[Agent team this turn: ...]"), appended to
+ * the prompt the CLI receives and stripped wherever the gateway reads a prompt
+ * back. It rides in the MESSAGE because the system prompt and the agent
+ * definitions are process identity: a per-turn value there would respawn the
+ * process every turn. It sits before the sender marker, which must stay last.
+ */
+export const TEAM_LINE_PREFIX = '[Agent team this turn: ';
+const TEAM_LINE = /\n\n\[Agent team this turn: [^\n]*\]\s*$/;
+export function withTeamLine(text: string, line: string | undefined): string {
+  if (!line || text.trimStart().startsWith('/')) return text;
+  const r = readMessageSender(text);
+  return r.sender ? r.text + '\n\n' + line + text.slice(r.text.length) : text + '\n\n' + line;
+}
+export function stripTeamLine(text: string): string {
+  return text.replace(TEAM_LINE, '');
+}

@@ -104,8 +104,12 @@ export const DEFAULT_CONTINUE_PROMPT =
  * can't resume a Claude transcript on GPT). Failover pools are per-provider.
  */
 export interface SubagentOutcome {
+  /** Finished WITH a result (status 'done'). */
   done: boolean;
-  status?: 'running' | 'done' | 'stopped' | 'failed';
+  /** 'ended' = finished but handed back nothing. */
+  status?: 'running' | 'done' | 'stopped' | 'failed' | 'ended';
+  /** An error event folded in since the task started. */
+  error?: string;
   startedAt?: number;
   endedAt?: number;
   /** The sub-agent's last message, when it finished. */
@@ -178,6 +182,9 @@ export interface ProviderAdapter {
    * re-login it needs.
    */
   hasCredentials?(configDir: string): boolean | null;
+  /** Why this account cannot take a turn right now although it is signed in
+   *  (Codex: its home is still indexing the shared rollout store). */
+  notReadyReason?(configDir: string): string | undefined;
   /** The models the fleet can use, when the provider publishes a catalog
    *  (Codex caches one per account). Takes EVERY account's config dir of the
    *  provider and merges them: a model any account offers belongs in the picker,

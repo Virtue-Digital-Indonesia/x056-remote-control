@@ -10,8 +10,15 @@ export class ConversationJournal {
   private path(pid: string, sid: string) {
     return join(this.state, 'conversation-journal', createHash('sha256').update(pid + '\0' + sid).digest('hex') + '.json');
   }
+  /** Turn ENDS, kept beside the journal rather than in it: merge() hands
+   *  every journal row to the chat, and an end is not a message. */
+  private endsPath(pid: string, sid: string) { return this.path(pid, sid).replace(/\.json$/, '.ends.json'); }
   record(kind: string, data: Record<string, unknown>, ts: string) {
     if (!data.projectId || !data.sessionId) return;
+    if (kind === 'session_done' || kind === 'session_error') {
+      const file = this.endsPath(String(data.projectId), String(data.sessionId));
+      writeState(file, [...readState<string[]>(file, []), ts].slice(-60));
+    }
     let row: HistoryEntry;
     if (kind === 'session_started' && typeof data.displayPrompt === 'string' && !data.displayPrompt.trimStart().startsWith('/')) {
       row = { role: 'user', text: data.displayPrompt, ts, messageId: String(data.messageId || ''), sender: data.sender as HistoryEntry['sender'] };
@@ -23,7 +30,7 @@ export class ConversationJournal {
         advisor: { model: data.model as string, trigger: data.trigger as string, verdict: data.verdict as string, advice: data.advice as string, delivered: data.delivered as string, latencyMs: data.latencyMs as number, error: data.error as string } };
     } else if (kind === 'jev_decision' && data.at) {
       // A per-turn model/effort pick: recorded by the gateway, in no transcript.
-      const keep = ['pickedModel', 'pickedEffort', 'modelConfidence', 'effortConfidence', 'model', 'effort', 'baseModel', 'baseEffort', 'notes', 'latencyMs', 'error', 'lean'];
+      const keep = ['pickedModel', 'pickedEffort', 'modelConfidence', 'effortConfidence', 'model', 'effort', 'baseModel', 'baseEffort', 'notes', 'latencyMs', 'error', 'lean', 'auto', 'team'];
       row = { role: 'advisor', messageId: 'decision:' + String(data.at), text: ((data.notes as string[] | undefined) ?? []).join(', ') || String(data.error || ''), ts: String(data.at),
         advisor: { helper: data.backend === 'openai' ? 'openai' : 'jev', decision: Object.fromEntries(keep.filter((k) => data[k] !== undefined).map((k) => [k, data[k]])) } };
     } else if (kind === 'delegate_report' && data.at && data.delegateId) {
@@ -48,6 +55,11 @@ export class ConversationJournal {
     const rows = readState<HistoryEntry[]>(this.path(pid, sid), []);
     for (let i = rows.length - 1; i >= 0; i--) if (rows[i].role === 'user' && rows[i].ts) return rows[i].ts;
     return undefined;
+  }
+  /** What the agent tree's per-turn view is built from: the journal's rows
+   *  (each gateway turn's prompt is a `user` row) and the recorded turn ends. */
+  turnSource(pid: string, sid: string): { rows: HistoryEntry[]; ends: string[] } {
+    return { rows: readState<HistoryEntry[]>(this.path(pid, sid), []), ends: readState<string[]>(this.endsPath(pid, sid), []) };
   }
   merge(pid: string, sid: string, transcript: HistoryEntry[], newest: boolean): HistoryEntry[] {
     const rows = transcript.map(r => ({ ...r }));

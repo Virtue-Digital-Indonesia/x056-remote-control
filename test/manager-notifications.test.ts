@@ -76,3 +76,66 @@ it('holds queued follow-ups when the operator stops the current turn', async () 
   expect(turns).toHaveLength(1);
   expect(manager.queues()[pid]).toHaveLength(1);
 });
+
+// ---- notices (server/notices.ts) as the manager attaches them ----
+it('a settled turn carries its origin, duration and notice; a relayed turn is quiet', async () => {
+  const {manager,pid,turns,events}=fixture();
+  vi.useFakeTimers({ toFake: ['setTimeout','clearTimeout','Date'] });
+  const sid=manager.start('go',undefined,undefined,pid);
+  await vi.advanceTimersByTimeAsync(60_000);
+  turns[0].resolve({status:'completed',failovers:0,resultText:'**Shipped.** The deed parser keeps leading zeros.'});
+  await vi.advanceTimersByTimeAsync(4000);
+  const done=events.find(e=>e.kind==='session_done')!.data;
+  expect(done).toMatchObject({origin:'human',completionPending:true});
+  expect(Number(done.durationMs)).toBeGreaterThanOrEqual(60_000);
+  expect(done.notice).toBeUndefined(); // pending: the settled event speaks
+  const settled=events.find(e=>e.kind==='conversation_settled')!.data;
+  expect(settled.notice).toMatchObject({tier:'normal',title:'go',kind:'conversation_settled',tag:'x056-conv-'+sid});
+  expect((settled.notice as {body:string}).body).toMatch(/^Notifications · Claude\n1m 0\ds · Shipped\. The deed parser keeps leading zeros\.$/);
+  manager.continueSession(pid,sid,'from elsewhere',{sender:{kind:'conversation',sessionId:'other'}});
+  await vi.advanceTimersByTimeAsync(60_000);
+  turns[1].resolve({status:'completed',failovers:0,resultText:'ok'});
+  await vi.advanceTimersByTimeAsync(4000);
+  expect(events.filter(e=>e.kind==='conversation_settled').at(-1)!.data.notice).toMatchObject({tier:'quiet',category:'automation'});
+});
+it('a failed cron turn is urgent; a cron delivery failure is its own urgent notice', async () => {
+  const {manager,pid,turns,events}=fixture();
+  const sid=manager.start('go',undefined,undefined,pid);
+  turns[0].resolve(complete);await flush();
+  manager.continueSession(pid,sid,'nightly',{sender:{kind:'automation'}});
+  turns[1].resolve({status:'failed',failovers:0,reason:'OAuth session expired',finalAccount:'a'});await flush();
+  expect(events.filter(e=>e.kind==='session_done').at(-1)!.data.notice).toMatchObject({tier:'urgent',body:'Notifications · Claude\nSign-in expired for account a'});
+  manager.reportCronFailure({id:'j1',projectId:pid,sessionId:sid,label:'Nightly report',prompt:'x'},'Conversation unavailable');
+  expect(events.find(e=>e.kind==='cron_failed')!.data.notice).toMatchObject({tier:'urgent',body:'Notifications · Claude\nNightly report failed: Conversation unavailable'});
+});
+it('an autopilot run ends in one notice that counts its steps', async () => {
+  const {manager,pid,turns,events}=fixture();
+  const sid=manager.start('go',undefined,undefined,pid);
+  manager.setAutopilot(pid,sid,{count:5});
+  (manager as unknown as {disarmAutopilot:(p:string,s:string,r:string)=>void}).disarmAutopilot(pid,sid,'done');
+  expect(events.filter(e=>e.kind==='autopilot'&&e.data.active===false).at(-1)!.data.notice).toMatchObject({tier:'normal',body:'Notifications · Claude\nAutopilot finished'});
+  turns[0].resolve(complete);await flush();
+});
+it('MCP approvals push while pending only', () => {
+  const {manager,pid,events}=fixture();
+  const sid=manager.start('go',undefined,undefined,pid);
+  const a=manager.requestMcpSend(pid,sid,'Please add the changelog entry',{from:sid});
+  const ev=events.filter(e=>e.kind==='mcp_approval');
+  expect(ev[0].data.notice).toMatchObject({tier:'urgent',tag:'x056-urgent-approval:'+a.id,body:'Claude in go wants to message go: “Please add the changelog entry”'});
+  manager.decideMcpApproval(a.id,false);
+  expect(events.filter(e=>e.kind==='mcp_approval').at(-1)!.data.notice).toBeUndefined();
+});
+it('a short turn that leaves background work running is timed to when the conversation settles', async () => {
+  const {manager,pid,turns,events}=fixture();
+  vi.useFakeTimers({ toFake: ['setTimeout','clearTimeout','Date'] });
+  const sid=manager.start('go',undefined,undefined,pid);
+  await vi.advanceTimersByTimeAsync(10_000);
+  turns[0].resolve({status:'completed',failovers:0,resultText:'Started the long job in the background.'});
+  const emit=(manager as unknown as {emit:(k:string,d:Record<string,unknown>)=>void}).emit.bind(manager);
+  for(let i=0;i<60;i++){ emit('activity',{projectId:pid,sessionId:sid,status:'start',label:'Bash'}); await vi.advanceTimersByTimeAsync(1000); }
+  await vi.advanceTimersByTimeAsync(4000);
+  expect(Number(events.find(e=>e.kind==='session_done')!.data.durationMs)).toBeLessThan(15_000);
+  const n=events.find(e=>e.kind==='conversation_settled')!.data.notice as {tier:string;body:string};
+  expect(n.tier).toBe('normal');
+  expect(n.body.split('\n')[1]).toMatch(/^1m \d\ds · Started the long job/);
+});

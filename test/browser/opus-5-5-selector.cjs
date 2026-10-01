@@ -16,7 +16,8 @@ const base=process.argv[2]||'http://127.0.0.1:8795';
     assert.equal(after.projects.find(p=>p.id===project.id).conversations.find(c=>c.sessionId===conversation.sessionId).model,'opus');
     const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
     await page.goto(base+'/work/'+project.id+'/'+conversation.sessionId);
-    await page.locator('#model').waitFor();
+    await page.locator('#prompt').click(); // the composer rests as one line; focus opens its controls
+    await page.locator('#model').waitFor({ state: 'attached' }); // hidden behind the model · effort popover
     await page.waitForFunction(()=>document.querySelector('#model')?.value==='opus');
     assert.equal((await page.locator('#model option[value="opus"]').textContent()).trim(),'Opus 5.5');
     await page.reload();await page.waitForFunction(()=>document.querySelector('#model')?.value==='opus');
