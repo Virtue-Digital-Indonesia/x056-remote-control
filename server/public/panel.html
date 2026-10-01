@@ -3063,7 +3063,17 @@ main.atree-open .composer-wrap { display: none !important; }
       var full = document.createElement('div'); full.className = 'delegate-digest-body'; full.appendChild(renderMarkdown(text));
       det.appendChild(sum); det.appendChild(full); content.appendChild(det);
     }
-    else content.appendChild(document.createTextNode(text));
+    else {
+      // Your own text stays literal, except the one tag the composer's underline
+      // shortcut writes: <u>…</u> shows underlined (as in the replies).
+      var rawText = String(text), uRe = /<u>([^<>\n]+?)<\/u>/g, uLast = 0, uM;
+      while ((uM = uRe.exec(rawText))) {
+        if (uM.index > uLast) content.appendChild(document.createTextNode(rawText.slice(uLast, uM.index)));
+        var uEl = document.createElement('u'); uEl.textContent = uM[1]; content.appendChild(uEl);
+        uLast = uM.index + uM[0].length;
+      }
+      content.appendChild(document.createTextNode(rawText.slice(uLast)));
+    }
     // atts: a single data URL (legacy), or an array of data URLs / {name,type,url}
     // objects. Images render as thumbnails; any other file as a download chip.
     var list = Array.isArray(atts) ? atts : (atts ? [atts] : []);

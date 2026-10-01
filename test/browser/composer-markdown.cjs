@@ -213,6 +213,13 @@ const LINUX_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, lik
   assert.equal(await content.locator('u strong').innerText(), 'word');
   assert.equal(await content.locator('b, script, [onclick]').count(), 0, 'no other HTML gets through');
   assert.match(await content.innerText(), /<b>bold tag<\/b>/);
+  // Your own bubble: literal text except the underline tag the shortcut writes.
+  await page.evaluate(({ pid, sid }) => window.fixtureStream.dispatchEvent(new MessageEvent('session_started', { data: JSON.stringify({ data: { projectId: pid, sessionId: sid, messageId: 'mine-u', displayPrompt: 'Make it <u>very</u> clear, keep <b>this</b> literal', ts: new Date().toISOString() } }) })), { pid: project.id, sid });
+  const mine = page.locator('.msg.user .content').last();
+  await mine.locator('u').first().waitFor();
+  assert.equal(await mine.locator('u').innerText(), 'very');
+  assert.match(await mine.innerText(), /<b>this<\/b> literal/);
+  assert.equal(await mine.locator('b').count(), 0);
   await linux.context.close();
 
   // Touch: plain typing is unaffected and Enter is still a newline.
