@@ -83,6 +83,9 @@ struct ConversationView: View {
         .safeAreaBar(edge: .bottom) {
             ComposerArea(model: model)
         }
+        // A conversation gets the whole screen: no tab bar (on iPhone Duo, no
+        // tabs or Search in the rail), only its own toolbar.
+        .toolbar(.hidden, for: .tabBar)
         .navigationTitle(model.conversation?.title ?? (model.sessionId == nil ? "New conversation" : "Conversation"))
         .navigationSubtitle(model.project?.name ?? "")
         .toolbarTitleDisplayMode(.inline)
