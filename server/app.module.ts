@@ -17,6 +17,7 @@ import { SessionManager } from './manager.js';
 import { AccountRegistry } from '../src/accounts.js';
 import { PushService } from './push.js';
 import { Presence } from './presence.js';
+import { ApnsService } from './apns.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
 import { CODEGRAPH, CodegraphClient, codegraphConfigFromEnv, type CodegraphConfig } from './codegraph.js';
@@ -92,12 +93,14 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // so a swap-interrupted turn pushes a "resume" notification.
   // What is pushed, and in what words, is decided in server/notices.ts and
   // attached to each event; the service only picks the devices (presence,
-  // per-device settings, quiet hours, ids already sent).
+  // per-device settings, quiet hours, ids already sent). Browsers get it over
+  // Web Push, the iOS app over APNs, under the same rules.
   const presence = new Presence();
   const push = new PushService(cfg.stateDir, {
     noticeOf: (kind, data) => manager.noticeOf(kind, data),
     titlePending: (pid, sid) => manager.titlePending(pid, sid),
     presence,
+    apns: new ApnsService(cfg.stateDir),
   });
   manager.subscribe((e) => { push.notify(e.kind, e.data).catch(() => {}); });
 

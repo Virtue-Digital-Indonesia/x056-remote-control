@@ -5,6 +5,7 @@ import type { PushSubscription } from 'web-push';
 import { gatewayDb } from './gateway-db.js';
 import { NOTICE_KINDS, type Notice } from './notices.js';
 import { deviceKey, type Presence } from './presence.js';
+import { apnsEndpoint, type ApnsService } from './apns.js';
 
 /**
  * Self-contained Web Push: generates+persists a VAPID keypair, stores browser
@@ -12,6 +13,10 @@ import { deviceKey, type Presence } from './presence.js';
  * a buzz. WHAT a notice says and how loud it is lives in notices.ts; this file
  * only decides which devices get it now: presence (someone is looking), the
  * device's own settings, quiet hours, and ids already sent.
+ *
+ * Browsers get notices over Web Push; the native iOS app gets the same ones
+ * over APNs (server/apns.ts), picked by the same rules. An iPhone's settings
+ * and presence key is `apns:<token>`, so it is one device among the others.
  */
 export interface StoredSub {
   sub: PushSubscription;
@@ -85,6 +90,8 @@ export interface PushOptions {
   titlePending?: (projectId: string, sessionId: string) => boolean;
   titleWaitMs?: number;
   presence?: Presence;
+  /** The iOS app's devices. Absent: browsers only. */
+  apns?: ApnsService;
   now?: () => number;
 }
 
@@ -106,6 +113,7 @@ export class PushService {
   private now(): number { return (this.opts.now ?? Date.now)(); }
 
   get publicKey(): string { return this.vapid.publicKey; }
+  get apns(): ApnsService | undefined { return this.opts.apns; }
 
   private loadOrCreateVapid(): { publicKey: string; privateKey: string } {
     if (existsSync(this.vapidFile)) {
@@ -189,34 +197,45 @@ export class PushService {
     try { return !!gatewayDb(this.stateDir).prepare('SELECT 1 FROM push_sent WHERE id=?').get(id); } catch { return false; }
   }
 
-  /** The devices that should get this notice right now. */
-  targets(n: Notice): StoredSub[] {
-    if (n.tier === 'none') return [];
+  /** Which device keys should get this notice right now; null = none. */
+  private wanted(n: Notice): ((key: string) => boolean) | null {
+    if (n.tier === 'none') return null;
     const p = this.opts.presence, at = this.now();
     // Nobody needs a buzz about the conversation they are reading.
-    if (p?.viewing(n.projectId, n.sessionId)) return [];
+    if (p?.viewing(n.projectId, n.sessionId)) return null;
     const loud = n.tier !== 'urgent';
     const visible = loud && p?.anyVisible() ? p.visibleDevices() : null;
-    return this.subs.filter((s) => {
-      const key = deviceKey(s.sub.endpoint);
+    return (key) => {
       if (!deviceWants(n, this.settingsFor(key), at)) return false;
       // You are at a screen: the other devices stay quiet for anything that
       // is not urgent.
       if (visible && !visible.has(key)) return false;
       return true;
-    });
+    };
+  }
+
+  /** The browsers that should get this notice right now. */
+  targets(n: Notice): StoredSub[] {
+    const ok = this.wanted(n);
+    return ok ? this.subs.filter((s) => ok(deviceKey(s.sub.endpoint))) : [];
+  }
+
+  /** The iPhones (APNs tokens) that should get this notice right now. */
+  apnsTargets(n: Notice): string[] {
+    const ok = this.opts.apns?.hasTargets() ? this.wanted(n) : null;
+    return ok ? this.opts.apns!.tokens().filter((t) => ok(deviceKey(apnsEndpoint(t)))) : [];
   }
 
   /** Send an event's notice, if it has one worth a push. */
   async notify(kind: string, data: Record<string, unknown>): Promise<void> {
-    if (this.subs.length === 0) return;
+    if (this.subs.length === 0 && !this.opts.apns?.hasTargets()) return;
     // Every event passes through here (text chunks included): only the kinds
     // a notice can come from are worth a lookup.
     if (!NOTICE_KINDS.has(kind)) return;
     let notice = (data.notice as Notice | undefined) ?? this.opts.noticeOf?.(kind, data) ?? null;
     if (!notice || notice.tier === 'none') return;
-    let targets = this.targets(notice);
-    if (!targets.length) return;
+    let targets = this.targets(notice), phones = this.apnsTargets(notice);
+    if (!targets.length && !phones.length) return;
     if (notice.id && !this.claim(notice.id)) return;
     const pid = notice.projectId, sid = notice.sessionId;
     if (pid && sid && this.opts.titlePending?.(pid, sid)) {
@@ -224,8 +243,12 @@ export class PushService {
       for (let waited = 0; waited < wait && this.opts.titlePending(pid, sid); waited += 500) await new Promise((r) => setTimeout(r, 500));
       notice = this.opts.noticeOf?.(kind, data) ?? notice;
       targets = this.targets(notice);
+      phones = this.apnsTargets(notice);
     }
-    await this.send(targets, notice);
+    await Promise.all([
+      this.send(targets, notice),
+      phones.length ? this.opts.apns!.send(notice, phones).catch((err) => console.warn('[apns] send failed:', (err as Error).message)) : undefined,
+    ]);
   }
 
   /** A normal-tier test push to ONE device, past presence and quiet hours. */
@@ -237,6 +260,7 @@ export class PushService {
   }
 
   private async send(targets: StoredSub[], n: Notice): Promise<void> {
+    if (!targets.length) return;
     const json = JSON.stringify({
       title: n.title, body: n.body, tag: n.tag, url: n.link, tier: n.tier, kind: n.kind,
       projectId: n.projectId ?? '', sessionId: n.sessionId ?? '', ...(n.id ? { notificationId: n.id } : {}),

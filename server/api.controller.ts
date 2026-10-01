@@ -55,6 +55,7 @@ import type { HistoryEntry } from './history.js';
 import { withAskInstructions } from '../src/question.js';
 import type { PushService, DeviceSettings } from './push.js';
 import { Presence, type PresenceReport } from './presence.js';
+import type { ApnsConfig, ApnsEnv, ApnsService } from './apns.js';
 import type { WebAuthnService, SessionStore } from './webauthn.js';
 import { Public, readCookie } from './auth.guard.js';
 import type { RegistrationResponseJSON, AuthenticationResponseJSON } from '@simplewebauthn/server';
@@ -1964,6 +1965,55 @@ export class ApiController {
   reportPresence(@Body() body: PresenceReport): { ok: boolean } {
     try { this.presence.update(body); return { ok: true }; }
     catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** The native iOS app: register its APNs device token. `env` is the APNs host
+   *  the build talks to (Xcode Debug = sandbox, TestFlight = production). */
+  @Get('push/apns')
+  apnsStatus(): ReturnType<ApnsService['status']> | { configured: false; devices: [] } {
+    return this.push.apns?.status() ?? { configured: false, devices: [] };
+  }
+
+  @Post('push/apns/register')
+  @HttpCode(200)
+  apnsRegister(@Body() body: { token?: string; env?: ApnsEnv; name?: string }): { ok: boolean; configured: boolean } {
+    if (!this.push.apns) throw new BadRequestException('APNs is not available');
+    try {
+      this.push.apns.register(String(body?.token ?? ''), body?.env ?? 'production', typeof body?.name === 'string' ? body.name : undefined);
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+    return { ok: true, configured: this.push.apns.configured };
+  }
+
+  @Post('push/apns/unregister')
+  @HttpCode(200)
+  apnsUnregister(@Body() body: { token?: string }): { ok: boolean } {
+    if (body?.token) this.push.apns?.unregister(body.token);
+    return { ok: true };
+  }
+
+  /** Install the APNs auth key (.p8) once. Written 0600 to state/secrets and never
+   *  returned by any route. */
+  @Post('push/apns/config')
+  @HttpCode(200)
+  apnsConfig(@Body() body: ApnsConfig): { ok: boolean; configured: boolean } {
+    if (!this.push.apns) throw new BadRequestException('APNs is not available');
+    try {
+      this.push.apns.setConfig(body);
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+    return { ok: true, configured: true };
+  }
+
+  /** Send one test banner to every registered device and report what APNs said. */
+  @Post('push/apns/test')
+  @HttpCode(200)
+  async apnsTest(): Promise<{ configured: boolean; results: Awaited<ReturnType<ApnsService['send']>> }> {
+    if (!this.push.apns?.configured) return { configured: false, results: [] };
+    const results = await this.push.apns.send({ title: 'x056 test notification', body: 'Notifications reach this iPhone.', kind: 'test', tag: 'x056-test' });
+    return { configured: true, results };
   }
 
   /**
