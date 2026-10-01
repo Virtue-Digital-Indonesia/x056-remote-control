@@ -191,3 +191,17 @@ describe('composer formatting: live highlight runs', () => {
     expect(joined(line)).toBe(line);
   });
 });
+
+// panel.html carries a copy of composer-format.js for frontend-only releases,
+// which cannot ship the file itself. The copy must be the file, byte for byte.
+import { readFileSync as readFileForCopy } from 'node:fs';
+import { describe as describeCopy, expect as expectCopy, it as itCopy } from 'vitest';
+describeCopy('the inline copy in panel.html', () => {
+  itCopy('matches composer-format.js exactly', () => {
+    const html = readFileForCopy(new URL('../server/public/panel.html', import.meta.url), 'utf8');
+    const file = readFileForCopy(new URL('../server/public/composer-format.js', import.meta.url), 'utf8').replace(/\n+$/, '');
+    const m = /<script id="composerFormatInline">[\s\S]*?\nif \(!\(window\.ComposerFormat && window\.ComposerFormat\.highlightLines\)\) \{\n([\s\S]*?)\n\}\n<\/script>/.exec(html);
+    expectCopy(m, 'inline block present').toBeTruthy();
+    expectCopy(m![1]).toBe(file);
+  });
+});
