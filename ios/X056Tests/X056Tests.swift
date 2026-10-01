@@ -157,3 +157,23 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         #expect(role == "worker" && gate == "needs_human")
     }
 }
+
+@MainActor @Suite(.serialized) struct SharedReadStateTests {
+    @Test func unreadMirrorsTheGatewayAndSkipsTheScreen() {
+        let app = AppModel.shared
+        let saved = app.serverRead
+        defer { app.serverRead = saved; app.setVisible(projectId: nil, sessionId: nil) }
+        app.serverRead = [
+            "p::a": ReadItem(unread: true, kind: "question"),
+            "p::b": ReadItem(unread: false, kind: nil),
+            "p::c": ReadItem(unread: true, kind: "unread"),
+        ]
+        #expect(app.unread == ["p::a": .question, "p::c": .unread])
+        // A web read arrives for c.
+        app.applyReadState("p", "c", ReadItem(readAt: 5, unread: false))
+        #expect(app.unread["p::c"] == nil)
+        // Raising locally is off while the gateway owns read state.
+        app.raiseUnread("p", "d", .failed, at: nil)
+        #expect(app.unread["p::d"] == nil)
+    }
+}

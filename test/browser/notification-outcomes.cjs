@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { chromium } = require('/usr/local/lib/node_modules/playwright');
+let chromium; try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/usr/local/lib/node_modules/playwright')); }
 (async () => {
   const browser=await chromium.launch({args:['--no-sandbox']});
   try {

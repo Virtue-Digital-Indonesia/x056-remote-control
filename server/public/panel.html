@@ -3780,12 +3780,39 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   }
   function questionAlreadySeen(pid, sid, at) { return !!at && qSeen[viewKey(pid, sid)] === at; }
   function notifRank(k) { return k === 'question' ? 3 : k === 'failed' ? 2 : k === 'unread' ? 1.5 : k === 'done' ? 1 : 0; }
+  // Read and unread also live in the gateway (server/read-state.ts), shared
+  // with the iOS app, so reading on one clears the other. Bells still rise
+  // from events here as before; the gateway's read_state events raise and
+  // clear them too, and an event read elsewhere after it happened stays quiet
+  // (a reload replays the buffer). An older gateway without the route leaves
+  // serverRead null and everything works as it did.
+  var serverRead = null; // 'pid::sid' -> {unread, kind, readAt, unreadAt, noticeAt}
+  var currentEventAt = NaN; // the event being handled, ms
+  function postRead(path, body) { api(path, { method: 'POST', body: JSON.stringify(body) }).catch(function () {}); }
+  function onScreen(pid, sid) { return pid === currentProjectId && sid === lastSessionId && (!controlRoom || controlRoom.isOpen()); }
+  function applyServerRead(k, v) {
+    if (!serverRead) return;
+    serverRead[k] = v;
+    var i = k.indexOf('::'), pid = k.slice(0, i), sid = k.slice(i + 2);
+    // You are reading it: tell the gateway, so the phone clears too.
+    if (v && v.unread && onScreen(pid, sid)) { postRead('/api/conversations/read', { projectId: pid, sessionId: sid }); return; }
+    if (v && v.unread) convNotif[k] = v.kind || 'done'; else delete convNotif[k];
+  }
+  function loadReadState() {
+    api('/api/conversations/read-state').then(function (r) { if (!r.ok) throw new Error('no read state'); return r.json(); }).then(function (j) {
+      serverRead = {};
+      var items = j.items || {};
+      Object.keys(items).forEach(function (k) { applyServerRead(k, items[k]); });
+      applyNotifs();
+    }).catch(function () {});
+  }
   /** Explicit "mark as unread" from the context menu. Unlike setConvNotif this
    *  bypasses the replay guard (the user is asking for the bell, not an event
    *  raising it) and drops the seen-watermark so it survives a refresh. */
   function markConvUnread(pid, sid) {
     if (!pid) return;
     var k = viewKey(pid, sid);
+    if (serverRead && sid) postRead('/api/conversations/unread', { projectId: pid, sessionId: sid });
     convNotif[k] = 'unread';
     delete seenSeq[k];
     // Also un-dismiss its pending question, so one that's still open rings
@@ -3803,11 +3830,14 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // nothing ever cleared it. Enforcing the invariant here can't race.
     if (pid === currentProjectId && sid === lastSessionId && (!controlRoom || controlRoom.isOpen())) return;
     var k = viewKey(pid, sid);
+    // Read on another device after this event happened: a replay, not news.
+    if (serverRead && serverRead[k] && serverRead[k].readAt && isFinite(currentEventAt) && serverRead[k].readAt >= currentEventAt && kind !== 'unread') return;
     if (typeof seenSeq[k] === 'number' && seenSeq[k] >= lastSeq && kind !== 'question') return; // already viewed at/after this event — a replay of something already dismissed
     if (notifRank(kind) > notifRank(convNotif[k])) { convNotif[k] = kind; applyNotifs(); }
   }
   function clearConvNotif(pid, sid) {
     var k = viewKey(pid, sid);
+    if (serverRead && sid && (convNotif[k] || (serverRead[k] && serverRead[k].unread))) postRead('/api/conversations/read', { projectId: pid, sessionId: sid });
     if (convNotif[k]) { delete convNotif[k]; applyNotifs(); }
     markConvSeen(pid, sid);
     // Opening a conversation dismisses its pending question too — otherwise the
@@ -3897,6 +3927,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   // a different, idle one, and only the viewed conversation's busy bar/thread
   // may reflect it.
   function handleEvent(kind, data) {
+    if (kind === 'read_state') { if (data.projectId && data.sessionId) { applyServerRead(viewKey(data.projectId, data.sessionId), data); applyNotifs(); } return; }
     if(kind==='message_delivery'){var receipt=deliveryRecords&&deliveryRecords.get(data.requestId);if(receipt){receipt.status=data.status;receipt.sessionId=data.sessionId||receipt.sessionId;saveDelivery(receipt).catch(function(){});}return;}
     if (['question','question_dismissed','session_started'].indexOf(kind) >= 0) questionsVersion++;
     if (controlRoom) controlRoom.event(kind, data);
@@ -4997,6 +5028,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     row.addEventListener('drop', function (e) { e.preventDefault(); row.classList.remove('drop-before', 'drop-after'); });
   }
   function markProjectRead(pid) {
+    if (serverRead) postRead('/api/conversations/read-all', { projectId: pid });
     var prefix = pid + '::';
     Object.keys(convNotif).forEach(function (k) { if (k.indexOf(prefix) === 0) delete convNotif[k]; });
     // Persist the dismissal so a refresh's event replay doesn't resurrect them.
@@ -5942,9 +5974,9 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     // A reconnect may have missed the 'question' event entirely (the gap, or a
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
-    es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
+    es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); loadReadState(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -5952,7 +5984,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
         // The envelope's own ts (server emit time) — not present inside data —
         // is what lets activity/messages interleave chronologically on reload.
         if (data.ts && d.ts === undefined) d.ts = data.ts;
-        handleEvent(kind, d);
+        currentEventAt = d.ts ? Date.parse(d.ts) : NaN;
+        try { handleEvent(kind, d); } finally { currentEventAt = NaN; }
       });
     });
   }
@@ -7533,7 +7566,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     promptText: ()=>promptEl.value,
     setComposerAccount: function(name){composerAccounts[composerAccountKey()]=name;},
     markRead: function () { clearConvNotif(currentProjectId,lastSessionId); },
-    markAllRead: function () { Object.keys(convNotif).forEach(function (k) { var i = k.indexOf('::'); clearConvNotif(k.slice(0, i), k.slice(i + 2)); }); Object.keys(pendingQ).forEach(function (sid) { var q = pendingQ[sid]; if (q && q.stale) markQuestionSeen(q.projectId, sid, q.at); }); dismissRestart(); applyNotifs(); },
+    markAllRead: function () { if (serverRead) postRead('/api/conversations/read-all', {}); Object.keys(convNotif).forEach(function (k) { var i = k.indexOf('::'); clearConvNotif(k.slice(0, i), k.slice(i + 2)); }); Object.keys(pendingQ).forEach(function (sid) { var q = pendingQ[sid]; if (q && q.stale) markQuestionSeen(q.projectId, sid, q.at); }); dismissRestart(); applyNotifs(); },
     clearRestartNotice: function () { dismissRestart(); applyNotifs(); },
     push: pushApi,
     state: function () { var vk=viewKey(currentProjectId,lastSessionId),effort=activeEffort[vk]; return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, notices: convNotice, restartNotice: restartNotice, views: views, provider:currentProvider(), model:effectiveModel(), effort:effort===undefined?effortEl.value:effort, composerAccount:composerAccounts[composerAccountKey()]||null, runningAccount:activeAccount[vk] || null }; },

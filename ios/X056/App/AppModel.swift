@@ -88,7 +88,11 @@ final class AppModel {
 
     /// Per conversation ("pid::sid"), this phone only, like the panel's
     /// localStorage: what is unread, unsent drafts, recents dismissed by hand.
-    private(set) var unread: [String: UnreadKind] = Stored.load("unread") ?? [:]
+    /// Unread as this phone tracks it, for a gateway without shared read state.
+    private(set) var localUnread: [String: UnreadKind] = Stored.load("unread") ?? [:]
+    /// The gateway's shared read state (`/api/conversations/read-state`), so a
+    /// read on the web clears the phone and back. nil: an older gateway.
+    var serverRead: [String: ReadItem]?
     private(set) var drafts: [String: String] = Stored.load("drafts") ?? [:]
     private(set) var recentDismissed: Set<String> = Stored.load("recentDismissed") ?? []
     /// Workspace metadata (archived, tags), shared with the panel.
@@ -208,8 +212,9 @@ final class AppModel {
         Keychain.delete("token")
         Keychain.delete("session")
         credential = nil
-        unread = [:]
-        Stored.save("unread", unread)
+        localUnread = [:]
+        Stored.save("unread", localUnread)
+        serverRead = nil
         projects = []
         projectsLoaded = false
         running = []
@@ -312,28 +317,86 @@ final class AppModel {
 
     nonisolated static func key(_ projectId: String, _ sessionId: String) -> String { projectId + "::" + sessionId }
 
+    /// What is unread: the gateway's shared state when it has one, else
+    /// this phone's own. The conversation on screen never counts.
+    var unread: [String: UnreadKind] {
+        guard let serverRead else { return localUnread }
+        let visible = visibleProjectId.flatMap { p in visibleSessionId.map { Self.key(p, $0) } }
+        var out: [String: UnreadKind] = [:]
+        for (k, v) in serverRead where v.unread == true && k != visible {
+            out[k] = UnreadKind(rawValue: v.kind ?? "done") ?? .done
+        }
+        return out
+    }
+
+    /// Local tracking only: with shared state the gateway raises unread itself.
     func raiseUnread(_ projectId: String, _ sessionId: String, _ kind: UnreadKind, at ts: String?) {
-        guard sessionId != visibleSessionId else { return }
+        guard serverRead == nil, sessionId != visibleSessionId else { return }
         if let ts, let at = Self.isoDate(ts), at < unreadSince { return }
         let k = Self.key(projectId, sessionId)
-        if let cur = unread[k], cur.rank > kind.rank { return }
-        unread[k] = kind
-        Stored.save("unread", unread)
+        if let cur = localUnread[k], cur.rank > kind.rank { return }
+        localUnread[k] = kind
+        Stored.save("unread", localUnread)
     }
 
     func markRead(_ projectId: String, _ sessionId: String) {
-        guard unread.removeValue(forKey: Self.key(projectId, sessionId)) != nil else { return }
-        Stored.save("unread", unread)
+        let k = Self.key(projectId, sessionId)
+        if serverRead != nil {
+            guard serverRead?[k]?.unread == true else { return }
+            serverRead?[k]?.unread = false
+            serverRead?[k]?.readAt = Date().timeIntervalSince1970 * 1000
+            Task { try? await client?.post("/api/conversations/read", ConversationRef(projectId: projectId, sessionId: sessionId)) }
+            return
+        }
+        guard localUnread.removeValue(forKey: k) != nil else { return }
+        Stored.save("unread", localUnread)
     }
 
     func markUnread(_ projectId: String, _ sessionId: String) {
-        unread[Self.key(projectId, sessionId)] = .unread
-        Stored.save("unread", unread)
+        let k = Self.key(projectId, sessionId)
+        if serverRead != nil {
+            var item = serverRead?[k] ?? ReadItem()
+            item.unread = true
+            item.kind = "unread"
+            serverRead?[k] = item
+            Task { try? await client?.post("/api/conversations/unread", ConversationRef(projectId: projectId, sessionId: sessionId)) }
+            return
+        }
+        localUnread[k] = .unread
+        Stored.save("unread", localUnread)
     }
 
     func markAllRead() {
-        unread = [:]
-        Stored.save("unread", unread)
+        if var all = serverRead {
+            for k in all.keys where all[k]?.unread == true { all[k]?.unread = false }
+            serverRead = all
+            Task { try? await client?.post("/api/conversations/read-all", ReadAllBody()) }
+            return
+        }
+        localUnread = [:]
+        Stored.save("unread", localUnread)
+    }
+
+    /// The gateway's view of one conversation changed (here, on the web, or
+    /// because something happened in it).
+    func applyReadState(_ projectId: String, _ sessionId: String, _ item: ReadItem) {
+        guard serverRead != nil else { return }
+        serverRead?[Self.key(projectId, sessionId)] = item
+        // On screen here: we are reading it, so say so for the other devices.
+        if item.unread == true && projectId == visibleProjectId && sessionId == visibleSessionId {
+            markRead(projectId, sessionId)
+        }
+    }
+
+    func loadReadState() async {
+        guard let client else { return }
+        do {
+            serverRead = try await client.get("/api/conversations/read-state", as: ReadStateReply.self).items
+        } catch let e as APIError where e.status == 404 {
+            serverRead = nil
+        } catch {
+            // Keep what we have; the next refresh tries again.
+        }
     }
 
     func draft(_ projectId: String, _ sessionId: String?) -> String {
@@ -536,8 +599,10 @@ final class AppModel {
         async let chats = try? client.get("/api/chats", as: EnabledReply.self)
         async let spaces = try? client.get("/api/project-spaces", as: EnabledReply.self)
         async let acc: Void = loadAccounts()
+        async let reads: Void = loadReadState()
         _ = await p
         _ = await acc
+        _ = await reads
         if let meta = await meta { conversationMeta = meta }
         jevStatus = await jev
         decisionsStatus = await decisions
@@ -716,6 +781,8 @@ final class AppModel {
             scheduleProjectsRefresh()
         case "accounts":
             accountsTick += 1
+        case "read_state":
+            if let pid, let sid, let item = d.decode(ReadItem.self) { applyReadState(pid, sid, item) }
         default:
             break
         }

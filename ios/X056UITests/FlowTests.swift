@@ -134,6 +134,58 @@ final class FlowTests: XCTestCase {
         snapshot(app, "dark-conversation")
     }
 
+    /// Read state is shared through the gateway: what the web marks shows on
+    /// the phone, and the phone's reads reach the gateway. "The web" here is
+    /// plain API calls to the fixture with its token.
+    func testReadStateFollowsTheWeb() throws {
+        let app = signInToFixture()
+        XCTAssertTrue(app.staticTexts["Needs attention"].waitForExistence(timeout: 15))
+        let projects = try XCTUnwrap(api("GET", "/api/projects")?["projects"] as? [[String: Any]])
+        let project = try XCTUnwrap(projects.first { ($0["name"] as? String) == "Website refresh" })
+        let conv = try XCTUnwrap((project["conversations"] as? [[String: Any]])?.first { ($0["title"] as? String) == "Update the component library" })
+        let ref: [String: Any] = ["projectId": project["id"]!, "sessionId": conv["sessionId"]!]
+        let key = "\(ref["projectId"]!)::\(ref["sessionId"]!)"
+
+        _ = api("POST", "/api/conversations/unread", ref)
+        XCTAssertTrue(app.staticTexts["Unread"].waitForExistence(timeout: 10), "the web's mark shows on the phone")
+        snapshot(app, "9-unread-from-web")
+        _ = api("POST", "/api/conversations/read", ref)
+        XCTAssertTrue(app.staticTexts["Unread"].waitForNonExistence(timeout: 10), "the web's read clears the phone")
+
+        _ = api("POST", "/api/conversations/unread", ref)
+        let row = app.staticTexts["Update the component library"].firstMatch
+        XCTAssertTrue(app.staticTexts["Unread"].waitForExistence(timeout: 10))
+        row.swipeRight()
+        app.buttons["Read"].firstMatch.tap()
+        let deadline = Date().addingTimeInterval(8)
+        var read = false
+        while Date() < deadline && !read {
+            let items = api("GET", "/api/conversations/read-state")?["items"] as? [String: [String: Any]]
+            read = (items?[key]?["unread"] as? Bool) == false
+            if !read { usleep(300_000) }
+        }
+        XCTAssertTrue(read, "the phone's read reaches the gateway")
+    }
+
+    /// One JSON call to the fixture gateway, synchronously.
+    private func api(_ method: String, _ path: String, _ body: [String: Any]? = nil) -> [String: Any]? {
+        var req = URLRequest(url: URL(string: server + path)!)
+        req.httpMethod = method
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let body {
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        let done = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var out: [String: Any]?
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            out = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 10)
+        return out
+    }
+
     /// The sign-in screen as it first opens, against the real gateway's
     /// public routes (version, passkey availability), in both appearances.
     func testSignInScreenLooks() {

@@ -390,7 +390,7 @@ struct Connector: View {
         VStack(spacing: 6) {
             line
             if let label {
-                (Text(label) + Text(strong.map { "  \($0)" } ?? "").fontWeight(.semibold).foregroundStyle(to))
+                Text("\(label)  \(Text(strong ?? "").fontWeight(.semibold).foregroundStyle(to))")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

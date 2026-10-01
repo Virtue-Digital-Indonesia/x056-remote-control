@@ -171,7 +171,7 @@ struct HelpersContent: View {
     let started: Bool
     let jev: JevStatus?
     let decisions: DecisionsStatus?
-    let save: (Helpers) -> Void
+    let save: @MainActor (Helpers) -> Void
 
     var body: some View {
         let codex = provider == "codex"
@@ -238,7 +238,7 @@ struct HelpersContent: View {
         }
     }
 
-    private func toggleCard(_ title: String, symbol: String, color: Color, text: String, on: Bool, set: @escaping (Bool) -> Void) -> some View {
+    private func toggleCard(_ title: String, symbol: String, color: Color, text: String, on: Bool, set: @escaping @MainActor (Bool) -> Void) -> some View {
         Toggle(isOn: Binding(get: { on }, set: set)) {
             HStack(alignment: .top, spacing: 12) {
                 IconTile(symbol: symbol, color: color, size: 34)

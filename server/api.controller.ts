@@ -55,6 +55,7 @@ import type { HistoryEntry } from './history.js';
 import { withAskInstructions } from '../src/question.js';
 import type { PushService, DeviceSettings } from './push.js';
 import { Presence, type PresenceReport } from './presence.js';
+import { ReadState } from './read-state.js';
 import type { ApnsConfig, ApnsEnv, ApnsService } from './apns.js';
 import type { WebAuthnService, SessionStore } from './webauthn.js';
 import { Public, readCookie } from './auth.guard.js';
@@ -132,6 +133,7 @@ function hasAttachments(body: SendBody): boolean {
 export const STATE_DIR = Symbol('x056-state-dir');
 export const PUSH_SERVICE = Symbol('x056-push-service');
 export const PRESENCE = Symbol('x056-presence');
+export const READ_STATE = Symbol('x056-read-state');
 export const WEBAUTHN_SERVICE = Symbol('x056-webauthn-service');
 export const SESSION_STORE = Symbol('x056-session-store');
 export const PLUGIN_MANAGER = Symbol('x056-plugin-manager');
@@ -174,6 +176,7 @@ export class ApiController {
     @Inject(TRANSCRIPT_STATS) private readonly stats: TranscriptStatsReader,
     // Optional so a controller built by hand (tests) still works.
     @Optional() @Inject(PRESENCE) private readonly presence: Presence = new Presence(),
+    @Optional() @Inject(READ_STATE) private readonly readState?: ReadState,
   ) {
     this.loadQuotaCache();
     this.deliveries=manager.deliveries();
@@ -1955,6 +1958,48 @@ export class ApiController {
     const sent = await this.push.test(body.endpoint);
     if (!sent) throw new BadRequestException('This device is not subscribed to notifications');
     return { sent };
+  }
+
+  /** Read and unread for every conversation, shared by web and phone. */
+  @Get('conversations/read-state')
+  readStateList(): { items: ReturnType<ReadState['list']> } {
+    return { items: this.reads().list() };
+  }
+
+  @Post('conversations/read')
+  @HttpCode(200)
+  markRead(@Body() body: { projectId?: string; sessionId?: string }): { ok: boolean; item: ReturnType<ReadState['view']> } {
+    const { projectId, sessionId } = this.conversationRef(body);
+    return { ok: true, item: this.reads().read(projectId, sessionId) };
+  }
+
+  @Post('conversations/unread')
+  @HttpCode(200)
+  markUnread(@Body() body: { projectId?: string; sessionId?: string }): { ok: boolean; item: ReturnType<ReadState['view']> } {
+    const { projectId, sessionId } = this.conversationRef(body);
+    return { ok: true, item: this.reads().unread(projectId, sessionId) };
+  }
+
+  /** Everything unread, or one project's conversations, or the keys named. */
+  @Post('conversations/read-all')
+  @HttpCode(200)
+  markAllRead(@Body() body: { projectId?: string; keys?: string[] }): { ok: boolean; count: number } {
+    let keys: string[] | undefined;
+    if (Array.isArray(body?.keys)) keys = body.keys.filter((k): k is string => typeof k === 'string' && k.includes('::')).slice(0, 5000);
+    else if (typeof body?.projectId === 'string' && body.projectId) keys = this.manager.listConversations(body.projectId).map((c) => ReadState.key(body.projectId!, c.sessionId));
+    return { ok: true, count: this.reads().readAll(keys) };
+  }
+
+  private reads(): ReadState {
+    if (!this.readState) throw new BadRequestException('Read state is not available');
+    return this.readState;
+  }
+
+  private conversationRef(body: { projectId?: string; sessionId?: string }): { projectId: string; sessionId: string } {
+    const projectId = typeof body?.projectId === 'string' ? body.projectId : '';
+    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : '';
+    if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    return { projectId, sessionId };
   }
 
   /** An open panel says what it has on screen (every 15 s while visible),

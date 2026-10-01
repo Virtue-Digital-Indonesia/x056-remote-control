@@ -2631,6 +2631,9 @@ export class SessionManager {
     this.emit('message_rejected', { projectId, sessionId, message, requestId });
   }
 
+  /** Publish an event from a service outside the manager (read_state). */
+  broadcast(kind: string, data: Record<string, unknown>): void { this.emit(kind, data); }
+
   private emit(kind: string, data: Record<string, unknown>): void {
     const sid = typeof data.sessionId === 'string' ? data.sessionId : '';
     if (sid) {

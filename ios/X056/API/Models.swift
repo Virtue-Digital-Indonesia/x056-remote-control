@@ -358,6 +358,21 @@ struct PresenceBody: Encodable, Sendable {
 
 struct Empty: Encodable, Sendable {}
 
+/// One conversation's shared read state (server/read-state.ts).
+struct ReadItem: Codable, Sendable, Hashable {
+    var readAt: Double?
+    var unreadAt: Double?
+    var noticeAt: Double?
+    var noticeKind: String?
+    var unread: Bool?
+    /// 'question' | 'failed' | 'done' | 'unread'
+    var kind: String?
+}
+
+struct ReadStateReply: Decodable, Sendable { let items: [String: ReadItem] }
+
+struct ReadAllBody: Encodable, Sendable {}
+
 struct RenameBody: Encodable, Sendable {
     let projectId: String
     let sessionId: String
