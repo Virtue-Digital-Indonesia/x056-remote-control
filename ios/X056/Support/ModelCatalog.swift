@@ -42,10 +42,63 @@ enum ModelCatalog {
             let name = family.prefix(1).uppercased() + family.dropFirst()
             return rest.isEmpty ? name : name + " " + rest.joined(separator: ".")
         }
-        if lower.hasPrefix("gpt-"), let last = lower.split(separator: "-").last, !last.allSatisfy({ $0.isNumber || $0 == "." }) {
-            return last.prefix(1).uppercased() + last.dropFirst()
+        // "gpt-6.1-sol" → "GPT-6.1 Sol"
+        if lower.hasPrefix("gpt-") {
+            let parts = lower.split(separator: "-").dropFirst()
+            let version = parts.first.map(String.init) ?? ""
+            let names = parts.dropFirst().map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            return (["GPT-" + version] + names).joined(separator: " ")
         }
         return id
+    }
+
+    /// The panel's one-line model descriptions (panel.html MODEL_DESC).
+    static func description(_ model: String, provider: String) -> String {
+        switch model {
+        case "": return provider == "codex" ? "House default, Terra" : "House default, Sonnet"
+        case "fable": return "Frontier model, for the hardest problems"
+        case "opus": return "Deep reasoning for long, multi-step work"
+        case "sonnet": return "Balanced and quick, the everyday choice"
+        case "haiku": return "Fastest and cheapest, for small edits"
+        case "gpt-6-astra": return "Strongest, for long multi-step work"
+        case "gpt-6.1-sol": return "Newest frontier model, rolling out by plan"
+        case "gpt-5.6-terra": return "Fast and balanced, the house default"
+        default: return ""
+        }
+    }
+
+    static func symbol(_ model: String) -> String {
+        let m = model.lowercased()
+        if m.isEmpty { return "wand.and.sparkles" }
+        if m.contains("fable") { return "sparkles" }
+        if m.contains("opus") { return "brain" }
+        if m.contains("sonnet") { return "bolt" }
+        if m.contains("haiku") { return "hare" }
+        if m.contains("astra") { return "star" }
+        if m.contains("sol") { return "sun.max" }
+        if m.contains("terra") { return "globe.asia.australia" }
+        if m.contains("luna") { return "moon" }
+        return "cpu"
+    }
+
+    /// 1-4 bars, like the panel's effort meter; 0 for Auto.
+    static func effortLevel(_ e: String) -> Int {
+        switch e {
+        case "minimal", "low": return 1
+        case "medium": return 2
+        case "high": return 3
+        case "xhigh", "max", "ultra", "ultracode": return 4
+        default: return 0
+        }
+    }
+
+    static func effortShort(_ e: String) -> String {
+        switch e {
+        case "": return "Auto"
+        case "medium": return "Med"
+        case "xhigh": return "X-high"
+        default: return effortLabel(e)
+        }
     }
 
     static func models(provider: String, codex: [CodexModel]) -> [Option] {

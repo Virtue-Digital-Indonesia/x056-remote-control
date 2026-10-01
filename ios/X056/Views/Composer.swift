@@ -243,48 +243,23 @@ struct ChipLabel: View {
     }
 }
 
-/// Model and effort: what the next turn runs with, or "Jev picks".
+/// Model and effort: what the next turn runs with, or "Jev picks". Opens
+/// the model and effort sheet.
 struct RunChip: View {
     @Environment(AppModel.self) private var app
     let model: ConversationModel
+    @State private var show = false
 
     var body: some View {
-        let provider = model.provider
-        let models = ModelCatalog.models(provider: provider, codex: app.codexModels)
-        let efforts = ModelCatalog.efforts(provider: provider, model: model.model, codex: app.codexModels)
-        Menu {
-            Picker(selection: Binding(get: { model.model }, set: { m in
-                // The per-model default effort follows a model change, like the panel.
-                let e = app.modelEffortDefaults[m].flatMap { efforts.contains($0) ? $0 : nil } ?? model.effort
-                Task { await model.setPreferences(model: m, effort: e) }
-            })) {
-                ForEach(models, id: \.self) { Text(autoLabel($0)).tag($0.value) }
-            } label: {
-                Label("Model", systemImage: "cpu")
-            }
-            .pickerStyle(.inline)
-            Picker(selection: Binding(get: { model.effort }, set: { e in Task { await model.setPreferences(model: model.model, effort: e) } })) {
-                ForEach(efforts, id: \.self) { Text(effortName($0)).tag($0) }
-            } label: {
-                Label("Effort", systemImage: "gauge.with.needle")
-            }
-            .pickerStyle(.menu)
-        } label: {
+        Button { show = true } label: {
             ChipLabel(icon: model.routerOn && model.model.isEmpty ? "wand.and.stars" : "cpu", text: summary, active: true)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Model and effort: \(summary)")
+        .sheet(isPresented: $show) { ModelEffortSheet(model: model) }
     }
 
     private var picker: String { model.helpers.router == "decisions" ? "OpenAI" : "Jev" }
-
-    private func autoLabel(_ o: ModelCatalog.Option) -> String {
-        o.value.isEmpty && model.routerOn ? "\(picker) picks" : o.label
-    }
-
-    private func effortName(_ e: String) -> String {
-        e.isEmpty && model.routerOn ? "\(picker) picks" : ModelCatalog.effortLabel(e)
-    }
 
     private var summary: String {
         if model.routerOn && model.model.isEmpty {
@@ -418,119 +393,6 @@ struct AttachmentTray: View {
             .padding(.horizontal, 2)
         }
         .scrollClipDisabled()
-    }
-}
-
-/// Advisor, agent team, and who picks model and effort, for the next turns.
-struct HelpersSheet: View {
-    @Environment(AppModel.self) private var app
-    @Environment(\.dismiss) private var dismiss
-    let model: ConversationModel
-
-    var body: some View {
-        let h = model.helpers
-        let codex = model.provider == "codex"
-        NavigationStack {
-            Form {
-                if model.sessionId == nil {
-                    Section {
-                        Text("Send the first message, then choose helpers for the following turns.")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Section {
-                    Toggle(isOn: binding(\.advisor)) {
-                        Text("Advisor")
-                        Text(codex ? "Astra reviews the plan, repeated failures and the finished turn." : "A stronger model reviews the plan, repeated errors and the result.")
-                    }
-                    Toggle(isOn: binding(\.team)) {
-                        Text("Agent team")
-                        Text((codex ? "Explorer and worker subagents, plus a researcher, on medium effort." : "Explorer, worker and researcher subagents on Opus, medium effort.")
-                             + (routerAvailable ? " Small forks go to \(h.router == "decisions" ? "OpenAI Decisions" : "Jev")." : ""))
-                    }
-                } footer: {
-                    Text("Applies to the next turns of this conversation.")
-                }
-                Section("Model and effort") {
-                    Picker("Chosen by", selection: Binding(get: { h.router ?? "" }, set: { r in
-                        var next = h
-                        next.router = r.isEmpty ? nil : r
-                        save(next)
-                    })) {
-                        VStack(alignment: .leading) {
-                            Text("Your choice")
-                            Text("The model and effort in the composer.").font(.caption).foregroundStyle(.secondary)
-                        }
-                        .tag("")
-                        VStack(alignment: .leading) {
-                            Text("Jev")
-                            Text(jevCaption).font(.caption).foregroundStyle(.secondary)
-                        }
-                        .tag("jev")
-                        .disabled(!(app.jevStatus?.configured ?? true) && h.router != "jev")
-                        VStack(alignment: .leading) {
-                            Text("OpenAI Decisions (preview)")
-                            Text(decisionsCaption).font(.caption).foregroundStyle(.secondary)
-                        }
-                        .tag("decisions")
-                        .disabled(!(app.decisionsStatus?.configured ?? false) && h.router != "decisions")
-                    }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
-                    if h.router != nil {
-                        Picker("Lean", selection: Binding(get: { h.lean ?? "medium" }, set: { l in
-                            var next = h
-                            next.lean = l == "medium" ? nil : l
-                            save(next)
-                        })) {
-                            Text("Low").tag("low")
-                            Text("Medium").tag("medium")
-                            Text("High").tag("high")
-                        }
-                        .pickerStyle(.segmented)
-                        Text(leanCaption(h.lean)).font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .disabled(model.sessionId == nil)
-            .navigationTitle("Helpers")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private var routerAvailable: Bool { model.helpers.router != nil }
-
-    private var jevCaption: String {
-        guard let s = app.jevStatus else { return "Picks the model and effort for each turn." }
-        guard s.configured else { return "Needs a TypeSafe API key." }
-        return "Picks the model and effort for each turn" + (s.estimatedLeft.map { String(format: ", about $%.2f left.", $0) } ?? ".")
-    }
-
-    private var decisionsCaption: String {
-        guard let s = app.decisionsStatus, s.configured else { return "Needs an OpenAI API key with Decisions access." }
-        return "Picks the model and effort for each turn, in place of Jev."
-    }
-
-    private func leanCaption(_ lean: String?) -> String {
-        switch lean {
-        case "low": return "Errs toward cheaper models and lower effort."
-        case "high": return "Errs toward the best result."
-        default: return "Balanced between cost and result."
-        }
-    }
-
-    private func binding(_ key: WritableKeyPath<Helpers, Bool?>) -> Binding<Bool> {
-        Binding(get: { model.helpers[keyPath: key] == true }, set: { on in
-            var next = model.helpers
-            next[keyPath: key] = on
-            save(next)
-        })
-    }
-
-    private func save(_ h: Helpers) {
-        Task { await model.setHelpers(h) }
     }
 }
 

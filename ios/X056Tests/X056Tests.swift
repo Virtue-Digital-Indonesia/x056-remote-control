@@ -131,7 +131,8 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         #expect(ModelCatalog.displayName("claude-opus-5-5-20260901") == "Opus 5.5")
         #expect(ModelCatalog.displayName("sonnet") == "Sonnet")
         #expect(ModelCatalog.displayName("claude-sonnet-5") == "Sonnet 5")
-        #expect(ModelCatalog.displayName("gpt-6-astra") == "Astra")
+        #expect(ModelCatalog.displayName("gpt-6-astra") == "GPT-6 Astra")
+        #expect(ModelCatalog.displayName("gpt-6.1-sol") == "GPT-6.1 Sol")
     }
 
     @Test func helpersPillMatchesThePanel() {

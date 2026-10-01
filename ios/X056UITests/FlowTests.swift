@@ -13,40 +13,7 @@ final class FlowTests: XCTestCase {
     }
 
     func testSignInBrowseAndSend() throws {
-        let app = XCUIApplication()
-        app.launchArguments = ["-X056ResetState"]
-        addUIInterruptionMonitor(withDescription: "Notifications") { alert in
-            let allow = alert.buttons["Allow"]
-            guard allow.exists else { return false }
-            allow.tap()
-            return true
-        }
-        app.launch()
-
-        // The fixture has no passkey, so the token section opens by itself
-        // once the screen has asked the gateway.
-        let change = app.buttons["change-server"]
-        XCTAssertTrue(change.waitForExistence(timeout: 10))
-        change.tap()
-        let serverField = app.textFields["server-field"]
-        XCTAssertTrue(serverField.waitForExistence(timeout: 5))
-        // Tap at the trailing edge so the cursor sits after the last character.
-        serverField.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
-        serverField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 40))
-        serverField.typeText(server)
-        app.buttons["change-server"].tap()
-        let tokenField = app.secureTextFields["token-field"]
-        XCTAssertTrue(tokenField.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Gateway is reachable"].waitForExistence(timeout: 10))
-        tokenField.tap()
-        tokenField.typeText(token)
-        snapshot(app, "1-login")
-        app.buttons["token-signin"].tap()
-
-        // The permission alert belongs to SpringBoard; tap Allow directly.
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let allow = springboard.buttons["Allow"]
-        if allow.waitForExistence(timeout: 5) { allow.tap() }
+        let app = signInToFixture()
 
         // Home: the fixture's pending question puts its conversation in
         // Needs attention.
@@ -93,21 +60,60 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Agent team"].waitForExistence(timeout: 5))
         snapshot(app, "7-helpers")
         app.buttons["Done"].firstMatch.tap()
+        app.buttons.containing(NSPredicate(format: "label BEGINSWITH %@", "Model and effort")).firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Effort"].waitForExistence(timeout: 5))
+        snapshot(app, "7-model-effort")
+        app.buttons["Done"].firstMatch.tap()
         app.buttons["Agents"].firstMatch.tap()
-        XCTAssertTrue(app.staticTexts["Main session"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Main session")).firstMatch.waitForExistence(timeout: 10))
         snapshot(app, "8-agent-tree")
         app.buttons["Done"].firstMatch.tap()
     }
 
+    /// Fresh launch, sign in to the fixture gateway with its token. Never
+    /// relies on a sign-in left in the simulator: that may be a real one.
+    @discardableResult
+    private func signInToFixture(_ extraArguments: [String] = []) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-X056ResetState"] + extraArguments
+        addUIInterruptionMonitor(withDescription: "Notifications") { alert in
+            let allow = alert.buttons["Allow"]
+            guard allow.exists else { return false }
+            allow.tap()
+            return true
+        }
+        app.launch()
+
+        // The fixture has no passkey, so the token section opens by itself
+        // once the screen has asked the gateway.
+        let change = app.buttons["change-server"]
+        XCTAssertTrue(change.waitForExistence(timeout: 10))
+        change.tap()
+        let serverField = app.textFields["server-field"]
+        XCTAssertTrue(serverField.waitForExistence(timeout: 5))
+        // Tap at the trailing edge so the cursor sits after the last character.
+        serverField.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
+        serverField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 40))
+        // Return submits the address, the same as Done.
+        serverField.typeText(server + "\n")
+        let tokenField = app.secureTextFields["token-field"]
+        XCTAssertTrue(tokenField.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Gateway is reachable"].waitForExistence(timeout: 10))
+        tokenField.tap()
+        tokenField.typeText(token)
+        snapshot(app, "1-login")
+        app.buttons["token-signin"].tap()
+
+        // The permission alert belongs to SpringBoard; tap Allow directly.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.buttons["Allow"]
+        if allow.waitForExistence(timeout: 5) { allow.tap() }
+        return app
+    }
+
     /// The main screens in dark mode, signed in to the fixture.
     func testScreensInDark() {
-        let app = XCUIApplication()
-        app.launchArguments = ["-X056Appearance", "dark"]
-        app.launch()
-        if app.buttons["change-server"].waitForExistence(timeout: 3) {
-            app.terminate()
-            return XCTFail("run testSignInBrowseAndSend first: this test needs the fixture sign-in it leaves behind")
-        }
+        let app = signInToFixture(["-X056Appearance", "dark"])
         XCTAssertTrue(app.staticTexts["Home"].waitForExistence(timeout: 15))
         sleep(1)
         snapshot(app, "dark-home")

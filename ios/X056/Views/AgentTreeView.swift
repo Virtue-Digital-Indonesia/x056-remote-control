@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// The conversation's whole working setup, like the panel's agent tree:
-/// the main session, its advisor, Jev's picks and forks, the agent team's
-/// subagents, delegates, and the turns.
+/// The conversation's whole working setup, like the panel's expanded agent
+/// tree: the main session, its advisor, the Jev fork layer, the subagents it
+/// delegated to, delegates, back to the main session, and a session log.
 struct AgentTreeView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
@@ -11,223 +11,63 @@ struct AgentTreeView: View {
     @State private var tree: AgentTree?
     @State private var subagents: [Subagent] = []
     @State private var error: String?
+    /// nil: the latest turn.
+    @State private var turnN: Int?
 
     var body: some View {
         NavigationStack {
-            List {
-                if let tree {
-                    mainSection(tree)
-                    advisorSection(tree)
-                    jevSection(tree)
-                    teamSection(tree)
-                    delegatesSection(tree)
-                    turnsSection(tree)
-                }
-            }
-            .overlay {
-                if tree == nil {
-                    if let error {
-                        ContentUnavailableView("Couldn't load the agent tree", systemImage: "point.3.connected.trianglepath.dotted", description: Text(error))
-                    } else {
-                        ProgressView()
+            GeometryReader { geo in
+                ScrollView {
+                    if let tree {
+                        AgentTreeContent(tree: tree, subagents: subagents, turnN: turnN, wide: geo.size.width >= 620) { id in
+                            Task {
+                                _ = try? await app.client?.post("/api/delegates/stop", DelegateRef(projectId: projectId, sessionId: sessionId, id: id))
+                                await load()
+                            }
+                        }
+                        .padding()
                     }
                 }
+                .background(Color(.systemGroupedBackground))
+                .overlay {
+                    if tree == nil {
+                        if let error {
+                            ContentUnavailableView("Couldn't load the agent tree", systemImage: "point.3.connected.trianglepath.dotted", description: Text(error))
+                        } else {
+                            ProgressView()
+                        }
+                    }
+                }
+                .refreshable { await load() }
             }
-            .refreshable { await load() }
             .navigationTitle("Agent tree")
-            .navigationSubtitle(app.conversation(projectId, sessionId)?.title ?? "")
+            .navigationSubtitle(turnTitle)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .task { await poll() }
-        }
-        .presentationDetents([.large])
-    }
-
-    // MARK: sections
-
-    private func mainSection(_ t: AgentTree) -> some View {
-        Section("Main session") {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    NodeStatus(text: t.main.running == true ? "Working" : t.main.background == true ? "Background work" : "Idle",
-                               color: t.main.running == true ? Palette.ok : t.main.background == true ? .purple : .secondary)
-                    Spacer()
-                    if let by = t.main.pickedBy {
-                        Text((by == "openai" ? "Picked by OpenAI" : "Picked by Jev") + (t.main.lean.map { ", lean \($0)" } ?? ""))
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Palette.clay)
-                    }
-                }
-                Text([t.main.model.map(ModelCatalog.displayName) ?? "Auto model", t.main.effort.map(ModelCatalog.effortLabel)].compactMap { $0 }.joined(separator: " · "))
-                    .font(.headline)
-                if let last = t.main.lastTurn, let line = lastTurnLine(last) {
-                    Text(line).font(.subheadline).foregroundStyle(.secondary)
-                }
-            }
-            .padding(.vertical, 4)
-        }
-    }
-
-    @ViewBuilder
-    private func advisorSection(_ t: AgentTree) -> some View {
-        if let a = t.advisor, a.on || !(a.calls ?? []).isEmpty {
-            Section {
-                ForEach(Array((a.calls ?? []).reversed().enumerated()), id: \.offset) { _, c in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(c.verdict.map(ConversationModel.verdictLabel).map { $0.prefix(1).uppercased() + $0.dropFirst() }
-                                 ?? (c.status == "reviewed" ? "Reviewed this step" : c.status == "declined" ? "Declined to advise" : c.status ?? "Call"))
-                                .fontWeight(.medium)
-                            Spacer()
-                            if let at = c.at.flatMap(AppModel.isoDate) {
-                                Text(at, format: .relative(presentation: .named, unitsStyle: .abbreviated)).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        if let trigger = c.trigger { Text("At the \(trigger) checkpoint").font(.caption).foregroundStyle(.secondary) }
-                        if let advice = c.advice, !advice.isEmpty { Text(advice).font(.callout).foregroundStyle(.secondary).lineLimit(6) }
-                        if let e = c.error { Text(e).font(.caption).foregroundStyle(.red) }
-                    }
-                }
-                if (a.calls ?? []).isEmpty {
-                    Text("No calls yet.").foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("Advisor" + (a.model.map { ", \(ModelCatalog.displayName($0))" } ?? ""))
-            } footer: {
-                if let note = a.note { Text(note) }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func jevSection(_ t: AgentTree) -> some View {
-        let picks = t.picks ?? []
-        let forks = t.forks?.recent ?? []
-        if t.helpers?.router != nil || t.helpers?.team == true || !picks.isEmpty || !forks.isEmpty {
-            Section {
-                ForEach(Array(picks.reversed().enumerated()), id: \.offset) { _, p in
-                    CardRow(card: .decision(p))
-                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                }
-                if let f = t.forks, (f.total ?? 0) > 0 {
-                    Text("\(f.sharp ?? 0) sharp, followed. \(f.split ?? 0) split, the main session decided.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(Array(forks.reversed().enumerated()), id: \.offset) { _, f in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(f.question ?? "Fork").lineLimit(3)
-                        HStack(spacing: 6) {
-                            if let choice = f.choice { Text("→ \(choice)").fontWeight(.medium) }
-                            if let c = f.confidence { Text("\(Int((c * 100).rounded()))%").foregroundStyle(.secondary) }
-                            Spacer()
-                            if let v = f.verdict {
-                                Text(v == "sharp" ? "Sharp" : "Split")
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 2)
-                                    .background((v == "sharp" ? Palette.ok : Color.secondary).opacity(0.14), in: .capsule)
-                            }
-                        }
-                        .font(.caption)
-                        if let e = f.error { Text(e).font(.caption).foregroundStyle(.red) }
-                    }
-                }
-                if picks.isEmpty && forks.isEmpty {
-                    Text("No picks or forks this turn.").foregroundStyle(.secondary)
-                }
-            } header: {
-                Text(t.helpers?.router == "decisions" ? "OpenAI Decisions" : "Jev")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func teamSection(_ t: AgentTree) -> some View {
-        if t.team != nil || !subagents.isEmpty {
-            Section {
-                if let team = t.team {
-                    HStack {
-                        Text([team.model.map(ModelCatalog.displayName), team.effort.map(ModelCatalog.effortLabel)].compactMap { $0 }.joined(separator: " · "))
-                        Spacer()
-                        if let c = team.confidence, team.pickedBy != nil {
-                            Text("Jev \(Int((c * 100).rounded()))%").font(.caption).foregroundStyle(Palette.clay)
-                        }
-                    }
-                    if let roles = team.roles, !roles.isEmpty {
-                        Text("Roles: " + roles.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                ForEach(ordered(subagents), id: \.agent.agentId) { item in
-                    SubagentRow(agent: item.agent)
-                        .padding(.leading, CGFloat(item.depth) * 16)
-                }
-            } header: {
-                Text(t.team != nil ? "Agent team" : "Subagents")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func delegatesSection(_ t: AgentTree) -> some View {
-        let delegates = t.delegates ?? []
-        if !delegates.isEmpty {
-            Section("Delegates") {
-                ForEach(delegates) { d in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(d.role.prefix(1).uppercased() + d.role.dropFirst()).fontWeight(.medium)
-                            Spacer()
-                            if let gate = d.lastReport?.gate { GatePill(gate: gate) }
-                            NodeStatus(text: delegateStatus(d), color: d.working == true ? Palette.ok : d.status == "failed" ? .red : .secondary)
-                        }
-                        Text([(d.provider == "codex" ? "ChatGPT" : "Claude"), d.model.map(ModelCatalog.displayName), "\(d.turns ?? 0) turns",
-                              (d.pending?.isEmpty == false ? "\(d.pending!.count) queued" : nil)].compactMap { $0 }.joined(separator: ", "))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if let text = d.lastReport?.text, !text.isEmpty {
-                            Text(text).font(.callout).foregroundStyle(.secondary).lineLimit(5)
-                        }
-                    }
-                    .swipeActions {
-                        if d.working == true || d.status == "idle" {
-                            Button("Stop", systemImage: "stop.fill", role: .destructive) {
-                                Task {
-                                    _ = try? await app.client?.post("/api/delegates/stop", DelegateRef(projectId: projectId, sessionId: sessionId, id: d.id))
-                                    await load()
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if let turns = tree?.turns, turns.count > 1 {
+                        Menu("Turn", systemImage: "clock.arrow.circlepath") {
+                            Picker("Turn", selection: $turnN) {
+                                Text("Latest turn").tag(Int?.none)
+                                ForEach(turns.reversed(), id: \.n) { t in
+                                    Text("Turn \(t.n)" + (t.prompt.map { ": \($0.prefix(40))" } ?? "")).tag(Optional(t.n))
                                 }
                             }
                         }
                     }
                 }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
+            .task { await poll() }
         }
     }
 
-    @ViewBuilder
-    private func turnsSection(_ t: AgentTree) -> some View {
-        let turns = (t.turns ?? []).reversed().prefix(20)
-        if !turns.isEmpty {
-            Section("Turns") {
-                ForEach(Array(turns), id: \.n) { turn in
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Turn \(turn.n)").fontWeight(.medium)
-                            if let p = turn.prompt, !p.isEmpty { Text(p).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
-                        }
-                        Spacer()
-                        if turn.running == true {
-                            NodeStatus(text: "Now", color: Palette.ok)
-                        } else if let at = turn.startedAt.flatMap(AppModel.isoDate) {
-                            Text(at, format: .relative(presentation: .named, unitsStyle: .abbreviated)).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-        }
+    private var turnTitle: String {
+        guard let turns = tree?.turns, let last = turns.last else { return app.conversation(projectId, sessionId)?.title ?? "" }
+        let n = turnN ?? last.n
+        let live = tree?.main.running == true || tree?.main.background == true
+        return "Turn \(n)" + (turnN == nil ? (live ? ", live" : ", idle") : "")
     }
-
-    // MARK: data
 
     private func poll() async {
         while !Task.isCancelled {
@@ -250,102 +90,632 @@ struct AgentTreeView: View {
             subagents = s.subagents
         }
     }
+}
 
-    /// Depth-first, children under the agent that spawned them.
-    private func ordered(_ all: [Subagent]) -> [(agent: Subagent, depth: Int)] {
-        let byParent = Dictionary(grouping: all) { $0.parentAgentId ?? $0.spawnedBy ?? "" }
-        let ids = Set(all.map(\.agentId))
-        var out: [(Subagent, Int)] = []
-        func walk(_ parent: String, _ depth: Int) {
-            for a in (byParent[parent] ?? []).sorted(by: { ($0.startedAt ?? 0) < ($1.startedAt ?? 0) }) {
-                out.append((a, depth))
-                walk(a.agentId, depth + 1)
+struct DelegateRef: Encodable, Sendable { let projectId: String; let sessionId: String; let id: String }
+
+/// The tree itself, for one turn. A plain view, so a test can render it.
+struct AgentTreeContent: View {
+    let tree: AgentTree
+    let subagents: [Subagent]
+    var turnN: Int?
+    var wide: Bool
+    var stopDelegate: (String) -> Void = { _ in }
+    @State private var earlierOpen = false
+
+    var body: some View {
+        let w = TurnWindow(tree: tree, turnN: turnN)
+        let advisorOn = tree.advisor?.on == true
+        VStack(alignment: .leading, spacing: 18) {
+            Legend(tree: tree, showForks: showForks(w), hasWorkers: tree.team != nil || !subagents.isEmpty)
+            if wide && advisorOn {
+                HStack(alignment: .top, spacing: 18) {
+                    AdvisorCard(advisor: tree.advisor!, calls: w.calls(tree.advisor?.calls ?? []))
+                        .frame(width: 250)
+                    pipeline(w)
+                }
+            } else {
+                if advisorOn {
+                    AdvisorCard(advisor: tree.advisor!, calls: w.calls(tree.advisor?.calls ?? []))
+                }
+                pipeline(w)
             }
+            SessionLog(events: logEvents(w))
         }
-        // Roots: no parent, or a parent this list does not hold.
-        for key in byParent.keys where key.isEmpty || !ids.contains(key) { walk(key, 0) }
-        return out.map { (agent: $0.0, depth: $0.1) }
     }
 
-    private func lastTurnLine(_ l: AgentTree.Main.LastTurn) -> String? {
+    private func showForks(_ w: TurnWindow) -> Bool {
+        tree.team != nil || tree.helpers?.router != nil || !w.forks(tree.forks?.recent ?? []).isEmpty
+    }
+
+    @ViewBuilder
+    private func pipeline(_ w: TurnWindow) -> some View {
+        let thisTurn = w.workers(subagents)
+        let earlier = w.earlier(subagents)
+        let delegates = tree.delegates ?? []
+        let anyWorkers = !subagents.isEmpty || !delegates.isEmpty
+        VStack(spacing: 0) {
+            MainCard(main: tree.main)
+            if showForks(w) {
+                Connector(from: RoleColor.main, to: RoleColor.jev)
+                ForkCard(forks: w.forks(tree.forks?.recent ?? []), picker: tree.helpers?.router)
+            }
+            if tree.team != nil || !subagents.isEmpty {
+                Connector(from: showForks(w) ? RoleColor.jev : RoleColor.main, to: RoleColor.sub,
+                          label: tree.team != nil ? "Delegate to subagents" : "Subagents", strong: tree.team.map(teamLabel))
+                workers(thisTurn, earlier)
+            }
+            if !delegates.isEmpty {
+                Connector(from: RoleColor.sub, to: RoleColor.delegate, label: tree.team != nil || !subagents.isEmpty ? nil : "Delegate to hidden workers")
+                DelegatesCard(delegates: delegates, stop: stopDelegate)
+            }
+            if tree.team != nil || anyWorkers {
+                Connector(from: delegates.isEmpty ? RoleColor.sub : RoleColor.delegate, to: RoleColor.main)
+                RoleCard(color: RoleColor.main, dashed: true) {
+                    VStack(spacing: 4) {
+                        Text("Back to main session" + (tree.main.effort.map { ", \(ModelCatalog.effortLabel($0).lowercased())" } ?? ""))
+                            .font(.headline)
+                            .foregroundStyle(RoleColor.main)
+                        Text("Reviews and verifies").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            if tree.helpers?.advisor != true && tree.helpers?.team != true && tree.helpers?.router == nil && !anyWorkers {
+                Text("Turn on Advisor, Agent team or Jev from Helpers, or ask this conversation to delegate work.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 14)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func workers(_ list: [Subagent], _ earlier: [(String, [Subagent])]) -> some View {
+        VStack(spacing: 12) {
+            if list.isEmpty {
+                Text("No workers this turn.").font(.footnote).foregroundStyle(.secondary).padding(.vertical, 8)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10, alignment: .top)], spacing: 10) {
+                    ForEach(nest(list), id: \.agent.agentId) { item in
+                        SubagentCard(agent: item.agent, model: workerLabel(item.agent), children: item.children)
+                    }
+                }
+            }
+            let n = earlier.reduce(0) { $0 + $1.1.count }
+            if n > 0 {
+                Button {
+                    withAnimation(.snappy) { earlierOpen.toggle() }
+                } label: {
+                    Label("\(n) earlier", systemImage: earlierOpen ? "chevron.down" : "chevron.right")
+                        .font(.footnote.weight(.medium))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .overlay(Capsule().strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                if earlierOpen {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(earlier, id: \.0) { group in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(group.0).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                ForEach(group.1) { s in
+                                    HStack(spacing: 8) {
+                                        SubagentStatusIcon(status: s.status)
+                                        Text(SubagentCard.role(s)).font(.footnote.weight(.medium))
+                                        Text(s.description ?? s.brief ?? "").font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 16, style: .continuous))
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+        }
+    }
+
+    /// Top-level workers, each with the agents it spawned.
+    private func nest(_ list: [Subagent]) -> [(agent: Subagent, children: [Subagent])] {
+        let ids = Set(list.map(\.agentId))
+        func parent(_ s: Subagent) -> String? {
+            if let p = s.parentAgentId, ids.contains(p), p != s.agentId { return p }
+            if let p = s.spawnedBy, ids.contains(p) { return p }
+            return nil
+        }
+        let kids = Dictionary(grouping: list.filter { parent($0) != nil }) { parent($0)! }
+        return list.filter { parent($0) == nil }.map { ($0, kids[$0.agentId] ?? []) }
+    }
+
+    private func teamLabel(_ team: AgentTree.Team) -> String {
+        guard team.pickedBy != nil else { return "effort " + (team.effort.map(ModelCatalog.effortLabel)?.lowercased() ?? "medium") }
+        return [team.model.map(ModelCatalog.displayName), team.effort.map { ModelCatalog.effortLabel($0).lowercased() },
+                (team.pickedBy == "openai" ? "Decisions" : "Jev") + (team.confidence.map { " \(Int(($0 * 100).rounded()))%" } ?? "")]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// The panel's workerLabel: the team's model and effort for a team role.
+    private func workerLabel(_ s: Subagent) -> String? {
+        guard let team = tree.team else { return nil }
+        if tree.provider == "codex" {
+            return ((team.pickedBy != nil ? team.model.map { ModelCatalog.displayName($0) + " · " } : nil) ?? "") + "effort " + (team.effort ?? "medium")
+        }
+        let type = s.agentType ?? ""
+        var role = type, effort = "medium"
+        for suffix in ["-low", "-high"] where type.hasSuffix(suffix) {
+            role = String(type.dropLast(suffix.count))
+            effort = String(suffix.dropFirst())
+        }
+        guard (team.roles ?? []).contains(role) else { return nil }
+        return ModelCatalog.displayName(team.model ?? "opus") + " · " + effort
+    }
+
+    private func logEvents(_ w: TurnWindow) -> [LogEvent] {
+        var ev: [LogEvent] = []
+        for s in w.workers(subagents) {
+            if let at = s.startedAt { ev.append(LogEvent(at: at, tag: SubagentCard.role(s), color: RoleColor.sub, text: "started, " + (s.description ?? s.brief ?? ""))) }
+            if let at = s.endedAt { ev.append(LogEvent(at: at, tag: SubagentCard.role(s), color: RoleColor.sub, text: SubagentStatusIcon.label(s.status).lowercased() + ", " + (s.description ?? s.brief ?? ""))) }
+        }
+        let jevTag = tree.helpers?.router == "decisions" ? "decisions" : "jev"
+        for f in w.forks(tree.forks?.recent ?? []) {
+            guard let at = f.at.flatMap(TurnWindow.ms) else { continue }
+            let p = f.confidence.map { String(format: " p=%.2f", $0) } ?? ""
+            ev.append(LogEvent(at: at, tag: jevTag, color: RoleColor.jev,
+                               text: (f.question ?? "") + (f.choice.map { " → \($0)" } ?? "") + p + (f.verdict == "sharp" ? ", sharp, followed" : ", split, main model decided")))
+        }
+        for g in w.forks(tree.gates ?? []) {
+            guard let at = g.at.flatMap(TurnWindow.ms) else { continue }
+            ev.append(LogEvent(at: at, tag: "gate", color: RoleColor.delegate,
+                               text: (g.question ?? "").replacingOccurrences(of: "report gate · ", with: "") + " → " + (g.choice ?? "unsure")))
+        }
+        for c in w.calls(tree.advisor?.calls ?? []) {
+            guard let at = c.at.flatMap(TurnWindow.ms) else { continue }
+            let text = tree.advisor?.kind == "claude"
+                ? "advisor " + (c.status ?? "")
+                : (AdvisorCard.checkpointLabel(c.trigger) ?? c.trigger ?? "call") + ", " + (c.error.map { "error: \($0)" } ?? c.verdict.map(ConversationModel.verdictLabel) ?? "")
+            ev.append(LogEvent(at: at, tag: "advisor", color: RoleColor.advisor, text: text))
+        }
+        for p in w.picks(tree.picks ?? []) {
+            guard let at = p.at.flatMap(TurnWindow.ms) else { continue }
+            ev.append(LogEvent(at: at, tag: p.backend == "openai" ? "decisions" : "jev", color: RoleColor.jev, text: p.noteLine.isEmpty ? "unchanged" : p.noteLine))
+        }
+        for d in tree.delegates ?? [] {
+            guard let r = d.lastReport, let at = r.at.flatMap(TurnWindow.ms) else { continue }
+            ev.append(LogEvent(at: at, tag: d.role, color: RoleColor.delegate, text: (r.gate ?? r.status ?? "report") + ", " + (r.text?.split(separator: "\n").first.map(String.init) ?? "")))
+        }
+        return Array(ev.sorted { $0.at > $1.at }.prefix(15))
+    }
+}
+
+/// Which turn's work to show, by the panel's membership rule: a node belongs
+/// to a turn when it started before the turn ended and was running or ended
+/// after the turn began.
+struct TurnWindow {
+    let start: Double
+    let end: Double
+    let turns: [(n: Int, start: Double)]
+
+    init(tree: AgentTree, turnN: Int?) {
+        let list = (tree.turns ?? []).compactMap { t in t.startedAt.flatMap(Self.ms).map { (n: t.n, start: $0, end: t.endedAt.flatMap(Self.ms)) } }
+        turns = list.map { (n: $0.n, start: $0.start) }
+        let pick = list.last { $0.n == (turnN ?? list.last?.n) } ?? list.last
+        if let pick, let i = list.firstIndex(where: { $0.n == pick.n }) {
+            start = pick.start
+            let next = i + 1 < list.count ? list[i + 1].start : nil
+            end = turnN == nil ? .infinity : (pick.end ?? next ?? .infinity)
+        } else {
+            start = 0
+            end = .infinity
+        }
+    }
+
+    static func ms(_ iso: String) -> Double? { AppModel.isoDate(iso).map { $0.timeIntervalSince1970 * 1000 } }
+
+    func contains(_ at: Double) -> Bool { at >= start && at < end }
+
+    func workers(_ all: [Subagent]) -> [Subagent] {
+        all.filter { s in
+            guard let st = s.startedAt else { return false }
+            let running = s.status == "running"
+            return st < end && (running || (s.endedAt ?? st) >= start)
+        }
+        .sorted { ($0.status == "running" ? 0 : 1, $0.startedAt ?? 0) < ($1.status == "running" ? 0 : 1, $1.startedAt ?? 0) }
+    }
+
+    /// Workers from before this turn, grouped by the turn they started in.
+    func earlier(_ all: [Subagent]) -> [(String, [Subagent])] {
+        let mine = Set(workers(all).map(\.agentId))
+        let older = all.filter { !mine.contains($0.agentId) && ($0.startedAt ?? 0) < start }
+        var groups: [Int: [Subagent]] = [:], before: [Subagent] = []
+        for s in older {
+            let st = s.startedAt ?? 0
+            if let t = turns.last(where: { $0.start <= st }) { groups[t.n, default: []].append(s) } else { before.append(s) }
+        }
+        var out = groups.keys.sorted(by: >).map { ("Turn \($0)", groups[$0]!) }
+        if !before.isEmpty { out.append(("Before the first turn", before)) }
+        return out
+    }
+
+    func forks(_ list: [AgentTree.Fork]) -> [AgentTree.Fork] { list.filter { $0.at.flatMap(Self.ms).map(contains) ?? false } }
+    func calls(_ list: [AgentTree.AdvisorCall]) -> [AgentTree.AdvisorCall] { list.filter { $0.at.flatMap(Self.ms).map(contains) ?? false } }
+    func picks(_ list: [JevDecision]) -> [JevDecision] { list.filter { $0.at.flatMap(Self.ms).map(contains) ?? false } }
+}
+
+// MARK: cards
+
+struct Legend: View {
+    let tree: AgentTree
+    let showForks: Bool
+    let hasWorkers: Bool
+
+    var body: some View {
+        FlowRow(spacing: 8) {
+            chip(RoleColor.main, [tree.main.model.map(ModelCatalog.displayName) ?? "Main session", tree.main.effort.map { ModelCatalog.effortLabel($0).lowercased() }])
+            if hasWorkers {
+                chip(RoleColor.sub, ["Subagents", tree.team.flatMap { $0.pickedBy != nil ? $0.model.map(ModelCatalog.displayName) : nil }, tree.team?.effort])
+            }
+            if showForks { chip(RoleColor.jev, [tree.helpers?.router == "decisions" ? "Decisions" : "Jev", "forks"]) }
+            if !(tree.delegates ?? []).isEmpty { chip(RoleColor.delegate, ["Delegates"]) }
+            if tree.advisor?.on == true { chip(RoleColor.advisor, [tree.advisor?.model.map(ModelCatalog.displayName), "advisor"]) }
+        }
+    }
+
+    private func chip(_ color: Color, _ parts: [String?]) -> some View {
+        HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 2.5, style: .continuous).fill(color).frame(width: 10, height: 10)
+            Text(parts.compactMap { $0 }.joined(separator: " · "))
+        }
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color(.secondarySystemGroupedBackground), in: .capsule)
+    }
+}
+
+/// Short vertical line between pipeline cards, coloured from one role to the
+/// next, with an optional caption.
+struct Connector: View {
+    let from: Color
+    let to: Color
+    var label: String?
+    var strong: String?
+
+    var body: some View {
+        VStack(spacing: 6) {
+            line
+            if let label {
+                (Text(label) + Text(strong.map { "  \($0)" } ?? "").fontWeight(.semibold).foregroundStyle(to))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                line
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var line: some View {
+        Capsule()
+            .fill(LinearGradient(colors: [from.opacity(0.6), to.opacity(0.6)], startPoint: .top, endPoint: .bottom))
+            .frame(width: 2, height: label == nil ? 22 : 12)
+    }
+}
+
+struct MainCard: View {
+    let main: AgentTree.Main
+
+    var body: some View {
+        RoleCard(color: RoleColor.main) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    IconTile(symbol: ModelCatalog.symbol(main.model ?? ""), color: RoleColor.main, size: 34)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(main.model.map(ModelCatalog.displayName) ?? "Auto model").font(.headline)
+                        Text("Main session, plans and decides").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    status
+                }
+                HStack(spacing: 8) {
+                    Text("Effort").foregroundStyle(.secondary)
+                    EffortMeter(level: ModelCatalog.effortLevel(main.effort ?? ""))
+                    Text(main.effort.map(ModelCatalog.effortLabel) ?? "Default").fontWeight(.medium)
+                    Spacer(minLength: 8)
+                    if let by = main.pickedBy {
+                        Label((by == "openai" ? "Picked by OpenAI" : "Picked by Jev") + (main.lean.map { ", lean \($0)" } ?? ""), systemImage: "wand.and.stars")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                            .foregroundStyle(RoleColor.jev)
+                            .background(RoleColor.jev.opacity(0.14), in: .capsule)
+                    }
+                }
+                .font(.subheadline)
+                if let last = main.lastTurn, let line = Self.lastTurnLine(last) {
+                    Text(line).font(.caption).foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        if main.running == true {
+            Label("Working", systemImage: "circle.fill")
+                .symbolEffect(.pulse, options: .repeating)
+                .foregroundStyle(RoleColor.main)
+                .font(.caption.weight(.semibold))
+        } else if main.background == true {
+            Label("Background", systemImage: "circle.lefthalf.filled")
+                .foregroundStyle(.purple)
+                .font(.caption.weight(.semibold))
+        } else {
+            Label("Idle", systemImage: "circle")
+                .foregroundStyle(.secondary)
+                .font(.caption.weight(.semibold))
+        }
+    }
+
+    static func lastTurnLine(_ l: AgentTree.Main.LastTurn) -> String? {
         var parts: [String] = []
         if let s = l.steps { parts.append("\(s) steps") }
         if let ms = l.durationMs { parts.append(Duration.milliseconds(Int64(ms)).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow))) }
         if let c = l.costUsd { parts.append(String(format: "$%.2f", c)) }
         return parts.isEmpty ? nil : "Last turn: " + parts.joined(separator: ", ")
     }
-
-    private func delegateStatus(_ d: AgentTree.Delegate) -> String {
-        if d.working == true { return "Working" }
-        switch d.status {
-        case "idle": return "Idle"
-        case "failed": return "Failed"
-        case "stopped": return "Stopped"
-        case "interrupted": return "Interrupted"
-        default: return d.status.capitalized
-        }
-    }
 }
 
-struct DelegateRef: Encodable, Sendable { let projectId: String; let sessionId: String; let id: String }
-
-struct NodeStatus: View {
-    let text: String
-    let color: Color
+struct ForkCard: View {
+    let forks: [AgentTree.Fork]
+    let picker: String?
 
     var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 7, height: 7)
-            Text(text)
+        let sharp = forks.filter { $0.verdict == "sharp" }.count
+        RoleCard(color: RoleColor.jev) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    IconTile(symbol: "wand.and.stars", color: RoleColor.jev, size: 34)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(picker == "decisions" ? "OpenAI Decisions" : "Jev").font(.headline)
+                        Text("Fork layer").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text("\(forks.count)").font(.title3.weight(.semibold).monospacedDigit()).foregroundStyle(RoleColor.jev)
+                        Text(forks.count == 1 ? "fork" : "forks").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if forks.isEmpty {
+                    Text("No forks yet. Small either-or questions go here.").font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(forks.suffix(4).reversed().enumerated()), id: \.offset) { _, f in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(f.question ?? "Fork").font(.subheadline).lineLimit(2)
+                            HStack(spacing: 8) {
+                                ConfidenceMeter(value: f.confidence, color: f.verdict == "sharp" ? RoleColor.jev : .secondary)
+                                Text(f.confidence.map { String(format: "%.2f", $0) } ?? "–")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                Text(f.verdict == "sharp" ? "Sharp" : "Split")
+                                    .font(.caption2.weight(.bold))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 2)
+                                    .foregroundStyle(f.verdict == "sharp" ? .white : .secondary)
+                                    .background(f.verdict == "sharp" ? AnyShapeStyle(RoleColor.jev) : AnyShapeStyle(.quaternary), in: .capsule)
+                            }
+                            if let choice = f.choice {
+                                Text("→ \(choice)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                    }
+                    HStack {
+                        Text("Sharp \(sharp), followed").foregroundStyle(RoleColor.jev)
+                        Spacer()
+                        Text("Split \(forks.count - sharp), main model decided").foregroundStyle(RoleColor.main)
+                    }
+                    .font(.caption.weight(.medium))
+                }
+            }
         }
-        .font(.caption.weight(.medium))
-        .foregroundStyle(color == .secondary ? Color.secondary : color)
     }
 }
 
-struct SubagentRow: View {
+struct SubagentCard: View {
     let agent: Subagent
+    let model: String?
+    let children: [Subagent]
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(name).fontWeight(.medium).lineLimit(1)
-                Spacer()
-                NodeStatus(text: status.0, color: status.1)
-            }
-            if let d = agent.description ?? agent.brief, !d.isEmpty {
-                Text(d).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            }
-            if !bits.isEmpty {
-                Text(bits).font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var name: String {
-        guard let t = agent.agentType, t != "codex-subagent" else { return "Codex agent" }
+    static func role(_ s: Subagent) -> String {
+        guard let t = s.agentType, t != "codex-subagent" else { return "Codex agent" }
         return t.prefix(1).uppercased() + t.dropFirst()
     }
 
-    private var status: (String, Color) {
-        switch agent.status {
-        case "running": return ("Working", Palette.ok)
-        case "done": return ("Done", .secondary)
-        case "failed": return ("Failed", .red)
-        case "stopped": return ("Stopped", .orange)
-        case "ended": return ("Ended, no result", .secondary)
-        default: return ("Status unknown", .secondary)
+    var body: some View {
+        RoleCard(color: RoleColor.sub) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    IconTile(symbol: "person.fill", color: RoleColor.sub, size: 24)
+                    Text(Self.role(agent)).font(.subheadline.weight(.semibold)).lineLimit(1)
+                }
+                if let model {
+                    Text(model).font(.caption.weight(.medium)).foregroundStyle(RoleColor.sub).lineLimit(1)
+                }
+                if let d = agent.description ?? agent.brief, !d.isEmpty {
+                    Text(d).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                HStack(spacing: 5) {
+                    SubagentStatusIcon(status: agent.status)
+                    Text(SubagentStatusIcon.label(agent.status)).font(.caption.weight(.medium))
+                    Spacer(minLength: 4)
+                    if let usd = agent.cost?.usd { Text(String(format: "$%.2f", usd)).font(.caption2).foregroundStyle(.tertiary) }
+                }
+                ForEach(children) { c in
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.turn.down.right").font(.caption2).foregroundStyle(.tertiary)
+                        SubagentStatusIcon(status: c.status)
+                        Text(Self.role(c)).font(.caption.weight(.medium)).lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct SubagentStatusIcon: View {
+    let status: String
+
+    static func label(_ s: String) -> String {
+        switch s {
+        case "running": return "Running"
+        case "done": return "Done"
+        case "failed": return "Failed"
+        case "stopped": return "Stopped"
+        case "ended": return "Ended, no result"
+        default: return "Status unknown"
         }
     }
 
-    private var bits: String {
-        var parts: [String] = []
-        if let s = agent.startedAt {
-            let end = agent.endedAt ?? Date().timeIntervalSince1970 * 1000
-            parts.append(Duration.milliseconds(Int64(max(0, end - s))).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow)))
+    var body: some View {
+        switch status {
+        case "running":
+            Image(systemName: "circle.dotted").symbolEffect(.rotate, options: .repeating).foregroundStyle(RoleColor.sub)
+        case "done":
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case "failed":
+            Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+        case "stopped":
+            Image(systemName: "stop.circle.fill").foregroundStyle(.orange)
+        default:
+            Image(systemName: "minus.circle").foregroundStyle(.secondary)
         }
-        if let usd = agent.cost?.usd { parts.append(String(format: "$%.2f", usd)) }
-        return parts.joined(separator: ", ")
+    }
+}
+
+struct AdvisorCard: View {
+    let advisor: AgentTree.Advisor
+    let calls: [AgentTree.AdvisorCall]
+
+    static let checkpoints = [("plan", "Before a plan"), ("stuck", "When an error repeats"), ("done", "Before done")]
+    static func checkpointLabel(_ trigger: String?) -> String? { checkpoints.first { $0.0 == trigger }?.1.lowercased() }
+
+    var body: some View {
+        RoleCard(color: RoleColor.advisor) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    IconTile(symbol: "person.badge.shield.checkmark.fill", color: RoleColor.advisor, size: 34)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(advisor.model.map(ModelCatalog.displayName) ?? "Advisor").font(.headline)
+                        Text("Advisor, on call").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+                if advisor.kind != "claude" {
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(Self.checkpoints, id: \.0) { cp in
+                            let hit = calls.contains { $0.trigger == cp.0 }
+                            Label(cp.1, systemImage: hit ? "diamond.fill" : "diamond")
+                                .font(.subheadline)
+                                .foregroundStyle(hit ? RoleColor.advisor : .secondary)
+                        }
+                    }
+                }
+                HStack {
+                    Text("Calls this turn").foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(calls.count)").fontWeight(.semibold).monospacedDigit().foregroundStyle(RoleColor.advisor)
+                }
+                .font(.subheadline)
+                if let advice = calls.last(where: { $0.advice?.isEmpty == false })?.advice {
+                    Text("“\(advice)”").font(.footnote).foregroundStyle(.secondary).lineLimit(6)
+                }
+                Text(advisor.note ?? "Reviews the turn at these checkpoints and never writes code itself.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+struct DelegatesCard: View {
+    let delegates: [AgentTree.Delegate]
+    let stop: (String) -> Void
+
+    var body: some View {
+        RoleCard(color: RoleColor.delegate) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    IconTile(symbol: "person.2.fill", color: RoleColor.delegate, size: 34)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Delegates").font(.headline)
+                        Text("Reports gated by Jev").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(delegates) { d in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(d.role.prefix(1).uppercased() + d.role.dropFirst()).font(.subheadline.weight(.semibold))
+                            Spacer()
+                            if let gate = d.lastReport?.gate { GatePill(gate: gate) }
+                            SubagentStatusIcon(status: d.working == true ? "running" : d.status == "failed" ? "failed" : d.status == "stopped" ? "stopped" : "done")
+                        }
+                        Text([(d.provider == "codex" ? "ChatGPT" : "Claude"), d.model.map(ModelCatalog.displayName), "\(d.turns ?? 0) turns",
+                              (d.pending?.isEmpty == false ? "\(d.pending!.count) queued" : nil)].compactMap { $0 }.joined(separator: ", "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let text = d.lastReport?.text, !text.isEmpty {
+                            Text(text).font(.footnote).foregroundStyle(.secondary).lineLimit(4)
+                        }
+                    }
+                    .contextMenu {
+                        if d.working == true || d.status == "idle" {
+                            Button("Stop delegate", systemImage: "stop.fill", role: .destructive) { stop(d.id) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct LogEvent: Hashable {
+    let at: Double
+    let tag: String
+    let color: Color
+    let text: String
+}
+
+struct SessionLog: View {
+    let events: [LogEvent]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Session log").font(.headline)
+            if events.isEmpty {
+                Text("Nothing yet this turn.").font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(events, id: \.self) { e in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(Date(timeIntervalSince1970: e.at / 1000), format: .dateTime.hour().minute().second())
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                    Text(e.tag)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(e.color)
+                        .frame(width: 92, alignment: .leading)
+                        .lineLimit(1)
+                    Text(e.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 20, style: .continuous))
     }
 }
