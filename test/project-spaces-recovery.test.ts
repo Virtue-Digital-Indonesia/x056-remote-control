@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AccountRegistry } from '../src/accounts.js';
 import { SessionManager } from '../server/manager.js';
 import { backupProjectSpaces, restoreProjectSpaces, projectSpacesRecoveryReport } from '../server/project-spaces-recovery.js';
+import { ArtifactStore } from '../server/workspace-store.js';
+import { closeAllGatewayDbs, gatewayDb, putArtifact } from '../server/gateway-db.js';
 const managers: SessionManager[] = [];
 afterEach(() => { for (const m of managers.splice(0)) m.onModuleDestroy(); });
 function fixture() {
@@ -64,7 +66,7 @@ describe('Project spaces backup, rollback and repair reports', () => {
     f.m.memory().update(memory.id, memory.revision, { content: 'New approved brief' });
     f.m.enqueue(f.chat.id, { text: 'Retain this later message', sessionId: f.chat.lastSessionId, paused: true });
     const latest = join(f.root, 'after-new-writes'), manifest = await backupProjectSpaces(f.stateDir, latest, true);
-    expect(manifest.databases).toEqual(['chat-files.sqlite','memory.sqlite']);
+    expect(manifest.databases).toEqual(['chat-files.sqlite','memory.sqlite','gateway.sqlite']);
     expect(() => restoreProjectSpaces(first, f.stateDir)).toThrow('preserve');
     f.m.onModuleDestroy(); f.m.memory().close();
     renameSync(f.stateDir, join(f.root, 'preserved-latest-state'));
@@ -140,6 +142,28 @@ describe('Project spaces backup, rollback and repair reports', () => {
     f.m.memory().create({projectId:work.id,sessionId:target.sessionId,scope:'conversation',title:'Keep context',content:'Reviewed local fact',status:'confirmed'});
     expect(()=>f.m.removeProject(work.id)).toThrow('Archive');expect(()=>f.m.removeConversation(work.id,target.sessionId)).toThrow('Archive');
     expect(f.m.executionProject(work.id).cwd).toBe(f.root);expect(projectSpacesRecoveryReport(f.stateDir).ready).toBe(true);
+  });
+  it('backs up and restores the artifact library in gateway.sqlite and reports orphaned artifacts from it', async () => {
+    const f = fixture(), shot = join(f.chat.cwd, 'shot.png'); writeFileSync(shot, 'png bytes');
+    const kept = new ArtifactStore(f.stateDir, () => [f.chat.cwd]).add({ projectId: f.chat.id, sessionId: f.chat.lastSessionId!, title: 'Shot', kind: 'image', path: shot, source: 'manual' });
+    expect(projectSpacesRecoveryReport(f.stateDir)).toMatchObject({ ready: true, counts: { artifacts: 1 } });
+    putArtifact(gatewayDb(f.stateDir), { ...kept, id: 'orphan-artifact', projectId: 'gone', sessionId: 'gone' });
+    f.m.onModuleDestroy();
+    const snap = join(f.root, 'with-artifacts'), manifest = await backupProjectSpaces(f.stateDir, snap, true);
+    expect(manifest.databases).toContain('gateway.sqlite');
+    renameSync(f.stateDir, join(f.root, 'preserved')); restoreProjectSpaces(snap, f.stateDir);
+    const report = projectSpacesRecoveryReport(f.stateDir);
+    expect(report.counts.artifacts).toBe(2);
+    expect(report.issues).toContainEqual({ store: 'artifacts', id: 'orphan-artifact', reason: 'Source Project unavailable' });
+    expect(new ArtifactStore(f.stateDir, () => []).list().map(a => a.id)).toEqual(['orphan-artifact', kept.id]);
+  });
+  it('reads a legacy artifacts.json the gateway has not imported yet, without importing it', () => {
+    const f = fixture(); f.m.onModuleDestroy(); closeAllGatewayDbs();
+    writeFileSync(join(f.stateDir, 'artifacts.json'), JSON.stringify([{ id: 'legacy-orphan', projectId: 'gone', sessionId: 'gone', title: 't', kind: 'test', at: '', source: 'manual' }]));
+    const report = projectSpacesRecoveryReport(f.stateDir);
+    expect(report.counts.artifacts).toBe(1);
+    expect(report.issues).toContainEqual({ store: 'artifacts', id: 'legacy-orphan', reason: 'Source Project unavailable' });
+    expect(existsSync(join(f.stateDir, 'artifacts.json'))).toBe(true);
   });
   it('requires offline backup and rejects damaged snapshots before creating a restore', async () => {
     const f = fixture(); await expect(backupProjectSpaces(f.stateDir, join(f.root, 'unsafe'), false)).rejects.toThrow('Stop all');

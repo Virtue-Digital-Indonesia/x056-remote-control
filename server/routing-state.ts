@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readState, writeState } from './workspace-store.js';
-import { gatewayDb, putRoute, ROUTING_HISTORY_CAP } from './gateway-db.js';
+import { gatewayDb, putRoute, trimRoutingHistory } from './gateway-db.js';
 import { transaction } from './sqlite.js';
 import type { AccountRouteContext } from '../src/accounts.js';
 export interface ConversationRoute {
@@ -61,7 +61,7 @@ export class RoutingState {
     const db = gatewayDb(this.state);
     transaction(db, () => {
       putRoute(db, { ...row, id: randomUUID(), at: new Date().toISOString() });
-      db.prepare(`DELETE FROM routing_history WHERE id <= (SELECT id FROM routing_history ORDER BY id DESC LIMIT 1 OFFSET ${ROUTING_HISTORY_CAP})`).run();
+      trimRoutingHistory(db);
     });
   }
   links(): HandoffLink[] {

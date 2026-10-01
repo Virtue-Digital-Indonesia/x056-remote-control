@@ -10,6 +10,7 @@ export { transaction } from './sqlite.js';
  *   transcript_stats  per-transcript token/Task cache   (was transcript-stats.json)
  *   routing_history   routing events, newest 3000       (was routing-history.json)
  *   message_receipts  panel send idempotency receipts   (was message-receipts.json)
+ *   artifacts         the artifact library (soft-removed) (was artifacts.json)
  *
  * ONE connection per state directory, opened lazily and shared by every store
  * instance (RoutingState is constructed per call all over the manager). Stores
@@ -30,6 +31,14 @@ export { transaction } from './sqlite.js';
  */
 export const GATEWAY_DB = 'gateway.sqlite';
 export const ROUTING_HISTORY_CAP = 3000;
+/** Keep the newest ROUTING_HISTORY_CAP rows. Ids are an INTEGER PRIMARY KEY
+ *  without AUTOINCREMENT and rows only ever leave from the bottom, so they are
+ *  contiguous and `max(id) - cap` is the cut. The `ORDER BY id DESC LIMIT 1
+ *  OFFSET cap` form walks 3000 wide table rows: 2.6 ms per routing event on
+ *  the live data, against 0.3 ms for this. */
+export function trimRoutingHistory(db: Db): void {
+  db.prepare(`DELETE FROM routing_history WHERE id <= (SELECT max(id) FROM routing_history) - ${ROUTING_HISTORY_CAP}`).run();
+}
 
 const MIGRATIONS: Migration[] = [
   (db) => db.exec(`
@@ -41,6 +50,14 @@ const MIGRATIONS: Migration[] = [
     CREATE TABLE message_receipts(request_id TEXT PRIMARY KEY, project_id TEXT, session_id TEXT, status TEXT NOT NULL, updated_at INTEGER NOT NULL, data TEXT NOT NULL);
     CREATE INDEX message_receipts_status ON message_receipts(status);
     CREATE INDEX message_receipts_updated ON message_receipts(updated_at);
+  `),
+  // `seq` is the library order (newest = highest); rowid is not stable across
+  // VACUUM for a table with a TEXT primary key.
+  (db) => db.exec(`
+    CREATE TABLE artifacts(id TEXT PRIMARY KEY, seq INTEGER NOT NULL, project_id TEXT, session_id TEXT, removed INTEGER NOT NULL DEFAULT 0, created_at TEXT, data TEXT NOT NULL);
+    CREATE INDEX artifacts_seq ON artifacts(seq);
+    CREATE INDEX artifacts_scope ON artifacts(project_id, session_id, seq);
+    CREATE INDEX artifacts_removed ON artifacts(removed, seq);
   `),
 ];
 
@@ -64,6 +81,14 @@ export function putReceipt(db: Db, row: Row, updatedAt = Date.now()): void {
   db.prepare(`INSERT INTO message_receipts(request_id, project_id, session_id, status, updated_at, data) VALUES(?,?,?,?,?,?)
     ON CONFLICT(request_id) DO UPDATE SET project_id=excluded.project_id, session_id=excluded.session_id, status=excluded.status, updated_at=excluded.updated_at, data=excluded.data`).run(
     String(row.requestId), str(row.projectId), str(row.sessionId), String(row.status), updatedAt, JSON.stringify(row));
+}
+/** Insert or update an artifact; a new one goes to the top of the library,
+ *  an existing one keeps its place. */
+export function putArtifact(db: Db, row: Row): void {
+  db.prepare(`INSERT INTO artifacts(id, seq, project_id, session_id, removed, created_at, data)
+    VALUES(?, (SELECT coalesce(max(seq), 0) + 1 FROM artifacts), ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id, session_id=excluded.session_id, removed=excluded.removed, created_at=excluded.created_at, data=excluded.data`).run(
+    String(row.id), str(row.projectId), str(row.sessionId), row.removed ? 1 : 0, str(row.at), JSON.stringify(row));
 }
 const str = (x: unknown) => (typeof x === 'string' ? x : null);
 
@@ -94,6 +119,7 @@ const LEGACY: LegacyFile[] = [
         if (!isObject(row) || typeof row.id !== 'string') { bad++; continue; }
         putRoute(db, row); n++;
       }
+      // Exact count-based cut, once per import.
       db.prepare(`DELETE FROM routing_history WHERE id <= (SELECT id FROM routing_history ORDER BY id DESC LIMIT 1 OFFSET ${ROUTING_HISTORY_CAP})`).run();
       return [n, bad];
     },
@@ -106,6 +132,19 @@ const LEGACY: LegacyFile[] = [
       for (const [id, row] of Object.entries(raw)) {
         if (!isObject(row) || typeof row.status !== 'string') { bad++; continue; }
         putReceipt(db, { ...row, requestId: id }, typeof row.at === 'number' ? row.at : Date.now()); n++;
+      }
+      return [n, bad];
+    },
+  },
+  {
+    name: 'artifacts.json',
+    load(db, raw) {
+      if (!Array.isArray(raw)) throw new Error('expected an array');
+      let n = 0, bad = 0;
+      // Newest first on disk: insert oldest first so it gets the lowest seq.
+      for (const row of [...raw].reverse()) {
+        if (!isObject(row) || typeof row.id !== 'string') { bad++; continue; }
+        putArtifact(db, row); n++;
       }
       return [n, bad];
     },

@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { imagePaths } from '../src/artifact-references.js';
 import { basename, extname, join, resolve, sep, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { gatewayDb, putReceipt, transaction } from './gateway-db.js';
+import { gatewayDb, putArtifact, putReceipt, transaction } from './gateway-db.js';
 
 export interface Artifact {
   id: string;
@@ -70,20 +70,31 @@ export function writeState(file: string, value: unknown): void {
   renameSync(tmp, file);
   const dir = openSync(resolve(file, '..'), 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
 }
+/** The artifact library, in gateway.sqlite (`artifacts`), newest first.
+ *  `removed` is a soft flag: a manual re-add revives the same row. */
 export class ArtifactStore {
-  private file: string;
   private worktrees = new Map<string, { at: number; paths: string[] }>();
   constructor(
     private state: string,
     private roots: () => string[],
-  ) {
-    this.file = join(state, 'artifacts.json');
+  ) {}
+  private select(where: string, ...params: (string | null)[]): Artifact[] {
+    return gatewayDb(this.state)
+      .prepare(`SELECT data FROM artifacts${where ? ' WHERE ' + where : ''} ORDER BY seq DESC`)
+      .all(...params)
+      .map((r) => JSON.parse(String(r.data)) as Artifact);
   }
-  private all(): Artifact[] {
-    return readState<Artifact[]>(this.file, []);
+  /** One conversation's artifacts, removed ones included (they can be revived). */
+  private scoped(projectId: string, sessionId: string): Artifact[] {
+    // IS, not =: a project-level artifact has no sessionId (NULL), and the old
+    // in-memory `x.sessionId === sessionId` matched undefined to undefined.
+    return this.select('project_id IS ? AND session_id IS ?', projectId ?? null, sessionId ?? null);
+  }
+  private save(item: Artifact): void {
+    putArtifact(gatewayDb(this.state), item as unknown as Record<string, unknown>);
   }
   list(): Artifact[] {
-    return this.all().filter((x) => !x.removed);
+    return this.select('removed=0');
   }
   /** Internal file-catalog bridge. The catalog has already validated and synced
    * the blob; public add() continues to require an allowed source path. */
@@ -91,22 +102,21 @@ export class ArtifactStore {
     if (!/^[a-f0-9]{64}\.[a-z0-9]{1,12}$/.test(input.file)) throw new Error('Invalid retained blob');
     const path = join(this.state, 'artifacts', input.file);
     if (realpathSync(path) !== join(realpathSync(this.state), 'artifacts', input.file) || !statSync(path).isFile() || statSync(path).size !== input.size) throw new Error('Retained blob is missing or damaged');
-    const all = this.all();
-    const previous = all.find(a => a.projectId === input.projectId && a.sessionId === input.sessionId && a.file === input.file && a.title === input.title);
-    if (previous) return this.reuse(previous, 'manual', all);
+    const previous = this.scoped(input.projectId, input.sessionId).find(a => a.file === input.file && a.title === input.title);
+    if (previous) return this.reuse(previous, 'manual');
     const item: Artifact = { ...input, id: randomUUID(), at: new Date().toISOString(), source: 'manual', kind: input.mime?.startsWith('image/') ? 'image' : 'file' };
-    all.unshift(item); writeState(this.file, all); return item;
+    this.save(item); return item;
   }
-  private reuse(item: Artifact, source: Artifact['source'], all: Artifact[]): Artifact {
+  private reuse(item: Artifact, source: Artifact['source']): Artifact {
     if (item.removed && source === 'manual') {
       delete item.removed;
       item.at = new Date().toISOString();
-      writeState(this.file, all);
+      this.save(item);
     }
     return item;
   }
   add(input: Omit<Artifact, 'id' | 'at'> & { path?: string }): Artifact {
-    const all = this.all(),
+    const all = this.scoped(input.projectId, input.sessionId),
       item: Artifact = {
         ...input,
         id: randomUUID(),
@@ -130,7 +140,7 @@ export class ArtifactStore {
         if (retained) {
           try {
             if (statSync(join(this.state, 'artifacts', basename(retained.file!))).isFile())
-              return this.reuse(retained, input.source, all);
+              return this.reuse(retained, input.source);
           } catch {}
         }
         throw error;
@@ -192,7 +202,7 @@ export class ArtifactStore {
           x.sessionId === input.sessionId &&
           x.file?.startsWith(digest),
       );
-      if (previous) return this.reuse(previous, input.source, all);
+      if (previous) return this.reuse(previous, input.source);
       item.file = digest + extname(path).toLowerCase();
       item.original = path;
       item.mime = mime;
@@ -208,7 +218,7 @@ export class ArtifactStore {
       const previous = all.find(
         (x) => x.projectId === input.projectId && x.sessionId === input.sessionId && x.url === item.url,
       );
-      if (previous) return this.reuse(previous, input.source, all);
+      if (previous) return this.reuse(previous, input.source);
     } else if (input.kind === 'test') {
       const previous = all.find(
         (x) =>
@@ -217,20 +227,20 @@ export class ArtifactStore {
           x.kind === 'test' &&
           x.summary === input.summary,
       );
-      if (previous) return this.reuse(previous, input.source, all);
+      if (previous) return this.reuse(previous, input.source);
     } else throw new Error('A file path, preview URL, or test result is required.');
-    all.unshift(item);
-    writeState(this.file, all);
+    this.save(item);
     return item;
   }
   remove(id: string): void {
-    const all = this.all(),
-      item = all.find((x) => x.id === id);
-    if (item) item.removed = true;
-    writeState(this.file, all);
+    const item = this.select('id=?', id)[0];
+    if (item && !item.removed) {
+      item.removed = true;
+      this.save(item);
+    }
   }
   fileFor(id: string): { item: Artifact; path: string } | undefined {
-    const item = this.list().find((x) => x.id === id);
+    const item = this.select('id=? AND removed=0', id)[0];
     if (!item?.file) return;
     return { item, path: join(this.state, 'artifacts', basename(item.file)) };
   }
@@ -294,9 +304,7 @@ export class ArtifactStore {
       );
     if (
       testLine &&
-      !this.list().some(
-        (x) => x.projectId === projectId && x.sessionId === sessionId && x.summary === testLine,
-      )
+      !this.scoped(projectId, sessionId).some((x) => !x.removed && x.summary === testLine)
     )
       this.add({
         projectId,

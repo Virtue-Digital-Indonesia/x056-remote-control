@@ -902,8 +902,9 @@ Every assistant entry carries `message.usage` and `message.model`, so what a
 conversation or a subagent spent is **recorded, not estimated**. One incremental
 pass collects both that and the Task outcomes above.
 
-- **Scanning is incremental and cached** (`state/transcript-stats.json`, keyed by
-  path, holding a byte offset + running totals). Transcripts here reach 627MB;
+- **Scanning is incremental and cached** (`transcript_stats` in
+  `state/gateway.sqlite`, one row per path, holding a byte offset + running
+  totals; only entries that changed are written). Transcripts here reach 627MB;
   re-reading one per request is not an option.
 - Totals are for the **whole file**, always read from byte 0. A 627MB transcript
   takes 10.3s at ~61MB/s, which cannot happen inside one request, so it is read
@@ -921,7 +922,39 @@ pass collects both that and the Task outcomes above.
   flat subscription). An unpriced model is NAMED rather than blanking the figure;
   `<synthetic>` carries no tokens and is skipped.
 
-## Conversations messaging each other is BOUNDED
+## Gateway SQLite (`state/gateway.sqlite`)
+
+The busiest whole-file JSON stores moved here (2026-10-01): each used to be
+rewritten, and mostly re-parsed, on every change.
+
+| table | was | notes |
+|---|---|---|
+| `transcript_stats` | `transcript-stats.json` (4.3 MB rewrite per scan) | per-path upsert of changed entries; old `CACHE_VERSION` rows and vanished transcripts dropped at load |
+| `routing_history` | `routing-history.json` (2 fsyncs per routing event) | newest 3000 kept |
+| `message_receipts` | `message-receipts.json` | 30 days or the newest 5000, whichever is more |
+| `artifacts` | `artifacts.json` (re-parsed on every list/add) | `seq` = library order; `removed` stays a soft flag |
+
+- `server/sqlite.ts` is the helper (WAL, `synchronous=NORMAL`, versioned
+  migrations, refuses a newer `user_version`); `server/gateway-db.ts` holds ONE
+  connection per state dir, which every store fetches per operation (the
+  manager builds `RoutingState`/`ArtifactStore` per call). Closed on SIGTERM
+  and `onModuleDestroy`; the next access reopens it.
+- **Import / rollback rule.** At every open, an old JSON file that is present
+  is imported in one transaction (upsert by key, the file wins), then renamed
+  `<name>.migrated-<ts>` and kept. Rollback = rename it back and run the
+  previous image (writes made since then stay only in the database). A file
+  that does not parse at all is LEFT IN PLACE, logged, and not imported: the
+  table is used as is. For receipts that means a request id known only to the
+  broken file loses its duplicate-send guard. Only the rebuildable stats cache
+  is set aside as `.corrupt-<ts>`. `legacy_imports` records each import.
+- The offline backup/restore and recovery report (`project-spaces-recovery.ts`)
+  include it as a database; the report reads `artifacts` read-only through
+  SQLite, plus a legacy `artifacts.json` not yet imported.
+- **`projects.json` deliberately stays JSON for now**: the recovery and
+  migration tools fingerprint and read it raw, and ~114 call sites go through
+  the registry.
+
+
 
 `send_message` lets one conversation drive another, which is also how two of them
 get stuck: A asks B to debug something, B reports back, A asks a follow-up, and

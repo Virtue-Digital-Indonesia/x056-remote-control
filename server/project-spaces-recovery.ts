@@ -6,8 +6,11 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { ProjectRegistry } from './projects.js';
 import { ProjectSpaceRegistry } from './project-space-registry.js';
 
-const JSON_FILES = ['project-space-runtime.json','project-dispatches.jsonl','projects.json','project-spaces.json','project-space-migration.json','state.json','accounts.json','queues.json','autopilot.json','cron.json','questions.json','mcp-approvals.json','artifacts.json','conversation-routing.json','routing-history.json','provider-handoffs.json','project-handoffs.json','chat-requirements.json','message-receipts.json'];
-const DATABASES = ['chat-files.sqlite','memory.sqlite'];
+const JSON_FILES = ['project-space-runtime.json','project-dispatches.jsonl','projects.json','project-spaces.json','project-space-migration.json','state.json','accounts.json','queues.json','autopilot.json','cron.json','questions.json','mcp-approvals.json','conversation-routing.json','routing-history.json','provider-handoffs.json','project-handoffs.json','chat-requirements.json','message-receipts.json'];
+// The artifact library lives in gateway.sqlite (gateway-db.ts), so artifacts.json
+// is no longer listed: a state this build has never opened still holds it and
+// must be booted once (which imports it) before an offline backup.
+const DATABASES = ['chat-files.sqlite','memory.sqlite','gateway.sqlite'];
 const DIRECTORIES = ['artifacts','chats','project-files','memory-extractions'];
 interface SnapshotFile { path: string; hash?: string; link?: string; bytes?: number }
 interface Snapshot { schemaVersion: 1; createdAt: string; source: string; files: SnapshotFile[]; databases: string[] }
@@ -84,6 +87,24 @@ export function restoreProjectSpaces(snapshotPath: string, output: string): Snap
   return snapshot;
 }
 
+/** The artifact library as the gateway will see it: gateway.sqlite, read-only
+ *  and through SQLite (committed WAL pages included), plus a legacy
+ *  artifacts.json the gateway has not imported yet, which wins by id exactly
+ *  as the import would. Never initialises or migrates anything. */
+function artifactRows(state: string): { id: string; projectId: string; sessionId?: string }[] {
+  const rows = new Map<string, any>(), path = join(state, 'gateway.sqlite');
+  if (existsSync(path)) {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      if (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='artifacts'").get())
+        for (const r of db.prepare('SELECT data FROM artifacts ORDER BY seq DESC').all()) { const a = JSON.parse(String(r.data)); rows.set(a.id, a); }
+    } finally { db.close(); }
+  }
+  const legacy = join(state, 'artifacts.json');
+  if (existsSync(legacy)) for (const a of JSON.parse(readFileSync(legacy, 'utf8'))) if (a && typeof a.id === 'string') rows.set(a.id, a);
+  return [...rows.values()];
+}
+
 /** Read-only report. Missing references are repair requests, not instructions
  * to discard history or infer memberships from directory names. */
 export function projectSpacesRecoveryReport(state: string) {
@@ -150,7 +171,7 @@ export function projectSpacesRecoveryReport(state: string) {
       const handoffs=readJSON('project-handoffs.json',[]);for(const h of Array.isArray(handoffs)?handoffs:Object.values(handoffs.operations||handoffs))if(h&&typeof h==='object')checkSnapshot((h as any).memorySnapshot,(h as any).requestId||'handoff');
     }
   } finally { memory?.close();fileCatalog?.close(); }
-  for (const row of readJSON('artifacts.json', [])) { counts.artifacts++; if (!ids.has(row.projectId) && !(ownerIds.has(row.projectId) && !row.sessionId)) issues.push({ store: 'artifacts', id: row.id, reason: 'Source Project unavailable' }); }
+  for (const row of artifactRows(state)) { counts.artifacts++; if (!ids.has(row.projectId) && !(ownerIds.has(row.projectId) && !row.sessionId)) issues.push({ store: 'artifacts', id: row.id, reason: 'Source Project unavailable' }); }
   const runtime=readJSON('project-space-runtime.json',{}),pendingArchives=registry.pendingArchiveOperations().map(o=>o.id);
   return { runtime:{enabled:runtime.enabled,pending:runtime.pending?.id},pendingArchives,registry: registry.migrateSpaces(), spaces: { count: spaces.spaces.length, revision: spaces.revision, pendingOperations: spaces.operations.filter(o => o.state === 'pending').map(o => o.id) }, counts, issues, ready: !issues.length && !spaces.operations.some(o=>o.state==='pending') && !runtime.pending && !pendingArchives.length && !registry.migrateSpaces().invalidParents.length };
 }

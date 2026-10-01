@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDb, transaction, userVersion } from '../server/sqlite.js';
 import { closeAllGatewayDbs, gatewayDb, putReceipt, ROUTING_HISTORY_CAP } from '../server/gateway-db.js';
 import { RoutingState } from '../server/routing-state.js';
-import { DeliveryStore, RECEIPT_KEEP_MS, RECEIPT_KEEP_ROWS } from '../server/workspace-store.js';
+import { ArtifactStore, DeliveryStore, RECEIPT_KEEP_MS, RECEIPT_KEEP_ROWS } from '../server/workspace-store.js';
 import { TranscriptStatsReader } from '../server/transcript-stats.js';
 
 const dir = () => mkdtempSync(join(tmpdir(), 'x056-gateway-db-'));
@@ -162,5 +162,25 @@ describe('message_receipts retention', () => {
     const d = dir(), db = gatewayDb(d), now = Date.now();
     transaction(db, () => { for (let i = 0; i < RECEIPT_KEEP_ROWS + 3; i++) putReceipt(db, { requestId: 'r-' + i, hash: 'h', status: 'accepted', at: now }, now - i); });
     expect(Object.keys(new DeliveryStore(d).all())).toHaveLength(RECEIPT_KEEP_ROWS + 3);
+  });
+});
+
+describe('artifacts', () => {
+  it('imports the library in its order, keeps removed rows soft, and puts new ones on top', () => {
+    const d = dir(), row = (id: string, removed?: boolean) => ({ id, projectId: 'p', sessionId: 's', title: id, kind: 'test', summary: id, at: '2026-01-01T00:00:00.000Z', source: 'response', ...(removed ? { removed } : {}) });
+    writeFileSync(join(d, 'artifacts.json'), JSON.stringify([row('c'), row('b', true), row('a')]));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const store = new ArtifactStore(d, () => []);
+    expect(store.list().map((a) => a.id)).toEqual(['c', 'a']);
+    const added = store.add({ projectId: 'p', sessionId: 's', title: 'n', kind: 'test', summary: 'new', source: 'response' });
+    expect(store.list().map((a) => a.id)).toEqual([added.id, 'c', 'a']);
+    // Same test summary in the same conversation: reused, not duplicated.
+    expect(store.add({ projectId: 'p', sessionId: 's', title: 'n', kind: 'test', summary: 'new', source: 'response' }).id).toBe(added.id);
+    // A manual re-add revives the soft-removed row in its old place.
+    expect(store.add({ projectId: 'p', sessionId: 's', title: 'b', kind: 'test', summary: 'b', source: 'manual' }).id).toBe('b');
+    expect(store.list().map((a) => a.id)).toEqual([added.id, 'c', 'b', 'a']);
+    store.remove('c');
+    expect(store.fileFor('c')).toBeUndefined();
+    expect(Number(gatewayDb(d).prepare('SELECT count(*) n FROM artifacts').get()!.n)).toBe(4);
   });
 });
