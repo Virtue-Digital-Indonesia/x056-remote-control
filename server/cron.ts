@@ -53,6 +53,8 @@ export interface CronDeps {
   stateDir: string;
   /** Deliver a prompt; queues if the conversation is mid-turn. */
   deliver(projectId: string, sessionId: string | undefined, prompt: string): { sessionId: string; queued: boolean };
+  /** A job's delivery failed: tell a person (it will not retry by itself). */
+  onFailure?(job: CronJob, reason: string): void;
   /** Default zone for jobs that don't name one. */
   defaultTz?: string;
   /** Injectable for tests. */
@@ -237,6 +239,7 @@ export class CronScheduler {
         if (job.once) spent.push(job.id);
       } catch (err) {
         job.lastResult = `failed: ${(err as Error).message}`;
+        try { this.deps.onFailure?.(job, (err as Error).message); } catch { /* never stop the tick */ }
         // A one-shot that FAILED is disabled, not deleted: deleting it would
         // hide why, and leaving it armed would fire it at the next match — for a
         // daily schedule, a full day later, long after anyone is expecting it.

@@ -21,6 +21,7 @@ import {
   Get,
   HttpCode,
   Inject,
+  Optional,
   Post,
   Query,
   Req,
@@ -52,7 +53,8 @@ import { readRawEntry, readRawPage } from './raw-transcript.js';
 import { McpServerManager, REDACTED_RE, redactSpec, restoreRedacted, type McpServerSpec } from './mcp-servers.js';
 import type { HistoryEntry } from './history.js';
 import { withAskInstructions } from '../src/question.js';
-import type { PushService } from './push.js';
+import type { PushService, DeviceSettings } from './push.js';
+import { Presence, type PresenceReport } from './presence.js';
 import type { WebAuthnService, SessionStore } from './webauthn.js';
 import { Public, readCookie } from './auth.guard.js';
 import type { RegistrationResponseJSON, AuthenticationResponseJSON } from '@simplewebauthn/server';
@@ -128,6 +130,7 @@ function hasAttachments(body: SendBody): boolean {
 // they rely only on `experimentalDecorators`, which esbuild does support.
 export const STATE_DIR = Symbol('x056-state-dir');
 export const PUSH_SERVICE = Symbol('x056-push-service');
+export const PRESENCE = Symbol('x056-presence');
 export const WEBAUTHN_SERVICE = Symbol('x056-webauthn-service');
 export const SESSION_STORE = Symbol('x056-session-store');
 export const PLUGIN_MANAGER = Symbol('x056-plugin-manager');
@@ -168,6 +171,8 @@ export class ApiController {
     @Inject(DESIGN_CONSENT) private readonly designConsent: DesignConsentGranter,
     @Inject(TEMPLATES) private readonly templates: TemplateStore,
     @Inject(TRANSCRIPT_STATS) private readonly stats: TranscriptStatsReader,
+    // Optional so a controller built by hand (tests) still works.
+    @Optional() @Inject(PRESENCE) private readonly presence: Presence = new Presence(),
   ) {
     this.loadQuotaCache();
     this.deliveries=manager.deliveries();
@@ -1924,6 +1929,41 @@ export class ApiController {
   pushUnsubscribe(@Body() body: { endpoint?: string }): { ok: boolean } {
     if (body?.endpoint) this.push.remove(body.endpoint);
     return { ok: true };
+  }
+
+  /** This device's notification settings, keyed by its push endpoint. */
+  @Get('push/settings')
+  pushSettings(@Query('endpoint') endpoint?: string): DeviceSettings & { subscribed: boolean } {
+    if (!endpoint) throw new BadRequestException('endpoint required');
+    return { ...this.push.settings(endpoint), subscribed: this.push.subscribed(endpoint) };
+  }
+
+  @Post('push/settings')
+  @HttpCode(200)
+  savePushSettings(@Body() body: { endpoint?: string; settings?: Partial<DeviceSettings> }): DeviceSettings {
+    if (!body?.endpoint || typeof body.endpoint !== 'string') throw new BadRequestException('endpoint required');
+    try { return this.push.saveSettings(body.endpoint, body.settings ?? {}); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** A test push to THIS device only. */
+  @Post('push/test')
+  @HttpCode(200)
+  async pushTest(@Body() body: { endpoint?: string }): Promise<{ sent: boolean }> {
+    if (!body?.endpoint) throw new BadRequestException('endpoint required');
+    const sent = await this.push.test(body.endpoint);
+    if (!sent) throw new BadRequestException('This device is not subscribed to notifications');
+    return { sent };
+  }
+
+  /** An open panel says what it has on screen (every 15 s while visible),
+   *  so pushes skip the conversation you are reading and, for anything not
+   *  urgent, the devices you are not at. */
+  @Post('presence')
+  @HttpCode(200)
+  reportPresence(@Body() body: PresenceReport): { ok: boolean } {
+    try { this.presence.update(body); return { ok: true }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
   /**

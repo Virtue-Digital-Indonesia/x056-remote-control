@@ -12,10 +12,11 @@ import { fileURLToPath } from 'node:url';
 import { Module } from '@nestjs/common';
 import { APP_GUARD, Reflector } from '@nestjs/core';
 import { AuthGuard } from './auth.guard.js';
-import { ApiController, STATE_DIR, PUSH_SERVICE, WEBAUTHN_SERVICE, SESSION_STORE, PLUGIN_MANAGER, MCP_SERVER_MANAGER } from './api.controller.js';
+import { ApiController, STATE_DIR, PUSH_SERVICE, PRESENCE, WEBAUTHN_SERVICE, SESSION_STORE, PLUGIN_MANAGER, MCP_SERVER_MANAGER } from './api.controller.js';
 import { SessionManager } from './manager.js';
 import { AccountRegistry } from '../src/accounts.js';
 import { PushService } from './push.js';
+import { Presence } from './presence.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
 import { CODEGRAPH, CodegraphClient, codegraphConfigFromEnv, type CodegraphConfig } from './codegraph.js';
@@ -89,13 +90,15 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // Web Push: notify the (installed) panel when a turn needs the user, finishes,
   // or was interrupted. Subscribing here also replays any startup orphan events
   // so a swap-interrupted turn pushes a "resume" notification.
-  const push = new PushService(
-    cfg.stateDir,
-    (pid) => manager.projectName(pid) ?? 'a project',
-    (sessionId) => { const ap = manager.autopilotStatus()[sessionId]; return !!ap && !ap.paused; },
-    (pid, sid) => manager.conversationUrl(pid, sid),
-    (pid, sid) => manager.titlePending(pid, sid),
-  );
+  // What is pushed, and in what words, is decided in server/notices.ts and
+  // attached to each event; the service only picks the devices (presence,
+  // per-device settings, quiet hours, ids already sent).
+  const presence = new Presence();
+  const push = new PushService(cfg.stateDir, {
+    noticeOf: (kind, data) => manager.noticeOf(kind, data),
+    titlePending: (pid, sid) => manager.titlePending(pid, sid),
+    presence,
+  });
   manager.subscribe((e) => { push.notify(e.kind, e.data).catch(() => {}); });
 
   // Passkey (WebAuthn) auth + the sessions it mints. The guard accepts either the
@@ -128,6 +131,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   const cron = new CronScheduler({
     stateDir: cfg.stateDir,
     deliver: (projectId, sessionId, prompt) => manager.deliverMcpMessage(projectId, sessionId, prompt, { sender: { kind: 'automation' } }),
+    onFailure: (job, reason) => manager.reportCronFailure(job, reason),
   });
   manager.setProjectAutomationPauser((targets, reason, operationId) => {
     for (const job of cron.list()) if (job.sessionId
@@ -157,6 +161,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
     providers: [
       { provide: SessionManager, useValue: manager },
       { provide: PUSH_SERVICE, useValue: push },
+      { provide: PRESENCE, useValue: presence },
       { provide: WEBAUTHN_SERVICE, useValue: webauthn },
       { provide: SESSION_STORE, useValue: sessions },
       { provide: PLUGIN_MANAGER, useValue: plugins },

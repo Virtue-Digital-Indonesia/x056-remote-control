@@ -14,6 +14,7 @@ import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
 import { withMessageSender, withTeamLine, type MessageSender } from '../src/message-sender.js';
 import { CompletionGate } from './completion-gate.js';
+import { noticeFor, originOf, NOTICE_KINDS, type Notice } from './notices.js';
 import { FileStore, type FileReference } from './file-store.js';
 import { DOCUMENT_SKILL } from './documents.js';
 import type { ChatCapabilities } from './chat-capabilities.js';
@@ -274,6 +275,16 @@ interface ActiveRun {
    *  waits for it, so a concern is queued (and drains) before the next step. */
   pendingAdvice?: Promise<unknown>;
 }
+
+/** Steps an autopilot run has taken, when it knows the budget it began with. */
+function autopilotSteps(ap: { remaining: number; count?: number }): { steps?: number } {
+  return typeof ap.count === 'number' ? { steps: Math.max(0, ap.count - ap.remaining) } : {};
+}
+
+/** A question nobody answered in this long stops lighting the bell... */
+const QUESTION_STALE_MS = 3 * 24 * 3600_000;
+/** ...and after this long it is dropped at boot. */
+const QUESTION_PURGE_MS = 14 * 24 * 3600_000;
 
 /** A short conversation title from the opening prompt (first non-empty line,
  *  minus the appended ASK convention and any image-attachment marker). */
@@ -555,6 +566,9 @@ export class SessionManager {
     }
   }
 
+  /** This process's start: the id of its restart notice. */
+  private readonly bootAt = new Date().toISOString();
+
   private get inflightDir(): string {
     return join(this.opts.stateDir, 'inflight');
   }
@@ -569,6 +583,7 @@ export class SessionManager {
     } catch {
       return;
     }
+    const orphaned: { projectId: string; sessionId: string | null }[] = [];
     for (const f of files) {
       const path = join(this.inflightDir, f);
       try {
@@ -584,11 +599,16 @@ export class SessionManager {
           prompt: m.prompt ?? null,
           startedAt: m.startedAt ?? null,
         });
+        orphaned.push({ projectId: opid, sessionId: m.sessionId ?? null });
       } catch {
         // corrupt marker — ignore
       }
       rmSync(path, { force: true });
     }
+    // ONE notice for the restart, not one per conversation: the resume cards
+    // above are per conversation, the buzz is not. The id is the boot time,
+    // so it is sent once per restart.
+    if (orphaned.length) this.emit('restart_interrupted', { count: orphaned.length, bootAt: this.bootAt, sessions: orphaned });
   }
 
   private writeMarker(pid: string, sessionId: string, cwd: string, prompt: string): void {
@@ -622,12 +642,12 @@ export class SessionManager {
   // carrying its projectId so the loop can resume that exact session. A project
   // can have several conversations, only some on autopilot — arming one must not
   // arm the others.
-  private loadAutopilot(): Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string }> {
+  private loadAutopilot(): Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string; count?: number }> {
     try {
       const m = JSON.parse(readFileSync(this.autopilotFile, 'utf8')) as Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId?: string }>;
       // Migrate legacy project-keyed entries (no projectId field) to session-keyed:
       // the key WAS the projectId, so resume the project's current conversation.
-      const out: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string }> = {};
+      const out: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string; count?: number }> = {};
       for (const [key, v] of Object.entries(m)) {
         if (v.projectId) { out[key] = v as typeof out[string]; continue; }
         const proj = this.projects().get(key); // legacy key = projectId
@@ -639,7 +659,7 @@ export class SessionManager {
       return {};
     }
   }
-  private saveAutopilot(map: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string }>): void {
+  private saveAutopilot(map: Record<string, { remaining: number; prompt: string; stopPhrase: string; projectId: string; paused?: boolean; pauseReason?: string; count?: number }>): void {
     writeState(this.autopilotFile, map);
   }
 
@@ -654,8 +674,11 @@ export class SessionManager {
     if (!sessionId) throw new Error('no conversation selected');
     if (this.projectSpacesEnabled() && !this.assertExecutionAllowed(projectId, sessionId).conversations?.some(c => c.sessionId === sessionId)) throw new Error('Conversation unavailable');
     const map = this.loadAutopilot();
+    const count = Math.max(1, Math.min(500, Math.floor(opts.count)));
     map[sessionId] = {
-      remaining: Math.max(1, Math.min(500, Math.floor(opts.count))),
+      remaining: count,
+      // The budget it started with: "finished after N steps" is count - remaining.
+      count,
       prompt: opts.prompt?.trim() || this.DEFAULT_AUTOPILOT_PROMPT,
       stopPhrase: opts.stopPhrase?.trim() || 'AUTOPILOT_DONE',
       projectId,
@@ -683,7 +706,7 @@ export class SessionManager {
     if (!ap || ap.paused) return;
     ap.paused = true; ap.pauseReason = reason; this.saveAutopilot(map);
     const timer = this.autopilotTimers.get(sessionId); if (timer) { clearTimeout(timer); this.autopilotTimers.delete(sessionId); }
-    this.emit('autopilot', { projectId: ap.projectId, sessionId, active: false, remaining: ap.remaining, reason });
+    this.emit('autopilot', { projectId: ap.projectId, sessionId, active: false, remaining: ap.remaining, reason, ...autopilotSteps(ap) });
   }
   resumeProjectAutopilot(projectId: string, sessionId: string, expectedMembershipRevision: number): void {
     const p = this.assertExecutionAllowed(projectId, sessionId), map = this.loadAutopilot(), ap = map[sessionId];
@@ -737,10 +760,11 @@ export class SessionManager {
   }
   private disarmAutopilot(pid: string, sessionId: string, reason: string): void {
     const map = this.loadAutopilot();
+    const steps = map[sessionId] ? autopilotSteps(map[sessionId]) : {};
     if (map[sessionId]) { delete map[sessionId]; this.saveAutopilot(map); }
     const t = this.autopilotTimers.get(sessionId);
     if (t) { clearTimeout(t); this.autopilotTimers.delete(sessionId); }
-    this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason });
+    this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason, ...steps });
   }
 
   /** After a turn whose queue had nothing: wait for that turn's pending advisor
@@ -2021,6 +2045,31 @@ export class SessionManager {
     if (p?.kind !== 'chat' || p.conversations?.find((c) => c.sessionId === sid)?.titleOrigin !== 'temporary') return false;
     try { return this.titles().list(pid, sid).some((j) => j.status === 'waiting' || j.status === 'generating'); } catch { return false; }
   }
+  /** What people are told about this event (server/notices.ts), with the
+   *  conversation's current title. Public so a push that waited for a chat's
+   *  title can ask again. */
+  noticeOf(kind: string, data: Record<string, unknown>, at?: string): Notice | null {
+    if (!NOTICE_KINDS.has(kind) || (kind === 'supervisor' && data.type !== 'failover' && data.type !== 'waiting_for_reset')) return null;
+    try {
+      let pid = typeof data.projectId === 'string' ? data.projectId : undefined;
+      let sid = typeof data.sessionId === 'string' ? data.sessionId : undefined;
+      // An approval is about the conversation that wants to send.
+      if (kind === 'mcp_approval') {
+        const from = data.sender as MessageSender | undefined;
+        pid = from?.projectId; sid = from?.sessionId;
+      }
+      const p = pid ? this.projects().get(pid) : undefined;
+      const c = sid ? p?.conversations?.find((x) => x.sessionId === sid) : undefined;
+      return noticeFor(kind, data, {
+        conversationTitle: p?.kind === 'chat' ? (c?.title || p.name) : c?.title,
+        projectName: p?.name,
+        projectKind: p?.kind,
+        provider: c?.provider ?? p?.provider ?? (p ? 'claude' : undefined),
+        link: pid && sid ? this.conversationUrl(pid, sid) : pid ? '/?project=' + encodeURIComponent(pid) : '/',
+        at: at ?? (typeof data.at === 'string' ? data.at : undefined),
+      });
+    } catch { return null; }
+  }
   conversationUrl(pid: string, sid: string): string {
     const p = this.projects().get(pid);
     if (p?.kind === 'chat') return '/chat/' + encodeURIComponent(pid);
@@ -2603,7 +2652,17 @@ export class SessionManager {
         } else this.completions.cancel(sid);
       }
     }
-    const e: GatewayEvent = { seq: ++this.seq, ts: new Date().toISOString(), kind, data };
+    const ts = new Date().toISOString();
+    // A turn whose background work kept the conversation busy settles later
+    // than it ended: "how long did my work take" is measured to the settle.
+    if (kind === 'conversation_settled' && typeof data.turnStartedAt === 'string' && Number.isFinite(Date.parse(data.turnStartedAt))) data = { ...data, durationMs: Date.parse(ts) - Date.parse(data.turnStartedAt) };
+    // The notice (tier + words) rides on the event itself, so the push, the
+    // bell, the sidebar dot and the desktop fallback all say the same thing.
+    if (NOTICE_KINDS.has(kind)) {
+      const notice = this.noticeOf(kind, data, ts);
+      if (notice) data = { ...data, notice };
+    }
+    const e: GatewayEvent = { seq: ++this.seq, ts, kind, data };
     try { new ConversationJournal(this.opts.stateDir).record(kind, data, e.ts); } catch (error) { console.error('Could not persist conversation event', error); }
     this.buffer.push(e);
     if (this.buffer.length > BUFFER_MAX) this.buffer.splice(0, this.buffer.length - BUFFER_MAX);
@@ -2796,6 +2855,13 @@ export class SessionManager {
       const raw = JSON.parse(readFileSync(this.questionsFile, 'utf8')) as Record<string, PendingQuestion>;
       if (raw && typeof raw === 'object') for (const [sid, q] of Object.entries(raw)) this.pendingQuestions.set(sid, q);
     } catch { /* none on disk yet */ }
+    // A question two weeks old is not waiting on anyone any more.
+    let purged = false;
+    for (const [sid, q] of this.pendingQuestions) {
+      const at = Date.parse(q.at);
+      if (Number.isFinite(at) && Date.now() - at > QUESTION_PURGE_MS) { this.pendingQuestions.delete(sid); purged = true; }
+    }
+    if (purged) this.savePendingQuestions();
   }
   private savePendingQuestions(): void {
     try {
@@ -2926,7 +2992,22 @@ export class SessionManager {
 
   /** Unanswered questions across all conversations — the panel hydrates from
    *  this so a refresh/reconnect/restart restores the cards. */
-  listPendingQuestions(): PendingQuestion[] { return [...this.pendingQuestions.values()]; }
+  /** Pending questions; one older than 3 days is `stale`: still answerable in
+   *  its conversation, but no longer counted by the bell. */
+  listPendingQuestions(): (PendingQuestion & { stale?: boolean })[] {
+    const now = Date.now();
+    return [...this.pendingQuestions.values()].map((q) => {
+      const at = Date.parse(q.at);
+      return Number.isFinite(at) && now - at > QUESTION_STALE_MS ? { ...q, stale: true } : q;
+    });
+  }
+
+  /** A scheduled task could not deliver its prompt: urgent, it will not
+   *  retry on its own. */
+  reportCronFailure(job: { id: string; projectId: string; sessionId?: string; label?: string; prompt: string }, reason: string): void {
+    const name = job.label?.trim() || cleanMemorySource(job.prompt).split('\n').find((l) => l.trim())?.trim().slice(0, 60) || 'A scheduled task';
+    this.emit('cron_failed', { projectId: job.projectId, ...(job.sessionId ? { sessionId: job.sessionId } : {}), jobId: job.id, name, reason, at: new Date().toISOString() });
+  }
 
   /** Dismissing is a UI decision, never a reply or a new turn. The timestamp
    * protects a newer question from a click on an older card in another tab. */
@@ -3056,6 +3137,9 @@ export class SessionManager {
     const sender = runOpts?.sender && !prompt.trimStart().startsWith('/') ? { ...runOpts.sender, messageId: runOpts.sender.messageId || randomUUID() } : undefined;
     turnPrompt = withMessageSender(turnPrompt, sender);
     const sourcePrompt=prompt;
+    // Who started this turn, for the notice policy. Read from the request,
+    // not `sender`, which is dropped for slash commands.
+    const origin = originOf(runOpts?.sender);
     const autopilot = this.loadAutopilot()[sessionId];
     // Keep the turn's notification ownership even if autopilot is disabled later.
     const run: ActiveRun = { startedAt: new Date().toISOString(), sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId, suppressCompletion: sender?.kind === 'autopilot' || (!!autopilot && !autopilot.paused) };
@@ -3065,6 +3149,7 @@ export class SessionManager {
     // conversations running at once, and each conversation's activity/messages
     // must land only in its own view, not whatever's currently on screen.
     const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { sessionId, requestId: memoryRequestId, ...data, projectId: pid });
+    const turnMeta = () => ({ origin, turnStartedAt: run.startedAt, durationMs: Date.now() - Date.parse(run.startedAt!) });
     try {
       const runFn = this.opts.runSessionFn ?? runSession;
       let fileAccount: string | undefined;
@@ -3277,7 +3362,7 @@ export class SessionManager {
             this.savePendingQuestions();
             emit('question', pending);
           }
-          emit('session_done', { sessionId, ...res });
+          emit('session_done', { sessionId, ...res, ...turnMeta() });
           if (res.status === 'completed') {
             try { this.titles().observe(pid, sessionId, sourcePrompt, res.resultText || ''); }
             catch (error) { console.warn('[titles] Could not queue title:', (error as Error).message); }
@@ -3298,13 +3383,13 @@ export class SessionManager {
             this.lastResults.set(pid, stopped);
             if (this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
             this.projects().recordOutcome(pid, sessionId, { status: 'stopped', at: new Date().toISOString(), reason: stopped.reason });
-            emit('session_done', { ...stopped });
+            emit('session_done', { ...stopped, ...turnMeta() });
             return;
           }
           if(err instanceof MemoryReferenceConflict)this.pauseAutopilot(sessionId,(err as Error).message);
           if (this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
           this.projects().recordOutcome(pid, sessionId, {status:'failed', at:new Date().toISOString(), reason:(err as Error).message});
-          emit('session_error', { sessionId, message: (err as Error).message });
+          emit('session_error', { sessionId, message: (err as Error).message, ...turnMeta() });
           this.pauseAutopilot(sessionId, 'failed');
         })
         .finally(() => {

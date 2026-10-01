@@ -11,6 +11,10 @@ export { transaction } from './sqlite.js';
  *   routing_history   routing events, newest 3000       (was routing-history.json)
  *   message_receipts  panel send idempotency receipts   (was message-receipts.json)
  *   artifacts         the artifact library (soft-removed) (was artifacts.json)
+ *   push_sent         push notification ids already sent (7 days), so a
+ *                     restart does not send them again
+ *   push_settings     per-device notification settings, keyed by a hash of
+ *                     the device's push endpoint
  *
  * ONE connection per state directory, opened lazily and shared by every store
  * instance (RoutingState is constructed per call all over the manager). Stores
@@ -58,6 +62,11 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX artifacts_seq ON artifacts(seq);
     CREATE INDEX artifacts_scope ON artifacts(project_id, session_id, seq);
     CREATE INDEX artifacts_removed ON artifacts(removed, seq);
+  `),
+  (db) => db.exec(`
+    CREATE TABLE push_sent(id TEXT PRIMARY KEY, at INTEGER NOT NULL);
+    CREATE INDEX push_sent_at ON push_sent(at);
+    CREATE TABLE push_settings(device TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL);
   `),
 ];
 
