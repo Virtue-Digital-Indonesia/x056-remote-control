@@ -4,6 +4,9 @@
 self.addEventListener('install', function () { self.skipWaiting(); });
 self.addEventListener('activate', function (event) { event.waitUntil(self.clients.claim()); });
 
+// The payload is the gateway's notice (server/notices.ts): title, body, tag
+// and link are decided there, so this only renders them. Tags are one per
+// conversation (a newer notice replaces the older) or one per urgent item.
 self.addEventListener('push', function (event) {
   var data = {};
   try { data = event.data ? event.data.json() : {}; } catch (e) {}
@@ -12,7 +15,7 @@ self.addEventListener('push', function (event) {
     body: data.body || '',
     icon: '/icon-192.png?v=31f56a235316',
     badge: '/icon-192.png?v=31f56a235316',
-    tag: 'x056-' + (data.notificationId || data.sessionId || data.projectId || 'general'),
+    tag: data.tag || ('x056-' + (data.notificationId || data.sessionId || data.projectId || 'general')),
     renotify: false,
     data: { projectId: data.projectId || '', sessionId: data.sessionId || '', url: data.url || '' },
   }));

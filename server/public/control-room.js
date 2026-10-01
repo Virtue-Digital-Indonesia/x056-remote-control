@@ -438,7 +438,7 @@ window.createControlRoom = function (engine) {
       const time=Math.max(messageMetadata.get(k)||0,messageActivity.get(k)||0);
       let draft=false;
       try { draft=!!(localStorage.getItem('x056_draft_'+k)||'').trim(); } catch {}
-      out.push({ p, c, k, status, draft, unread: !!notification, label: q?.question || (running || bg ? s.views[k]?.label : result?.reason) || '', time, recentActivity:time||(Number(c.createdAt)||0) });
+      out.push({ p, c, k, status, draft, unread: !!notification, stale: !!q?.stale, label: q?.question || (running || bg ? s.views[k]?.label : result?.reason) || '', time, recentActivity:time||(Number(c.createdAt)||0) });
     }
     return out.sort((a,b) => (Number(new Date(b.time)) || 0) - (Number(new Date(a.time)) || 0));
   }
@@ -718,7 +718,12 @@ window.createControlRoom = function (engine) {
     sendAccounts.querySelectorAll('[data-switch-turn]').forEach(b=>b.onclick=()=>choose(b.dataset.switchTurn,true));
     placeSendAccounts();
   }
-  function refresh() { const count=cards().filter(x=>x.unread||x.status==='question').length;$('crNotifications').setAttribute('aria-label','Notifications'+(count?' ('+count+' unread)':''));$('crNotifications').dataset.unread=count?String(count):'';document.dispatchEvent(new CustomEvent('x056:state')); clearTimeout(renderTimer); renderTimer = setTimeout(() => { renderBoard(); if (section === 'accounts') renderAccountRows(); }, 60); }
+  const baseTitle=document.title;
+  // Needs you: an open question, or an urgent notice not yet read.
+  const needsYou=(x,s)=>x.status==='question'&&!x.stale||x.unread&&s.notices?.[x.k]?.notice?.tier==='urgent';
+  function refresh() { const s=engine.state(),all=cards(),count=all.filter(x=>x.unread||x.status==='question'&&!x.stale).length+(s.restartNotice?1:0),urgent=all.filter(x=>needsYou(x,s)).length;$('crNotifications').setAttribute('aria-label','Notifications'+(count?' ('+count+' unread)':''));$('crNotifications').dataset.unread=count?String(count):'';
+    document.title=(urgent?'('+urgent+') ':'')+baseTitle;
+    try{if(navigator.setAppBadge){if(count)navigator.setAppBadge(count).catch(()=>{});else navigator.clearAppBadge().catch(()=>{});}}catch{}document.dispatchEvent(new CustomEvent('x056:state')); clearTimeout(renderTimer); renderTimer = setTimeout(() => { renderBoard(); if (section === 'accounts') renderAccountRows(); }, 60); }
   document.addEventListener('x056:draft-changed',refresh);
   async function json(url, body) { const res = await engine.api(url, body === undefined ? undefined : { method:'POST', body:JSON.stringify(body) }); const data = await res.json(); if (!res.ok) throw new Error(data.message || 'Request failed'); return data; }
   function event(kind, data) {
@@ -1004,13 +1009,53 @@ window.createControlRoom = function (engine) {
   }
   function unmountSettings() {if(settingsHost===preferences)return;releaseSettings();settingsHost.innerHTML='';settingsHost=preferences;}
   function mountControl(id,host,button) {const el=$(id);host.append(el);el.classList.add('integrated-pop');el.hidden=false;if(button)$(button).click();}
+  /** Settings > Notifications: what reaches THIS device (stored on the
+   *  gateway against its push endpoint), plus a test push. */
+  function renderNotificationSettings(body){
+    const push=engine.push;
+    body.innerHTML=`<p class="settings-lead">What reaches this device when you are away. Questions, message approvals, failures and limits always do. The bell keeps everything, pushed or not.</p>
+      <div class="setting-row"><span><strong>Notifications on this device</strong><small id="notifyState">Checking…</small></span><button class="cr-secondary" id="notifyEnable" hidden>Turn on</button></div>
+      <fieldset id="notifyPrefs" class="notify-prefs" aria-label="Notification categories" disabled>
+        <div class="setting-row"><label for="notifyNeeds"><strong>Needs you</strong><small>Questions, message approvals, failed turns, every account at its limit. Always on.</small></label><input type="checkbox" role="switch" class="setting-switch" id="notifyNeeds" checked disabled></div>
+        <div class="setting-row"><label for="notifyFinished"><strong>Finished long turns I started</strong><small>Turns of 45 seconds or more, the end of an autopilot run, a parked turn</small></label><input type="checkbox" role="switch" class="setting-switch" id="notifyFinished"></div>
+        <div class="setting-row"><label for="notifyAutomation"><strong>Automation and background</strong><small>Scheduled tasks, conversations messaging each other, delegates. Off: they stay in the bell.</small></label><input type="checkbox" role="switch" class="setting-switch" id="notifyAutomation"></div>
+        <div class="setting-row"><label for="notifyQuiet"><strong>Quiet hours</strong><small>Nothing reaches this device between these times, urgent included</small></label><input type="checkbox" role="switch" class="setting-switch" id="notifyQuiet"></div>
+        <div class="setting-row notify-quiet-times"><label for="notifyQuietStart">From</label><input type="time" id="notifyQuietStart" value="22:00"><label for="notifyQuietEnd">to</label><input type="time" id="notifyQuietEnd" value="07:00"></div>
+      </fieldset>
+      <div class="setting-row"><span><strong>Test</strong><small>One notification, to this device only</small></span><button class="cr-secondary" id="notifyTest" disabled>Send a test notification</button></div>
+      <p id="notifyStatus" class="notify-status" role="status"></p>`;
+    const status=t=>{if($('notifyStatus'))$('notifyStatus').textContent=t;};
+    const fill=s=>{$('notifyFinished').checked=!!s.finished;$('notifyAutomation').checked=!!s.automation;$('notifyQuiet').checked=!!s.quietHours?.enabled;$('notifyQuietStart').value=s.quietHours?.start||'22:00';$('notifyQuietEnd').value=s.quietHours?.end||'07:00';$('notifyQuietStart').disabled=$('notifyQuietEnd').disabled=!s.quietHours?.enabled;};
+    const load=async()=>{
+      if(!body.isConnected)return;
+      const state=$('notifyState'),enable=$('notifyEnable');
+      if(!push||!push.supported()){state.textContent='This browser cannot receive push notifications. On iPhone or iPad, add x056 to the Home Screen first.';return;}
+      if(push.permission()==='denied'){state.textContent='Blocked in this browser’s site settings.';return;}
+      const ep=await push.endpoint();
+      if(!body.isConnected)return;
+      if(!ep){state.textContent='Off. The bell still collects everything.';enable.hidden=false;return;}
+      state.textContent='On';enable.hidden=true;
+      try{const s=await push.settings();if(!body.isConnected||!s)return;fill(s);$('notifyPrefs').disabled=false;$('notifyTest').disabled=false;}
+      catch(e){status('Could not load this device’s settings. '+e.message);}
+    };
+    const save=async()=>{
+      const q={enabled:$('notifyQuiet').checked,start:$('notifyQuietStart').value||'22:00',end:$('notifyQuietEnd').value||'07:00'};
+      $('notifyQuietStart').disabled=$('notifyQuietEnd').disabled=!q.enabled;
+      try{fill(await push.saveSettings({finished:$('notifyFinished').checked,automation:$('notifyAutomation').checked,quietHours:q}));status('Saved for this device.');}
+      catch(e){status(e.message);}
+    };
+    ['notifyFinished','notifyAutomation','notifyQuiet','notifyQuietStart','notifyQuietEnd'].forEach(id=>$(id).addEventListener('change',save));
+    $('notifyEnable').onclick=async()=>{status('');try{await push.enable();}catch{}load();};
+    $('notifyTest').onclick=async e=>{const b=e.currentTarget;b.disabled=true;status('Sending…');try{await push.test();status('Sent. It should arrive in a few seconds.');}catch(err){status(err.message);}finally{b.disabled=false;}};
+    load();
+  }
   function settingsTab(tab,host) {
     if(typeof tab!=='string')tab='general';settingSection=tab;
     if(host&&host!==settingsHost){releaseSettings();settingsHost.innerHTML='';settingsHost=host;settingsHost.classList.add('settings-surface');}
     releaseSettings();
     const inline=settingsHost!==preferences;
-    if(inline)settingsHost.innerHTML=`<h2 class="sr-only">${{general:'General',models:'Model defaults',routing:'Account routing',memory:'Memory',connections:'Connections',security:'Security'}[tab]||'Settings'}</h2><div id="settingsBody"></div>`;
-    else preferences.innerHTML=`<div class="settings-shell"><nav class="settings-nav" aria-label="Settings"><h2>Settings</h2>${[['general','controls','General'],['models','sparkles','Models'],['routing','route','Routing'],['memory','snippet','Memory'],['connections','plug','Connections'],['security','key','Security']].map(([id,icon,label])=>`<button data-settings="${id}" aria-current="${id===tab?'page':'false'}">${ic(icon)}<span>${label}</span></button>`).join('')}</nav><section class="settings-content"><header><h2>${{general:'General',models:'Model defaults',routing:'Account routing',memory:'Memory',connections:'Connections',security:'Security'}[tab]}</h2><button class="cr-icon" data-close-settings aria-label="Close settings">${ic('x')}</button></header><div id="settingsBody"></div></section></div>`;
+    if(inline)settingsHost.innerHTML=`<h2 class="sr-only">${{general:'General',notifications:'Notifications',models:'Model defaults',routing:'Account routing',memory:'Memory',connections:'Connections',security:'Security'}[tab]||'Settings'}</h2><div id="settingsBody"></div>`;
+    else preferences.innerHTML=`<div class="settings-shell"><nav class="settings-nav" aria-label="Settings"><h2>Settings</h2>${[['general','controls','General'],['notifications','bell','Notifications'],['models','sparkles','Models'],['routing','route','Routing'],['memory','snippet','Memory'],['connections','plug','Connections'],['security','key','Security']].map(([id,icon,label])=>`<button data-settings="${id}" aria-current="${id===tab?'page':'false'}">${ic(icon)}<span>${label}</span></button>`).join('')}</nav><section class="settings-content"><header><h2>${{general:'General',notifications:'Notifications',models:'Model defaults',routing:'Account routing',memory:'Memory',connections:'Connections',security:'Security'}[tab]}</h2><button class="cr-icon" data-close-settings aria-label="Close settings">${ic('x')}</button></header><div id="settingsBody"></div></section></div>`;
     if(!inline){
       preferences.querySelector('[data-close-settings]').onclick=()=>preferences.close();
       preferences.querySelectorAll('[data-settings]').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settings));
@@ -1025,7 +1070,9 @@ window.createControlRoom = function (engine) {
       $('recentActivityWindow').value=String(recentPreferences.days);$('recentMaximum').value=String(recentPreferences.max);
       for(const id of ['recentActivityWindow','recentMaximum'])$(id).onchange=()=>{recentPreferences={days:Number($('recentActivityWindow').value),max:Number($('recentMaximum').value)};recentLimit=Math.min(10,recentPreferences.max);try{localStorage.setItem('x056_recent_preferences',JSON.stringify(recentPreferences));}catch{toast('This browser could not save recent settings.');}renderBoard();};
       body.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{engine.setTheme(b.dataset.themeChoice);syncTheme();body.querySelectorAll('[data-theme-choice]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));});
-      on('settingsTitles',showTitleSettings);on('settingsNotify',e=>notificationMenu(e.currentTarget));on('settingsShortcuts',()=>$('shortcutsBtn').click());
+      on('settingsTitles',showTitleSettings);on('settingsNotify',()=>settingsTab('notifications'));on('settingsShortcuts',()=>$('shortcutsBtn').click());
+    } else if(tab==='notifications') {
+      renderNotificationSettings(body);
     } else if(tab==='models') {
       body.innerHTML=segmented('defaultProvider',[['claude','Claude'],['codex','ChatGPT']],defaultProvider,'Model defaults provider')+'<p>Choose the effort selected when you pick a model. Changes sync across your devices.</p><form id="modelDefaultsForm"><div id="modelDefaultRows">Loading defaults…</div><div class="cr-dialog-actions"><button class="cr-primary" disabled>Save defaults</button></div><p id="modelDefaultStatus" role="status"></p></form>';
       wireSegment('defaultProvider',value=>{defaultProvider=value;settingsTab('models');});
@@ -1141,13 +1188,31 @@ window.createControlRoom = function (engine) {
   $('crScopeActions').onclick=e=>projectMenu(e.currentTarget,selectedProject);
   $('projTitle').onclick=()=>engine.renameConversation();
   function themeMenu(anchor){openMenu(anchor,[['system','auto','Follow device theme'],['light','sun','Light'],['dark','moon','Dark']].map(([value,icon,label])=>({label,icon,checked:engine.theme()===value,run:()=>{engine.setTheme(value);syncTheme();}})));}
+  // The bell: the same notice words a push would carry (server/notices.ts),
+  // needing-you first, then recent, then the quiet ones under "Earlier".
+  function notificationEntries(){
+    const s=engine.state(),fallback={question:'Needs your answer',failed:'Failed',parked:'Paused',finished:'Finished'};
+    const out=cards().filter(x=>x.unread||x.status==='question'&&!x.stale).map(x=>{
+      const held=s.notices?.[x.k],n=held?.notice,q=x.status==='question'&&!x.stale?s.questions[x.c.sessionId]:null;
+      const tier=q?'urgent':n?.tier||(x.status==='failed'?'urgent':'quiet');
+      const title=n?.title||x.c.title||'Conversation';
+      const body=q?conversationLabels(x.p,x.c)[1]+'\n'+String(q.question||'Needs your answer'):n?.body||(conversationLabels(x.p,x.c)[1]+'\n'+(fallback[x.status]||'New activity'));
+      const at=q?Date.parse(q.at)||x.time:Date.parse(held?.ts||'')||x.time;
+      return {x,tier,title,body,at};
+    });
+    if(s.restartNotice)out.push({restart:true,tier:'normal',title:s.restartNotice.notice.title,body:s.restartNotice.notice.body,at:Date.parse(s.restartNotice.ts)||Date.now()});
+    return out.sort((a,b)=>({urgent:0,normal:1,quiet:2}[a.tier]??2)-({urgent:0,normal:1,quiet:2}[b.tier]??2)||b.at-a.at);
+  }
   function notificationMenu(anchor){
-    const entries=cards().filter(x=>x.unread||x.status==='question').sort((a,b)=>(b.status==='question')-(a.status==='question')||b.time-a.time);
+    const entries=notificationEntries(),groups=[['Needs you',e=>e.tier==='urgent'],['Recent',e=>e.tier==='normal'],['Earlier',e=>e.tier!=='urgent'&&e.tier!=='normal']];
+    const item=(e,i)=>'<div class="rc-notification-item tier-'+esc(e.tier)+'"><button class="rc-notification-open" data-notification="'+i+'"><strong>'+esc(e.title)+'</strong><span class="rc-notification-body">'+esc(e.body)+'</span><time datetime="'+new Date(e.at).toISOString()+'">'+esc(relativeDate(e.at))+'</time></button><button class="cr-icon rc-notification-read" data-read="'+i+'" aria-label="Mark '+esc(e.title)+' as read" title="Mark as read">'+ic('check')+'</button></div>';
     const d=document.createElement('dialog');d.className='cr-dialog rc-notification-dialog';d.setAttribute('aria-label','Notifications');
-    d.innerHTML='<header><h2>Notifications</h2><button class="cr-icon" aria-label="Close notifications">'+ic('x')+'</button></header><div class="rc-notification-list">'+(entries.map((x,i)=>'<button class="rc-notification-item" data-notification="'+i+'"><strong>'+esc(x.c.title||'Conversation')+'</strong><small>'+esc(conversationLabels(x.p,x.c)[1])+'</small><span>'+esc(x.status==='question'?'Needs your answer':x.status==='failed'?'Failed':x.status==='parked'?'Paused':x.status==='finished'?'Finished':'New activity')+'</span></button>').join('')||'<p>No unread conversation updates.</p>')+'</div><footer><button class="cr-secondary" data-approvals>Message approvals</button><button class="cr-secondary" data-browser>Browser notifications</button></footer>';
+    d.innerHTML='<header><h2>Notifications</h2><button class="cr-icon" aria-label="Close notifications">'+ic('x')+'</button></header><div class="rc-notification-list">'+(entries.length?groups.map(([label,f])=>{const rows=entries.map((e,i)=>[e,i]).filter(([e])=>f(e));return rows.length?'<section class="rc-notification-group"><h3>'+label+'</h3>'+rows.map(([e,i])=>item(e,i)).join('')+'</section>':'';}).join(''):'<p>Nothing new. Questions, failures and long turns you started show up here.</p>')+'</div><footer>'+(entries.length?'<button class="cr-secondary" data-read-all>Mark all as read</button>':'')+'<button class="cr-secondary" data-approvals>Message approvals</button><button class="cr-secondary" data-notify-settings>Notification settings</button></footer>';
     d.querySelector('header button').onclick=()=>d.close();d.onclose=()=>{d.remove();anchor?.focus();};
-    d.querySelectorAll('[data-notification]').forEach(b=>b.onclick=()=>{const x=entries[Number(b.dataset.notification)];d.close();openConversation({dataset:{project:x.p.id,session:x.c.sessionId}});});
-    d.querySelector('[data-approvals]').onclick=()=>{d.close();$('mcpApprovalsBtn').click();};d.querySelector('[data-browser]').onclick=()=>$('notifyBtn').click();document.body.append(d);d.showModal();
+    d.querySelectorAll('[data-notification]').forEach(b=>b.onclick=()=>{const e=entries[Number(b.dataset.notification)];d.close();if(e.restart){engine.clearRestartNotice();refresh();selectProjectScope('');return;}openConversation({dataset:{project:e.x.p.id,session:e.x.c.sessionId}});});
+    d.querySelectorAll('[data-read]').forEach(b=>b.onclick=()=>{const e=entries[Number(b.dataset.read)];if(e.restart)engine.clearRestartNotice();else engine.setConversationUnread(e.x.p.id,e.x.c.sessionId,false);b.closest('.rc-notification-item').remove();refresh();});
+    d.querySelector('[data-read-all]')?.addEventListener('click',()=>{engine.markAllRead();d.close();refresh();toast('All notifications marked as read.');});
+    d.querySelector('[data-approvals]').onclick=()=>{d.close();$('mcpApprovalsBtn').click();};d.querySelector('[data-notify-settings]').onclick=()=>{d.close();settings('notifications');};document.body.append(d);d.showModal();
   }
   function activityMenu(anchor){openMenu(anchor,[{label:'Agent tree',icon:'tree',disabled:!engine.state().sessionId,run:()=>engine.showAgentTree&&engine.showAgentTree()},{label:'Message approvals',icon:'inbox',run:()=>$('mcpApprovalsBtn').click()}]);}
   function conversationMenu(anchor){const s=engine.state(),isChat=s.projects.find(p=>p.id===s.projectId)?.kind==='chat',pinned=isStagePinned(s.projectId,s.sessionId);openMenu(anchor,[

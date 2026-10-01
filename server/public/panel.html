@@ -3254,6 +3254,14 @@ main.atree-open .composer-wrap { display: none !important; }
   // user isn't currently viewing (a question, a failed turn, or a finished turn).
   // Keyed by project+conversation (viewKey); a project row aggregates its convos.
   var convNotif = {}; // 'pid::sessionId' -> 'question' | 'failed' | 'done'
+  // The latest notice per conversation (server/notices.ts): the bell dialog,
+  // the desktop fallback and the push all use these same words.
+  var convNotice = {}; // 'pid::sessionId' -> { notice, ts }
+  var restartNotice = null;
+  // A reload replays the server's buffer, restart notice included: remember
+  // which restart was dismissed, as qSeen does for questions.
+  function restartSeen() { try { return localStorage.getItem('x056_restart_seen') || ''; } catch (e) { return ''; } }
+  function dismissRestart() { if (restartNotice) { try { localStorage.setItem('x056_restart_seen', restartNotice.bootAt); } catch (e) {} } restartNotice = null; }
   // The SSE cursor (lastSeq) intentionally resets to 0 on every page load, so a
   // refresh replays the server's full event buffer and no notification from
   // while the tab was closed gets lost. But that means the events for a
@@ -3412,6 +3420,8 @@ main.atree-open .composer-wrap { display: none !important; }
     var mine = !data.projectId || data.projectId === currentProjectId;
     var sid = data.sessionId;
     var mineConvo = mine && (!sid || sid === lastSessionId);
+    if (data.notice && data.notice.tier && data.notice.tier !== 'none') onNotice(kind, data, pid, sid);
+    if (kind === 'cron_failed' || kind === 'restart_interrupted') return;
     if (kind === 'background_state') {
       var bg = bgSessionIds[pid] = bgSessionIds[pid] || {};
       if (data.active) bg[sid] = true; else delete bg[sid];
@@ -3422,7 +3432,7 @@ main.atree-open .composer-wrap { display: none !important; }
       return;
     }
     if (kind === 'conversation_settled') {
-      if (!data.notificationSuppressed && (!mineConvo || (controlRoom && !controlRoom.isOpen()))) setConvNotif(pid, sid, 'done');
+      if (!data.notificationSuppressed && !(data.notice && data.notice.tier === 'none') && (!mineConvo || (controlRoom && !controlRoom.isOpen()))) setConvNotif(pid, sid, 'done');
       return;
     }
     if (kind === 'turn_state') {
@@ -3532,14 +3542,13 @@ main.atree-open .composer-wrap { display: none !important; }
       if (sid) pendingQ[sid] = Object.assign({}, data, { projectId: pid, sessionId: sid, at: qAt });
       showQuestion(pid, data);
       if (mineConvo && (!controlRoom || controlRoom.isOpen())) markQuestionSeen(pid, sid, qAt); // you're looking at it
-      else { setConvNotif(pid, sid, 'question'); notify('Assistant has a question', (projCache[pid] ? projCache[pid].name : 'a project') + ': ' + String(data.question || '').slice(0, 80), data); }
+      else setConvNotif(pid, sid, 'question');
     }
     else if (kind === 'autopilot') {
       // Autopilot is per-conversation now — keyed by the run's sessionId, not
       // the project. The bar shows only for the conversation actually on screen.
       if (sid) { if (data.active) apState[sid] = data.remaining; else delete apState[sid]; }
       if (mineConvo) renderAutopilot();
-      if (!data.active && data.reason === 'done' && !mineConvo) notify('Autopilot done', (projCache[pid] ? projCache[pid].name : 'a project') + ' finished its task', data);
     }
     else if (kind === 'queue') {
       queueState[pid] = Array.isArray(data.items) ? data.items : [];
@@ -3797,7 +3806,9 @@ main.atree-open .composer-wrap { display: none !important; }
         if (q.sessionId === lastSessionId && (!controlRoom || controlRoom.isOpen())) {
           showQuestion(q.projectId, q);
           markQuestionSeen(q.projectId, q.sessionId, q.at);
-        } else if (!questionAlreadySeen(q.projectId, q.sessionId, q.at)) {
+        } else if (!q.stale && !questionAlreadySeen(q.projectId, q.sessionId, q.at)) {
+          // A question days old is still answerable in its conversation, but
+          // it no longer lights the bell.
           setConvNotif(q.projectId, q.sessionId, 'question');
         }
       });
@@ -4039,20 +4050,31 @@ main.atree-open .composer-wrap { display: none !important; }
   function loadQueue() { return api('/api/queue').then(function (r) { return r.json(); }).then(function (m) { queueState = m || {}; renderQueue(); }).catch(function () {}); }
 
   // ---- browser notifications ----
+  // The open page is only a fallback for a device with no push subscription;
+  // the words are the event's notice, the same ones a push would carry.
   var localNotificationIds = new Set();
-  function notify(title, body, data) {
-    // Web Push owns delivery when registered. The open page is only a fallback.
+  function viewingConv(pid, sid) { return !!sid && pid === currentProjectId && sid === lastSessionId && (!controlRoom || controlRoom.isOpen()); }
+  function onNotice(kind, data, pid, sid) {
+    var n = data.notice;
+    if (n.kind === 'restart_interrupted') { if (restartSeen() !== String(data.bootAt)) restartNotice = { notice: n, ts: data.ts || new Date().toISOString(), bootAt: String(data.bootAt) }; }
+    else if (sid && !viewingConv(pid, sid)) convNotice[viewKey(pid, sid)] = { notice: n, ts: data.ts || new Date().toISOString() };
+    if (kind === 'cron_failed' && sid) setConvNotif(pid, sid, 'failed');
+    if (kind === 'delegate_report' && n.tier === 'urgent' && sid) setConvNotif(pid, sid, 'question');
+    // Only what just happened: a reload replays the server's whole buffer.
+    var at = Date.parse(data.ts || '');
+    if ((n.tier === 'urgent' || n.tier === 'normal') && !(viewingConv(pid, sid) && !document.hidden) && (!isFinite(at) || Date.now() - at < 60000)) notify(n, data);
+  }
+  function notify(n, data) {
     data = data || {};
-    if (data.notificationSuppressed) return;
-    var id = data.notificationId || data.requestId || data.at;
-    var key = id ? [data.projectId, data.sessionId, id, title].join(':') : '';
+    if (data.notificationSuppressed || !n || !n.title) return;
+    var key = n.id || n.tag || '';
     if (key && localNotificationIds.has(key)) return;
     if (key) { localNotificationIds.add(key); if (localNotificationIds.size > 500) localNotificationIds.delete(localNotificationIds.values().next().value); }
     function show() {
       try {
         if (!('Notification' in window) || Notification.permission !== 'granted') return;
         // Never request permission in response to a task event.
-        new Notification(title, { body: body, tag: key || undefined, renotify: false });
+        new Notification(n.title, { body: n.body || '', tag: n.tag || undefined, renotify: false, data: { url: n.link || '' } });
       } catch (e) {}
     }
     Promise.resolve(swReady).then(function (reg) {
@@ -4083,6 +4105,39 @@ main.atree-open .composer-wrap { display: none !important; }
       .then(function (r) { swReg = r; markBell(); return (Notification.permission === 'granted' ? postSubscription(r).catch(function () {}) : Promise.resolve()).then(function () { return r; }); })
       .catch(function () { return null; });
   }
+  // This device's push endpoint: the key for its settings and its presence.
+  var pushEndpoint = null;
+  function currentEndpoint() {
+    return Promise.resolve(swReady).then(function (reg) {
+      if (!reg || !reg.pushManager || !reg.pushManager.getSubscription) return null;
+      return reg.pushManager.getSubscription().then(function (sub) { pushEndpoint = sub && sub.endpoint || null; return pushEndpoint; });
+    }).catch(function () { return null; });
+  }
+  var pushApi = {
+    supported: pushSupported,
+    permission: function () { return ('Notification' in window) ? Notification.permission : 'unsupported'; },
+    endpoint: currentEndpoint,
+    enable: function () { return enablePush().then(currentEndpoint); },
+    settings: function () {
+      return currentEndpoint().then(function (ep) {
+        if (!ep) return null;
+        return api('/api/push/settings?endpoint=' + encodeURIComponent(ep)).then(function (r) { return r.json(); });
+      });
+    },
+    saveSettings: function (patch) {
+      return currentEndpoint().then(function (ep) {
+        if (!ep) throw new Error('Turn on notifications on this device first.');
+        try { patch = Object.assign({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, patch); } catch (e) {}
+        return api('/api/push/settings', { method: 'POST', body: JSON.stringify({ endpoint: ep, settings: patch }) }).then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.message || 'Could not save'); return d; }); });
+      });
+    },
+    test: function () {
+      return currentEndpoint().then(function (ep) {
+        if (!ep) throw new Error('Turn on notifications on this device first.');
+        return api('/api/push/test', { method: 'POST', body: JSON.stringify({ endpoint: ep }) }).then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.message || 'Could not send'); return d; }); });
+      });
+    },
+  };
   // Subscribe with the server's VAPID key (reusing any existing subscription) and
   // register it server-side. Used by both the button and the silent boot path.
   function postSubscription(reg) {
@@ -4096,8 +4151,8 @@ main.atree-open .composer-wrap { display: none !important; }
     });
   }
   function enablePush() {
-    if (!pushSupported()) { addSys('this browser can’t do push notifications (on iOS, Add to Home Screen first)', 'banner'); return; }
-    Notification.requestPermission().then(function (perm) {
+    if (!pushSupported()) { addSys('this browser can’t do push notifications (on iOS, Add to Home Screen first)', 'banner'); return Promise.resolve(); }
+    return Notification.requestPermission().then(function (perm) {
       if (perm !== 'granted') { addSys('notifications not allowed', 'banner'); markBell(); return; }
       return (swReg ? Promise.resolve(swReg) : registerSW()).then(function (reg) {
         if (!reg) { addSys('service worker unavailable', 'banner'); return; }
@@ -4107,6 +4162,33 @@ main.atree-open .composer-wrap { display: none !important; }
   }
   $('notifyBtn').addEventListener('click', enablePush);
   var swReady = registerSW(); // register on boot; silently re-subscribes if already granted
+
+  // ---- presence: what this panel has on screen. The gateway skips the push
+  // for the conversation you are reading and, for anything not urgent, the
+  // devices you are not at (Safari shows every push, so the service worker
+  // cannot decide that). Sent on change and every 15 s while visible.
+  var presenceId = (function () { try { var v = sessionStorage.getItem('x056_presence_id'); if (!v) { v = Math.random().toString(36).slice(2) + Date.now().toString(36); sessionStorage.setItem('x056_presence_id', v); } return v; } catch (e) { return 'p' + Math.random().toString(36).slice(2); } })();
+  var presenceKey = '', presenceAt = 0;
+  function reportPresence(force, leaving) {
+    var visible = !leaving && !document.hidden;
+    var open = !!lastSessionId && (!controlRoom || controlRoom.isOpen());
+    var key = [visible, currentProjectId || '', open ? lastSessionId : '', pushEndpoint || ''].join('|');
+    var now = Date.now();
+    if (!force && key === presenceKey && (!visible || now - presenceAt < 15000)) return;
+    presenceKey = key; presenceAt = now;
+    try {
+      api('/api/presence', { method: 'POST', keepalive: true,
+        body: JSON.stringify({ clientId: presenceId, projectId: currentProjectId || null, sessionId: open ? lastSessionId : null, visible: visible, endpoint: pushEndpoint }) }).catch(function () {});
+    } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', function () { reportPresence(true); });
+  window.addEventListener('focus', function () { reportPresence(true); });
+  window.addEventListener('blur', function () { reportPresence(true); });
+  window.addEventListener('pagehide', function () { reportPresence(true, true); });
+  // Cheap local check each second; the request goes out only on a change or
+  // every 15 s while visible.
+  setInterval(function () { reportPresence(false); }, 1000);
+  currentEndpoint().then(function () { reportPresence(true); });
   // Notification tap (from the service worker) → open that project.
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', function (e) {
@@ -5373,7 +5455,7 @@ main.atree-open .composer-wrap { display: none !important; }
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -6813,7 +6895,10 @@ main.atree-open .composer-wrap { display: none !important; }
     promptText: ()=>promptEl.value,
     setComposerAccount: function(name){composerAccounts[composerAccountKey()]=name;},
     markRead: function () { clearConvNotif(currentProjectId,lastSessionId); },
-    state: function () { var vk=viewKey(currentProjectId,lastSessionId),effort=activeEffort[vk]; return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, views: views, provider:currentProvider(), model:effectiveModel(), effort:effort===undefined?effortEl.value:effort, composerAccount:composerAccounts[composerAccountKey()]||null, runningAccount:activeAccount[vk] || null }; },
+    markAllRead: function () { Object.keys(convNotif).forEach(function (k) { var i = k.indexOf('::'); clearConvNotif(k.slice(0, i), k.slice(i + 2)); }); Object.keys(pendingQ).forEach(function (sid) { var q = pendingQ[sid]; if (q && q.stale) markQuestionSeen(q.projectId, sid, q.at); }); dismissRestart(); applyNotifs(); },
+    clearRestartNotice: function () { dismissRestart(); applyNotifs(); },
+    push: pushApi,
+    state: function () { var vk=viewKey(currentProjectId,lastSessionId),effort=activeEffort[vk]; return { projects: Object.keys(projCache).map(function (k) { return projCache[k]; }), projectId: currentProjectId, sessionId: lastSessionId, accounts: acctList, running: runningSessionIds, background: bgSessionIds, questions: pendingQ, notifications: convNotif, notices: convNotice, restartNotice: restartNotice, views: views, provider:currentProvider(), model:effectiveModel(), effort:effort===undefined?effortEl.value:effort, composerAccount:composerAccounts[composerAccountKey()]||null, runningAccount:activeAccount[vk] || null }; },
     select: function (pid, sid) {
       if (pid === currentProjectId) return Promise.resolve(switchConversation(pid, sid));
       // Select the target conversation before switching project, then the existing

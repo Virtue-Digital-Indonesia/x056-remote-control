@@ -990,6 +990,54 @@ gateway, not asked for in a prompt.
 
 Both counters are in memory. A restart re-earns them, deliberately.
 
+## Notifications (`server/notices.ts`, 2026-10-01)
+
+Three live days had pushed ~500 "finished - tap to continue" to both phones,
+most of them relays and cron, while an approval, a parked turn and a failed
+cron job pushed nothing. Now ONE function decides:
+`noticeFor(event, ctx) -> { tier, category, title, body, link, tag, id }`.
+The manager attaches it to each event as `notice`, so the push, the bell, the
+sidebar dots and the desktop fallback all use the same words. Change copy or
+tiers THERE, and keep `test/notices.test.ts` in step.
+
+- **Tiers.** `urgent` (pushed even for automated turns): a question, an MCP
+  approval while pending, a delegate `needs_human`, a parked turn with no
+  reason (every account out) or `waiting_for_reset`, a failed turn (any
+  origin but advisor/autopilot, which are `normal`), `cron_failed`.
+  `normal`: a turn a HUMAN started that ran >= `LONG_TURN_MS` (45 s), an
+  autopilot run's end (one per run, "after N steps"), a parked turn, the
+  restart notice. `quiet` (bell + dot, no push): short turns, relays, cron,
+  delegate wakes, advisor follow-ups, delegate progress, a failover that
+  worked. `none`: stopped turns, autopilot steps, per-conversation
+  `turn_orphaned` (collapsed into ONE `restart_interrupted` per boot, id
+  `restart:<bootAt>`).
+- **Origin** = the sender kind of the turn's request (`originOf`: none ->
+  human, automation -> cron, conversation/mcp -> relay, ...), carried with
+  `turnStartedAt`/`durationMs` on `session_done`, so it reaches
+  `conversation_settled` through the completion gate unchanged.
+- **Words.** Title = the conversation title, never "New chat" alone ("New
+  chat · {project}"), 60 chars on a word. Body = `{project} · {provider}` on
+  its own first line for a Work project, then what happened: duration + the
+  cleaned reply (a closing question leads), the failure in plain words, the
+  question, the approval preview. Tag `x056-conv-<sid>` (newer replaces
+  older) or `x056-urgent-<id>`.
+- **Presence.** Safari shows every push, so the gateway decides: the panel
+  `POST /api/presence {clientId, projectId, sessionId, visible, endpoint}`
+  on change and every 15 s while visible (30 s TTL, `server/presence.ts`).
+  Nothing is pushed for a conversation some visible panel is showing; while
+  any panel is visible, non-urgent pushes go only to that device.
+- **Per device** (`push_settings`, keyed by a hash of the push endpoint):
+  "Needs you" always on; "Finished long turns I started" (default on);
+  "Automation and background" (default off: relays/cron/delegates stay
+  quiet; on: pushed); quiet hours in the device's own zone, urgent included.
+  `GET/POST /api/push/settings`, `POST /api/push/test` (this device only).
+  Panel: Settings > Notifications (`/settings/notifications`).
+- **Sent ids** live in `push_sent` (gateway.sqlite migration 3, 7 days), so
+  a deploy does not resend. Pending questions older than 3 days are
+  `stale` (still answerable, not counted by the bell); 14 days are purged at
+  boot. The tab title shows "(N) " for what needs you; the app badge is the
+  bell count.
+
 ## Scheduled tasks (cron)
 
 A conversation can schedule a prompt to be sent on a repeating schedule, via the
