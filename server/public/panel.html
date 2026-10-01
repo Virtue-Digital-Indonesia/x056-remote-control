@@ -442,6 +442,31 @@
   #conversationSurface .composer-wrap[data-qp-open] .composer { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "att att" "prompt prompt" "bar send"; padding: 10px 6px 6px 8px; border-color: var(--border-strong); }
   #conversationSurface .composer #prompt { grid-area: prompt; min-height: 24px; padding: 7px 0; font-size: 15px; line-height: 1.5; }
   #conversationSurface .composer-wrap[data-qp-open] #prompt { padding: 4px 10px 8px; }
+  /* Live Markdown: #promptHighlight mirrors the textarea behind it (geometry and
+     type copied from the textarea in JS). Every style here keeps each
+     character's advance width: no weight, italic face, size or padding, or the
+     caret drifts off the glyphs. Bold is a faux stroke, italic a tint. Kerning
+     and ligatures are off on BOTH, because WebKit shapes each span apart. */
+  #prompt, .prompt-hl { font-kerning: none; font-variant-ligatures: none; }
+  #prompt.hl-on { position: relative; z-index: 1; color: transparent; caret-color: var(--text); }
+  #prompt.hl-on::selection { color: transparent; background: color-mix(in srgb, var(--accent) 34%, transparent); }
+  #prompt.hl-on.hl-composing { color: var(--text); }
+  .prompt-hl { position: absolute; z-index: 0; margin: 0; border: 0; box-sizing: border-box; overflow: hidden; pointer-events: none; user-select: none; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; color: var(--text); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  /* A trailing newline is an empty last line in a textarea, nothing in a div. */
+  .prompt-hl > div:last-child::after { content: "\200b"; }
+  #prompt:not(.hl-on) + .prompt-hl, #prompt.hl-composing + .prompt-hl { visibility: hidden; }
+  .prompt-hl .md-mark, .prompt-hl .md-fence { color: var(--faint); }
+  .prompt-hl .md-b, .prompt-hl .md-h { -webkit-text-stroke: .45px currentColor; }
+  .prompt-hl .md-i { color: color-mix(in srgb, var(--text) 62%, var(--accent)); }
+  .prompt-hl .md-u { text-decoration: underline; text-underline-offset: 2px; }
+  .prompt-hl .md-s { text-decoration: line-through; color: var(--muted); }
+  .prompt-hl .md-code { background: var(--surface-3); border-radius: 4px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  .prompt-hl .md-q { color: var(--muted); }
+  /* The quote marker's glyph gives way to a bar drawn in its own box. */
+  .prompt-hl .md-qm { color: transparent; background: linear-gradient(90deg, transparent 1px, var(--border-strong) 1px 4px, transparent 4px); }
+  .prompt-hl .md-li { color: var(--muted); }
+  .prompt-hl .md-hr { color: var(--faint); background: linear-gradient(transparent calc(50% - .5px), var(--border-strong) calc(50% - .5px) calc(50% + .5px), transparent calc(50% + .5px)); }
+  .prompt-hl .md-pre { background: color-mix(in srgb, var(--surface-3) 75%, transparent); }
   #conversationSurface .composer #attachRow, #conversationSurface .composer #attachRow.show { display: none; grid-area: att; padding: 0 4px 10px; }
   #conversationSurface .composer-wrap[data-qp-open] #attachRow.show { display: flex; }
   #conversationSurface .composer .bar { display: none; grid-area: bar; align-items: center; flex-wrap: nowrap; gap: 4px; padding: 0; min-width: 0; }
@@ -1575,6 +1600,7 @@ main.atree-open .composer-wrap { display: none !important; }
            keyboard's word suggestions, which are wanted when typing prose and
            are a SEPARATE mechanism from AutoFill. -->
       <textarea id="prompt" name="x056-prompt" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" data-form-type="other" aria-label="Message" aria-describedby="composerHint" placeholder="Ask anything"></textarea>
+      <div id="promptHighlight" class="prompt-hl" aria-hidden="true"></div>
       <div class="bar">
         <div class="qp-plus" id="composerPlusWrap">
           <button type="button" class="qp-plus-btn" id="composerPlusBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="composerPlusMenu" aria-label="Add files, a template or a reference" title="Add files, a template or a reference"><svg class="ic sm"><use href="#i-plus"/></svg></button>
@@ -5495,7 +5521,104 @@ main.atree-open .composer-wrap { display: none !important; }
   // ---- composer ----
   // Every programmatic write to the box (draft restore, clear after send) ends
   // here, so this is also where the quiet pill learns the box changed.
-  function autogrow() { syncComposer(); promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + 'px'; }
+  function autogrow() { syncComposer(); promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + 'px'; scheduleHighlight(); }
+  // Live Markdown in the box. The textarea stays the source of truth (undo,
+  // IME, list editing, drafts and send all use it); its text is transparent
+  // and #promptHighlight, behind it, paints the same characters with classed
+  // spans (ComposerFormat.highlight). Every style there is width-neutral, so
+  // the caret and selection, drawn by the textarea, land on the mirror's
+  // glyphs. The mirror copies the textarea's computed type and box on each
+  // render, so control-room.css and the phone 16px rule apply to both.
+  var promptHl = $('promptHighlight'), hlValue = null, hlFrame = 0, hlComposing = false;
+  var HL_COPY = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontStretch', 'lineHeight', 'letterSpacing', 'wordSpacing', 'tabSize', 'textIndent', 'textTransform', 'textAlign', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'];
+  function scheduleHighlight() {
+    if (!promptHl || hlFrame) return;
+    hlFrame = requestAnimationFrame(function () { hlFrame = 0; renderHighlight(); });
+  }
+  function placeHighlight() {
+    var box = promptHl.offsetParent; if (!box) return;
+    var cs = getComputedStyle(promptEl), st = promptHl.style;
+    for (var i = 0; i < HL_COPY.length; i++) st[HL_COPY[i]] = cs[HL_COPY[i]];
+    // Fractional rects, not offset*: an integer width wraps a word differently.
+    var r = promptEl.getBoundingClientRect(), b = box.getBoundingClientRect();
+    var bl = parseFloat(cs.borderLeftWidth) || 0, br = parseFloat(cs.borderRightWidth) || 0;
+    var bt = parseFloat(cs.borderTopWidth) || 0, bb = parseFloat(cs.borderBottomWidth) || 0;
+    // A classic scrollbar (past 240px) narrows the text; the mirror has none.
+    var sbw = Math.max(0, promptEl.offsetWidth - promptEl.clientWidth - bl - br);
+    var sbh = Math.max(0, promptEl.offsetHeight - promptEl.clientHeight - bt - bb);
+    st.left = (r.left - b.left - box.clientLeft + bl) + 'px';
+    st.top = (r.top - b.top - box.clientTop + bt) + 'px';
+    st.width = Math.max(0, r.width - bl - br - sbw) + 'px';
+    st.height = Math.max(0, r.height - bt - bb - sbh) + 'px';
+  }
+  // One block per source line, holding its runs and its own '\n', so the
+  // mirror's text is the value exactly. Only the lines between the unchanged
+  // head and tail are rebuilt: layout then touches the edited lines, not a
+  // whole 20 KB draft per keystroke.
+  function hlLineKey(runs, nl) {
+    var k = nl ? '\n' : '';
+    for (var i = 0; i < runs.length; i++) k += runs[i].cls + '\u0001' + runs[i].text + '\u0002';
+    return k;
+  }
+  function hlLine(runs, nl, key) {
+    var div = document.createElement('div');
+    for (var i = 0; i < runs.length; i++) {
+      var run = runs[i];
+      if (!run.cls) { div.appendChild(document.createTextNode(run.text)); continue; }
+      var span = document.createElement('span'); span.className = run.cls; span.textContent = run.text;
+      div.appendChild(span);
+    }
+    if (nl) div.appendChild(document.createTextNode('\n'));
+    div.hlKey = key;
+    return div;
+  }
+  function patchHighlight(lines) {
+    var old = promptHl.children, n = lines.length, o = old.length, keys = new Array(n);
+    for (var i = 0; i < n; i++) keys[i] = hlLineKey(lines[i], i < n - 1);
+    var head = 0; while (head < n && head < o && old[head].hlKey === keys[head]) head++;
+    var tail = 0; while (tail < n - head && tail < o - head && old[o - 1 - tail].hlKey === keys[n - 1 - tail]) tail++;
+    for (var r = o - tail - 1; r >= head; r--) old[r].remove();
+    var before = old[head] || null, frag = document.createDocumentFragment();
+    for (var j = head; j < n - tail; j++) frag.appendChild(hlLine(lines[j], j < n - 1, keys[j]));
+    promptHl.insertBefore(frag, before);
+  }
+  function renderHighlight() {
+    var F = window.ComposerFormat;
+    if (!promptHl || !F || !F.highlightLines || hlComposing) return;
+    var value = promptEl.value;
+    if (value !== hlValue) { patchHighlight(F.highlightLines(value)); hlValue = value; }
+    placeHighlight();
+    promptHl.scrollTop = promptEl.scrollTop;
+    // Transparent only once the mirror really holds the text.
+    promptEl.classList.add('hl-on');
+  }
+  if (promptHl) {
+    // Programmatic writes (draft restore, clear after send, templates) fire no
+    // input event; catch them at the property so the mirror never shows stale text.
+    var nativeValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+    if (nativeValue && nativeValue.set) {
+      Object.defineProperty(promptEl, 'value', {
+        configurable: true,
+        get: function () { return nativeValue.get.call(this); },
+        set: function (v) { nativeValue.set.call(this, v); scheduleHighlight(); },
+      });
+    }
+    promptEl.addEventListener('input', scheduleHighlight);
+    promptEl.addEventListener('scroll', function () { promptHl.scrollTop = promptEl.scrollTop; });
+    // During IME composition the textarea shows its own text (and the
+    // composition underline); the mirror hides, so nothing renders twice.
+    promptEl.addEventListener('compositionstart', function () { hlComposing = true; promptEl.classList.add('hl-composing'); });
+    promptEl.addEventListener('compositionend', function () {
+      hlComposing = false; promptEl.classList.remove('hl-composing'); hlValue = null; renderHighlight();
+    });
+    promptEl.addEventListener('blur', function () {
+      // A composition the browser abandoned (focus moved) never sends compositionend.
+      if (hlComposing) { hlComposing = false; promptEl.classList.remove('hl-composing'); hlValue = null; scheduleHighlight(); }
+    });
+    if (window.ResizeObserver) { var hlRO = new ResizeObserver(scheduleHighlight); hlRO.observe(promptEl.parentNode); hlRO.observe(promptEl); }
+    window.addEventListener('resize', scheduleHighlight);
+    scheduleHighlight();
+  }
   if (window.ResizeObserver) {
     var promptWidth = 0;
     new ResizeObserver(function (entries) {
@@ -6270,6 +6393,7 @@ main.atree-open .composer-wrap { display: none !important; }
   }
   function syncComposer() {
     if (!composerWrap || !composerBox) return;
+    scheduleHighlight();
     var a = document.activeElement, running = composerRunning(), content = composerHasContent();
     var open = qpForce || qpHold || !!(a && a !== document.body && composerBox.contains(a)) || promptEl.value.length > 0 || composerHasFiles() || composerMenuOpen();
     composerWrap.toggleAttribute('data-qp-open', open);

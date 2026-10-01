@@ -148,3 +148,46 @@ describe('composer formatting: shortcuts', () => {
     expect(F.diff('a ****b', 'a b')).toEqual({ from: 2, to: 6, text: '' });
   });
 });
+
+describe('composer formatting: live highlight runs', () => {
+  const hl = (s: string) => F.highlight(s).map((r: { text: string; cls: string }) => [r.text, r.cls]);
+  const joined = (s: string) => F.highlight(s).map((r: { text: string }) => r.text).join('');
+  it('marks a quote line and bold, keeping every character', () => {
+    expect(hl('> asda\n**wtf bro**')).toEqual([
+      ['> ', 'md-mark md-qm'], ['asda', 'md-q'], ['\n', ''],
+      ['**', 'md-mark'], ['wtf bro', 'md-b'], ['**', 'md-mark'],
+    ]);
+  });
+  it('handles italic, both, underline, strike and inline code', () => {
+    expect(hl('*a* ***b*** <u>c</u> ~~d~~ `e*f`')).toEqual([
+      ['*', 'md-mark'], ['a', 'md-i'], ['*', 'md-mark'], [' ', ''],
+      ['***', 'md-mark'], ['b', 'md-b md-i'], ['***', 'md-mark'], [' ', ''],
+      ['<u>', 'md-mark'], ['c', 'md-u'], ['</u>', 'md-mark'], [' ', ''],
+      ['~~', 'md-mark'], ['d', 'md-s'], ['~~', 'md-mark'], [' ', ''],
+      ['`', 'md-code md-mark'], ['e*f', 'md-code'], ['`', 'md-code md-mark'],
+    ]);
+  });
+  it('nests emphasis and leaves unmatched or spaced markers plain', () => {
+    expect(hl('**a *b* c**')).toEqual([['**', 'md-mark'], ['a ', 'md-b'], ['*', 'md-b md-mark'], ['b', 'md-b md-i'], ['*', 'md-b md-mark'], [' c', 'md-b'], ['**', 'md-mark']]);
+    expect(hl('2 * 3 * 4 and **open')).toEqual([['2 * 3 * 4 and **open', '']]);
+    expect(hl('snake_case_name')).toEqual([['snake_case_name', '']]);
+  });
+  it('marks headings, rules, list markers and fenced code', () => {
+    expect(hl('# T\n---\n  • x\n  2. y\n```js\na **b**\n```')).toEqual([
+      ['# ', 'md-mark'], ['T', 'md-h'], ['\n', ''], ['---', 'md-hr'], ['\n', ''],
+      ['  • ', 'md-li'], ['x\n', ''], ['  2. ', 'md-li'], ['y\n', ''],
+      ['```js', 'md-fence'], ['\n', ''], ['a **b**', 'md-pre'], ['\n', ''], ['```', 'md-fence'],
+    ]);
+  });
+  it('always joins back to the exact input', () => {
+    const corpus = ['', '\n', '>', '> ', '**', '`', '``a`', '<u>', '<u>x', 'a</u>', '~~~\nx\n', '***\n* * *', '> > **q** `c`\n\n', '\t•\t*x*', '_a_ b_c_ __d__', 'x'.repeat(2500) + '*y*'];
+    for (const s of corpus) expect(joined(s)).toBe(s);
+  });
+  it('stays linear on a long line of unmatched openers', () => {
+    const line = '*a _b `c ~~d '.repeat(150);
+    const t = performance.now();
+    for (let i = 0; i < 10; i++) F.highlight(line);
+    expect((performance.now() - t) / 10).toBeLessThan(20);
+    expect(joined(line)).toBe(line);
+  });
+});
