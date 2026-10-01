@@ -102,9 +102,11 @@ function activeModel(e: RawEvent): string | undefined {
   return typeof model === 'string' ? model : undefined;
 }
 
-/** The assistant's displayable text blocks on an assistant event. */
+/** The MAIN session's displayable text blocks on an assistant event. A
+ *  subagent's messages carry `parent_tool_use_id`; they live in its own
+ *  transcript, so showing them here put text in the chat that a reload lost. */
 function assistantText(e: RawEvent): string[] {
-  if (e.type !== 'assistant') return [];
+  if (e.type !== 'assistant' || e.parent_tool_use_id != null) return [];
   const content = (e.message as { content?: unknown } | undefined)?.content;
   if (!Array.isArray(content)) return [];
   const out: string[] = [];
