@@ -109,7 +109,6 @@ window.createControlRoom = function (engine) {
   let stageHidden=false;
   try{stageHidden=localStorage.getItem('x056_stage_hidden')==='true';}catch{}
   document.body.dataset.stageHidden=String(stageHidden);
-  const stageRestore=document.createElement('button');stageRestore.id='stageRestore';stageRestore.className='cr-secondary';stageRestore.innerHTML=ic('chat')+'<span>Conversations</span>';stageRestore.onclick=()=>setStageHidden(false);document.body.append(stageRestore);
   stage.insertAdjacentHTML('afterbegin','<button id="stageHide" class="cr-icon" aria-label="Hide conversation switcher" title="Hide switcher">'+ic('x')+'</button>');
   function setStageHidden(hidden,save=true){
     stageHidden=hidden;document.body.dataset.stageHidden=String(hidden);stageExpanded=false;stageOpen(false);
@@ -256,7 +255,7 @@ window.createControlRoom = function (engine) {
     if(lead){const [primary,secondary]=conversationLabels(lead.p,lead.c);caption.innerHTML=`<strong>${esc(primary)}</strong><small>${esc(secondary)}</small>`;}
     $('stageToggle').setAttribute('aria-label',pinned.length?(stageMode==='pinned'?'Pinned conversations':stageMode==='smart'?'Smart conversations':'Recent conversations')+' ('+pinned.length+') · '+(matchMedia('(hover: none)').matches?'Tap to browse':'Click to switch, hover to browse'):'Pin a conversation');
     stage.setAttribute('aria-label',stageMode==='pinned'?'Pinned conversations':stageMode==='smart'?'Smart conversations':'Recent conversations');
-    stage.dataset.count=String(pinned.length);stage.dataset.unread=String(pinned.some(x=>x.unread));const visibleIds=new Set(pinned.map(x=>x.k));document.body.dataset.stageCoversRuns=String(stageMode==='recent'||stageMode==='smart'&&all.filter(x=>['running','background'].includes(x.status)).every(x=>visibleIds.has(x.k)));updateStageToggle();
+    stage.dataset.count=String(pinned.length);stage.dataset.unread=String(pinned.some(x=>x.unread));const visibleIds=new Set(pinned.map(x=>x.k));document.body.dataset.stageCoversRuns=String(!stageHidden&&(stageMode==='recent'||stageMode==='smart'&&all.filter(x=>['running','background'].includes(x.status)).every(x=>visibleIds.has(x.k))));updateStageToggle();
     $('stagePrevious').setAttribute('aria-label','Previous conversations');$('stageNext').setAttribute('aria-label','More conversations');
     $('stagePrevious').hidden=stagePage===0;$('stageNext').hidden=(stagePage+1)*pageSize>=pinned.length;
     const html=rows.map(x=>{
