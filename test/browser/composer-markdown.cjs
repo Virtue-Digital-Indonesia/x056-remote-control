@@ -220,6 +220,17 @@ const LINUX_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, lik
   assert.equal(await mine.locator('u').innerText(), 'very');
   assert.match(await mine.innerText(), /<b>this<\/b> literal/);
   assert.equal(await mine.locator('b').count(), 0);
+  // ...and the rest of the Markdown renders too, like the replies.
+  await page.evaluate(({ pid, sid }) => window.fixtureStream.dispatchEvent(new MessageEvent('session_started', { data: JSON.stringify({ data: { projectId: pid, sessionId: sid, messageId: 'mine-md', displayPrompt: '> The lookup is not live yet.\nWhat else is missing?\n\n---\n\n**Bold**, `code` and\n- one\n- two', ts: new Date().toISOString() } }) })), { pid: project.id, sid });
+  const md = page.locator('.msg.user .content').last();
+  await md.locator('blockquote').waitFor();
+  assert.match(await md.locator('blockquote').innerText(), /The lookup is not live yet/);
+  assert.doesNotMatch(await md.innerText(), /^>/m, 'no raw quote marker');
+  assert.equal(await md.locator('hr').count(), 1);
+  assert.equal(await md.locator('strong').innerText(), 'Bold');
+  assert.equal(await md.locator('code').innerText(), 'code');
+  assert.equal(await md.locator('ul li').count(), 2);
+  await md.screenshot({ path: shots + '/user-bubble-markdown.png' });
   await linux.context.close();
 
   // Touch: plain typing is unaffected and Enter is still a newline.
