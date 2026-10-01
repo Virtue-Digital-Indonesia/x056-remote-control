@@ -16,6 +16,7 @@ import { ApiController, STATE_DIR, PUSH_SERVICE, WEBAUTHN_SERVICE, SESSION_STORE
 import { SessionManager } from './manager.js';
 import { AccountRegistry } from '../src/accounts.js';
 import { PushService } from './push.js';
+import { ApnsService } from './apns.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
 import { CODEGRAPH, CodegraphClient, codegraphConfigFromEnv, type CodegraphConfig } from './codegraph.js';
@@ -96,6 +97,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
     (pid, sid) => manager.conversationUrl(pid, sid),
     (pid, sid) => manager.titlePending(pid, sid),
   );
+  push.apns = new ApnsService(cfg.stateDir);
   manager.subscribe((e) => { push.notify(e.kind, e.data).catch(() => {}); });
 
   // Passkey (WebAuthn) auth + the sessions it mints. The guard accepts either the

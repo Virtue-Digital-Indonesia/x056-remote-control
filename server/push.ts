@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { join } from 'node:path';
 import webpush from 'web-push';
 import type { PushSubscription } from 'web-push';
+import type { ApnsService } from './apns.js';
 
 /**
  * Self-contained Web Push: generates+persists a VAPID keypair, stores browser
@@ -20,6 +21,8 @@ export class PushService {
   private vapid: { publicKey: string; privateKey: string };
   private subs: StoredSub[] = [];
   private delivered = new Set<string>();
+  /** The native iOS app's devices. Same events, same dedupe, its own transport. */
+  apns?: ApnsService;
 
   constructor(
     private readonly stateDir: string,
@@ -93,7 +96,7 @@ export class PushService {
    *  Autopilot projects emit session_done every step, so those are suppressed —
    *  the user is pinged only when autopilot as a whole finishes/stops. */
   async notify(kind: string, data: Record<string, unknown>): Promise<void> {
-    if (!NOTIFY_KINDS.has(kind) || this.subs.length === 0 || data.notificationSuppressed) return;
+    if (!NOTIFY_KINDS.has(kind) || (this.subs.length === 0 && !this.apns?.hasTargets()) || data.notificationSuppressed) return;
     if (['stopped', 'cancelled', 'canceled'].includes(String(data.status)) || data.reason === 'Stopped by user.') return;
     const pid = typeof data.projectId === 'string' ? data.projectId : '';
     const waitSid = typeof data.sessionId === 'string' ? data.sessionId : '';
@@ -141,10 +144,15 @@ export class PushService {
       this.delivered.add(notificationId);
       if (this.delivered.size > 1000) this.delivered.delete(this.delivered.values().next().value!);
     }
-    await this.sendToAll({ title, body, projectId: pid, sessionId, notificationId, ...(this.linkOf ? { url: this.linkOf(pid, sessionId) } : {}) });
+    const payload = { title, body, projectId: pid, sessionId, notificationId, ...(this.linkOf ? { url: this.linkOf(pid, sessionId) } : {}) };
+    await Promise.all([
+      this.sendToAll(payload),
+      this.apns?.send({ ...payload, kind }).catch((err) => console.warn('[apns] send failed:', (err as Error).message)),
+    ]);
   }
 
   private async sendToAll(payload: { title: string; body: string; projectId: string; sessionId?: string; notificationId?: string; url?: string }): Promise<void> {
+    if (this.subs.length === 0) return;
     const json = JSON.stringify(payload);
     const dead: string[] = [];
     await Promise.all(this.subs.map(async (s) => {
