@@ -29,7 +29,7 @@ struct AuthImage: View {
         guard let client = app.client else { return }
         let url = URL(string: path, relativeTo: client.baseURL)?.absoluteURL ?? client.baseURL
         var req = URLRequest(url: url)
-        req.setValue("Bearer \(client.token)", forHTTPHeaderField: "Authorization")
+        client.authorize(&req)
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let img = UIImage(data: data) else { failed = true; return }

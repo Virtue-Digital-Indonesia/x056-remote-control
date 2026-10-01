@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildModule, type GatewayConfig } from './app.module.js';
+import { appleAppSiteAssociation } from './apple-app-site.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +42,11 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
     const active=frontend.current();res.json(active?{backend:version.backend,ui:{revision:active.revision.slice(0,7),fingerprint:active.id,dirty:false}}:version.current());
   });
   express.get('/healthz', (_req, res) => res.json({ ok: true }));
+  // Public, JSON, never a redirect: Apple's CDN fetches it without credentials.
+  express.get('/.well-known/apple-app-site-association', (_req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.type('application/json').send(JSON.stringify(appleAppSiteAssociation()));
+  });
   express.get(['/', '/home', '/dashboard', '/activity', '/activity/queue', '/activity/automations', '/activity/outputs', '/accounts', '/accounts/tools', '/automations', '/artifacts', '/queue', '/memory', '/settings', '/settings/:section', '/chat', '/chat/:chatId', '/projects', '/projects/:projectId', '/projects/:projectId/:tab', '/work', '/work/:projectId', '/work/:projectId/:sessionId'], (_req, res) => {
     try {
       res.setHeader('Cache-Control','no-cache');

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0318ABA1AD5C57014FDD750E /* EventStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = E99F5FC5AE0AF70609FF1DD7 /* EventStream.swift */; };
+		17C0EE934498A1CC3481F884 /* Passkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = F88A7B593E49575CDE445F65 /* Passkeys.swift */; };
 		1B76D4FA1899FF2531D4F589 /* AuthImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A99817C8A97FE41AD55CCEC /* AuthImage.swift */; };
 		209AAA52E07203F801E39765 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45660412BCBDE515C7AFE501 /* AppDelegate.swift */; };
 		37AD03F785996F553BC46853 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = F187BFE84B7CF066FB00BB12 /* Models.swift */; };
@@ -28,6 +29,7 @@
 		D0BAF4F4C8F36773D9DE2D83 /* ConversationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F00729F7A800C6AD78E76D4 /* ConversationModel.swift */; };
 		D60A81F5228CFDED3F5E9B96 /* FlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F415E85D966E431B5A721755 /* FlowTests.swift */; };
 		D94F297012DBF8A79FA70F03 /* MarkdownText.swift in Sources */ = {isa = PBXBuildFile; fileRef = B63D2E9782C505E3BFBCA267 /* MarkdownText.swift */; };
+		DB4D71E8698AF1CF5C714925 /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61DBB11C2781CD83B747A300 /* Palette.swift */; };
 		DD1FCE9A2B0DC0CEB93EDEBF /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79D030718E476DB4BC5E0B4E /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
@@ -56,6 +58,7 @@
 		40690CCAB7FFCA2A800FD5F2 /* StatusDot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusDot.swift; sourceTree = "<group>"; };
 		45660412BCBDE515C7AFE501 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		52237D4D7527152AA5D80A61 /* X056UITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = X056UITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		61DBB11C2781CD83B747A300 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
 		6593DFD9224EDDB74330D518 /* X056.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = X056.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6A4491987D96D463F03CB3E6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7296A739C6B4413AFC829CC5 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
@@ -76,6 +79,7 @@
 		F187BFE84B7CF066FB00BB12 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		F415E85D966E431B5A721755 /* FlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowTests.swift; sourceTree = "<group>"; };
 		F74E2C371851BCE99E7B7DDB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		F88A7B593E49575CDE445F65 /* Passkeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Passkeys.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -124,6 +128,7 @@
 				978C9E93EFE7C166739C3C87 /* APIClient.swift */,
 				E99F5FC5AE0AF70609FF1DD7 /* EventStream.swift */,
 				F187BFE84B7CF066FB00BB12 /* Models.swift */,
+				F88A7B593E49575CDE445F65 /* Passkeys.swift */,
 			);
 			path = API;
 			sourceTree = "<group>";
@@ -163,6 +168,7 @@
 				6A4491987D96D463F03CB3E6 /* Info.plist */,
 				39B6121E030108EA625E57D7 /* Keychain.swift */,
 				C39F2325D4EEC9FC1B91D4BB /* ModelCatalog.swift */,
+				61DBB11C2781CD83B747A300 /* Palette.swift */,
 				AE345A8288730E1539EFA493 /* X056.entitlements */,
 			);
 			path = Support;
@@ -309,6 +315,8 @@
 				D94F297012DBF8A79FA70F03 /* MarkdownText.swift in Sources */,
 				868FFC2572381D83D5C56DEC /* ModelCatalog.swift in Sources */,
 				37AD03F785996F553BC46853 /* Models.swift in Sources */,
+				DB4D71E8698AF1CF5C714925 /* Palette.swift in Sources */,
+				17C0EE934498A1CC3481F884 /* Passkeys.swift in Sources */,
 				C8985C5250A4A25A2A032648 /* ProjectsView.swift in Sources */,
 				DD1FCE9A2B0DC0CEB93EDEBF /* SettingsView.swift in Sources */,
 				3BA1561DF0A0EEB81568D0B4 /* StatusDot.swift in Sources */,

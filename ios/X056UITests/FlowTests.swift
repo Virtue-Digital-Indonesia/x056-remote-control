@@ -23,18 +23,25 @@ final class FlowTests: XCTestCase {
         }
         app.launch()
 
-        let serverField = app.textFields["Server"]
-        XCTAssertTrue(serverField.waitForExistence(timeout: 10))
-        serverField.tap()
-        serverField.press(forDuration: 1.2)
-        if app.menuItems["Select All"].waitForExistence(timeout: 2) { app.menuItems["Select All"].tap() }
-        serverField.typeText(XCUIKeyboardKey.delete.rawValue)
+        // The fixture has no passkey, so the token section opens by itself
+        // once the screen has asked the gateway.
+        let change = app.buttons["change-server"]
+        XCTAssertTrue(change.waitForExistence(timeout: 10))
+        change.tap()
+        let serverField = app.textFields["server-field"]
+        XCTAssertTrue(serverField.waitForExistence(timeout: 5))
+        // Tap at the trailing edge so the cursor sits after the last character.
+        serverField.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
+        serverField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 40))
         serverField.typeText(server)
-        let tokenField = app.secureTextFields["Token"]
+        app.buttons["change-server"].tap()
+        let tokenField = app.secureTextFields["token-field"]
+        XCTAssertTrue(tokenField.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Gateway is reachable"].waitForExistence(timeout: 10))
         tokenField.tap()
         tokenField.typeText(token)
         snapshot(app, "1-login")
-        app.buttons["Connect"].tap()
+        app.buttons["token-signin"].tap()
 
         // The permission alert belongs to SpringBoard; tap Allow directly.
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
@@ -76,6 +83,25 @@ final class FlowTests: XCTestCase {
         // The question is cleared by the new turn.
         XCTAssertFalse(app.staticTexts["Which landing page should we publish?"].exists)
         snapshot(app, "6-reply")
+    }
+
+    /// The sign-in screen as it first opens, against the real gateway's
+    /// public routes (version, passkey availability), in both appearances.
+    func testSignInScreenLooks() {
+        for (style, name) in [(XCUIDevice.Appearance.light, "light"), (.dark, "dark")] {
+            XCUIDevice.shared.appearance = style
+            let app = XCUIApplication()
+            app.launchArguments = ["-X056ResetState"]
+            app.launch()
+            XCTAssertTrue(app.buttons["passkey-button"].waitForExistence(timeout: 10))
+            _ = app.staticTexts["Gateway is reachable"].waitForExistence(timeout: 10)
+            snapshot(app, "signin-\(name)")
+            app.buttons["use-token"].firstMatch.tap()
+            _ = app.secureTextFields["token-field"].waitForExistence(timeout: 3)
+            snapshot(app, "signin-token-\(name)")
+            app.terminate()
+        }
+        XCUIDevice.shared.appearance = .light
     }
 
     private func snapshot(_ app: XCUIApplication, _ name: String) {

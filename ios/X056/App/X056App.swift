@@ -6,11 +6,24 @@ struct X056App: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var app = AppModel.shared
 
+    /// Debug builds take `-X056Appearance dark|light`: the iOS 27 simulator
+    /// stores `simctl ui appearance` but does not apply it.
+    private static var forcedScheme: ColorScheme? {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-X056Appearance"), i + 1 < args.count {
+            return args[i + 1] == "dark" ? .dark : .light
+        }
+        #endif
+        return nil
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(app)
                 .tint(Color.accentColor)
+                .preferredColorScheme(Self.forcedScheme)
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {

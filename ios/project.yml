@@ -57,6 +57,10 @@ targets:
       path: X056/Support/X056.entitlements
       properties:
         aps-environment: development
+        # Passkeys for the gateway's host; it lists this app in
+        # /.well-known/apple-app-site-association (server/apple-app-site.ts).
+        com.apple.developer.associated-domains:
+          - webcredentials:x056.rc.val.id
   X056Tests:
     type: bundle.unit-test
     platform: iOS

@@ -8,6 +8,9 @@ struct SettingsView: View {
     @State private var gateway: ApnsStatus?
     @State private var testResult: String?
     @State private var confirmSignOut = false
+    @State private var passkeyCount: Int?
+    @State private var passkeyResult: String?
+    @State private var addingPasskey = false
 
     var body: some View {
         NavigationStack {
@@ -15,6 +18,25 @@ struct SettingsView: View {
                 Section("Gateway") {
                     LabeledContent("Server", value: app.server?.host() ?? "-")
                     LabeledContent("Stream", value: streamLabel)
+                }
+                Section {
+                    LabeledContent("Signed in with", value: app.credential?.isPasskey == true ? "Passkey" : "Access token")
+                    LabeledContent("Passkeys on this gateway", value: passkeyCount.map(String.init) ?? "…")
+                    Button {
+                        Task { await addPasskey() }
+                    } label: {
+                        HStack {
+                            Text("Add a passkey on this iPhone")
+                            Spacer()
+                            if addingPasskey { ProgressView() }
+                        }
+                    }
+                    .disabled(addingPasskey)
+                    if let passkeyResult { Text(passkeyResult).font(.caption).foregroundStyle(.secondary) }
+                } header: {
+                    Text("Sign-in")
+                } footer: {
+                    Text("A passkey signs you in with Face ID and syncs through iCloud Keychain. Passkeys you made in the panel work here too.")
                 }
                 Section {
                     LabeledContent("This iPhone", value: authLabel)
@@ -72,6 +94,21 @@ struct SettingsView: View {
     private func refresh() async {
         authorization = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
         gateway = try? await app.client?.get("/api/push/apns", as: ApnsStatus.self)
+        passkeyCount = (try? await app.client?.get("/api/auth/passkey/list", as: [PasskeyInfo].self))?.count
+    }
+
+    private func addPasskey() async {
+        addingPasskey = true
+        defer { addingPasskey = false }
+        do {
+            try await app.addPasskey()
+            passkeyResult = "Passkey added. Next time, sign in with Face ID."
+            await refresh()
+        } catch PasskeyError.cancelled {
+            passkeyResult = nil
+        } catch {
+            passkeyResult = error.localizedDescription
+        }
     }
 
     private func test() async {

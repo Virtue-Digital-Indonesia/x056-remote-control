@@ -6,11 +6,44 @@ struct APIError: LocalizedError {
     var errorDescription: String? { status == 401 ? "The gateway rejected the token." : message }
 }
 
-/// Thin JSON client for the gateway. Every route takes the X056 token as a
-/// Bearer header, the first thing `AuthGuard` checks.
+/// How this app proves who it is. `AuthGuard` accepts either.
+enum Credential: Sendable, Equatable {
+    /// The gateway's X056_TOKEN, sent as a Bearer header.
+    case token(String)
+    /// A passkey login's session id, sent as the `x056_session` cookie the
+    /// panel gets. It lasts 30 days; a passkey renews it.
+    case session(String)
+
+    var isPasskey: Bool { if case .session = self { return true }; return false }
+}
+
+/// Thin JSON client for the gateway.
 struct APIClient: Sendable {
     let baseURL: URL
-    let token: String
+    /// nil for the public routes (passkey options and verify, availability).
+    let credential: Credential?
+
+    /// `https://host[:port]`, the WebAuthn origin the gateway expects. Sent
+    /// explicitly: a native request has no Origin, and the gateway would
+    /// otherwise derive one from whatever Host its proxy forwards.
+    var origin: String {
+        var c = URLComponents()
+        c.scheme = baseURL.scheme
+        c.host = baseURL.host()
+        c.port = baseURL.port
+        return c.string ?? baseURL.absoluteString
+    }
+
+    func authorize(_ r: inout URLRequest) {
+        // Cookies are handled here, not by URLSession's shared jar, so a
+        // passkey session lives in the Keychain like the token does.
+        r.httpShouldHandleCookies = false
+        switch credential {
+        case .token(let t): r.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
+        case .session(let s): r.setValue("x056_session=\(s)", forHTTPHeaderField: "Cookie")
+        case nil: break
+        }
+    }
 
     func url(_ path: String, query: [String: String?] = [:]) -> URL {
         var c = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)!
@@ -22,7 +55,7 @@ struct APIClient: Sendable {
     func request(_ method: String, _ path: String, query: [String: String?] = [:], body: Data? = nil, timeout: TimeInterval = 30) -> URLRequest {
         var r = URLRequest(url: url(path, query: query), timeoutInterval: timeout)
         r.httpMethod = method
-        r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        authorize(&r)
         r.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             r.httpBody = body

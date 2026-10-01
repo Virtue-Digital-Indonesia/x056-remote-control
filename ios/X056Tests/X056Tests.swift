@@ -95,3 +95,33 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         #expect(user?.attachments.first?.isImage == true)
     }
 }
+
+@Suite struct PasskeyPlumbingTests {
+    @Test func base64URLRoundTripsWithoutPadding() {
+        let bytes = Data([0xfb, 0xff, 0x00, 0x10, 0x3e])
+        #expect(bytes.base64URL == "-_8AED4")
+        #expect(Data(base64URL: "-_8AED4") == bytes)
+        #expect(Data(base64URL: "eDA1Ni11c2Vy").map { String(decoding: $0, as: UTF8.self) } == "x056-user")
+    }
+
+    @Test func readsTheSessionCookieTheGatewaySets() {
+        let url = URL(string: "https://x056.rc.val.id/api/auth/passkey/auth/verify")!
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [
+            "Set-Cookie": "x056_session=abc123def; Max-Age=2592000; Path=/; HttpOnly; Secure; SameSite=Lax",
+        ])!
+        #expect(Passkeys.sessionCookie(from: response) == "abc123def")
+    }
+
+    @Test func sendsTheRightCredentialAndOrigin() {
+        let base = URL(string: "https://x056.rc.val.id")!
+        let token = APIClient(baseURL: base, credential: .token("t0k")).request("GET", "/api/projects")
+        #expect(token.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
+        #expect(token.value(forHTTPHeaderField: "Cookie") == nil)
+        let session = APIClient(baseURL: base, credential: .session("s1d")).request("GET", "/api/projects")
+        #expect(session.value(forHTTPHeaderField: "Cookie") == "x056_session=s1d")
+        #expect(session.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(session.httpShouldHandleCookies == false)
+        #expect(APIClient(baseURL: URL(string: "http://127.0.0.1:8768")!, credential: nil).origin == "http://127.0.0.1:8768")
+        #expect(APIClient(baseURL: base, credential: nil).origin == "https://x056.rc.val.id")
+    }
+}

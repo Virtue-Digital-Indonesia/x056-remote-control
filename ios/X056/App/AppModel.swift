@@ -22,7 +22,9 @@ final class AppModel {
     static let shared = AppModel()
 
     private(set) var server: URL?
-    private(set) var token: String?
+    private(set) var credential: Credential?
+    /// Shown on the sign-in screen after the gateway turned this device away.
+    var signInNotice: String?
 
     var projects: [Project] = []
     var projectsLoaded = false
@@ -67,49 +69,97 @@ final class AppModel {
         // UI tests start from the sign-in screen every time.
         if ProcessInfo.processInfo.arguments.contains("-X056ResetState") {
             Keychain.delete("token")
+            Keychain.delete("session")
             for key in ["server", "lastSeq", "apnsToken"] { UserDefaults.standard.removeObject(forKey: key) }
         }
         #endif
         server = UserDefaults.standard.string(forKey: "server").flatMap(URL.init(string:))
-        token = Keychain.read("token")
+        credential = Keychain.read("session").map(Credential.session) ?? Keychain.read("token").map(Credential.token)
         lastSeq = UserDefaults.standard.integer(forKey: "lastSeq")
     }
 
     var client: APIClient? {
-        guard let server, let token else { return nil }
-        return APIClient(baseURL: server, token: token)
+        guard let server, let credential else { return nil }
+        return APIClient(baseURL: server, credential: credential)
     }
 
     var isSignedIn: Bool { client != nil }
 
     // MARK: sign in / out
 
-    func signIn(server raw: String, token: String) async throws {
+    /// "x056.rc.val.id", "https://host/", "http://127.0.0.1:8768" → a base URL.
+    static func serverURL(_ raw: String) throws -> URL {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.contains("://") { text = "https://" + text }
         while text.hasSuffix("/") { text.removeLast() }
         guard let url = URL(string: text), url.host() != nil else { throw APIError(status: 0, message: "That is not a server address.") }
-        let tok = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        let probe = APIClient(baseURL: url, token: tok)
-        let _: AuthStatus = try await probe.get("/api/auth/status")
+        return url
+    }
+
+    func signIn(server raw: String, token: String) async throws {
+        let url = try Self.serverURL(raw)
+        let cred = Credential.token(token.trimmingCharacters(in: .whitespacesAndNewlines))
+        let _: AuthStatus = try await APIClient(baseURL: url, credential: cred).get("/api/auth/status")
+        await finishSignIn(url, cred)
+    }
+
+    /// Face ID / Touch ID against the gateway's own passkeys.
+    func signInWithPasskey(server raw: String) async throws {
+        let url = try Self.serverURL(raw)
+        let session = try await Passkeys.signIn(baseURL: url)
+        await finishSignIn(url, .session(session))
+    }
+
+    /// Whether the gateway has any passkey yet. nil: could not tell.
+    static func passkeysAvailable(server raw: String) async -> Bool? {
+        guard let url = try? serverURL(raw) else { return nil }
+        let reply = try? await APIClient(baseURL: url, credential: nil).get("/api/auth/passkey/available", as: PasskeyAvailability.self)
+        return reply?.available
+    }
+
+    /// Create a passkey for this gateway on this iPhone (needs a signed-in client).
+    func addPasskey() async throws {
+        guard let client else { return }
+        try await Passkeys.register(client: client, label: "iPhone app · \(UIDevice.current.name)")
+    }
+
+    private func finishSignIn(_ url: URL, _ cred: Credential) async {
         UserDefaults.standard.set(url.absoluteString, forKey: "server")
         UserDefaults.standard.set(0, forKey: "lastSeq")
-        Keychain.write("token", tok)
-        self.server = url
-        self.token = tok
-        self.lastSeq = 0
+        switch cred {
+        case .token(let t): Keychain.write("token", t); Keychain.delete("session")
+        case .session(let s): Keychain.write("session", s); Keychain.delete("token")
+        }
+        server = url
+        credential = cred
+        signInNotice = nil
+        lastSeq = 0
         connect()
+        startPresence()
         await Push.requestAndRegister()
     }
 
+    /// The gateway answered 401: the token changed or the 30-day session ran out.
+    func credentialRejected() async {
+        guard credential != nil else { return }
+        let passkey = credential?.isPasskey ?? false
+        await signOut()
+        signInNotice = passkey ? "Your session ended. Sign in again with your passkey." : "The gateway no longer accepts that token."
+    }
+
     func signOut() async {
-        if let client, let device = Push.deviceToken {
-            _ = try? await client.post("/api/push/apns/unregister", ApnsUnregisterBody(token: device))
+        if let client {
+            if let device = Push.deviceToken {
+                _ = try? await client.post("/api/push/apns/unregister", ApnsUnregisterBody(token: device))
+            }
+            // A passkey session is a server-side record: end it there too.
+            if credential?.isPasskey == true { _ = try? await client.post("/api/auth/logout", Empty()) }
         }
         disconnect()
         stopPresence()
         Keychain.delete("token")
-        token = nil
+        Keychain.delete("session")
+        credential = nil
         projects = []
         projectsLoaded = false
         running = []
@@ -221,6 +271,8 @@ final class AppModel {
             runningAccounts = r.projects.reduce(into: [:]) { acc, p in acc.merge(p.runningAccounts ?? [:]) { _, new in new } }
             projectsLoaded = true
             projectsError = nil
+        } catch let e as APIError where e.status == 401 {
+            await credentialRejected()
         } catch {
             projectsError = error.localizedDescription
         }
@@ -257,6 +309,7 @@ final class AppModel {
                     if Task.isCancelled { return }
                     if let e = error as? APIError, e.status == 401 {
                         self.connection = .failed(e.localizedDescription)
+                        await self.credentialRejected()
                         return
                     }
                     self.connection = .failed(error.localizedDescription)
