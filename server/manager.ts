@@ -91,6 +91,9 @@ export interface SessionManagerOptions {
   manageProcessSignals?: boolean;
   /** Delay before a gateway-driven autopilot continuation (ms). */
   autopilotIntervalMs?: number;
+  /** How long autopilot waits for a turn's pending ChatGPT-advisor `done`
+   *  review before it schedules the next step anyway (ms, default 60 000). */
+  advisorWaitMs?: number;
   /** Where the user's interactive `claude` transcripts live (read-only mount).
    *  Defaults to ~/.claude/projects. */
   interactiveProjectsDir?: string;
@@ -267,6 +270,9 @@ interface ActiveRun {
   nextChoice?: ConversationRoute;
   actualModel?:string;
   account?: string; // the account this turn is currently running on (from turn_started)
+  /** The ChatGPT advisor's `done` review of THIS turn, while it runs. Autopilot
+   *  waits for it, so a concern is queued (and drains) before the next step. */
+  pendingAdvice?: Promise<unknown>;
 }
 
 /** A short conversation title from the opening prompt (first non-empty line,
@@ -704,44 +710,81 @@ export class SessionManager {
     return out;
   }
 
-  /** After a completed turn, decide whether the gateway should auto-continue
-   *  THIS conversation — each conversation drives its own autopilot loop. */
-  private maybeAutopilot(pid: string, sessionId: string, res: SessionResult): void {
+  /** After a turn, apply ITS verdict to this conversation's autopilot: pause on
+   *  a non-completed turn, disarm on the stop phrase or an empty budget.
+   *  Called for EVERY turn, before anything else is scheduled -- a queued
+   *  message (an advisor follow-up included) that drains after this turn must
+   *  not hide its stop phrase or its failure. Returns whether autopilot may go on. */
+  private evaluateAutopilot(pid: string, sessionId: string, res: SessionResult): boolean {
     const map = this.loadAutopilot();
     const ap = map[sessionId];
-    if (!ap || ap.paused) return;
+    if (!ap || ap.paused) return false;
     // Only continue on a clean completion; park/error pauses (state kept so the
     // user or a later trigger can resume) but stops the auto-loop.
     if (res.status !== 'completed') {
       this.pauseAutopilot(sessionId, res.status);
-      return;
+      return false;
     }
     if (typeof res.resultText === 'string' && res.resultText.includes(ap.stopPhrase)) {
-      delete map[sessionId]; this.saveAutopilot(map);
-      this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'done' });
-      return;
+      this.disarmAutopilot(pid, sessionId, 'done');
+      return false;
     }
     if (ap.remaining <= 0) {
-      delete map[sessionId]; this.saveAutopilot(map);
-      this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'exhausted' });
-      return;
+      this.disarmAutopilot(pid, sessionId, 'exhausted');
+      return false;
     }
-    // This continuation consumes one of the allotted steps.
-    ap.remaining -= 1;
-    map[sessionId] = ap; this.saveAutopilot(map);
-    this.emit('autopilot', { projectId: pid, sessionId, active: true, remaining: ap.remaining });
-    this.scheduleAutopilot(sessionId, ap.prompt);
+    return true;
+  }
+  private disarmAutopilot(pid: string, sessionId: string, reason: string): void {
+    const map = this.loadAutopilot();
+    if (map[sessionId]) { delete map[sessionId]; this.saveAutopilot(map); }
+    const t = this.autopilotTimers.get(sessionId);
+    if (t) { clearTimeout(t); this.autopilotTimers.delete(sessionId); }
+    this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason });
   }
 
-  private scheduleAutopilot(sessionId: string, prompt: string): void {
+  /** After a turn whose queue had nothing: wait for that turn's pending advisor
+   *  review (capped), let a concern it queued drain first, else schedule the
+   *  next step. */
+  private async continueAutopilotAfter(pid: string, sessionId: string, run: ActiveRun): Promise<void> {
+    if (run.pendingAdvice) {
+      let cap: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        run.pendingAdvice.catch(() => {}),
+        new Promise<void>((r) => { cap = setTimeout(r, this.opts.advisorWaitMs ?? 60_000); cap.unref?.(); }),
+      ]);
+      clearTimeout(cap);
+    }
+    if (this.destroyed) return;
+    const ap = this.loadAutopilot()[sessionId];
+    if (!ap || ap.paused) return;
+    // The advisor's follow-up is a queued message, and a queued message always
+    // beats autopilot; the drained turn's own result schedules the next step.
+    if (this.maybeDrainQueue(pid, sessionId)) return;
+    // No busy check here: without a pending review this runs inside the result
+    // handler, while the finished run is still in the map. The timer checks.
+    this.emit('autopilot', { projectId: pid, sessionId, active: true, remaining: ap.remaining });
+    this.scheduleAutopilot(sessionId, ap.prompt, { spend: true });
+  }
+
+  /** Arm the continuation timer. A step is SPENT only when its prompt is
+   *  actually sent (`spend`): a tick that finds the conversation busy (a queued
+   *  message drained in the gap) costs nothing, and the busy turn's result
+   *  re-arms it. Re-arming, pausing or stopping never loses a paid step. */
+  private scheduleAutopilot(sessionId: string, prompt: string, opts: { spend?: boolean } = {}): void {
     const existing = this.autopilotTimers.get(sessionId);
     if (existing) clearTimeout(existing);
     // Deferred so the finished run is out of the map before we continue.
     const t = setTimeout(() => {
       this.autopilotTimers.delete(sessionId);
-      const ap = this.loadAutopilot()[sessionId];
+      const map = this.loadAutopilot(), ap = map[sessionId];
       if (!ap || ap.paused) return; // stopped meanwhile
-      if (this.sessionBusy(sessionId)) return; // this conversation is running; skip this tick
+      if (this.sessionBusy(sessionId)) return; // running; its result re-arms this
+      if (opts.spend) {
+        if (ap.remaining <= 0) return;
+        ap.remaining -= 1; this.saveAutopilot(map);
+        this.emit('autopilot', { projectId: ap.projectId, sessionId, active: true, remaining: ap.remaining });
+      }
       try {
         this.continueSession(ap.projectId, sessionId, prompt, { sender: { kind: 'autopilot' } });
       } catch {
@@ -1600,7 +1643,7 @@ export class SessionManager {
    *  mid-turn "adjust" is steered into the running turn; a post-turn "concern"
    *  becomes ONE queued follow-up from the Advisor (whose own turn is never
    *  reviewed again, so the two cannot loop). */
-  private async runCodexAdvisor(pid: string, sid: string, trigger: AdvisorTrigger, transcript: string, account: string | undefined, mainModel?: string): Promise<AdvisorConsult> {
+  private async runCodexAdvisor(pid: string, sid: string, trigger: AdvisorTrigger, transcript: string, account: string | undefined, mainModel?: string, isCurrentTurn: () => boolean = () => this.runs.has(sid)): Promise<AdvisorConsult> {
     const codexAccounts = this.registry().list().filter((a) => a.provider === 'codex');
     const acct = codexAccounts.find((a) => a.name === account) ?? codexAccounts.find((a) => a.state?.kind === 'ok') ?? codexAccounts[0];
     const offered = getAdapter('codex').listModels?.(codexAccounts.map((a) => a.configDir)) ?? [];
@@ -1610,7 +1653,8 @@ export class SessionManager {
     else c = await this.codexAdvisor().consult(sid, { trigger, transcript, mainModel, model, effort: 'high', configDir: acct.configDir, account: acct.name });
     if (!c.error && (c.verdict === 'adjust' || c.verdict === 'concern')) {
       const note = `[Advisor · ${model}] ${c.advice}`;
-      if (trigger !== 'done') c.delivered = this.runs.has(sid) && this.steerSession(pid, sid, note) ? 'steered' : 'too-late';
+      // An advisor steer is not human: it keeps the relay and self brakes.
+      if (trigger !== 'done') c.delivered = isCurrentTurn() && this.steerSession(pid, sid, note, { humanOrigin: false }) ? 'steered' : 'too-late';
       else {
         try {
           this.enqueue(pid, { sessionId: sid, sender: { kind: 'advisor', projectName: model }, text: `The advisor (${model}) reviewed your work before you called it done:\n\n${c.advice}\n\nAddress this, or say briefly why it does not apply.` });
@@ -3087,7 +3131,10 @@ export class SessionManager {
       // ChatGPT has no advisor of its own; the gateway watches the turn.
       const watcher = helpers.advisor && adapter.id === 'codex'
         ? new TurnWatcher(cleanMemorySource(prompt), (trigger, transcript) => {
-            void this.runCodexAdvisor(pid, sessionId, trigger, transcript, run.account, model).catch(() => {});
+            // Advice belongs to the turn that produced it: steered only while
+            // THIS run is the live one, never into a later turn.
+            const consult = this.runCodexAdvisor(pid, sessionId, trigger, transcript, run.account, model, () => this.runs.get(sessionId) === run).catch(() => {});
+            if (trigger === 'done') run.pendingAdvice = consult;
           }, { reviewDone: sender?.kind !== 'advisor' })
         : undefined;
       void runWith({
@@ -3235,9 +3282,14 @@ export class SessionManager {
             try { this.titles().observe(pid, sessionId, sourcePrompt, res.resultText || ''); }
             catch (error) { console.warn('[titles] Could not queue title:', (error as Error).message); }
           }
+          // THIS turn's verdict (stop phrase, budget, pause on failure) applies
+          // every time, drained or not -- after session_done, so its
+          // notification still sees the autopilot that owned the turn, and
+          // before the drained item starts (that waits 400 ms).
+          const goOn = this.evaluateAutopilot(pid, sessionId, res);
           // Only when the queue had nothing — autopilot must never jump ahead of
           // a real message, and it resumes by itself once the queue empties.
-          if (!drained) this.maybeAutopilot(pid, sessionId, res);
+          if (!drained && goOn) void this.continueAutopilotAfter(pid, sessionId, run).catch(() => {});
         })
         .catch((err: unknown) => {
           if (this.destroyed) return;
@@ -3639,13 +3691,15 @@ export class SessionManager {
    * the token did not already open. Bounding AI-origin traffic properly would
    * mean a separate credential, which is a bigger change than this.
    */
-  steerSession(projectId: string, sessionId: string, text: string): boolean {
+  steerSession(projectId: string, sessionId: string, text: string, opts: { humanOrigin?: boolean } = {}): boolean {
     if (!this.pools().length) return false;
     const conv = this.projects().conversations(projectId).find((c) => c.sessionId === sessionId);
     if (!conv) return false;
     if (!this.pools().some((p) => p.injectMessage(sessionId, text))) return false;
-    // A steer is human-origin, so it resets the same counters a panel message
-    // does -- otherwise steering an exhausted pair would leave the brakes on.
+    // A panel steer is human-origin, so it resets the same counters a panel
+    // message does -- otherwise steering an exhausted pair would leave the
+    // brakes on. The gateway's own steers (the ChatGPT advisor) are not.
+    if (opts.humanOrigin === false) return true;
     this.clearSelfQueueStreak(sessionId);
     this.clearRelayChain(sessionId);
     return true;

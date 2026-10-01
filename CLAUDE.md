@@ -566,6 +566,15 @@ the thread they come from uses them together, and so do we now.
   post-turn "concern" is ONE queued follow-up from sender kind `advisor`, and
   an advisor-started turn is never reviewed again, so they cannot loop.
   ~9 s and ~14.5k tokens per consultation (mostly Codex's own instructions).
+  **With autopilot on** (2026-10-01): each turn's verdict (stop phrase,
+  budget, pause on failure) is applied to THAT turn's result after
+  `session_done`, even when a queued message drains next, so an advisor
+  follow-up cannot hide a stop phrase. Autopilot waits for the turn's
+  `done` review (`run.pendingAdvice`, cap `advisorWaitMs` 60 s), so a concern
+  is queued and drains before the next step. A step is spent when its prompt
+  is SENT, never on a tick that found the conversation busy. A plan/stuck
+  steer lands only in the turn that produced it (else `too-late`), and an
+  advisor steer is not human: it keeps the relay chain and self-message brake.
 - **Jev** (TypeSafe AI's System One model, `server/jev.ts`) picks model and
   effort per turn, both providers: one HTTPS call (~0.3 s, ~$0.00003) inside
   the async run, so sending never waits. Applied to that turn only, never over

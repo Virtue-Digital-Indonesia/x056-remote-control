@@ -92,7 +92,7 @@ describe('SessionManager: the ChatGPT advisor end to end', () => {
     for (let i = 0; i < 100 && consult.mock.calls.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
     expect(consult.mock.calls.map((c) => c[1].trigger)).toEqual(['plan', 'stuck']);
     await new Promise((r) => setTimeout(r, 20));
-    expect(steer).toHaveBeenCalledWith(p.id, sid, expect.stringMatching(/^\[Advisor · gpt-6-astra\] Read the stack trace first\./));
+    expect(steer).toHaveBeenCalledWith(p.id, sid, expect.stringMatching(/^\[Advisor · gpt-6-astra\] Read the stack trace first\./), { humanOrigin: false });
     release();
     for (let i = 0; i < 200 && consult.mock.calls.length < 3; i++) await new Promise((r) => setTimeout(r, 10));
     expect(consult.mock.calls[2][1].trigger).toBe('done');
