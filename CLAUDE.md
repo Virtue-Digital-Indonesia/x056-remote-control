@@ -491,7 +491,15 @@ the thread they come from uses them together, and so do we now.
   worker per part, outside docs -> researcher), says it holds even if earlier
   turns worked alone, and asks for one line naming the spawns (or why none)
   before the first command. Still a prompt: nothing in the gateway forces a
-  spawn.
+  spawn. **Codex overrides the brief**: 0.159 follows it with its own
+  developer message (`<multi_agent_mode>`: "Any earlier instruction enabling
+  proactive multi-agent delegation no longer applies. Do not spawn sub-agents
+  unless the user ... explicitly ask[s]"), lifted only at effort `ultra` --
+  0 spawns in 28 team turns across three chats (2026-10-01). So every Codex
+  turn with the team on carries an explicit ask in the USER message
+  (`teamTurnLine('codex')`, picker or not): delegate per the brief, or do a
+  genuinely small turn (one command, a known one-file edit, a single deploy,
+  a direct answer) alone and say why. Claude gets the line only with a pick.
 - **With a picker on, it also picks the TEAM's model and effort per turn**
   (2026-09-30): two more questions in the same call (`subagent_model`,
   `subagent_effort`, written whole per lean like the main ones; model only

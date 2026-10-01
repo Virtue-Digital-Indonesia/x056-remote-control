@@ -70,16 +70,29 @@ export function claudeTeamAgents(): string {
 }
 
 /**
- * The one line appended to a turn's message when a picker chose the team's
- * model and effort. Codex's spawn_agent takes both per call; Claude's Agent
- * tool takes the model per call and the effort through the variant's name.
+ * The one line appended to a turn's message for the agent team.
+ *
+ * Codex: EVERY turn with the team on, picker or not. Codex 0.159 follows our
+ * team brief with its own developer message ("Any earlier instruction enabling
+ * proactive multi-agent delegation no longer applies. Do not spawn sub-agents
+ * unless the user ... explicitly ask[s]"), lifted only at effort "ultra", so
+ * the brief alone produced 0 spawns in 28 turns (2026-10-01). The request has
+ * to come from the user's message. It still allows a solo turn for simple work,
+ * as the owner asked. spawn_agent takes model and reasoning_effort per call.
+ *
+ * Claude: only when a picker chose the team's model/effort (nothing overrides
+ * its brief). The Agent tool takes the model per call, the effort through the
+ * variant's name. Returns undefined when there is nothing to say.
  */
-export function teamTurnLine(provider: ProviderId, team: { model?: string; effort: string }, backend: 'jev' | 'openai' = 'jev'): string {
+export function teamTurnLine(provider: ProviderId, team?: { model?: string; effort: string }, backend: 'jev' | 'openai' = 'jev'): string | undefined {
   const by = backend === 'openai' ? 'OpenAI Decisions' : 'Jev';
   if (provider === 'codex') {
-    const what = [team.model ? `model "${team.model}"` : '', `reasoning_effort "${team.effort}"`].filter(Boolean).join(' and ');
-    return `${TEAM_LINE_PREFIX}pass ${what} on every spawn_agent call. Picked by ${by}.]`;
+    const what = team ? [team.model ? `model "${team.model}"` : '', `reasoning_effort "${team.effort}"`].filter(Boolean).join(' and ') : '';
+    return `${TEAM_LINE_PREFIX}I am asking you to delegate this turn as the agent team brief says: spawn_agent explorers for code you have not read (several in parallel), a worker for each independent change, a default agent as researcher for outside docs`
+      + (what ? `, passing ${what} on every spawn_agent call (picked by ${by})` : '')
+      + '. If the turn is small enough to do alone (one command, a one-file edit you already understand, a single deploy, a direct answer), do it alone and say why in one line.]';
   }
+  if (!team) return undefined;
   const effort = (CLAUDE_TEAM_EFFORTS as readonly string[]).includes(team.effort) ? team.effort : TEAM_EFFORT;
   const names = Object.keys(AGENTS).map((r) => roleName(r, effort));
   const types = `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`;

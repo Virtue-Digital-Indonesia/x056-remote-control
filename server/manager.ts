@@ -3070,10 +3070,13 @@ export class SessionManager {
             const useModel = d.model ?? (d.auto?.model ? d.baseModel : undefined);
             // The team's pick rides in THIS turn's message, never in the system
             // prompt or --agents (process identity: it would respawn per turn).
-            const teamLine = team && d.team && !d.error ? teamTurnLine(adapter.id, d.team, d.backend === 'openai' ? 'openai' : 'jev') : undefined;
+            const teamLine = team ? teamTurnLine(adapter.id, d.team && !d.error ? d.team : undefined, d.backend === 'openai' ? 'openai' : 'jev') : undefined;
             return runFn({ ...o, ...(teamLine ? { prompt: withTeamLine(o.prompt, teamLine) } : {}), ...(useModel ? { model: useModel } : {}), ...(d.effort ? { effort: d.effort } : {}) });
           }) as typeof runFn
-        : runFn;
+        // No picker: Codex still needs the explicit ask (see teamTurnLine).
+        : team && adapter.id === 'codex'
+          ? ((o: Parameters<typeof runFn>[0]) => runFn({ ...o, prompt: withTeamLine(o.prompt, teamTurnLine('codex')) })) as typeof runFn
+          : runFn;
       if (advisor) emit('advisor_state', { advisor, model: model ?? null });
       // ChatGPT has no advisor of its own; the gateway watches the turn.
       const watcher = helpers.advisor && adapter.id === 'codex'

@@ -65,11 +65,22 @@ describe('the team tree', () => {
     }
   });
 
+  // Codex overrides our brief with its own "do not spawn unless the user
+  // explicitly asks"; the ask must ride in every team turn's message, picker or not.
+  it('Codex: an explicit ask on every team turn, with room for a solo turn', () => {
+    const line = teamTurnLine('codex')!;
+    expect(line).toMatch(/^\[Agent team this turn: I am asking you to delegate/);
+    expect(line).toMatch(/small enough to do alone/);
+    expect(line).not.toMatch(/picked by/);
+    expect(line.includes('\n')).toBe(false);
+    expect(teamTurnLine('claude')).toBeUndefined();
+    expect(stripTeamLine(withTeamLine('deploy it', line))).toBe('deploy it');
+  });
+
   it('names this turn\'s team model and effort in one line, per provider', () => {
     expect(teamTurnLine('codex', { model: 'gpt-6-astra', effort: 'high' }, 'jev'))
-      .toBe('[Agent team this turn: pass model "gpt-6-astra" and reasoning_effort "high" on every spawn_agent call. Picked by Jev.]');
-    expect(teamTurnLine('codex', { effort: 'xhigh' }, 'openai'))
-      .toBe('[Agent team this turn: pass reasoning_effort "xhigh" on every spawn_agent call. Picked by OpenAI Decisions.]');
+      .toMatch(/^\[Agent team this turn: I am asking you to delegate .*passing model "gpt-6-astra" and reasoning_effort "high" on every spawn_agent call \(picked by Jev\)\. If the turn is small enough to do alone .*say why in one line\.\]$/);
+    expect(teamTurnLine('codex', { effort: 'xhigh' }, 'openai')).toMatch(/passing reasoning_effort "xhigh" on every spawn_agent call \(picked by OpenAI Decisions\)/);
     expect(teamTurnLine('claude', { model: 'sonnet', effort: 'high' }, 'jev'))
       .toBe('[Agent team this turn: call the Agent tool with model "sonnet" and subagent_type explorer-high, worker-high or researcher-high. Picked by Jev.]');
     // Medium is the plain names.
@@ -78,7 +89,7 @@ describe('the team tree', () => {
     expect(teamTurnLine('claude', { model: 'haiku', effort: 'low' })).toMatch(/explorer-low, worker-low or researcher-low/);
     // Every name the line gives exists in the definitions.
     const agents = JSON.parse(claudeTeamAgents());
-    for (const e of ['low', 'medium', 'high']) for (const n of teamTurnLine('claude', { model: 'opus', effort: e }).match(/(explorer|worker|researcher)(-\w+)?/g)!) expect(agents[n]).toBeDefined();
+    for (const e of ['low', 'medium', 'high']) for (const n of teamTurnLine('claude', { model: 'opus', effort: e })!.match(/(explorer|worker|researcher)(-\w+)?/g)!) expect(agents[n]).toBeDefined();
   });
 
   it('keeps the line out of every prompt the gateway reads back, and the sender marker last', () => {
@@ -224,6 +235,26 @@ describe('helpers combine', () => {
     mgr.continueSession(p.id, sid, 'fifth', {});
     await waitFor(() => calls.length === 5);
     expect(calls[4].prompt).not.toContain('Agent team this turn');
+  });
+
+  // Codex overrides the brief unless the USER asks, so with the team on every
+  // Codex turn carries the explicit ask -- with no picker too. Claude does not.
+  it('asks a Codex conversation to delegate on every team turn, picker or not', async () => {
+    const dir = temp(), stateDir = join(dir, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'd', configDir: '/cfg/d', provider: 'codex' }]);
+    const calls: RunSessionOptions[] = [];
+    const runSessionFn = (async (o: RunSessionOptions) => { calls.push(o); return { status: 'completed', finalAccount: 'd', failovers: 0 } as SessionResult; }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+    const p = mgr.createProject('CX', dir, 'codex');
+    const sid = mgr.start('first', undefined, undefined, p.id);
+    await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
+    expect(calls[0].prompt).not.toContain('Agent team this turn');
+    mgr.setHelpers(p.id, sid, { team: true });
+    mgr.continueSession(p.id, sid, 'deploy it', {});
+    await waitFor(() => calls.length === 2 && !mgr.snapshot().running);
+    expect(calls[1].prompt).toContain(teamTurnLine('codex')!);
+    expect(calls[1].appendSystemPrompt).not.toContain('I am asking you to delegate');
   });
 
   it('refuses a picker with no key, and forks without the team or a backend', async () => {
