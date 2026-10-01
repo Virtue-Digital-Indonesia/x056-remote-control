@@ -43,6 +43,23 @@ ios/scripts/testflight.sh
 
 The script needs no registered device. Xcode's automatic signing archives with a Development profile, and that profile needs a device on the team. So the script archives unsigned, ad-hoc signs the app with its entitlements, and lets the export re-sign it for the App Store. `ExportOptions.plist` uploads straight to App Store Connect. Each run stamps its own build number, `YYYYMMDD.HHMM` in UTC, because App Store Connect rejects a build number it has seen before.
 
+## Passkeys
+
+The app signs in with the same passkeys as the panel, or with the access token. iOS offers `x056.rc.val.id` passkeys to the app only when two things hold:
+
+- The app carries `webcredentials:x056.rc.val.id` in its entitlements (`project.yml`).
+- The gateway lists `Z4NCYN9LKJ.id.val.x056` at `/.well-known/apple-app-site-association` (`server/apple-app-site.ts`).
+
+iPhones read that file from Apple's CDN, not from the gateway. Check what the CDN holds with:
+
+```sh
+curl -s -D - https://app-site-association.cdn-apple.com/a/v1/x056.rc.val.id
+```
+
+The CDN caches a success for up to 6 hours and a failure for 1 hour. An install made while the CDN still holds a 404 does not get passkeys, so ship a build only after the CDN answers 200.
+
+A passkey sign-in gives a 30-day session, the `x056_session` cookie the panel also gets. The app keeps it in the Keychain. When it runs out, the app returns to the sign-in screen.
+
 ## Push
 
 The gateway sends nothing until it has an APNs key. Create one in the developer portal (Keys, Apple Push Notifications service), then install it once:
