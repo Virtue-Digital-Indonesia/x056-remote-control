@@ -323,33 +323,42 @@ dialog.modern-prompt:has(.action-detail){width:min(840px,calc(100vw - 32px))}
 .cr-row-slot{flex:none;width:28px;height:28px;margin-right:9px}
 @media(max-width:650px){.cr-row-slot{display:none}.cr-conversation-row .cr-dismiss{margin:0 12px 10px auto}}
 /* Send with account: a popover anchored to the chip (One pill draft), a bottom sheet on phones. */
-#sendAccountPicker.acct-pop{position:fixed;inset:auto;right:auto;top:auto;margin:0;width:360px;max-width:calc(100vw - 24px);max-height:70vh;padding:6px;gap:0;color:var(--text);overflow-y:auto;border:1px solid var(--border);border-radius:14px;background:var(--bg);box-shadow:var(--shadow);z-index:170}
+#sendAccountPicker.acct-pop{position:fixed;inset:auto;right:auto;top:auto;margin:0;width:400px;max-width:calc(100vw - 24px);max-height:70vh;padding:16px;gap:0;color:var(--text);overflow-y:auto;border:1px solid var(--border);border-radius:14px;background:var(--bg);box-shadow:var(--shadow);z-index:170}
 #sendAccountPicker.acct-pop[open]{display:block}
-#sendAccountPicker.acct-pop .send-account-list{display:block;margin:0;padding:0;overflow:visible;min-height:0}
+#sendAccountPicker.acct-pop .helper-head{padding:2px 12px 12px;font-size:13px;color:var(--text)}
+#sendAccountPicker.acct-pop .send-account-list{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;overflow:visible;min-height:0}
 #sendAccountPicker.acct-pop[aria-busy=true]{cursor:progress}
-.acct-line{display:flex;align-items:center;gap:4px}
-.acct-row{display:flex;align-items:center;gap:10px;flex:1;min-width:0;padding:8px 10px;border:0;border-radius:9px;background:transparent;color:var(--text);font:inherit;font-size:13.5px;text-align:left;cursor:pointer}
+.acct-line{position:relative;display:flex;align-items:center}
+/* "Switch now" sits under the meter, so the row grows instead of the name column shrinking. */
+.acct-line.has-switch .acct-row{padding-bottom:52px}
+.acct-line .acct-switch{position:absolute;right:12px;bottom:12px}
+.acct-row{display:flex;align-items:center;gap:12px;flex:1;min-width:0;min-height:56px;padding:12px;border:0;border-radius:10px;background:transparent;color:var(--text);font:inherit;font-size:13.5px;text-align:left;cursor:pointer}
+.acct-row[aria-checked=true]{background:var(--surface-2)}
 .acct-row:hover:not(:disabled),.acct-row:focus-visible{background:var(--surface-2);outline:none}
 .acct-row:focus-visible{box-shadow:inset 0 0 0 2px var(--accent)}
-.acct-row:disabled{cursor:default;opacity:.55}
-.acct-row-t{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;line-height:1.3}
-.acct-row-t b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.acct-row-t small{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct-row:disabled{cursor:default;opacity:1}
+.acct-row-t{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;line-height:1.35}
+.acct-name{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:6px;row-gap:1px;min-width:0}
+.acct-name b{font-weight:600;max-width:100%;overflow:hidden;text-overflow:ellipsis}.acct-name b.acct-token{white-space:nowrap}
+.acct-email{min-width:0;max-width:100%;color:var(--muted);font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct-row-t small{font-size:12px;color:var(--muted);line-height:1.4}
 .acct-row .hi-check{flex:none;width:16px;height:16px;visibility:hidden;color:var(--text);stroke-width:2.2}
 .acct-row[aria-checked=true] .hi-check{visibility:visible}
-.acct-usage{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex:none;width:38px}
-.acct-meter{display:block;width:36px;height:4px;border-radius:999px;background:var(--surface-3);overflow:hidden}
+.acct-usage{display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:6px;flex:none;width:64px;text-align:right}
+.acct-meter{display:block;width:100%;height:4px;border-radius:999px;background:var(--surface-3);overflow:hidden}
 .acct-meter i{display:block;height:100%;border-radius:inherit;background:var(--lvl,var(--faint))}
-.acct-pct{font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--lvl,var(--faint));line-height:1}
+.acct-pct{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--lvl,var(--faint));line-height:1}
 :is(.acct-usage,.acct-dot)[data-level=ok]{--lvl:var(--ok)}:is(.acct-usage,.acct-dot)[data-level=mid]{--lvl:var(--amber)}:is(.acct-usage,.acct-dot)[data-level=high],:is(.acct-usage,.acct-dot)[data-level=limit]{--lvl:var(--err)}:is(.acct-usage,.acct-dot)[data-level=unknown],:is(.acct-usage,.acct-dot)[data-level=off]{--lvl:var(--faint)}
-.acct-row:disabled .acct-pct{opacity:1}
-.acct-switch{flex:none;border:1px solid var(--border-strong);border-radius:999px;background:transparent;color:var(--muted);font:inherit;font-size:11.5px;padding:3px 9px;cursor:pointer;margin-right:4px}
-.acct-switch:hover{color:var(--text);background:var(--surface-2)}
-.acct-running{display:flex;align-items:center;gap:8px;margin:2px 6px 6px;padding:8px 10px;border-radius:9px;background:var(--surface-2);font-size:12px;color:var(--muted)}.acct-running .ic{width:14px;height:14px}.acct-running strong{color:var(--text);font-weight:550}
-.acct-note{font-size:12px;color:var(--faint);margin:6px 10px 6px;line-height:1.4}
-#sendAccountPicker.acct-pop #pickerError:empty{display:none}#sendAccountPicker.acct-pop #pickerError{margin:4px 10px;font-size:12px}
-.acct-foot{display:flex;gap:4px;border-top:1px solid var(--border);margin-top:4px;padding:4px 2px 0}
-.acct-link{border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;padding:6px 8px;border-radius:7px;cursor:pointer}.acct-link:hover{color:var(--text);background:var(--surface-2)}
+/* Limit reached: greyed but readable -- muted text (>= 4.5:1), a faded meter. */
+.acct-row:disabled .acct-name b{color:var(--muted)}
+.acct-row:disabled .acct-meter{opacity:.5}
+.acct-switch{flex:none;min-height:30px;border:1px solid var(--border-strong);border-radius:999px;background:transparent;color:var(--text);font:inherit;font-size:12px;padding:0 12px;cursor:pointer;white-space:nowrap}
+.acct-switch:hover{background:var(--surface-2)}
+.acct-running{display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:10px 12px;border-radius:10px;background:var(--surface-2);font-size:12.5px;color:var(--muted)}.acct-running .ic{width:14px;height:14px;flex:none}.acct-running strong{color:var(--text);font-weight:550}
+.acct-note{font-size:12px;color:var(--muted);margin:12px 12px 0;line-height:1.5}
+#sendAccountPicker.acct-pop #pickerError:empty{display:none}#sendAccountPicker.acct-pop #pickerError{margin:8px 12px 0;font-size:12px}
+.acct-foot{display:flex;gap:4px;border-top:1px solid var(--border);margin:12px 0 -4px;padding:12px 0 0}
+.acct-link{min-height:34px;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12.5px;padding:0 12px;border-radius:8px;cursor:pointer}.acct-link:hover,.acct-link:focus-visible{color:var(--text);background:var(--surface-2)}
 /* The chip carries the selected account's level as a dot (the title says it in words). */
 .send-account-chip .acct-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--lvl);display:inline-block}
-@media(max-width:720px){#sendAccountPicker.acct-pop{left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom));width:auto;max-width:none;border-radius:18px;padding:8px 6px}.acct-row{padding:10px}}
+@media(max-width:720px){#sendAccountPicker.acct-pop{left:0!important;right:0;bottom:0!important;width:auto;max-width:none;border-radius:18px 18px 0 0;border-bottom:0;padding:28px 20px calc(20px + env(safe-area-inset-bottom))}#sendAccountPicker.acct-pop::before{content:"";position:absolute;top:10px;left:50%;width:36px;height:4px;margin-left:-18px;border-radius:999px;background:var(--border-strong)}#sendAccountPicker.acct-pop .helper-head{padding:2px 4px 12px}.acct-row{min-height:60px;padding:12px}.acct-note{margin:12px 4px 0}.acct-foot{margin-bottom:0}}

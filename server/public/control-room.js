@@ -647,11 +647,11 @@ window.createControlRoom = function (engine) {
   const LEVEL_WORD={ok:'Plenty left',mid:'Over half used',high:'Nearly used up',limit:'Limit reached',unknown:'Usage not checked',off:'Unavailable'};
   function accountMeter(lv) {
     const pct=lv.pct??0;
-    return `<span class="acct-usage" data-level="${lv.level}"><span class="acct-meter" aria-hidden="true"><i style="width:${lv.level==='unknown'||lv.level==='off'?0:pct}%"></i></span><span class="acct-pct">${lv.level==='unknown'||lv.level==='off'?'—':lv.level==='limit'?'100%':pct+'%'}</span></span>`;
+    return `<span class="acct-usage" data-level="${lv.level}"><span class="acct-pct">${lv.level==='unknown'||lv.level==='off'?'—':lv.level==='limit'?'100%':pct+'%'}</span><span class="acct-meter" aria-hidden="true"><i style="width:${lv.level==='unknown'||lv.level==='off'?0:pct}%"></i></span></span>`;
   }
   function placeSendAccounts() {
     if(!sendAccounts.open)return;
-    const chip=$('sendAccountChip').getBoundingClientRect(), w=Math.min(360,innerWidth-24);
+    const chip=$('sendAccountChip').getBoundingClientRect(), w=Math.min(400,innerWidth-24);
     if(innerWidth<=720){sendAccounts.style.left='';sendAccounts.style.bottom='';sendAccounts.style.maxHeight=Math.round(innerHeight*.8)+'px';return;}
     sendAccounts.style.left=Math.max(12,Math.min(chip.right-w,innerWidth-w-12))+'px';
     sendAccounts.style.bottom=(innerHeight-chip.top+8)+'px';
@@ -682,8 +682,9 @@ window.createControlRoom = function (engine) {
       const label=name+(a.email&&a.email!==name?' · '+a.email:'');
       const tags=[a.name===s.runningAccount&&isRunning?'running this turn':''].filter(Boolean);
       const desc=[plan?String(plan).replace(/^./,c=>c.toUpperCase()):'',lv.text].filter(Boolean).join(' · ')+(tags.length?' · '+tags.join(' · '):'');
-      return `<div class="acct-line" role="none"><button type="button" class="acct-row" role="menuitemradio" data-send-next="${esc(a.name)}" aria-checked="${a.name===next?.name}" ${ok?'':'disabled aria-disabled="true"'} aria-label="${esc(label)}: ${esc(lv.text)}">
-        <span class="acct-row-t"><b>${esc(label)}</b><small>${esc(desc)}</small></span>${accountMeter(lv)}<svg class="ic hi-check" aria-hidden="true"><use href="#i-check"/></svg></button>${isRunning&&s.runningAccount&&ok&&a.name!==s.runningAccount?`<button type="button" class="acct-switch" data-switch-turn="${esc(a.name)}" title="Resume the running turn on ${esc(name)}">Switch now</button>`:''}</div>`;
+      const canSwitch=isRunning&&s.runningAccount&&ok&&a.name!==s.runningAccount;
+      return `<div class="acct-line${canSwitch?' has-switch':''}" role="none"><button type="button" class="acct-row" role="menuitemradio" data-send-next="${esc(a.name)}" aria-checked="${a.name===next?.name}" ${ok?'':'disabled aria-disabled="true"'} aria-label="${esc(label)}: ${esc(lv.text)}">
+        <svg class="ic hi-check" aria-hidden="true"><use href="#i-check"/></svg><span class="acct-row-t"><span class="acct-name"><b${/\s/.test(name)?'':' class="acct-token"'}>${esc(name)}</b>${a.email&&a.email!==name?`<span class="acct-email">${esc(a.email)}</span>`:''}</span><small>${esc(desc)}</small></span>${accountMeter(lv)}</button>${canSwitch?`<button type="button" class="acct-switch" data-switch-turn="${esc(a.name)}" title="Resume the running turn on ${esc(name)}">Switch now</button>`:''}</div>`;
     };
     const html=`<div class="helper-head">Send with account <span class="helper-hint" title="A conversation keeps its provider">${ic('lock')}${esc(providerName(s.provider))}</span></div>
       ${isRunning?`<p class="acct-running">${ic('repeat')}<span>Running with <strong>${esc(accountName(running))}</strong></span></p>`:''}
