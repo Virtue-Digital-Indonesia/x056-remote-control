@@ -1,5 +1,5 @@
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
+import { gatewayDb, transaction } from './gateway-db.js';
 
 /**
  * Token totals and Task outcomes, read straight out of a transcript.
@@ -156,27 +156,54 @@ const MAX_RESULT_CHARS = 4000;
 const MAX_TASKS = 400;
 const SUBAGENT_TOOLS = new Set(['Task', 'Agent']);
 
+/** Only a definite ENOENT counts as gone: a mount that is briefly
+ *  unreadable must not wipe the cache. */
+function gone(path: string): boolean {
+  try { statSync(path); return false; } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT'; }
+}
+
 export class TranscriptStatsReader {
   private cache = new Map<string, CacheEntry>();
 
   constructor(private readonly stateDir: string) { this.load(); }
 
-  private get file(): string { return join(this.stateDir, 'transcript-stats.json'); }
+  /** Paths whose entry changed since the last save: only those are written. */
+  private dirty = new Set<string>();
 
+  /**
+   * Load the cache from `transcript_stats` in gateway.sqlite. Rows written
+   * under another CACHE_VERSION are deleted (their totals mean something
+   * else), and so are rows whose transcript no longer exists: the table would
+   * otherwise only ever grow.
+   */
   private load(): void {
     try {
-      const raw = JSON.parse(readFileSync(this.file, 'utf8')) as { v?: number; entries?: Record<string, CacheEntry> };
-      if (raw?.v !== CACHE_VERSION || !raw.entries) return; // older shape: rescan
-      for (const [k, v] of Object.entries(raw.entries)) this.cache.set(k, v);
-    } catch { /* first run */ }
+      const db = gatewayDb(this.stateDir), drop: string[] = [];
+      for (const row of db.prepare('SELECT path, version, data FROM transcript_stats').all()) {
+        const path = String(row.path);
+        if (Number(row.version) !== CACHE_VERSION || gone(path)) { drop.push(path); continue; }
+        try { this.cache.set(path, JSON.parse(String(row.data)) as CacheEntry); } catch { drop.push(path); }
+      }
+      if (drop.length) {
+        const del = db.prepare('DELETE FROM transcript_stats WHERE path=?');
+        transaction(db, () => { for (const p of drop) del.run(p); });
+      }
+    } catch { /* first run, or no database: every transcript is rescanned */ }
   }
 
+  /** Upsert the changed entries, in one transaction. */
   private save(): void {
+    if (!this.dirty.size) return;
     try {
-      mkdirSync(dirname(this.file), { recursive: true });
-      const tmp = `${this.file}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ v: CACHE_VERSION, entries: Object.fromEntries(this.cache) }));
-      renameSync(tmp, this.file);
+      const db = gatewayDb(this.stateDir);
+      const put = db.prepare('INSERT INTO transcript_stats(path, version, data) VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET version=excluded.version, data=excluded.data');
+      transaction(db, () => {
+        for (const path of this.dirty) {
+          const entry = this.cache.get(path);
+          if (entry) put.run(path, CACHE_VERSION, JSON.stringify(entry));
+        }
+      });
+      this.dirty.clear();
     } catch { /* the cache is an optimisation; losing it only costs a rescan */ }
   }
 
@@ -205,6 +232,7 @@ export class TranscriptStatsReader {
     entry.scanned = end;
     entry.partial = end < size;
     this.cache.set(path, entry);
+    this.dirty.add(path);
     this.save();
     return strip(entry);
   }

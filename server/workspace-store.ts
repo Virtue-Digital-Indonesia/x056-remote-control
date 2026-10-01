@@ -14,6 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { imagePaths } from '../src/artifact-references.js';
 import { basename, extname, join, resolve, sep, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { gatewayDb, putReceipt, transaction } from './gateway-db.js';
 
 export interface Artifact {
   id: string;
@@ -324,33 +325,41 @@ export interface DeliveryReceipt {
   steered?: boolean;
   error?: string;
 }
+/** Receipts are kept for at least RECEIPT_KEEP_MS, and the newest
+ *  RECEIPT_KEEP_ROWS are kept whatever their age. */
+export const RECEIPT_KEEP_ROWS = 5000;
+export const RECEIPT_KEEP_MS = 30 * 24 * 3600 * 1000;
+/** Panel send receipts, in gateway.sqlite (`message_receipts`). Each write is
+ *  its own commit: the `processing` marker is durable BEFORE the action runs. */
 export class DeliveryStore {
-  private file: string;
-  constructor(state: string) {
-    this.file = join(state, 'message-receipts.json');
-    const rows = this.all();
-    for (const r of Object.values(rows)) if (r.status === 'processing') r.status = 'uncertain';
-    writeState(this.file, rows);
+  constructor(private state: string) {
+    const db = gatewayDb(state);
+    transaction(db, () => {
+      // A restart mid-dispatch: whether the message went out is unknown.
+      db.prepare(`UPDATE message_receipts SET status='uncertain', data=json_set(data,'$.status','uncertain') WHERE status='processing'`).run();
+      db.prepare(`DELETE FROM message_receipts WHERE updated_at < ? AND request_id NOT IN
+        (SELECT request_id FROM message_receipts ORDER BY updated_at DESC LIMIT ${RECEIPT_KEEP_ROWS})`).run(Date.now() - RECEIPT_KEEP_MS);
+    });
   }
   all(): Record<string, DeliveryReceipt> {
-    try {
-      const rows = JSON.parse(readFileSync(this.file, 'utf8'));
-      if (!rows || typeof rows !== 'object' || Array.isArray(rows)) throw new Error('Invalid delivery receipts');
-      return rows;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-      throw new Error('Delivery receipts need repair before sending: ' + (error as Error).message);
-    }
+    const rows: Record<string, DeliveryReceipt> = {};
+    for (const r of gatewayDb(this.state).prepare('SELECT request_id, data FROM message_receipts ORDER BY updated_at').all())
+      rows[String(r.request_id)] = JSON.parse(String(r.data));
+    return rows;
   }
-  get(id: string) {
-    return this.all()[id];
+  get(id: string): DeliveryReceipt | undefined {
+    const r = gatewayDb(this.state).prepare('SELECT data FROM message_receipts WHERE request_id=?').get(id);
+    return r ? JSON.parse(String(r.data)) : undefined;
+  }
+  private put(row: DeliveryReceipt): void {
+    putReceipt(gatewayDb(this.state), row as unknown as Record<string, unknown>);
   }
   accept(id: string, sessionId: string, status: 'accepted' | 'queued' | 'cancelled' | 'uncertain' = 'accepted') {
-    const rows = this.all();
-    if (rows[id]) {
-      rows[id].status = status;
-      rows[id].sessionId = sessionId;
-      writeState(this.file, rows);
+    const row = this.get(id);
+    if (row) {
+      row.status = status;
+      row.sessionId = sessionId;
+      this.put(row);
     }
   }
   run<T extends { requestId?: string }>(
@@ -365,13 +374,12 @@ export class DeliveryStore {
     const id = body.requestId || '';
     if (!/^[a-zA-Z0-9-]{16,80}$/.test(id)) throw new Error('Invalid request ID');
     const hash = createHash('sha256').update(JSON.stringify(body)).digest('hex'),
-      rows = this.all(),
-      previous = rows[id];
+      previous = this.get(id);
     if (previous && previous.hash !== hash)
       throw new Error('Request ID was already used for another message');
     if (previous && previous.status !== 'failed') return previous;
-    rows[id] = { requestId: id, hash, status: 'processing', at: Date.now() };
-    writeState(this.file, rows);
+    let row: DeliveryReceipt = { requestId: id, hash, status: 'processing', at: Date.now() };
+    this.put(row);
     let result: {
       sessionId?: string;
       id?: string;
@@ -381,18 +389,18 @@ export class DeliveryStore {
     try {
       result = action();
     } catch (e) {
-      rows[id] = { ...rows[id], status: 'failed', error: (e as Error).message };
-      writeState(this.file, rows);
+      row = { ...row, status: 'failed', error: (e as Error).message };
+      this.put(row);
       throw e;
     }
-    rows[id] = {
-      ...rows[id],
+    row = {
+      ...row,
       ...result,
       status: result.queued ? 'queued' : 'accepted',
     };
     // A persistence error after dispatch leaves the durable processing marker;
     // it must never turn an already-started request into a retryable failure.
-    writeState(this.file, rows);
-    return rows[id];
+    this.put(row);
+    return row;
   }
 }

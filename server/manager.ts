@@ -51,6 +51,7 @@ import type { TurnHandle, TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
 import { parseQuestion, stripAsk, stripAskInstructions, withAskInstructions } from '../src/question.js';
+import { closeAllGatewayDbs, closeGatewayDb, gatewayDb } from './gateway-db.js';
 
 export interface GatewayEvent {
   seq: number;
@@ -387,6 +388,7 @@ export class SessionManager {
     for (const pool of this.pools()) pool.shutdown();
     this.sharedMemory?.documents.close();
     this.fileStore?.close(); this.titleWorker?.close();
+    closeGatewayDb(this.opts.stateDir);
   }
   private titleWorker?: ConversationTitles;
   titles(): ConversationTitles {
@@ -490,6 +492,9 @@ export class SessionManager {
 
   constructor(private readonly opts: SessionManagerOptions) {
     mkdirSync(opts.stateDir, { recursive: true });
+    // Open (migrate, import legacy JSON) before anything reads those stores,
+    // the boot-time recovery report included.
+    gatewayDb(opts.stateDir);
     this.migrateProjects();
     this.projects().migrateConversations();
     if (this.projectSpacesEnabled()) this.legacySpaceReviewRequired = inspectSpaceMigration(opts.stateDir).requiresReview;
@@ -513,6 +518,7 @@ export class SessionManager {
         // Idle persistent processes have no run to abort, so they would outlive
         // the gateway as orphans across every container swap.
         for (const p of this.pools()) p.shutdown();
+        closeAllGatewayDbs();
         process.exit(130);
       };
       process.on('SIGTERM', onTerm);
