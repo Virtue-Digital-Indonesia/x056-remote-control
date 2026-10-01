@@ -173,9 +173,15 @@ describe('dismiss a question without sending a reply', () => {
       expect(await res.json()).toEqual({ dismissed: true });
       expect(await questions()).not.toContainEqual(question);
       expect(stableProjects()).toEqual(projectsBefore);
-      expect(emitted).toHaveLength(1);
-      expect(emitted[0]).toMatchObject({ kind: 'question_dismissed', data: {
+      // The dismissal and shared read state: a dismissed question reads the
+      // conversation on every device. ReadState publishes from inside its
+      // own subscriber, so the order a later subscriber sees is not fixed.
+      expect(emitted.map(e => e.kind).sort()).toEqual(['question_dismissed', 'read_state']);
+      expect(emitted.find(e => e.kind === 'question_dismissed')).toMatchObject({ data: {
         projectId: question.projectId, sessionId: question.sessionId, at: question.at,
+      } });
+      expect(emitted.find(e => e.kind === 'read_state')).toMatchObject({ data: {
+        projectId: question.projectId, sessionId: question.sessionId, unread: false,
       } });
       const persisted = JSON.parse(readFileSync(join(dir, 'state/questions.json'), 'utf8'));
       expect(persisted[question.sessionId]).toBeUndefined();
