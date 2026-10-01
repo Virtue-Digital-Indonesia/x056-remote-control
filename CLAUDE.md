@@ -77,8 +77,26 @@ in one step. Underline has no Markdown syntax, so it is `<u>…</u>`, and the
 chat renderer lets exactly a bare `<u>` through and nothing else. The handler
 calls `stopPropagation`, because the document handler would also read ⌘⇧8 as
 "jump to project 8". The model and effort popovers are ⌥M / ⌥E, untouched.
+**Live styling (2026-10-01):** the textarea's text is transparent over a
+mirror (`#promptHighlight`) with the same metrics, drawn from the pure
+tokenizer in `composer-format.js`; markers stay visible but faint, and every
+style keeps character widths (faux bold via text-shadow, no font-weight or
+monospace, quote bar and code tint drawn as backgrounds), so the caret lines
+up (measured within 0.05 px). Your sent bubble renders the same Markdown.
 Playwright proves that the page receives these keys. It cannot prove that a
 browser won't take one first, such as ⌘⇧C (Firefox inspector) or ⌘⇧- (zoom).
+
+**Live Markdown in the box (2026-10-01)**: the textarea's text is
+transparent and `#promptHighlight` behind it paints the same characters,
+classed by `ComposerFormat.highlightLines` (markers faint, quote bar,
+code tint, etc.). The textarea stays the only source of truth. Every style is
+width-neutral so the native caret and selection land on the mirror's glyphs:
+bold is a faux `-webkit-text-stroke`, italic is a tint (a real italic face
+changes widths), and there is no size, weight, monospace or padding change.
+Kerning and ligatures are off on both layers. The mirror copies the
+textarea's computed type and box on each render, catches programmatic
+`value` writes through an instance setter, rebuilds only the changed lines,
+and hides during IME composition. Measured drift is under 0.1px.
 
 ## There is a SECOND instance on this host (`/home/efran/x056-devs`)
 

@@ -261,6 +261,136 @@ const LINUX_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, lik
   await s.page.locator('.composer-wrap').screenshot({ path: `${shots}/mid-edit.png` });
   await s.context.close();
 
+  // ---- live highlight: the mirror behind the transparent textarea ----------
+  const hl = await open({ mac: false, theme: 'dark', width: 1440, height: 900 });
+  const mirrorText = () => hl.page.evaluate(() => document.getElementById('promptHighlight').textContent);
+  const settle = () => hl.page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  // Placeholder stays visible while the box is empty.
+  await hl.prompt.fill(''); await settle();
+  assert.equal(await mirrorText(), '');
+  const ph = await hl.prompt.evaluate((el) => getComputedStyle(el, '::placeholder').color);
+  assert.ok(!/rgba\(\d+, \d+, \d+, 0\)|transparent/.test(ph), 'placeholder visible: ' + ph);
+  // What the owner typed.
+  await hl.prompt.pressSequentially('> asda'); await hl.prompt.press('Shift+Enter'); await hl.prompt.pressSequentially('**wtf bro**');
+  await settle();
+  assert.equal(await hl.prompt.inputValue(), '> asda\n**wtf bro**');
+  assert.equal(await mirrorText(), '> asda\n**wtf bro**', 'mirror text equals the value');
+  const spans = await hl.page.$$eval('#promptHighlight span', (els) => els.map((e) => [e.className, e.textContent]));
+  assert.deepEqual(spans, [['md-mark md-qm', '> '], ['md-q', 'asda'], ['md-mark', '**'], ['md-b', 'wtf bro'], ['md-mark', '**']]);
+  const look = await hl.page.evaluate(() => {
+    const ta = document.getElementById('prompt'), b = document.querySelector('#promptHighlight .md-b');
+    return { ta: getComputedStyle(ta).color, on: ta.classList.contains('hl-on'), weight: getComputedStyle(b).fontWeight, taWeight: getComputedStyle(ta).fontWeight };
+  });
+  assert.equal(look.on, true); assert.equal(look.ta, 'rgba(0, 0, 0, 0)', 'textarea text is transparent');
+  assert.equal(look.weight, look.taWeight, 'bold keeps the weight (width-neutral)');
+
+  // Alignment: each character's box in the styled mirror against a plain copy
+  // of it (same box, one text node), and the mirror's box and wrapping against
+  // the textarea's. Both within 1px.
+  async function alignment(probes) {
+    return hl.page.evaluate((probes) => {
+      const ta = document.getElementById('prompt'), m = document.getElementById('promptHighlight');
+      const plain = m.cloneNode(false); plain.removeAttribute('id'); plain.textContent = ta.value;
+      m.parentNode.appendChild(plain); plain.scrollTop = m.scrollTop;
+      function charRect(root, k) {
+        const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let n, at = k;
+        while ((n = walk.nextNode())) { if (at < n.data.length) break; at -= n.data.length; }
+        const r = document.createRange(); r.setStart(n, at); r.setEnd(n, at + 1); return r.getClientRects()[0];
+      }
+      const cs = getComputedStyle(ta), tr = ta.getBoundingClientRect(), mr = m.getBoundingClientRect();
+      const out = { box: [Math.abs(mr.left - tr.left - parseFloat(cs.borderLeftWidth)), Math.abs(mr.top - tr.top - parseFloat(cs.borderTopWidth)), Math.abs(mr.width - ta.clientWidth)],
+        scroll: [ta.scrollTop, m.scrollTop, ta.scrollHeight, m.scrollHeight], font: [cs.font, getComputedStyle(m).font], probes: {} };
+      for (const [name, k] of probes) {
+        const a = charRect(m, k), b = charRect(plain, k);
+        out.probes[name] = { dx: Math.abs(a.left - b.left), dy: Math.abs(a.top - b.top), right: Math.abs(a.right - b.right), inside: a.top >= tr.top - 1 && a.bottom <= tr.bottom + 1 };
+      }
+      plain.remove();
+      return out;
+    }, probes);
+  }
+  function checkAlign(res, label) {
+    for (const d of res.box) assert.ok(d <= 1, label + ' mirror box matches the textarea: ' + JSON.stringify(res.box));
+    assert.equal(res.font[0], res.font[1], label + ' same font');
+    assert.ok(Math.abs(res.scroll[0] - res.scroll[1]) <= 1 && Math.abs(res.scroll[2] - res.scroll[3]) <= 1, label + ' scroll synced: ' + JSON.stringify(res.scroll));
+    for (const [name, p] of Object.entries(res.probes)) assert.ok(p.dx <= 1 && p.dy <= 1 && p.right <= 1, label + ' ' + name + ': ' + JSON.stringify(p));
+    console.log('align', label, JSON.stringify(res.probes));
+  }
+  const MIX = '> quoted **line** here\nPlease **review the deploy** then `npm test` and *maybe* <u>today</u> ~~not~~.\n# Head\n---\n  • item `x`\n```\ncode **here**\n```\n' + 'A long line that keeps going so it wraps around in the composer box, '.repeat(4) + 'ending in **bold words** here.';
+  await hl.prompt.fill(MIX); await settle();
+  assert.equal(await mirrorText(), MIX);
+  const idx = (s, d = 0) => MIX.indexOf(s) + d;
+  checkAlign(await alignment([['end of bold run', idx('deploy** then') + 5], ['after inline code', idx('` and *maybe') + 1], ['inside quote', idx('line** here') + 2],
+    ['italic end', idx('maybe*') + 4], ['after underline', idx('</u>') + 4], ['in fence', idx('code **here**') + 8], ['wrapped long line', MIX.length - 3]]), 'mixed');
+  // A 30-line draft scrolled to the bottom (the box caps at 240px and scrolls).
+  const LONG = Array.from({ length: 30 }, (_, i) => `line ${i + 1} with **bold** and \`code\``).join('\n');
+  await hl.prompt.fill(LONG); await hl.prompt.evaluate((el) => { el.scrollTop = el.scrollHeight; }); await settle();
+  const scrolled = await alignment([['line 29 bold', LONG.indexOf('line 29') + 15], ['last char', LONG.length - 1]]);
+  assert.ok(scrolled.scroll[0] > 100, 'the textarea really scrolled');
+  checkAlign(scrolled, 'scrolled');
+  for (const p of Object.values(scrolled.probes)) assert.ok(p.inside, 'visible line sits inside the box');
+
+  // 20 KB draft. The whole value is re-tokenized on every change; only the
+  // edited lines are rebuilt and re-laid out. A keystroke in the middle of it
+  // stays inside one frame (< 16 ms, or the textarea's own layout time on a loaded host); the first paint is logged.
+  const times = await hl.page.evaluate((seed) => {
+    const el = document.getElementById('prompt');
+    const render = () => el.dispatchEvent(new CompositionEvent('compositionend')); // renders synchronously
+    let big = ''; while (big.length < 20000) big += seed + '\n';
+    let t = performance.now(); el.value = big; render(); const first = performance.now() - t;
+    const out = [], base = [], mid = big.indexOf('\n', 10000) + 1;
+    for (let i = 0; i < 9; i++) {
+      big = big.slice(0, mid) + 'x' + big.slice(mid);
+      // The textarea's own relayout of 20 KB is the browser's cost with or
+      // without a mirror; it is forced first and logged apart.
+      t = performance.now(); el.value = big; el.getBoundingClientRect(); base.push(performance.now() - t);
+      t = performance.now(); render(); out.push(performance.now() - t);
+    }
+    // A fence opened mid-draft re-styles every line after it.
+    t = performance.now(); el.value = big.slice(0, mid) + '```\n' + big.slice(mid); render(); const fence = performance.now() - t;
+    if (document.getElementById('promptHighlight').textContent !== el.value) throw new Error('mirror out of sync');
+    return { first, fence, edits: out.sort((a, b) => a - b), base: base.sort((a, b) => a - b) };
+  }, MIX);
+  console.log('20KB render ms: first', times.first.toFixed(1), 'fence', times.fence.toFixed(1), 'edits', times.edits.map((t) => t.toFixed(1)).join(' '), '| textarea alone', times.base.map((t) => t.toFixed(1)).join(' '));
+  // One frame (16 ms), or no slower than the textarea's own layout measured in
+  // the same run: a loaded host slows both alike, so the fixed bar alone flaked.
+  const bar = Math.max(16, times.base[4] * 1.5);
+  assert.ok(times.edits[4] < bar, '20KB keystroke re-highlight median ' + times.edits[4].toFixed(1) + ' ms, bar ' + bar.toFixed(1));
+
+  // Programmatic writes (clear after send, draft restore) reach the mirror.
+  await hl.prompt.evaluate((el) => { el.value = 'restored **draft**'; }); await settle();
+  assert.equal(await mirrorText(), 'restored **draft**');
+  await hl.prompt.evaluate((el) => { el.value = ''; }); await settle();
+  assert.equal(await mirrorText(), '');
+
+  // IME: while composing the textarea shows its own text and the mirror hides.
+  await hl.prompt.fill('ab **c** '); await hl.prompt.press('End');
+  const cdp = await hl.context.newCDPSession(hl.page);
+  await cdp.send('Input.imeSetComposition', { text: 'かな', selectionStart: 2, selectionEnd: 2 });
+  const mid = await hl.page.evaluate(() => ({ cls: document.getElementById('prompt').className, color: getComputedStyle(document.getElementById('prompt')).color, vis: getComputedStyle(document.getElementById('promptHighlight')).visibility }));
+  assert.ok(mid.cls.includes('hl-composing') && mid.vis === 'hidden' && mid.color !== 'rgba(0, 0, 0, 0)', 'composing: native text, mirror hidden ' + JSON.stringify(mid));
+  await cdp.send('Input.insertText', { text: 'かな' }); await settle();
+  assert.equal(await hl.prompt.inputValue(), 'ab **c** かな', 'committed once');
+  assert.equal(await mirrorText(), 'ab **c** かな', 'mirror after composition');
+  assert.equal(await hl.page.evaluate(() => getComputedStyle(document.getElementById('promptHighlight')).visibility), 'visible');
+
+  // Sending clears the box and the mirror together.
+  await hl.prompt.fill('send **me**'); await hl.prompt.press('Enter');
+  await hl.page.waitForFunction(() => document.getElementById('prompt').value === '');
+  await settle();
+  assert.equal(await mirrorText(), '', 'mirror cleared after send');
+  assert.deepEqual(hl.errors, [], 'highlight page errors');
+  await hl.context.close();
+
+  // Screenshots of a mixed draft, both themes, desktop and phone.
+  for (const theme of ['dark', 'light']) for (const [w, h] of [[1440, 900], [390, 844]]) {
+    const s = await open({ mac: true, theme, width: w, height: h, mobile: w < 500 });
+    await s.prompt.fill('> The lookup is **not live** yet\nPlease **review** the `deploy` script, *carefully*, and <u>today</u>.\n---\n## Steps\n  • check the `env` file\n  1. ship ~~it~~\n```bash\nnpm test\n```');
+    await s.prompt.evaluate((el) => { el.scrollTop = 0; });
+    await s.page.waitForTimeout(200);
+    await s.page.locator('.composer-wrap').screenshot({ path: `${shots}/highlight-${theme}-${w}.png` });
+    await s.context.close();
+  }
+
   await browser.close();
   console.log('PASS: formatting shortcuts (Mac Cmd, Linux Ctrl), toggles, trim, quote, rule, fence, lists, undo, IME, focus, project-jump guard, Alt+M/E, Enter semantics, cheat sheet, <u> rendering, touch.');
 })().catch((e) => { console.error(e); process.exit(1); });

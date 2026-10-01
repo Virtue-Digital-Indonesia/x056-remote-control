@@ -289,7 +289,144 @@
     return { from: p, to: a.length - s, text: b.slice(p, b.length - s) };
   }
 
-  var api = { wrapInline: wrapInline, toggleQuote: toggleQuote, toggleList: toggleList, insertRule: insertRule, toggleFence: toggleFence, apply: apply, diff: diff, shortcutFor: shortcutFor, keysFor: keysFor, SHORTCUTS: SHORTCUTS };
+  // ---- live highlight -----------------------------------------------------------
+  // The composer paints a mirror of the textarea behind it (the textarea's own
+  // text is transparent). `highlight` turns the source into runs whose texts
+  // join back to EXACTLY the input: every marker stays in place, only classed,
+  // so the mirror's characters sit where the textarea's caret expects them.
+  // Line by line; fences follow the same rule as `inFence`. Inline parsing is
+  // skipped on a line longer than HL_INLINE_MAX (an unmatched opener scans to
+  // the end of its line, so a huge line could go quadratic).
+  var HL_INLINE_MAX = 2000;
+  var HL_RULE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+  var HL_HEADING = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
+  function isSpace(c) { return c === undefined || c === ' ' || c === '\t' || c === '\n'; }
+  function isWord(c) {
+    if (c === undefined) return false;
+    var k = c.charCodeAt(0);
+    return (k >= 48 && k <= 57) || (k >= 65 && k <= 90) || (k >= 97 && k <= 122);
+  }
+  var HL_SPECIAL = /[`<*_~]/g;
+  /** One array of runs per source line (newlines dropped), so the panel can
+   *  re-render only the lines that changed. */
+  function highlightLines(value) {
+    var out = [], runs = [];
+    function push(text, cls) {
+      if (!text) return;
+      var last = runs[runs.length - 1];
+      if (last && last.cls === cls) last.text += text; else runs.push({ text: text, cls: cls });
+    }
+    function join(base, cls) { return base ? base + ' ' + cls : cls; }
+    /** The next run of exactly `n` × `ch` at or after `from`, closing an
+     *  emphasis: not preceded by a space (and for `_`, not followed by a letter). */
+    function closer(text, from, ch, n, strict) {
+      for (var j = text.indexOf(ch, from); j !== -1; j = text.indexOf(ch, j)) {
+        var m = runAt(text, j, ch, 1);
+        if (m === n && (!strict || !isSpace(text[j - 1])) && (ch !== '_' || !isWord(text[j + n]))) return j;
+        j += m;
+      }
+      return -1;
+    }
+    function inline(text, base) {
+      if (text.length > HL_INLINE_MAX) { push(text, base); return; }
+      // A closer search that failed from position p fails from any later p
+      // too (it runs to the end of `text`), so it is never repeated: linear.
+      var i = 0, plain = 0, failed = {};
+      function flush(to) { if (to > plain) push(text.slice(plain, to), base); }
+      while (i < text.length) {
+        HL_SPECIAL.lastIndex = i;
+        var hit = HL_SPECIAL.exec(text);
+        if (!hit) break;
+        i = hit.index;
+        var ch = text[i], n, j;
+        if (ch === '<') {
+          if (text.slice(i, i + 3) === '<u>' && (j = text.indexOf('</u>', i + 3)) !== -1) {
+            flush(i);
+            push('<u>', join(base, 'md-mark'));
+            inline(text.slice(i + 3, j), join(base, 'md-u'));
+            push('</u>', join(base, 'md-mark'));
+            i = plain = j + 4;
+          } else i++;
+          continue;
+        }
+        n = runAt(text, i, ch, 1);
+        if (ch === '`') {
+          j = failed['`' + n] ? -1 : closer(text, i + n, '`', n, false);
+          if (j === -1) failed['`' + n] = true;
+          if (j !== -1) {
+            var code = join(base, 'md-code');
+            flush(i);
+            push(text.slice(i, i + n), join(code, 'md-mark'));
+            push(text.slice(i + n, j), code);
+            push(text.slice(j, j + n), join(code, 'md-mark'));
+            i = plain = j + n;
+            continue;
+          }
+          i += n; continue;
+        }
+        // Emphasis: * and _ runs of 1-3, ~~ strike. Opens before a non-space;
+        // an underscore never opens inside a word (snake_case stays plain).
+        var ok = ch === '~' ? n === 2 : n <= 3;
+        if (ok && !isSpace(text[i + n]) && !(ch === '_' && isWord(text[i - 1]))) {
+          j = failed[ch + n] ? -1 : closer(text, i + n + 1, ch, n, true);
+          if (j === -1) failed[ch + n] = true;
+          else {
+            var cls = ch === '~' ? 'md-s' : n === 1 ? 'md-i' : n === 2 ? 'md-b' : 'md-b md-i';
+            flush(i);
+            push(text.slice(i, i + n), join(base, 'md-mark'));
+            inline(text.slice(i + n, j), join(base, cls));
+            push(text.slice(j, j + n), join(base, 'md-mark'));
+            i = plain = j + n;
+            continue;
+          }
+        }
+        i += n;
+      }
+      flush(text.length);
+    }
+    function body(line, base) {
+      var h = HL_HEADING.exec(line);
+      if (h) { push(h[0], join(base, 'md-mark')); inline(line.slice(h[0].length), join(base, 'md-h')); return; }
+      var l = LIST.exec(line);
+      if (l) { push(l[0], join(base, 'md-li')); inline(line.slice(l[0].length), base); return; }
+      inline(line, base);
+    }
+    var fence = null, lines = String(value).split('\n');
+    for (var k = 0; k < lines.length; k++) {
+      var line = lines[k];
+      if (k) { out.push(runs); runs = []; }
+      var f = fenceLine(line);
+      if (f && !fence) { fence = { marker: f[1][0], length: f[1].length }; push(line, 'md-fence'); continue; }
+      if (fence) {
+        if (f && f[1][0] === fence.marker && f[1].length >= fence.length && !f[2].trim()) { fence = null; push(line, 'md-fence'); }
+        else push(line, 'md-pre');
+        continue;
+      }
+      if (HL_RULE.test(line)) { push(line, 'md-hr'); continue; }
+      var q = QUOTES.exec(line);
+      if (q) { push(q[0], 'md-mark md-qm'); body(line.slice(q[0].length), 'md-q'); continue; }
+      body(line, '');
+    }
+    out.push(runs);
+    return out;
+  }
+  /** The same runs flat, newlines included: their texts join to `value`. */
+  function highlight(value) {
+    var lines = highlightLines(value), runs = [];
+    for (var k = 0; k < lines.length; k++) {
+      if (k) {
+        var last = runs[runs.length - 1];
+        if (last && !last.cls) last.text += '\n'; else runs.push({ text: '\n', cls: '' });
+      }
+      for (var r = 0; r < lines[k].length; r++) {
+        var run = lines[k][r], prev = runs[runs.length - 1];
+        if (prev && prev.cls === run.cls) prev.text += run.text; else runs.push({ text: run.text, cls: run.cls });
+      }
+    }
+    return runs;
+  }
+
+  var api = { wrapInline: wrapInline, toggleQuote: toggleQuote, toggleList: toggleList, insertRule: insertRule, toggleFence: toggleFence, apply: apply, diff: diff, shortcutFor: shortcutFor, keysFor: keysFor, highlight: highlight, highlightLines: highlightLines, SHORTCUTS: SHORTCUTS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ComposerFormat = api;
 })(typeof window !== 'undefined' ? window : this);
