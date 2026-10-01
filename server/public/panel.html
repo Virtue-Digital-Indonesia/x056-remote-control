@@ -471,22 +471,20 @@
   .qp-plus-menu .helper-item[hidden] { display: none; }
   .qp-kbd { flex: none; font: inherit; font-size: 11px; color: var(--faint); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
   #conversationSurface .composer .helper-btn { height: 34px; }
-  #conversationSurface .composer .selects.qp-run { display: inline-flex; align-items: center; flex: 0 1 auto; flex-wrap: nowrap; gap: 0; width: auto; min-width: 0; height: 34px; margin: 0; padding: 0 2px; border-radius: 999px; overflow: hidden; }
-  #conversationSurface .composer .selects.qp-run:focus-within { background: var(--surface-3); }
-  @media (hover: hover) { #conversationSurface .composer .selects.qp-run:hover { background: var(--surface-3); } }
-  #conversationSurface .composer .qp-run .select { flex: 0 1 auto; min-width: 0; }
-  #conversationSurface .composer .qp-run select { width: auto; max-width: 150px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font-size: 13px; padding: 6px 20px 6px 9px; text-overflow: ellipsis; field-sizing: content; }
-  #conversationSurface .composer .qp-run select:hover, #conversationSurface .composer .qp-run select:focus-visible { color: var(--text); }
-  #conversationSurface .composer .qp-run select:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  #conversationSurface .composer .qp-run .select::after { right: 8px; }
-  #conversationSurface .composer .qp-run #providerWrap:not([hidden]) { border-right: 1px solid var(--border-strong); margin-right: 2px; }
-  /* A started conversation's provider is fixed: the chip is model · effort only. */
-  #conversationSurface .composer .qp-run #providerWrap.locked { display: none; }
-  #conversationSurface .composer .qp-run .provlock { padding: 6px 10px; font-size: 13px; }
-  .qp-run-sep { flex: none; color: var(--faint); font-size: 13px; margin: 0 -1px; }
+  #conversationSurface .composer .selects.qp-run { display: inline-flex; align-items: center; flex: 0 1 auto; width: auto; min-width: 0; height: 34px; margin: 0; padding: 0; }
+  .qp-native { display: none !important; }
+  .qp-run-btn { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; height: 34px; padding: 0 9px 0 11px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; }
+  .qp-run-btn:hover, .qp-run-btn[aria-expanded=true] { background: var(--surface-3); color: var(--text); }
+  .qp-run-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .qp-run-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .qp-chev { flex: none; width: 13px; height: 13px; transition: transform .15s; }
+  [aria-expanded=true] > .qp-chev { transform: rotate(180deg); }
   /* The quiet line: live status or the run setup left, account + delivery right. */
   #conversationSurface .composer-wrap .composer-footer { max-width: 780px; margin: 6px auto 0; padding: 0 8px 0 16px; border-top: 0; display: flex; align-items: center; gap: 10px; min-height: 26px; min-width: 0; font-size: 12px; color: var(--faint); }
-  .composer-status { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+  .composer-status { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+  /* The account chip keeps its width; a long running status shrinks first. */
+  #conversationSurface .composer-wrap .composer-footer .send-account-chip { flex: 0 0 auto; max-width: 62%; }
+  #conversationSurface .composer-status #busy .tasks, #conversationSurface .composer-status #busy .bmeta { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   #conversationSurface .composer-status #busy { max-width: none; margin: 0; padding: 0; flex: 0 1 auto; min-width: 0; font-size: 12px; gap: 7px; }
   #conversationSurface .composer-status #busy .spin { width: 11px; height: 11px; border-width: 1.7px; }
   #conversationSurface .composer-status #busy .stopbtn { margin-left: 4px; padding: 1px 8px; font-size: 11px; }
@@ -512,8 +510,7 @@
   @media (max-width: 720px) {
     #conversationSurface .composer-wrap { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
     #conversationSurface .composer #prompt { font-size: 16px; }
-    #conversationSurface .composer .qp-run select { font-size: 16px; max-width: 128px; padding-left: 7px; padding-right: 17px; }
-    #conversationSurface .composer .qp-run .select::after { right: 6px; }
+    .qp-run-btn { padding: 0 7px 0 9px; }
     #conversationSurface .qp-send #steerBtn { padding: 0 12px 0 11px; }
     #conversationSurface .composer-wrap .composer-footer { padding: 0 4px 0 12px; gap: 6px; }
     /* The account's name is what matters on a phone; "Send with" is in the title. */
@@ -522,15 +519,14 @@
   }
   @media (max-width: 420px) {
     /* A phone gives the chip ~170px: the model keeps its name, effort its word. */
-    #conversationSurface .composer .qp-run select { max-width: 118px; }
+    #conversationSurface .composer .selects.qp-run { max-width: 190px; }
     #conversationSurface .composer-footer .send-account-chip { max-width: 62%; }
     #conversationSurface .composer .helper-btn[data-state=on] .helper-label { max-width: 64px; }
     #conversationSurface .qp-send .qp-steer-label { display: none; }
     #conversationSurface #composerSend #steerBtn { width: 38px; padding: 0; justify-content: center; }
   }
   @media (max-width: 360px) {
-    #conversationSurface .composer .qp-run select { max-width: 92px; padding-left: 5px; padding-right: 15px; }
-    #conversationSurface .composer .qp-run .select::after { right: 4px; }
+    #conversationSurface .composer .selects.qp-run { max-width: 150px; }
     #conversationSurface .composer .bar { gap: 2px; }
   }
 
@@ -1333,30 +1329,54 @@ main.atree-open .composer-wrap { display: none !important; }
 .helper-label { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .helper-head.sub { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
 .helper-label { font-weight: 600; letter-spacing: .1px; }
-.helper-menu { position: fixed; z-index: 160; width: 300px; max-width: calc(100vw - 24px); overflow-y: auto; overscroll-behavior: contain; padding: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); }
+.helper-menu { position: fixed; z-index: 160; width: 320px; max-width: calc(100vw - 24px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); animation: cp-in .14s ease-out; }
+@keyframes cp-in { from { opacity: 0; transform: translateY(4px); } }
 .helper-menu[hidden] { display: none; }
-.helper-head { padding: 8px 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--faint); }
-.helper-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 10px; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.helper-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px 5px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.helper-head.sub { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); font-weight: 500; font-size: 12px; }
+.helper-hint { font-weight: 400; font-size: 12px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.helper-hint .ic { width: 12px; height: 12px; flex: none; }
+.helper-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 9px; background: transparent; color: var(--text); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; }
 .helper-item:hover:not(:disabled), .helper-item:focus-visible { background: var(--surface-2); outline: none; }
+.helper-item:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .helper-item:disabled { opacity: .5; cursor: default; }
-.hi-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.hi-title { font-size: 13.5px; font-weight: 600; }
-.hi-desc { font-size: 12px; line-height: 1.4; color: var(--muted); }
+.hi-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; line-height: 1.3; }
+.hi-title { font-weight: 500; }
+.hi-desc { font-size: 12px; line-height: 1.35; color: var(--muted); }
+.hi-desc:empty { display: none; }
 .hi-tag { margin-left: 6px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-size: 10.5px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; vertical-align: 1px; }
-.hi-check { flex: none; color: var(--accent); visibility: hidden; }
-/* The picker's lean, Low / Medium / High: shown only while a picker is on. */
-.helper-lean { margin: 2px 0 2px; padding: 8px 10px 10px; }
-.helper-lean[hidden] { display: none; }
-.lean-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
-.lean-title { font-size: 12.5px; font-weight: 600; color: var(--text); flex: none; }
-.lean-cap { font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lean-seg-group { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 3px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
-.lean-seg { height: 26px; padding: 0 6px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s; }
-.lean-seg:hover:not([aria-checked=true]) { color: var(--text); }
-.lean-seg[aria-checked=true] { background: var(--bg); color: var(--accent); font-weight: 600; box-shadow: 0 0 0 1px var(--border), 0 1px 2px color-mix(in srgb, var(--text) 12%, transparent); }
-.lean-seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.helper-menu[aria-busy=true] .lean-seg { cursor: progress; }
+.hi-check { flex: none; width: 16px; height: 16px; color: var(--text); visibility: hidden; stroke-width: 2.2; }
 .helper-item[aria-checked=true] .hi-check { visibility: visible; }
+.hi-box { width: 16px; height: 16px; flex: none; border: 1.5px solid var(--border-strong); border-radius: 5px; display: grid; place-items: center; }
+.hi-box .ic { width: 12px; height: 12px; stroke-width: 3; visibility: hidden; }
+.helper-item[aria-checked=true] .hi-box { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.helper-item[aria-checked=true] .hi-box .ic { visibility: visible; }
+.helper-lean { margin: 0; padding: 8px 10px 2px; }
+.helper-lean[hidden] { display: none; }
+.lean-top { display: flex; align-items: center; gap: 10px; }
+.lean-title { font-size: 12.5px; color: var(--muted); flex: none; }
+.lean-top .lean-seg-group { flex: 1; }
+.lean-cap { margin: 6px 0 6px; font-size: 12px; line-height: 1.4; color: var(--faint); }
+.lean-seg-group, .cp-seg { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 10px; background: var(--surface-2); }
+.lean-seg, .cp-seg button { flex: 1 1 auto; height: 27px; padding: 0 7px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s; }
+.lean-seg:hover:not([aria-checked=true]), .cp-seg button:hover:not([aria-checked=true]) { color: var(--text); }
+.lean-seg[aria-checked=true], .cp-seg button[aria-checked=true] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--border-strong), 0 1px 2px #0000001a; }
+.lean-seg:focus-visible, .cp-seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.helper-menu[aria-busy=true] .lean-seg { cursor: progress; }
+/* The model · effort popover: rows from the hidden #model, a segment from #effort. */
+.run-menu { width: 360px; }
+.run-menu .cp-seg button { padding: 0 6px; }
+.run-menu .cp-pad { padding: 2px 6px 6px; }
+.run-menu .cp-prov-seg { margin: 0 6px 4px; }
+.run-menu .helper-item[aria-checked=true] .hi-title { font-weight: 600; }
+.run-menu .hi-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Phones: every composer popover is a bottom sheet. */
+@media (max-width: 720px) {
+  .helper-menu:not(.qp-plus-menu) { left: 8px !important; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)) !important; width: auto; max-width: none; border-radius: 18px; padding: 8px 6px; animation: cp-sheet .22s cubic-bezier(.2,.8,.2,1); }
+  @keyframes cp-sheet { from { opacity: 0; transform: translateY(24px); } }
+  .helper-item { padding: 10px 10px; }
+  body.qp-menu-open #conversationStage { visibility: hidden; }
+}
 
 /* ---- advisor card (chat) ---- */
 .advcard { box-sizing: border-box; width: 100%; max-width: min(780px, 100%); margin: 12px auto; padding: 14px 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 16px; }
@@ -1467,6 +1487,7 @@ main.atree-open .composer-wrap { display: none !important; }
   <symbol id="i-insert" viewBox="0 0 24 24"><path d="M9 10l-5 5 5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
   <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M10 14h4"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-4 4 3 3m-6-1 2.5 2.5"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M19.44 7.85c-.05.32.06.65.29.88l1.56 1.56c.47.47.71 1.09.71 1.71s-.24 1.23-.71 1.7l-1.6 1.61a.98.98 0 0 1-.84.28c-.47-.07-.8-.48-.97-.93a2.5 2.5 0 1 0-3.21 3.22c.44.16.85.5.92.97a.98.98 0 0 1-.28.84l-1.6 1.6c-.48.48-1.1.71-1.71.71s-1.23-.23-1.7-.7l-1.57-1.57a1.03 1.03 0 0 0-.88-.29c-.49.07-.84.5-1.02.97a2.5 2.5 0 1 1-3.24-3.24c.46-.18.9-.53.97-1.02a1.03 1.03 0 0 0-.29-.88L2.7 13.7A2.4 2.4 0 0 1 2 12c0-.62.24-1.23.71-1.7l1.52-1.53c.24-.24.58-.35.92-.3.51.08.87.53 1.07 1.01a2.5 2.5 0 1 0 3.26-3.26c-.48-.2-.93-.56-1.01-1.07-.05-.34.06-.68.3-.92l1.53-1.52A2.4 2.4 0 0 1 12 2c.62 0 1.23.24 1.7.71l1.57 1.57c.23.23.56.33.88.29.49-.08.84-.5 1.02-.97a2.5 2.5 0 1 1 3.24 3.24c-.47.18-.9.53-.97 1.02Z"/></symbol>
@@ -1541,25 +1562,32 @@ main.atree-open .composer-wrap { display: none !important; }
         <div class="helper" id="helperWrap">
           <button type="button" class="helper-btn" id="helperBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="helperMenu"><svg class="ic sm"><use href="#i-sparkles"/></svg><span class="helper-label" id="helperLabel"></span></button>
           <div class="helper-menu" id="helperMenu" role="menu" aria-label="Helpers for the next turns" hidden>
-            <div class="helper-head">Helpers for the next turns</div>
-            <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="advisor"><span class="hi-text"><span class="hi-title">Advisor</span><span class="hi-desc" id="helperAdvisorDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="team"><span class="hi-text"><span class="hi-title">Agent team</span><span class="hi-desc" id="helperTeamDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <div class="helper-head sub">Model &amp; effort for each turn</div>
+            <div class="helper-head">Helpers <span class="helper-hint">for the next turns</span></div>
+            <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="advisor"><span class="hi-box" aria-hidden="true"><svg class="ic"><use href="#i-check"/></svg></span><span class="hi-text"><span class="hi-title">Advisor</span><span class="hi-desc" id="helperAdvisorDesc"></span></span></button>
+            <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="team"><span class="hi-box" aria-hidden="true"><svg class="ic"><use href="#i-check"/></svg></span><span class="hi-text"><span class="hi-title">Agent team</span><span class="hi-desc" id="helperTeamDesc"></span></span></button>
+            <div class="helper-head sub">Model &amp; effort</div>
             <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value=""><span class="hi-text"><span class="hi-title">Your choice</span><span class="hi-desc">The model and effort in the composer.</span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
             <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="jev"><span class="hi-text"><span class="hi-title">Jev</span><span class="hi-desc" id="helperJevDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
             <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="decisions"><span class="hi-text"><span class="hi-title">OpenAI Decisions <span class="hi-tag">preview</span></span><span class="hi-desc" id="helperDecisionsDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
             <div class="helper-lean" id="helperLean" hidden>
-              <div class="lean-top"><span class="lean-title" id="helperLeanTitle">Lean</span><span class="lean-cap" id="helperLeanCap"></span></div>
+              <div class="lean-top"><span class="lean-title" id="helperLeanTitle">Lean</span>
               <div class="lean-seg-group" role="group" aria-labelledby="helperLeanTitle" aria-describedby="helperLeanCap">
                 <button type="button" class="lean-seg" role="menuitemradio" data-lean="low" aria-checked="false">Low</button>
                 <button type="button" class="lean-seg" role="menuitemradio" data-lean="medium" aria-checked="true">Medium</button>
                 <button type="button" class="lean-seg" role="menuitemradio" data-lean="high" aria-checked="false">High</button>
-              </div>
+              </div></div>
+              <p class="lean-cap" id="helperLeanCap"></p>
             </div>
           </div>
         </div>
         <span class="sp"></span>
+        <!-- Model · effort: ONE chip opening a popover. The native selects stay
+             the source of truth (hidden): the popover reads their options when
+             it opens and writes back with .value + a 'change' event, so every
+             per-provider refill, save and label keeps working unchanged. -->
         <div class="selects qp-run" id="composerRunChip">
+          <button type="button" class="qp-run-btn" id="runChip" aria-haspopup="dialog" aria-expanded="false" aria-controls="runMenu"><span class="qp-run-label" id="runChipLabel"></span><svg class="ic sm qp-chev" aria-hidden="true"><use href="#i-down"/></svg></button>
+          <div class="qp-native" hidden>
           <div class="select" id="providerWrap" hidden><select id="provider" title="which agent runs this conversation">
             <option value="claude">Claude</option><option value="codex">ChatGPT</option>
           </select><span class="provlock" id="providerLock" hidden></span></div>
@@ -1570,10 +1598,11 @@ main.atree-open .composer-wrap { display: none !important; }
           <div class="select"><select id="model" title="model">
             <option value="">Auto model</option><option value="fable">Fable</option><option value="opus">Opus 5.5</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
           </select></div>
-          <span class="qp-run-sep" aria-hidden="true">·</span>
           <div class="select"><select id="effort" title="effort">
             <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option><option value="ultracode">Ultracode</option>
           </select></div>
+          </div>
+          <div class="helper-menu run-menu" id="runMenu" role="dialog" aria-label="Model and effort" hidden></div>
         </div>
       </div>
       <!-- Bottom-right in BOTH states, so collapsing on blur never moves it
@@ -2488,7 +2517,7 @@ main.atree-open .composer-wrap { display: none !important; }
   }
   // The picker's lean: 'low' | 'high', absent = medium (balanced).
   var LEAN_NAMES = { low: 'Low', medium: 'Medium', high: 'High' };
-  var LEAN_CAPS = { low: 'Cheaper models, less effort', medium: 'Balanced', high: 'Stronger models, more effort' };
+  var LEAN_CAPS = { low: 'Errs toward cheaper models and lower effort.', medium: 'Balanced between cost and result.', high: 'Errs toward the best result.' };
   function leanOf(h) { return h && (h.lean === 'low' || h.lean === 'high') ? h.lean : 'medium'; }
   function helperNames(h) {
     var lean = leanOf(h), router = h.router === 'jev' ? 'Jev' : h.router === 'decisions' ? 'Decisions' : '';
@@ -2534,15 +2563,9 @@ main.atree-open .composer-wrap { display: none !important; }
   function helperMenu(open) {
     var menu = $('helperMenu'), btn = $('helperBtn');
     if (open === undefined) open = menu.hidden;
+    if (open && typeof runMenu === 'function') runMenu(false);
     menu.hidden = !open; btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    // Fixed, placed from the button: the composer clips anything that overflows it.
-    if (open) {
-      var r = btn.getBoundingClientRect(), w = Math.min(300, window.innerWidth - 24);
-      menu.style.left = Math.max(12, Math.min(r.left, window.innerWidth - w - 12)) + 'px';
-      menu.style.bottom = (window.innerHeight - r.top + 10) + 'px';
-      // A short screen scrolls the menu rather than pushing it off the top.
-      menu.style.maxHeight = Math.max(160, r.top - 22) + 'px';
-    }
+    if (open) placeComposerMenu(menu, btn, 320, false);
     if (open) { refreshJevStatus(); var sel = menu.querySelector('[aria-checked=true]') || menu.querySelector('.helper-item'); if (sel) sel.focus(); }
   }
   // One click changes one helper; the menu stays open so several can be set.
@@ -3167,7 +3190,7 @@ main.atree-open .composer-wrap { display: none !important; }
     return isSessionRunning(currentProjectId, lastSessionId) || isSessionBackground(currentProjectId, lastSessionId);
   }
   // Steer shows only with something to steer: an empty box's button is Stop.
-  function syncSteerBtn() { var b = $('steerBtn'); if (b) { b.hidden = !canSteer() || !composerHasContent(); b.title = pendingFiles?.length ? 'Queue message and files after this turn' : 'Steer the running turn'; b.setAttribute('aria-label',pendingFiles?.length ? 'Queue message and files' : 'Steer'); } syncComposer(); }
+  function syncSteerBtn() { queueComposerSync(); var b = $('steerBtn'); if (b) { b.hidden = !canSteer() || !composerHasContent(); b.title = pendingFiles?.length ? 'Queue message and files after this turn' : 'Steer the running turn'; b.setAttribute('aria-label',pendingFiles?.length ? 'Queue message and files' : 'Steer'); } syncComposer(); }
   /** Put the amber spinner on an existing sidebar row without re-rendering the
    *  whole list (the 20s project poll rebuilds it authoritatively anyway). */
   function markConvBg(pid, sid) {
@@ -3192,6 +3215,15 @@ main.atree-open .composer-wrap { display: none !important; }
       delete runningSessionIds[pid][sid];
       if (Object.keys(runningSessionIds[pid]).length === 0) { delete runningSessionIds[pid]; delete runningProjects[pid]; }
     }
+    queueComposerSync();
+  }
+  // Run state changes without touching the composer's DOM (a turn opened mid-way,
+  // autopilot, a queued send, background work), so Stop has to be re-checked here.
+  var composerSyncQueued = false;
+  function queueComposerSync() {
+    if (composerSyncQueued) return;
+    composerSyncQueued = true;
+    setTimeout(function () { composerSyncQueued = false; if (typeof syncComposer === 'function') syncComposer(); }, 0);
   }
   var acctNames = {}; // registry name (a/b) -> display name
   // Per CONVERSATION (viewKey), not per project: sibling conversations run at
@@ -4898,7 +4930,12 @@ main.atree-open .composer-wrap { display: none !important; }
     return out;
   }
   function jumpToProject(idx) { var ps = orderedProjects(); if (idx >= 0 && idx < ps.length && ps[idx].id !== currentProjectId) switchProject(ps[idx]); }
-  function openSelect(el) { if (!el) return; revealComposer(el); el.focus(); try { if (el.showPicker) el.showPicker(); } catch (e) {} }
+  function openSelect(el) {
+    if (!el) return;
+    // #model / #effort are hidden behind the model · effort popover.
+    if (el === modelEl || el === effortEl) { runMenu(true, el === effortEl ? 'effort' : 'model'); return; }
+    revealComposer(el); el.focus(); try { if (el.showPicker) el.showPicker(); } catch (e) {}
+  }
   $('searchChatsBtn').addEventListener('click', function () { setNav(false); openPalette(); });
   $('searchShortcut').textContent = K_CMD + ' K';
   $('composerHint').textContent = 'Enter to send · ' + K_CMD + '+Enter to steer · Shift+Enter for a new line · Paste or drop files';
@@ -5941,6 +5978,131 @@ main.atree-open .composer-wrap { display: none !important; }
   promptEl.addEventListener('keydown',function(e){if(slashMenu.hidden)return;if(e.key==='Escape'){slashMenu.hidden=true;e.preventDefault();e.stopPropagation();}else if(e.key==='ArrowUp'||e.key==='ArrowDown'){var buttons=slashMenu.querySelectorAll('button');if(buttons.length){e.preventDefault();buttons[e.key==='ArrowUp'?buttons.length-1:0].focus();}}},true);
   slashMenu.addEventListener('keydown',function(e){var buttons=Array.prototype.slice.call(slashMenu.querySelectorAll('button')),i=buttons.indexOf(document.activeElement);if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();buttons[(i+(e.key==='ArrowDown'?1:buttons.length-1))%buttons.length].focus();}if(e.key==='Escape'){e.stopPropagation();slashMenu.hidden=true;promptEl.focus();}});
 
+  // ---- model · effort popover (the One pill draft) -------------------------
+  // The hidden #model / #effort selects stay the truth: rows and segments are
+  // read from their CURRENT options every time the popover renders (they are
+  // refilled per provider and per Codex catalog), and a pick writes back with
+  // .value + a bubbling 'change', so saving, labels and refills run unchanged.
+  var runMenuEl = $('runMenu'), runChipEl = $('runChip'), runMenuSig = '', runMenuOpening = false;
+  var MODEL_DESC = {
+    fable: 'Frontier model, for the hardest problems',
+    opus: 'Deep reasoning for long, multi-step work',
+    sonnet: 'Balanced and quick, the everyday choice',
+    haiku: 'Fastest and cheapest, for small edits',
+    'gpt-6-astra': 'Strongest, for long multi-step work',
+    'gpt-6.1-sol': 'Newest frontier model, rolling out by plan',
+    'gpt-5.6-terra': 'Fast and balanced, the house default'
+  };
+  var EFFORT_SHORT = { low: 'Low', medium: 'Med', high: 'High', xhigh: 'X-high', max: 'Max', ultra: 'Ultra', ultracode: 'Ultracode' };
+  function escHtml(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function modelDescription(v, prov) {
+    if (prov === 'codex') {
+      var m = (providerModels.codex || []).filter(function (x) { return x.slug === v; })[0];
+      if (m && m.description) return m.description;
+    }
+    return MODEL_DESC[v] || '';
+  }
+  function runChipText() {
+    var opt = function (sel) { var o = sel && sel.options[sel.selectedIndex]; return o ? o.textContent.trim() : ''; };
+    var m = opt(modelEl), e = opt(effortEl);
+    return m && m === e ? m : [m, e].filter(Boolean).join(' · ');
+  }
+  // Fixed, placed from its anchor: the composer clips anything that overflows
+  // it. Phones get a bottom sheet from CSS, so no inline position there.
+  function placeComposerMenu(menu, anchor, width, alignRight) {
+    if (window.innerWidth <= 720) { menu.style.left = ''; menu.style.bottom = ''; menu.style.maxHeight = Math.round(window.innerHeight * 0.8) + 'px'; return; }
+    var r = anchor.getBoundingClientRect(), w = Math.min(width, window.innerWidth - 24);
+    var left = alignRight ? r.right - w : r.left;
+    menu.style.left = Math.max(12, Math.min(left, window.innerWidth - w - 12)) + 'px';
+    menu.style.bottom = (window.innerHeight - r.top + 10) + 'px';
+    // A short screen scrolls the menu rather than pushing it off the top.
+    menu.style.maxHeight = Math.max(160, r.top - 22) + 'px';
+  }
+  function renderRunMenu(force) {
+    if (!runMenuEl || runMenuEl.hidden) return;
+    var prov = currentProvider(), who = pickerName(), house = autoModelLabel(prov).replace(/^Auto \((.*)\)$/, '$1');
+    var item = function (kind, v, checked, title, desc) {
+      return '<button type="button" class="helper-item" role="menuitemradio" data-run="' + kind + '" data-value="' + escHtml(v) + '" aria-checked="' + (checked ? 'true' : 'false') + '"><span class="hi-text"><span class="hi-title">' + escHtml(title) + '</span>' + (desc ? '<span class="hi-desc" title="' + escHtml(desc) + '">' + escHtml(desc) + '</span>' : '') + '</span><svg class="ic sm hi-check" aria-hidden="true"><use href="#i-check"/></svg></button>';
+    };
+    var seg = function (kind, label, opts, cur) {
+      return '<div class="cp-seg" role="radiogroup" aria-label="' + label + '">' + opts.map(function (o) {
+        var on = o[0] === cur;
+        return '<button type="button" role="radio" data-run="' + kind + '" data-value="' + escHtml(o[0]) + '" aria-checked="' + on + '" tabindex="' + (on ? 0 : -1) + '"' + (o[2] ? ' title="' + escHtml(o[2]) + '" aria-label="' + escHtml(o[2]) + '"' : '') + '>' + escHtml(o[1]) + '</button>';
+      }).join('') + '</div>';
+    };
+    var html = '';
+    var canPickProvider = providerWrap && !providerWrap.hidden && !providerWrap.classList.contains('locked');
+    if (canPickProvider) {
+      html += '<div class="helper-head">Provider <span class="helper-hint">until the first message</span></div><div class="cp-prov-seg">'
+        + seg('provider', 'Provider', [].slice.call(providerEl.options).map(function (o) { return [o.value, o.textContent.trim()]; }), providerEl.value) + '</div>';
+    }
+    var hint = prov === 'codex' ? 'catalog of your ChatGPT accounts' : (PROV_LABEL[prov] || prov);
+    html += '<div class="helper-head' + (canPickProvider ? ' sub' : '') + '">Model <span class="helper-hint">' + (canPickProvider ? '' : '<svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg>') + escHtml(hint) + '</span></div><div role="menu" aria-label="Model">';
+    [].slice.call(modelEl.options).forEach(function (o) {
+      var v = o.value, on = modelEl.value === v;
+      if (!v) html += item('model', '', on, who ? who + ' picks' : 'Auto', who ? 'Chosen per turn, starting from ' + house : 'House default, ' + house);
+      else html += item('model', v, on, o.textContent.trim(), modelDescription(v, prov));
+    });
+    html += '</div><div class="helper-head sub">Effort</div><div class="cp-pad">'
+      + seg('effort', 'Effort', [].slice.call(effortEl.options).map(function (o) {
+        var v = o.value;
+        if (!v) return ['', who || 'Auto', who ? who + ' picks the effort' : 'Auto effort'];
+        return [v, EFFORT_SHORT[v] || o.textContent.trim(), o.textContent.trim()];
+      }), effortEl.value) + '</div>';
+    if (html === runMenuSig && !force) return;
+    runMenuSig = html;
+    var f = document.activeElement, fk = f && runMenuEl.contains(f) ? [f.dataset.run, f.dataset.value] : null;
+    runMenuEl.innerHTML = html;
+    if (fk) { var n = runMenuEl.querySelector('[data-run="' + fk[0] + '"][data-value="' + CSS.escape(fk[1] || '') + '"]'); if (n) n.focus({ preventScroll: true }); }
+  }
+  function runMenu(open, focusWhat) {
+    if (!runMenuEl) return;
+    if (open === undefined) open = runMenuEl.hidden;
+    // Opened by a click elsewhere (the caption, send running /model): that same
+    // click reaching the document must not close it again.
+    if (open) { helperMenu(false); revealComposer(runChipEl); runMenuOpening = true; setTimeout(function () { runMenuOpening = false; }, 0); }
+    runMenuEl.hidden = !open; runChipEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (!open) return;
+    renderRunMenu(true);
+    placeComposerMenu(runMenuEl, runChipEl, 360, true);
+    var sel = focusWhat === 'effort' ? runMenuEl.querySelector('[data-run=effort][aria-checked=true]') : runMenuEl.querySelector('[data-run=model][aria-checked=true]');
+    (sel || runMenuEl.querySelector('button')).focus({ preventScroll: true });
+  }
+  function pickRun(kind, value) {
+    var el = kind === 'model' ? modelEl : kind === 'effort' ? effortEl : providerEl;
+    if (!el || el.value === value) return;
+    el.value = value;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    renderRunMenu();
+  }
+  runChipEl.addEventListener('click', function (e) { e.stopPropagation(); runMenu(); });
+  runMenuEl.addEventListener('click', function (e) { var b = e.target.closest('[data-run]'); if (b && !b.disabled) pickRun(b.dataset.run, b.dataset.value); });
+  runMenuEl.addEventListener('keydown', function (e) {
+    var segBtn = e.target.closest && e.target.closest('.cp-seg button');
+    if (segBtn && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End')) {
+      e.preventDefault();
+      var segs = [].slice.call(segBtn.parentNode.querySelectorAll('button')), j = segs.indexOf(segBtn);
+      j = e.key === 'Home' ? 0 : e.key === 'End' ? segs.length - 1 : Math.max(0, Math.min(segs.length - 1, j + (e.key === 'ArrowRight' ? 1 : -1)));
+      pickRun(segs[j].dataset.run, segs[j].dataset.value);
+      var n = runMenuEl.querySelector('[data-run="' + segs[j].dataset.run + '"][data-value="' + CSS.escape(segs[j].dataset.value) + '"]'); if (n) n.focus();
+      return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      // Up/Down walk the rows; each segmented control is one stop (its checked segment).
+      e.preventDefault();
+      var items = [].slice.call(runMenuEl.querySelectorAll('.helper-item:not([disabled]), .cp-seg button[aria-checked=true]')), i = items.indexOf(document.activeElement);
+      var nx = items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]; if (nx) nx.focus();
+    } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); runMenu(false); runChipEl.focus(); }
+  });
+  // composedPath, not closest(): a pick re-renders the rows, so by the time the
+  // click reaches the document its target is detached from the popover.
+  document.addEventListener('click', function (e) { if (runMenuEl.hidden || runMenuOpening) return; var path = e.composedPath(); if (path.indexOf(runMenuEl) < 0 && path.indexOf(runChipEl) < 0) runMenu(false); });
+  window.addEventListener('resize', function () { if (!runMenuEl.hidden) placeComposerMenu(runMenuEl, runChipEl, 360, true); });
+  [modelEl, effortEl, providerEl].forEach(function (el) { if (el) el.addEventListener('change', function () { renderRunMenu(); }); });
+  if (window.MutationObserver) {
+    var runObs = new MutationObserver(function () { renderRunMenu(); });
+    [modelEl, effortEl].forEach(function (el) { runObs.observe(el, { childList: true, subtree: true, characterData: true }); });
+  }
   // ---- the quiet pill ------------------------------------------------------
   // One line at rest; open (data-qp-open on .composer-wrap) while focus is in
   // it, it holds text or files, or one of its menus is open. Only the CSS
@@ -5950,7 +6112,8 @@ main.atree-open .composer-wrap { display: none !important; }
   function composerHasFiles() { return !!(attachRow && attachRow.querySelector('.chip')); }
   function composerHasContent() { return !!(promptEl && promptEl.value.trim()) || composerHasFiles(); }
   function composerMenuOpen() {
-    return ['helperMenu', 'composerPlusMenu', 'codexSlashMenu'].some(function (id) { var m = $(id); return m && !m.hidden; });
+    var acct = $('sendAccountPicker');
+    return ['helperMenu', 'runMenu', 'composerPlusMenu', 'codexSlashMenu'].some(function (id) { var m = $(id); return m && !m.hidden; }) || !!(acct && acct.open);
   }
   function composerRunning() { return !!(busyEl && busyEl.firstChild) || canSteer(); }
   function composerCaption() {
@@ -5970,6 +6133,8 @@ main.atree-open .composer-wrap { display: none !important; }
     var a = document.activeElement, running = composerRunning(), content = composerHasContent();
     var open = qpForce || qpHold || !!(a && a !== document.body && composerBox.contains(a)) || promptEl.value.length > 0 || composerHasFiles() || composerMenuOpen();
     composerWrap.toggleAttribute('data-qp-open', open);
+    // Phones show composer menus as bottom sheets; the floating stage bubble sits over them.
+    document.body.classList.toggle('qp-menu-open', composerMenuOpen());
     composerWrap.toggleAttribute('data-qp-run', running);
     composerWrap.toggleAttribute('data-qp-content', content);
     var bg = !active && isSessionBackground(currentProjectId, lastSessionId);
@@ -5994,6 +6159,8 @@ main.atree-open .composer-wrap { display: none !important; }
         badge.title = n + ' file' + (n > 1 ? 's' : '') + ' attached'; badge.setAttribute('aria-label', badge.title);
       }
     }
+    var rl = $('runChipLabel'), rt = runChipText();
+    if (rl && rl.textContent !== rt) { rl.textContent = rt; runChipEl.setAttribute('aria-label', 'Model and effort: ' + rt); runChipEl.title = 'Model and effort: ' + rt; }
     var cap = $('composerCaption');
     if (cap) { var c = composerCaption(); if (cap.textContent !== c) { cap.textContent = c; cap.setAttribute('aria-label', 'Model and effort: ' + c); } }
     promptEl.placeholder = open && running ? 'Ask anything to queue or steer' : open && currentProvider() === 'codex' ? 'Ask anything, or type / for commands' : 'Ask anything';
@@ -6005,6 +6172,11 @@ main.atree-open .composer-wrap { display: none !important; }
     qpForce = true; syncComposer(); qpForce = false;
   }
   composerBox.addEventListener('focusin', syncComposer);
+  document.addEventListener('x056:composer-menu', function () { syncComposer(); });
+  // A tap on the account chip under an OPEN pill must not fold it on the way to
+  // opening the account popover (which then holds it open itself).
+  var qpFooter = $('composerFooter');
+  if (qpFooter) qpFooter.addEventListener('pointerdown', function () { if (!composerWrap.hasAttribute('data-qp-open')) return; qpHold = true; clearTimeout(qpHoldTimer); qpHoldTimer = setTimeout(releaseHold, 1200); });
   // Collapse on a later tick and only if focus really left: a click on + or
   // send moves focus INSIDE the pill, which must not fold it under the pointer.
   composerBox.addEventListener('focusout', function () { setTimeout(syncComposer, 0); });
@@ -6018,22 +6190,24 @@ main.atree-open .composer-wrap { display: none !important; }
   composerBox.addEventListener('click', function (e) { if (e.target === composerBox) promptEl.focus(); });
   promptEl.addEventListener('input', syncComposer);
   $('composerAttachBadge').addEventListener('click', function () { promptEl.focus(); });
-  $('composerCaption').addEventListener('click', function () { openSelect(modelEl); });
+  $('composerCaption').addEventListener('click', function () { runMenu(true); });
   [modelEl, effortEl, providerEl].forEach(function (el) { if (el) el.addEventListener('change', syncComposer); });
   if (window.MutationObserver) {
     var qpObs = new MutationObserver(syncComposer);
     qpObs.observe(attachRow, { childList: true });
     qpObs.observe(busyEl, { childList: true });
-    ['helperMenu', 'composerPlusMenu', 'codexSlashMenu'].forEach(function (id) { if ($(id)) qpObs.observe($(id), { attributes: true, attributeFilter: ['hidden'] }); });
+    ['helperMenu', 'runMenu', 'composerPlusMenu', 'codexSlashMenu'].forEach(function (id) { if ($(id)) qpObs.observe($(id), { attributes: true, attributeFilter: ['hidden'] }); });
     qpObs.observe($('helperBtn'), { attributes: true, attributeFilter: ['data-state'], childList: true, subtree: true, characterData: true });
     qpObs.observe(modelEl, { childList: true, subtree: true, characterData: true });
     qpObs.observe(effortEl, { childList: true, subtree: true, characterData: true });
   }
+  // Safety net for run-state paths no hook covers: cheap attribute toggles only.
+  setInterval(function () { if (!document.hidden) syncComposer(); }, 1000);
   // The + menu: attach, a template, and (chat mode) a conversation reference.
   function plusMenu(open) {
     var menu = $('composerPlusMenu'), btn = $('composerPlusBtn');
     if (open === undefined) open = menu.hidden;
-    if (open) { helperMenu(false); $('composerRefItem').hidden = !(document.body.classList.contains('rc-chat-active') && $('rcChatReference')); }
+    if (open) { helperMenu(false); runMenu(false); $('composerRefItem').hidden = !(document.body.classList.contains('rc-chat-active') && $('rcChatReference')); }
     menu.hidden = !open; btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) {
       var r = btn.getBoundingClientRect(), w = Math.min(280, window.innerWidth - 24);

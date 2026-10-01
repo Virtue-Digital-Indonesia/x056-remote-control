@@ -28,6 +28,26 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
       // Keep a handle on the live stream so a test can say "a turn is running".
       const Original = EventSource; window.EventSource = class extends Original { constructor(...a) { super(...a); window.__source = this; } };
     }, [TOKEN, theme]);
+    // Four Claude accounts at four usage levels (+ one never checked), so the
+    // account popover shows every meter colour. Codex reports fractions.
+    await ctx.route('**/api/accounts', async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      const res = await route.fetch(), list = await res.json(), later = Math.floor(Date.now() / 1000) + 7200;
+      const q = (five, seven) => ({ fiveHour: { utilization: five, resetsAt: new Date(Date.now() + 3600e3).toISOString() }, sevenDay: { utilization: seven, resetsAt: new Date(Date.now() + 86400e3).toISOString() } });
+      const primary = list.find((a) => a.name === 'primary');
+      if (primary) primary.quota = q(34, 12);
+      const clone = (name, email, quota, state) => ({ ...primary, name, displayName: name, label: '', email, quota, quotaError: undefined, quotaStale: false, state: state || { kind: 'ok' }, nextUp: false });
+      if (primary) list.push(clone('mid', 'mid@example.test', q(20, 64)), clone('high', 'high@example.test', q(91, 40)), clone('fresh', 'fresh@example.test', undefined));
+      const backup = list.find((a) => a.name === 'backup');
+      if (backup) { backup.quota = q(100, 70); backup.state = { kind: 'limited', until: later }; }
+      route.fulfill({ response: res, json: list });
+    });
+    // A ChatGPT catalog (the fixture account has none): one model with its own
+    // description and X-high, one without either.
+    await ctx.route('**/api/models', (route) => route.fulfill({ json: { codex: [
+      { slug: 'gpt-6-astra', label: 'GPT-6 Astra', description: 'Catalog text: strongest for long multi-step work', efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+      { slug: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+    ] } }));
     const page = await ctx.newPage(), errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(url);
@@ -46,7 +66,7 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   await page.evaluate(() => { document.getElementById('prompt').value = ''; document.getElementById('prompt').dispatchEvent(new Event('input')); document.activeElement?.blur(); });
   await blur(page);
   assert.equal(await isOpen(page), false, 'rests as one line');
-  assert.equal(await page.locator('#model').isHidden(), true, 'model select hidden at rest');
+  assert.equal(await page.locator('#runChip').isHidden(), true, 'model · effort chip hidden at rest');
   assert.equal(await page.locator('#composerPlusBtn').isHidden(), true, '+ hidden at rest');
   assert.equal(await page.locator('#sendBtn').isVisible(), true, 'send visible at rest');
   assert.match(await page.locator('#composerCaption').textContent(), / · /, 'caption names model · effort');
@@ -60,15 +80,75 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
 
   await page.locator('#prompt').click();
   assert.equal(await isOpen(page), true, 'focus opens the pill');
-  for (const id of ['#composerPlusBtn', '#helperBtn', '#model', '#effort']) assert.equal(await page.locator(id).isVisible(), true, id + ' visible when open');
+  for (const id of ['#composerPlusBtn', '#helperBtn', '#runChip']) assert.equal(await page.locator(id).isVisible(), true, id + ' visible when open');
   const sendOpen = await page.locator('#sendBtn').boundingBox();
   assert.ok(Math.abs(sendOpen.x - sendRest.x) < 1 && Math.abs(sendOpen.y - sendRest.y) < 1, 'send does not move between rest and open');
-  // The merged chip holds the two native selects, and both change without folding the pill.
-  assert.equal(await page.locator('#composerRunChip > .select > select#model').count(), 1);
-  assert.equal(await page.locator('#composerRunChip > .select > select#effort').count(), 1);
-  await page.locator('#model').selectOption('opus'); await page.locator('#effort').selectOption('high');
+  // One chip opens the model · effort popover; the native selects stay hidden as the source of truth.
+  assert.equal(await page.locator('#composerRunChip select#model').count(), 1);
+  assert.equal(await page.locator('#model').isHidden(), true, 'native model select hidden');
+  await page.locator('#runChip').click();
+  assert.equal(await page.locator('#runMenu').isVisible(), true, 'model popover opens');
+  const options = await page.locator('#model option').evaluateAll((os) => os.map((o) => o.value));
+  const rows = await page.locator('#runMenu [data-run=model]').evaluateAll((bs) => bs.map((b) => b.dataset.value));
+  assert.deepEqual(rows, options, 'one row per #model option, in order');
+  assert.match(await page.locator('#runMenu [data-run=model][data-value=opus] .hi-desc').textContent(), /\w/, 'known models carry a description');
+  assert.equal(await page.locator('#runMenu [data-run=model][data-value=""] .hi-title').textContent(), 'Auto');
+  const effortSegs = await page.locator('#runMenu .cp-seg [data-run=effort]').evaluateAll((bs) => bs.map((b) => b.dataset.value));
+  assert.deepEqual(effortSegs, await page.locator('#effort option').evaluateAll((os) => os.map((o) => o.value)), 'one segment per #effort option');
+  assert.ok(effortSegs.includes('ultracode'), 'Ultracode on Claude');
+  await page.locator('#runMenu [data-run=model][data-value=opus]').click();
+  assert.equal(await page.locator('#model').inputValue(), 'opus', 'a row sets #model');
+  assert.equal(await page.locator('#runMenu [data-run=model][data-value=opus]').getAttribute('aria-checked'), 'true');
+  await page.locator('#runMenu [data-run=effort][data-value=high]').click();
+  assert.equal(await page.locator('#effort').inputValue(), 'high', 'a segment sets #effort');
+  assert.equal(await page.locator('#runMenu [data-run=effort][data-value=high]').getAttribute('aria-checked'), 'true');
   assert.equal(await isOpen(page), true, 'still open after two selections');
+  assert.match(await page.locator('#runChipLabel').textContent(), /Opus 5\.5 · High/);
+  // Keyboard: arrows walk the rows, Left/Right move the effort, Escape returns to the chip.
+  await page.locator('#runMenu [data-run=model][data-value=opus]').focus();
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.value), 'sonnet', 'ArrowDown moves to the next model');
+  await page.locator('#runMenu [data-run=effort][data-value=high]').focus();
+  await page.keyboard.press('ArrowLeft');
+  assert.equal(await page.locator('#effort').inputValue(), 'medium', 'ArrowLeft picks the previous effort');
+  await page.keyboard.press('ArrowRight');
   assert.equal(await page.locator('#effort').inputValue(), 'high');
+  await page.waitForTimeout(300); await page.screenshot({ path: shots + '/pop-model-dark-1440.png' });
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#runMenu').isHidden(), true, 'Escape closes the model popover');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'runChip', 'focus returns to the chip');
+  assert.equal(await isOpen(page), true, 'the pill stays open');
+  await page.locator('#runChip').click(); await blur(page);
+  assert.equal(await page.locator('#runMenu').isHidden(), true, 'outside click closes the model popover');
+
+  // The account popover: one row per Claude account, a meter coloured by level.
+  await page.locator('#prompt').click();
+  await page.locator('#sendAccountChip').click();
+  assert.equal(await page.locator('#sendAccountPicker').isVisible(), true, 'account popover opens');
+  assert.equal(await isOpen(page), true, 'the account popover keeps the pill open');
+  assert.equal(await page.locator('#sendAccountPicker [data-send-next=chatgpt]').count(), 0, 'provider pools stay separate');
+  const levels = await page.locator('#sendAccountPicker [data-send-next]').evaluateAll((bs) => Object.fromEntries(bs.map((b) => [b.dataset.sendNext, { level: b.querySelector('.acct-usage').dataset.level, text: b.textContent.replace(/\s+/g, ' ').trim(), disabled: b.disabled }])));
+  assert.equal(levels.primary.level, 'ok'); assert.match(levels.primary.text, /34% of the 5-hour limit used/);
+  assert.equal(levels.mid.level, 'mid'); assert.match(levels.mid.text, /64% of the weekly limit used/);
+  assert.equal(levels.high.level, 'high'); assert.match(levels.high.text, /91%/);
+  assert.equal(levels.backup.level, 'limit'); assert.match(levels.backup.text, /Limit reached · resets/); assert.equal(levels.backup.disabled, true);
+  assert.equal(levels.fresh.level, 'unknown'); assert.match(levels.fresh.text, /Usage not checked/);
+  const colour = (sel) => page.locator(sel).evaluate((e) => getComputedStyle(e).color);
+  assert.notEqual(await colour('[data-send-next=primary] .acct-pct'), await colour('[data-send-next=high] .acct-pct'), 'levels differ in colour');
+  assert.equal(await page.locator('#sendAccountChip .acct-dot').getAttribute('data-level'), 'ok', 'the chip carries the level dot');
+  assert.match(await page.locator('#sendAccountPicker').textContent(), /fails over to the next one/);
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.sendNext), 'mid', 'ArrowDown moves between accounts');
+  await page.waitForTimeout(300); await page.screenshot({ path: shots + '/pop-account-dark-1440.png' });
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#sendAccountPicker').isHidden(), true, 'Escape closes the account popover');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'sendAccountChip', 'focus returns to the account chip');
+  await page.locator('#sendAccountChip').click(); await blur(page);
+  assert.equal(await page.locator('#sendAccountPicker').isHidden(), true, 'outside click closes it');
+  await page.locator('#prompt').click();
+  await page.locator('#helperBtn').click();
+  await page.waitForTimeout(300); await page.screenshot({ path: shots + '/pop-helpers-dark-1440.png' });
+  await page.keyboard.press('Escape');
   await page.screenshot({ path: shots + '/open-dark-1440.png' });
 
   // Empty and focus gone: folds. Text keeps it open after focus leaves.
@@ -77,7 +157,8 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   assert.match(await page.locator('#composerCaption').textContent(), /Opus 5\.5 · High/);
   await page.locator('#composerCaption').click();
   assert.equal(await isOpen(page), true, 'the caption opens the pill');
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'model', 'and lands on the model');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.run), 'model', 'and lands on the model list');
+  await page.keyboard.press('Escape');
   await page.locator('#prompt').fill('A draft that stays');
   await blur(page);
   assert.equal(await isOpen(page), true, 'text keeps it open');
@@ -182,7 +263,7 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
     await page.locator('#prompt').click();
     assert.equal(await isOpen(page), true);
     assert.equal(await noOverflow(page), true, 'no overflow open ' + tag);
-    for (const id of ['#composerPlusBtn', '#helperBtn', '#model', '#effort', '#sendBtn']) {
+    for (const id of ['#composerPlusBtn', '#helperBtn', '#runChip', '#sendBtn']) {
       const b = await page.locator(id).boundingBox();
       assert.ok(b && b.x >= 0 && b.x + b.width <= vp.width + 0.5, id + ' on screen ' + tag + ' ' + JSON.stringify(b));
     }
@@ -191,8 +272,20 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
     await page.locator('#helperBtn').click();
     const hm = await page.locator('#helperMenu').boundingBox();
     assert.ok(hm && hm.y >= 0 && hm.x >= 0 && hm.x + hm.width <= vp.width && hm.height > 150, 'helper menu on screen ' + tag);
+    await page.waitForTimeout(300); await page.screenshot({ path: shots + '/pop-helpers-' + tag + '.png' });
     await page.keyboard.press('Escape');
     assert.equal(await isOpen(page), true, 'Escape from the helpers keeps the pill open');
+    for (const [chip, pop, name] of [['#runChip', '#runMenu', 'model'], ['#sendAccountChip', '#sendAccountPicker', 'account']]) {
+      await page.locator(chip).click();
+      await page.waitForTimeout(300); // let the open animation settle before measuring
+      const pb = await page.locator(pop).boundingBox();
+      assert.ok(pb && pb.y >= 0 && pb.x >= 0 && pb.x + pb.width <= vp.width + 0.5 && pb.y + pb.height <= vp.height + 0.5, name + ' popover on screen ' + tag + ' ' + JSON.stringify(pb));
+      assert.equal(await isOpen(page), true, name + ' popover keeps the pill open ' + tag);
+      assert.equal(await noOverflow(page), true, 'no overflow with the ' + name + ' popover ' + tag);
+      await page.screenshot({ path: shots + '/pop-' + name + '-' + tag + '.png' });
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator(pop).isHidden(), true, name + ' popover closes ' + tag);
+    }
     await page.locator('#prompt').fill('Queue this');
     await running(page, true);
     await page.locator('#steerBtn').waitFor();
@@ -222,6 +315,29 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   assert.deepEqual(r.errors, []);
   await r.ctx.close();
 
+  // ---- ChatGPT: rows from the catalog, and a model pick refills the effort in place ----
+  const codexChat = await api('chats', { requestId: require('node:crypto').randomUUID(), name: 'Quiet pill ChatGPT', provider: 'codex' });
+  r = await open({ width: 1440, height: 900 }, 'dark', base + '/chat/' + encodeURIComponent(codexChat.id)); page = r.page;
+  await page.waitForSelector('body.rc-chat-active');
+  await page.waitForFunction(() => document.querySelector('#model option[value="gpt-6-astra"]'));
+  await page.locator('#prompt').click(); await page.locator('#runChip').click();
+  assert.deepEqual(await page.locator('#runMenu [data-run=model]').evaluateAll((bs) => bs.map((b) => b.dataset.value)), ['', 'gpt-6-astra', 'gpt-5.6-terra']);
+  assert.match(await page.locator('#runMenu .helper-head').first().textContent(), /catalog/);
+  assert.equal(await page.locator('#runMenu [data-run=model][data-value="gpt-6-astra"] .hi-desc').textContent(), 'Catalog text: strongest for long multi-step work', 'the catalog description wins');
+  await page.locator('#runMenu [data-run=model][data-value="gpt-6-astra"]').click();
+  assert.equal(await page.locator('#runMenu [data-run=effort][data-value=ultracode]').count(), 0, 'no Ultracode on ChatGPT');
+  await page.locator('#runMenu [data-run=effort][data-value=xhigh]').click();
+  assert.equal(await page.locator('#effort').inputValue(), 'xhigh');
+  await page.waitForTimeout(300); await page.screenshot({ path: shots + '/pop-model-codex-dark-1440.png' });
+  await page.locator('#runMenu [data-run=model][data-value="gpt-5.6-terra"]').click();
+  assert.deepEqual(await page.locator('#runMenu [data-run=effort]').evaluateAll((bs) => bs.map((b) => b.dataset.value)), await page.locator('#effort option').evaluateAll((os) => os.map((o) => o.value)), 'segments follow the refilled #effort');
+  assert.equal(await page.locator('#runMenu [data-run=effort][data-value=xhigh]').count(), 0, 'Terra has no X-high');
+  assert.equal(await page.locator('#runMenu').isVisible(), true, 'the popover stays open through the refill');
+  assert.equal(await page.evaluate(() => document.getElementById('runMenu').contains(document.activeElement)), true, 'focus stays inside');
+  await page.keyboard.press('Escape');
+  assert.deepEqual(r.errors, []);
+  await r.ctx.close();
+
   await browser.close();
-  console.log('PASS quiet pill: rests as one line, opens on focus/text/files/draft/menu, folds only when empty and unfocused, send never moves, Stop when empty and Steer+Queue with text while running, + menu attach/template/reference, one chip holding both selects, desktop and phone in dark and light with no overflow');
+  console.log('PASS quiet pill: rests as one line, opens on focus/text/files/draft/menu, folds only when empty and unfocused, send never moves, Stop when empty and Steer+Queue with text while running, + menu attach/template/reference, one chip opening the model · effort popover (rows from #model, segments from #effort), the account popover with level-coloured meters, desktop and phone in dark and light with no overflow');
 })().catch((e) => { console.error(e); process.exit(1); });

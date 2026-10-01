@@ -1,4 +1,11 @@
 const assert=require('node:assert/strict');
+// #model / #effort are hidden behind the model · effort popover: pick through it.
+const pickRun = async (page, kind, value) => {
+  if (!(await page.locator('#runChip').isVisible())) await page.locator('#prompt').click();
+  if (await page.locator('#runMenu').isHidden()) await page.locator('#runChip').click();
+  await page.locator('#runMenu [data-run=' + kind + '][data-value="' + value + '"]').click();
+  await page.keyboard.press('Escape');
+};
 const {chromium}=require('/usr/local/lib/node_modules/playwright');
 const base=process.argv[2]||'http://127.0.0.1:8795';
 (async()=>{
@@ -22,11 +29,11 @@ const base=process.argv[2]||'http://127.0.0.1:8795';
     }
     async function open(c){await page.locator('.cr-task[data-session="'+c.sessionId+'"]').click();await page.locator('#prompt').waitFor();await page.locator('#prompt').click();}
     await page.goto(base);await open(first);
-    await page.locator('#model').selectOption('fable');await page.locator('#effort').selectOption('high');
+    await pickRun(page, 'model', 'fable');await pickRun(page, 'effort', 'high');
     await saved('fable','high');
     assert.match(await page.locator('#acctPlan').textContent(),/Fable · High · Max/);
     await page.locator('#chatClose').click();await open(second);
-    await page.locator('#model').selectOption('opus');await page.locator('#effort').selectOption('low');
+    await pickRun(page, 'model', 'opus');await pickRun(page, 'effort', 'low');
     await page.locator('#chatClose').click();await open(first);
     assert.equal(await page.locator('#model').inputValue(),'fable');
     assert.equal(await page.locator('#effort').inputValue(),'high');
@@ -40,7 +47,7 @@ const base=process.argv[2]||'http://127.0.0.1:8795';
     assert.equal(approval.model,'fable');assert.equal(approval.effort,'high');
     await context.request.post(base+'/api/mcp/approvals/decide',{headers,data:{id:approvalId,approve:false}});
     // Auto is an explicit choice, not a fallback to another chat or localStorage.
-    await page.locator('#model').selectOption('');await page.locator('#effort').selectOption('');
+    await pickRun(page, 'model', '');await pickRun(page, 'effort', '');
     await saved('','');await page.reload();await open(first);
     assert.equal(await page.locator('#model').inputValue(),'');
     assert.equal(await page.locator('#effort').inputValue(),'');

@@ -4,6 +4,13 @@
 // X056_CHAT_ENABLED=1). Every send is intercepted, so no turn runs and the real
 // Jev API is never called.
 const assert = require('node:assert/strict');
+// #model / #effort are hidden behind the model · effort popover: pick through it.
+const pickRun = async (page, kind, value) => {
+  if (!(await page.locator('#runChip').isVisible())) await page.locator('#prompt').click();
+  if (await page.locator('#runMenu').isHidden()) await page.locator('#runChip').click();
+  await page.locator('#runMenu [data-run=' + kind + '][data-value="' + value + '"]').click();
+  await page.keyboard.press('Escape');
+};
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const { execSync } = require('node:child_process');
 let playwright; try { playwright = require('playwright'); } catch { playwright = require('/usr/local/lib/node_modules/playwright'); }
@@ -63,8 +70,8 @@ const TITLE = 'Review accessibility findings';
   assert.ok(mo.startsWith('Auto'), 'model Auto label: ' + mo);
   assert.ok(!/picks/.test(mo), 'no picker named without a picker: ' + mo);
   assert.ok(!/picks/.test(eo), 'no picker named on effort without a picker: ' + eo);
-  await r.page.locator('#model').selectOption('');
-  await r.page.locator('#effort').selectOption('');
+  await pickRun(r.page, 'model', '');
+  await pickRun(r.page, 'effort', '');
   let b = await send(r, 'No picker, auto');
   assert.equal(b.model, 'sonnet', 'no picker: Auto posts the house default');
   assert.equal('effort' in b, false, 'no picker: Auto effort not posted');
@@ -78,15 +85,22 @@ const TITLE = 'Review accessibility findings';
   assert.equal(await autoText(r.page, 'model'), 'Jev picks');
   assert.equal(await autoText(r.page, 'effort'), 'Jev picks');
   assert.equal(await r.page.locator('#model').inputValue(), '');
+  // The model · effort popover names the picker on its Auto row and segment.
+  await r.page.locator('#prompt').click(); await r.page.locator('#runChip').click();
+  assert.equal(await r.page.locator('#runMenu [data-run=model][data-value=""] .hi-title').textContent(), 'Jev picks');
+  assert.match(await r.page.locator('#runMenu [data-run=model][data-value=""] .hi-desc').textContent(), /Chosen per turn, starting from Sonnet/);
+  assert.equal(await r.page.locator('#runMenu [data-run=effort][data-value=""]').textContent(), 'Jev');
+  await r.page.waitForTimeout(300); await r.page.screenshot({ path: '/tmp/jev-auto-popover.png' });
+  await r.page.keyboard.press('Escape');
   b = await send(r, 'Jev, auto');
   assert.equal(b.model, '', 'Jev on: Auto model posted as empty');
   assert.equal(b.effort, '', 'Jev on: Auto effort posted as empty');
 
   // (c) An explicit pick with Jev on still posts that model.
-  await r.page.locator('#model').selectOption('opus');
+  await pickRun(r.page, 'model', 'opus');
   b = await send(r, 'Jev, opus');
   assert.equal(b.model, 'opus', 'explicit model kept with Jev on');
-  await r.page.locator('#model').selectOption('');
+  await pickRun(r.page, 'model', '');
 
   // (d) Decision cards for picks made on Auto.
   const cards = r.page.locator('.advcard.decision');
@@ -113,7 +127,7 @@ const TITLE = 'Review accessibility findings';
   for (const [vp, shot] of [[desk, '/tmp/jev-auto-desktop.png'], [{ width: 390, height: 844 }, '/tmp/jev-auto-phone.png']]) {
     r = await open(vp);
     await r.page.waitForFunction(() => document.querySelector('#model option[value=""]').textContent === 'Jev picks');
-    const boxes = await r.page.evaluate(() => ['model', 'effort', 'helperBtn', 'prompt'].map((id) => { const e = document.getElementById(id), b = e.getBoundingClientRect(); return { id, left: b.left, right: b.right, top: b.top, bottom: b.bottom, scroll: e.scrollWidth, client: e.clientWidth }; }));
+    const boxes = await r.page.evaluate(() => ['runChip', 'helperBtn', 'prompt'].map((id) => { const e = document.getElementById(id), b = e.getBoundingClientRect(); return { id, left: b.left, right: b.right, top: b.top, bottom: b.bottom, scroll: e.scrollWidth, client: e.clientWidth }; }));
     for (const x of boxes) assert.ok(x.left >= 0 && x.right <= vp.width + 0.5, x.id + ' on screen at ' + vp.width + ': ' + JSON.stringify(x));
     console.log('layout ' + vp.width + ': ' + JSON.stringify(boxes));
     await r.page.screenshot({ path: shot });

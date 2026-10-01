@@ -322,3 +322,34 @@ dialog.modern-prompt:has(.action-detail){width:min(840px,calc(100vw - 32px))}
 .cr-conversation-row .cr-dismiss:hover{background:var(--surface-2);color:var(--text)}
 .cr-row-slot{flex:none;width:28px;height:28px;margin-right:9px}
 @media(max-width:650px){.cr-row-slot{display:none}.cr-conversation-row .cr-dismiss{margin:0 12px 10px auto}}
+/* Send with account: a popover anchored to the chip (One pill draft), a bottom sheet on phones. */
+#sendAccountPicker.acct-pop{position:fixed;inset:auto;right:auto;top:auto;margin:0;width:360px;max-width:calc(100vw - 24px);max-height:70vh;padding:6px;gap:0;color:var(--text);overflow-y:auto;border:1px solid var(--border);border-radius:14px;background:var(--bg);box-shadow:var(--shadow);z-index:170}
+#sendAccountPicker.acct-pop[open]{display:block}
+#sendAccountPicker.acct-pop .send-account-list{display:block;margin:0;padding:0;overflow:visible;min-height:0}
+#sendAccountPicker.acct-pop[aria-busy=true]{cursor:progress}
+.acct-line{display:flex;align-items:center;gap:4px}
+.acct-row{display:flex;align-items:center;gap:10px;flex:1;min-width:0;padding:8px 10px;border:0;border-radius:9px;background:transparent;color:var(--text);font:inherit;font-size:13.5px;text-align:left;cursor:pointer}
+.acct-row:hover:not(:disabled),.acct-row:focus-visible{background:var(--surface-2);outline:none}
+.acct-row:focus-visible{box-shadow:inset 0 0 0 2px var(--accent)}
+.acct-row:disabled{cursor:default;opacity:.55}
+.acct-row-t{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;line-height:1.3}
+.acct-row-t b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct-row-t small{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct-row .hi-check{flex:none;width:16px;height:16px;visibility:hidden;color:var(--text);stroke-width:2.2}
+.acct-row[aria-checked=true] .hi-check{visibility:visible}
+.acct-usage{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex:none;width:38px}
+.acct-meter{display:block;width:36px;height:4px;border-radius:999px;background:var(--surface-3);overflow:hidden}
+.acct-meter i{display:block;height:100%;border-radius:inherit;background:var(--lvl,var(--faint))}
+.acct-pct{font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--lvl,var(--faint));line-height:1}
+:is(.acct-usage,.acct-dot)[data-level=ok]{--lvl:var(--ok)}:is(.acct-usage,.acct-dot)[data-level=mid]{--lvl:var(--amber)}:is(.acct-usage,.acct-dot)[data-level=high],:is(.acct-usage,.acct-dot)[data-level=limit]{--lvl:var(--err)}:is(.acct-usage,.acct-dot)[data-level=unknown],:is(.acct-usage,.acct-dot)[data-level=off]{--lvl:var(--faint)}
+.acct-row:disabled .acct-pct{opacity:1}
+.acct-switch{flex:none;border:1px solid var(--border-strong);border-radius:999px;background:transparent;color:var(--muted);font:inherit;font-size:11.5px;padding:3px 9px;cursor:pointer;margin-right:4px}
+.acct-switch:hover{color:var(--text);background:var(--surface-2)}
+.acct-running{display:flex;align-items:center;gap:8px;margin:2px 6px 6px;padding:8px 10px;border-radius:9px;background:var(--surface-2);font-size:12px;color:var(--muted)}.acct-running .ic{width:14px;height:14px}.acct-running strong{color:var(--text);font-weight:550}
+.acct-note{font-size:12px;color:var(--faint);margin:6px 10px 6px;line-height:1.4}
+#sendAccountPicker.acct-pop #pickerError:empty{display:none}#sendAccountPicker.acct-pop #pickerError{margin:4px 10px;font-size:12px}
+.acct-foot{display:flex;gap:4px;border-top:1px solid var(--border);margin-top:4px;padding:4px 2px 0}
+.acct-link{border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;padding:6px 8px;border-radius:7px;cursor:pointer}.acct-link:hover{color:var(--text);background:var(--surface-2)}
+/* The chip carries the selected account's level as a dot (the title says it in words). */
+.send-account-chip .acct-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--lvl);display:inline-block}
+@media(max-width:720px){#sendAccountPicker.acct-pop{left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom));width:auto;max-width:none;border-radius:18px;padding:8px 6px}.acct-row{padding:10px}}

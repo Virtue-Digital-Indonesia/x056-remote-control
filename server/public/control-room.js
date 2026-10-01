@@ -40,9 +40,20 @@ window.createControlRoom = function (engine) {
   // beside the delivery dot; that line is built here only if the markup lacks it.
   let composerFooter = content.querySelector('.composer-footer');
   if (!composerFooter) { content.querySelector('.composer').insertAdjacentHTML('afterend', '<div class="composer-footer"></div>'); composerFooter = content.querySelector('.composer-footer'); }
-  composerFooter.insertAdjacentHTML('beforeend', '<button id="sendAccountChip" class="send-account-chip" aria-haspopup="dialog"></button>');
+  composerFooter.insertAdjacentHTML('beforeend', '<button id="sendAccountChip" class="send-account-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="sendAccountPicker"></button>');
   if($('deliveryStrip'))composerFooter.append($('deliveryStrip'));
-  const sendAccounts = document.createElement('dialog'); sendAccounts.id='sendAccountPicker'; sendAccounts.className='cr-dialog';sendAccounts.setAttribute('aria-label','Choose an account'); document.body.append(sendAccounts);
+  // A non-modal dialog used as a popover anchored to the chip (a bottom sheet on
+  // phones): .open, .close() and the [open] attribute keep their meaning.
+  const sendAccounts = document.createElement('dialog'); sendAccounts.id='sendAccountPicker'; sendAccounts.className='helper-menu acct-pop';sendAccounts.setAttribute('aria-label','Send with account'); document.body.append(sendAccounts);
+  sendAccounts.addEventListener('close',()=>{const chip=$('sendAccountChip');chip.setAttribute('aria-expanded','false');document.dispatchEvent(new CustomEvent('x056:composer-menu'));const f=document.activeElement;if(!f||f===document.body||sendAccounts.contains(f))chip.focus({preventScroll:true});});
+  sendAccounts.addEventListener('keydown',e=>{
+    if(e.key==='Escape'){e.preventDefault();e.stopPropagation();sendAccounts.close();return;}
+    if(e.key!=='ArrowDown'&&e.key!=='ArrowUp'&&e.key!=='Home'&&e.key!=='End')return;
+    const items=[...sendAccounts.querySelectorAll('button:not(:disabled)')],i=items.indexOf(document.activeElement);if(!items.length)return;e.preventDefault();
+    const n=e.key==='Home'?0:e.key==='End'?items.length-1:(i+(e.key==='ArrowDown'?1:items.length-1))%items.length;items[n].focus();
+  });
+  document.addEventListener('pointerdown',e=>{if(sendAccounts.open&&!sendAccounts.contains(e.target)&&!e.target.closest('#sendAccountChip'))sendAccounts.close();},true);
+  window.addEventListener('resize',()=>placeSendAccounts());
 
   const preferences = document.createElement('dialog'); preferences.id = 'displayPreferences'; preferences.className = 'cr-dialog'; preferences.setAttribute('aria-label','Settings');
   preferences.innerHTML = '';
@@ -374,7 +385,7 @@ window.createControlRoom = function (engine) {
   on('crManageProjects',()=>{projectNav(false);if(window.rcProjectSpaces?.enabled())window.rcProjectSpaces.navigate('/projects');else engine.nav(true);});
   $('crProjectSearch').addEventListener('input',()=>renderProjectNav(cards(),engine.state()));
   projectVeil.addEventListener('click',()=>projectNav(false));
-  on('sendAccountChip',()=>{selectedSendAccount='';renderSendAccounts(true);sendAccounts.showModal();});
+  on('sendAccountChip',()=>openSendAccounts());
   on('crAutomationsTab',()=>showSection('automations')); on('refreshAutomations',()=> { $('cronBtn').click(); loadAutomationAutopilots(); }); on('crNotifications',e=>notificationMenu(e.currentTarget)); on('chatActivity',e=>activityMenu(e.currentTarget)); on('focusSearch', () => $('searchChatsBtn').click());
   ['crNew','focusNew'].forEach(id => on(id, () => { engine.newConversation(selectedProject); open(); }));
   on('chatRefresh', async e => {
@@ -609,43 +620,91 @@ window.createControlRoom = function (engine) {
   function effortName(effort) { return effort ? ({low:'Low',medium:'Medium',high:'High',xhigh:'Extra high',max:'Max',ultra:'Ultra'}[effort]||effort) : 'Auto effort'; }
   function accountStatus(a) { return a.paused?'Paused':a.state?.kind==='unauthenticated'?'Needs login':accountQuotaLimited(a)||a.state?.kind==='limited'?'Limited':a.state?.kind==='ok'?'Available':'Not checked'; }
   function identity(a) { return `<span class="cr-account-avatar ${esc(a.provider)}">${a.provider==='codex'?'G':'C'}</span><span class="identity-copy"><strong>${esc(accountName(a))}</strong><small>${esc(a.email || providerName(a.provider))}</small></span>`; }
+  // How much of an account's binding (fullest) usage window is used, as a level
+  // the meter and the chip's dot share: ok < 50, mid 50-80, high > 80, limit
+  // when the account cannot take a turn, unknown when nothing was reported.
+  function accountLevel(a) {
+    if(!a)return {level:'unknown',text:'Usage not checked'};
+    if(a.paused)return {level:'off',text:'Paused'};
+    if(a.state?.kind==='unauthenticated')return {level:'off',text:'Needs login'};
+    const scale=a.provider==='codex'?100:1, now=Date.now();
+    const resetOf=w=>{const t=typeof w?.resetsAt==='number'?w.resetsAt*1000:Date.parse(w?.resetsAt);return Number.isFinite(t)?t:null;};
+    // The binding window is the fuller of the 5-hour and weekly ones; a model-scoped
+    // window counts only when neither was reported.
+    const qw=quotaWindows(a), main=[qw.five,qw.seven].filter(Boolean);
+    const windows=(main.length?main:qw.all).filter(w=>{const r=resetOf(w);return r==null||r>now;});
+    const bind=windows.reduce((m,w)=>!m||w.utilization>m.utilization?w:m,null);
+    const at=t=>new Date(t).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})+(new Date(t).toDateString()===new Date().toDateString()?'':' '+new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric'}));
+    if(accountQuotaLimited(a)||a.state?.kind==='limited'){
+      const until=a.state?.kind==='limited'&&a.state.until?a.state.until*1000:bind?resetOf(bind):null;
+      return {level:'limit',pct:100,text:'Limit reached'+(until&&until>now?' · resets '+at(until):'')};
+    }
+    if(!bind)return {level:'unknown',text:a.quotaError?'Usage temporarily unavailable':'Usage not checked'};
+    const pct=Math.max(0,Math.min(100,Math.round(bind.utilization*scale)));
+    const label=/^5[ -]hour$/i.test(bind.label)?'5-hour':/^7[ -]day$/i.test(bind.label)?'weekly':String(bind.label||'usage').toLowerCase();
+    return {level:pct>80?'high':pct>=50?'mid':'ok',pct,text:`${pct}% of the ${label} limit used`+(a.quotaStale?' · cached':'')};
+  }
+  const LEVEL_WORD={ok:'Plenty left',mid:'Over half used',high:'Nearly used up',limit:'Limit reached',unknown:'Usage not checked',off:'Unavailable'};
+  function accountMeter(lv) {
+    const pct=lv.pct??0;
+    return `<span class="acct-usage" data-level="${lv.level}"><span class="acct-meter" aria-hidden="true"><i style="width:${lv.level==='unknown'||lv.level==='off'?0:pct}%"></i></span><span class="acct-pct">${lv.level==='unknown'||lv.level==='off'?'—':lv.level==='limit'?'100%':pct+'%'}</span></span>`;
+  }
+  function placeSendAccounts() {
+    if(!sendAccounts.open)return;
+    const chip=$('sendAccountChip').getBoundingClientRect(), w=Math.min(360,innerWidth-24);
+    if(innerWidth<=720){sendAccounts.style.left='';sendAccounts.style.bottom='';sendAccounts.style.maxHeight=Math.round(innerHeight*.8)+'px';return;}
+    sendAccounts.style.left=Math.max(12,Math.min(chip.right-w,innerWidth-w-12))+'px';
+    sendAccounts.style.bottom=(innerHeight-chip.top+8)+'px';
+    sendAccounts.style.maxHeight=Math.max(200,chip.top-22)+'px';
+  }
+  function openSendAccounts(open) {
+    if(open===undefined)open=!sendAccounts.open;
+    if(!open){if(sendAccounts.open)sendAccounts.close();return;}
+    selectedSendAccount='';sendAccountSignature='';renderSendAccounts(true);
+    sendAccounts.show();$('sendAccountChip').setAttribute('aria-expanded','true');
+    document.dispatchEvent(new CustomEvent('x056:composer-menu'));
+    placeSendAccounts();
+    (sendAccounts.querySelector('.acct-row[aria-checked=true]:not(:disabled)')||sendAccounts.querySelector('.acct-row:not(:disabled)')||sendAccounts.querySelector('button'))?.focus({preventScroll:true});
+  }
   function renderSendAccounts(force=false) {
     const s=engine.state(), pool=s.accounts.filter(a=>a.provider===s.provider), preview=routeCache.get(routeKey(s)), chosen=s.sessionId?preview?.selected:s.composerAccount, next=chosen?pool.find(a=>a.name===chosen):preview?null:pool.find(a=>a.nextUp&&available(a));
     loadRoutePreview(s);
     const isRunning=!!s.running[s.projectId]?.[s.sessionId], running=pool.find(a=>a.name===s.runningAccount);
-    const chip=ic('user')+`<span>${isRunning?'Next message':'Send with'} <strong>${esc(next?accountName(next):'No available account')}</strong></span><small>${esc(next?.email || providerName(s.provider))}</small>`+ic('down');
+    const nextLv=next?accountLevel(next):null;
+    const chip=ic('user')+`<span>${isRunning?'Next message':'Send with'} <strong>${esc(next?accountName(next):'No available account')}</strong></span>${nextLv?`<i class="acct-dot" data-level="${nextLv.level}" aria-hidden="true"></i>`:''}<small>${esc(next?.email || providerName(s.provider))}</small>`+ic('down');
     if($('sendAccountChip').innerHTML!==chip) $('sendAccountChip').innerHTML=chip;
-    $('sendAccountChip').title='Choose the account for the next message';
+    $('sendAccountChip').title='Choose the account for the next message'+(nextLv?' · '+nextLv.text:'');
     $('runningAccountLabel').hidden=!isRunning;
     $('runningAccountLabel').textContent=isRunning?'Working with '+[s.model||'Auto model',effortName(s.effort),providerName(s.provider),accountName(running)].join(' · '):'';
     if((!sendAccounts.open&&!force)||pickerBusy)return;
-    if(!pool.some(a=>a.name===selectedSendAccount&&available(a))) selectedSendAccount=next?.name||pool.find(available)?.name||'';
-    const html=`<header><h2>Choose an account</h2><button class="cr-icon" data-close aria-label="Close account picker">${ic('x')}</button></header>
-      <p>${providerName(s.provider)} · Choose the account for your next message.</p>
-      ${isRunning?`<div class="picker-running">${ic('repeat')}<span>Running with <strong>${esc(accountName(running))}</strong></span></div>`:''}
-      <div class="send-account-list" role="radiogroup" aria-label="${providerName(s.provider)} accounts">${pool.map(a=>`<label class="account-pick-card ${a.name===selectedSendAccount?'selected':''} ${available(a)?'':'unavailable'}">
-        <div class="picker-account-head"><span class="cr-identity">${identity(a)}</span><input type="radio" name="send-account" value="${esc(a.name)}" ${a.name===selectedSendAccount?'checked':''} ${available(a)?'':'disabled'} aria-label="${esc(accountName(a))}"></div>
-        <div class="picker-status">${esc(accountStatus(a))}${a.name===next?.name?' · Next message':''}${isRunning&&a.name===s.runningAccount?' · Running this turn':''}</div>
-        <div class="picker-quotas">${quotaCell(a,quotaWindows(a).five,'5-hour window')}${quotaCell(a,quotaWindows(a).seven,'7-day window')}</div>
-        ${quotaWindows(a).other.length?`<details class="picker-extra"><summary>${quotaWindows(a).other.length} additional usage ${quotaWindows(a).other.length===1?'limit':'limits'}</summary><div class="picker-quotas">${quotaWindows(a).other.map(w=>quotaCell(a,w,w.label)).join('')}</div></details>`:''}
-        ${quotaFreshness(a)}</label>`).join('')||'<div class="cr-empty">No accounts connected for this provider.</div>'}</div>
-      <p class="picker-note">This choice applies to this conversation’s next turn. If unavailable, automatic routing may use a fallback. Use an account lock to prevent that. ${isRunning?'Use “Switch this turn” to resume the current turn on another account.':''}</p>
-      <div id="pickerError" class="cr-error" role="alert"></div><footer><button class="cr-text-button" data-add-account>Add account</button><button class="cr-text-button" data-manage-accounts>Routing & locks</button><span class="sp"></span>${isRunning?`<button class="cr-secondary" data-switch-turn ${!selectedSendAccount||selectedSendAccount===s.runningAccount?'disabled':''}>Switch this turn</button>`:''}<button class="cr-primary" data-send-next ${selectedSendAccount?'':'disabled'}>Use for next message</button></footer>`;
+    const row=a=>{
+      const lv=accountLevel(a), ok=available(a), name=accountName(a), plan=a.quota?.planType||a.plan;
+      const label=name+(a.email&&a.email!==name?' · '+a.email:'');
+      const tags=[a.name===s.runningAccount&&isRunning?'running this turn':''].filter(Boolean);
+      const desc=[plan?String(plan).replace(/^./,c=>c.toUpperCase()):'',lv.text].filter(Boolean).join(' · ')+(tags.length?' · '+tags.join(' · '):'');
+      return `<div class="acct-line" role="none"><button type="button" class="acct-row" role="menuitemradio" data-send-next="${esc(a.name)}" aria-checked="${a.name===next?.name}" ${ok?'':'disabled aria-disabled="true"'} aria-label="${esc(label)}: ${esc(lv.text)}">
+        <span class="acct-row-t"><b>${esc(label)}</b><small>${esc(desc)}</small></span>${accountMeter(lv)}<svg class="ic hi-check" aria-hidden="true"><use href="#i-check"/></svg></button>${isRunning&&s.runningAccount&&ok&&a.name!==s.runningAccount?`<button type="button" class="acct-switch" data-switch-turn="${esc(a.name)}" title="Resume the running turn on ${esc(name)}">Switch now</button>`:''}</div>`;
+    };
+    const html=`<div class="helper-head">Send with account <span class="helper-hint" title="A conversation keeps its provider">${ic('lock')}${esc(providerName(s.provider))}</span></div>
+      ${isRunning?`<p class="acct-running">${ic('repeat')}<span>Running with <strong>${esc(accountName(running))}</strong></span></p>`:''}
+      <div class="send-account-list" role="menu" aria-label="${providerName(s.provider)} accounts">${pool.map(row).join('')||'<p class="acct-note">No accounts connected for this provider.</p>'}</div>
+      <p class="acct-note">Applies to this conversation’s next turn. When this account hits its limit, the turn fails over to the next one.</p>
+      <div id="pickerError" class="cr-error" role="alert"></div>
+      <div class="acct-foot"><button type="button" class="acct-link" data-add-account>Add account</button><button type="button" class="acct-link" data-manage-accounts>Routing &amp; locks</button></div>`;
     if(html===sendAccountSignature&&!force)return;
     sendAccountSignature=html;
-    const focused=document.activeElement, focusValue=focused?.name==='send-account'?focused.value:null, oldScroll=sendAccounts.querySelector('.send-account-list')?.scrollTop||0;
+    const f=document.activeElement, fk=f&&sendAccounts.contains(f)?(f.dataset.sendNext?['send-next',f.dataset.sendNext]:f.dataset.switchTurn?['switch-turn',f.dataset.switchTurn]:null):null, oldScroll=sendAccounts.querySelector('.send-account-list')?.scrollTop||0;
     sendAccounts.innerHTML=html;
-    sendAccounts.querySelector('[data-add-account]').onclick=()=>{sendAccounts.close();$('addAcctBtn').click();};
     sendAccounts.querySelector('.send-account-list').scrollTop=oldScroll;
-    if(focusValue) [...sendAccounts.querySelectorAll('input')].find(n=>n.value===focusValue)?.focus({preventScroll:true});
-    sendAccounts.querySelector('[data-close]').onclick=()=>sendAccounts.close();
+    if(fk) sendAccounts.querySelector(`[data-${fk[0]}="${CSS.escape(fk[1])}"]`)?.focus({preventScroll:true});
+    sendAccounts.querySelector('[data-add-account]').onclick=()=>{sendAccounts.close();$('addAcctBtn').click();};
     sendAccounts.querySelector('[data-manage-accounts]').onclick=()=>{sendAccounts.close();if(s.sessionId)showRouting(s);else showSection('accounts');};
-    sendAccounts.querySelectorAll('[name="send-account"]').forEach(input=>input.onchange=()=>{selectedSendAccount=input.value;renderSendAccounts(true);});
-    const choose=async(switching)=>{
-      // Recheck current state: this dialog may have stayed open across a completed turn.
-      const state=engine.state(), selected=state.accounts.find(a=>a.name===selectedSendAccount&&a.provider===s.provider);
+    const choose=async(name,switching)=>{
+      // Recheck current state: the popover may have stayed open across a completed turn.
+      const state=engine.state(), selected=state.accounts.find(a=>a.name===name&&a.provider===s.provider);
       if(!selected||!available(selected)||state.provider!==s.provider) { renderSendAccounts(true);return; }
-      let failure='';pickerBusy=true; sendAccounts.querySelectorAll('button,input,a').forEach(b=>b.disabled=true);
+      selectedSendAccount=name;
+      let failure='';pickerBusy=true; sendAccounts.setAttribute('aria-busy','true'); sendAccounts.querySelectorAll('button').forEach(b=>b.disabled=true);
       try {
         if(switching)await json('/api/switch',{projectId:s.projectId,sessionId:s.sessionId,account:selected.name});
         else if(s.sessionId)await json('/api/routing/conversation',{projectId:s.projectId,sessionId:s.sessionId,nextAccount:selected.name});
@@ -653,10 +712,11 @@ window.createControlRoom = function (engine) {
         routeCache.delete(routeKey(s));await loadRoutePreview(s,true);
         await engine.pollAccounts(); sendAccounts.close(); toast(switching?'Switching this turn to '+accountName(selected)+'…':'Next turn prefers '+accountName(selected)+'.');
       } catch(e) { failure=e.message; }
-      finally {pickerBusy=false;renderSendAccounts(true);if(failure)$('pickerError').textContent=failure;}
+      finally {pickerBusy=false;sendAccounts.removeAttribute('aria-busy');renderSendAccounts(true);if(failure)$('pickerError').textContent=failure;placeSendAccounts();}
     };
-    sendAccounts.querySelector('[data-send-next]').onclick=()=>choose(false);
-    const switchButton=sendAccounts.querySelector('[data-switch-turn]');if(switchButton)switchButton.onclick=()=>choose(true);
+    sendAccounts.querySelectorAll('[data-send-next]').forEach(b=>b.onclick=()=>{if(b.getAttribute('aria-checked')==='true'){sendAccounts.close();return;}choose(b.dataset.sendNext,false);});
+    sendAccounts.querySelectorAll('[data-switch-turn]').forEach(b=>b.onclick=()=>choose(b.dataset.switchTurn,true));
+    placeSendAccounts();
   }
   function refresh() { const count=cards().filter(x=>x.unread||x.status==='question').length;$('crNotifications').setAttribute('aria-label','Notifications'+(count?' ('+count+' unread)':''));$('crNotifications').dataset.unread=count?String(count):'';document.dispatchEvent(new CustomEvent('x056:state')); clearTimeout(renderTimer); renderTimer = setTimeout(() => { renderBoard(); if (section === 'accounts') renderAccountRows(); }, 60); }
   document.addEventListener('x056:draft-changed',refresh);
