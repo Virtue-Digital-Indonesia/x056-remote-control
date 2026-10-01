@@ -45,7 +45,7 @@ const SHOTS = '/tmp/x056-agent-tree';
   fs.mkdirSync(path.join(state, 'jev', 'forks'), { recursive: true });
   fs.writeFileSync(path.join(state, 'jev', 'forks', sid + '.jsonl'), [
     { at: iso(100000), sessionId: sid, backend: 'jev', question: 'which file', options: ['src/auth.ts', 'README.md'], choice: 'src/auth.ts', confidence: 0.79, verdict: 'sharp', latencyMs: 280 },
-    { at: iso(90000), sessionId: sid, backend: 'jev', question: 'which tool', options: ['grep', 'codegraph'], choice: 'grep', confidence: 0.48, verdict: 'split', latencyMs: 300 },
+    { at: iso(90000), sessionId: sid, backend: 'jev', question: 'which tool should find every caller of the session refresh helper before we change its signature, given that ripgrep only returns line numbers and the code graph indexes committed main rather than the working tree, and the helper is re-exported from three barrel files plus two test utilities that also shadow the name', options: ['grep', 'codegraph'], choice: 'grep', confidence: 0.48, verdict: 'split', latencyMs: 300 },
     { at: iso(80000), sessionId: sid, backend: 'jev', question: 'retry or stop', options: ['retry', 'stop'], choice: 'stop', confidence: 0.53, verdict: 'split', latencyMs: 250 },
     { at: iso(3600000 - 60000), sessionId: sid, backend: 'jev', question: 'which adapter', options: ['perubahan', 'pendirian'], choice: 'perubahan', confidence: 0.81, verdict: 'sharp', latencyMs: 270 },
     { at: iso(40000), sessionId: sid, backend: 'jev', question: 'report gate · backend', options: ['done', 'needs_orchestrator', 'needs_human', 'blocked'], choice: 'done', confidence: 0.91, verdict: 'sharp', latencyMs: 310 },
@@ -59,7 +59,7 @@ const SHOTS = '/tmp/x056-agent-tree';
 
   // Delegates: one working, one that reported and waits on a person.
   const reviewerSid = crypto.randomUUID();
-  const report = { at: iso(30000), delegateId: 'd-reviewer', role: 'reviewer', turn: 1, status: 'completed', text: 'NEEDS HUMAN: staging credentials are missing.', durationMs: 95000, gate: 'needs_human', gateConfidence: 0.93, gateBy: 'jev', woke: false };
+  const report = { at: iso(30000), delegateId: 'd-reviewer', role: 'reviewer', turn: 1, status: 'completed', text: 'NEEDS HUMAN: **staging credentials** are missing.\n\n- first item\n- second item with `inline_code`\n', durationMs: 95000, gate: 'needs_human', gateConfidence: 0.93, gateBy: 'jev', woke: false };
   fs.mkdirSync(path.join(state, 'delegates'), { recursive: true });
   fs.writeFileSync(path.join(state, 'delegates', sid + '.json'), JSON.stringify({ parentProjectId: project.id, parentSessionId: sid, delegates: [
     { id: 'd-backend', role: 'backend', brief: 'Fix the flaky login test.', provider: 'claude', model: 'opus', projectId: project.id, cwd: root, sessionId: crypto.randomUUID(), status: 'working', createdAt: iso(60000), updatedAt: iso(60000), turns: 1, pending: [] },
@@ -69,6 +69,7 @@ const SHOTS = '/tmp/x056-agent-tree';
   fs.writeFileSync(path.join(root, 'primary', 'projects', 'fixture', reviewerSid + '.jsonl'), [
     { type: 'user', timestamp: iso(120000), message: { role: 'user', content: 'Review the DWH views.' } },
     { type: 'assistant', timestamp: iso(100000), message: { role: 'assistant', model: 'claude-fable-5-1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'psql -c "\\\\dv"' } }] } },
+    { type: 'assistant', timestamp: iso(90000), message: { role: 'assistant', model: 'claude-fable-5-1', content: [{ type: 'text', text: '## Findings\n\nThe views look **fine**; see `dwh.v_sales`.\n\n- one\n- two' }] } },
   ].map((e) => JSON.stringify(e)).join('\n') + '\n');
 
   // The tree reads exactly this from the server: 4 forks, 1 gate.
@@ -107,6 +108,20 @@ const SHOTS = '/tmp/x056-agent-tree';
   const codexChildren = [{ agentId: 'child', agentType: 'codex-subagent', description: 'Astra review agent', status: 'running', startedAt: now - 30000, bytes: 1000 }];
   let withTurns = true, historyCalls = [], runCalls = [];
 
+  // Detail column: nothing clipped in the stats grid / header; shots for worker, delegate and Jev.
+  async function detailShots(page, theme, w) {
+    for (const [key, name] of [['sub:w1', 'worker'], ['dg:d-reviewer', 'delegate'], ['jev', 'jev']]) {
+      await page.locator('#agentPane').evaluate(() => {});
+      const back = page.locator('#agentPaneHistory button[aria-label="Back to the tree"]');
+      if (await back.count() && await back.isVisible()) await back.click();
+      await row(page, key).click();
+      await page.locator('#agentPaneHistBody').waitFor();
+      await page.waitForTimeout(500);
+      const clipped = await page.evaluate(() => [...document.querySelectorAll('#agentPaneHistory .ap-stats dd, #agentPaneHistory .ap-hn, #agentPaneHistory .ap-hmeta')].filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent));
+      assert.deepEqual(clipped, [], 'clipped detail values for ' + name);
+      await page.screenshot({ path: SHOTS + '/detail-' + name + '-' + theme + '-' + w + '.png' });
+    }
+  }
   async function newPage(vp, theme) {
     const ctx = await browser.newContext({ viewport: vp, colorScheme: theme });
     await ctx.addInitScript((th) => { localStorage.setItem('x056_token', 'browser-fixture-token-0123456789'); localStorage.setItem('x056_theme', th); if (!sessionStorage.getItem('at-init')) { sessionStorage.setItem('at-init', '1'); localStorage.removeItem('x056_terminal'); localStorage.removeItem('x056_agent_tree'); localStorage.removeItem('x056_agent_pane_w'); } }, theme);
@@ -211,7 +226,18 @@ const SHOTS = '/tmp/x056-agent-tree';
     // A delegate: its report, its transcript, a message box; Stop only while it works.
     await row(page, 'dg:d-reviewer').click();
     await page.locator('#agentPaneHistory .ap-report').filter({ hasText: 'staging credentials' }).waitFor();
-    await page.locator('#agentPaneHistBody .ap-r-tool').first().waitFor();
+    await page.locator('#agentPaneHistBody .msg.assistant').first().waitFor();
+    await page.locator('#agentPaneHistBody .act').first().waitFor();
+    // Markdown renders as elements, not raw asterisks; the time shows once per message.
+    assert.equal(await page.locator('#agentPaneHistory .ap-report strong').count(), 1);
+    assert.equal(await page.locator('#agentPaneHistory .ap-report li').count(), 2);
+    assert.equal(await page.locator('#agentPaneHistory .ap-report code').count(), 1);
+    assert.doesNotMatch(await page.locator('#agentPaneHistory .ap-report').textContent(), /\*\*/);
+    assert.equal(await page.locator('#agentPaneHistBody .msg.assistant h4').count(), 1);
+    assert.equal(await page.locator('#agentPaneHistBody .msg.assistant strong').count(), 1);
+    assert.equal(await page.locator('#agentPaneHistBody .ap-r').count(), 0, 'no per-line timestamp rows');
+    assert.equal(await page.locator('#agentPaneHistBody .msg .mmeta').count(), await page.locator('#agentPaneHistBody .msg').count());
+    await page.screenshot({ path: SHOTS + '/detail-delegate-dark-1440.png' });
     assert.equal(await page.locator('#agentPaneHistory .ap-send input').count(), 1);
     assert.equal(await page.locator('#agentPaneHistory .ap-send button').filter({ hasText: 'Stop' }).isDisabled(), true);
     // The advisor on Claude: calls, and why there is no advice to read.
@@ -221,6 +247,17 @@ const SHOTS = '/tmp/x056-agent-tree';
     // Jev: its forks, the gate not among them.
     await row(page, 'jev').click();
     await page.locator('#agentPaneHistBody .ap-card').filter({ hasText: 'which file' }).waitFor();
+    {
+      const q = page.locator('#agentPaneHistBody .ap-card').filter({ hasText: 'which tool should' }).locator('.ap-clamp');
+      const h0 = (await q.boundingBox()).height;
+      const more = page.locator('#agentPaneHistBody .ap-card').filter({ hasText: 'which tool should' }).locator('.ap-more');
+      await more.waitFor({ state: 'visible' });
+      await more.click();
+      assert.ok((await q.boundingBox()).height > h0 + 5, 'a long fork question expands');
+      await more.click();
+      assert.ok(Math.abs((await q.boundingBox()).height - h0) < 2, 'and clamps again');
+    }
+    await page.screenshot({ path: SHOTS + '/detail-jev-dark-1440.png' });
     assert.equal(await page.locator('#agentPaneHistBody .ap-card').filter({ hasText: 'report gate' }).count(), 0);
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#agentPaneHistory').isVisible(), false, 'Escape closes the history');
@@ -395,6 +432,7 @@ const SHOTS = '/tmp/x056-agent-tree';
     await row(page, 'dg:d-reviewer').click();
     await page.locator('#agentPaneHistory .ap-report').waitFor();
     await page.screenshot({ path: SHOTS + '/pane-history-light.png' });
+    await detailShots(page, 'light', 1440);
     await page.locator('#agentPaneExpand').click();
     await page.waitForSelector('#atree .at-card');
     await page.screenshot({ path: SHOTS + '/expanded-light.png' });
@@ -438,6 +476,7 @@ const SHOTS = '/tmp/x056-agent-tree';
     await page.locator('#agentPaneHistBody .msg').first().waitFor();
     assert.equal(await page.locator('#agentPaneHistory button[aria-label="Back to the tree"]').isVisible(), true);
     await page.screenshot({ path: SHOTS + '/pane-phone-history-' + theme + '.png' });
+    await detailShots(page, theme, 390);
     await page.locator('#agentPaneHistory button[aria-label="Back to the tree"]').click();
     await page.locator('#agentPaneClose').click();
     assert.equal(await pane(page).isVisible(), false);

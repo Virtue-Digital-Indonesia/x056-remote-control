@@ -1205,13 +1205,12 @@ html[data-theme="dark"] #agentPane {
 .ap-hh { display: flex; align-items: center; gap: 8px; padding: 9px 8px 9px 12px; border-bottom: 1px solid var(--border); flex: none; min-width: 0; }
 .ap-hh > .ap-dot { margin-top: 0; }
 .ap-hm { flex: 1; min-width: 0; }
-.ap-hn { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-hmeta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; }
-.ap-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; border-bottom: 1px solid var(--border); flex: none; }
-.ap-stats div { padding: 7px 10px; min-width: 0; }
-.ap-stats div + div { border-left: 1px solid var(--border); }
+.ap-hn { font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; line-height: 1.3; }
+.ap-hmeta { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.ap-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); margin: 0; border-bottom: 1px solid var(--border); flex: none; overflow: hidden; }
+.ap-stats div { padding: 7px 10px; min-width: 0; box-shadow: 1px 1px 0 0 var(--border); }
 .ap-stats dt { font-size: 11px; color: var(--muted); }
-.ap-stats dd { margin: 0; font-size: 12.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.ap-stats dd { margin: 1px 0 0; font-size: 12.5px; font-weight: 550; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .ap-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); flex: none; }
 .ap-tabs button { border: 0; background: transparent; padding: 7px 10px 8px; font: inherit; font-size: 12.5px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 6px 6px 0 0; cursor: pointer; }
 .ap-tabs button:hover { color: var(--text); }
@@ -1243,6 +1242,7 @@ html[data-theme="dark"] #agentPane {
 .ap-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--ap-main); }
 .ap-bar.sharp i { background: var(--ap-jev); }
 .ap-bar em { position: absolute; left: 75%; top: -3px; bottom: -3px; border-left: 1.5px solid var(--text); opacity: .5; }
+.ap-report + .ap-hbody { margin-top: 10px; border-top: 1px solid var(--border); }
 .ap-report { margin: 10px 12px 0; border: 1px solid color-mix(in srgb, var(--c) 45%, var(--border)); border-radius: 10px; padding: 8px 10px; flex: none; }
 .ap-report p { margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .ap-rph { display: flex; align-items: center; gap: 8px; }
@@ -1268,9 +1268,23 @@ html[data-theme="dark"] #agentPane {
 .ap-turnbtn time { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
 .ap-turnbtn .ap-faint { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Narrow frames: the stats wrap to two rows instead of truncating. */
-.ap-sheet .ap-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.ap-sheet .ap-stats div:nth-child(3) { border-left: 0; }
-.ap-sheet .ap-stats div:nth-child(n+3) { border-top: 1px solid var(--border); }
+/* Jev picks and forks: compact cards */
+.ap-jc { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; }
+.ap-jc > .ap-fch { align-items: center; flex-wrap: nowrap; }
+.ap-jc .ap-sp { flex: 1; }
+.ap-jc .ap-fconf { margin: 0; flex: 0 0 auto; width: 120px; }
+.ap-jc .ap-opts { margin: 0; }
+.ap-jc .ap-pc { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+.ap-pickline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12.5px; overflow-wrap: anywhere; }
+.ap-pickline b { font-weight: 550; }
+.ap-clampw { min-width: 0; }
+.ap-clamp { font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--n, 3); line-clamp: var(--n, 3); overflow: hidden; }
+.ap-clamp.open { display: block; -webkit-line-clamp: unset; line-clamp: unset; }
+.ap-more { font-size: 11.5px; margin-top: 2px; padding: 0; }
+.ap-rmd { font-size: 12.5px; line-height: 1.5; }
+.ap-rmd > :last-child { margin-bottom: 0; }
+.ap-rmd pre { overflow: auto; max-width: 100%; }
+.ap-report .ap-rmd { margin-top: 6px; max-height: 14em; overflow: auto; }
 @media (max-width: 650px) {
   .ap-head { padding-left: 10px; gap: 4px; }
   .ap-live { display: none; }

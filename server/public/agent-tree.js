@@ -606,7 +606,7 @@
           var card = el('div', 'ap-report'); var rh = el('div', 'ap-rph');
           if (rep.gate) rh.appendChild(gatePill(rep.gate));
           rh.appendChild(el('span', 'ap-faint', 'Latest report · ' + when(ms(rep.at))));
-          add(card, rh, el('p', '', one(rep.text, 600)));
+          add(card, rh, md(rep.text, 'ap-doc ap-rmd'));
           box.appendChild(card);
         }
         foot = el('form', 'ap-send');
@@ -709,14 +709,16 @@
           reps.slice().reverse().forEach(function (r) {
             var li = el('li', 'ap-card'); var top = el('div', 'ap-fch');
             add(top, el('time', '', when(ms(r.at))), el('b', '', 'Turn ' + (r.turn || '?')), r.gate ? gatePill(r.gate) : null);
-            add(li, top, el('p', '', one(r.text, 400)));
+            add(li, top, md(r.text, 'ap-doc ap-rmd'));
             rl.appendChild(li);
           });
           body.appendChild(rl);
         }
         body.appendChild(el('div', 'ap-sect', 'Transcript'));
         if (!c.done && c.rows.length) { var ob = el('button', 'ap-link ap-older', 'Load earlier'); ob.type = 'button'; ob.addEventListener('click', function () { loadBody(true); }); body.appendChild(ob); }
-        body.appendChild(c.rows.length ? rawList(c.rows) : el('p', 'ap-empty', c.loaded ? 'No transcript yet.' : 'Loading…'));
+        var drows = delegateRows(c.rows);
+        if (drows.length && engine.renderRows) { var dbox = el('div', 'thread ap-rows'); engine.renderRows(dbox, drows, c.provider || (S.data.tree || {}).provider); body.appendChild(dbox); }
+        else body.appendChild(el('p', 'ap-empty', c.loaded ? (c.rows.length ? 'Nothing readable in this page of the transcript; open it in the terminal view for every entry.' : 'No transcript yet.') : 'Loading…'));
       } else if (it.kind === 'advisor') {
         var a = t.advisor || {};
         if (a.kind === 'claude' || t.provider !== 'codex') {
@@ -745,21 +747,29 @@
         body.appendChild(el('div', 'ap-sect', 'Picks'));
         var pl = el('ol', 'ap-list');
         (dj.picks || []).slice(-12).reverse().forEach(function (p) {
-          var li = el('li', 'ap-card');
-          var what = p.error ? 'error: ' + p.error : (p.notes && p.notes.length ? p.notes.join(', ') : [p.model ? modelName(p.model) : '', p.effort || ''].filter(Boolean).join(' · ') || 'unchanged');
-          add(li, add(el('div', 'ap-fch'), el('time', '', when(ms(p.at))), el('b', '', String(what).replace(/->/g, '→')), p.team ? el('span', 'ap-faint', 'team ' + [p.team.model && modelName(p.team.model), p.team.effort].filter(Boolean).join(' · ')) : null));
+          var li = el('li', 'ap-card ap-jc');
+          var changed = !!(p.model || p.effort), conf = Math.max(p.modelConfidence == null ? -1 : p.modelConfidence, p.effortConfidence == null ? -1 : p.effortConfidence);
+          var hd = add(el('div', 'ap-fch'), el('time', '', when(ms(p.at))), el('span', 'ap-verdict' + (p.error ? ' err' : changed ? ' sharp' : ''), p.error ? 'Error' : changed ? 'Changed' : 'Kept'), el('span', 'ap-sp'));
+          if (conf >= 0) hd.appendChild(confMeter(conf, changed));
+          li.appendChild(hd);
+          var line = [p.model ? modelName(p.model) : '', p.effort || ''].filter(Boolean).join(' · ');
+          var ln = el('div', 'ap-pickline'); ln.appendChild(el('b', '', p.error ? p.error : line || 'Your saved choice'));
+          if (p.team) ln.appendChild(el('span', 'ap-opt', 'team ' + [p.team.model && modelName(p.team.model), p.team.effort].filter(Boolean).join(' · ')));
+          li.appendChild(ln);
+          if (p.notes && p.notes.length) li.appendChild(clampBlock(p.notes.join('; ').replace(/->/g, '→'), 2));
           pl.appendChild(li);
         });
         body.appendChild((dj.picks || []).length ? pl : el('p', 'ap-empty', 'No picks yet.'));
         body.appendChild(el('div', 'ap-sect', 'Forks'));
         var fl = el('ol', 'ap-list');
         (dj.forks || []).filter(function (x) { return !/^report gate · /.test(x.question || ''); }).slice(-20).reverse().forEach(function (x) {
-          var li = el('li', 'ap-card');
-          add(li, add(el('div', 'ap-fch'), el('time', '', clockS(ms(x.at))), el('b', '', x.question), el('span', 'ap-verdict' + (x.verdict === 'sharp' ? ' sharp' : ''), x.verdict === 'sharp' ? 'Sharp' : 'Split')));
+          var li = el('li', 'ap-card ap-jc');
+          var sharp = x.verdict === 'sharp';
+          var hd = add(el('div', 'ap-fch'), el('time', '', clockS(ms(x.at))), el('span', 'ap-verdict' + (sharp ? ' sharp' : ''), sharp ? 'SHARP' : 'SPLIT'), el('span', 'ap-sp'));
+          if (x.confidence != null) hd.appendChild(confMeter(x.confidence, sharp, true));
+          li.appendChild(hd);
+          li.appendChild(clampBlock(x.question, 3));
           if (x.options && x.options.length) { var ops = el('div', 'ap-opts'); x.options.forEach(function (op) { var sp = el('span', 'ap-opt' + (op === x.choice ? ' on' : '')); if (op === x.choice) sp.appendChild(icon('check')); sp.appendChild(document.createTextNode(op)); ops.appendChild(sp); }); li.appendChild(ops); }
-          var bar = el('div', 'ap-fconf'), meter = el('span', 'ap-bar' + (x.verdict === 'sharp' ? ' sharp' : '')), fill = el('i'); fill.style.width = Math.round(Math.max(0, Math.min(1, x.confidence || 0)) * 100) + '%';
-          var mk = el('em'); mk.title = '75%: followed from here'; add(meter, fill, mk); add(bar, meter, el('span', 'ap-faint', x.confidence == null ? '—' : pct(x.confidence)));
-          li.appendChild(bar);
           if (x.error) li.appendChild(el('p', 'ap-faint', x.error));
           fl.appendChild(li);
         });
@@ -786,6 +796,22 @@
       if (keepTop) body.scrollTop = top0 + body.scrollHeight - h0;
       else if (S.tab === 'conv' && (it.kind === 'sub' || it.kind === 'wfagent' || it.kind === 'delegate') && (atBottom || !c.olderLoaded)) body.scrollTop = body.scrollHeight;
     }
+    /** Text clamped to n lines with a Show more toggle that appears only if it overflows. */
+    function clampBlock(text, n) {
+      var w = el('div', 'ap-clampw'), t = el('div', 'ap-clamp'); t.style.setProperty('--n', String(n)); t.textContent = text;
+      var b = el('button', 'ap-link ap-more', 'Show more'); b.type = 'button'; b.hidden = true; b.setAttribute('aria-expanded', 'false');
+      b.addEventListener('click', function () { var open = t.classList.toggle('open'); b.textContent = open ? 'Show less' : 'Show more'; b.setAttribute('aria-expanded', String(open)); });
+      add(w, t, b);
+      var check = function () { if (!t.classList.contains('open')) b.hidden = !(t.scrollHeight > t.clientHeight + 1); };
+      (window.requestAnimationFrame || setTimeout)(function () { check(); (window.requestAnimationFrame || setTimeout)(check); });
+      return w;
+    }
+    function confMeter(c, sharp, mark) {
+      var wrap = el('span', 'ap-fconf'), meter = el('span', 'ap-bar' + (sharp ? ' sharp' : '')), fill = el('i');
+      fill.style.width = Math.round(Math.max(0, Math.min(1, c || 0)) * 100) + '%';
+      add(meter, fill); if (mark) { var mk = el('em'); mk.title = '75%: followed from here'; meter.appendChild(mk); }
+      return add(wrap, meter, el('span', 'ap-faint ap-pc', pct(c)));
+    }
     function doc(text, foot) {
       var d = el('div', 'ap-doc');
       if (engine.renderMarkdown) { try { d.appendChild(engine.renderMarkdown(text)); } catch (e) { d.appendChild(el('p', '', text)); } }
@@ -793,7 +819,40 @@
       if (foot) d.appendChild(el('p', 'ap-faint', foot));
       return d;
     }
-    /** A delegate's raw transcript entries, compact: prompts, text, tool calls, results. */
+    function md(text, cls) {
+      var d = el('div', cls || 'ap-doc');
+      if (engine.renderMarkdown) { try { d.appendChild(engine.renderMarkdown(String(text || ''))); return d; } catch (e) {} }
+      d.appendChild(el('p', '', String(text || ''))); return d;
+    }
+    /** A delegate's transcript as the chat's own rows: messages with one time each,
+     *  consecutive assistant text merged, runs of tool calls folded to one activity line. */
+    function delegateRows(entries) {
+      var rows = [], run = null;
+      var flush = function () { if (!run) return; var names = {}; run.calls.forEach(function (c) { names[c.name] = (names[c.name] || 0) + 1; });
+        var label = run.calls.length === 1 ? run.calls[0].label : Object.keys(names).map(function (k) { return names[k] > 1 ? k + ' ×' + names[k] : k; }).join(', ');
+        rows.push({ role: 'action', text: one(label, 120), detail: run.calls.map(function (c) { return c.detail; }).join('\n\n') }); run = null; };
+      var msg = function (role, text, ts) {
+        text = String(text || '').trim(); if (!text) return; flush();
+        var last = rows[rows.length - 1];
+        if (last && last.role === role && role === 'assistant') { last.text += '\n\n' + text; last.ts = ts || last.ts; } else rows.push({ role: role, text: text, ts: ts });
+      };
+      var tool = function (name, input) { var d = typeof input === 'string' ? input : JSON.stringify(input || {}); run = run || { calls: [] }; run.calls.push({ name: name, label: name + ' ' + one(d, 80), detail: name + ' ' + d }); };
+      entries.forEach(function (e) {
+        var j = (e && e.line && typeof e.line === 'object' ? e.line : e) || {}, ts = j.timestamp, m = j.message, content = m && m.content;
+        if (j.type === 'user' || j.type === 'assistant') {
+          var role = j.type === 'user' ? 'user' : 'assistant';
+          if (typeof content === 'string') msg(role, content, ts);
+          else (content || []).forEach(function (c) { if (c.type === 'text') msg(role, c.text, ts); else if (c.type === 'tool_use') tool(c.name, c.input); });
+        } else if (j.type === 'response_item' && j.payload) {
+          var p = j.payload;
+          if (p.type === 'message') msg(p.role === 'user' ? 'user' : 'assistant', (p.content || []).map(function (x) { return x.text || ''; }).join('\n'), ts);
+          else if (p.type === 'function_call') tool(p.name || 'call', p.arguments || '');
+        } else if (j.type === 'event_msg' && j.payload && j.payload.message) msg('assistant', j.payload.message, ts);
+        else if (j.type === 'item_completed' || (j.payload && j.payload.type === 'item_completed')) { var itm = (j.payload || j).item || {}; if (itm.text) msg(itm.type === 'UserMessage' ? 'user' : 'assistant', itm.text, ts); }
+      });
+      flush(); return rows;
+    }
+    /** (retired: per-line rows) */
     function rawList(entries) {
       var ol = el('ol', 'ap-raw');
       entries.forEach(function (e) {
