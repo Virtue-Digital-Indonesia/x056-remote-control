@@ -6,7 +6,7 @@ import { AccountRegistry } from '../src/accounts.js';
 import type { RunSessionOptions, SessionResult } from '../src/failover.js';
 import { readMessageSender } from '../src/message-sender.js';
 import { SessionManager } from '../server/manager.js';
-import { DelegateStore, decideGate, digest, checkRole, shouldWake, MAX_DELEGATES, ROUND_LIMIT, type Delegate, type DelegateReport } from '../server/delegates.js';
+import { autoDismissible, saysDone, DelegateStore, decideGate, digest, checkRole, shouldWake, MAX_DELEGATES, ROUND_LIMIT, type Delegate, type DelegateReport } from '../server/delegates.js';
 import type { ForkDecision } from '../server/jev.js';
 
 const dirs: string[] = [];
@@ -199,6 +199,38 @@ describe('delegates on the gateway', () => {
     const drain = () => new Promise((r) => setTimeout(r, 600));
     const dismissed = (mgr: SessionManager, pid: string, sid: string) => Object.fromEntries(mgr.listDelegates(pid, sid).map((d) => [d.role, d.dismissedBy ?? null]));
 
+    it('the rule: DONE gate, or needs_orchestrator with a DONE first line, and only once consumed', () => {
+      expect([saysDone('DONE'), saysDone('\n  DONE — finalized'), saysDone('DONE: x'), saysDone('DONEish'), saysDone('NEEDS HUMAN\nDONE'), saysDone('')]).toEqual([true, true, true, false, false, false]);
+      const r = (gate: DelegateReport['gate'], text = 'DONE', extra: Partial<DelegateReport> = {}): DelegateReport => ({ at: 't', delegateId: 'd-1', role: 'x', turn: 1, status: 'completed', text, gate, gateBy: 'jev', woke: true, ...extra });
+      const d = (rep: DelegateReport, over: Partial<Delegate> = {}): Delegate => ({ id: 'd-1', role: 'x', brief: 'b', provider: 'claude', projectId: 'p', cwd: '/', sessionId: 's', status: 'idle', createdAt: 't', updatedAt: 't', turns: 1, pending: [], lastReport: rep, ...over });
+      const ok = (rep: DelegateReport, over: Partial<Delegate> = {}, queued = new Set<string>(), delegateQueued = false, working = false) => autoDismissible(d(rep, over), new Map([['d-1@t', rep]]), queued, delegateQueued, working);
+      expect(ok(r('done'))).toBe(true);
+      expect(ok(r('needs_orchestrator'))).toBe(true);
+      expect(ok(r('needs_orchestrator', 'NEEDS ORCHESTRATOR: pick one'))).toBe(false);
+      expect(ok(r('needs_human'))).toBe(false);
+      expect(ok(r('blocked'))).toBe(false);
+      expect(ok(r('done', 'DONE', { woke: false }))).toBe(false);
+      expect(ok(r('needs_orchestrator', 'DONE', { queueId: 'q1' }), {}, new Set(['q1']))).toBe(false);
+      expect(ok(r('needs_orchestrator', 'DONE', { queueId: 'q1' }), {}, new Set(['q2']))).toBe(true);
+      expect(ok(r('done'), {}, new Set(), true)).toBe(false);
+      expect(ok(r('done'), {}, new Set(), false, true)).toBe(false);
+      expect(ok(r('done'), { pending: ['more'] })).toBe(false);
+      expect(ok(r('done'), { status: 'failed' })).toBe(false);
+    });
+
+    it('puts away a needs-orchestrator delegate that wrote DONE once the turn that read it ends', async () => {
+      const f = fixture(); const { pid, sid } = await orchestrator(f);
+      byRole(f.mgr, { backend: 'needs_orchestrator', dwh: 'needs_orchestrator' });
+      const a = f.mgr.startDelegate(pid, sid, { role: 'backend', brief: 'A' });
+      const b = f.mgr.startDelegate(pid, sid, { role: 'dwh', brief: 'B' });
+      await tick();
+      f.finish(a.sessionId, 'DONE\nShipped.'); f.finish(b.sessionId, 'NEEDS ORCHESTRATOR: which schema?'); await tick(); await tick();
+      f.finish(sid, 'planned'); await tick();
+      expect(dismissed(f.mgr, pid, sid)).toEqual({ backend: null, dwh: null });
+      await drain(); f.finish(sid, 'noted'); await tick();
+      expect(dismissed(f.mgr, pid, sid)).toEqual({ backend: 'auto', dwh: null });
+    });
+
     it('puts a DONE delegate away when the orchestrator turn that read its report ends; needs-a-person stays', async () => {
       const f = fixture(); const { pid, sid } = await orchestrator(f);
       byRole(f.mgr, { backend: 'done', reviewer: 'needs_human' });
@@ -269,17 +301,19 @@ describe('delegates on the gateway', () => {
       expect(again.listDelegates(pid, sid).filter((d) => d.dismissedAt).length).toBe(f.mgr.listDelegates(pid, sid).filter((d) => d.dismissedAt).length);
     });
 
-    it('at boot, DONE reports delivered before it are put away; other gates and working delegates are not', async () => {
+    it('at boot, DONE reports delivered before it are put away (a needs-orchestrator one too when it says DONE); the rest are not', async () => {
       const f = fixture(); const { pid, sid } = await orchestrator(f);
       const store = new DelegateStore(f.stateDir);
       const rep = (id: string, gate: DelegateReport['gate'], at: string): DelegateReport => ({ at, delegateId: id, role: id, turn: 1, status: 'completed', text: 'DONE', gate, gateBy: 'jev', woke: true });
       const base = (id: string, status: Delegate['status'], lastReport: DelegateReport): Delegate => ({ id, role: id, brief: 'x', provider: 'claude', projectId: pid, cwd: f.dir, sessionId: 's-' + id, status, createdAt: 't', updatedAt: 't', turns: 1, pending: [], lastReport: { ...lastReport, woke: false } });
       const r1 = rep('d-done', 'done', '2026-10-01T01:00:00Z'), r2 = rep('d-orch', 'needs_orchestrator', '2026-10-01T01:00:01Z'), r3 = rep('d-work', 'done', '2026-10-01T01:00:02Z');
-      store.save(pid, sid, [base('d-done', 'idle', r1), base('d-orch', 'idle', r2), base('d-work', 'working', r3)]);
-      for (const r of [r1, r2, r3]) store.addReport(sid, r);
+      const r4 = { ...rep('d-ask', 'needs_orchestrator', '2026-10-01T01:00:03Z'), text: 'NEEDS ORCHESTRATOR: which schema?\nDONE with the rest' };
+      const r5 = rep('d-human', 'needs_human', '2026-10-01T01:00:04Z');
+      store.save(pid, sid, [base('d-done', 'idle', r1), base('d-orch', 'idle', r2), base('d-work', 'working', r3), base('d-ask', 'idle', r4), base('d-human', 'idle', r5)]);
+      for (const r of [r1, r2, r3, r4, r5]) store.addReport(sid, r);
       const again = new SessionManager({ stateDir: f.stateDir, workspaceRoot: f.dir, runSessionFn: (async () => new Promise(() => {})) as never });
       await tick();
-      expect(Object.fromEntries(again.listDelegates(pid, sid).map((d) => [d.id, d.dismissedBy ?? null]))).toEqual({ 'd-done': 'auto', 'd-orch': null, 'd-work': null });
+      expect(Object.fromEntries(again.listDelegates(pid, sid).map((d) => [d.id, d.dismissedBy ?? null]))).toEqual({ 'd-done': 'auto', 'd-orch': 'auto', 'd-work': null, 'd-ask': null, 'd-human': null });
     });
   });
 });

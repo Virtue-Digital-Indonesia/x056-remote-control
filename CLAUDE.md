@@ -793,12 +793,15 @@ only), and Jev gates which reports wake the orchestrator.
   limit and frees its role name (`isActive` = not stopped, not dismissed),
   left out of the digest's "Team now", still in the agent tree (faint,
   "Dismissed"). **Auto rule** (`autoDismissible`): latest report gated
-  `done`, handed over (`woke`), the queue item that carried it (`queueId`
+  `done` -- or `needs_orchestrator` with the worker's own first line
+  starting DONE (`saysDone`; the gate only chose to wake at once, and live
+  5 of 9 finished workers were filed that way) -- handed over (`woke`), the queue item that carried it (`queueId`
   on the report, set by `wakeOrchestrator`) has left the queue, the
   delegate is idle with nothing pending -- checked when an orchestrator
   turn ends (`session_done` not stopped, or `session_error`), serialised
   on `delegateSettling` so a report mid-gate is never taken for an old
-  one. needs_orchestrator / needs_human / blocked never auto-dismiss.
+  one. needs_human, blocked and a needs_orchestrator report not saying
+  DONE never auto-dismiss.
   Boot runs the same rule (`recoverDelegates`; reports from before
   `queueId` count as consumed when no delegate wake is queued). **Revive**:
   any follow-up (MCP, bar, agent tree) clears it, if a slot and its role

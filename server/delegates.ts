@@ -147,19 +147,25 @@ export class DelegateStore {
 /** Counts against the limit and holds its role name. */
 export const isActive = (d: Pick<Delegate, 'status' | 'dismissedAt'>) => d.status !== 'stopped' && !d.dismissedAt;
 
+/** The worker's own verdict: its report's first non-empty line opens with DONE. */
+export const saysDone = (text: string) => /^DONE\b/.test((text.split('\n').find((l) => l.trim()) ?? '').trim());
+
 /**
  * The auto-dismiss rule: a delegate is put away once its latest report was
- * gated DONE, handed to the orchestrator, and the message carrying it has left
+ * gated DONE -- or gated needs_orchestrator while the worker itself wrote
+ * DONE on its first line (the gate only chose to wake the orchestrator at
+ * once; live, 5 of 9 finished workers were filed that way) -- handed to the
+ * orchestrator, and the message carrying it has left
  * the queue (dispatched) -- called when an orchestrator turn ends, so that
- * turn read it. Needs-orchestrator / needs-human / blocked reports stay: they
- * ask for action. A working delegate, or one with instructions waiting, stays.
+ * turn read it. needs_human and blocked reports stay, and so does a
+ * needs_orchestrator one whose first line is not DONE: they ask for action. A working delegate, or one with instructions waiting, stays.
  * `queuedIds` = the orchestrator's queue items still waiting; `delegateQueued`
  * = whether one of them is a delegate wake (for reports with no queueId).
  */
 export function autoDismissible(d: Delegate, reports: Map<string, DelegateReport>, queuedIds: Set<string>, delegateQueued: boolean, working: boolean): boolean {
   if (d.dismissedAt || working || d.status !== 'idle' || d.pending.length || !d.lastReport) return false;
   const r = reports.get(reportKey(d.lastReport));
-  if (!r || r.gate !== 'done' || !r.woke) return false;
+  if (!r || !r.woke || !(r.gate === 'done' || (r.gate === 'needs_orchestrator' && saysDone(r.text)))) return false;
   return r.queueId ? !queuedIds.has(r.queueId) : !delegateQueued;
 }
 

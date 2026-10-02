@@ -381,11 +381,19 @@ const SHOTS = '/tmp/x056-agent-tree';
     await page.locator('.agent-reader-scroll').filter({ hasText: 'for w1.' }).waitFor();
     await page.keyboard.press('Escape');
 
-    // A conversation with nothing on: the main node alone, no stepper without turns.
+    // A conversation with no helper saved: Jev is the default picker while it
+    // is available (a key, credits), so the tree shows main + jev.
+    const rowKeys = () => page.locator('#agentPane .ap-row').evaluateAll((l) => l.map((e) => e.dataset.key));
     await page.goto(base); await page.waitForSelector('.cr-task');
     await openConv(page, 'Review accessibility findings');
     await row(page, 'main').waitFor();
-    await page.waitForTimeout(800); assert.deepEqual(await page.locator('#agentPane .ap-row').evaluateAll((l) => l.map((e) => e.dataset.key)), ['main']);
+    await page.waitForTimeout(800); assert.deepEqual(await rowKeys(), ['main', 'jev']);
+    // "Your choice" saved explicitly turns the picker off: the main node alone, no stepper without turns.
+    assert.equal((await req.request.post(base + '/api/conversations/helpers', { headers: H, data: { projectId: other.p.id, sessionId: other.c.sessionId, router: 'none' } })).ok(), true);
+    await page.goto(base); await page.waitForSelector('.cr-task');
+    await openConv(page, 'Review accessibility findings');
+    await row(page, 'main').waitFor();
+    await page.waitForTimeout(800); assert.deepEqual(await rowKeys(), ['main']);
 
     // A ChatGPT conversation: its Codex child is listed and opens its history.
     await page.goto(base); await page.waitForSelector('.cr-task');
