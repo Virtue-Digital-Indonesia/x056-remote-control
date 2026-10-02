@@ -8,7 +8,14 @@ enum Push {
     static let replyAction = "X056_REPLY_ACTION"
 
     static var deviceToken: String? {
-        get { UserDefaults.standard.string(forKey: "apnsToken") }
+        get {
+            #if DEBUG
+            // UI tests on a simulator without APNs: `-X056PushToken <hex>`.
+            let args = ProcessInfo.processInfo.arguments
+            if let i = args.firstIndex(of: "-X056PushToken"), i + 1 < args.count { return args[i + 1] }
+            #endif
+            return UserDefaults.standard.string(forKey: "apnsToken")
+        }
         set { UserDefaults.standard.set(newValue, forKey: "apnsToken") }
     }
 

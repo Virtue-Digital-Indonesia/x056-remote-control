@@ -87,7 +87,18 @@ final class FlowTests: XCTestCase {
         // The fixture has no passkey, so the token section opens by itself
         // once the screen has asked the gateway.
         let change = app.buttons["change-server"]
-        XCTAssertTrue(change.waitForExistence(timeout: 10))
+        // Now and then the reset does not hold and the app opens signed in
+        // (cause not found; DEBUG-only path). Sign out the normal way.
+        if !change.waitForExistence(timeout: 10), app.buttons["Projects"].exists {
+            app.buttons["Projects"].firstMatch.tap()
+            app.buttons["Settings"].firstMatch.tap()
+            let signOut = app.buttons["Sign out"].firstMatch
+            for _ in 0..<4 where !signOut.isHittable { app.swipeUp() }
+            signOut.tap()
+            app.buttons.matching(NSPredicate(format: "label == %@", "Sign out")).element(boundBy: 1).tap()
+        }
+        if !change.waitForExistence(timeout: 10) { snapshot(app, "0-signin-missing") }
+        XCTAssertTrue(change.exists)
         change.tap()
         let serverField = app.textFields["server-field"]
         XCTAssertTrue(serverField.waitForExistence(timeout: 5))
@@ -236,6 +247,14 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["Show questions"].waitForExistence(timeout: 5))
         app.buttons["Show questions"].tap()
         XCTAssertTrue(app.buttons["Send answers"].waitForExistence(timeout: 5))
+        // Typing a message folds the card, so the box and send stay on screen.
+        composer.tap()
+        let folded = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["Send answers"])
+        wait(for: [folded], timeout: 5)
+        XCTAssertTrue(app.buttons["send"].isHittable)
+        snapshot(app, "12a-typing-folds-questions")
+        app.buttons["Show questions"].tap()
+        XCTAssertTrue(app.buttons["Send answers"].waitForExistence(timeout: 5))
         sleep(1)
         let screen = app.windows.firstMatch.frame
         for label in ["Keep the hold until the source owner confirms", "Require verified templates before the demo"] {
@@ -263,6 +282,137 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(answer.isHittable, "the sent answer is in view")
         XCTAssertFalse(latest.exists)
         snapshot(app, "13-answer-sent")
+    }
+
+    /// Autopilot from the conversation menu (start, the bar, stop), the
+    /// transcript, and this iPhone's notification settings.
+    func testAutopilotTranscriptAndNotifications() throws {
+        let app = signInToFixture(["-X056PushToken", "f00dfeed"])
+        app.buttons["Projects"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Website refresh"].waitForExistence(timeout: 10))
+        snapshot(app, "20-projects")
+        app.buttons["Settings"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Signed in with"].waitForExistence(timeout: 10))
+        sleep(1)
+        app.swipeUp()
+        // This iPhone's settings, saved to the gateway as they change.
+        let automation = app.switches.matching(NSPredicate(format: "label == %@", "Automation and background")).firstMatch
+        for _ in 0..<3 where !automation.waitForExistence(timeout: 3) { app.swipeUp() }
+        XCTAssertTrue(automation.exists)
+        let endpoint = "/api/push/settings?endpoint=apns:f00dfeed"
+        let before = api("GET", endpoint)?["automation"] as? Bool ?? false
+        // The switch end of the row: a tap on the label does not toggle.
+        automation.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        let flipped = expectation(description: "saved")
+        DispatchQueue.global().async {
+            for _ in 0..<20 {
+                if (self.api("GET", endpoint)?["automation"] as? Bool) == !before { flipped.fulfill(); return }
+                usleep(250_000)
+            }
+        }
+        wait(for: [flipped], timeout: 8)
+        let quiet = app.switches.matching(NSPredicate(format: "label == %@", "Quiet hours")).firstMatch
+        if !quiet.isHittable { app.swipeUp() }
+        if (api("GET", endpoint)?["quietHours"] as? [String: Any])?["enabled"] as? Bool != true {
+            quiet.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        }
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", "From")).firstMatch.waitForExistence(timeout: 5), "quiet hours show their times")
+        sleep(1)
+        snapshot(app, "21-notification-settings")
+        app.swipeDown()
+        app.buttons["Done"].firstMatch.tap()
+
+        app.staticTexts["Website refresh"].tap()
+        let conversation = app.staticTexts["Update the component library"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+        conversation.tap()
+        XCTAssertTrue(app.textViews["composer"].waitForExistence(timeout: 10))
+
+        // Autopilot: start from the menu, the bar shows it, stop from the bar.
+        app.buttons["More"].firstMatch.tap()
+        app.buttons["Autopilot…"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Keep this conversation going"].waitForExistence(timeout: 5))
+        snapshot(app, "22-autopilot-sheet")
+        app.buttons["5"].firstMatch.tap()
+        app.buttons["Start autopilot"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "steps left")).firstMatch.waitForExistence(timeout: 5))
+        snapshot(app, "23-autopilot-running")
+        app.buttons["Done"].firstMatch.tap()
+        let bar = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Autopilot")).firstMatch
+        XCTAssertTrue(bar.waitForExistence(timeout: 5))
+        snapshot(app, "24-autopilot-bar")
+        app.buttons["Stop"].firstMatch.tap()
+        let stopped = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: bar)
+        wait(for: [stopped], timeout: 10)
+
+        // The transcript: CLI lines from the conversation's own file.
+        app.buttons["More"].firstMatch.tap()
+        app.buttons["Transcript"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Please improve the layout")).firstMatch.waitForExistence(timeout: 10))
+        sleep(1)
+        snapshot(app, "25-transcript")
+        app.buttons["Done"].firstMatch.tap()
+    }
+
+    /// Sending from the phone puts the turn on the Lock Screen: the menu
+    /// offers to stop following it, and Notification Center shows it running
+    /// and then ended. Needs X056_TEST_RICH_REPLY=1 (steps two seconds apart).
+    func testLiveActivityFollowsASentTurn() throws {
+        let app = signInToFixture()
+        let projects = try XCTUnwrap(api("GET", "/api/projects")?["projects"] as? [[String: Any]])
+        let site = try XCTUnwrap(projects.first { ($0["name"] as? String) == "Website refresh" })
+        let conv = try XCTUnwrap((site["conversations"] as? [[String: Any]])?.first { ($0["title"] as? String) == "Update the component library" })
+        for q in apiList("/api/questions") where q["sessionId"] as? String == conv["sessionId"] as? String {
+            _ = api("POST", "/api/questions/dismiss", ["projectId": site["id"]!, "sessionId": conv["sessionId"]!, "at": q["at"]!])
+        }
+        app.buttons["Projects"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Website refresh"].waitForExistence(timeout: 10))
+        app.staticTexts["Website refresh"].tap()
+        let conversation = app.staticTexts["Update the component library"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+        conversation.tap()
+        let composer = app.textViews["composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.tap()
+        composer.typeText("Run the checks.")
+        app.buttons["send"].tap()
+        // The turn's first step is in (its header names it, or counts them).
+        XCTAssertTrue(app.buttons["steps"].firstMatch.waitForExistence(timeout: 15))
+
+        app.buttons["More"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Stop following on Lock Screen"].waitForExistence(timeout: 5), "sending started a Live Activity")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.35)).tap() // closes the menu
+
+        openNotificationCenter(app)
+        snapshotScreen("30-live-activity-running")
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        // The turn is over once Stop gives way to Send again. (The fixture's
+        // fake replies are not in its transcript, so a reload drops them.)
+        XCTAssertTrue(app.buttons["send"].waitForExistence(timeout: 30))
+        sleep(2)
+        openNotificationCenter(app)
+        snapshotScreen("31-live-activity-done")
+        XCUIDevice.shared.press(.home)
+        app.activate()
+    }
+
+    private func openNotificationCenter(_ app: XCUIApplication) {
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0))
+        top.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.8)))
+        sleep(2)
+    }
+
+    /// The whole screen (another app's, such as Notification Center).
+    private func snapshotScreen(_ name: String) {
+        let screenshot = XCUIScreen.main.screenshot()
+        let shot = XCTAttachment(screenshot: screenshot)
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
+        if FileManager.default.fileExists(atPath: "/tmp/x056-shots") {
+            try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: "/tmp/x056-shots/\(name)-xc.png"))
+        }
     }
 
     /// Read state is shared through the gateway: what the web marks shows on
@@ -356,6 +506,8 @@ final class FlowTests: XCTestCase {
         guard FileManager.default.fileExists(atPath: dir) else { return }
         // XCTest's own capture, readable without the result bundle.
         try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: "\(dir)/\(name)-xc.png"))
+        // A simctl capture only when a watcher says it is there (.watcher).
+        guard FileManager.default.fileExists(atPath: "\(dir)/.watcher") else { return }
         let request = "\(dir)/\(name).request"
         FileManager.default.createFile(atPath: request, contents: nil)
         for _ in 0..<30 where FileManager.default.fileExists(atPath: request) { usleep(100_000) }

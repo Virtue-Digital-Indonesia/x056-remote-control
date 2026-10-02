@@ -51,6 +51,8 @@ struct ComposerTextView: UIViewRepresentable {
     var placeholder: String
     var longTextLimit: Int
     var maxLines = 8
+    /// Set while the text view has the keyboard.
+    var editing: Binding<Bool>? = nil
     var onPaste: ([PendingFile]) -> Void
 
     func makeUIView(context: Context) -> PasteAwareTextView {
@@ -85,11 +87,18 @@ struct ComposerTextView: UIViewRepresentable {
         return CGSize(width: width, height: min(fitted.height, cap))
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text, editing: editing) }
 
     final class Coordinator: NSObject, UITextViewDelegate {
         let text: Binding<String>
-        init(text: Binding<String>) { self.text = text }
+        let editing: Binding<Bool>?
+        init(text: Binding<String>, editing: Binding<Bool>?) {
+            self.text = text
+            self.editing = editing
+        }
+
+        func textViewDidBeginEditing(_ view: UITextView) { editing?.wrappedValue = true }
+        func textViewDidEndEditing(_ view: UITextView) { editing?.wrappedValue = false }
 
         func textViewDidChange(_ view: UITextView) {
             text.wrappedValue = view.text

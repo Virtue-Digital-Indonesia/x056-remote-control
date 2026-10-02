@@ -12,6 +12,8 @@ struct ConversationView: View {
     /// Reading back through history folds the composer away.
     @State private var composerFolded = false
     @State private var showTree = false
+    @State private var showAutopilot = false
+    @State private var showTranscript = false
     @State private var position = ScrollPosition(edge: .bottom)
     @State private var offsetY: CGFloat = 0
     @State private var contentHeight: CGFloat = 0
@@ -163,7 +165,7 @@ struct ConversationView: View {
             if !loading { toLatest(animated: false) }
         }
         .safeAreaBar(edge: .bottom) {
-            ComposerArea(model: model, folded: $composerFolded, jumpToLatest: jumpToLatest)
+            ComposerArea(model: model, folded: $composerFolded, jumpToLatest: jumpToLatest) { showAutopilot = true }
         }
         // A conversation gets the whole screen: no tab bar (on iPhone Duo, no
         // tabs or Search in the rail), only its own toolbar.
@@ -178,6 +180,16 @@ struct ConversationView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("More", systemImage: "ellipsis") {
+                        Button(app.autopilot[sid] == nil ? "Autopilot…" : "Autopilot", systemImage: "repeat") { showAutopilot = true }
+                        Button("Transcript", systemImage: "terminal") { showTranscript = true }
+                        if LiveTurns.shared.isFollowing(sid) {
+                            Button("Stop following on Lock Screen", systemImage: "iphone.slash") {
+                                Task { await LiveTurns.shared.unfollow(sid) }
+                            }
+                        } else if model.isWorking, LiveTurns.shared.available {
+                            Button("Follow on Lock Screen", systemImage: "iphone.badge.play") { model.followOnLockScreen() }
+                        }
+                        Divider()
                         if let url = app.panelURL(projectId: model.projectId, sessionId: sid, isChat: model.isChat) {
                             Link(destination: url) { Label("Open in the panel", systemImage: "safari") }
                         }
@@ -189,6 +201,13 @@ struct ConversationView: View {
         .sheet(isPresented: $showTree) {
             if let sid = model.sessionId { AgentTreeView(projectId: model.projectId, sessionId: sid) }
         }
+        .sheet(isPresented: $showAutopilot) {
+            if let sid = model.sessionId { AutopilotSheet(projectId: model.projectId, sessionId: sid) }
+        }
+        .fullScreenCover(isPresented: $showTranscript) {
+            if let sid = model.sessionId { TranscriptView(projectId: model.projectId, sessionId: sid, title: model.conversation?.title ?? "Transcript") }
+        }
+        .environment(\.openTranscript, model.sessionId.map { OpenTranscriptAction(sessionId: $0) { showTranscript = true } })
         .task { await model.load() }
         .onAppear {
             app.attach(model)
@@ -203,7 +222,21 @@ struct ConversationView: View {
 
 // MARK: rows
 
+/// Opens the conversation's transcript ("what actually happened"). Equal by
+/// conversation, so the rows that read it are not redrawn on every update.
+struct OpenTranscriptAction: Equatable {
+    let sessionId: String
+    let run: () -> Void
+    func callAsFunction() { run() }
+    static func == (a: Self, b: Self) -> Bool { a.sessionId == b.sessionId }
+}
+
+extension EnvironmentValues {
+    @Entry var openTranscript: OpenTranscriptAction? = nil
+}
+
 struct MessageRow: View {
+    @Environment(\.openTranscript) private var openTranscript
     let row: ChatRow
 
     var body: some View {
@@ -239,13 +272,21 @@ struct MessageRow: View {
             MarkdownText(text: row.text)
                 .contextMenu { CopyButton(text: row.text) }
         case .error:
-            Label(row.text, systemImage: "exclamationmark.triangle.fill")
-                .font(.callout)
-                .foregroundStyle(.red)
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.red.opacity(0.08), in: .rect(cornerRadius: 14, style: .continuous))
-                .textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 10) {
+                Label(row.text, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                if let openTranscript {
+                    Button("See what happened", systemImage: "terminal") { openTranscript() }
+                        .font(.footnote.weight(.medium))
+                        .buttonStyle(.glass)
+                        .controlSize(.small)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.red.opacity(0.08), in: .rect(cornerRadius: 14, style: .continuous))
         case .card:
             if let card = row.card { CardRow(card: card) }
         case .notice, .action:
@@ -396,6 +437,8 @@ struct WorkingLine: View {
 struct QuestionCard: View {
     let question: PendingQuestion
     let model: ConversationModel
+    /// Folded while a message is being typed below it.
+    var folded = false
     @State private var picked: [Int: String] = [:]
     /// A written answer wins over a picked option, as on the panel.
     @State private var written: [Int: String] = [:]
@@ -405,6 +448,7 @@ struct QuestionCard: View {
 
     var body: some View {
         let parts = question.parts
+        let collapsed = collapsed || folded
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "questionmark.bubble.fill")
@@ -415,7 +459,9 @@ struct QuestionCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 Button(collapsed ? "Show questions" : "Hide questions", systemImage: collapsed ? "chevron.up" : "chevron.down") {
-                    withAnimation(.snappy) { collapsed.toggle() }
+                    // Folded for typing: put the keyboard away to answer here.
+                    if folded { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+                    withAnimation(.snappy) { self.collapsed = folded ? false : !self.collapsed }
                 }
                 .labelStyle(.iconOnly)
                 .foregroundStyle(.secondary)
@@ -455,6 +501,7 @@ struct QuestionCard: View {
         }
         .padding(14)
         .glassEffect(.regular.tint(.orange.opacity(0.12)), in: .rect(cornerRadius: 22, style: .continuous))
+        .animation(.snappy, value: folded)
     }
 
     private func part(_ i: Int, _ q: QuestionPart) -> some View {

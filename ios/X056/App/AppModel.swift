@@ -57,6 +57,11 @@ final class AppModel {
     var queues: [String: [QueueItem]] = [:]
     /// The open question per conversation, by sessionId.
     var questions: [String: PendingQuestion] = [:]
+    /// Autopilot by conversation (sessionId).
+    var autopilot: [String: AutopilotState] = [:]
+    /// Whether the gateway takes a standing instruction for autopilot; nil
+    /// until asked.
+    var autopilotInstructions: Bool?
     var approvals: [McpApproval] = []
     var codexModels: [CodexModel] = []
     var connection: Connection = .offline
@@ -417,6 +422,66 @@ final class AppModel {
         Stored.save("recentDismissed", recentDismissed)
     }
 
+    // MARK: autopilot
+
+    func loadAutopilot() async {
+        guard let client, let map = try? await client.get("/api/autopilot", as: [String: AutopilotState].self) else { return }
+        autopilot = map
+    }
+
+    /// What autopilot last ran with here, or nil. Also learns whether the
+    /// gateway takes a standing instruction at all (its route 404s if not).
+    func autopilotLast(projectId: String, sessionId: String) async -> AutopilotLast? {
+        guard let client else { return nil }
+        do {
+            let last = try await client.get("/api/autopilot/last", query: ["projectId": projectId, "sessionId": sessionId], as: AutopilotLast.self)
+            autopilotInstructions = true
+            return last
+        } catch let e as APIError where e.status == 404 {
+            autopilotInstructions = false
+            return nil
+        } catch {
+            return nil
+        }
+    }
+
+    func startAutopilot(projectId: String, sessionId: String, count: Int, instruction: String) async throws {
+        guard let client else { return }
+        let text = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = try await client.post("/api/autopilot", AutopilotBody(projectId: projectId, sessionId: sessionId, count: count, instruction: text.isEmpty ? nil : text))
+        await loadAutopilot()
+    }
+
+    func setAutopilotInstruction(projectId: String, sessionId: String, instruction: String) async throws {
+        guard let client else { return }
+        _ = try await client.post("/api/autopilot/instruction", AutopilotInstructionBody(projectId: projectId, sessionId: sessionId, instruction: instruction.trimmingCharacters(in: .whitespacesAndNewlines)))
+        await loadAutopilot()
+    }
+
+    func stopAutopilot(sessionId: String) async throws {
+        guard let client else { return }
+        _ = try await client.post("/api/autopilot/stop", SessionOnly(sessionId: sessionId))
+        autopilot[sessionId] = nil
+        await loadAutopilot()
+    }
+
+    // MARK: notification settings for this iPhone
+
+    /// The endpoint the gateway keys this iPhone by, once it has a token.
+    var pushEndpoint: String? { Push.deviceToken.map { "apns:" + $0.lowercased() } }
+
+    func pushSettings() async throws -> DeviceSettings? {
+        guard let client, let endpoint = pushEndpoint else { return nil }
+        return try await client.get("/api/push/settings", query: ["endpoint": endpoint], as: DeviceSettings.self)
+    }
+
+    func savePushSettings(_ settings: DeviceSettings) async throws -> DeviceSettings? {
+        guard let client, let endpoint = pushEndpoint else { return nil }
+        var s = settings
+        s.timeZone = TimeZone.current.identifier
+        return try await client.post("/api/push/settings", PushSettingsBody(endpoint: endpoint, settings: s), as: DeviceSettings.self)
+    }
+
     func dismissQuestion(_ q: PendingQuestion) async {
         _ = try? await client?.post("/api/questions/dismiss", DismissQuestionBody(projectId: q.projectId, sessionId: q.sessionId, at: q.at))
         questions[q.sessionId] = nil
@@ -600,7 +665,9 @@ final class AppModel {
         async let spaces = try? client.get("/api/project-spaces", as: EnabledReply.self)
         async let acc: Void = loadAccounts()
         async let reads: Void = loadReadState()
+        async let pilots: Void = loadAutopilot()
         _ = await p
+        _ = await pilots
         _ = await acc
         _ = await reads
         if let meta = await meta { conversationMeta = meta }
@@ -613,6 +680,9 @@ final class AppModel {
         if let q = await q { questions = Dictionary(q.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new }) }
         if let queue = await queue { queues = queue }
         if let codex = await models?.codex { codexModels = codex }
+        LiveTurns.shared.reconcile(running: running.union(background), autopilot: Set(autopilot.keys)) { [weak self] pid, sid in
+            self?.conversation(pid, sid)?.lastOutcome
+        }
     }
 
     func refreshProjects() async {
@@ -783,11 +853,23 @@ final class AppModel {
             accountsTick += 1
         case "read_state":
             if let pid, let sid, let item = d.decode(ReadItem.self) { applyReadState(pid, sid, item) }
+        case "autopilot":
+            // Steps, pauses, stops and the end of a run all arrive here; the
+            // status is small, so read it whole rather than patch it.
+            if let sid, d["active"]?.bool == true, var ap = autopilot[sid] {
+                if let r = d["remaining"]?.number { ap.remaining = Int(r) }
+                if let c = d["count"]?.number { ap.count = Int(c) }
+                if let i = d["instruction"]?.string { ap.instruction = i }
+                ap.paused = nil
+                autopilot[sid] = ap
+            }
+            Task { await loadAutopilot() }
         default:
             break
         }
         if let sid {
             for m in open.values where m.sessionId == sid { m.apply(e) }
+            LiveTurns.shared.apply(e, autopilot: autopilot[sid])
         }
     }
 
@@ -830,6 +912,14 @@ final class AppModel {
     }
 
     /// Route a notification tap to its conversation.
+    /// `x056://conversation?projectId=…&sessionId=…`, from a Live Activity.
+    func open(_ url: URL) {
+        guard url.scheme == "x056", url.host() == "conversation",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let pid = items.first(where: { $0.name == "projectId" })?.value else { return }
+        open(projectId: pid, sessionId: items.first(where: { $0.name == "sessionId" })?.value)
+    }
+
     func open(projectId: String, sessionId: String?) {
         guard !projectId.isEmpty else { return }
         tab = .home

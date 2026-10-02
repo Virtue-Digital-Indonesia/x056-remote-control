@@ -19,6 +19,10 @@ rm -rf "$ARCHIVE" build/export
 xcodebuild archive -project X056.xcodeproj -scheme X056 -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" -derivedDataPath build/dd \
   CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION="$BUILD"
+# Inside out: the widget extension first (it needs no entitlements), then the app.
+for appex in "$APP"/PlugIns/*.appex; do
+  [ -e "$appex" ] && codesign --force --sign - --timestamp=none "$appex"
+done
 codesign --force --sign - --entitlements X056/Support/X056.entitlements --timestamp=none "$APP"
 xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportOptionsPlist ExportOptions.plist \
   -exportPath build/export -allowProvisioningUpdates

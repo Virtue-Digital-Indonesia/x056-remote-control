@@ -24,6 +24,8 @@ struct X056App: App {
                 .environment(app)
                 .tint(Palette.clay)
                 .preferredColorScheme(Self.forcedScheme)
+                .onOpenURL { app.open($0) }
+                .task { LiveTurns.shared.resume() }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {

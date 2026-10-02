@@ -43,6 +43,7 @@ enum JSONValue: Codable, Sendable, Hashable {
     var string: String? { if case .string(let s) = self { return s }; return nil }
     var bool: Bool? { if case .bool(let b) = self { return b }; return nil }
     var number: Double? { if case .number(let n) = self { return n }; return nil }
+    var array: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
 
     /// Re-decode this value as a concrete type.
     func decode<T: Decodable>(_ type: T.Type) -> T? {
@@ -261,6 +262,84 @@ struct CodexModel: Decodable, Sendable, Hashable {
 
 struct ModelsResponse: Decodable, Sendable {
     let codex: [CodexModel]?
+}
+
+// MARK: autopilot
+
+/// One conversation's autopilot, from `GET /api/autopilot` (keyed by session).
+struct AutopilotState: Decodable, Sendable, Hashable {
+    var remaining: Int
+    let projectId: String
+    /// The budget it started with (gateways from 2026-10-02 on).
+    var count: Int?
+    var paused: Bool?
+    var pauseReason: String?
+    /// Sent with every step, after the "keep going" prompt.
+    var instruction: String?
+}
+
+/// What autopilot last ran with in a conversation, to prefill a restart.
+struct AutopilotLast: Decodable, Sendable {
+    let count: Int?
+    let instruction: String?
+}
+
+struct AutopilotBody: Encodable, Sendable {
+    let projectId: String
+    let sessionId: String
+    let count: Int
+    let instruction: String?
+}
+
+struct AutopilotInstructionBody: Encodable, Sendable {
+    let projectId: String
+    let sessionId: String
+    let instruction: String
+}
+
+struct SessionOnly: Encodable, Sendable { let sessionId: String }
+
+// MARK: notification settings
+
+/// This device's notification settings (`/api/push/settings`, keyed by its
+/// push endpoint, which for an iPhone is `apns:<token>`).
+struct DeviceSettings: Codable, Sendable, Equatable {
+    struct QuietHours: Codable, Sendable, Equatable {
+        var enabled: Bool
+        var start: String
+        var end: String
+    }
+    /// Long turns you started finished, autopilot runs ended, parked turns.
+    var finished: Bool
+    /// Autopilot, cron, relays, delegates.
+    var automation: Bool
+    var quietHours: QuietHours
+    var timeZone: String?
+}
+
+struct PushSettingsBody: Encodable, Sendable {
+    let endpoint: String
+    let settings: DeviceSettings
+}
+
+struct ApnsTestBody: Encodable, Sendable { let token: String }
+
+// MARK: raw transcript
+
+/// One page of a conversation's own transcript (`conversations/raw-page`),
+/// paged by byte offset. Each entry is a raw transcript line.
+struct RawPage: Decodable, Sendable {
+    struct Entry: Decodable, Sendable {
+        let at: Int
+        let line: JSONValue
+        let truncated: Bool?
+    }
+    let provider: String?
+    let size: Int
+    let start: Int
+    let end: Int
+    let entries: [Entry]
+    let done: Bool
 }
 
 struct ApnsStatus: Decodable, Sendable {

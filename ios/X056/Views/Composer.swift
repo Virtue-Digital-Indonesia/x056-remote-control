@@ -26,7 +26,12 @@ struct ComposerArea: View {
     /// Folded while reading back through history.
     @Binding var folded: Bool
     var jumpToLatest: () -> Void = {}
+    var openAutopilot: () -> Void = {}
+    @Environment(AppModel.self) private var app
     @State private var showQueue = false
+    /// Typing a message: a question card folds to its header, or with the
+    /// keyboard up the two fill the screen and send hides behind the keys.
+    @State private var typing = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,10 +81,16 @@ struct ComposerArea: View {
                         .padding(.vertical, 8)
                         .glassEffect(.regular, in: .rect(cornerRadius: 16, style: .continuous))
                 }
-                if let q = model.question {
-                    QuestionCard(question: q, model: model)
+                if let sid = model.sessionId, let pilot = app.autopilot[sid] {
+                    AutopilotBar(state: pilot, working: model.isWorking, open: openAutopilot) {
+                        Task { try? await app.stopAutopilot(sessionId: sid) }
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                Composer(model: model, showQueue: $showQueue)
+                if let q = model.question {
+                    QuestionCard(question: q, model: model, folded: typing)
+                }
+                Composer(model: model, showQueue: $showQueue, editing: $typing)
             }
         }
     }
@@ -89,6 +100,8 @@ struct Composer: View {
     @Environment(AppModel.self) private var app
     let model: ConversationModel
     @Binding var showQueue: Bool
+    /// Set while the message box has the keyboard.
+    var editing: Binding<Bool>? = nil
     @State private var text = ""
     @State private var files: [PendingFile] = []
     @State private var picks: [PhotosPickerItem] = []
@@ -137,7 +150,7 @@ struct Composer: View {
                 }
                 .glassEffect(.regular.interactive(), in: .circle)
                 .accessibilityLabel("Attach")
-                ComposerTextView(text: $text, placeholder: placeholder, longTextLimit: Self.longTextChars) { pasted in
+                ComposerTextView(text: $text, placeholder: placeholder, longTextLimit: Self.longTextChars, editing: editing) { pasted in
                     files.append(contentsOf: pasted)
                 }
                 .frame(minHeight: 44)

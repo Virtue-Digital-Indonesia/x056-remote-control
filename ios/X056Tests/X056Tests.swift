@@ -114,6 +114,33 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
     }
 }
 
+@Suite struct TranscriptLineTests {
+    private func entry(_ json: String, at: Int = 0) -> RawPage.Entry {
+        RawPage.Entry(at: at, line: try! JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)), truncated: nil)
+    }
+
+    @Test func readsAClaudeToolCallAndItsFailedResult() {
+        let call = Transcript.lines(entry(#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":1200,"output_tokens":40},"content":[{"type":"text","text":"Running the tests."},{"type":"tool_use","name":"Bash","input":{"command":"npm test","description":"Run the suite"}}]}}"#, at: 10), provider: "claude")
+        #expect(call.map(\.kind) == [.text, .tool])
+        #expect(call[1].text == "Bash(npm test)")
+        #expect(call[1].tag == "opus-5-5 · in 1.2k · out 40")
+        let result = Transcript.lines(entry(#"{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":[{"type":"text","text":"2 failed"}]}]}}"#), provider: "claude")
+        #expect(result.first?.kind == .err)
+        #expect(result.first?.text == "2 failed")
+    }
+
+    @Test func readsACodexCallItsOutputAndAnError() {
+        let call = Transcript.lines(entry(#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"go test ./...\"}"}}"#), provider: "codex")
+        #expect(call.first?.kind == .tool)
+        #expect(call.first?.text == "exec_command(go test ./...)")
+        let output = Transcript.lines(entry(#"{"type":"response_item","payload":{"type":"function_call_output","output":"{\"output\":\"ok  pkg 0.3s\"}"}}"#), provider: "codex")
+        #expect(output.first?.text == "ok  pkg 0.3s")
+        let error = Transcript.lines(entry(#"{"type":"event_msg","payload":{"type":"error","message":"usage limit reached"}}"#), provider: "codex")
+        #expect(error.first?.kind == .err)
+        #expect(error.first?.quiet == false)
+    }
+}
+
 @Suite struct PasskeyPlumbingTests {
     @Test func base64URLRoundTripsWithoutPadding() {
         let bytes = Data([0xfb, 0xff, 0x00, 0x10, 0x3e])

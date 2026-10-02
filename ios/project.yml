@@ -21,6 +21,10 @@ targets:
         - X056UITests
     sources:
       - path: X056
+      - path: Shared
+    dependencies:
+      - target: X056Widgets
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: id.val.x056
@@ -52,6 +56,12 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSPhotoLibraryUsageDescription: Attach screenshots and photos to a message.
+        # A running turn on the Lock Screen (X056Widgets, Shared/TurnActivity.swift).
+        NSSupportsLiveActivities: true
+        # x056://conversation?projectId=…&sessionId=… (a Live Activity's tap).
+        CFBundleURLTypes:
+          - CFBundleURLName: id.val.x056
+            CFBundleURLSchemes: [x056]
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     entitlements:
@@ -62,6 +72,28 @@ targets:
         # /.well-known/apple-app-site-association (server/apple-app-site.ts).
         com.apple.developer.associated-domains:
           - webcredentials:x056.rc.val.id
+  X056Widgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: X056Widgets
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: id.val.x056.widgets
+        PRODUCT_NAME: X056Widgets
+        INFOPLIST_FILE: X056Widgets/Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: "YES"
+    info:
+      path: X056Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: x056
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
   X056Tests:
     type: bundle.unit-test
     platform: iOS

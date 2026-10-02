@@ -11,6 +11,10 @@ struct SettingsView: View {
     @State private var passkeyCount: Int?
     @State private var passkeyResult: String?
     @State private var addingPasskey = false
+    /// This iPhone's notification settings on the gateway.
+    @State private var notify: DeviceSettings?
+    @State private var notifyError: String?
+    @AppStorage(LiveTurns.enabledKey) private var liveActivities = true
 
     var body: some View {
         NavigationStack {
@@ -58,6 +62,39 @@ struct SettingsView: View {
                 } footer: {
                     Text("The gateway sends a notification when a turn finishes, fails, asks you something, or is interrupted. Reply straight from the notification.")
                 }
+                if let notify {
+                    Section {
+                        LabeledContent("Needs you", value: "Always")
+                        Toggle("Finished long turns I started", isOn: binding(\.finished))
+                        Toggle("Automation and background", isOn: binding(\.automation))
+                    } header: {
+                        Text("What this iPhone gets")
+                    } footer: {
+                        Text("Needs you: questions, approvals, failed turns and failed scheduled tasks. Long turns: 45 seconds or more, the end of an autopilot run, a parked turn. Automation: autopilot steps' results, scheduled tasks, delegates and conversations messaging each other.")
+                    }
+                    Section {
+                        Toggle("Quiet hours", isOn: binding(\.quietHours.enabled))
+                        if notify.quietHours.enabled {
+                            DatePicker("From", selection: time(\.quietHours.start), displayedComponents: .hourAndMinute)
+                            DatePicker("Until", selection: time(\.quietHours.end), displayedComponents: .hourAndMinute)
+                        }
+                    } footer: {
+                        Text("Nothing reaches this iPhone in quiet hours, urgent notices included. Times are this iPhone's (\(TimeZone.current.identifier)).")
+                    }
+                } else if let notifyError {
+                    Section("What this iPhone gets") {
+                        Text(notifyError).font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                Section {
+                    Toggle("Turns I send", isOn: $liveActivities)
+                } header: {
+                    Text("Live Activities")
+                } footer: {
+                    Text(LiveTurns.shared.available
+                         ? "A turn you send from this iPhone shows on the Lock Screen and in the Dynamic Island until it ends: the step it is on, how long it has run, and how it ended. Any running conversation can be followed from its ⋯ menu."
+                         : "Live Activities are off for x056 in the iPhone's Settings.")
+                }
                 Section {
                     Button("Sign out", role: .destructive) { confirmSignOut = true }
                 } footer: {
@@ -92,9 +129,27 @@ struct SettingsView: View {
     }
 
     private func refresh() async {
+        // Each part on its own: one slow answer must not hold up the rest.
+        async let apns = try? app.client?.get("/api/push/apns", as: ApnsStatus.self)
+        async let passkeys = try? app.client?.get("/api/auth/passkey/list", as: [PasskeyInfo].self)
+        async let device: Void = loadNotify()
+        gateway = await apns
+        passkeyCount = await passkeys?.count
+        await device
         authorization = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
-        gateway = try? await app.client?.get("/api/push/apns", as: ApnsStatus.self)
-        passkeyCount = (try? await app.client?.get("/api/auth/passkey/list", as: [PasskeyInfo].self))?.count
+    }
+
+    private func loadNotify() async {
+        if app.pushEndpoint == nil {
+            notifyError = "Allow notifications first: these settings belong to this iPhone's registration with the gateway."
+        } else {
+            do {
+                notify = try await app.pushSettings()
+                notifyError = nil
+            } catch {
+                notifyError = error.localizedDescription
+            }
+        }
     }
 
     private func addPasskey() async {
@@ -111,10 +166,42 @@ struct SettingsView: View {
         }
     }
 
+    /// A toggle that saves to the gateway as it changes.
+    private func binding<V>(_ path: WritableKeyPath<DeviceSettings, V>) -> Binding<V> {
+        Binding(get: { notify![keyPath: path] }, set: { value in
+            notify?[keyPath: path] = value
+            save()
+        })
+    }
+
+    /// "22:00" on the gateway, a time of day here.
+    private func time(_ path: WritableKeyPath<DeviceSettings, String>) -> Binding<Date> {
+        Binding(get: {
+            let parts = (notify?[keyPath: path] ?? "00:00").split(separator: ":").compactMap { Int($0) }
+            return Calendar.current.date(bySettingHour: parts.first ?? 0, minute: parts.count > 1 ? parts[1] : 0, second: 0, of: Date()) ?? Date()
+        }, set: { date in
+            let c = Calendar.current.dateComponents([.hour, .minute], from: date)
+            notify?[keyPath: path] = String(format: "%02d:%02d", c.hour ?? 0, c.minute ?? 0)
+            save()
+        })
+    }
+
+    private func save() {
+        guard let notify else { return }
+        Task {
+            do {
+                if let saved = try await app.savePushSettings(notify) { self.notify = saved }
+            } catch {
+                notifyError = error.localizedDescription
+            }
+        }
+    }
+
     private func test() async {
         guard let client = app.client else { return }
         do {
-            let r: ApnsTestReply = try await client.post("/api/push/apns/test", Empty(), as: ApnsTestReply.self)
+            // Only this iPhone (a gateway that predates `token` sends to all).
+            let r: ApnsTestReply = try await client.post("/api/push/apns/test", ApnsTestBody(token: Push.deviceToken?.lowercased() ?? ""), as: ApnsTestReply.self)
             testResult = r.results.isEmpty ? "No devices registered." : r.results.map { "\($0.env) \($0.token): \($0.status == 200 ? "sent" : "\($0.status) \($0.reason ?? "")")" }.joined(separator: "\n")
         } catch {
             testResult = error.localizedDescription

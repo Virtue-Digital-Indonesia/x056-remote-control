@@ -370,10 +370,25 @@ final class ConversationModel {
                 rows.removeAll { $0.id == rowId }
             } else if reply.status == "failed" || reply.status == "cancelled" {
                 markFailed(rowId, reply.error ?? "The gateway did not accept the message.")
+            } else if LiveTurns.enabled {
+                followOnLockScreen()
             }
         } catch {
             markFailed(rowId, error.localizedDescription)
         }
+    }
+
+    /// This conversation's turn on the Lock Screen and in the Dynamic Island.
+    func followOnLockScreen() {
+        guard let sessionId else { return }
+        // Steps since the last prompt, for a turn that is already running.
+        let since = rows.lastIndex { $0.role == .user } ?? -1
+        let steps = rows.indices.filter { $0 > since && rows[$0].role == .action }.count
+        LiveTurns.shared.follow(projectId: projectId, sessionId: sessionId,
+                                title: conversation?.title ?? "New conversation",
+                                project: project?.name ?? "x056", provider: provider,
+                                steps: isRunning ? steps : 0, activity: isRunning ? activity : nil,
+                                autopilot: app.autopilot[sessionId])
     }
 
     private func steer(_ prompt: String, sessionId: String, client: APIClient) async {
