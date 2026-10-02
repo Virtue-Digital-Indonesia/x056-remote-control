@@ -636,6 +636,17 @@ export class ApiController {
     catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
+  /** Put delegates away: `id` (a working one is stopped first), or `all`:
+   *  "finished" (every one not working) or "all". */
+  @Post('delegates/dismiss')
+  @HttpCode(200)
+  delegateDismiss(@Body() b: { projectId?: string; sessionId?: string; id?: string; all?: string }) {
+    if (!b?.projectId || !b.sessionId) throw new BadRequestException('projectId and sessionId required');
+    const all = b.all === 'finished' || b.all === 'all' ? b.all : undefined;
+    try { return { dismissed: this.manager.dismissDelegates(b.projectId, b.sessionId, { id: b.id || undefined, all }) }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
   /** Every report this orchestrator's delegates wrote, oldest first. */
   @Get('delegates/reports')
   delegateReports(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {

@@ -56,6 +56,11 @@ export interface Delegate {
   pending: string[];
   account?: string;
   lastReport?: DelegateReport;
+  /** Put away: hidden from the Delegates bar and out of the active limit, but
+   *  kept with its reports and transcript. A follow-up revives it. `auto` =
+   *  its DONE report was delivered and the orchestrator's turn on it ended. */
+  dismissedAt?: string;
+  dismissedBy?: 'auto' | 'user';
 }
 
 export interface DelegateReport {
@@ -72,6 +77,9 @@ export interface DelegateReport {
   gateBy: 'jev' | 'openai' | 'rule' | 'none';
   /** Whether the orchestrator has been handed this report. */
   woke: boolean;
+  /** The queued wake message that carried it (absent on reports from before
+   *  2026-10-02); once that item has left the queue the report was consumed. */
+  queueId?: string;
 }
 
 interface Roster { parentProjectId: string; parentSessionId: string; delegates: Delegate[] }
@@ -115,13 +123,16 @@ export class DelegateStore {
   }
   /** Mark reports as handed to the orchestrator. The log is small (one line
    *  per delegate turn), so it is rewritten whole, via a rename. */
-  markWoke(parentSid: string, keys: Set<string>): void {
-    const all = this.reports(parentSid).map((r) => (keys.has(reportKey(r)) ? { ...r, woke: true } : r));
+  markWoke(parentSid: string, keys: Set<string>, queueId?: string): void {
+    const all = this.reports(parentSid).map((r) => (keys.has(reportKey(r)) ? { ...r, woke: true, ...(queueId ? { queueId } : {}) } : r));
     mkdirSync(this.dir, { recursive: true });
     const tmp = this.reportsFile(parentSid) + '.tmp';
     writeFileSync(tmp, all.map((r) => JSON.stringify(r) + '\n').join(''), { mode: 0o600 });
     renameSync(tmp, this.reportsFile(parentSid));
   }
+
+  /** Whether this conversation has ever had a delegate (cheap: one stat). */
+  has(parentSid: string): boolean { return ID.test(parentSid) && existsSync(this.file(parentSid)); }
 
   /** Every orchestrator with delegates, for boot-time recovery. */
   parents(): { parentProjectId: string; parentSessionId: string }[] {
@@ -131,6 +142,25 @@ export class DelegateStore {
       return { parentProjectId: r.parentProjectId, parentSessionId: r.parentSessionId };
     }).filter((p) => p.parentProjectId && p.parentSessionId);
   }
+}
+
+/** Counts against the limit and holds its role name. */
+export const isActive = (d: Pick<Delegate, 'status' | 'dismissedAt'>) => d.status !== 'stopped' && !d.dismissedAt;
+
+/**
+ * The auto-dismiss rule: a delegate is put away once its latest report was
+ * gated DONE, handed to the orchestrator, and the message carrying it has left
+ * the queue (dispatched) -- called when an orchestrator turn ends, so that
+ * turn read it. Needs-orchestrator / needs-human / blocked reports stay: they
+ * ask for action. A working delegate, or one with instructions waiting, stays.
+ * `queuedIds` = the orchestrator's queue items still waiting; `delegateQueued`
+ * = whether one of them is a delegate wake (for reports with no queueId).
+ */
+export function autoDismissible(d: Delegate, reports: Map<string, DelegateReport>, queuedIds: Set<string>, delegateQueued: boolean, working: boolean): boolean {
+  if (d.dismissedAt || working || d.status !== 'idle' || d.pending.length || !d.lastReport) return false;
+  const r = reports.get(reportKey(d.lastReport));
+  if (!r || r.gate !== 'done' || !r.woke) return false;
+  return r.queueId ? !queuedIds.has(r.queueId) : !delegateQueued;
 }
 
 export const reportKey = (r: Pick<DelegateReport, 'at' | 'delegateId'>) => r.delegateId + '@' + r.at;
@@ -207,6 +237,6 @@ export function digest(reports: DelegateReport[], roster: Delegate[]): string {
     return `## ${r.role} (${r.delegateId}) - ${GATE_TITLE[r.gate]}${r.gateConfidence != null ? ` (${Math.round(r.gateConfidence * 100)}%)` : ''}\n` +
       `<${who}${who ? ' · ' : ''}turn ${r.turn}${r.status !== 'completed' ? ' · ' + r.status : ''}>\n\n${clipped || '(no report text)'}`;
   });
-  const state = roster.filter((d) => d.status !== 'stopped').map((d) => `${d.role} ${d.status}`).join(', ');
+  const state = roster.filter(isActive).map((d) => `${d.role} ${d.status}`).join(', ');
   return [head, ...parts, `Team now: ${state || 'none active'}. Continue one with delegate_followup, start another with delegate, or report to the user. Reports marked "needs a person" also reached the user as a notification.`].join('\n\n');
 }

@@ -234,6 +234,10 @@
   /* Delegates: an orchestrator's hidden workers, one compact bar. */
   #delegatesBar { max-width: 780px; margin: 0 auto 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); overflow: hidden; }
   #delegatesBar[hidden] { display: none; }
+  .dg-headrow { display: flex; align-items: center; min-width: 0; }
+  .dg-headrow .dg-head { flex: 1; min-width: 0; }
+  .dg-clear { flex: none; margin-right: 8px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+  .dg-clear:hover, .dg-clear:focus-visible { color: var(--text); border-color: var(--faint); }
   .dg-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
   .dg-head > .ic { color: var(--accent); flex: none; }
   .dg-head strong { font-weight: 600; }
@@ -1101,7 +1105,7 @@ main.atree-open .scroll, main.atree-open #jumpBtn, main.atree-open #streamStatus
 .at-dg-btn { box-sizing: border-box; width: 100%; display: grid; grid-template-columns: minmax(70px, auto) minmax(0, 1fr) auto auto; gap: 4px 12px; align-items: center; padding: 5px 8px; border: 1px solid #22303a; background: transparent; color: #d6dde6; font: inherit; text-align: left; cursor: pointer; }
 .at-dg-btn:hover, .at-dg-btn:focus-visible { background: #161b22; border-color: var(--at-dg); outline: none; }
 .at-dg-btn .role { font-weight: 700; color: #e6edf3; } .at-dg-btn .model { color: var(--at-dg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .at-dg-btn .st { color: var(--at-muted); font-size: 11.5px; white-space: nowrap; }
-.at-dg.working .st { color: var(--at-adv); }
+.at-dg.working .st { color: var(--at-adv); } .at-dg.dismissed { opacity: .55; }
 .at-dg-btn .gate { font-size: 11px; padding: 0 7px; border: 1px solid currentColor; border-radius: 999px; white-space: nowrap; }
 .at-dg-btn .gate.done { color: var(--at-jev); } .at-dg-btn .gate.needs_orchestrator { color: var(--at-sub); } .at-dg-btn .gate.needs_human, .at-dg-btn .gate.blocked { color: var(--at-warn); }
 .at-adv { box-sizing: border-box; background: transparent; color: #d6dde6; border: 1px solid var(--at-adv); padding: 10px 14px 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -3127,7 +3131,9 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   var DELEGATE_STATE = { working: 'Working', failed: 'Stopped with an error', needs: 'Waiting on you', idle: 'Reported' };
   function renderDelegates() {
     var bar = $('delegatesBar'); if (!bar) return;
-    var list = delegateState.list.filter(function (d) { return d.status !== 'stopped' || d.working; });
+    // Dismissed ones are put away (the agent tree still has them); stopped
+    // ones left the team until a follow-up revives them.
+    var list = delegateState.list.filter(function (d) { return !d.dismissedAt && (d.status !== 'stopped' || d.working); });
     bar.textContent = '';
     if (!list.length) { bar.hidden = true; return; }
     bar.hidden = false; bar.classList.toggle('open', !!delegateState.open);
@@ -3140,7 +3146,15 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     head.appendChild(sum);
     var chev = icon('chevron', 'sm'); chev.classList.add('dg-chev'); head.appendChild(chev);
     head.addEventListener('click', function () { delegateState.open = !delegateState.open; renderDelegates(); });
-    bar.appendChild(head);
+    var headRow = document.createElement('div'); headRow.className = 'dg-headrow'; headRow.appendChild(head);
+    var finished = list.filter(function (d) { return delegateClass(d) !== 'working'; });
+    if (finished.length) {
+      var clear = document.createElement('button'); clear.type = 'button'; clear.className = 'dg-clear'; clear.textContent = 'Dismiss finished';
+      clear.title = 'Put away every delegate that is not working (' + finished.length + ')';
+      clear.addEventListener('click', function () { dismissFinishedDelegates(finished); });
+      headRow.appendChild(clear);
+    }
+    bar.appendChild(headRow);
     var rows = document.createElement('div'); rows.className = 'dg-list';
     list.forEach(function (d) {
       var cls = delegateClass(d), row = document.createElement('div'); row.className = 'dg-row ' + cls;
@@ -3158,6 +3172,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       act('terminal', 'Open its transcript', function () { if (terminalView && terminalView.showDelegate) terminalView.showDelegate(d.id, d.role); });
       act('send', 'Message it directly', function () { delegateState.saying = delegateState.saying === d.id ? '' : d.id; renderDelegates(); });
       if (cls === 'working') act('stop', 'Stop it', function () { stopDelegate(d.id); });
+      act('x', 'Dismiss', function () { dismissDelegate(d); });
       row.appendChild(acts);
       if (delegateState.saying === d.id) {
         var say = document.createElement('form'); say.className = 'dg-say';
@@ -3178,6 +3193,30 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   }
   function messageDelegate(id, text) { delegateState.saying = ''; renderDelegates(); delegateCall('/api/delegates/followup', { id: id, message: text, fromHuman: true }); }
   function stopDelegate(id) { delegateCall('/api/delegates/stop', { id: id }); }
+  /** Put one away. A working one is stopped first, and one that is waiting on
+   *  you is asked about: both lose something the bar was showing. */
+  function dismissDelegate(d) {
+    var cls = delegateClass(d);
+    var ask = cls === 'working' ? { title: 'Stop and dismiss ' + d.role + '?', message: 'It is still working. Its turn ends now; its reports and transcript stay, and a message revives it.', confirmText: 'Stop and dismiss', danger: true }
+      : cls === 'needs' ? { title: 'Dismiss ' + d.role + '?', message: 'Its last report is waiting on you. It stays in the agent tree, and a message revives it.', confirmText: 'Dismiss' } : null;
+    (ask ? uiConfirm(ask) : Promise.resolve(true)).then(function (ok) {
+      if (!ok) return;
+      delegateState.list = delegateState.list.map(function (x) { return x.id === d.id ? Object.assign({}, x, { dismissedAt: new Date().toISOString() }) : x; });
+      renderDelegates();
+      delegateCall('/api/delegates/dismiss', { id: d.id });
+    });
+  }
+  function dismissFinishedDelegates(finished) {
+    var waiting = finished.filter(function (d) { return delegateClass(d) === 'needs'; });
+    var ask = waiting.length ? { title: 'Dismiss ' + finished.length + ' finished delegate' + (finished.length === 1 ? '' : 's') + '?', message: waiting.map(function (d) { return d.role; }).join(', ') + (waiting.length === 1 ? ' is' : ' are') + ' waiting on you. They stay in the agent tree, and a message revives any of them.', confirmText: 'Dismiss all' } : null;
+    (ask ? uiConfirm(ask) : Promise.resolve(true)).then(function (ok) {
+      if (!ok) return;
+      var ids = finished.map(function (d) { return d.id; });
+      delegateState.list = delegateState.list.map(function (x) { return ids.indexOf(x.id) >= 0 ? Object.assign({}, x, { dismissedAt: new Date().toISOString() }) : x; });
+      renderDelegates();
+      delegateCall('/api/delegates/dismiss', { all: 'finished' });
+    });
+  }
   function refreshJevStatus() {
     var get = function (u) { return api(u).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }); };
     return Promise.all([get('/api/jev/status'), get('/api/decisions/status')]).then(function (s) { jevStatus = s[0]; decisionsStatus = s[1]; if (currentProjectId) syncDecider(currentProjectId); });
@@ -7694,6 +7733,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     fmtTok: fmtTok, costLabel: costLabel, fmtDur: fmtDur,
     messageDelegate: function (id, text) { return delegateCall('/api/delegates/followup', { id: id, message: text, fromHuman: true }); },
     stopDelegate: function (id) { return delegateCall('/api/delegates/stop', { id: id }); },
+    dismissDelegate: function (id) { return delegateCall('/api/delegates/dismiss', { id: id }); },
+    confirm: uiConfirm,
     scrollChat: function () { if (typeof down === 'function') down(); },
   }) : null;
   $('atreeBtn').addEventListener('click', function () { if (agentTree) agentTree.toggle(); });

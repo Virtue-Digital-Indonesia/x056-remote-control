@@ -296,13 +296,13 @@ QUEUE_TOOLS.push({
 });
 QUEUE_TOOLS.push({
   name: 'list_delegates',
-  description: 'Delegates of this conversation (or of another one: give projectId and sessionId): role, provider and model, status, and the start of each last report. Pass id for one delegate with its full last report.',
-  inputSchema: { type: 'object', properties: { projectId: { type: 'string' }, sessionId: { type: 'string' }, id: { type: 'string' } }, additionalProperties: false },
+  description: 'Delegates of this conversation (or of another one: give projectId and sessionId): role, provider and model, status, and the start of each last report. Pass id for one delegate with its full last report. Dismissed delegates (put away once their DONE report reached you, or by hand) are left out unless include_dismissed is true.',
+  inputSchema: { type: 'object', properties: { projectId: { type: 'string' }, sessionId: { type: 'string' }, id: { type: 'string' }, include_dismissed: { type: 'boolean', description: 'Also list dismissed delegates (default false). delegate_followup revives one.' } }, additionalProperties: false },
 });
 QUEUE_TOOLS.push({
   name: 'stop_delegate',
-  description: 'Stop a delegate (or all of them, without id) of this conversation or of another one (projectId + sessionId): its turn ends and its waiting instructions are dropped. A later delegate_followup from its orchestrator revives it with its context.',
-  inputSchema: { type: 'object', properties: { projectId: { type: 'string' }, sessionId: { type: 'string' }, id: { type: 'string' } }, additionalProperties: false },
+  description: 'Stop a delegate (or all of them, without id) of this conversation or of another one (projectId + sessionId): its turn ends and its waiting instructions are dropped. With dismiss: true it is also put away (out of the Delegates bar and the 8-active limit; its reports stay). A later delegate_followup from its orchestrator revives it with its context.',
+  inputSchema: { type: 'object', properties: { projectId: { type: 'string' }, sessionId: { type: 'string' }, id: { type: 'string' }, dismiss: { type: 'boolean', description: 'Also dismiss it (default false).' } }, additionalProperties: false },
 });
 
 QUEUE_TOOLS.push({
@@ -617,7 +617,7 @@ export async function callToolResult(api, name, args) {
       const other = args.projectId && args.sessionId && ['list_delegates', 'stop_delegate'].includes(name);
       if (!other && (!SELF.projectId || !SELF.sessionId)) throw new Error(name + ' is only available to a conversation running on this gateway (a delegate cannot delegate)');
       const self = other ? { projectId: args.projectId, sessionId: args.sessionId } : { projectId: SELF.projectId, sessionId: SELF.sessionId };
-      const clip = (d) => ({ id: d.id, role: d.role, provider: d.provider, ...(d.model ? { model: d.model } : {}), ...(d.effort ? { effort: d.effort } : {}), status: d.working ? 'working' : d.status, turns: d.turns, queued: (d.pending || []).length,
+      const clip = (d) => ({ id: d.id, role: d.role, provider: d.provider, ...(d.model ? { model: d.model } : {}), ...(d.effort ? { effort: d.effort } : {}), status: d.working ? 'working' : d.status, turns: d.turns, queued: (d.pending || []).length, ...(d.dismissedAt ? { dismissed: true } : {}),
         ...(d.lastReport ? { lastReport: { at: d.lastReport.at, gate: d.lastReport.gate, status: d.lastReport.status, text: d.lastReport.text } } : {}) });
       if (name === 'delegate') {
         const d = await api('/api/delegates', { method: 'POST', body: JSON.stringify({ ...self, role: args.role, brief: args.brief, provider: args.provider, model: args.model, effort: args.effort, targetProjectId: args.projectId, advisor: args.advisor }) });
@@ -630,12 +630,15 @@ export async function callToolResult(api, name, args) {
       if (name === 'list_delegates') {
         const q = new URLSearchParams({ ...self, ...(args.id ? { id: args.id } : {}) });
         const r = await api('/api/delegates?' + q);
-        const list = (r.delegates || []).map(clip);
-        const text = list.length ? list.map((d) => `${d.id} ${d.role} · ${d.provider}${d.model ? ' ' + d.model : ''} · ${d.status}${d.queued ? ` (+${d.queued} queued)` : ''}${d.lastReport ? `\n  last report (${d.lastReport.gate}): ${args.id ? d.lastReport.text : d.lastReport.text.split('\n')[0]}` : ''}`).join('\n') : 'No delegates yet.';
+        const list = (r.delegates || []).filter((d) => args.id || args.include_dismissed === true || !d.dismissedAt).map(clip);
+        const hidden = (r.delegates || []).length - list.length;
+        const text = (list.length ? list.map((d) => `${d.id} ${d.role} · ${d.provider}${d.model ? ' ' + d.model : ''} · ${d.status}${d.dismissed ? ' · dismissed' : ''}${d.queued ? ` (+${d.queued} queued)` : ''}${d.lastReport ? `\n  last report (${d.lastReport.gate}): ${args.id ? d.lastReport.text : d.lastReport.text.split('\n')[0]}` : ''}`).join('\n') : hidden ? 'No active delegates.' : 'No delegates yet.') + (hidden ? `\n(${hidden} dismissed: include_dismissed to list them)` : '');
         return result(text, { delegates: list });
       }
       const r = await api('/api/delegates/stop', { method: 'POST', body: JSON.stringify({ ...self, ...(args.id ? { id: args.id } : {}) }) });
-      return result(`Stopped ${r.stopped} delegate(s).`, { stopped: r.stopped });
+      if (args.dismiss !== true) return result(`Stopped ${r.stopped} delegate(s).`, { stopped: r.stopped });
+      const x = await api('/api/delegates/dismiss', { method: 'POST', body: JSON.stringify({ ...self, ...(args.id ? { id: args.id } : { all: 'all' }) }) });
+      return result(`Stopped ${r.stopped} and dismissed ${x.dismissed} delegate(s).`, { stopped: r.stopped, dismissed: x.dismissed });
     }
     if (name === 'set_helpers') {
       const target = args.projectId && args.sessionId ? { projectId: args.projectId, sessionId: args.sessionId } : { projectId: SELF.projectId, sessionId: SELF.sessionId };
@@ -708,7 +711,7 @@ export async function callToolResult(api, name, args) {
     const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}&limit=${limit}&strict=true`);
     // Its helpers and delegates, so a reader can see and then steer them.
     const state = await api(`/api/conversations/helpers?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}`).catch(() => null);
-    const team = (state?.delegates || []).map((d) => ({ id: d.id, role: d.role, provider: d.provider, status: d.working ? 'working' : d.status }));
+    const team = (state?.delegates || []).filter((d) => !d.dismissedAt).map((d) => ({ id: d.id, role: d.role, provider: d.provider, status: d.working ? 'working' : d.status }));
     const head = state ? `[helpers: ${helperText(state.helpers, state.effectiveRouter)}${team.length ? ` · delegates: ${team.map((d) => d.role + ' ' + d.status).join(', ')}` : ''}]\n\n` : '';
     return result(head + fmtHistory(rows), { messages: messages(rows), ...(state ? { helpers: state.helpers, ...(state.effectiveRouter !== undefined ? { effectiveRouter: state.effectiveRouter } : {}), delegates: team } : {}) });
   }

@@ -41,7 +41,7 @@
     run: ['run', 'Working'], bg: ['run', 'Background work'], needs: ['needs', 'Needs you'], blocked: ['needs', 'Blocked'],
     done: ['done', 'Done'], reported: ['idle', 'Reported'], idle: ['idle', 'Idle'],
     ended: ['ended', 'Ended · no result'], stopped: ['stopped', 'Stopped'], failed: ['failed', 'Failed'],
-    interrupted: ['failed', 'Interrupted'], unknown: ['unknown', 'Status unknown'],
+    interrupted: ['failed', 'Interrupted'], dismissed: ['stopped', 'Dismissed'], unknown: ['unknown', 'Status unknown'],
   };
   var RANK = { run: 0, needs: 1, done: 2, idle: 2, ended: 3, stopped: 4, failed: 5, unknown: 6 };
   function st(k) { var s = STATUS[k] || STATUS.unknown; return { id: STATUS[k] ? k : 'unknown', key: s[0], label: s[1] }; }
@@ -51,6 +51,8 @@
   }
   function delegateStatus(d) {
     if (d.working || d.status === 'working') return 'run';
+    // Put away by hand or after its DONE report was read: still listed, faint.
+    if (d.dismissedAt) return 'dismissed';
     if (d.status === 'interrupted') return 'interrupted';
     if (d.status === 'failed') return 'failed';
     if (d.status === 'stopped') return 'stopped';
@@ -614,7 +616,15 @@
         var sendB = el('button', 'ap-btn pri', 'Send'); sendB.type = 'submit';
         var stopB = el('button', 'ap-btn'); stopB.type = 'button'; add(stopB, icon('stop'), el('span', '', 'Stop')); stopB.disabled = delegateStatus(d) !== 'run';
         var termB = el('button', 'ap-btn'); termB.type = 'button'; add(termB, icon('console'), el('span', '', 'Terminal')); termB.title = 'Open its transcript in the terminal view';
-        add(foot, inp, sendB, stopB, termB);
+        var disB = el('button', 'ap-btn'); disB.type = 'button'; add(disB, icon('x'), el('span', '', d.dismissedAt ? 'Dismissed' : 'Dismiss'));
+        disB.title = d.dismissedAt ? 'Put away; a message revives it' : 'Put it away: out of the Delegates bar, kept here'; disB.disabled = !!d.dismissedAt;
+        add(foot, inp, sendB, stopB, termB, disB);
+        disB.addEventListener('click', function () {
+          if (!engine.dismissDelegate) return;
+          var go = function () { engine.dismissDelegate(d.id); disB.disabled = true; stopB.disabled = true; };
+          if (delegateStatus(d) === 'run' && engine.confirm) engine.confirm({ title: 'Stop and dismiss ' + d.role + '?', message: 'It is still working. Its turn ends now; its reports and transcript stay, and a message revives it.', confirmText: 'Stop and dismiss', danger: true }).then(function (ok) { if (ok) go(); });
+          else go();
+        });
         foot.addEventListener('submit', function (e) { e.preventDefault(); var v = inp.value.trim(); if (!v || !engine.messageDelegate) return; inp.value = ''; engine.messageDelegate(d.id, v); if (engine.notify) engine.notify('Sent to ' + d.role + '.'); });
         stopB.addEventListener('click', function () { if (engine.stopDelegate) engine.stopDelegate(d.id); stopB.disabled = true; });
         termB.addEventListener('click', function () { if (engine.openDelegate) engine.openDelegate(d.id, d.role); });
@@ -907,7 +917,7 @@
   var VERDICT = { proceed: 'proceed', adjust: 'adjust', looks_good: 'looks good', concern: 'concern' };
   // Every value the server can send, each with its own glyph and words.
   var SUB_STATUS = { running: ['◐', 'running'], done: ['✓', 'done'], ended: ['⊘', 'ended · no result'], stopped: ['■', 'stopped'], failed: ['✕', 'failed'], unknown: ['◌', 'status unknown'] };
-  var DG_STATUS = { working: 'working', idle: 'idle', failed: 'failed', stopped: 'stopped', interrupted: 'interrupted' };
+  var DG_STATUS = { working: 'working', idle: 'idle', failed: 'failed', stopped: 'stopped', interrupted: 'interrupted', dismissed: 'dismissed' };
   var GATE = { done: 'done', needs_orchestrator: 'needs orchestrator', needs_human: 'needs you', blocked: 'blocked' };
   var SUB_RANK = { running: 0, done: 2, ended: 3, stopped: 4, failed: 5, unknown: 6 };
 
@@ -1347,12 +1357,13 @@
       var ul = put(li, el('ul', 'at-dgs'));
       Model.bySt(list.map(function (d) { return { d: d, status: Model.delegateStatus(d) }; })).forEach(function (x) {
         var d = x.d;
-        var r = el('li', 'at-dg ' + (d.status || ''));
+        var gone = !!d.dismissedAt && !d.working, word = gone ? 'dismissed' : (DG_STATUS[d.status] || d.status);
+        var r = el('li', 'at-dg ' + (d.status || '') + (gone ? ' dismissed' : ''));
         var b = put(r, el('button', 'at-dg-btn')); b.type = 'button'; b.dataset.delegate = d.id;
-        b.setAttribute('aria-label', 'Delegate ' + d.role + ', ' + (DG_STATUS[d.status] || d.status) + ' — open its transcript');
+        b.setAttribute('aria-label', 'Delegate ' + d.role + ', ' + word + ' — open its transcript');
         add(b, el('span', 'role', d.role));
         add(b, el('span', 'model', d.model ? modelName(d.model) + (d.effort ? ' · ' + d.effort : '') : 'default'));
-        add(b, el('span', 'st', (d.working || d.status === 'working' ? '● ' : '○ ') + (DG_STATUS[d.status] || d.status) + ' · ' + d.turns + ' turn' + (d.turns === 1 ? '' : 's') + (d.pending && d.pending.length ? ' · ' + d.pending.length + ' queued' : '')));
+        add(b, el('span', 'st', (d.working || d.status === 'working' ? '● ' : '○ ') + word + ' · ' + d.turns + ' turn' + (d.turns === 1 ? '' : 's') + (d.pending && d.pending.length ? ' · ' + d.pending.length + ' queued' : '')));
         if (d.lastReport && d.lastReport.gate) add(b, el('span', 'gate ' + d.lastReport.gate, GATE[d.lastReport.gate] || d.lastReport.gate));
         b.addEventListener('click', function () { if (engine.openDelegate) engine.openDelegate(d.id, d.role); });
         add(ul, r);

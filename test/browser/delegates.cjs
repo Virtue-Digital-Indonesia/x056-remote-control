@@ -102,7 +102,78 @@ const TOKEN = 'browser-fixture-token-0123456789';
   assert.equal(over, false, 'the delegates bar overflows on a phone');
   await p2.screenshot({ path: '/tmp/x056-delegates-phone.png' });
 
+  // ---- Dismissing (2026-10-02): the bar used to keep every reported
+  // delegate forever. A roster of four: working, waiting on a person, two reported.
+  const rosterFile = path.join(state, 'delegates', conv.sessionId + '.json');
+  const live = JSON.parse(fs.readFileSync(rosterFile, 'utf8'));
+  const rep2 = (id, role, gate, text) => ({ at: iso(20000), delegateId: id, role, turn: 1, status: 'completed', text, durationMs: 40000, gate, gateBy: 'jev', woke: true });
+  live.delegates = [
+    { ...live.delegates.find((d) => d.id === 'd-backend'), status: 'working' },
+    { ...live.delegates.find((d) => d.id === 'd-reviewer'), status: 'idle', lastReport: report },
+    { id: 'd-docs', role: 'docs', brief: 'Write the changelog.', provider: 'codex', model: 'gpt-6-astra', projectId: project.id, cwd: root, sessionId: crypto.randomUUID(), status: 'idle', createdAt: iso(80000), updatedAt: iso(20000), turns: 1, pending: [], lastReport: rep2('d-docs', 'docs', 'done', 'DONE\nChangelog written.') },
+    { id: 'd-qa', role: 'qa', brief: 'Run the e2e suite.', provider: 'codex', model: 'gpt-6-astra', projectId: project.id, cwd: root, sessionId: crypto.randomUUID(), status: 'idle', createdAt: iso(80000), updatedAt: iso(20000), turns: 1, pending: [], lastReport: rep2('d-qa', 'qa', 'needs_orchestrator', 'DONE\n42 passed.') },
+  ];
+  fs.writeFileSync(rosterFile, JSON.stringify(live));
+  const rosterNow = async () => (await api(`/api/delegates?projectId=${project.id}&sessionId=${conv.sessionId}`)).delegates;
+  const shots = async (tag) => {
+    for (const [w, h] of [[1440, 900], [390, 844]]) for (const theme of ['light', 'dark']) {
+      const c = await browser.newContext({ viewport: { width: w, height: h } });
+      await c.addInitScript((t) => { localStorage.setItem('x056_token', 'browser-fixture-token-0123456789'); localStorage.removeItem('x056_terminal'); localStorage.setItem('x056_theme', t); }, theme);
+      const pg = await c.newPage(); pg.on('pageerror', (e) => errors.push(e.message));
+      await pg.goto(base); await pg.waitForSelector('.cr-task');
+      await pg.locator('.cr-task').filter({ hasText: 'Build the new homepage' }).first().click();
+      await pg.waitForSelector('#delegatesBar:not([hidden])', { timeout: 8000 });
+      if (!(await pg.locator('#delegatesBar').evaluate((b) => b.classList.contains('open')))) await pg.locator('#delegatesBar .dg-head').click();
+      const over = await pg.locator('#delegatesBar').evaluate((bar) => { const b = bar.getBoundingClientRect(); return b.right > window.innerWidth + 1 || [...bar.querySelectorAll('*')].some((e) => { const r = e.getBoundingClientRect(); return r.width && r.right > b.right + 1; }); });
+      assert.equal(over, false, `the delegates bar overflows at ${w}px ${theme}`);
+      await pg.locator('#delegatesBar').screenshot({ path: `/tmp/x056-dismiss-${tag}-${w}-${theme}.png` });
+      await c.close();
+    }
+  };
+  await shots('before');
+
+  await page.goto(base); await page.waitForSelector('.cr-task');
+  await page.locator('.cr-task').filter({ hasText: 'Build the new homepage' }).first().click();
+  await page.waitForSelector('#delegatesBar:not([hidden])', { timeout: 8000 });
+  if (!(await page.locator('#delegatesBar').evaluate((b) => b.classList.contains('open')))) await page.locator('#delegatesBar .dg-head').click();
+  assert.equal(await page.locator('#delegatesBar .dg-row').count(), 4);
+  assert.match(await page.locator('#delegatesBar .dg-sum').textContent(), /1 working · 1 waiting on you · 2 reported/);
+  assert.equal(await page.locator('#delegatesBar .dg-clear').textContent(), 'Dismiss finished');
+
+  // The row's x: a reported one goes at once, no question asked.
+  await page.locator('#delegatesBar .dg-row').filter({ hasText: 'docs' }).locator('button[title="Dismiss"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('#delegatesBar .dg-row').length === 3);
+  for (let i = 0; i < 20 && !(await rosterNow()).find((d) => d.id === 'd-docs').dismissedAt; i++) await page.waitForTimeout(100);
+  assert.equal((await rosterNow()).find((d) => d.id === 'd-docs').dismissedBy, 'user');
+
+  // "Dismiss finished": the reviewer waits on a person, so it asks first.
+  await page.locator('#delegatesBar .dg-clear').click();
+  const dlg = page.locator('dialog.modal-wrap');
+  await dlg.waitFor();
+  assert.match(await dlg.textContent(), /Dismiss 2 finished delegates\?reviewer is waiting on you/);
+  await dlg.locator('button', { hasText: 'Cancel' }).click();
+  assert.equal(await page.locator('#delegatesBar .dg-row').count(), 3, 'cancel keeps them');
+  await page.locator('#delegatesBar .dg-clear').click();
+  await dlg.locator('button', { hasText: 'Dismiss all' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('#delegatesBar .dg-row').length === 1);
+  assert.equal(await page.locator('#delegatesBar .dg-clear').count(), 0, 'nothing finished left to dismiss');
+  assert.match(await page.locator('#delegatesBar .dg-row').textContent(), /backend/);
+  for (let i = 0; i < 20 && (await rosterNow()).filter((d) => d.dismissedAt).length < 3; i++) await page.waitForTimeout(100);
+  assert.deepEqual((await rosterNow()).filter((d) => d.dismissedAt).map((d) => d.id).sort(), ['d-docs', 'd-qa', 'd-reviewer']);
+  await shots('after');
+
+  // A working one: stop and dismiss, after a question. Then the bar is gone.
+  await page.locator('#delegatesBar .dg-row').filter({ hasText: 'backend' }).locator('button[title="Dismiss"]').click();
+  await dlg.waitFor();
+  assert.match(await dlg.textContent(), /Stop and dismiss backend\?/);
+  await dlg.locator('button', { hasText: 'Stop and dismiss' }).click();
+  await page.waitForSelector('#delegatesBar[hidden]', { state: 'attached', timeout: 5000 });
+  for (let i = 0; i < 20 && !(await rosterNow()).find((d) => d.id === 'd-backend').dismissedAt; i++) await page.waitForTimeout(100);
+  assert.equal((await rosterNow()).find((d) => d.id === 'd-backend').status, 'stopped');
+  // Kept for the record: the API still lists all four, each one dismissed.
+  assert.equal((await rosterNow()).filter((d) => d.dismissedAt).length, 4);
+
   assert.deepEqual(errors, []);
   await browser.close();
-  console.log('PASS delegates: bar and rows, report cards, a delegate transcript in the terminal, a direct message runs a hidden turn, nothing in the sidebar');
+  console.log('PASS delegates: bar and rows, report cards, a delegate transcript in the terminal, a direct message runs a hidden turn, nothing in the sidebar, dismiss one / finished / a working one');
 })().catch((e) => { console.error(e); process.exit(1); });

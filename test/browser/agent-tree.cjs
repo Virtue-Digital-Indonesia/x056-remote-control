@@ -240,6 +240,10 @@ const SHOTS = '/tmp/x056-agent-tree';
     await page.screenshot({ path: SHOTS + '/detail-delegate-dark-1440.png' });
     assert.equal(await page.locator('#agentPaneHistory .ap-send input').count(), 1);
     assert.equal(await page.locator('#agentPaneHistory .ap-send button').filter({ hasText: 'Stop' }).isDisabled(), true);
+    // Dismiss: put away from the Delegates bar, still listed here, faint.
+    await page.locator('#agentPaneHistory .ap-send button').filter({ hasText: 'Dismiss' }).click();
+    await page.waitForFunction(() => /Dismissed/.test((document.querySelector('#agentPane .ap-row[data-key="dg:d-reviewer"]') || {}).textContent || ''), null, { timeout: 8000 });
+    assert.ok((await api(`/api/delegates?projectId=${project.id}&sessionId=${sid}&id=d-reviewer`)).delegates[0].dismissedAt);
     // The advisor on Claude: calls, and why there is no advice to read.
     await row(page, 'advisor').click();
     assert.match(await page.locator('#agentPaneHistBody').textContent(), /advice comes back encrypted/);

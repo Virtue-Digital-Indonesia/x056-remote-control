@@ -133,6 +133,7 @@ describe('all advertised output contracts', () => {
       if (path === '/api/delegates') return manager.startDelegate(body.projectId, body.sessionId, { role: body.role, brief: body.brief, provider: body.provider, model: body.model });
       if (path === '/api/delegates/followup') return manager.delegateFollowup(body.projectId, body.sessionId, body.id, body.message);
       if (path === '/api/delegates/stop') return { stopped: manager.stopDelegates(body.projectId, body.sessionId, body.id) };
+      if (path === '/api/delegates/dismiss') return { dismissed: manager.dismissDelegates(body.projectId, body.sessionId, { id: body.id, all: body.all }) };
       const q = new URLSearchParams(path.split('?')[1]);
       return { delegates: manager.listDelegates(q.get('projectId')!, q.get('sessionId')!, q.get('id') || undefined) };
     };
@@ -143,6 +144,14 @@ describe('all advertised output contracts', () => {
     expect(validateResult('list_delegates', await dtool('list_delegates', {})).delegates).toHaveLength(1);
     expect(validateResult('list_delegates', await dtool('list_delegates', { id: started.id })).delegates[0]).toMatchObject({ role: 'backend' });
     expect(validateResult('stop_delegate', await dtool('stop_delegate', {}))).toEqual({ stopped: 1 });
+    // Dismissed: out of the list unless asked for.
+    const reviewerD = validateResult('delegate', await dtool('delegate', { role: 'reviewer', brief: 'Review it.' }));
+    expect(validateResult('stop_delegate', await dtool('stop_delegate', { id: reviewerD.id, dismiss: true }))).toEqual({ stopped: 1, dismissed: 1 });
+    const visible = await dtool('list_delegates', {});
+    expect(validateResult('list_delegates', visible).delegates.map((d: { role: string }) => d.role)).toEqual(['backend']);
+    expect(visible.content[0].text).toMatch(/1 dismissed: include_dismissed to list them/);
+    expect(validateResult('list_delegates', await dtool('list_delegates', { include_dismissed: true })).delegates.find((d: { id: string }) => d.id === reviewerD.id)).toMatchObject({ dismissed: true });
+    expect(validateResult('list_delegates', await dtool('list_delegates', { id: reviewerD.id })).delegates[0]).toMatchObject({ dismissed: true });
     for (const n of ['delegate', 'delegate_followup', 'list_delegates', 'stop_delegate']) covered.add(n);
 
     // Another conversation's helpers: change only what is named, read them back.

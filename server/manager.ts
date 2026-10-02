@@ -4,7 +4,7 @@ import { checkFork, JEV_POLICY, JevService, type DecisionContext, type ForkDecis
 import { OpenAIDecisionsService } from './openai-decisions.js';
 import { claudeTeamAgents, codexTeamConfig, teamInstructions, teamTurnLine, TEAM_EFFORT } from './team.js';
 import { ClaudeAdvisorLog, buildTurns, forkSummary, mainRun, tailJsonl, teamRun } from './agent-tree.js';
-import { checkBrief, checkRole, decideGate, delegateInstructions, DelegateStore, digest, GATE_OPTIONS, GATE_QUESTION, gateState, MAX_DELEGATES, reportKey, ROUND_LIMIT, shouldWake, type Delegate, type DelegateReport } from './delegates.js';
+import { autoDismissible, checkBrief, checkRole, decideGate, isActive, delegateInstructions, DelegateStore, digest, GATE_OPTIONS, GATE_QUESTION, gateState, MAX_DELEGATES, reportKey, ROUND_LIMIT, shouldWake, type Delegate, type DelegateReport } from './delegates.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
 import { findRollout } from '../src/adapters/codex.js';
 import { advisorFor, AUTO_MODEL, CLAUDE_DEFAULT_EFFORT, jevCandidates, teamCandidates } from './decision-maker.js';
@@ -1888,8 +1888,8 @@ export class SessionManager {
     const parentProvider = this.projects().conversationProvider(parentPid, parentSid); // throws for an unknown conversation
     const role = checkRole(input.role), brief = checkBrief(input.brief);
     const store = this.delegateStore(), roster = store.list(parentPid, parentSid);
-    const active = roster.filter((d) => d.status !== 'stopped');
-    if (active.length >= MAX_DELEGATES) throw new Error(`An orchestrator can have ${MAX_DELEGATES} delegates; stop one with stop_delegate first.`);
+    const active = roster.filter(isActive);
+    if (active.length >= MAX_DELEGATES) throw new Error(`An orchestrator can have ${MAX_DELEGATES} delegates; stop or dismiss one with stop_delegate first.`);
     const same = active.find((d) => d.role.toLowerCase() === role.toLowerCase());
     if (same) throw new Error(`A delegate named "${role}" already exists (${same.id}): continue it with delegate_followup.`);
     const provider = (input.provider || parentProvider) as 'claude' | 'codex';
@@ -1921,12 +1921,20 @@ export class SessionManager {
     if (!fromHuman) this.bumpDelegateRounds(parentSid);
     const prompt = fromHuman ? '[From the user, directly]\n' + text : text;
     if ([...this.delegateRuns.values()].some((r) => r.id === id && r.parentSid === parentSid)) {
-      store.update(parentPid, parentSid, id, { pending: [...d.pending, prompt] });
+      store.update(parentPid, parentSid, id, { pending: [...d.pending, prompt], dismissedAt: undefined, dismissedBy: undefined });
       this.emitDelegates(parentPid, parentSid);
       return { id, status: 'queued' };
     }
-    if (d.status === 'stopped' && store.list(parentPid, parentSid).filter((x) => x.status !== 'stopped').length >= MAX_DELEGATES) throw new Error(`An orchestrator can have ${MAX_DELEGATES} active delegates; stop another first.`);
-    this.runDelegateTurn(parentPid, parentSid, d, prompt);
+    if (!isActive(d)) {
+      // Reviving a stopped or dismissed delegate: it counts again, and its
+      // role name may have been taken meanwhile.
+      const others = store.list(parentPid, parentSid).filter((x) => x.id !== id && isActive(x));
+      if (others.length >= MAX_DELEGATES) throw new Error(`An orchestrator can have ${MAX_DELEGATES} active delegates; stop or dismiss another first.`);
+      const same = others.find((x) => x.role.toLowerCase() === d.role.toLowerCase());
+      if (same) throw new Error(`Another delegate named "${d.role}" is active (${same.id}); dismiss it first or continue that one.`);
+      if (d.dismissedAt) store.update(parentPid, parentSid, id, { dismissedAt: undefined, dismissedBy: undefined });
+    }
+    this.runDelegateTurn(parentPid, parentSid, store.get(parentPid, parentSid, id)!, prompt);
     return { id, status: 'working' };
   }
 
@@ -1945,6 +1953,64 @@ export class SessionManager {
     if (id && !n && !store.get(parentPid, parentSid, id)) throw new Error('unknown delegate ' + id);
     this.emitDelegates(parentPid, parentSid);
     return n;
+  }
+
+  /** Put delegates away (the person's or the orchestrator's choice): one by
+   *  id, every one that is not working (`finished`), or every one (`all`). A
+   *  working one named by id, or under `all`, is stopped first. The record,
+   *  its reports and its transcript stay; a follow-up revives it. */
+  dismissDelegates(parentPid: string, parentSid: string, which: { id?: string; all?: 'finished' | 'all' }): number {
+    const store = this.delegateStore();
+    const working = (d: Delegate) => [...this.delegateRuns.values()].some((r) => r.id === d.id && r.parentSid === parentSid);
+    const roster = store.list(parentPid, parentSid);
+    if (which.id && !roster.some((d) => d.id === which.id)) throw new Error('unknown delegate ' + which.id);
+    if (!which.id && which.all !== 'finished' && which.all !== 'all') throw new Error('give id, or all: "finished" or "all"');
+    // "Finished" = not working by either measure, as the panel shows it.
+    const picked = roster.filter((d) => !d.dismissedAt && (which.id ? d.id === which.id : which.all === 'all' || (!working(d) && d.status !== 'working')));
+    for (const d of picked) if (working(d) || d.status === 'working') this.stopDelegates(parentPid, parentSid, d.id);
+    const at = new Date().toISOString();
+    for (const d of picked) store.update(parentPid, parentSid, d.id, { dismissedAt: at, dismissedBy: 'user' });
+    if (picked.length) this.emitDelegates(parentPid, parentSid);
+    return picked.length;
+  }
+
+  /** The auto rule (`autoDismissible`), run when an orchestrator turn ends and
+   *  once at boot. Serialised with report handling, so a report being gated
+   *  right now (its run already gone, its status not yet written) is never
+   *  mistaken for an old one. */
+  private dismissDelivered(parentPid: string, parentSid: string): Promise<void> {
+    const prev = this.delegateSettling.get(parentSid) ?? Promise.resolve();
+    const next = prev.then(() => { this.dismissDeliveredNow(parentPid, parentSid); }).catch((e) => {
+      console.error('[delegates] could not dismiss delivered reports:', (e as Error).message);
+    });
+    this.delegateSettling.set(parentSid, next);
+    return next;
+  }
+  private dismissDeliveredNow(parentPid: string, parentSid: string): number {
+    if (this.destroyed) return 0;
+    const store = this.delegateStore();
+    const roster = store.list(parentPid, parentSid);
+    if (!roster.some((d) => !d.dismissedAt)) return 0;
+    const reports = new Map(store.reports(parentSid).map((r) => [reportKey(r), r]));
+    const waiting = (this.loadQueues()[parentPid] ?? []).filter((x) => x.sessionId === parentSid);
+    const queuedIds = new Set(waiting.map((x) => x.id)), delegateQueued = waiting.some((x) => x.sender?.kind === 'delegate');
+    const at = new Date().toISOString();
+    let n = 0;
+    for (const d of roster) {
+      const working = [...this.delegateRuns.values()].some((r) => r.id === d.id && r.parentSid === parentSid);
+      if (!autoDismissible(d, reports, queuedIds, delegateQueued, working)) continue;
+      store.update(parentPid, parentSid, d.id, { dismissedAt: at, dismissedBy: 'auto' });
+      n++;
+    }
+    if (n) this.emitDelegates(parentPid, parentSid);
+    return n;
+  }
+  /** An orchestrator turn ended: the delegate reports it was handed are read. */
+  private orchestratorTurnEnded(sid: string): void {
+    const store = this.delegateStore();
+    if (!store.has(sid)) return;
+    const pid = store.roster('', sid).parentProjectId;
+    if (pid) void this.dismissDelivered(pid, sid);
   }
 
   /** One hidden turn: runSession like any conversation (accounts, failover,
@@ -2037,9 +2103,16 @@ export class SessionManager {
     const text = digest(waiting, store.list(parentPid, parentSid));
     try {
       const earlier = (this.loadQueues()[parentPid] ?? []).find((x) => x.sessionId === parentSid && x.sender?.kind === 'delegate' && !x.dispatching);
-      if (earlier) this.editQueueItem(parentPid, earlier.id, { text: earlier.text + '\n\n---\n\n' + text });
-      else this.enqueue(parentPid, { sessionId: parentSid, sender: { kind: 'delegate' }, text });
-      store.markWoke(parentSid, new Set(waiting.map(reportKey)));
+      let queueId: string;
+      if (earlier) { this.editQueueItem(parentPid, earlier.id, { text: earlier.text + '\n\n---\n\n' + text }); queueId = earlier.id; }
+      else queueId = this.enqueue(parentPid, { sessionId: parentSid, sender: { kind: 'delegate' }, text }).id;
+      const keys = new Set(waiting.map(reportKey));
+      store.markWoke(parentSid, keys, queueId);
+      // The roster's copy of each last report says so too (the panel reads it).
+      const roster = store.list(parentPid, parentSid);
+      let touched = false;
+      for (const d of roster) if (d.lastReport && keys.has(reportKey(d.lastReport))) { d.lastReport = { ...d.lastReport, woke: true, queueId }; touched = true; }
+      if (touched) store.save(parentPid, parentSid, roster);
     } catch (e) {
       this.emit('delegate_warning', { projectId: parentPid, sessionId: parentSid, message: 'Could not hand the delegate reports to this conversation: ' + (e as Error).message });
     }
@@ -2068,6 +2141,9 @@ export class SessionManager {
         store.update(p.parentProjectId, p.parentSessionId, d.id, { status: 'interrupted', turns: d.turns + 1, lastReport: report });
       }
       if (hit) setTimeout(() => { try { this.wakeOrchestrator(p.parentProjectId, p.parentSessionId); } catch { /* the conversation may be gone */ } }, 0);
+      // DONE reports delivered before this boot (or before auto-dismiss
+      // existed) are put away now, rather than sitting in the bar forever.
+      try { this.dismissDeliveredNow(p.parentProjectId, p.parentSessionId); } catch { /* a broken roster stays as it is */ }
     }
   }
 
@@ -2710,6 +2786,11 @@ export class SessionManager {
       if (kind === 'session_done' && (data.status === 'stopped' || run?.stopRequested || (data.status === 'completed' && run?.suppressCompletion))) data = { ...data, notificationSuppressed: true };
       if (['session_started', 'session_error', 'turn_orphaned', 'question'].includes(kind)) this.completions.cancel(sid);
       if (['background_state', 'assistant_text', 'activity'].includes(kind)) this.completions.touch(sid);
+      // An orchestrator turn that ended (not one stopped) has read the
+      // delegate reports it was handed: DONE ones are put away.
+      if ((kind === 'session_done' && data.status !== 'stopped') || kind === 'session_error') {
+        try { this.orchestratorTurnEnded(sid); } catch { /* never let this break the event */ }
+      }
       if (kind === 'session_done') {
         const ap = this.loadAutopilot()[sid];
         if (data.status === 'completed') {

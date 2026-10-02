@@ -190,4 +190,97 @@ describe('delegates on the gateway', () => {
     expect(woke).toHaveLength(1);
     expect(readMessageSender(woke[0].text).text).toMatch(/Interrupted by a gateway restart/);
   });
+
+  describe('dismissing', () => {
+    const byRole = (mgr: SessionManager, gates: Record<string, string>) => {
+      vi.spyOn(mgr.jev(), 'configured').mockReturnValue(true);
+      vi.spyOn(mgr.jev(), 'choose').mockImplementation(async (_sid, q) => ({ at: 't', sessionId: 's', backend: 'jev', question: 'q', options: [], choice: gates[(q.state as Record<string, string>).worker_role], confidence: 0.95, verdict: 'sharp', latencyMs: 1 }) as ForkDecision);
+    };
+    const drain = () => new Promise((r) => setTimeout(r, 600));
+    const dismissed = (mgr: SessionManager, pid: string, sid: string) => Object.fromEntries(mgr.listDelegates(pid, sid).map((d) => [d.role, d.dismissedBy ?? null]));
+
+    it('puts a DONE delegate away when the orchestrator turn that read its report ends; needs-a-person stays', async () => {
+      const f = fixture(); const { pid, sid } = await orchestrator(f);
+      byRole(f.mgr, { backend: 'done', reviewer: 'needs_human' });
+      const a = f.mgr.startDelegate(pid, sid, { role: 'backend', brief: 'A' });
+      const b = f.mgr.startDelegate(pid, sid, { role: 'reviewer', brief: 'B' });
+      await tick();
+      f.finish(a.sessionId, 'DONE: shipped'); await tick();
+      f.finish(b.sessionId, 'NEEDS HUMAN: credentials'); await tick();
+      expect(queued(f.mgr, pid, sid)).toHaveLength(1);
+      const queueId = f.mgr.delegateStore().reports(sid)[0].queueId;
+      expect(queueId).toBeTruthy();
+      expect(f.mgr.listDelegates(pid, sid).find((d) => d.role === 'backend')?.lastReport).toMatchObject({ woke: true, queueId });
+      // The turn that was running when the reports arrived did not read them.
+      f.finish(sid, 'planned'); await tick();
+      expect(dismissed(f.mgr, pid, sid)).toEqual({ backend: null, reviewer: null });
+      // The digest is dispatched as the next turn; when THAT ends, DONE goes.
+      await drain();
+      expect(f.calls.at(-1)!.sessionId).toBe(sid);
+      expect(queued(f.mgr, pid, sid)).toHaveLength(0);
+      f.finish(sid, 'noted'); await tick();
+      expect(dismissed(f.mgr, pid, sid)).toEqual({ backend: 'auto', reviewer: null });
+    });
+
+    it('never puts away a delegate that is working again, and a failed orchestrator turn counts as read', async () => {
+      const f = fixture(); const { pid, sid } = await orchestrator(f);
+      byRole(f.mgr, { backend: 'done', dwh: 'done' });
+      const a = f.mgr.startDelegate(pid, sid, { role: 'backend', brief: 'A' });
+      const b = f.mgr.startDelegate(pid, sid, { role: 'dwh', brief: 'B' });
+      await tick();
+      f.finish(a.sessionId, 'DONE'); f.finish(b.sessionId, 'DONE'); await tick(); await tick();
+      f.finish(sid, 'planned'); await drain();
+      // The orchestrator reads the digest and sends backend more work.
+      f.mgr.delegateFollowup(pid, sid, a.id, 'One more thing.');
+      await tick();
+      f.finish(sid, 'oops', 'failed'); await tick();
+      expect(dismissed(f.mgr, pid, sid)).toEqual({ backend: null, dwh: 'auto' });
+    });
+
+    it('by hand: one, every finished one, and a working one is stopped first; out of the limit and the role names', async () => {
+      const f = fixture(); const { pid, sid } = await orchestrator(f);
+      byRole(f.mgr, {});
+      for (let i = 0; i < MAX_DELEGATES; i++) f.mgr.startDelegate(pid, sid, { role: 'w' + i, brief: 'x' });
+      await tick();
+      const ds = f.mgr.listDelegates(pid, sid);
+      f.finish(ds[0].sessionId, 'DONE'); f.finish(ds[1].sessionId, 'DONE'); await tick(); await tick();
+      expect(() => f.mgr.dismissDelegates(pid, sid, { id: 'd-nope' })).toThrow(/unknown delegate/);
+      expect(f.mgr.dismissDelegates(pid, sid, { id: ds[2].id })).toBe(1);
+      await tick();
+      expect(f.mgr.listDelegates(pid, sid)[2]).toMatchObject({ dismissedBy: 'user', status: 'stopped', working: false });
+      expect(f.mgr.dismissDelegates(pid, sid, { all: 'finished' })).toBe(2);
+      expect(f.mgr.listDelegates(pid, sid).filter((d) => d.dismissedAt).map((d) => d.role).sort()).toEqual(['w0', 'w1', 'w2']);
+      // Three slots free, and the names with them.
+      expect(() => f.mgr.startDelegate(pid, sid, { role: 'w0', brief: 'again' })).not.toThrow();
+      const n1 = f.mgr.startDelegate(pid, sid, { role: 'n1', brief: 'x' }); f.mgr.startDelegate(pid, sid, { role: 'n2', brief: 'x' });
+      expect(() => f.mgr.startDelegate(pid, sid, { role: 'n3', brief: 'x' })).toThrow(/8 delegates/);
+      // Reviving needs a slot, and its name back.
+      expect(() => f.mgr.delegateFollowup(pid, sid, ds[1].id, 'more')).toThrow(/8 active delegates/);
+      expect(f.mgr.dismissDelegates(pid, sid, { id: n1.id })).toBe(1); // working: stopped, then put away
+      await tick();
+      expect(() => f.mgr.delegateFollowup(pid, sid, ds[0].id, 'more')).toThrow(/Another delegate named "w0"/);
+      expect(f.mgr.delegateFollowup(pid, sid, ds[1].id, 'more')).toEqual({ id: ds[1].id, status: 'working' });
+      const w1 = f.mgr.listDelegates(pid, sid).find((d) => d.id === ds[1].id)!;
+      expect(w1).toMatchObject({ working: true, turns: 1 });
+      expect(w1.dismissedAt).toBeUndefined();
+      expect(f.calls.at(-1)).toMatchObject({ sessionId: ds[1].sessionId, prompt: 'more', resume: true });
+      // Persisted: a restart still knows who was put away.
+      const again = new SessionManager({ stateDir: f.stateDir, workspaceRoot: f.dir, runSessionFn: (async () => new Promise(() => {})) as never });
+      expect(again.listDelegates(pid, sid).filter((d) => d.dismissedAt).length).toBe(f.mgr.listDelegates(pid, sid).filter((d) => d.dismissedAt).length);
+    });
+
+    it('at boot, DONE reports delivered before it are put away; other gates and working delegates are not', async () => {
+      const f = fixture(); const { pid, sid } = await orchestrator(f);
+      const store = new DelegateStore(f.stateDir);
+      const rep = (id: string, gate: DelegateReport['gate'], at: string): DelegateReport => ({ at, delegateId: id, role: id, turn: 1, status: 'completed', text: 'DONE', gate, gateBy: 'jev', woke: true });
+      const base = (id: string, status: Delegate['status'], lastReport: DelegateReport): Delegate => ({ id, role: id, brief: 'x', provider: 'claude', projectId: pid, cwd: f.dir, sessionId: 's-' + id, status, createdAt: 't', updatedAt: 't', turns: 1, pending: [], lastReport: { ...lastReport, woke: false } });
+      const r1 = rep('d-done', 'done', '2026-10-01T01:00:00Z'), r2 = rep('d-orch', 'needs_orchestrator', '2026-10-01T01:00:01Z'), r3 = rep('d-work', 'done', '2026-10-01T01:00:02Z');
+      store.save(pid, sid, [base('d-done', 'idle', r1), base('d-orch', 'idle', r2), base('d-work', 'working', r3)]);
+      for (const r of [r1, r2, r3]) store.addReport(sid, r);
+      const again = new SessionManager({ stateDir: f.stateDir, workspaceRoot: f.dir, runSessionFn: (async () => new Promise(() => {})) as never });
+      await tick();
+      expect(Object.fromEntries(again.listDelegates(pid, sid).map((d) => [d.id, d.dismissedBy ?? null]))).toEqual({ 'd-done': 'auto', 'd-orch': null, 'd-work': null });
+    });
+  });
 });
+

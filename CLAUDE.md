@@ -785,7 +785,29 @@ only), and Jev gates which reports wake the orchestrator.
   `X056_RELAY_FROM` = the orchestrator, so their sends count on its relay
   chain instead of starting a fresh, unbounded one. **Panel**: a Delegates bar above the composer
   (status per delegate, open its transcript in the terminal view -- the
-  pager takes `delegateId` -- message it directly, stop it).
+  pager takes `delegateId` -- message it directly, stop it, dismiss it).
+- **Dismissed (2026-10-02)**: the bar used to keep every delegate that had
+  reported, forever ("8 reported", no way out). Roster fields `dismissedAt`
+  + `dismissedBy: 'auto' | 'user'`; the record, reports and transcript stay.
+  A dismissed delegate is off the bar and its counts, out of the 8-active
+  limit and frees its role name (`isActive` = not stopped, not dismissed),
+  left out of the digest's "Team now", still in the agent tree (faint,
+  "Dismissed"). **Auto rule** (`autoDismissible`): latest report gated
+  `done`, handed over (`woke`), the queue item that carried it (`queueId`
+  on the report, set by `wakeOrchestrator`) has left the queue, the
+  delegate is idle with nothing pending -- checked when an orchestrator
+  turn ends (`session_done` not stopped, or `session_error`), serialised
+  on `delegateSettling` so a report mid-gate is never taken for an old
+  one. needs_orchestrator / needs_human / blocked never auto-dismiss.
+  Boot runs the same rule (`recoverDelegates`; reports from before
+  `queueId` count as consumed when no delegate wake is queued). **Revive**:
+  any follow-up (MCP, bar, agent tree) clears it, if a slot and its role
+  name are free. **By hand**: `POST /api/delegates/dismiss {projectId,
+  sessionId, id}` (a working one is stopped first) or `{..., all:
+  'finished' | 'all'}`; MCP `stop_delegate {dismiss: true}`; `list_delegates`
+  hides dismissed ones unless `include_dismissed`. Panel: a x per row,
+  "Dismiss finished" in the bar's head (asks when one waits on you or is
+  working), Dismiss in the agent tree's delegate detail.
 
 ## Agent tree (`server/public/agent-tree.js`, `server/agent-tree.ts`)
 
