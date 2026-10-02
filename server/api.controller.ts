@@ -1713,14 +1713,29 @@ export class ApiController {
 
   @Post('autopilot')
   @HttpCode(200)
-  setAutopilot(@Body() body: { projectId?: string; sessionId?: string; count?: number; prompt?: string; stopPhrase?: string }): { ok: boolean } {
+  setAutopilot(@Body() body: { projectId?: string; sessionId?: string; count?: number; prompt?: string; stopPhrase?: string; instruction?: string }): { ok: boolean } {
     if (!body?.projectId || !body?.sessionId || !body?.count) throw new BadRequestException('projectId, sessionId and count required');
+    if (body.instruction !== undefined && typeof body.instruction !== 'string') throw new BadRequestException('instruction must be a string');
     try {
-      this.manager.setAutopilot(body.projectId, body.sessionId, { count: body.count, prompt: body.prompt, stopPhrase: body.stopPhrase });
+      this.manager.setAutopilot(body.projectId, body.sessionId, { count: body.count, prompt: body.prompt, stopPhrase: body.stopPhrase, instruction: body.instruction });
       return { ok: true };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
     }
+  }
+
+  @Post('autopilot/instruction')
+  @HttpCode(200)
+  setAutopilotInstruction(@Body() body: { projectId?: string; sessionId?: string; instruction?: string }): { ok: boolean } {
+    if (!body?.projectId || !body?.sessionId || typeof body.instruction !== 'string') throw new BadRequestException('projectId, sessionId and instruction required');
+    if (!this.manager.setAutopilotInstruction(body.projectId, body.sessionId, body.instruction)) throw new ConflictException('no autopilot armed in this conversation');
+    return { ok: true };
+  }
+
+  @Get('autopilot/last')
+  autopilotLast(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string): unknown {
+    if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    return this.manager.autopilotLast(projectId, sessionId);
   }
 
   @Post('autopilot/stop')

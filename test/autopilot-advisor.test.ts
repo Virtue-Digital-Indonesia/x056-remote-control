@@ -62,7 +62,7 @@ describe('autopilot with the ChatGPT advisor', () => {
     mgr.continueSession(p.id, sid, 'the task', {});
     await waitFor(() => mgr.autopilotStatus()[sid] === undefined, 8000);
     await idle(mgr);
-    expect(texts.slice(1).map((t) => /never ran the tests/.test(t) ? 'ADVISOR' : t)).toEqual(['the task', 'ADVISOR', 'AP_STEP', 'AP_STEP']);
+    expect(texts.slice(1).map((t) => /never ran the tests/.test(t) ? 'ADVISOR' : t.split('\n\n')[0])).toEqual(['the task', 'ADVISOR', 'AP_STEP', 'AP_STEP']);
     const ap = seen.filter((e) => e.kind === 'autopilot').map((e) => e.data);
     expect(ap.at(-1)).toMatchObject({ active: false, reason: 'exhausted' });
     // Spent at send time: 2 -> 1 -> 0, once per AP_STEP actually sent.
@@ -113,7 +113,7 @@ describe('autopilot verdicts survive a queue drain', () => {
     await idle(mgr);
     await sleep(150);
     expect(mgr.autopilotStatus()[sid]).toBeUndefined();
-    expect(texts).not.toContain('AP_STEP');
+    expect(texts.some(t => t.startsWith('AP_STEP'))).toBe(false);
   });
 
   it('a failed turn pauses autopilot even though a queued message drained after it', async () => {
@@ -126,7 +126,7 @@ describe('autopilot verdicts survive a queue drain', () => {
     await idle(mgr);
     await sleep(150);
     expect(mgr.autopilotStatus()[sid]).toMatchObject({ paused: true, pauseReason: 'failed', remaining: 5 });
-    expect(texts).not.toContain('AP_STEP');
+    expect(texts.some(t => t.startsWith('AP_STEP'))).toBe(false);
   });
 
   it('a step skipped because a queued message was running is not spent', async () => {
@@ -139,8 +139,8 @@ describe('autopilot verdicts survive a queue drain', () => {
     mgr.enqueue(p.id, { text: 'REAL MESSAGE', sessionId: sid });
     await waitFor(() => mgr.autopilotStatus()[sid] === undefined, 10000);
     await idle(mgr);
-    expect(texts.filter((t) => t === 'AP_STEP')).toHaveLength(3);
-    expect(texts.indexOf('REAL MESSAGE')).toBeLessThan(texts.indexOf('AP_STEP'));
+    expect(texts.filter((t) => t.startsWith('AP_STEP\n\n'))).toHaveLength(3);
+    expect(texts.indexOf('REAL MESSAGE')).toBeLessThan(texts.findIndex(t => t.startsWith('AP_STEP\n\n')));
   }, 15000);
 });
 

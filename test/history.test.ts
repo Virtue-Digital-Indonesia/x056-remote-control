@@ -1,4 +1,5 @@
 import { withMessageSender } from '../src/message-sender.js';
+import { composeAutopilotPrompt } from '../src/autopilot.js';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +14,12 @@ function configDirWithTranscript(sessionId: string, lines: unknown[]): string {
   writeFileSync(join(projectDir, `${sessionId}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
   return configDir;
 }
+
+it('retains multiline standing instructions and autopilot attribution in Claude history', () => {
+  const text = composeAutopilotPrompt({ prompt: 'Continue task', stopPhrase: 'AUTOPILOT_DONE', instruction: 'Follow docs/plan.md\nTick off each item' });
+  const dir = configDirWithTranscript('autopilot', [{ type: 'user', message: { role: 'user', content: withMessageSender(text, { kind: 'autopilot' }) } }]);
+  expect(readSessionHistory([dir], 'autopilot')).toEqual([{ role: 'user', text, sender: { kind: 'autopilot' }, ts: undefined }]);
+});
 
 describe('readSessionHistory', () => {
   it('extracts user prompts, assistant text, tool calls and slash commands, skipping thinking/synthetic/meta noise', () => {
