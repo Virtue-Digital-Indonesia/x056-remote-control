@@ -56,6 +56,7 @@ import { withAskInstructions } from '../src/question.js';
 import type { PushService, DeviceSettings } from './push.js';
 import { Presence, type PresenceReport } from './presence.js';
 import { ReadState } from './read-state.js';
+import type { LiveActivities, TurnContent } from './live-activity.js';
 import type { ApnsConfig, ApnsEnv, ApnsService } from './apns.js';
 import type { WebAuthnService, SessionStore } from './webauthn.js';
 import { Public, readCookie } from './auth.guard.js';
@@ -134,6 +135,7 @@ export const STATE_DIR = Symbol('x056-state-dir');
 export const PUSH_SERVICE = Symbol('x056-push-service');
 export const PRESENCE = Symbol('x056-presence');
 export const READ_STATE = Symbol('x056-read-state');
+export const LIVE_ACTIVITIES = Symbol('x056-live-activities');
 export const WEBAUTHN_SERVICE = Symbol('x056-webauthn-service');
 export const SESSION_STORE = Symbol('x056-session-store');
 export const PLUGIN_MANAGER = Symbol('x056-plugin-manager');
@@ -177,6 +179,7 @@ export class ApiController {
     // Optional so a controller built by hand (tests) still works.
     @Optional() @Inject(PRESENCE) private readonly presence: Presence = new Presence(),
     @Optional() @Inject(READ_STATE) private readonly readState?: ReadState,
+    @Optional() @Inject(LIVE_ACTIVITIES) private readonly liveActivities?: LiveActivities,
   ) {
     this.loadQuotaCache();
     this.deliveries=manager.deliveries();
@@ -2052,13 +2055,37 @@ export class ApiController {
     return { ok: true, configured: true };
   }
 
-  /** Send one test banner to every registered device and report what APNs said. */
+  /** Send one test banner and report what APNs said: to the iPhone whose
+   *  `token` is given, else to every registered one. */
   @Post('push/apns/test')
   @HttpCode(200)
-  async apnsTest(): Promise<{ configured: boolean; results: Awaited<ReturnType<ApnsService['send']>> }> {
+  async apnsTest(@Body() body?: { token?: string }): Promise<{ configured: boolean; results: Awaited<ReturnType<ApnsService['send']>> }> {
     if (!this.push.apns?.configured) return { configured: false, results: [] };
-    const results = await this.push.apns.send({ title: 'x056 test notification', body: 'Notifications reach this iPhone.', kind: 'test', tag: 'x056-test' });
+    const only = typeof body?.token === 'string' && body.token ? [body.token] : undefined;
+    const results = await this.push.apns.send({ title: 'x056 test notification', body: 'Notifications reach this iPhone.', kind: 'test', tag: 'x056-test' }, only);
     return { configured: true, results };
+  }
+
+  /** A Live Activity the iOS app started: its push token, so the gateway can
+   *  keep the Lock Screen current while the phone is locked. */
+  @Post('push/apns/activity')
+  @HttpCode(200)
+  apnsActivity(@Body() body: { token?: string; env?: ApnsEnv; projectId?: string; sessionId?: string; content?: Partial<TurnContent> }): { ok: boolean } {
+    if (!this.liveActivities) throw new BadRequestException('Live Activities are not available');
+    const { projectId, sessionId } = this.conversationRef(body ?? {});
+    try {
+      this.liveActivities.register({ ...body, projectId, sessionId });
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+    return { ok: true };
+  }
+
+  @Post('push/apns/activity/end')
+  @HttpCode(200)
+  apnsActivityEnd(@Body() body: { token?: string }): { ok: boolean } {
+    if (body?.token) this.liveActivities?.unregister(body.token);
+    return { ok: true };
   }
 
   /**

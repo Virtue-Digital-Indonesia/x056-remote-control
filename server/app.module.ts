@@ -12,13 +12,14 @@ import { fileURLToPath } from 'node:url';
 import { Module } from '@nestjs/common';
 import { APP_GUARD, Reflector } from '@nestjs/core';
 import { AuthGuard } from './auth.guard.js';
-import { ApiController, STATE_DIR, PUSH_SERVICE, PRESENCE, READ_STATE, WEBAUTHN_SERVICE, SESSION_STORE, PLUGIN_MANAGER, MCP_SERVER_MANAGER } from './api.controller.js';
+import { ApiController, STATE_DIR, PUSH_SERVICE, PRESENCE, READ_STATE, LIVE_ACTIVITIES, WEBAUTHN_SERVICE, SESSION_STORE, PLUGIN_MANAGER, MCP_SERVER_MANAGER } from './api.controller.js';
 import { SessionManager } from './manager.js';
 import { AccountRegistry } from '../src/accounts.js';
 import { PushService } from './push.js';
 import { Presence } from './presence.js';
 import { ApnsService } from './apns.js';
 import { ReadState } from './read-state.js';
+import { LiveActivities } from './live-activity.js';
 import { PluginManager } from './plugins.js';
 import { McpServerManager } from './mcp-servers.js';
 import { CODEGRAPH, CodegraphClient, codegraphConfigFromEnv, type CodegraphConfig } from './codegraph.js';
@@ -97,16 +98,20 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // per-device settings, quiet hours, ids already sent). Browsers get it over
   // Web Push, the iOS app over APNs, under the same rules.
   const presence = new Presence();
+  const apns = new ApnsService(cfg.stateDir);
   const push = new PushService(cfg.stateDir, {
     noticeOf: (kind, data) => manager.noticeOf(kind, data),
     titlePending: (pid, sid) => manager.titlePending(pid, sid),
     presence,
-    apns: new ApnsService(cfg.stateDir),
+    apns,
   });
   manager.subscribe((e) => { push.notify(e.kind, e.data).catch(() => {}); });
   // Read and unread live here, not in each client, so web and phone agree.
   const readState = new ReadState(cfg.stateDir, (kind, data) => manager.broadcast(kind, data), (pid, sid) => presence.viewing(pid, sid));
   manager.subscribe((e) => { if (e.kind !== 'read_state') readState.observe(e.kind, e.data); });
+  // A running turn on the iPhone's Lock Screen, kept current over ActivityKit.
+  const liveActivities = new LiveActivities(cfg.stateDir, (token, env, payload, priority) => apns.sendActivity(token, env, payload, priority));
+  manager.subscribe((e) => liveActivities.observe(e.kind, e.data));
 
   // Passkey (WebAuthn) auth + the sessions it mints. The guard accepts either the
   // X056_TOKEN (fallback) or a valid passkey session cookie.
@@ -170,6 +175,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: PUSH_SERVICE, useValue: push },
       { provide: PRESENCE, useValue: presence },
       { provide: READ_STATE, useValue: readState },
+      { provide: LIVE_ACTIVITIES, useValue: liveActivities },
       { provide: WEBAUTHN_SERVICE, useValue: webauthn },
       { provide: SESSION_STORE, useValue: sessions },
       { provide: PLUGIN_MANAGER, useValue: plugins },

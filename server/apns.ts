@@ -165,6 +165,25 @@ export class ApnsService {
     return results.map((r) => ({ ...r, token: '…' + r.token.slice(-8) }));
   }
 
+  /** One ActivityKit push to a Live Activity's own token: its own topic and
+   *  push type. Priority 5 for step updates (Apple budgets 10s). */
+  async sendActivity(token: string, env: ApnsEnv, payload: Record<string, unknown>, priority: 5 | 10): Promise<ApnsReply> {
+    if (!this.configured) return { status: 0, reason: 'APNs is not configured' };
+    const body = JSON.stringify(payload);
+    const attempt = () => this.transport(env, `/3/device/${token}`, {
+      authorization: `bearer ${this.providerToken()}`,
+      'apns-topic': `${this.config!.bundleId}.push-type.liveactivity`,
+      'apns-push-type': 'liveactivity',
+      'apns-priority': String(priority),
+    }, body);
+    let reply = await attempt();
+    if (reply.status === 403 && reply.reason === 'ExpiredProviderToken') {
+      this.jwt = null;
+      reply = await attempt();
+    }
+    return reply;
+  }
+
   private async post(d: ApnsDevice, alert: ApnsAlert, body: string): Promise<ApnsReply> {
     const attempt = () => this.transport(d.env, `/3/device/${d.token}`, this.headers(alert), body);
     let reply = await attempt();
