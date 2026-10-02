@@ -15,7 +15,10 @@ const object = (properties, required = Object.keys(properties)) => ({
 });
 const provider = choices('claude', 'codex');
 const nullableProvider = { anyOf: [provider, { type: 'null' }] };
-const helpers = object({ advisor: bool, team: bool, router: choices('jev', 'decisions'), lean: choices('low', 'high') }, []);
+// router is what the user SAVED ('none' = "Your choice", absent = not
+// overridden); effectiveRouter is the picker that actually runs (null = none).
+const helpers = object({ advisor: bool, team: bool, router: choices('jev', 'decisions', 'none'), lean: choices('low', 'high') }, []);
+const effectiveRouter = { anyOf: [choices('jev', 'decisions'), { type: 'null' }] };
 const ref = (name) => ({ $ref: `#/$defs/${name}` });
 
 const memoryOwner=object({kind:choices('space','execution'),id:str});
@@ -81,9 +84,9 @@ const schemas = {
   read_reply: object({ messageId: str, found: bool, messages: array(message), truncated: bool }),
   list_projects: object({ projects: array(object({ id: str, name: str, cwd: { anyOf: [str, { type: 'null' }] }, provider, current: bool, kind: choices('project','chat'), parentProjectId: str, membershipRevision: integer }, ['id','name','cwd','provider','current'])) }),
   list_conversations: object({ conversations: array(object({ sessionId: str, title: str, provider, model: str,
-    effort: str, createdAt: str, current: bool, helpers }, ['sessionId', 'title', 'provider', 'current'])) }),
-  read_conversation: object({ messages: array(message), helpers, delegates: array(object({ id: str, role: str, provider, status: choices('working', 'idle', 'failed', 'stopped', 'interrupted') })) }, ['messages']),
-  set_helpers: object({ projectId: str, sessionId: str, helpers }),
+    effort: str, createdAt: str, current: bool, helpers, effectiveRouter }, ['sessionId', 'title', 'provider', 'current'])) }),
+  read_conversation: object({ messages: array(message), helpers, effectiveRouter, delegates: array(object({ id: str, role: str, provider, status: choices('working', 'idle', 'failed', 'stopped', 'interrupted') })) }, ['messages']),
+  set_helpers: object({ projectId: str, sessionId: str, helpers, effectiveRouter }, ['projectId', 'sessionId', 'helpers']),
   send_message: object({ delivery: sendResult }),
   list_queued: object({ messages: array(queueItem) }),
   cancel_queued: object({ projectId: str, id: str, ok: bool }),

@@ -148,7 +148,10 @@ describe('helpers combine', () => {
     AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }]);
     const calls: RunSessionOptions[] = [];
     const runSessionFn = (async (o: RunSessionOptions) => { calls.push(o); return { status: 'completed', finalAccount: 'a', failovers: 0 } as SessionResult; }) as unknown as typeof import('../src/failover.js').runSession;
-    return { mgr: new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn }), calls, dir };
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+    // A key makes Jev the DEFAULT picker; keep that off the network.
+    (mgr as unknown as { jevService: JevService }).jevService = new JevService(stateDir, (async () => { throw new Error('offline in tests'); }) as unknown as typeof fetch);
+    return { mgr, calls, dir };
   }
   const waitFor = async (f: () => boolean) => { for (let i = 0; i < 200 && !f(); i++) await new Promise((r) => setTimeout(r, 10)); };
 
@@ -225,7 +228,8 @@ describe('helpers combine', () => {
     expect(calls[2].prompt).not.toContain('Agent team this turn');
     await waitFor(() => !mgr.snapshot().running);
     // Team without a picker, or a failed pick: today's fixed medium, no line.
-    mgr.setHelpers(p.id, sid, { team: true });
+    // ('none' explicitly: with a keyed Jev, absent now means the Jev default.)
+    mgr.setHelpers(p.id, sid, { team: true, router: 'none' });
     mgr.continueSession(p.id, sid, 'fourth', {});
     await waitFor(() => calls.length === 4);
     expect(calls[3].prompt).not.toContain('Agent team this turn');
@@ -309,7 +313,10 @@ describe('helpers ride along with a send', () => {
     AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'a', configDir: '/cfg/a' }]);
     const calls: RunSessionOptions[] = [];
     const runSessionFn = (async (o: RunSessionOptions) => { calls.push(o); return { status: 'completed', finalAccount: 'a', failovers: 0 } as SessionResult; }) as unknown as typeof import('../src/failover.js').runSession;
-    return { mgr: new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn }), calls, dir };
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+    // A key makes Jev the DEFAULT picker; keep that off the network.
+    (mgr as unknown as { jevService: JevService }).jevService = new JevService(stateDir, (async () => { throw new Error('offline in tests'); }) as unknown as typeof fetch);
+    return { mgr, calls, dir };
   }
   const waitFor = async (f: () => boolean) => { for (let i = 0; i < 200 && !f(); i++) await new Promise((r) => setTimeout(r, 10)); };
 

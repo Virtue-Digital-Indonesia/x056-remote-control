@@ -28,7 +28,10 @@ export interface ArchiveOperation { id: string; projectId: string; expectedRevis
 /** One conversation (a resumable session) within a project. */
 export interface ConversationHelpers {
   advisor?: boolean;
-  router?: 'jev' | 'decisions';
+  /** The per-turn model/effort picker as the USER set it. Absent = not
+   *  overridden: the default applies (Jev while it is available, see
+   *  `effectiveRouter`). 'none' = the user chose "Your choice" explicitly. */
+  router?: 'jev' | 'decisions' | 'none';
   team?: boolean;
   /** Which way the picker leans when it is unsure: 'low' toward cheaper
    *  models and less effort, 'high' toward stronger ones. Absent = medium,
@@ -38,8 +41,8 @@ export interface ConversationHelpers {
 }
 export type Lean = 'low' | 'medium' | 'high';
 
-/** A change to some helpers, from a send or a tool; router 'none' removes it,
- *  lean 'medium' clears the lean. */
+/** A change to some helpers, from a send or a tool; router 'none' is saved
+ *  as the user's explicit "Your choice", lean 'medium' clears the lean. */
 export interface HelperPatch { advisor?: boolean; team?: boolean; router?: 'jev' | 'decisions' | 'none'; lean?: Lean }
 
 /** A conversation's helpers, whichever way they were stored. */
@@ -49,6 +52,21 @@ export function helpersOf(c: { helpers?: ConversationHelpers; decisionMaker?: 'a
   if (c.decisionMaker === 'advisor') return { advisor: true };
   if (c.decisionMaker === 'jev' || c.decisionMaker === 'decisions') return { router: c.decisionMaker };
   return {};
+}
+
+export type Router = 'jev' | 'decisions';
+
+/**
+ * The picker that actually runs for a conversation: what the user saved, and
+ * when they saved nothing, Jev while it is available (a key, and credits left
+ * on the gateway's own meter). An explicit 'none' is never overridden. Every
+ * place that decides behaviour from the router goes through this.
+ */
+export function effectiveRouter(h: ConversationHelpers | undefined, jevAvailable: boolean): Router | undefined {
+  const r = h?.router;
+  if (r === 'none') return undefined;
+  if (r === 'jev' || r === 'decisions') return r;
+  return jevAvailable ? 'jev' : undefined;
 }
 
 export interface Conversation {

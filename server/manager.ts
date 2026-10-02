@@ -44,7 +44,7 @@ import { shareCodexSessions, prepareCodexHome, codexHomeIndexed } from './codex-
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { getAdapter } from '../src/adapters/registry.js';
-import { ProjectRegistry, ProjectConflict, validateModeDefaults, requireWorkspace, requireWork, type ModeDefaults, type RunnableProject, type Project, type Conversation, type ConversationHelpers, type HelperPatch, helpersOf } from './projects.js';
+import { ProjectRegistry, ProjectConflict, validateModeDefaults, requireWorkspace, requireWork, type ModeDefaults, type RunnableProject, type Project, type Conversation, type ConversationHelpers, type HelperPatch, type Router, helpersOf, effectiveRouter } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import { PersistentTurns } from '../src/persistent.js';
@@ -1507,6 +1507,7 @@ export class SessionManager {
     const reg = this.projects();
     // Computed once for the whole list, not once per project (see backgroundSessions).
     const backgroundByProject = new Map<string, string[]>();
+    const jev = this.jev().available();
     for (const b of this.backgroundSessions(false)) {
       const list = backgroundByProject.get(b.projectId);
       if (list) list.push(b.sessionId); else backgroundByProject.set(b.projectId, [b.sessionId]);
@@ -1520,7 +1521,7 @@ export class SessionManager {
         const running = this.runningSessionsForProject(p.id);
         const background = backgroundByProject.get(p.id) ?? [];
         const runningAccounts = Object.fromEntries([...this.runs.values()].filter(r => r.projectId === p.id && r.account).map(r => [r.sessionId, r.account!]));
-        const conversations = (p.conversations || []).map(c => ({ ...c, provider: reg.conversationProvider(p.id, c.sessionId), ...(spaceView ? spaceView.resolve(p.id, c.sessionId) : {}) }));
+        const conversations = (p.conversations || []).map(c => ({ ...c, provider: reg.conversationProvider(p.id, c.sessionId), effectiveRouter: effectiveRouter(helpersOf(c), jev) ?? null, ...(spaceView ? spaceView.resolve(p.id, c.sessionId) : {}) }));
         return { ...p, conversations, spaceId: p.kind === 'chat' ? conversations[0]?.spaceId : undefined, workSpaceId: p.kind !== 'chat' ? spaceView?.defaultForWork(p.id) : undefined,
           running: running.length > 0, runningSessionIds: running, runningAccounts, backgroundSessionIds: background };
       }),
@@ -1533,7 +1534,14 @@ export class SessionManager {
     this.emit('conversation', { projectId, conversations: this.listConversations(projectId), currentSessionId: reg.get(projectId)?.lastSessionId ?? null });
   }
 
-  listConversations(projectId: string) { return this.projects().conversations(projectId).map(c => ({ ...c, ...(this.projectSpacesEnabled() ? this.spaces().resolve(projectId, c.sessionId) : {}) })); }
+  listConversations(projectId: string) {
+    const jev = this.jev().available();
+    return this.projects().conversations(projectId).map(c => ({ ...c, effectiveRouter: effectiveRouter(helpersOf(c), jev) ?? null, ...(this.projectSpacesEnabled() ? this.spaces().resolve(projectId, c.sessionId) : {}) }));
+  }
+
+  /** The picker this conversation's turns actually run with (see
+   *  `effectiveRouter`): the saved one, else Jev while it is available. */
+  routerFor(helpers: ConversationHelpers): Router | undefined { return effectiveRouter(helpers, this.jev().available()); }
 
   /** Resolve on the target conversation, never the panel's selected chat. Blank
    *  values deliberately select provider defaults instead of a project fallback. */
@@ -1693,8 +1701,13 @@ export class SessionManager {
       : { on: true, model: advisorFor('claude', main.model), kind: 'claude' as const, checkpoints: false,
           note: 'Claude decides when to consult; the advice is encrypted. Main-session calls only, counted from 2026-09-30.',
           calls: this.claudeAdvisorLog().tail(sid, 20) };
+    // `router` here is the EFFECTIVE picker (the view draws what runs);
+    // what the user saved, 'none' included, is `savedRouter`.
+    const shown: ConversationHelpers & { savedRouter?: string } = { ...helpers, savedRouter: helpers.router };
+    const eff = this.routerFor(helpers);
+    if (eff) shown.router = eff; else delete shown.router;
     return {
-      provider, helpers, turnStartedAt: turnStartedAt ?? null,
+      provider, helpers: shown, turnStartedAt: turnStartedAt ?? null,
       main: { ...main, running, background, lastTurn: last ? { at: last.at, durationMs: last.durationMs, steps: last.numTurns, costUsd: last.totalCostUsd } : null },
       advisor,
       team: helpers.team ? teamRun(provider, picks, turnStartedAt) : null,
@@ -1747,7 +1760,11 @@ export class SessionManager {
     const provider = this.projects().conversationProvider(pid, sid);
     if (value === 'jev' && !this.jev().configured()) throw new Error('No Jev API key is configured');
     if (value === 'decisions' && !this.openaiDecisions().configured()) throw new Error('No OpenAI API key is configured for the Decisions API');
-    this.projects().setDecisionMaker(pid, sid, value === 'none' ? null : value);
+    // Absent now means "the default" (Jev while available), so the legacy
+    // "none" and "advisor" store an explicit 'none' to stay exactly one.
+    if (value === 'none') this.projects().setHelpers(pid, sid, { router: 'none' });
+    else if (value === 'advisor') this.projects().setHelpers(pid, sid, { advisor: true, router: 'none' });
+    else this.projects().setDecisionMaker(pid, sid, value);
     this.emitConversations(pid);
   }
 
@@ -1778,7 +1795,7 @@ export class SessionManager {
   /** Turn helpers on or off together: the advisor, a model/effort picker, the
    *  agent team. Each is checked against what it needs before it is saved. */
   setHelpers(pid: string, sid: string, helpers: ConversationHelpers): ConversationHelpers {
-    if (helpers.router !== undefined && !['jev', 'decisions'].includes(helpers.router)) throw new Error('router must be jev or decisions');
+    if (helpers.router !== undefined && !['jev', 'decisions', 'none'].includes(helpers.router)) throw new Error('router must be jev, decisions or none');
     if (helpers.lean !== undefined && !['low', 'high'].includes(helpers.lean)) throw new Error('lean must be low, medium or high');
     this.projects().conversationProvider(pid, sid); // unknown conversation throws here
     if (helpers.router === 'jev' && !this.jev().configured()) throw new Error('No Jev API key is configured');
@@ -1788,7 +1805,8 @@ export class SessionManager {
     return helpersOf(this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid));
   }
 
-  /** A partial change: only the helpers named change; router 'none' clears it. */
+  /** A partial change: only the helpers named change; router 'none' is the
+   *  explicit "Your choice" (saved, so the Jev default no longer applies). */
   checkHelperPatch(patch: HelperPatch): void {
     if (!patch || typeof patch !== 'object') throw new Error('helpers must be an object');
     for (const k of Object.keys(patch)) if (!['advisor', 'team', 'router', 'lean'].includes(k)) throw new Error('unknown helper ' + k + ' (advisor, team, router, lean)');
@@ -1803,15 +1821,19 @@ export class SessionManager {
     this.checkHelperPatch(patch);
     const cur = helpersOf(this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid));
     const next: ConversationHelpers = { ...cur, ...(patch.advisor !== undefined ? { advisor: patch.advisor } : {}), ...(patch.team !== undefined ? { team: patch.team } : {}) };
-    if (patch.router === 'none') delete next.router; else if (patch.router) next.router = patch.router;
+    if (patch.router) next.router = patch.router;
     if (patch.lean === 'medium') delete next.lean; else if (patch.lean) next.lean = patch.lean;
     return this.setHelpers(pid, sid, next);
   }
 
-  /** Which backend answers the team's forks: the conversation's own picker if
-   *  it has one, else whichever is configured (Jev first). */
+  /** Which backend answers the team's forks: the conversation's effective
+   *  picker if it has one, else whichever is configured (Jev first). Whether
+   *  there IS a backend depends on keys only, never on credits: it feeds the
+   *  team's system prompt, which is process identity, so running out of
+   *  credits must not respawn every team conversation (Jev then answers
+   *  SPLIT). Forks belong to the team, so an explicit 'none' keeps them. */
   private forkBackend(helpers: ConversationHelpers): 'jev' | 'decisions' | undefined {
-    if (helpers.router === 'decisions' && this.openaiDecisions().configured()) return 'decisions';
+    if (this.routerFor(helpers) === 'decisions' && this.openaiDecisions().configured()) return 'decisions';
     if (this.jev().configured()) return 'jev';
     return this.openaiDecisions().configured() ? 'decisions' : undefined;
   }
@@ -3242,7 +3264,12 @@ export class SessionManager {
       // it starts -- inside the async run, so sending a message never waits on
       // it. A failed or unsure pick leaves the conversation's own choice in
       // place. Both report as `jev_decision`, told apart by `backend`.
-      const router = helpers.router;
+      const router = this.routerFor(helpers);
+      // Auto with no picker running means the panel thought one would (the
+      // Jev default) and it was not available at turn time: run on the house
+      // default, never the CLI's own default, which is the frontier model.
+      // (Only with a key: without one no default picker was ever offered.)
+      const autoFallback = !router && !helpers.router && !model && this.jev().configured() && !prompt.trimStart().startsWith('/') ? AUTO_MODEL[adapter.id as 'claude' | 'codex'] : undefined;
       const runWith: typeof runFn = router
         ? (async (o: Parameters<typeof runFn>[0]) => {
             const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort, sender, !!team);
@@ -3292,7 +3319,7 @@ export class SessionManager {
         providerSessionId,
         adapter,
         claudePath: this.opts.claudePath,
-        model,
+        model: model ?? autoFallback,
         effort,
         advisor,
         subagents: team?.subagents,

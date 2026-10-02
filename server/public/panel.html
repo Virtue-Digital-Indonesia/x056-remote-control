@@ -2063,8 +2063,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
             <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="advisor"><span class="hi-box" aria-hidden="true"><svg class="ic"><use href="#i-check"/></svg></span><span class="hi-text"><span class="hi-title">Advisor</span><span class="hi-desc" id="helperAdvisorDesc"></span></span></button>
             <button type="button" class="helper-item" role="menuitemcheckbox" data-kind="team"><span class="hi-box" aria-hidden="true"><svg class="ic"><use href="#i-check"/></svg></span><span class="hi-text"><span class="hi-title">Agent team</span><span class="hi-desc" id="helperTeamDesc"></span></span></button>
             <div class="helper-head sub">Model &amp; effort</div>
-            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value=""><span class="hi-text"><span class="hi-title">Your choice</span><span class="hi-desc">The model and effort in the composer.</span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
-            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="jev"><span class="hi-text"><span class="hi-title">Jev</span><span class="hi-desc" id="helperJevDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value=""><span class="hi-text"><span class="hi-title">Your choice</span><span class="hi-desc" id="helperOwnDesc">The model and effort in the composer.</span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
+            <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="jev"><span class="hi-text"><span class="hi-title">Jev <span class="hi-tag" id="helperJevDefault" hidden>default</span></span><span class="hi-desc" id="helperJevDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
             <button type="button" class="helper-item" role="menuitemradio" data-kind="router" data-value="decisions"><span class="hi-text"><span class="hi-title">OpenAI Decisions <span class="hi-tag">preview</span></span><span class="hi-desc" id="helperDecisionsDesc"></span></span><svg class="ic sm hi-check"><use href="#i-check"/></svg></button>
             <div class="helper-lean" id="helperLean" hidden>
               <div class="lean-top"><span class="lean-title" id="helperLeanTitle">Lean</span>
@@ -2393,7 +2393,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   function pickerName() {
     if (pendingNew || !lastSessionId || typeof helperFor !== 'function') return '';
     var h = helperFor(currentProjectId);
-    return !h.conv ? '' : h.helpers.router === 'jev' ? 'Jev' : h.helpers.router === 'decisions' ? 'OpenAI' : '';
+    return !h.conv ? '' : h.router === 'jev' ? 'Jev' : h.router === 'decisions' ? 'OpenAI' : '';
   }
   function putModelEffort(b) {
     var auto = !!pickerName(), m = effectiveModel();
@@ -2999,8 +2999,10 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var g = /^gpt-\d+(?:\.\d+)?-(\w+)/i.exec(m); if (g) return g[1].charAt(0).toUpperCase() + g[1].slice(1);
     return m.replace(/^claude-/, '');
   }
-  // Helpers are combinable: { advisor, team, router: 'jev' | 'decisions' }.
+  // Helpers are combinable: { advisor, team, router: 'jev' | 'decisions' | 'none' }.
   // Older conversations stored ONE `decisionMaker`; read it the same way.
+  // `router` is what the user SAVED: 'none' = "Your choice" explicitly,
+  // absent = not overridden, so Jev picks by default while it is available.
   function helpersOfConv(c) {
     if (!c) return {};
     if (c.helpers) return c.helpers;
@@ -3008,16 +3010,26 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (c.decisionMaker === 'jev' || c.decisionMaker === 'decisions') return { router: c.decisionMaker };
     return {};
   }
+  // The picker that actually runs ('' = none), the server's effectiveRouter
+  // rule: the saved one, else Jev while it has a key and credits. The fresh
+  // /api/jev/status wins over the row's own `effectiveRouter` snapshot.
+  function effectiveRouterOf(c, h) {
+    if (h.router === 'none') return '';
+    if (h.router === 'jev' || h.router === 'decisions') return h.router;
+    if (jevStatus && jevStatus.available !== undefined) return jevStatus.available ? 'jev' : '';
+    return (c && c.effectiveRouter) || '';
+  }
   function helperFor(pid) {
     var c = ((projCache[pid] || {}).conversations || []).find(function (row) { return row.sessionId === lastSessionId; });
-    return { conv: c, helpers: helpersOfConv(c) };
+    var h = helpersOfConv(c);
+    return { conv: c, helpers: h, router: c ? effectiveRouterOf(c, h) : '' };
   }
   // The picker's lean: 'low' | 'high', absent = medium (balanced).
   var LEAN_NAMES = { low: 'Low', medium: 'Medium', high: 'High' };
   var LEAN_CAPS = { low: 'Errs toward cheaper models and lower effort.', medium: 'Balanced between cost and result.', high: 'Errs toward the best result.' };
   function leanOf(h) { return h && (h.lean === 'low' || h.lean === 'high') ? h.lean : 'medium'; }
-  function helperNames(h) {
-    var lean = leanOf(h), router = h.router === 'jev' ? 'Jev' : h.router === 'decisions' ? 'Decisions' : '';
+  function helperNames(h, eff) {
+    var lean = leanOf(h), router = eff === 'jev' ? 'Jev' : eff === 'decisions' ? 'Decisions' : '';
     if (router && lean !== 'medium') router += ' · ' + LEAN_NAMES[lean];
     return [h.advisor && 'Advisor', h.team && 'Team', router].filter(Boolean);
   }
@@ -3025,7 +3037,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     syncDelegates();
     var btn = $('helperBtn'); if (!btn) return;
     var h = helperFor(pid), on = h.helpers, codex = currentProvider() === 'codex';
-    var usable = !pendingNew && !!lastSessionId && !!h.conv, names = helperNames(on);
+    var eff = h.router, byDefault = !!eff && !on.router;
+    var usable = !pendingNew && !!lastSessionId && !!h.conv, names = helperNames(on, eff);
     btn.disabled = !usable;
     btn.dataset.state = names.length ? 'on' : 'none';
     $('helperLabel').textContent = names.join(' · ');
@@ -3034,22 +3047,28 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     btn.setAttribute('aria-label', 'Helpers: ' + what);
     $('helperAdvisorDesc').textContent = codex ? 'Astra reviews the plan, repeated failures and the finished turn.' : 'A stronger model reviews the plan, repeated errors and the result.';
     var forks = (jevStatus && jevStatus.configured) || (decisionsStatus && decisionsStatus.configured);
-    $('helperTeamDesc').textContent = (codex ? 'Explorer and worker subagents, plus a researcher, on medium effort.' : 'Explorer, worker and researcher subagents on Opus, medium effort.') + (forks ? ' Small forks go to ' + (on.router === 'decisions' ? 'OpenAI Decisions' : 'Jev') + '.' : '');
+    $('helperTeamDesc').textContent = (codex ? 'Explorer and worker subagents, plus a researcher, on medium effort.' : 'Explorer, worker and researcher subagents on Opus, medium effort.') + (forks ? ' Small forks go to ' + (eff === 'decisions' ? 'OpenAI Decisions' : 'Jev') + '.' : '');
     var jevItem = document.querySelector('#helperMenu [data-value=jev]'), jevReady = !jevStatus || jevStatus.configured;
     jevItem.disabled = !jevReady && on.router !== 'jev';
-    $('helperJevDesc').textContent = !jevReady ? 'Needs a TypeSafe API key.' : 'Picks the model and effort for each turn' + (jevStatus && jevStatus.estimatedLeft !== undefined ? ' · ≈$' + jevStatus.estimatedLeft.toFixed(2) + ' left' : '') + '.';
+    // Jev is the default picker while it is available; say so, and say why
+    // when it is not (only where the user left the choice to the default).
+    $('helperJevDefault').hidden = !byDefault;
+    var left = jevStatus && jevStatus.estimatedLeft !== undefined ? ' · ≈$' + jevStatus.estimatedLeft.toFixed(2) + ' left' : '';
+    $('helperJevDesc').textContent = !jevReady ? 'Needs a TypeSafe API key.' : 'Picks the model and effort for each turn' + (byDefault ? ' (default while credits last)' : '') + left + '.';
+    var why = !on.router && jevStatus && jevStatus.configured && jevStatus.available === false ? ' Jev unavailable: no credits.' : '';
+    $('helperOwnDesc').textContent = 'The model and effort in the composer.' + why;
     // Same job as Jev through OpenAI's Decisions API. Offered only once a key
     // is configured; a conversation already on it keeps it selectable.
     var decItem = document.querySelector('#helperMenu [data-value=decisions]'), decReady = !!(decisionsStatus && decisionsStatus.configured);
     decItem.disabled = !decReady && on.router !== 'decisions';
     $('helperDecisionsDesc').textContent = !decReady ? 'Needs an OpenAI API key with Decisions access.' : 'Picks the model and effort for each turn, in place of Jev' + (decisionsStatus.calls ? ' · ' + decisionsStatus.calls + ' call' + (decisionsStatus.calls === 1 ? '' : 's') : '') + '.';
     document.querySelectorAll('#helperMenu .helper-item').forEach(function (it) {
-      var k = it.dataset.kind, v = k === 'router' ? (on.router || '') === it.dataset.value : !!on[k];
+      var k = it.dataset.kind, v = k === 'router' ? eff === it.dataset.value : !!on[k];
       it.setAttribute('aria-checked', v ? 'true' : 'false');
     });
     syncAutoLabels();
     var lean = leanOf(on);
-    $('helperLean').hidden = !on.router;
+    $('helperLean').hidden = !eff;
     $('helperLeanCap').textContent = LEAN_CAPS[lean];
     document.querySelectorAll('#helperLean .lean-seg').forEach(function (b) {
       var v = b.dataset.lean === lean;
@@ -3070,14 +3089,15 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var pid = currentProjectId, sid = lastSessionId, h = helperFor(pid);
     if (!pid || !sid || !h.conv) return;
     var next = Object.assign({}, h.helpers);
-    if (kind === 'router') { if (value) next.router = value; else delete next.router; }
+    // "Your choice" is SAVED as 'none': absent would mean the Jev default.
+    if (kind === 'router') next.router = value || 'none';
     else if (kind === 'lean') { if (value === 'low' || value === 'high') next.lean = value; else delete next.lean; }
     else next[kind] = !next[kind];
     var btn = $('helperBtn'), menu = $('helperMenu');
     menu.setAttribute('aria-busy', 'true');
     api('/api/conversations/helpers', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, advisor: !!next.advisor, team: !!next.team, router: next.router || null, lean: leanOf(next) }) })
       .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || 'Could not change the helpers'); return j; }); })
-      .then(function (j) { if (h.conv) { h.conv.helpers = j.helpers || next; delete h.conv.decisionMaker; } })
+      .then(function (j) { if (h.conv) { h.conv.helpers = j.helpers || next; delete h.conv.decisionMaker; if (j.effectiveRouter !== undefined) h.conv.effectiveRouter = j.effectiveRouter; } })
       .catch(function (e) { addSys(e.message, 'banner'); })
       .then(function () { menu.removeAttribute('aria-busy'); syncDecider(pid); if (menu.hidden) btn.focus(); });
   }

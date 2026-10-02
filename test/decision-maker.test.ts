@@ -329,6 +329,8 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     const calls: RunSessionOptions[] = [];
     const runSessionFn = (async (o: RunSessionOptions) => { calls.push(o); return { status: 'completed', finalAccount: 'a', failovers: 0 } as SessionResult; }) as unknown as typeof import('../src/failover.js').runSession;
     const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+    // The key makes Jev the DEFAULT picker; keep that off the network.
+    (mgr as unknown as { jevService: JevService }).jevService = new JevService(stateDir, (async () => { throw new Error('offline in tests'); }) as unknown as typeof fetch);
     return { mgr, calls, dir };
   }
   const waitFor = async (f: () => boolean) => { for (let i = 0; i < 200 && !f(); i++) await new Promise((r) => setTimeout(r, 10)); };
@@ -433,7 +435,8 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     mgr.continueSession(p.id, sid, 'rename x to count', {});
     await waitFor(() => calls.length === 2);
     expect(calls[1]).toMatchObject({ model: 'haiku', effort: 'low' });
-    const d = seen.find((e) => e.kind === 'jev_decision')?.data as { backend?: string } | undefined;
+    // The first turn ran the Jev default (the key is set); this turn's pick is the last.
+    const d = seen.filter((e) => e.kind === 'jev_decision').at(-1)?.data as { backend?: string } | undefined;
     expect(d?.backend).toBe('openai');
     expect(mgr.jev().decisions(sid).at(-1)?.backend).toBe('openai');
   });

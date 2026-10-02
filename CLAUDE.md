@@ -499,12 +499,39 @@ message per turn over `--input-format stream-json`. A turn now ends at the
 
 ## Helpers: advisor + agent team + a model/effort picker, combinable
 
-`Conversation.helpers` = `{ advisor?, team?, router?: 'jev' | 'decisions' }`,
+`Conversation.helpers` = `{ advisor?, team?, router?: 'jev' | 'decisions' | 'none' }`,
 any combination (`POST /api/conversations/helpers`). The older single field
 `decisionMaker` is still read through `helpersOf` and dropped on the first
 combined save; `POST /api/conversations/decision-maker` still sets it. They
 were exclusive until 2026-09-30 because the owner first asked for "only one";
 the thread they come from uses them together, and so do we now.
+
+- **Jev is the DEFAULT picker (2026-10-02, owner).** `router` is what the
+  user SAVED; absent = not overridden. `effectiveRouter(helpers,
+  jevAvailable)` (`server/projects.ts`, beside `helpersOf`) is the one rule:
+  `'none'` -> no picker (the panel's "Your choice", saved explicitly, so the
+  default never overrides it), `'jev'`/`'decisions'` -> that one, absent ->
+  `'jev'` while Jev is available, else none. Available = a key in
+  `state/secrets/typesafe.json` AND credits on the gateway's own meter (synced
+  balance minus spend since > 0; never synced counts as available),
+  `JevService.availability()`, cached 5 s and cleared by a sync or a metered
+  call; `GET /api/jev/status` carries `available` + `unavailableReason`
+  (`no_key` / `no_credits`). Everything that acts on the picker goes through
+  `SessionManager.routerFor`: the turn's pick, the team line, Auto, the agent
+  tree (`helpers.router` there is effective, `savedRouter` the saved one),
+  the fork backend's preference. Conversation rows (`/api/projects`, the
+  `conversation` event), both helpers endpoints and MCP `read_conversation` /
+  `list_conversations` / `set_helpers` report `effectiveRouter` (null =
+  none) beside the saved `helpers`. The fork layer's EXISTENCE still depends
+  on keys only, never credits: it is in the team's system prompt (process
+  identity), so running out must not respawn every team conversation. A key
+  with no credits and no saved picker turns Auto into the house default
+  (`AUTO_MODEL`), never the CLI default: a panel that believed Jev would pick
+  sent `''`. The panel marks Jev "default" ("default while credits last") and
+  says "Jev unavailable: no credits" under "Your choice". The legacy
+  decision-maker endpoint's `none`/`advisor` store `router: 'none'`. iOS reads
+  `helpers.router` raw: it treats `'none'` as on and an absent router as off
+  (not yet taught the default).
 
 - **Agent team** (`server/team.ts`) is that thread's tree: the main session
   (its own model/effort) plans and decides; **explorer** (reads code,
