@@ -63,16 +63,50 @@ const TITLE = 'Review accessibility findings';
     return r.sent[n];
   };
 
-  // (a) No picker: the old Auto labels, and Auto sends the house default.
+  // (0) The default: a key with credits and nothing saved = Jev picks. The
+  // menu marks Jev checked as the default, Auto names it, the caption too.
   const desk = { width: 1280, height: 800 };
+  await setHelpers({});
   let r = await open(desk);
+  assert.equal(await autoText(r.page, 'model'), 'Jev picks', 'default: Auto names Jev');
+  await pickRun(r.page, 'model', ''); await pickRun(r.page, 'effort', '');
+  await r.page.locator('#prompt').click();
+  await r.page.locator('#helperBtn').click();
+  await r.page.waitForFunction(() => document.querySelector('#helperMenu [data-value=jev]').getAttribute('aria-checked') === 'true');
+  assert.equal(await r.page.locator('#helperJevDefault').isVisible(), true, 'Jev tagged as the default');
+  assert.match(await r.page.locator('#helperJevDesc').textContent(), /default while credits last/);
+  assert.equal(await r.page.locator('#helperMenu [data-value=""]').getAttribute('aria-checked'), 'false');
+  assert.equal(await r.page.locator('#helperLean').isVisible(), true, 'lean shown for the default picker');
+  await r.page.keyboard.press('Escape');
+  await r.page.locator('#prompt').blur(); await r.page.mouse.click(5, 5);
+  await r.page.waitForFunction(() => /Jev picks/.test(document.getElementById('composerCaption').textContent));
+  let b = await send(r, 'Default Jev, auto');
+  assert.equal(b.model, '', 'default Jev: Auto model posted as empty');
+  assert.deepEqual(r.errors, []);
+  await r.ctx.close();
+  // No credits left: back to "Your choice", and the menu says why.
+  await req.request.post(base + '/api/jev/balance', { headers: { ...auth, 'Content-Type': 'application/json' }, data: { amount: 0 } });
+  r = await open(desk);
+  assert.ok(!/picks/.test(await autoText(r.page, 'model')), 'no credits: no picker named');
+  await r.page.locator('#helperBtn').click();
+  await r.page.waitForFunction(() => document.querySelector('#helperMenu [data-value=""]').getAttribute('aria-checked') === 'true');
+  assert.match(await r.page.locator('#helperOwnDesc').textContent(), /Jev unavailable: no credits/);
+  assert.equal(await r.page.locator('#helperJevDefault').isVisible(), false);
+  await r.page.keyboard.press('Escape');
+  assert.deepEqual(r.errors, []);
+  await r.ctx.close();
+  await req.request.post(base + '/api/jev/balance', { headers: { ...auth, 'Content-Type': 'application/json' }, data: { amount: 5 } });
+
+  // (a) No picker ("Your choice", saved): the old Auto labels, and Auto sends the house default.
+  await setHelpers({ router: 'none' });
+  r = await open(desk);
   let mo = await autoText(r.page, 'model'), eo = await autoText(r.page, 'effort');
   assert.ok(mo.startsWith('Auto'), 'model Auto label: ' + mo);
   assert.ok(!/picks/.test(mo), 'no picker named without a picker: ' + mo);
   assert.ok(!/picks/.test(eo), 'no picker named on effort without a picker: ' + eo);
   await pickRun(r.page, 'model', '');
   await pickRun(r.page, 'effort', '');
-  let b = await send(r, 'No picker, auto');
+  b = await send(r, 'No picker, auto');
   assert.equal(b.model, 'sonnet', 'no picker: Auto posts the house default');
   assert.equal('effort' in b, false, 'no picker: Auto effort not posted');
 
@@ -115,7 +149,7 @@ const TITLE = 'Review accessibility findings';
   // Switching the picker off restores the old labels.
   assert.deepEqual(r.errors, []);
   await r.ctx.close();
-  await setHelpers({ router: '' });
+  await setHelpers({ router: 'none' });
   r = await open(desk);
   assert.equal(await autoText(r.page, 'model'), mo, 'model label back without a picker');
   assert.equal(await autoText(r.page, 'effort'), eo, 'effort label back without a picker');

@@ -182,6 +182,8 @@ export function forkVerdict(confidence: number | undefined): 'sharp' | 'split' {
   return (confidence ?? 0) >= JEV_POLICY.forkSharp ? 'sharp' : 'split';
 }
 
+export interface JevAvailability { available: boolean; reason?: 'no_key' | 'no_credits' }
+
 export class JevService {
   private readonly dir: string;
   constructor(private readonly stateDir: string, private readonly fetchFn: typeof fetch = fetch, private readonly timeoutMs = 3000) {
@@ -193,6 +195,28 @@ export class JevService {
   }
   configured(): boolean { return !!this.key(); }
 
+  private availableCache?: { at: number; value: JevAvailability };
+  /**
+   * Whether Jev can be the DEFAULT picker: a key is configured and the meter
+   * says credits are left (synced balance minus spend since). A balance never
+   * synced counts as available -- the key works and nothing says it is empty.
+   * Read on every turn and every conversation listing, so it is cached for a
+   * few seconds; syncing the balance or metering a call clears the cache.
+   */
+  availability(): JevAvailability {
+    const now = Date.now();
+    if (this.availableCache && now - this.availableCache.at < 5000) return this.availableCache.value;
+    let value: JevAvailability;
+    if (!this.configured()) value = { available: false, reason: 'no_key' };
+    else {
+      const l = this.ledger();
+      value = l.balance && !(l.balance.amount - l.since.costUsd > 0) ? { available: false, reason: 'no_credits' } : { available: true };
+    }
+    this.availableCache = { at: now, value };
+    return value;
+  }
+  available(): boolean { return this.availability().available; }
+
   private ledgerFile() { return join(this.dir, 'ledger.json'); }
   private ledger(): Ledger { return readState<Ledger>(this.ledgerFile(), { since: zero(), total: zero() }); }
 
@@ -203,13 +227,18 @@ export class JevService {
     l.balance = { amount, syncedAt: new Date().toISOString() };
     l.since = zero();
     writeState(this.ledgerFile(), l);
+    this.availableCache = undefined;
     return this.status();
   }
 
-  status(): { configured: boolean; balance?: number; syncedAt?: string; spentSinceSync: number; estimatedLeft?: number; callsSinceSync: number; totalSpent: number; totalCalls: number; pricePerMTokInputUsd: number } {
+  status(): { configured: boolean; available: boolean; unavailableReason?: 'no_key' | 'no_credits'; balance?: number; syncedAt?: string; spentSinceSync: number; estimatedLeft?: number; callsSinceSync: number; totalSpent: number; totalCalls: number; pricePerMTokInputUsd: number } {
     const l = this.ledger();
+    this.availableCache = undefined; // status is the fresh read
+    const a = this.availability();
     return {
       configured: this.configured(),
+      available: a.available,
+      ...(a.reason ? { unavailableReason: a.reason } : {}),
       balance: l.balance?.amount,
       syncedAt: l.balance?.syncedAt,
       spentSinceSync: round(l.since.costUsd),
@@ -226,6 +255,7 @@ export class JevService {
     const l = this.ledger();
     for (const b of [l.since, l.total]) { b.calls++; b.inputTokens += inputTokens; b.outputTokens += outputTokens; b.costUsd += cost; }
     writeState(this.ledgerFile(), l);
+    this.availableCache = undefined;
     return cost;
   }
 

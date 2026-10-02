@@ -42,6 +42,10 @@ const TOKEN = 'browser-fixture-token-0123456789';
   };
   const saved = (page) => page.waitForFunction(() => !document.getElementById('helperMenu').hasAttribute('aria-busy'));
 
+  // With a key Jev is the DEFAULT picker; start from an explicit "Your choice".
+  await req.request.post(base + '/api/conversations/helpers', { headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' }, data: { projectId: project.id, sessionId: conv.sessionId, advisor: false, team: false, router: 'none' } });
+  assert.equal((await helpersNow()).router, 'none');
+
   // Desktop: the whole flow.
   const desk = { width: 1280, height: 900 };
   const ctx = await browser.newContext({ viewport: desk });
@@ -87,6 +91,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
   await page.locator('#helperBtn').click();
   await page.locator('#helperMenu [data-kind=router][data-value=""]').click(); await saved(page);
   assert.equal(await lean.isHidden(), true, 'lean hidden again with "Your choice"');
+  assert.equal((await helpersNow()).router, 'none', '"Your choice" is saved, not cleared');
   assert.equal(await page.locator('#helperLabel').textContent(), 'Advisor');
   assert.deepEqual(errors, []);
   await ctx.close();

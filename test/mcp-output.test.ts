@@ -156,6 +156,11 @@ describe('all advertised output contracts', () => {
     expect(validateResult('set_helpers', await self.callToolResult(hapi, 'set_helpers', { team: false })).helpers).toEqual({ advisor: true });
     expect(validateResult('set_helpers', await self.callToolResult(hapi, 'set_helpers', { lean: 'low' })).helpers).toEqual({ advisor: true, lean: 'low' });
     expect((await self.callToolResult(hapi, 'set_helpers', { lean: 'medium' })).structuredContent.helpers).toEqual({ advisor: true });
+    // "Your choice" is saved as 'none' (absent = the Jev default), and the
+    // effective picker the gateway reports passes the contract too.
+    const own = await self.callToolResult(async (path: string, o?: RequestInit) => ({ ...(await hapi(path, o)), effectiveRouter: null }), 'set_helpers', { router: 'none' });
+    expect(validateResult('set_helpers', own)).toEqual({ projectId: 'p', sessionId: 's', helpers: { advisor: true, router: 'none' }, effectiveRouter: null });
+    expect(own.content[0].text).toMatch(/own model\/effort/);
     await expect(self.callToolResult(hapi, 'set_helpers', {})).rejects.toThrow(/name at least one helper/);
     vi.spyOn(manager.jev(), 'configured').mockReturnValue(false);
     await expect(self.callToolResult(hapi, 'set_helpers', { router: 'jev' })).rejects.toThrow(/No Jev API key/);

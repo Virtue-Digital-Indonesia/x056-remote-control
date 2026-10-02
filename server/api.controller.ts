@@ -535,18 +535,21 @@ export class ApiController {
     catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
-  /** Helpers, combinable: { advisor?, router?: 'jev'|'decisions', team?, lean?: 'low'|'medium'|'high' }. */
+  /** Helpers, combinable: { advisor?, router?: 'jev'|'decisions'|'none', team?, lean?: 'low'|'medium'|'high' }.
+   *  router null/absent = not overridden (Jev by default while available);
+   *  'none' = the user's own model and effort, explicitly. */
   @Post('conversations/helpers')
   @HttpCode(200)
   conversationHelpers(@Body() body: { projectId?: string; sessionId?: string; advisor?: boolean; router?: string | null; team?: boolean; lean?: string | null }) {
     if (!body?.projectId || !body.sessionId) throw new BadRequestException('projectId and sessionId required');
     try {
-      return { ok: true, helpers: this.manager.setHelpers(body.projectId, body.sessionId, {
+      const helpers = this.manager.setHelpers(body.projectId, body.sessionId, {
         advisor: body.advisor === true, team: body.team === true,
-        ...(body.router ? { router: body.router as 'jev' | 'decisions' } : {}),
+        ...(body.router ? { router: body.router as 'jev' | 'decisions' | 'none' } : {}),
         // The whole set is saved at once, so an absent lean means medium.
         ...(body.lean && body.lean !== 'medium' ? { lean: body.lean as 'low' | 'high' } : {}),
-      }) };
+      });
+      return { ok: true, helpers, effectiveRouter: this.manager.routerFor(helpers) ?? null };
     } catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
@@ -565,10 +568,11 @@ export class ApiController {
   conversationHelperState(@Query('projectId') projectId: string, @Query('sessionId') sessionId: string) {
     const conv = projectId && sessionId ? this.manager.listConversations(projectId).find((c) => c.sessionId === sessionId) : undefined;
     if (!conv) throw new BadRequestException('unknown conversation for that project');
-    return { helpers: helpersOf(conv), delegates: this.manager.listDelegates(projectId, sessionId) };
+    const helpers = helpersOf(conv);
+    return { helpers, effectiveRouter: this.manager.routerFor(helpers) ?? null, delegates: this.manager.listDelegates(projectId, sessionId) };
   }
 
-  /** Change only the helpers named; router "none" clears the picker. */
+  /** Change only the helpers named; router "none" saves "Your choice". */
   @Post('conversations/helpers/patch')
   @HttpCode(200)
   conversationHelperPatch(@Body() b: { projectId?: string; sessionId?: string; advisor?: boolean; team?: boolean; router?: 'jev' | 'decisions' | 'none'; lean?: 'low' | 'medium' | 'high' }) {
@@ -578,7 +582,7 @@ export class ApiController {
     if (b.team !== undefined) patch.team = b.team;
     if (b.router !== undefined) patch.router = b.router;
     if (b.lean !== undefined) patch.lean = b.lean;
-    try { return { helpers: this.manager.patchHelpers(b.projectId, b.sessionId, patch) }; }
+    try { const helpers = this.manager.patchHelpers(b.projectId, b.sessionId, patch); return { helpers, effectiveRouter: this.manager.routerFor(helpers) ?? null }; }
     catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
