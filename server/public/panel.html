@@ -2391,7 +2391,11 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   // would only ever have seen Sonnet. The server falls back to the house
   // default when a pick fails.
   function pickerName() {
-    if (pendingNew || !lastSessionId || typeof helperFor !== 'function') return '';
+    // A new chat has no saved helpers yet, so the default applies: Jev while
+    // it is available. Else the first send would post the house default and
+    // save it, and the chat would never be on Auto again.
+    if (pendingNew || !lastSessionId) return jevStatus && jevStatus.available ? 'Jev' : '';
+    if (typeof helperFor !== 'function') return '';
     var h = helperFor(currentProjectId);
     return !h.conv ? '' : h.router === 'jev' ? 'Jev' : h.router === 'decisions' ? 'OpenAI' : '';
   }

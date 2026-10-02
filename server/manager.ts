@@ -3265,11 +3265,13 @@ export class SessionManager {
       // it. A failed or unsure pick leaves the conversation's own choice in
       // place. Both report as `jev_decision`, told apart by `backend`.
       const router = this.routerFor(helpers);
-      // Auto with no picker running means the panel thought one would (the
-      // Jev default) and it was not available at turn time: run on the house
-      // default, never the CLI's own default, which is the frontier model.
-      // (Only with a key: without one no default picker was ever offered.)
-      const autoFallback = !router && !helpers.router && !model && this.jev().configured() && !prompt.trimStart().startsWith('/') ? AUTO_MODEL[adapter.id as 'claude' | 'codex'] : undefined;
+      // Auto with no picker running: the panel thought one would (the Jev
+      // default, out of credits at turn time), or Auto was saved under the
+      // default and the user then chose "Your choice" ('none') -- a later
+      // cron or queued turn reuses that ''. Run on the house default, never
+      // the CLI's own default, which is the frontier model. (Only with a
+      // key: without one no default picker ever saved an Auto.)
+      const autoFallback = !router && !model && this.jev().configured() && !prompt.trimStart().startsWith('/') ? AUTO_MODEL[adapter.id as 'claude' | 'codex'] : undefined;
       const runWith: typeof runFn = router
         ? (async (o: Parameters<typeof runFn>[0]) => {
             const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort, sender, !!team);

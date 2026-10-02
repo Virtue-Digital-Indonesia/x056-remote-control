@@ -118,6 +118,13 @@ describe('SessionManager: Jev is the default picker', () => {
     mgr.setDecisionMaker(p.id, sid, 'jev');
     mgr.setDecisionMaker(p.id, sid, 'none');
     expect(helpersOf(mgr.listConversations(p.id).find((c) => c.sessionId === sid))).toEqual({ router: 'none' });
+    // Auto saved under the default, then "Your choice": a later turn reusing
+    // the saved '' runs the house default, never the CLI's frontier default.
+    mgr.continueSession(p.id, sid, 'auto', { model: '', effort: '' });
+    await waitFor(() => calls.length === 3 && !mgr.snapshot().running);
+    mgr.continueSession(p.id, sid, 'queued later', {});
+    await waitFor(() => calls.length === 4 && !mgr.snapshot().running);
+    expect(calls[3].model).toBe(AUTO_MODEL.claude);
     // Back to Jev explicitly.
     expect(mgr.patchHelpers(p.id, sid, { router: 'jev' })).toEqual({ router: 'jev' });
   });
