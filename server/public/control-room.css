@@ -362,3 +362,5 @@ dialog.modern-prompt:has(.action-detail){width:min(840px,calc(100vw - 32px))}
 /* The chip carries the selected account's level as a dot (the title says it in words). */
 .send-account-chip .acct-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--lvl);display:inline-block}
 @media(max-width:720px){#sendAccountPicker.acct-pop{left:0!important;right:0;bottom:0!important;width:auto;max-width:none;border-radius:18px 18px 0 0;border-bottom:0;padding:28px 20px calc(20px + env(safe-area-inset-bottom))}#sendAccountPicker.acct-pop::before{content:"";position:absolute;top:10px;left:50%;width:36px;height:4px;margin-left:-18px;border-radius:999px;background:var(--border-strong)}#sendAccountPicker.acct-pop .helper-head{padding:2px 4px 12px}.acct-row{min-height:60px;padding:12px}.acct-note{margin:12px 4px 0}.acct-foot{margin-bottom:0}}
+
+.automation-ap-instruction{display:block;order:3;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;margin-top:5px;color:var(--text)}

@@ -748,7 +748,7 @@ window.createControlRoom = function (engine) {
       host.innerHTML='<header class="automation-section-heading"><h2>Conversation autopilots</h2><span>'+Object.keys(data).length+' enabled</span></header>'+Object.entries(data).map(([sid,ap])=>{
         const project=projects.find(p=>p.id===ap.projectId),conversation=project?.conversations?.find(c=>c.sessionId===sid),card=all.find(x=>x.c.sessionId===sid&&x.p.id===ap.projectId),status=ap.paused?'Paused: '+(ap.pauseReason||'Review required'):card&&['running','background'].includes(card.status)?'Running':'Waiting for next turn';
         const [primary,secondary]=conversationLabels(project,conversation);
-        return `<article class="automation-ap-row"><button class="automation-ap-open" data-project="${esc(ap.projectId)}" data-session="${esc(sid)}" ${!conversation?'disabled':''}>${ic('repeat')}<span><strong>${esc(primary)}</strong><small>${esc(secondary)} · ${esc(status)}</small></span></button><span class="automation-ap-remaining">${ap.remaining} continuations left</span>${ap.paused?`<button class="cr-secondary" data-resume-ap="${esc(sid)}" data-owner="${esc(ap.projectId)}">Review and resume</button>`:''}<button class="cr-secondary" data-stop-ap="${esc(sid)}">Stop autopilot</button></article>`;
+        return `<article class="automation-ap-row"><button class="automation-ap-open" data-project="${esc(ap.projectId)}" data-session="${esc(sid)}" ${!conversation?'disabled':''}>${ic('repeat')}<span><strong>${esc(primary)}</strong><small>${esc(secondary)} · ${esc(status)}</small>${ap.instruction?`<span class="automation-ap-instruction" title="${esc(ap.instruction)}">${esc(ap.instruction.replace(/\s+/g,' '))}</span>`:''}</span></button><span class="automation-ap-remaining">${ap.remaining} continuations left</span>${ap.paused?`<button class="cr-secondary" data-resume-ap="${esc(sid)}" data-owner="${esc(ap.projectId)}">Review and resume</button>`:''}<button class="cr-secondary" data-stop-ap="${esc(sid)}">Stop autopilot</button></article>`;
       }).join('')+(Object.keys(data).length?'':'<p class="cr-empty">No conversation autopilots enabled. Open a conversation to enable autopilot from its menu.</p>');
       host.querySelectorAll('[data-session]').forEach(b=>b.onclick=()=>openConversation(b));
       host.querySelectorAll('[data-resume-ap]').forEach(b=>b.onclick=()=>window.rcProjectSpaces.resumeAutopilot(b.dataset.owner,b.dataset.resumeAp,loadAutomationAutopilots));
@@ -1231,6 +1231,7 @@ window.createControlRoom = function (engine) {
     {label:'Continue with another provider',icon:'switch',disabled:!s.sessionId||isChat,run:()=>showHandoff(s)},
     {label:'Resume a session',icon:'history',disabled:isChat,run:()=>$('resumeBtn').click()},
     {label:'Message delivery',icon:'send',run:engine.showDelivery},
+    {label:'Autopilot',icon:'repeat',disabled:!s.sessionId,run:()=>$('autopilotBtn').click()},
     {heading:'More'},
     {label:'Copy conversation ID',icon:'copy',disabled:!s.sessionId,run:()=>navigator.clipboard.writeText(s.sessionId).then(()=>toast('Conversation ID copied.')).catch(()=>toast('Could not copy the conversation ID.'))},
     {label:'Remove from panel',icon:'trash',danger:true,disabled:isChat||!s.sessionId||!!s.running[s.projectId]?.[s.sessionId],run:engine.removeConversation}]);}

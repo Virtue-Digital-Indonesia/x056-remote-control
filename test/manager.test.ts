@@ -684,8 +684,8 @@ describe('SessionManager autopilot', () => {
     const sid = mgr.start('kick off', undefined, undefined, p.id);
     mgr.setAutopilot(p.id, sid, { count: 2, prompt: 'CONTINUE_NOW' });
     // 1 initial + up to 2 auto-continues
-    await waitFor(() => prompts.filter((x) => x === 'CONTINUE_NOW').length >= 2, 8000);
-    expect(prompts.filter((x) => x === 'CONTINUE_NOW').length).toBe(2);
+    await waitFor(() => prompts.filter((x) => x.startsWith('CONTINUE_NOW\n\n')).length >= 2, 8000);
+    expect(prompts.filter((x) => x.startsWith('CONTINUE_NOW\n\n')).length).toBe(2);
     await waitFor(() => mgr.autopilotStatus()[sid] === undefined, 3000); // clears when the final continue settles
   }, 12000);
 
@@ -702,7 +702,7 @@ describe('SessionManager autopilot', () => {
   it('is per-conversation: arming one conversation leaves a sibling un-armed', async () => {
     const { mgr, p } = apFixture([done('working')]);
     mgr.setAutopilot(p.id, 'sess-A', { count: 5 });
-    expect(mgr.autopilotStatus()['sess-A']).toEqual({ remaining: 5, projectId: p.id });
+    expect(mgr.autopilotStatus()['sess-A']).toEqual({ remaining: 5, count: 5, projectId: p.id });
     expect(mgr.autopilotStatus()['sess-B']).toBeUndefined(); // sibling conversation NOT armed
     expect(mgr.hasAutopilot('sess-A')).toBe(true);
     expect(mgr.hasAutopilot('sess-B')).toBe(false);

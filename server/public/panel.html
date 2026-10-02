@@ -211,8 +211,10 @@
   #autopilotBar { max-width: 780px; margin: 0 auto 8px; }
   #autopilotBar:empty { display: none; }
   .apbar { display: flex; align-items: center; gap: 10px; background: var(--accent-weak); border: 1px solid var(--accent); border-radius: 12px; padding: 8px 14px; font-size: 13px; color: var(--accent); }
-  .apbar .lbl { flex: 1; }
+  .apbar .lbl { flex: 1; min-width: 0; }
   .apbar button { background: transparent; border: 1px solid var(--accent); color: var(--accent); border-radius: 8px; padding: 4px 12px; cursor: pointer; font: inherit; font-size: 12px; }
+  .apbar .ap-instruction { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; padding: 0; margin-top: 3px; text-align: left; }
+  .autopilot-digest summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
   /* MCP cross-conversation send approval — the prominent, always-visible prompt
      (an AI asked to message another conversation; nothing is sent until you
      decide). Deliberately eye-catching: it's a gate, not a passive notice. */
@@ -3528,6 +3530,15 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (role === 'assistant') content.appendChild(renderMarkdown(text));
     // Delegate reports already have their own cards; the message that handed
     // them to the orchestrator stays one line until opened.
+    else if (role === 'user' && sender && sender.kind === 'autopilot') {
+      var det = document.createElement('details'); det.className = 'delegate-digest autopilot-digest';
+      var sum = document.createElement('summary'), marker = '\n\nStanding instruction from the user:\n';
+      var instructionAt = String(text).indexOf(marker), instruction = instructionAt < 0 ? '' : String(text).slice(instructionAt + marker.length).trim();
+      sum.textContent = instruction ? 'Continue task · ' + instruction.replace(/\s+/g, ' ') : 'Continue task';
+      sum.title = instruction || 'Autopilot continuation';
+      var full = document.createElement('div'); full.className = 'delegate-digest-body'; full.appendChild(renderMarkdown(text));
+      det.appendChild(sum); det.appendChild(full); content.appendChild(det);
+    }
     else if (role === 'user' && sender && sender.kind === 'delegate') {
       var det = document.createElement('details'); det.className = 'delegate-digest';
       var sum = document.createElement('summary'); sum.textContent = (String(text).split('\n')[0] || 'Delegate reports').replace(/^\[Delegates\]\s*/, '');
@@ -4065,7 +4076,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     else if (kind === 'autopilot') {
       // Autopilot is per-conversation now — keyed by the run's sessionId, not
       // the project. The bar shows only for the conversation actually on screen.
-      if (sid) { if (data.active) apState[sid] = data.remaining; else delete apState[sid]; }
+      if (sid) { if (data.active) apState[sid] = data; else { delete apState[sid]; if (data.reason && ['stopped','done','exhausted'].indexOf(data.reason) < 0) loadAutopilot(); } }
       if (mineConvo) renderAutopilot();
     }
     else if (kind === 'queue') {
@@ -4411,15 +4422,47 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       });
   }
   // ---- autopilot (gateway-driven continuation, per conversation) ----
-  var apState = {}; // sessionId -> remaining
+  var apState = {}; // sessionId -> status
+  var apInstructionPlaceholder = 'e.g. Follow docs/plan.md and tick off each item as you finish it';
+  function autopilotDialog(last) {
+    return showModal('wide', null, function (card, done) {
+      var h = document.createElement('h3'); h.textContent = 'Enable autopilot'; card.appendChild(h);
+      var p = document.createElement('p'); p.textContent = 'Continue this conversation after each turn until the task replies AUTOPILOT_DONE or the steps run out. Autopilot survives restarts.'; card.appendChild(p);
+      var form = document.createElement('form');
+      var countLabel = document.createElement('label'); countLabel.htmlFor = 'autopilotCount'; countLabel.textContent = 'Step count'; form.appendChild(countLabel);
+      var count = document.createElement('input'); count.id = 'autopilotCount'; count.className = 'm-in'; count.type = 'number'; count.min = '1'; count.max = '500'; count.required = true; count.value = String(last.count || 20); form.appendChild(count);
+      var instructionLabel = document.createElement('label'); instructionLabel.htmlFor = 'autopilotInstruction'; instructionLabel.textContent = 'Standing instruction (optional)'; form.appendChild(instructionLabel);
+      var instruction = document.createElement('textarea'); instruction.id = 'autopilotInstruction'; instruction.className = 'm-in'; instruction.rows = 4; instruction.maxLength = 4000; instruction.placeholder = apInstructionPlaceholder; instruction.value = last.instruction || ''; form.appendChild(instruction);
+      var acts = document.createElement('div'); acts.className = 'modal-actions';
+      var cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'send ghost'; cancel.textContent = 'Cancel'; cancel.addEventListener('click', function () { done(null); });
+      var ok = document.createElement('button'); ok.type = 'submit'; ok.className = 'send'; ok.textContent = 'Enable'; acts.appendChild(cancel); acts.appendChild(ok); form.appendChild(acts);
+      form.addEventListener('submit', function (e) { e.preventDefault(); done({ count: Number(count.value), instruction: instruction.value }); });
+      card.appendChild(form); setTimeout(function () { count.focus(); count.select(); }, 20);
+    });
+  }
+  function saveAutopilot(path, body) {
+    return api(path, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+      if (!r.ok) return r.json().then(function (data) { throw new Error(data.message || 'Could not update autopilot'); });
+      return loadAutopilot();
+    }).catch(function (e) { addSys(e.message || 'Could not update autopilot', 'banner'); });
+  }
+  function editAutopilotInstruction(pid, sid) {
+    var ap = apState[sid]; if (!ap) return;
+    uiPrompt({ title: 'Standing instruction', value: ap.instruction || '', placeholder: apInstructionPlaceholder, multiline: true, maxLength: 4000, okText: 'Save' }).then(function (instruction) {
+      if (instruction == null) return;
+      return saveAutopilot('/api/autopilot/instruction', { projectId: pid, sessionId: sid, instruction: instruction });
+    });
+  }
   function renderAutopilot() {
     var bar = $('autopilotBar'); bar.textContent = '';
-    var rem = lastSessionId ? apState[lastSessionId] : undefined; // the VIEWED conversation's autopilot
-    if (rem === undefined) return;
-    var sid = lastSessionId;
+    var ap = lastSessionId ? apState[lastSessionId] : undefined; // the VIEWED conversation's autopilot
+    if (ap === undefined) return;
+    var sid = lastSessionId, pid = currentProjectId, rem = ap.remaining;
     var d = document.createElement('div'); d.className = 'apbar';
     d.appendChild(icon('repeat', 'sm'));
-    var l = document.createElement('span'); l.className = 'lbl'; var steps = rem + ' step' + (rem === 1 ? '' : 's') + ' left'; var long = 'Autopilot on — gateway will keep this conversation going (' + steps + ', or until the task says done)'; l.textContent = innerWidth <= 650 ? 'Autopilot · ' + steps : long; l.title = long; d.appendChild(l);
+    var l = document.createElement('span'); l.className = 'lbl'; var steps = rem + ' step' + (rem === 1 ? '' : 's') + ' left'; var long = ap.paused ? 'Autopilot paused · ' + (ap.pauseReason || '') + ' · ' + steps : 'Autopilot on · ' + steps; l.textContent = long; l.title = long; d.appendChild(l);
+    if (ap.instruction) { var instruction = document.createElement('button'); instruction.className = 'ap-instruction'; instruction.textContent = ap.instruction.replace(/\s+/g, ' '); instruction.title = ap.instruction; instruction.setAttribute('aria-label', 'Edit standing instruction: ' + ap.instruction); instruction.addEventListener('click', function () { editAutopilotInstruction(pid, sid); }); l.appendChild(instruction); }
+    var edit = document.createElement('button'); edit.textContent = 'Edit'; edit.addEventListener('click', function () { editAutopilotInstruction(pid, sid); }); d.appendChild(edit);
     var stop = document.createElement('button'); stop.textContent = 'Stop'; stop.addEventListener('click', function () { api('/api/autopilot/stop', { method: 'POST', body: JSON.stringify({ sessionId: sid }) }).catch(function () {}); }); d.appendChild(stop);
     bar.appendChild(d);
   }
@@ -4428,12 +4471,12 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (!lastSessionId) { addSys('start or open a conversation first, then enable autopilot for it', 'banner'); return; }
     if (apState[lastSessionId] !== undefined) { api('/api/autopilot/stop', { method: 'POST', body: JSON.stringify({ sessionId: lastSessionId }) }).catch(function () {}); return; }
     var pid = currentProjectId, sid = lastSessionId;
-    uiPrompt({ title: 'Enable autopilot', message: 'How many times should the gateway auto-continue THIS conversation? After each turn it sends “keep going” until the task replies AUTOPILOT_DONE or this many steps run out. Survives turn-end and restarts.', value: '20', type: 'number', okText: 'Enable' }).then(function (n) {
-      if (n == null) return; var count = parseInt(n, 10); if (!(count > 0)) return;
-      api('/api/autopilot', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, count: count }) }).catch(function () {});
-    });
+    api('/api/autopilot/last?projectId=' + encodeURIComponent(pid) + '&sessionId=' + encodeURIComponent(sid)).then(function (r) { if (r.status === 404) return {}; if (!r.ok) throw new Error('Could not load autopilot defaults'); return r.json(); }).then(autopilotDialog).then(function (settings) {
+      if (settings == null) return;
+      return saveAutopilot('/api/autopilot', { projectId: pid, sessionId: sid, count: settings.count, instruction: settings.instruction });
+    }).catch(function (e) { addSys(e.message, 'banner'); });
   });
-  function loadAutopilot() { return api('/api/autopilot').then(function (r) { return r.json(); }).then(function (m) { apState = {}; Object.keys(m || {}).forEach(function (sid) { apState[sid] = m[sid].remaining; }); renderAutopilot(); }).catch(function () {}); }
+  function loadAutopilot() { return api('/api/autopilot').then(function (r) { return r.json(); }).then(function (m) { apState = m || {}; renderAutopilot(); }).catch(function () {}); }
 
   // ---- prompt queue (messages lined up to send when the current turn finishes) ----
   var queueState = {}; // pid -> [{id,text,model,effort,at}]
@@ -5401,6 +5444,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       inp.className = 'm-in'; if (!o.multiline) inp.type = o.type || 'text';
       inp.value = o.value == null ? '' : String(o.value);
       if (o.placeholder) inp.placeholder = o.placeholder;
+      if (o.maxLength) inp.maxLength = o.maxLength;
       // Match the main composer's convention: Enter sends/saves, Shift+Enter
       // inserts a newline — only relevant once the field actually has room for one.
       inp.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !(o.multiline && e.shiftKey)) { e.preventDefault(); done(inp.value); } });

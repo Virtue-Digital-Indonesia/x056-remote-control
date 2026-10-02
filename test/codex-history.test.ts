@@ -1,4 +1,5 @@
 import { withMessageSender } from '../src/message-sender.js';
+import { composeAutopilotPrompt } from '../src/autopilot.js';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +16,12 @@ function rolloutDir(threadId: string, lines: unknown[]): string {
   writeFileSync(join(day, `rollout-2026-07-15T01-51-33-${threadId}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
   return configDir;
 }
+
+it('retains multiline standing instructions and autopilot attribution in Codex history', () => {
+  const text = composeAutopilotPrompt({ prompt: 'Continue task', stopPhrase: 'AUTOPILOT_DONE', instruction: 'Follow docs/plan.md\nTick off each item' });
+  const dir = rolloutDir('autopilot', [{ type: 'event_msg', payload: { type: 'user_message', message: withMessageSender(text, { kind: 'autopilot' }) } }]);
+  expect(codexAdapter.readHistory!([dir], 'autopilot', 100)).toEqual([{ role: 'user', text, sender: { kind: 'autopilot' }, ts: undefined }]);
+});
 
 describe('codexAdapter.readHistory', () => {
   it('extracts user prompts and the final agent message per turn, skipping lifecycle/internal event types', () => {
