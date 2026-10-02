@@ -88,7 +88,7 @@ final class RenderTests: XCTestCase {
                 .padding().frame(width: 390).background(Color(.systemGroupedBackground)).environment(\.colorScheme, scheme)
             attach(me, "model-effort-\(scheme == .dark ? "dark" : "light")")
             let jev = try? JSONDecoder().decode(JevStatus.self, from: Data(#"{"configured":true,"estimatedLeft":4.12}"#.utf8))
-            let hs = HelpersContent(helpers: Helpers(advisor: true, team: false, router: "jev", lean: "high"), provider: "claude", started: true,
+            let hs = HelpersContent(helpers: Helpers(advisor: true, team: false, router: "jev", lean: "high"), effective: "jev", provider: "claude", started: true,
                                     jev: jev, decisions: nil) { _ in }
                 .padding().frame(width: 390).background(Color(.systemGroupedBackground)).environment(\.colorScheme, scheme)
             attach(hs, "helpers-\(scheme == .dark ? "dark" : "light")")

@@ -19,7 +19,8 @@ struct AgentTreeView: View {
             GeometryReader { geo in
                 ScrollView {
                     if let tree {
-                        AgentTreeContent(tree: tree, subagents: subagents, turnN: turnN, wide: geo.size.width >= 620) { id in
+                        AgentTreeContent(tree: tree, subagents: subagents, turnN: turnN, wide: geo.size.width >= 620,
+                                         router: app.effectiveRouter(tree.helpers ?? Helpers(), app.conversation(projectId, sessionId))) { id in
                             Task {
                                 _ = try? await app.client?.post("/api/delegates/stop", DelegateRef(projectId: projectId, sessionId: sessionId, id: id))
                                 await load()
@@ -100,14 +101,19 @@ struct AgentTreeContent: View {
     let subagents: [Subagent]
     var turnN: Int?
     var wide: Bool
+    /// The picker that runs (AppModel.effectiveRouter); nil falls back to
+    /// what the tree's helpers saved.
+    var router: String? = nil
     var stopDelegate: (String) -> Void = { _ in }
     @State private var earlierOpen = false
+
+    private var picker: String? { router ?? (tree.helpers?.router == "none" ? nil : tree.helpers?.router) }
 
     var body: some View {
         let w = TurnWindow(tree: tree, turnN: turnN)
         let advisorOn = tree.advisor?.on == true
         VStack(alignment: .leading, spacing: 18) {
-            Legend(tree: tree, showForks: showForks(w), hasWorkers: tree.team != nil || !subagents.isEmpty)
+            Legend(tree: tree, picker: picker, showForks: showForks(w), hasWorkers: tree.team != nil || !subagents.isEmpty)
             if wide && advisorOn {
                 HStack(alignment: .top, spacing: 18) {
                     AdvisorCard(advisor: tree.advisor!, calls: w.calls(tree.advisor?.calls ?? []))
@@ -125,7 +131,7 @@ struct AgentTreeContent: View {
     }
 
     private func showForks(_ w: TurnWindow) -> Bool {
-        tree.team != nil || tree.helpers?.router != nil || !w.forks(tree.forks?.recent ?? []).isEmpty
+        tree.team != nil || picker != nil || !w.forks(tree.forks?.recent ?? []).isEmpty
     }
 
     @ViewBuilder
@@ -138,7 +144,7 @@ struct AgentTreeContent: View {
             MainCard(main: tree.main)
             if showForks(w) {
                 Connector(from: RoleColor.main, to: RoleColor.jev)
-                ForkCard(forks: w.forks(tree.forks?.recent ?? []), picker: tree.helpers?.router)
+                ForkCard(forks: w.forks(tree.forks?.recent ?? []), picker: picker)
             }
             if tree.team != nil || !subagents.isEmpty {
                 Connector(from: showForks(w) ? RoleColor.jev : RoleColor.main, to: RoleColor.sub,
@@ -161,7 +167,7 @@ struct AgentTreeContent: View {
                     .frame(maxWidth: .infinity)
                 }
             }
-            if tree.helpers?.advisor != true && tree.helpers?.team != true && tree.helpers?.router == nil && !anyWorkers {
+            if tree.helpers?.advisor != true && tree.helpers?.team != true && picker == nil && !anyWorkers {
                 Text("Turn on Advisor, Agent team or Jev from Helpers, or ask this conversation to delegate work.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -262,7 +268,7 @@ struct AgentTreeContent: View {
             if let at = s.startedAt { ev.append(LogEvent(at: at, tag: SubagentCard.role(s), color: RoleColor.sub, text: "started, " + (s.description ?? s.brief ?? ""))) }
             if let at = s.endedAt { ev.append(LogEvent(at: at, tag: SubagentCard.role(s), color: RoleColor.sub, text: SubagentStatusIcon.label(s.status).lowercased() + ", " + (s.description ?? s.brief ?? ""))) }
         }
-        let jevTag = tree.helpers?.router == "decisions" ? "decisions" : "jev"
+        let jevTag = picker == "decisions" ? "decisions" : "jev"
         for f in w.forks(tree.forks?.recent ?? []) {
             guard let at = f.at.flatMap(TurnWindow.ms) else { continue }
             let p = f.confidence.map { String(format: " p=%.2f", $0) } ?? ""
@@ -351,6 +357,7 @@ struct TurnWindow {
 
 struct Legend: View {
     let tree: AgentTree
+    var picker: String? = nil
     let showForks: Bool
     let hasWorkers: Bool
 
@@ -360,7 +367,7 @@ struct Legend: View {
             if hasWorkers {
                 chip(RoleColor.sub, ["Subagents", tree.team.flatMap { $0.pickedBy != nil ? $0.model.map(ModelCatalog.displayName) : nil }, tree.team?.effort])
             }
-            if showForks { chip(RoleColor.jev, [tree.helpers?.router == "decisions" ? "Decisions" : "Jev", "forks"]) }
+            if showForks { chip(RoleColor.jev, [picker == "decisions" ? "Decisions" : "Jev", "forks"]) }
             if !(tree.delegates ?? []).isEmpty { chip(RoleColor.delegate, ["Delegates"]) }
             if tree.advisor?.on == true { chip(RoleColor.advisor, [tree.advisor?.model.map(ModelCatalog.displayName), "advisor"]) }
         }

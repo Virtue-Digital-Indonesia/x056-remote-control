@@ -25,7 +25,7 @@ struct ModelEffortSheet: View {
     }
 
     private var routerName: String? {
-        switch model.helpers.router {
+        switch model.router {
         case "jev": return "Jev"
         case "decisions": return "OpenAI"
         default: return nil
@@ -149,7 +149,7 @@ struct HelpersSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                HelpersContent(helpers: model.helpers, provider: model.provider, started: model.sessionId != nil,
+                HelpersContent(helpers: model.helpers, effective: model.router, provider: model.provider, started: model.sessionId != nil,
                                jev: app.jevStatus, decisions: app.decisionsStatus) { h in
                     Task { await model.setHelpers(h) }
                 }
@@ -167,6 +167,8 @@ struct HelpersSheet: View {
 
 struct HelpersContent: View {
     let helpers: Helpers
+    /// The picker that runs (AppModel.effectiveRouter).
+    let effective: String?
     let provider: String
     let started: Bool
     let jev: JevStatus?
@@ -187,23 +189,24 @@ struct HelpersContent: View {
                            on: helpers.advisor == true) { var h = helpers; h.advisor = $0; save(h) }
                 toggleCard("Agent team", symbol: "person.3.fill", color: RoleColor.sub,
                            text: (codex ? "Explorer and worker subagents, plus a researcher, on medium effort." : "Explorer, worker and researcher subagents on Opus, medium effort.")
-                               + (helpers.router != nil ? " Small forks go to \(helpers.router == "decisions" ? "OpenAI Decisions" : "Jev")." : ""),
+                               + (effective != nil ? " Small forks go to \(effective == "decisions" ? "OpenAI Decisions" : "Jev")." : ""),
                            on: helpers.team == true) { var h = helpers; h.team = $0; save(h) }
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Who picks model and effort").font(.headline).padding(.leading, 4)
                 VStack(spacing: 10) {
-                    pickerCard(nil, title: "Your choice", symbol: "slider.horizontal.3", color: .gray,
-                               text: "The model and effort in the composer.", enabled: true)
+                    // Saved as 'none': nothing saved means the Jev default.
+                    pickerCard("none", title: "Your choice", symbol: "slider.horizontal.3", color: .gray,
+                               text: ownText, enabled: true)
                     pickerCard("jev", title: "Jev", symbol: "wand.and.stars", color: RoleColor.jev, text: jevText,
-                               enabled: (jev?.configured ?? true) || helpers.router == "jev")
+                               enabled: (jev?.configured ?? true) || helpers.router == "jev", tag: byDefault ? "Default" : nil)
                     pickerCard("decisions", title: "OpenAI Decisions", symbol: "brain.filled.head.profile", color: .indigo, text: decisionsText,
                                enabled: (decisions?.configured ?? false) || helpers.router == "decisions", tag: "Preview")
                 }
             }
 
-            if helpers.router != nil {
+            if effective != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Lean").font(.headline).padding(.leading, 4)
                     HStack(spacing: 8) {
@@ -219,10 +222,19 @@ struct HelpersContent: View {
         .opacity(started ? 1 : 0.6)
     }
 
+    /// Jev runs because nothing was chosen, not because it was picked.
+    private var byDefault: Bool { helpers.router == nil && effective != nil }
+
     private var jevText: String {
         guard let j = jev else { return "Picks the model and effort for each turn." }
         guard j.configured else { return "Needs a TypeSafe API key." }
-        return "Picks the model and effort for each turn" + (j.estimatedLeft.map { String(format: ", about $%.2f left.", $0) } ?? ".")
+        return "Picks the model and effort for each turn" + (byDefault ? " (the default while credits last)" : "")
+            + (j.estimatedLeft.map { String(format: ", about $%.2f left.", $0) } ?? ".")
+    }
+
+    private var ownText: String {
+        let noCredits = helpers.router == nil && jev?.configured == true && jev?.available == false
+        return "The model and effort in the composer." + (noCredits ? " Jev is out of credits." : "")
     }
 
     private var decisionsText: String {
@@ -253,8 +265,8 @@ struct HelpersContent: View {
         .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 20, style: .continuous))
     }
 
-    private func pickerCard(_ router: String?, title: String, symbol: String, color: Color, text: String, enabled: Bool, tag: String? = nil) -> some View {
-        let on = helpers.router == router
+    private func pickerCard(_ router: String, title: String, symbol: String, color: Color, text: String, enabled: Bool, tag: String? = nil) -> some View {
+        let on = (effective ?? "none") == router
         return Button {
             var h = helpers
             h.router = router

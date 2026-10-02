@@ -181,11 +181,33 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
     }
 
     @Test func helpersPillMatchesThePanel() {
-        #expect(Helpers().summary == "")
-        #expect(Helpers(advisor: true, team: true, router: "jev", lean: "high").summary == "Advisor · Team · Jev · High")
-        #expect(Helpers(router: "decisions").summary == "Decisions")
+        #expect(Helpers().summary(router: nil) == "")
+        #expect(Helpers(advisor: true, team: true, router: "jev", lean: "high").summary(router: "jev") == "Advisor · Team · Jev · High")
+        #expect(Helpers(router: "decisions").summary(router: "decisions") == "Decisions")
+        // Jev by default: nothing saved, but the pill names what runs.
+        #expect(Helpers(team: true).summary(router: "jev") == "Team · Jev")
         let legacy = try! JSONDecoder().decode(Conversation.self, from: Data(#"{"sessionId":"s","title":"t","decisionMaker":"advisor"}"#.utf8))
         #expect(legacy.effectiveHelpers.advisor == true)
+    }
+
+    /// server/projects.ts effectiveRouter: what was saved; 'none' is none;
+    /// nothing saved is Jev while available (fresh status first, else the
+    /// conversation's snapshot).
+    @Test func picksTheRouterThatRunsLikeTheGateway() {
+        let app = AppModel.shared
+        let saved = app.jevStatus
+        defer { app.jevStatus = saved }
+        let snapshot = try! JSONDecoder().decode(Conversation.self, from: Data(#"{"sessionId":"s","title":"t","effectiveRouter":"jev"}"#.utf8))
+        app.jevStatus = JevStatus(configured: true, estimatedLeft: 1, available: true)
+        #expect(app.effectiveRouter(Helpers(), nil) == "jev")
+        #expect(app.effectiveRouter(Helpers(router: "none"), snapshot) == nil)
+        #expect(app.effectiveRouter(Helpers(router: "decisions"), nil) == "decisions")
+        app.jevStatus = JevStatus(configured: true, estimatedLeft: 0, available: false)
+        #expect(app.effectiveRouter(Helpers(), snapshot) == nil)
+        #expect(app.effectiveRouter(Helpers(router: "jev"), nil) == "jev")
+        app.jevStatus = nil
+        #expect(app.effectiveRouter(Helpers(), snapshot) == "jev")
+        #expect(app.effectiveRouter(Helpers(), nil) == nil)
     }
 
     @Test func readsJevAndDelegateCardsFromHistory() {

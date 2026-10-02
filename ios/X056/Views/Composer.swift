@@ -121,7 +121,8 @@ struct Composer: View {
                 HStack(spacing: 8) {
                     RunChip(model: model)
                     Button { showHelpers = true } label: {
-                        ChipLabel(icon: "sparkles", text: model.helpers.isEmpty ? "Helpers" : model.helpers.summary, active: !model.helpers.isEmpty)
+                        let pill = model.helpers.summary(router: model.router)
+                        ChipLabel(icon: "sparkles", text: pill.isEmpty ? "Helpers" : pill, active: !pill.isEmpty)
                     }
                     .buttonStyle(.plain)
                     AccountChip(model: model)
@@ -318,7 +319,7 @@ struct RunChip: View {
         .sheet(isPresented: $show) { ModelEffortSheet(model: model) }
     }
 
-    private var picker: String { model.helpers.router == "decisions" ? "OpenAI" : "Jev" }
+    private var picker: String { model.router == "decisions" ? "OpenAI" : "Jev" }
 
     private var summary: String {
         if model.routerOn && model.model.isEmpty {

@@ -88,7 +88,9 @@ final class ConversationModel {
     var model: String { sessionId == nil ? draftModel : (conversation?.model ?? "") }
     var effort: String { sessionId == nil ? draftEffort : (conversation?.effort ?? "") }
     var helpers: Helpers { conversation?.effectiveHelpers ?? Helpers() }
-    var routerOn: Bool { helpers.router != nil }
+    /// The picker that runs: Jev by default unless "Your choice" was saved.
+    var router: String? { app.effectiveRouter(helpers, conversation) }
+    var routerOn: Bool { router != nil }
     var isChat: Bool { project?.isChat ?? false }
 
     /// The newest Jev / Decisions pick in this conversation.

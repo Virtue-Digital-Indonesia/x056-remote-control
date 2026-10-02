@@ -528,12 +528,30 @@ final class AppModel {
         accounts.filter { ($0.provider ?? "claude") == provider }
     }
 
+    /// The picker that runs for a conversation (server/projects.ts
+    /// effectiveRouter): what was saved, 'none' for none, and when nothing
+    /// was saved, Jev while it is available. The fresh /api/jev/status wins
+    /// over the conversation's own snapshot, as on the panel.
+    func effectiveRouter(_ h: Helpers, _ conversation: Conversation?) -> String? {
+        switch h.router {
+        case "none": return nil
+        case "jev", "decisions": return h.router
+        default:
+            if let available = jevStatus?.available { return available ? "jev" : nil }
+            return conversation?.effectiveRouter.flatMap { $0.isEmpty ? nil : $0 }
+        }
+    }
+
     func setHelpers(_ projectId: String, _ sessionId: String, _ h: Helpers) async throws {
         guard let client else { return }
         let body = HelpersBody(projectId: projectId, sessionId: sessionId, advisor: h.advisor == true, team: h.team == true,
                                router: h.router ?? "", lean: h.lean ?? "medium")
         let reply = try await client.post("/api/conversations/helpers", body, as: HelpersReply.self)
-        updateConversation(projectId, sessionId) { $0.helpers = reply.helpers ?? h; $0.decisionMaker = nil }
+        updateConversation(projectId, sessionId) {
+            $0.helpers = reply.helpers ?? h
+            $0.decisionMaker = nil
+            $0.effectiveRouter = reply.effectiveRouter
+        }
     }
 
     func routingPreview(_ projectId: String, _ sessionId: String) async -> RoutingPreview? {

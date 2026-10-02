@@ -102,6 +102,9 @@ struct Conversation: Codable, Sendable, Identifiable, Hashable {
     var decisionMaker: String?
 
     /// The panel's helpersOf: `helpers` wins; the legacy field maps onto it.
+    /// The gateway's own answer for the picker that runs, as of the listing.
+    var effectiveRouter: String?
+
     var effectiveHelpers: Helpers {
         if let helpers { return helpers }
         switch decisionMaker {
@@ -470,15 +473,16 @@ struct ConversationMeta: Decodable, Sendable, Hashable {
 struct Helpers: Codable, Sendable, Hashable {
     var advisor: Bool?
     var team: Bool?
-    /// 'jev' | 'decisions'; nil = your own model and effort.
+    /// What the user SAVED: 'jev' | 'decisions' | 'none' ("Your choice",
+    /// explicitly). nil = not overridden: Jev picks while it is available.
+    /// What actually runs is `AppModel.effectiveRouter`.
     var router: String?
     /// 'low' | 'high'; nil = medium.
     var lean: String?
 
-    var isEmpty: Bool { advisor != true && team != true && router == nil }
-
-    /// The panel's pill: "Advisor · Team · Jev · High".
-    var summary: String {
+    /// The panel's pill: "Advisor · Team · Jev · High", with the picker that
+    /// actually runs.
+    func summary(router: String?) -> String {
         var parts: [String] = []
         if advisor == true { parts.append("Advisor") }
         if team == true { parts.append("Team") }
@@ -499,7 +503,7 @@ struct HelpersBody: Encodable, Sendable {
     let lean: String
 }
 
-struct HelpersReply: Decodable, Sendable { let helpers: Helpers? }
+struct HelpersReply: Decodable, Sendable { let helpers: Helpers?; let effectiveRouter: String? }
 
 /// One Jev / OpenAI Decisions pick for a turn (server/jev.ts JevDecision).
 struct JevDecision: Decodable, Sendable, Hashable {
@@ -541,7 +545,12 @@ struct JevDecision: Decodable, Sendable, Hashable {
     }
 }
 
-struct JevStatus: Decodable, Sendable { let configured: Bool; let estimatedLeft: Double? }
+struct JevStatus: Decodable, Sendable {
+    let configured: Bool
+    let estimatedLeft: Double?
+    /// A key and credits left: Jev then picks wherever nothing was chosen.
+    var available: Bool? = nil
+}
 struct DecisionsStatus: Decodable, Sendable { let configured: Bool; let calls: Int? }
 struct SettingsReply: Decodable, Sendable { let modelEffort: [String: String]? }
 struct EnabledReply: Decodable, Sendable { let enabled: Bool? }
