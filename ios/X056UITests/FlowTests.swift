@@ -298,6 +298,7 @@ final class FlowTests: XCTestCase {
         // This iPhone's settings, saved to the gateway as they change.
         let automation = app.switches.matching(NSPredicate(format: "label == %@", "Automation and background")).firstMatch
         for _ in 0..<3 where !automation.waitForExistence(timeout: 3) { app.swipeUp() }
+        if !automation.exists { snapshot(app, "21-settings-missing") }
         XCTAssertTrue(automation.exists)
         let endpoint = "/api/push/settings?endpoint=apns:f00dfeed"
         let before = api("GET", endpoint)?["automation"] as? Bool ?? false
@@ -327,15 +328,44 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(conversation.waitForExistence(timeout: 10))
         conversation.tap()
         XCTAssertTrue(app.textViews["composer"].waitForExistence(timeout: 10))
+        let projects = try XCTUnwrap(api("GET", "/api/projects")?["projects"] as? [[String: Any]])
+        let site = try XCTUnwrap(projects.first { ($0["name"] as? String) == "Website refresh" })
+        let conv = try XCTUnwrap((site["conversations"] as? [[String: Any]])?.first { ($0["title"] as? String) == "Update the component library" })
+        // An autopilot an earlier run left armed would change the menu.
+        _ = api("POST", "/api/autopilot/stop", ["sessionId": conv["sessionId"]!])
+        _ = site
 
         // Autopilot: start from the menu, the bar shows it, stop from the bar.
         app.buttons["More"].firstMatch.tap()
         app.buttons["Autopilot…"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Keep this conversation going"].waitForExistence(timeout: 5))
-        snapshot(app, "22-autopilot-sheet")
         app.buttons["5"].firstMatch.tap()
+        // The plan suggestion selects its placeholder path to type over.
+        app.buttons["Plan doc"].firstMatch.tap()
+        app.typeText("docs/ios-plan.md")
+        snapshot(app, "22-autopilot-sheet")
+        XCTAssertFalse(app.buttons["Start autopilot"].exists, "the buttons step aside while typing")
+        app.buttons["Hide keyboard"].firstMatch.tap()
         app.buttons["Start autopilot"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "steps left")).firstMatch.waitForExistence(timeout: 5))
+        let sid = try XCTUnwrap(conv["sessionId"] as? String)
+        let mine = { (self.api("GET", "/api/autopilot") ?? [:])[sid] as? [String: Any] }
+        // Contains: the sheet prefills what the last run used (/last).
+        XCTAssertTrue((mine()?["instruction"] as? String)?.contains("Follow the implementation plan in docs/ios-plan.md and tick off each item as you finish it.") == true, "\(mine() ?? [:])")
+        XCTAssertEqual(mine()?["count"] as? Int, 5)
+        // Edited while it runs: the budget is untouched.
+        app.textViews["Standing instruction"].tap()
+        app.typeText(" Run the tests too.")
+        app.buttons["Hide keyboard"].firstMatch.tap()
+        app.buttons["Save instruction"].firstMatch.tap()
+        let saved = expectation(description: "instruction saved")
+        DispatchQueue.global().async {
+            for _ in 0..<20 {
+                if (mine()?["instruction"] as? String)?.contains("Run the tests too.") == true { saved.fulfill(); return }
+                usleep(250_000)
+            }
+        }
+        wait(for: [saved], timeout: 8)
         snapshot(app, "23-autopilot-running")
         app.buttons["Done"].firstMatch.tap()
         let bar = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Autopilot")).firstMatch

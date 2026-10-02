@@ -30,7 +30,18 @@ struct AutopilotSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        // Its own header, not a navigation bar: on iPhone Duo the bar's Done
+        // was gone for good once the keyboard had been up in this sheet.
+        VStack(spacing: 0) {
+            HStack {
+                Text("Autopilot").font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }
+                    .buttonStyle(.glass)
+            }
+            .padding(.horizontal)
+            .padding(.top, 14)
+            .padding(.bottom, 6)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     statusCard
@@ -50,13 +61,27 @@ struct AutopilotSheet: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(Color(.systemGroupedBackground))
-            .safeAreaBar(edge: .bottom) { actions }
-            .navigationTitle("Autopilot")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .task { await load() }
+            // While the instruction is being typed the buttons step aside (over
+            // the keyboard they would cover the text) for one small one that
+            // puts the keyboard away.
+            .safeAreaInset(edge: .bottom) {
+                if editing {
+                    HStack {
+                        Spacer()
+                        Button("Hide keyboard", systemImage: "keyboard.chevron.compact.down") { editing = false }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.glass)
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                } else {
+                    actions
+                }
+            }
         }
+        .background(Color(.systemGroupedBackground))
+        .animation(.snappy, value: editing)
+        .task { await load() }
         .presentationDetents([.large])
     }
 
