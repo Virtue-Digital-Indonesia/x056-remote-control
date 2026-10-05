@@ -16,9 +16,11 @@ export function advisorFor(provider: 'claude' | 'codex', model: string | undefin
 }
 
 /** What Jev may choose between on Claude. Fable is left out on purpose: it
- *  bills to usage credits and would be picked for "hard" often enough to hurt. */
+ *  bills to usage credits and would be picked for "hard" often enough to hurt.
+ *  Haiku is left out too (owner, 2026-10-05): its context window is too short
+ *  for these conversations, which carry long histories and tool output. A user
+ *  can still pick Haiku by hand. */
 export const CLAUDE_CANDIDATES: JevCandidate[] = [
-  { id: 'haiku', about: 'Fastest and cheapest. Quick answers, lookups, small mechanical edits, formatting.' },
   { id: 'sonnet', about: 'Strong everyday model. Normal coding, writing, explanations, features of moderate size.' },
   { id: 'opus', about: 'Strongest affordable reasoning. Hard debugging, architecture, large or risky refactors, ambiguous problems.' },
 ];

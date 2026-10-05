@@ -38,9 +38,10 @@ describe('advisor pairing', () => {
 
 describe('Jev policy', () => {
   it('applies a confident effort, and a model only above the higher bar', () => {
-    const d = applyPolicy(base(), input(), { effort: { choice: 'low', confidence: 0.9 }, model: { choice: 'haiku', confidence: 0.95 } }, []);
-    expect(d).toMatchObject({ effort: 'low', model: 'haiku', pickedModel: 'haiku', pickedEffort: 'low' });
-    const unsure = applyPolicy(base(), input(), { effort: { choice: 'low', confidence: 0.5 }, model: { choice: 'haiku', confidence: 0.55 } }, []);
+    const cur = input({ currentModel: 'sonnet' });
+    const d = applyPolicy(base(), cur, { effort: { choice: 'low', confidence: 0.9 }, model: { choice: 'opus', confidence: 0.95 } }, []);
+    expect(d).toMatchObject({ effort: 'low', model: 'opus', pickedModel: 'opus', pickedEffort: 'low' });
+    const unsure = applyPolicy(base(), cur, { effort: { choice: 'low', confidence: 0.5 }, model: { choice: 'opus', confidence: 0.55 } }, []);
     expect(unsure.effort).toBeUndefined();
     expect(unsure.model).toBeUndefined();
     expect(unsure.notes.join(' ')).toMatch(/only 55% sure/);
@@ -60,12 +61,11 @@ describe('Jev policy', () => {
   // Lowering is the costly mistake (quality, a human round trip); raising
   // only costs tokens. So going below the turn's own choice needs more.
   it('needs more confidence to go lower than to go higher', () => {
-    const cur = input({ currentModel: 'sonnet', currentEffort: 'high' });
-    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.6 }, model: { choice: 'haiku', confidence: 0.62 } }, []);
+    const down = applyPolicy(base(), input({ currentModel: 'opus', currentEffort: 'high' }), { effort: { choice: 'medium', confidence: 0.6 }, model: { choice: 'sonnet', confidence: 0.62 } }, []);
     expect(down.effort).toBeUndefined();
     expect(down.model).toBeUndefined();
-    expect(down.notes).toEqual(['model haiku is below sonnet at only 62% (needs 65% to go lower); kept', 'effort medium is below high at only 60% (needs 65% to go lower); kept']);
-    const up = applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.6 }, model: { choice: 'opus', confidence: 0.62 } }, []);
+    expect(down.notes).toEqual(['model sonnet is below opus at only 62% (needs 65% to go lower); kept', 'effort medium is below high at only 60% (needs 65% to go lower); kept']);
+    const up = applyPolicy(base(), input({ currentModel: 'sonnet', currentEffort: 'high' }), { effort: { choice: 'xhigh', confidence: 0.6 }, model: { choice: 'opus', confidence: 0.62 } }, []);
     expect(up).toMatchObject({ effort: 'xhigh', model: 'opus' });
   });
 
@@ -77,16 +77,16 @@ describe('Jev policy', () => {
     expect(up).toMatchObject({ lean: 'low' });
     expect(up.effort).toBeUndefined(); expect(up.model).toBeUndefined();
     expect(up.notes).toEqual(['model opus only 70% sure (needs 75%, leaning low); kept', 'effort xhigh only 60% sure (needs 65% to go higher, leaning low); kept']);
-    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.5 }, model: { choice: 'haiku', confidence: 0.58 } }, []);
-    expect(down).toMatchObject({ effort: 'medium', model: 'haiku' });
+    const down = applyPolicy(base(), input({ currentModel: 'opus', currentEffort: 'high', lean: 'low' }), { effort: { choice: 'medium', confidence: 0.5 }, model: { choice: 'sonnet', confidence: 0.58 } }, []);
+    expect(down).toMatchObject({ effort: 'medium', model: 'sonnet' });
   });
 
   it('leans high: stronger is easier to reach, cheaper harder', () => {
     const cur = input({ currentModel: 'sonnet', currentEffort: 'high', lean: 'high' });
     expect(applyPolicy(base(), cur, { effort: { choice: 'xhigh', confidence: 0.47 }, model: { choice: 'opus', confidence: 0.52 } }, [])).toMatchObject({ effort: 'xhigh', model: 'opus', lean: 'high' });
-    const down = applyPolicy(base(), cur, { effort: { choice: 'medium', confidence: 0.72 }, model: { choice: 'haiku', confidence: 0.78 } }, []);
+    const down = applyPolicy(base(), input({ currentModel: 'opus', currentEffort: 'high', lean: 'high' }), { effort: { choice: 'medium', confidence: 0.72 }, model: { choice: 'sonnet', confidence: 0.78 } }, []);
     expect(down.effort).toBeUndefined(); expect(down.model).toBeUndefined();
-    expect(down.notes).toEqual(['model haiku is below sonnet at only 78% (needs 80% to go lower, leaning high); kept', 'effort medium is below high at only 72% (needs 75% to go lower, leaning high); kept']);
+    expect(down.notes).toEqual(['model sonnet is below opus at only 78% (needs 80% to go lower, leaning high); kept', 'effort medium is below high at only 72% (needs 75% to go lower, leaning high); kept']);
     // A move the ranks cannot place (Fable) keeps the plain 60% bar.
     expect(applyPolicy(base(), input({ currentModel: 'fable', lean: 'high' }), { model: { choice: 'opus', confidence: 0.55 } }, []).model).toBeUndefined();
   });
@@ -131,13 +131,13 @@ describe('Jev policy', () => {
       { model: { choice: 'gpt-9', confidence: 0.9 }, effort: { choice: 'max', confidence: 0.9 } }, []);
     expect(odd.model).toBe('sonnet'); expect(odd.effort).toBeUndefined();
     // Auto on one side only: the other still meets its bar.
-    const half = applyPolicy(base(), input({ currentModel: 'sonnet', currentEffort: 'high', auto: { model: true } }), { model: { choice: 'haiku', confidence: 0.3 }, effort: { choice: 'low', confidence: 0.3 } }, []);
-    expect(half).toMatchObject({ model: 'haiku' }); expect(half.effort).toBeUndefined();
+    const half = applyPolicy(base(), input({ currentModel: 'opus', currentEffort: 'high', auto: { model: true } }), { model: { choice: 'sonnet', confidence: 0.3 }, effort: { choice: 'low', confidence: 0.3 } }, []);
+    expect(half).toMatchObject({ model: 'sonnet' }); expect(half.effort).toBeUndefined();
   });
 
   it('on Auto, a Claude model switch still waits the gap; Codex does not', () => {
     const history: JevDecision[] = [{ ...base(), baseModel: 'sonnet', model: 'opus', auto: { model: true } }];
-    const d = applyPolicy(base(), input({ currentModel: 'opus', auto: { model: true } }), { model: { choice: 'haiku', confidence: 0.9 } }, history);
+    const d = applyPolicy(base(), input({ currentModel: 'opus', auto: { model: true } }), { model: { choice: 'sonnet', confidence: 0.9 } }, history);
     expect(d.model).toBe('opus');
     expect(d.notes[0]).toMatch(/switched 0 turn\(s\) ago/);
     const codex = input({ provider: 'codex', currentModel: 'gpt-a', auto: { model: true }, models: [{ id: 'gpt-a', about: 'a' }, { id: 'gpt-b', about: 'b' }] });
@@ -147,7 +147,7 @@ describe('Jev policy', () => {
   // Going back to the saved model respawns the process just the same.
   it('counts a return to the saved model as a switch', () => {
     const history: JevDecision[] = [{ ...base(), baseModel: 'opus', model: 'sonnet' }, { ...base(), baseModel: 'opus' }];
-    const d = applyPolicy(base(), input({ currentModel: 'opus' }), { model: { choice: 'haiku', confidence: 0.95 } }, history);
+    const d = applyPolicy(base(), input({ currentModel: 'opus' }), { model: { choice: 'sonnet', confidence: 0.95 } }, history);
     expect(d.model).toBeUndefined();
     expect(d.notes[0]).toMatch(/switched 0 turn\(s\) ago/);
   });
@@ -180,11 +180,15 @@ describe('Jev policy', () => {
 
   it('counts a run of stays as ONE switch for the gap', () => {
     const history: JevDecision[] = [{ ...base(), model: 'sonnet' }, base(), base(), { ...base(), model: 'sonnet' }];
-    // The last decision re-entered sonnet after two turns on opus: a switch.
-    expect(applyPolicy(base(), input({ currentModel: 'opus', previousModel: 'sonnet' }), { model: { choice: 'haiku', confidence: 0.95 } }, history).model).toBeUndefined();
+    // Saved on Fable by hand, so a pick of opus is neither the saved model nor
+    // a stay: a switch, which the gap governs.
+    // The last decision re-entered sonnet after two turns on Fable: a switch.
+    const gap = applyPolicy(base(), input({ currentModel: 'fable', previousModel: 'sonnet' }), { model: { choice: 'opus', confidence: 0.95 } }, history);
+    expect(gap.model).toBeUndefined();
+    expect(gap.notes[0]).toMatch(/switched 0 turn\(s\) ago/);
     const stays: JevDecision[] = [{ ...base(), model: 'sonnet' }, { ...base(), model: 'sonnet' }, { ...base(), model: 'sonnet' }, { ...base(), model: 'sonnet' }];
     // Four turns on sonnet, switched only at the first: the gap has passed.
-    expect(applyPolicy(base(), input({ currentModel: 'opus', previousModel: 'sonnet' }), { model: { choice: 'haiku', confidence: 0.95 } }, stays).model).toBe('haiku');
+    expect(applyPolicy(base(), input({ currentModel: 'fable', previousModel: 'sonnet' }), { model: { choice: 'opus', confidence: 0.95 } }, stays).model).toBe('opus');
   });
 
   // A Claude model switch respawns the process and drops the prompt cache.
@@ -196,6 +200,25 @@ describe('Jev policy', () => {
     expect(applyPolicy(base(), input({ currentModel: 'haiku' }), pick, later).model).toBe('opus');
     const codex = input({ provider: 'codex', currentModel: 'gpt-a', models: [{ id: 'gpt-a', about: 'a' }, { id: 'gpt-b', about: 'b' }] });
     expect(applyPolicy({ ...base(), provider: 'codex' }, codex, { model: { choice: 'gpt-b', confidence: 0.9 } }, [{ ...base(), model: 'gpt-a' }]).model).toBe('gpt-b');
+  });
+
+  // Owner, 2026-10-05: Haiku's context window is too short for these
+  // conversations, so Jev never gets it as an option and a pick of it is refused.
+  it('never offers Haiku on Claude, and refuses a pick of it', async () => {
+    expect(jevCandidates('claude', []).models.map((m) => m.id)).not.toContain('haiku');
+    const d = applyPolicy(base(), input({ currentModel: 'sonnet' }), { model: { choice: 'haiku', confidence: 0.99 } }, []);
+    expect(d.model).toBeUndefined();
+    expect(d.pickedModel).toBe('haiku');
+    expect(d.notes).toEqual(['model haiku is not a candidate; kept']);
+    // Under Auto the turn names the base it keeps.
+    expect(applyPolicy(base(), input({ currentModel: 'sonnet', auto: { model: true } }), { model: { choice: 'haiku', confidence: 0.99 } }, []).model).toBe('sonnet');
+    // Neither backend's request lists it.
+    const bodies: { questions: Record<string, { criteria: Record<string, string> }> }[] = [];
+    const fetchFn = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return new Response(JSON.stringify({ answers: {} }), { status: 200 }); }) as unknown as typeof fetch;
+    await new JevService(jevState(), fetchFn).decide('s-0000000a', input());
+    expect(Object.keys(bodies[0].questions.model.criteria)).toEqual(['sonnet', 'opus']);
+    const openai = decisionsRequest(input()) as { questions: { id: string; options: { value: string }[] }[] };
+    expect(openai.questions.find((q) => q.id === 'model')!.options.map((o) => o.value)).toEqual(['sonnet', 'opus']);
   });
 
   it('never applies an unknown model or an effort the chosen model does not offer', () => {
@@ -218,7 +241,7 @@ describe('Jev policy: the agent team\'s subagents', () => {
     const t = teamCandidates('claude', jevCandidates('claude', []).models);
     expect(t).toMatchObject({ baseModel: 'opus', baseEffort: 'medium' });
     expect(Object.keys(t.efforts)).toEqual(['low', 'medium', 'high']);
-    expect(t.models.map((m) => m.id)).toEqual(['haiku', 'sonnet', 'opus']);
+    expect(t.models.map((m) => m.id)).toEqual(['sonnet', 'opus']);
     // Codex: up to xhigh, and the base model follows the main session.
     const c = teamCandidates('codex', codexModels);
     expect(Object.keys(c.efforts)).toEqual(['low', 'medium', 'high', 'xhigh']);
@@ -265,11 +288,12 @@ describe('Jev policy: the agent team\'s subagents', () => {
   });
 
   it('has no Claude switching gap: nothing respawns', () => {
-    const history: JevDecision[] = [{ ...base(), baseModel: 'opus', model: 'haiku' }];
+    const history: JevDecision[] = [{ ...base(), baseModel: 'opus', model: 'sonnet' }];
     const d = applyPolicy(base(), claudeTeam(), { subagent_model: { choice: 'sonnet', confidence: 0.95 }, model: { choice: 'sonnet', confidence: 0.95 } }, history);
     expect(d.model).toBeUndefined(); // the main switch waits the gap
     expect(d.team!.model).toBe('sonnet');
-    expect(applySubagentPolicy(base(), claudeTeam(), { subagent_model: { choice: 'haiku', confidence: 0.95 } }).team!.model).toBe('haiku');
+    // Right after a main switch the team still moves: applySubagentPolicy takes no history at all.
+    expect(applySubagentPolicy(base(), claudeTeam({ currentModel: 'sonnet' }), { subagent_model: { choice: 'sonnet', confidence: 0.95 } }).team!.model).toBe('sonnet');
   });
 
   it('asks both team questions in the same Jev call, written per lean', async () => {
@@ -345,13 +369,13 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     await waitFor(() => calls.length === 2);
     expect(calls[1].advisor).toBe('opus');
     await waitFor(() => !mgr.snapshot().running);
-    const decide = vi.spyOn(mgr.jev(), 'decide').mockResolvedValue({ ...base(), sessionId: sid, model: 'haiku', effort: 'low', notes: ['model -> haiku'] });
+    const decide = vi.spyOn(mgr.jev(), 'decide').mockResolvedValue({ ...base(), sessionId: sid, model: 'opus', effort: 'low', notes: ['model -> opus'] });
     mgr.setDecisionMaker(p.id, sid, 'jev');
     const seen: GatewayEvent[] = []; mgr.subscribe((e) => seen.push(e));
     mgr.continueSession(p.id, sid, 'third', {});
     await waitFor(() => calls.length === 3);
     expect(decide).toHaveBeenCalledTimes(1);
-    expect(calls[2]).toMatchObject({ model: 'haiku', effort: 'low' });
+    expect(calls[2]).toMatchObject({ model: 'opus', effort: 'low' });
     expect(calls[2].advisor).toBeUndefined();
     expect(seen.some((e) => e.kind === 'jev_decision')).toBe(true);
     // Jev is told what the conversation is in the middle of, not just the message.
@@ -426,7 +450,7 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     const stateDir = join(dir, 'state');
     writeFileSync(join(stateDir, 'secrets', 'openai.json'), JSON.stringify({ apiKey: 'sk-test-000000000000' }));
     (mgr as unknown as { openaiDecisionsService: OpenAIDecisionsService }).openaiDecisionsService = new OpenAIDecisionsService(stateDir, mgr.jev(),
-      (async () => new Response(JSON.stringify({ answers: { effort: { choice: 'low', confidence: 0.95 }, model: { choice: 'haiku', confidence: 0.99 } } }), { status: 200 })) as unknown as typeof fetch);
+      (async () => new Response(JSON.stringify({ answers: { effort: { choice: 'low', confidence: 0.95 }, model: { choice: 'opus', confidence: 0.99 } } }), { status: 200 })) as unknown as typeof fetch);
     const p = mgr.createProject('D', dir);
     const sid = mgr.start('first', undefined, { model: 'sonnet', effort: 'high' }, p.id);
     await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
@@ -434,7 +458,7 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     const seen: GatewayEvent[] = []; mgr.subscribe((e) => seen.push(e));
     mgr.continueSession(p.id, sid, 'rename x to count', {});
     await waitFor(() => calls.length === 2);
-    expect(calls[1]).toMatchObject({ model: 'haiku', effort: 'low' });
+    expect(calls[1]).toMatchObject({ model: 'opus', effort: 'low' });
     // The first turn ran the Jev default (the key is set); this turn's pick is the last.
     const d = seen.filter((e) => e.kind === 'jev_decision').at(-1)?.data as { backend?: string } | undefined;
     expect(d?.backend).toBe('openai');

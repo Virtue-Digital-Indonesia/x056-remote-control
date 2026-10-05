@@ -701,7 +701,8 @@ the thread they come from uses them together, and so do we now.
   "and UTC?" after a one-line answer got haiku 95% / low 98% with it. Each pick is a compact card in the
   chat ("Jev · Opus · Medium · Changed this turn") via the conversation
   journal, so reloads keep it. Slow (3 s), failed or keyless = no change. Candidates:
-  haiku/sonnet/opus on Claude (Fable excluded: usage credits), the
+  sonnet/opus on Claude (Fable excluded: usage credits; Haiku excluded:
+  context too short, 2026-10-05), the
   account-advertised models on Codex. Key: `state/secrets/typesafe.json`
   (0600). Decisions: `state/jev/decisions/<sid>.jsonl`.
 - **Jev credits**: TypeSafe has NO balance API (every balance-style path 404s
