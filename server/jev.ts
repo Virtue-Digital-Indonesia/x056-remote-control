@@ -427,7 +427,7 @@ export interface DecisionContext {
 
 /** Ranks for "is this pick a downgrade?". Unknown ids are never ranked. */
 const EFFORT_RANK = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const MODEL_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3, 'gpt-6-luna': 1, 'gpt-5.6-terra': 2, 'gpt-6-sol': 3, 'gpt-6.1-sol': 3, 'gpt-6-astra': 4 };
+const MODEL_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3, fable: 4, 'gpt-6-luna': 1, 'gpt-5.6-terra': 2, 'gpt-6-sol': 3, 'gpt-6.1-sol': 3, 'gpt-6-astra': 4 };
 const lower = (rank: (x: string) => number, pick: string, cur?: string) => { if (!cur) return false; const a = rank(pick), b = rank(cur); return a >= 0 && b >= 0 && a < b; };
 const higher = (rank: (x: string) => number, pick: string, cur?: string) => { if (!cur) return false; const a = rank(pick), b = rank(cur); return a >= 0 && b >= 0 && a > b; };
 const effortRank = (e: string) => EFFORT_RANK.indexOf(e);

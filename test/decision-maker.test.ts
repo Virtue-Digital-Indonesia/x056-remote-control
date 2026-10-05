@@ -216,9 +216,9 @@ describe('Jev policy', () => {
     const bodies: { questions: Record<string, { criteria: Record<string, string> }> }[] = [];
     const fetchFn = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return new Response(JSON.stringify({ answers: {} }), { status: 200 }); }) as unknown as typeof fetch;
     await new JevService(jevState(), fetchFn).decide('s-0000000a', input());
-    expect(Object.keys(bodies[0].questions.model.criteria)).toEqual(['sonnet', 'opus']);
+    expect(Object.keys(bodies[0].questions.model.criteria)).toEqual(['sonnet', 'opus', 'fable']);
     const openai = decisionsRequest(input()) as { questions: { id: string; options: { value: string }[] }[] };
-    expect(openai.questions.find((q) => q.id === 'model')!.options.map((o) => o.value)).toEqual(['sonnet', 'opus']);
+    expect(openai.questions.find((q) => q.id === 'model')!.options.map((o) => o.value)).toEqual(['sonnet', 'opus', 'fable']);
   });
 
   it('never applies an unknown model or an effort the chosen model does not offer', () => {
@@ -237,11 +237,15 @@ describe('Jev policy: the agent team\'s subagents', () => {
   ];
   const codexTeam = (over: Partial<JevDecisionInput> = {}) => input({ provider: 'codex', currentModel: 'gpt-6-astra', currentEffort: 'medium', models: codexModels, efforts: { low: 'l', medium: 'm', high: 'h', xhigh: 'x' }, team: teamCandidates('codex', codexModels), ...over });
 
+  it('offers Codex only the luna/terra/sol/astra families, never a legacy slug', () => {
+    const slugs = ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.6-terra', 'gpt-5.5'].map((slug) => ({ slug, label: slug, efforts: ['low', 'medium'] }));
+    expect(jevCandidates('codex', slugs as never).models.map((m) => m.id)).toEqual(['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.6-terra']);
+  });
   it('Claude: Opus at medium is the base; candidates low/medium/high and the main model list', () => {
     const t = teamCandidates('claude', jevCandidates('claude', []).models);
     expect(t).toMatchObject({ baseModel: 'opus', baseEffort: 'medium' });
     expect(Object.keys(t.efforts)).toEqual(['low', 'medium', 'high']);
-    expect(t.models.map((m) => m.id)).toEqual(['sonnet', 'opus']);
+    expect(t.models.map((m) => m.id)).toEqual(['sonnet', 'opus', 'fable']);
     // Codex: up to xhigh, and the base model follows the main session.
     const c = teamCandidates('codex', codexModels);
     expect(Object.keys(c.efforts)).toEqual(['low', 'medium', 'high', 'xhigh']);
@@ -267,9 +271,9 @@ describe('Jev policy: the agent team\'s subagents', () => {
 
   it('falls back to the base on a missing, off-list or weak pick', () => {
     expect(applyPolicy(base(), claudeTeam(), {}, []).team).toEqual({ model: 'opus', effort: 'medium', base: { model: 'opus', effort: 'medium' } });
-    const off = applyPolicy(base(), claudeTeam(), { subagent_model: { choice: 'fable', confidence: 0.99 }, subagent_effort: { choice: 'max', confidence: 0.99 } }, []);
-    expect(off.team).toMatchObject({ model: 'opus', effort: 'medium', pickedModel: 'fable', pickedEffort: 'max' });
-    expect(off.notes).toEqual(expect.arrayContaining(['team model fable is not a candidate; kept', 'team effort max is not a candidate; kept']));
+    const off = applyPolicy(base(), claudeTeam(), { subagent_model: { choice: 'haiku', confidence: 0.99 }, subagent_effort: { choice: 'max', confidence: 0.99 } }, []);
+    expect(off.team).toMatchObject({ model: 'opus', effort: 'medium', pickedModel: 'haiku', pickedEffort: 'max' });
+    expect(off.notes).toEqual(expect.arrayContaining(['team model haiku is not a candidate; kept', 'team effort max is not a candidate; kept']));
     const weak = applyPolicy(base(), claudeTeam(), { subagent_effort: { choice: 'low', confidence: 0.3 } }, []);
     expect(weak.team!.effort).toBe('medium');
     // No team input: no team on the row.

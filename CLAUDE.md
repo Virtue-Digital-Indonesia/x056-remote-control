@@ -689,7 +689,7 @@ the thread they come from uses them together, and so do we now.
   bar even to pick `low`. A move the ranks cannot place (Fable, an
   unknown Codex slug) keeps the plain 60% bar; the "model stays" rule and the
   Claude switching gap are not relaxed; forks and the delegate gate ignore it;
-  Fable is still never a candidate. Kept while the picker is off; the panel
+  Fable ranks above Opus. Kept while the picker is off; the panel
   sends it on every full-set save (else toggling Advisor would wipe it);
   `set_helpers` / `send_message` `helpers` take `lean` too.
 - **Jev is told the work in progress** (`decisionContext`, built in code):
@@ -701,9 +701,10 @@ the thread they come from uses them together, and so do we now.
   "and UTC?" after a one-line answer got haiku 95% / low 98% with it. Each pick is a compact card in the
   chat ("Jev · Opus · Medium · Changed this turn") via the conversation
   journal, so reloads keep it. Slow (3 s), failed or keyless = no change. Candidates:
-  sonnet/opus on Claude (Fable excluded: usage credits; Haiku excluded:
-  context too short, 2026-10-05), the
-  account-advertised models on Codex. Key: `state/secrets/typesafe.json`
+  sonnet/opus/fable on Claude (Haiku excluded: context too short; Fable
+  allowed despite usage credits; owner, 2026-10-05), and on Codex the
+  account-advertised models of the luna/terra/sol/astra families (a legacy
+  slug like gpt-5.5 is never offered to the picker). Key: `state/secrets/typesafe.json`
   (0600). Decisions: `state/jev/decisions/<sid>.jsonl`.
 - **Jev credits**: TypeSafe has NO balance API (every balance-style path 404s
   with the key; the console is Cloudflare-blocked for servers). The gateway

@@ -15,14 +15,14 @@ export function advisorFor(provider: 'claude' | 'codex', model: string | undefin
   return /fable/i.test(model || '') ? 'fable' : 'opus';
 }
 
-/** What Jev may choose between on Claude. Fable is left out on purpose: it
- *  bills to usage credits and would be picked for "hard" often enough to hurt.
- *  Haiku is left out too (owner, 2026-10-05): its context window is too short
- *  for these conversations, which carry long histories and tool output. A user
+/** What Jev may choose between on Claude. Haiku is left out (owner,
+ *  2026-10-05): its context window is too short for these conversations.
+ *  Fable is in (owner, same day), although it bills to usage credits. A user
  *  can still pick Haiku by hand. */
 export const CLAUDE_CANDIDATES: JevCandidate[] = [
   { id: 'sonnet', about: 'Strong everyday model. Normal coding, writing, explanations, features of moderate size.' },
   { id: 'opus', about: 'Strongest affordable reasoning. Hard debugging, architecture, large or risky refactors, ambiguous problems.' },
+  { id: 'fable', about: 'Frontier model, billed to usage credits. Only the hardest work: deep multi-step reasoning, critical or very large changes.' },
 ];
 
 /**
@@ -52,12 +52,17 @@ export const EFFORT_CRITERIA: Record<string, string> = {
 
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
+const CODEX_FAMILIES = /-(luna|terra|sol|astra)$/;
+
 /** Candidates for one turn. Codex uses the models the accounts actually offer. */
 export function jevCandidates(provider: 'claude' | 'codex', codexModels: ProviderModel[]): { models: JevCandidate[]; efforts: Record<string, string> } {
   if (provider === 'claude') {
     return { models: CLAUDE_CANDIDATES.map((m) => ({ ...m, efforts: CLAUDE_EFFORTS })), efforts: pick(CLAUDE_EFFORTS) };
   }
-  const models = codexModels.map((m) => ({ id: m.slug, about: (m.description || m.label || m.slug).slice(0, 200), efforts: m.efforts }));
+  // The four current families only (owner, 2026-10-05): a legacy slug such as
+  // gpt-5.5 is never offered to the picker, though a user can still choose it.
+  const models = codexModels.filter((m) => CODEX_FAMILIES.test(m.slug))
+    .map((m) => ({ id: m.slug, about: (m.description || m.label || m.slug).slice(0, 200), efforts: m.efforts }));
   const offered = [...new Set(models.flatMap((m) => m.efforts ?? []))].filter((e) => EFFORT_CRITERIA[e]);
   return { models, efforts: pick(offered.length ? offered : ['low', 'medium', 'high']) };
 }
