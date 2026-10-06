@@ -270,6 +270,16 @@ describe('refresher', () => {
     expect(s.servers.accounts['claude/f'].Authorization).not.toBe(after);
   });
 
+  it('puts the header back on an account that lost it, on the next tick', async () => {
+    const s = await signedIn();
+    const good = s.servers.accounts['claude/b'].Authorization;
+    s.servers.accounts['codex/g'] = { Authorization: 'Bearer stale', 'X-MCP-Session': 'again' };
+    const reqs = fake.tokenRequests.length;
+    await s.oauth.tick();
+    expect(fake.tokenRequests.length).toBe(reqs); // no refresh needed for that
+    expect(s.servers.accounts['codex/g']).toEqual({ Authorization: good });
+  });
+
   it('a rejected refresh token means sign in again, with one notice', async () => {
     const s = await signedIn();
     fake.refreshMode = 'invalid_grant';

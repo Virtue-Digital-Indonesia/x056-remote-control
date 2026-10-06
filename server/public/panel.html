@@ -2914,15 +2914,26 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     } else if (o.error && o.expiresAt) {
       box.classList.add('warn'); st.textContent = 'Renewal failed, retrying'; st.title = o.error;
       btn = 'Sign in again';
+    } else if (mcpHasAuthHeader(s)) {
+      // Works today with a key of its own (Obscura's): offering "Not signed
+      // in" would read as broken, and one click would replace the key.
+      st.textContent = 'Uses its own Authorization header';
+      btn = 'Sign in with OAuth'; var keyed = true;
     } else {
       st.textContent = 'Not signed in';
       btn = 'Sign in';
     }
     box.appendChild(st);
     if (btn) {
-      var b = document.createElement('button'); b.type = 'button'; b.className = 'ab primary mcp-signin';
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'ab mcp-signin' + (keyed ? '' : ' primary');
       b.textContent = waiting ? 'Waiting for sign-in…' : btn; b.disabled = mcpBusy;
-      b.addEventListener('click', function () { mcpSignIn(s); });
+      b.addEventListener('click', function () {
+        if (!keyed) { mcpSignIn(s); return; }
+        // Confirm first, but the tab must still open inside a click: the
+        // dialog's own button is that click.
+        uiConfirm({ title: 'Sign in to ' + s.name + ' with OAuth?', message: 'After you sign in, the gateway replaces its Authorization header on every Claude and ChatGPT account with a token it renews automatically.', confirmText: 'Sign in' })
+          .then(function (ok) { if (ok) mcpSignIn(s); });
+      });
       box.appendChild(b);
     }
     if (o.signedIn || o.expiresAt || o.error) {
@@ -2932,6 +2943,9 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       box.appendChild(out);
     }
     return box;
+  }
+  function mcpHasAuthHeader(s) {
+    return Object.keys(s.headers || {}).some(function (k) { return k.toLowerCase() === 'authorization'; });
   }
   function mcpSignIn(s) {
     // Open the tab inside the click: a window opened after an await is

@@ -514,7 +514,11 @@ export class McpOAuth {
         const due = (r.expires_at ?? 0) - now < (this.opts.refreshAheadMs ?? REFRESH_AHEAD_MS);
         try {
           if (due && (r.next_attempt_at ?? 0) <= now) await this.refresh(r.name);
-          else if (r.access_token && r.applied_hash !== sha(r.access_token) && (r.expires_at ?? Infinity) > now) await this.serial(r.name, () => this.apply(r.name).then(() => undefined));
+          // Every tick, not just after a refresh: a long-lived CLI writing its
+          // in-memory config back, a provisioned account or a panel edit can
+          // undo the header on one account. Reading six files is free; only a
+          // file that differs is written.
+          else if (r.access_token && (r.expires_at ?? Infinity) > now) await this.serial(r.name, () => this.apply(r.name).then(() => undefined));
         } catch (e) { this.log(`${r.name}: ${(e as Error).message}`); }
       }
     } catch (e) {

@@ -1162,7 +1162,11 @@ server publishing OAuth metadata.
   (server, issuer, redirect_uri) as a public client; PKCE S256; `resource`
   (RFC 8707) on authorize, token and refresh. Discovery is cached (1 h, 10 min
   for a miss) and `GET /api/mcp/servers` never waits on it: `supported` is
-  `null` until a background run lands.
+  `null` until a background run lands. Obscura also advertises OAuth but
+  works with its own `obsk_` key, so a server with an Authorization header
+  and no sign-in reads "Uses its own Authorization header" with a secondary
+  "Sign in with OAuth" that confirms first (Carbon reads so too until the
+  first sign-in replaces its manual token).
 - **Redirect URI** = `X056_PUBLIC_URL` (else the request's forwarded
   host, https unless loopback) + `/api/mcp/oauth/callback`, kept in the state
   record and reused at the token exchange, so it is byte-identical.
@@ -1190,7 +1194,9 @@ server publishing OAuth metadata.
 - **Refresher** (in-process, 60 s tick, starts at boot): refreshes when < 20
   min remain, serialized per server; a rotated refresh token is written in
   the same statement as the access token, before applying; a failed apply is
-  retried without refreshing again. `invalid_grant` -> `error:
+  retried without refreshing again. Every tick also re-checks each account's
+  header and rewrites only one that drifted (a long-lived CLI writing its
+  config back, a new account, a panel edit). `invalid_grant` -> `error:
   signin_required`, the panel shows "Sign in again" and ONE `mcp_oauth`
   notice (tier normal, "Carbon MCP needs you to sign in again"). Network
   errors and 5xx back off (1 min doubling to 30 min) and never sign out.

@@ -23,6 +23,7 @@ function servers(state) {
       { ...carbon, provider: 'claude', oauth },
       { name: 'github', transport: 'stdio', command: 'npx', args: ['-y', 'server-github'], provider: 'claude', accountCount: 3, totalAccounts: 3, synced: true, differing: [] },
       { name: 'midtrans-docs', transport: 'http', url: 'https://docs.example/mcp', provider: 'claude', accountCount: 3, totalAccounts: 3, synced: true, differing: [], oauth: { supported: false, signedIn: false, expiresAt: null, lastRefreshAt: null, error: null } },
+      { name: 'Obscura', transport: 'http', url: 'https://dms.example/mcp', headers: { Authorization: '«redacted-wxyz»' }, provider: 'claude', accountCount: 3, totalAccounts: 3, synced: true, differing: [], oauth: { supported: true, signedIn: false, expiresAt: null, lastRefreshAt: null, error: null } },
       { ...carbon, provider: 'codex', oauth },
     ],
   };
@@ -66,8 +67,12 @@ async function shot(page, name) {
         await line.waitFor({ timeout: 15000 });
         assert.equal(new URL(page.url()).search, '', 'the ?mcp=servers parameter is dropped');
         // Only the http server that supports OAuth gets a line (both providers' rows).
-        assert.equal(await page.locator('#mcpSrvList .mi-auth').count(), 2);
+        assert.equal(await page.locator('#mcpSrvList .mi-auth').count(), 3);
         assert.match(await line.innerText(), /Not signed in/);
+        // A server that already works with its own key is not called "not signed in".
+        const keyed = page.locator('#mcpSrvList .mi-auth[data-oauth="Obscura"]');
+        assert.match(await keyed.innerText(), /Uses its own Authorization header/);
+        assert.equal(await keyed.locator('.mcp-signin.primary').count(), 0);
         await shot(page, `${theme}-${tag}-not-signed-in`);
 
         // Sign in opens the authorize URL in a NEW tab, opened inside the click.
@@ -83,7 +88,7 @@ async function shot(page, name) {
         await popup.close();
         await page.locator('#mcpSrvList .mi-auth.ok').first().waitFor({ timeout: 8000 });
         assert.match(await line.innerText(), /Signed in · renews automatically · token valid until 13:05/);
-        assert.equal(await page.locator('#mcpSrvList .mcp-signin').count(), 0);
+        assert.equal(await page.locator('#mcpSrvList .mi-auth[data-oauth="carbon-mcp"] .mcp-signin').count(), 0);
         assert.match(await page.locator('#mcpSrvStatus').innerText(), /Signed in to carbon-mcp/);
         await shot(page, `${theme}-${tag}-signed-in`);
 
