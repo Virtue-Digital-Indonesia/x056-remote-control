@@ -1147,6 +1147,60 @@ tools; the panel's ⋯ → **Scheduled tasks** lists, pauses and deletes them.
   firing at a busy conversation queues behind the running turn.
 - Jobs live in `state/cron.json` and survive restarts and deploys.
 
+## MCP OAuth sign-in (`server/mcp-oauth.ts`, 2026-10-06)
+
+An http MCP server that uses OAuth (first one: Carbon, `carbon-mcp`) is
+signed into ONCE from the panel (MCP servers list -> "Sign in"), and the
+gateway keeps every account of both providers signed in. Generic: any http
+server publishing OAuth metadata.
+
+- **Flow.** Discovery: an unauthenticated `initialize` POST for the 401's
+  `WWW-Authenticate` hints (`resource_metadata`, `authorization_server`,
+  `scope`), then RFC 9728 protected-resource metadata (path-suffixed, then
+  root), then RFC 8414 AS metadata, then `<origin>/.well-known/oauth-authorization-server`.
+  Supported = AS metadata with a registration endpoint and S256. DCR once per
+  (server, issuer, redirect_uri) as a public client; PKCE S256; `resource`
+  (RFC 8707) on authorize, token and refresh. Discovery is cached (1 h, 10 min
+  for a miss) and `GET /api/mcp/servers` never waits on it: `supported` is
+  `null` until a background run lands.
+- **Redirect URI** = `X056_PUBLIC_URL` (else the request's forwarded
+  host, https unless loopback) + `/api/mcp/oauth/callback`, kept in the state
+  record and reused at the token exchange, so it is byte-identical.
+- **Routes.** `POST /api/mcp/oauth/start {name}` -> `{authorizeUrl}`;
+  `GET /api/mcp/oauth/status?name=` (cheap, the panel polls it while the
+  sign-in tab is open); `POST /api/mcp/oauth/signout {name}` (deletes the
+  tokens AND the `Authorization` header on every account; the client
+  registration is kept). `GET /api/mcp/servers` rows carry `oauth:
+  {supported, signedIn, expiresAt, lastRefreshAt, error}`, never a token.
+  **`GET /api/mcp/oauth/callback` is the one `@Public()` route here** (the
+  browser arrives from the server's login without the panel bearer); it
+  trusts only a random `state` it issued: in memory, single use (deleted on
+  read), 10 min, `iss` checked (and required when the AS advertises it). A
+  deploy mid-sign-in loses the state: start again.
+- **Storage.** `gateway.sqlite` migration 4: `mcp_oauth_clients`, `mcp_oauth`
+  (access + refresh token, expiry, errors, backoff). The db file is chmod
+  0600 once it holds tokens.
+- **Applying** writes `Authorization: Bearer <access>` and DROPS
+  `X-MCP-Session` (the manual fallback; Carbon verified 2026-10-06 to answer
+  `initialize` and `tools/list` with the Authorization header alone) by
+  editing `.claude.json` / `config.toml` directly
+  (`McpServerManager.setHttpHeaders`), not `update()`: that is two CLI
+  launches per account, every ~2 h on every live account. Only accounts that
+  already have the server are touched.
+- **Refresher** (in-process, 60 s tick, starts at boot): refreshes when < 20
+  min remain, serialized per server; a rotated refresh token is written in
+  the same statement as the access token, before applying; a failed apply is
+  retried without refreshing again. `invalid_grant` -> `error:
+  signin_required`, the panel shows "Sign in again" and ONE `mcp_oauth`
+  notice (tier normal, "Carbon MCP needs you to sign in again"). Network
+  errors and 5xx back off (1 min doubling to 30 min) and never sign out.
+- **Long-running conversations keep the header they were spawned with**:
+  a persistent Claude process (or Codex app-server) read the config at spawn,
+  so it uses the old access token until that token's own expiry (at most ~20
+  min after the refresh), then gets 401s from that server until the process
+  respawns (idle TTL, model/helper change, failover, deploy). New turns on a
+  fresh process pick up the current token.
+
 ## Session rules
 
 - **Markdown uploads:** whenever you create or modify any `.md` file during a session, upload it so the rendered version can be read, and share the returned URL:

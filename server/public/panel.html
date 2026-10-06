@@ -757,6 +757,16 @@
   .mcp-item .mi-btn { flex: none; width: 26px; height: 26px; border: none; background: transparent; color: var(--faint); border-radius: 7px; cursor: pointer; display: grid; place-items: center; }
   .mcp-item .mi-btn:hover { background: var(--surface-2); color: var(--text); }
   .mcp-item .mi-btn.del:hover { background: var(--err-bg); color: var(--err); }
+  .mcp-item .mi-auth { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 7px; font-size: 11.5px; color: var(--muted); }
+  .mcp-item .mi-auth .st { display: inline-flex; align-items: center; gap: 6px; }
+  .mcp-item .mi-auth .st::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+  .mcp-item .mi-auth.ok .st { color: var(--ok); } .mcp-item .mi-auth.ok .st::before { background: var(--ok); }
+  .mcp-item .mi-auth.warn .st { color: var(--amber); } .mcp-item .mi-auth.warn .st::before { background: var(--amber); }
+  .mcp-item .mi-auth .ab { font: inherit; font-weight: 500; padding: 4px 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+  .mcp-item .mi-auth .ab.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .mcp-item .mi-auth .ab:disabled { opacity: .55; cursor: default; }
+  .mcp-item .mi-auth .al { font: inherit; border: none; background: none; padding: 0; color: var(--faint); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+  .mcp-item .mi-auth .al:hover { color: var(--text); }
   .qa { padding: 10px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 8px; }
   .qa:last-child { margin-bottom: 0; }
   .qa.nextup { border-color: var(--accent); }
@@ -2867,6 +2877,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       meta.textContent = bits.filter(Boolean).join(' · ');
       if (!s.synced) meta.classList.add('mi-warn');
       main.appendChild(meta);
+      var auth = mcpAuthLine(s);
+      if (auth) main.appendChild(auth);
       row.appendChild(main);
       var ed = document.createElement('button'); ed.className = 'mi-btn'; ed.title = 'edit'; ed.appendChild(icon('compose', 'sm'));
       ed.disabled = mcpBusy;
@@ -2878,6 +2890,104 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       row.appendChild(rm);
       list.appendChild(row);
     });
+  }
+  // ---- OAuth sign-in for an http server that publishes OAuth metadata. The
+  //      gateway keeps the token fresh on every account of both providers. ----
+  var mcpAuthWatch = null; // { name, until, timer } while a sign-in tab is open
+  function mcpClock(ms) {
+    var d = new Date(ms); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+  }
+  function mcpAuthLine(s) {
+    var o = s.oauth;
+    if (s.transport !== 'http' || !o || o.supported !== true) return null;
+    var box = document.createElement('div'); box.className = 'mi-auth'; box.setAttribute('data-oauth', s.name);
+    var st = document.createElement('span'); st.className = 'st';
+    var waiting = mcpAuthWatch && mcpAuthWatch.name === s.name;
+    var btn = null;
+    if (o.signedIn) {
+      box.classList.add('ok');
+      st.textContent = 'Signed in · renews automatically' + (o.expiresAt ? ' · token valid until ' + mcpClock(o.expiresAt) : '');
+      if (o.error && o.error !== 'signin_required') st.title = o.error;
+    } else if (o.error === 'signin_required' || o.error === 'expired') {
+      box.classList.add('warn'); st.textContent = 'Sign-in expired';
+      btn = 'Sign in again';
+    } else if (o.error && o.expiresAt) {
+      box.classList.add('warn'); st.textContent = 'Renewal failed, retrying'; st.title = o.error;
+      btn = 'Sign in again';
+    } else {
+      st.textContent = 'Not signed in';
+      btn = 'Sign in';
+    }
+    box.appendChild(st);
+    if (btn) {
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'ab primary mcp-signin';
+      b.textContent = waiting ? 'Waiting for sign-in…' : btn; b.disabled = mcpBusy;
+      b.addEventListener('click', function () { mcpSignIn(s); });
+      box.appendChild(b);
+    }
+    if (o.signedIn || o.expiresAt || o.error) {
+      var out = document.createElement('button'); out.type = 'button'; out.className = 'al mcp-signout'; out.textContent = 'Sign out';
+      out.disabled = mcpBusy;
+      out.addEventListener('click', function () { mcpSignOut(s); });
+      box.appendChild(out);
+    }
+    return box;
+  }
+  function mcpSignIn(s) {
+    // Open the tab inside the click: a window opened after an await is
+    // blocked (iOS Safari especially). No opener: the server's login page
+    // gets no handle on this tab.
+    var w = null;
+    try { w = window.open('', '_blank'); if (w) w.opener = null; } catch (e) { w = null; }
+    mcpSetStatus('busy', 'Opening the ' + s.name + ' sign-in…');
+    api('/api/mcp/oauth/start', { method: 'POST', body: JSON.stringify({ name: s.name }) })
+      .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
+      .then(function (o) {
+        if (!o.r.ok || !o.j || !o.j.authorizeUrl) {
+          if (w) try { w.close(); } catch (e) {}
+          mcpSetStatus('err', (o.j && o.j.message) || 'could not start the sign-in'); return;
+        }
+        if (w && !w.closed) w.location.href = o.j.authorizeUrl; else { location.href = o.j.authorizeUrl; return; }
+        mcpSetStatus('busy', 'Finish signing in to ' + s.name + ' in the new tab. This updates by itself.');
+        mcpWatchAuth(s.name);
+      })
+      .catch(function () { if (w) try { w.close(); } catch (e) {} mcpSetStatus('err', 'could not start the sign-in'); });
+  }
+  function mcpWatchAuth(name) {
+    if (mcpAuthWatch && mcpAuthWatch.timer) clearInterval(mcpAuthWatch.timer);
+    mcpAuthWatch = { name: name, until: Date.now() + 10 * 60 * 1000 };
+    renderMcpServers();
+    mcpAuthWatch.timer = setInterval(mcpPollAuth, 2500);
+  }
+  function mcpStopWatch() {
+    if (mcpAuthWatch && mcpAuthWatch.timer) clearInterval(mcpAuthWatch.timer);
+    mcpAuthWatch = null;
+  }
+  function mcpPollAuth() {
+    var w = mcpAuthWatch; if (!w) return;
+    if (Date.now() > w.until) { mcpStopWatch(); renderMcpServers(); mcpSetStatus(); return; }
+    api('/api/mcp/oauth/status?name=' + encodeURIComponent(w.name)).then(function (r) { return r.ok ? r.json() : null; }).then(function (st) {
+      if (!st || !st.signedIn || mcpAuthWatch !== w) return;
+      mcpStopWatch();
+      mcpSetStatus('ok', 'Signed in to ' + w.name + ' on every account.');
+      loadMcpServers();
+    }).catch(function () {});
+  }
+  // The sign-in tab usually ends with the user coming back here: check then.
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && mcpAuthWatch) mcpPollAuth(); });
+  window.addEventListener('focus', function () { if (mcpAuthWatch) mcpPollAuth(); });
+  function mcpSignOut(s) {
+    uiConfirm({ title: 'Sign out of ' + s.name + '?', message: 'Removes the sign-in from every Claude and ChatGPT account. Its tools stop working until someone signs in again.', confirmText: 'Sign out', danger: true })
+      .then(function (ok) {
+        if (!ok) return;
+        mcpStopWatch();
+        mcpBusy = true; renderMcpServers(); mcpSetStatus('busy', 'Signing out of ' + s.name + '…');
+        api('/api/mcp/oauth/signout', { method: 'POST', body: JSON.stringify({ name: s.name }) })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) { mcpSetStatus(j && j.ok ? 'ok' : 'err', j && j.ok ? 'Signed out of ' + s.name + '.' : 'could not sign out everywhere'); })
+          .catch(function () { mcpSetStatus('err', 'could not sign out'); })
+          .then(function () { mcpBusy = false; return loadMcpServers(); });
+      });
   }
   function mcpSyncTransportFields() {
     var http = $('mcpFTransport').value === 'http';
@@ -2978,6 +3088,13 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   $('mcpSrvBtn').addEventListener('click', function () {
     openPop($('mcpSrvPop')); mcpSetStatus(); mcpResetForm(); renderMcpSendMode(); loadSettings(); loadMcpServers();
   });
+  // /?mcp=servers (the OAuth callback page's "Back to x056") opens this list.
+  try {
+    if (new URLSearchParams(location.search).get('mcp') === 'servers') {
+      history.replaceState(null, '', location.pathname);
+      setTimeout(function () { $('mcpSrvBtn').click(); }, 400);
+    }
+  } catch (e) {}
 
   $('defaultsSave').addEventListener('click', function () {
     var map = {};

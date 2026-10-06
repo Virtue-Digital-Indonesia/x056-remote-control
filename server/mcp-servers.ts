@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AccountRegistry } from '../src/accounts.js';
 import type { ProviderId } from '../src/provider.js';
@@ -284,6 +284,128 @@ export class McpServerManager {
   remove(provider: ProviderId, name: string): Promise<McpOpResult> {
     return this.eachAccount(provider, (dir) => this.run(provider, dir, McpServerManager.removeArgs(provider, name)));
   }
+
+  /**
+   * The url of an http server called `name`, read from the account files
+   * (no CLI). The first account of either provider that has it wins.
+   */
+  findHttpServer(name: string): { name: string; url: string } | undefined {
+    for (const provider of ['claude', 'codex'] as ProviderId[]) {
+      for (const a of this.opts.accounts(provider)) {
+        const s = provider === 'codex' ? readCodexHttp(a.configDir, name) : readClaudeHttp(a.configDir, name);
+        if (s?.url) return { name, url: s.url };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Rewrite ONLY the headers of an http server, on every account of both
+   * providers that has it, by editing the config files directly.
+   *
+   * Why not update(): that is remove-then-add through each CLI, i.e. two CLI
+   * launches per account. The OAuth refresher calls this about every two
+   * hours on every live account, and a CLI start on a live account dir is how
+   * an account gets signed out (CLAUDE.md). A file edit also keeps every other
+   * key the server's entry carries. Accounts without the server are skipped,
+   * never created. Each write is read back before it counts as done.
+   */
+  async setHttpHeaders(name: string, mutate: (headers: Record<string, string>) => Record<string, string>): Promise<HeaderApplyResult[]> {
+    const out: HeaderApplyResult[] = [];
+    for (const provider of ['claude', 'codex'] as ProviderId[]) {
+      for (const a of this.opts.accounts(provider)) {
+        try {
+          const r = provider === 'codex' ? setCodexHeaders(a.configDir, name, mutate) : setClaudeHeaders(a.configDir, name, mutate);
+          if (r) out.push({ provider, account: a.name, ok: true, changed: r.changed });
+        } catch (err) {
+          out.push({ provider, account: a.name, ok: false, changed: false, message: (err as Error).message.slice(0, 200) });
+        }
+      }
+    }
+    return out;
+  }
+}
+
+export interface HeaderApplyResult { provider: ProviderId; account: string; ok: boolean; changed: boolean; message?: string }
+
+const sameHeaders = (a: Record<string, string>, b: Record<string, string>) =>
+  JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
+
+/** Write through a symlink to its target, atomically, keeping the mode. */
+function writeAtomic(file: string, body: string): void {
+  const real = realpathSync(file);
+  const mode = statSync(real).mode & 0o777;
+  const tmp = `${real}.x056-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, body, { mode });
+  try { renameSync(tmp, real); } catch (e) { try { unlinkSync(tmp); } catch { /* gone */ } throw e; }
+}
+
+function readClaudeHttp(configDir: string, name: string): { url?: string; headers: Record<string, string> } | undefined {
+  const file = join(configDir, '.claude.json');
+  if (!existsSync(file)) return undefined;
+  const raw = JSON.parse(readFileSync(file, 'utf8')) as { mcpServers?: Record<string, { url?: string; headers?: Record<string, string> }> };
+  const s = raw.mcpServers?.[name];
+  if (!s?.url) return undefined;
+  return { url: s.url, headers: { ...(s.headers ?? {}) } };
+}
+
+function setClaudeHeaders(configDir: string, name: string, mutate: (h: Record<string, string>) => Record<string, string>): { changed: boolean } | undefined {
+  const file = join(configDir, '.claude.json');
+  if (!existsSync(file)) return undefined;
+  // Read-modify-write of the WHOLE file: the CLI keeps a lot more than
+  // mcpServers in it. The window between read and rename is milliseconds.
+  const raw = JSON.parse(readFileSync(file, 'utf8')) as { mcpServers?: Record<string, { url?: string; headers?: Record<string, string> }> };
+  const s = raw.mcpServers?.[name];
+  if (!s?.url) return undefined;
+  const next = mutate({ ...(s.headers ?? {}) });
+  if (sameHeaders(s.headers ?? {}, next)) return { changed: false };
+  if (Object.keys(next).length) s.headers = next; else delete s.headers;
+  writeAtomic(file, JSON.stringify(raw, null, 2));
+  const back = readClaudeHttp(configDir, name);
+  if (!back || !sameHeaders(back.headers, next)) throw new Error('headers did not read back');
+  return { changed: true };
+}
+
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const tableRe = (name: string, sub: string) =>
+  new RegExp('^\\[mcp_servers\\.' + esc(name) + sub + '\\][^\\n]*\\n?(?:(?!\\[)[^\\n]*\\n?)*', 'm');
+
+/** `[mcp_servers.<name>]` url and `[mcp_servers.<name>.http_headers]`, the
+ *  two shapes the gateway (and `codex mcp add --url`) write. */
+function readCodexHttp(configDir: string, name: string): { url?: string; headers: Record<string, string>; inlineHeaders: boolean } | undefined {
+  const file = join(configDir, 'config.toml');
+  if (!existsSync(file)) return undefined;
+  const toml = readFileSync(file, 'utf8');
+  const main = tableRe(name, '').exec(toml)?.[0];
+  if (!main) return undefined;
+  const url = /^url\s*=\s*("(?:[^"\\]|\\.)*")\s*$/m.exec(main)?.[1];
+  const headers: Record<string, string> = {};
+  const sub = tableRe(name, '\\.http_headers').exec(toml)?.[0];
+  for (const line of (sub ?? '').split('\n').slice(1)) {
+    const m = /^\s*("(?:[^"\\]|\\.)*"|[A-Za-z0-9_-]+)\s*=\s*("(?:[^"\\]|\\.)*")\s*$/.exec(line);
+    if (m) headers[m[1].startsWith('"') ? JSON.parse(m[1]) : m[1]] = JSON.parse(m[2]);
+  }
+  return { url: url ? JSON.parse(url) : undefined, headers, inlineHeaders: /^http_headers\s*=/m.test(main) };
+}
+
+function setCodexHeaders(configDir: string, name: string, mutate: (h: Record<string, string>) => Record<string, string>): { changed: boolean } | undefined {
+  const file = join(configDir, 'config.toml');
+  const cur = readCodexHttp(configDir, name);
+  if (!cur?.url) return undefined;
+  // An inline `http_headers = {…}` cannot be rewritten without a TOML parser,
+  // and adding a sub-table beside it would define the key twice.
+  if (cur.inlineHeaders) throw new Error('http_headers is an inline table; edit it once in the panel to convert it');
+  const next = mutate({ ...cur.headers });
+  if (sameHeaders(cur.headers, next)) return { changed: false };
+  let toml = readFileSync(file, 'utf8').replace(tableRe(name, '\\.http_headers'), '').trimEnd();
+  if (Object.keys(next).length) {
+    const lines = Object.entries(next).map(([k, v]) => `${JSON.stringify(k)} = ${JSON.stringify(v)}`);
+    toml += `\n\n[mcp_servers.${name}.http_headers]\n${lines.join('\n')}`;
+  }
+  writeAtomic(file, toml.replace(/\n{3,}/g, '\n\n') + '\n');
+  const back = readCodexHttp(configDir, name);
+  if (!back || !sameHeaders(back.headers, next)) throw new Error('headers did not read back');
+  return { changed: true };
 }
 
 /** Compare only the fields that define the server, ignoring key order/absence. */

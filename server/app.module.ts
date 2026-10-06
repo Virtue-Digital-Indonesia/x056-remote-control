@@ -33,6 +33,8 @@ import { TRANSCRIPT_STATS, TranscriptStatsReader } from './transcript-stats.js';
 import { McpHttpController, MCP_HTTP_CONFIG } from './mcp-http.controller.js';
 import { OAuthController, OAUTH_STORE, OAUTH_DEPS } from './oauth.controller.js';
 import { OAuthStore } from './oauth.js';
+import { McpOAuth } from './mcp-oauth.js';
+import { McpOAuthController, MCP_OAUTH } from './mcp-oauth.controller.js';
 import { WebAuthnService, SessionStore } from './webauthn.js';
 import type { TurnOptions } from '../src/turn.js';
 
@@ -62,6 +64,8 @@ export interface GatewayConfig {
   panelPath?: string;
   /** Read-only mount of the user's interactive ~/.claude/projects for resume. */
   interactiveProjectsDir?: string;
+  /** The gateway's public origin (X056_PUBLIC_URL), for OAuth redirect URIs. */
+  publicUrl?: string;
   /** Code-graph / memory-wiki service. Defaults from env; tests inject their own. */
   codegraph?: CodegraphConfig;
 }
@@ -135,6 +139,17 @@ export function buildModule(cfg: GatewayConfig): unknown {
     claudePath: cfg.claudePath,
     accounts: McpServerManager.accountsFromRegistry(join(cfg.stateDir, 'accounts.json')),
   });
+  // OAuth sign-in to http MCP servers, kept fresh on every account of both
+  // providers. The refresher is in-process; its state is in gateway.sqlite,
+  // so a deploy only pauses it.
+  const mcpOAuth = new McpOAuth({
+    stateDir: cfg.stateDir,
+    servers: mcpServers,
+    publicUrl: cfg.publicUrl ?? process.env.X056_PUBLIC_URL,
+    onSigninRequired: (name) => manager.reportMcpSigninRequired(name),
+    onApplied: () => manager.refreshChatCapabilities(),
+  });
+  mcpOAuth.start();
   manager.setChatCapabilities(new ChatCapabilities(cfg.stateDir, () => AccountRegistry.load(join(cfg.stateDir, 'accounts.json')).list(), plugins, mcpServers, cfg.claudePath));
 
   // Scheduled prompts. Delivery goes through the same path a cross-conversation
@@ -169,7 +184,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   );
 
   @Module({
-    controllers: [ProjectSpacesController, FilesController, ChatsController, MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController],
+    controllers: [ProjectSpacesController, FilesController, ChatsController, MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController, McpOAuthController],
     providers: [
       { provide: SessionManager, useValue: manager },
       { provide: PUSH_SERVICE, useValue: push },
@@ -180,6 +195,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: SESSION_STORE, useValue: sessions },
       { provide: PLUGIN_MANAGER, useValue: plugins },
       { provide: MCP_SERVER_MANAGER, useValue: mcpServers },
+      { provide: MCP_OAUTH, useValue: mcpOAuth },
       { provide: CODEGRAPH, useValue: new CodegraphClient(cfg.codegraph ?? codegraphConfigFromEnv()) },
       // Memories live in the Claude config dirs; codex accounts have no such tree.
       { provide: PROVISIONER, useValue: provisioner },
@@ -199,6 +215,6 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: APP_GUARD, useFactory: (reflector: Reflector) => new AuthGuard(cfg.token, sessions, reflector, oauth), inject: [Reflector] },
     ],
   })
-  class AppModule {}
+  class AppModule { onModuleDestroy(): void { mcpOAuth.stop(); } }
   return AppModule;
 }

@@ -3153,6 +3153,11 @@ export class SessionManager {
 
   /** A scheduled task could not deliver its prompt: urgent, it will not
    *  retry on its own. */
+  /** An MCP server's OAuth refresh was refused: someone has to sign in again. */
+  reportMcpSigninRequired(name: string): void {
+    this.emit('mcp_oauth', { name, error: 'signin_required', at: new Date().toISOString() });
+  }
+
   reportCronFailure(job: { id: string; projectId: string; sessionId?: string; label?: string; prompt: string }, reason: string): void {
     const name = job.label?.trim() || cleanMemorySource(job.prompt).split('\n').find((l) => l.trim())?.trim().slice(0, 60) || 'A scheduled task';
     this.emit('cron_failed', { projectId: job.projectId, ...(job.sessionId ? { sessionId: job.sessionId } : {}), jobId: job.id, name, reason, at: new Date().toISOString() });

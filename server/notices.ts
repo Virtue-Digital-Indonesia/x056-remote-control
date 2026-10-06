@@ -17,6 +17,7 @@
  *           orphans (collapsed into one restart notice).
  */
 import { stripTeamLine } from '../src/message-sender.js';
+import { serverLabel } from './mcp-oauth.js';
 
 export type NoticeTier = 'urgent' | 'normal' | 'quiet' | 'none';
 /** What a device's settings switch on or off. `needs_you` cannot be turned off. */
@@ -306,6 +307,13 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         generic(ctx.conversationTitle) ? { title: cutWords(ctx.projectName ? `Scheduled task · ${ctx.projectName}` : 'Scheduled task', TITLE_MAX) } : {});
     }
 
+    case 'mcp_oauth': {
+      if (data.error !== 'signin_required') return null;
+      const name = String(data.name || 'An MCP server');
+      return make('normal', 'needs_you', `${serverLabel(name)} needs you to sign in again`, `mcp-oauth:${name}:${data.at || ctx.at || ''}`,
+        { title: 'MCP sign-in', tag: `x056-mcp-oauth-${name}`, link: '/?mcp=servers' });
+    }
+
     case 'turn_orphaned':
       return none();
 
@@ -320,4 +328,4 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
 }
 
 /** Which kinds noticeFor can answer, so the emitter skips the rest cheaply. */
-export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'turn_orphaned', 'restart_interrupted']);
+export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted']);

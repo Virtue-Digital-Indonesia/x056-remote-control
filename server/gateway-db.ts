@@ -15,6 +15,8 @@ export { transaction } from './sqlite.js';
  *                     restart does not send them again
  *   push_settings     per-device notification settings, keyed by a hash of
  *                     the device's push endpoint
+ *   mcp_oauth(_clients) OAuth sign-ins to http MCP servers: client
+ *                     registrations and the tokens the refresher keeps fresh
  *
  * ONE connection per state directory, opened lazily and shared by every store
  * instance (RoutingState is constructed per call all over the manager). Stores
@@ -67,6 +69,14 @@ const MIGRATIONS: Migration[] = [
     CREATE TABLE push_sent(id TEXT PRIMARY KEY, at INTEGER NOT NULL);
     CREATE INDEX push_sent_at ON push_sent(at);
     CREATE TABLE push_settings(device TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL);
+  `),
+  // MCP OAuth sign-in (server/mcp-oauth.ts). A client registration is kept
+  // per (server, issuer, redirect_uri): a different callback URL needs a new
+  // registration. Tokens never leave through any API.
+  (db) => db.exec(`
+    CREATE TABLE mcp_oauth_clients(name TEXT NOT NULL, issuer TEXT NOT NULL, redirect_uri TEXT NOT NULL, client_id TEXT NOT NULL, client_secret TEXT, auth_method TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(name, issuer, redirect_uri));
+    CREATE TABLE mcp_oauth(name TEXT PRIMARY KEY, issuer TEXT NOT NULL, token_endpoint TEXT NOT NULL, client_id TEXT NOT NULL, client_secret TEXT, auth_method TEXT NOT NULL, redirect_uri TEXT NOT NULL, resource TEXT, scope TEXT,
+      access_token TEXT, refresh_token TEXT, expires_at INTEGER, signed_in_at INTEGER NOT NULL, last_refresh_at INTEGER, applied_hash TEXT, apply_error TEXT, error TEXT, failures INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER);
   `),
 ];
 

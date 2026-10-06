@@ -50,6 +50,8 @@ import { join } from 'node:path';
 import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
 import { readRawEntry, readRawPage } from './raw-transcript.js';
+import { MCP_OAUTH } from './mcp-oauth.controller.js';
+import type { McpOAuth } from './mcp-oauth.js';
 import { McpServerManager, REDACTED_RE, redactSpec, restoreRedacted, type McpServerSpec } from './mcp-servers.js';
 import type { HistoryEntry } from './history.js';
 import { withAskInstructions } from '../src/question.js';
@@ -180,6 +182,7 @@ export class ApiController {
     @Optional() @Inject(PRESENCE) private readonly presence: Presence = new Presence(),
     @Optional() @Inject(READ_STATE) private readonly readState?: ReadState,
     @Optional() @Inject(LIVE_ACTIVITIES) private readonly liveActivities?: LiveActivities,
+    @Optional() @Inject(MCP_OAUTH) private readonly mcpOAuth?: McpOAuth,
   ) {
     this.loadQuotaCache();
     this.deliveries=manager.deliveries();
@@ -1162,7 +1165,12 @@ export class ApiController {
   @Get('mcp/servers')
   async listMcpServers() {
     const listed = await this.mcpServers.list();
-    return { ...listed, servers: listed.servers.map((s) => redactSpec(s)) };
+    // OAuth status per http server: never a token, never a network wait.
+    const oauth = (s: McpServerSpec) => {
+      if (!this.mcpOAuth || s.transport !== 'http' || !s.url) return {};
+      try { return { oauth: this.mcpOAuth.status(s.name, s.url) }; } catch { return {}; }
+    };
+    return { ...listed, servers: listed.servers.map((s) => ({ ...redactSpec(s), ...oauth(s) })) };
   }
 
   /** The Edit form round-trips masked secrets; resolve them against what the
