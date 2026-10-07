@@ -696,7 +696,7 @@ export async function callToolResult(api, name, args) {
         ...(typeof r.hopsLeft === 'number' ? { hopsLeft: r.hopsLeft } : {}), ...(typeof r.remaining === 'number' ? { remaining: r.remaining } : {}), ...(r.id ? { id: r.id } : {}), ...(r.approvalId ? { approvalId: r.approvalId } : {}) };
       if (r.delivered === 'pending_approval') {
         const a = await waitForApproval(api, r.approvalId);
-        const status = a.status === 'approved' ? (a.error ? 'failed' : a.delivered || (a.queued ? 'queued' : 'started')) : a.status;
+        const status = a.status === 'approved' ? (a.error ? 'failed' : a.delivered || (a.queued ? 'queued' : 'started')) : a.status === 'pending' ? 'pending_approval' : a.status;
         out = { ...out, delivered: status, ...(a.resultSessionId ? { sessionId: a.resultSessionId } : {}), ...(a.note ? { note: a.note } : {}), ...(a.error ? { error: a.error } : {}) };
       }
       const said = {

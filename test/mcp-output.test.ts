@@ -465,6 +465,15 @@ describe('send polling variants with disposable responses and controlled time', 
     expect(validateResult('send_message', await p).delivery.status).toBe('steered');
     expect(polls).toBe(3);
   });
+  it('a steer still awaiting approval when the wait runs out reports pending_approval', async () => {
+    vi.useFakeTimers();
+    const api = vi.fn(async (path: string) => path === '/api/conversations/steer'
+      ? { delivered: 'pending_approval', mode: 'approval', projectId: 'p', approvalId: 'fixture-approval', messageId: 'fixture-message' }
+      : { status: 'pending' });
+    const p = callToolResult(api, 'steer', { text: 'fixture', project_id: 'p', session_id: 's' });
+    await vi.runAllTimersAsync();
+    expect(validateResult('steer', await p)).toMatchObject({ delivered: 'pending_approval', approvalId: 'fixture-approval' });
+  });
   it.each(['sent', 'queued', 'reply', 'reply_timeout'])('automatic %s retains hop counts and polling', async status => {
     vi.useFakeTimers();
     let reads = 0;

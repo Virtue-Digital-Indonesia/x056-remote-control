@@ -303,7 +303,9 @@ export class CodexTransport implements Transport {
         ...(command.opts.model?{model:command.opts.model}:{}),...(command.opts.effort?{effort:command.opts.effort}:{})}}));
       return {events:[],turnEnded:false};
     }
-    if (id !== undefined && x.steerAcks?.has(id)) x.steerAcks.get(id)!(!err && !!res);
+    // JSON-RPC success is "no error member" -- `result: null` included. A
+    // between-turn turn/start also needs its turn in the result.
+    if (id !== undefined && x.steerAcks?.has(id)) x.steerAcks.get(id)!(!err && (!!res || !x.turnStarts?.has(id)));
     if (id !== undefined && x.turnStarts?.has(id)) {
       x.turnStarts.delete(id);
       if (err || !res) {

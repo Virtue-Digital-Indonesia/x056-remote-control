@@ -11,7 +11,7 @@ import type { RawEvent } from '../src/types.js';
  * answers the handshake and turn/start the way the real one does (verified
  * live on 0.153.4), and emits notifications when the test says so.
  */
-function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; skills?: {name:string;path:string;enabled:boolean}[]; deferThread?: boolean; steerReply?: 'error' | 'none' } = {}) {
+function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; skills?: {name:string;path:string;enabled:boolean}[]; deferThread?: boolean; steerReply?: 'error' | 'none' | 'null' } = {}) {
   const child = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter; stdin: { write: (s: string) => void; destroyed: boolean; writableEnded: boolean };
     kill: (s?: string) => void; pid?: number;
@@ -42,6 +42,7 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
         else out({ id: m.id, result: { turn: { id: `turn_${++turnSeq}`, status: 'inProgress' } } });
       } else if (m.method === 'turn/steer' && opts.steerReply === 'error') out({ id: m.id, error: { code: -32600, message: 'expected active turn id turn_1 but found none' } });
       else if (m.method === 'turn/steer' && opts.steerReply === 'none') return;
+      else if (m.method === 'turn/steer' && opts.steerReply === 'null') out({ id: m.id, result: null });
       else if (m.id !== undefined) out({ id: m.id, result: {} }); // steer / interrupt acks
     },
   };
@@ -66,7 +67,7 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
   };
 }
 
-function pool(o: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; skills?: {name:string;path:string;enabled:boolean}[]; deferThread?: boolean; workingGraceMs?: number; now?: () => number; steerReply?: 'error' | 'none'; steerAckMs?: number } = {}) {
+function pool(o: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; skills?: {name:string;path:string;enabled:boolean}[]; deferThread?: boolean; workingGraceMs?: number; now?: () => number; steerReply?: 'error' | 'none' | 'null'; steerAckMs?: number } = {}) {
   const spawned: ReturnType<typeof fakeAppServer>[] = [];
   const transport = new CodexTransport();
   if (o.steerAckMs !== undefined) transport.steerAckMs = o.steerAckMs;
@@ -275,6 +276,12 @@ describe('codex persistent: steering and stopping', () => {
     p.startTurn(turn({ sessionId: 's1' }));
     expect(await p.injectMessage('s1', 'too late')).toBe(false);
     expect(spawned[0].sent('turn/steer')).toHaveLength(1);
+  });
+
+  it('a success reply with `result: null` (valid JSON-RPC) IS steered', async () => {
+    const { p } = pool({ steerReply: 'null' });
+    p.startTurn(turn({ sessionId: 's1' }));
+    expect(await p.injectMessage('s1', 'still counts')).toBe(true);
   });
 
   it('no reply to turn/steer within the ack window is not steered either', async () => {
