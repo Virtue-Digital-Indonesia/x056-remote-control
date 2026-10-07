@@ -111,6 +111,8 @@ const SHOTS = '/tmp/x056-agent-tree';
     { agentId: 'godel', agentType: 'codex-subagent', task: 'Implement dev101 runner', nickname: 'Godel', agentPath: '/root/implement_dev101_runner', description: 'Implement dev101 runner · Godel',
       status: 'running', startedAt: now - 90000, bytes: 5000, model: 'gpt-6-astra', effort: 'high', tasks: 3, activeMs: 60000, current: 'npm test -- tenancy',
       brief: 'Task: Implement dev101 runner (agent Godel)\n\nGiven 3 tasks by its parent.', usage: { input: 1000, output: 50, cacheRead: 0, cacheWrite: 0 } },
+    { agentId: 'euler', agentType: 'codex-subagent', task: 'Review dev101 integration', nickname: 'Euler', agentPath: '/root/review_dev101_integration', description: 'Review dev101 integration · Euler',
+      status: 'done', startedAt: now - 100000, endedAt: now - 20000, bytes: 3000, model: 'gpt-6-astra', effort: 'medium', tasks: 2, current: 'git add docs/RC-31.md', result: 'Resolved the two review notes.', brief: 'Task: Review dev101 integration (agent Euler)' },
   ];
   let withTurns = true, historyCalls = [], runCalls = [];
 
@@ -411,8 +413,16 @@ const SHOTS = '/tmp/x056-agent-tree';
     const godel = await row(page, 'sub:godel').textContent();
     assert.match(godel, /Agent · Implement dev101 runner/);
     assert.match(godel, /Running · npm test -- tenancy/);
-    assert.match(godel, /GPT-6 Astra · high/);
-    assert.match(godel, /3 tasks/);
+    // A finished one shows its own model and how many tasks it was given.
+    const euler = await row(page, 'sub:euler').textContent();
+    assert.match(euler, /Agent · Review dev101 integration/);
+    assert.match(euler, /Euler/);
+    assert.match(euler, /GPT-6 Astra · medium/);
+    assert.match(euler, /2 tasks/);
+    assert.doesNotMatch(euler, /Running ·/);
+    // The running step is not squeezed by the bits.
+    const stepClipped = await row(page, 'sub:godel').locator('.ap-brief').evaluate((e) => e.scrollWidth > e.clientWidth + 1);
+    assert.equal(stepClipped, false, 'the running step is cut off');
     await page.screenshot({ path: SHOTS + '/pane-codex-tree-dark-1440.png' });
     await row(page, 'sub:godel').click();
     await page.locator('#agentPaneHistBody').waitFor();

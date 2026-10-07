@@ -189,7 +189,9 @@
   function subLeaf(s, fmt) {
     var u = usageTok(s.usage), cost = fmt && fmt.costLabel ? fmt.costLabel(s.cost) : '';
     return { key: 'sub:' + s.agentId, id: 'sub:' + s.agentId, kind: 'sub', color: ROLE.sub, name: roleName(s), brief: one(subLine(s), 120), status: subStatus(s.status),
-      bits: [subModel(s), dur(s.startedAt, s.endedAt || (s.status === 'running' ? null : s.updatedAt)), s.tasks > 1 ? s.tasks + ' tasks' : '', u ? tok(u) + ' tok' : '', cost].filter(Boolean).join(' · '), raw: s };
+      // While a Codex child runs, its live step gets the room: model and task
+      // count wait for the detail column and the finished row.
+      bits: (s.status === 'running' && s.current ? [dur(s.startedAt, null)] : [subModel(s), dur(s.startedAt, s.endedAt || (s.status === 'running' ? null : s.updatedAt)), s.tasks > 1 ? s.tasks + ' tasks' : '', u ? tok(u) + ' tok' : '', cost]).filter(Boolean).join(' · '), raw: s };
   }
   /** Nest workers by spawner: parentAgentId first, else the older spawnedBy guess. */
   function nest(list, fmt) {

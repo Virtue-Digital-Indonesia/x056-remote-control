@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AccountRegistry } from '../src/accounts.js';
-import { codexAdapter, codexTaskName } from '../src/adapters/codex.js';
+import { codexAdapter, codexTaskName, commandGist } from '../src/adapters/codex.js';
 import type { RunSessionOptions, SessionResult } from '../src/failover.js';
 import { ApiController, codexBrief } from '../server/api.controller.js';
 import { inTurn } from '../server/agent-tree.js';
@@ -92,6 +92,15 @@ describe('Codex children in the agent tree', () => {
     expect(inTurn(row as never, turn2)).toBe(true);
     expect(inTurn(row as never, before)).toBe(false);
     expect(codexBrief({}, null)).toBe('');
+  });
+
+  it('the live step skips the remote wrapper and setup lines (real commands from the AHU children)', () => {
+    expect(commandGist("bash -c 'source /app/state/chats/711ce2aa/work/ahu30.sh; a30s' <<'REMOTE'\nset -euo pipefail\ncd /srv/x056-candidate/wt/dev101-runner\nsource deploy/candidate/integration-lock.sh\nnode node_modules/typescript/bin/tsc --noEmit\nREMOTE"))
+      .toBe('node node_modules/typescript/bin/tsc --noEmit');
+    expect(commandGist(". /app/state/chats/711ce2aa/work/ahu30.sh\na30s <<'EOF'\ncd /srv/x056-candidate/wt/dev101-final-docs\ngit add docs/tenancy/RC-31.md\nEOF"))
+      .toBe('git add docs/tenancy/RC-31.md');
+    expect(commandGist("cat > /tmp/dev101-platform-assessment.md <<'EOF'\n# Assessment\nEOF")).toBe('cat > dev101-platform-assessment.md');
+    expect(commandGist('cat /tmp/dev101-platform-assessment.md')).toBe('cat dev101-platform-assessment.md');
   });
 
   it('a running child reports its latest step, and a later task updates it', () => {

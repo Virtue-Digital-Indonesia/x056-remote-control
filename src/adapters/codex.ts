@@ -846,6 +846,26 @@ interface OutcomeScan { offset: number; tail: string; decoder: StringDecoder; ou
 const outcomeByFile = new Map<string, OutcomeScan>();
 const OUTCOME_CACHE_MAX = 5_000;
 
+/**
+ * The line of a shell command that says what it does. Real children wrap
+ * every remote step (`bash -c 'source …/ahu30.sh; a30s' <<'REMOTE'`, then
+ * `set -e`, `cd /srv/…`), so the first line named the wrapper on 8 of 11
+ * children of a live conversation. Skip the wrapper, heredoc openers and
+ * setup lines, take the first real one, and cut absolute paths to their
+ * last segment.
+ */
+export function commandGist(text: string): string {
+  const lines = text.split('\n').map((l) => l.trim());
+  const setup = /^(?:#|(?:source|\.|cd|set|export|trap|umask|pushd|import|from)\s|[A-Za-z_][A-Za-z0-9_]*=|[A-Z_]+$|\)$|'$)/;
+  const opener = /\s*<<-?\s*['"\\]*[A-Za-z_]+['"\\]*/;
+  // A heredoc fed to a shell, ssh, an interpreter on stdin or a bare helper
+  // (`a30s <<'EOF'`) is a wrapper: its body says what runs. `cat > f <<EOF`
+  // is the step itself. So is a shell that opens a quote it never closes.
+  const wrapper = (l: string) => (opener.test(l) && !/^(?:cat|tee)\b/.test(l)) || /^(?:bash|sh|zsh)\b[^']*'[^']*$/.test(l);
+  const pick = lines.find((l) => l && !setup.test(l) && !wrapper(l)) ?? lines.find(Boolean) ?? '';
+  return pick.replace(opener, '').replace(/(?<=^|[\s'"=(:>])(?:\/[\w.@+~-]+)+\/([\w.@+~-]+)/g, '$1');
+}
+
 /** What a completed tool item was doing, short: the command, the MCP tool, the edited files. */
 function itemActivity(it: Record<string, unknown>): string | undefined {
   const clip = (t: string) => { const one = t.replace(/\s+/g, ' ').trim(); return one.length > 80 ? one.slice(0, 79) + '…' : one; };
@@ -854,7 +874,7 @@ function itemActivity(it: Record<string, unknown>): string | undefined {
       const parsed = Array.isArray(it.parsed_cmd) ? asObj(it.parsed_cmd[0]) : {};
       const cmd = Array.isArray(it.command) ? String(it.command[it.command.length - 1] ?? '') : String(it.command ?? '');
       const text = firstStr(parsed.cmd) || cmd;
-      return text ? clip(text) : undefined;
+      return text ? clip(commandGist(text)) : undefined;
     }
     case 'McpToolCall': case 'mcpToolCall': case 'mcp_tool_call': {
       const t = [firstStr(it.server), firstStr(it.tool)].filter(Boolean).join('.');

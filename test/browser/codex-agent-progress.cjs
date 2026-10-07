@@ -24,11 +24,10 @@ const { chromium } = require('/usr/local/lib/node_modules/playwright');
     assert.match(await child.textContent(), /Codex agent.*Astra review agent/);
     assert.equal(await child.locator('.ap-st').first().getAttribute('data-status'), 'run');
     assert.equal(await page.locator('#agentPaneLive').textContent(), 'Live');
-    // A 0.159 child: named by its task, its own model, and its latest step, which follows the polls.
+    // A 0.159 child: named by its task, with its latest step, which follows the polls.
     const runner = page.locator('#agentPane .ap-row[data-key="sub:runner"]');
     assert.match(await runner.textContent(), /Agent · Implement dev101 runner/);
     assert.match(await runner.textContent(), /Running · rg -n jobRunDir server\/tenancy/);
-    assert.match(await runner.textContent(), /GPT-6 Astra · medium/);
     step='npm test -- tenancy';
     // Child polling continues with the parent's turn idle and no reader open.
     const before=polls;
