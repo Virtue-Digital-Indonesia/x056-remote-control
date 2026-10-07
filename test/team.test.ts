@@ -11,7 +11,7 @@ import type { TurnOptions } from '../src/turn.js';
 import { SessionManager } from '../server/manager.js';
 import { helpersOf } from '../server/projects.js';
 import { JevService, JEV_POLICY, checkFork, type JevDecision } from '../server/jev.js';
-import { claudeTeamAgents, codexTeamConfig, teamInstructions, teamTurnLine } from '../server/team.js';
+import { advisorTurnLine, claudeTeamAgents, codexTeamConfig, teamInstructions, teamTurnLine } from '../server/team.js';
 import { readMessageSender, stripTeamLine, withMessageSender, withTeamLine } from '../src/message-sender.js';
 import { withMemoryContext } from '../src/memory-context.js';
 import { withAskInstructions } from '../src/question.js';
@@ -209,7 +209,10 @@ describe('helpers combine', () => {
     await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
     const team = { model: 'sonnet', effort: 'high', base: { model: 'opus', effort: 'medium' }, pickedModel: 'sonnet', pickedEffort: 'high', modelConfidence: 0.7, effortConfidence: 0.6 };
     const decide = vi.spyOn(mgr.jev(), 'decide').mockImplementation(async (s) => ({ at: 't', sessionId: s, provider: 'claude', notes: [], latencyMs: 1, team } as JevDecision));
-    const line = teamTurnLine('claude', team, 'jev');
+    // A key means a fork backend, so the line also names quick_decision.
+    const line = teamTurnLine('claude', team, 'jev', { forks: true })!;
+    expect(line).toMatch(/Picked by Jev\. Use quick_decision for small either-or forks/);
+    const forkOnly = teamTurnLine('claude', undefined, 'jev', { forks: true })!;
     // Picker and team on: the line rides in the message; identity stays fixed.
     mgr.setHelpers(p.id, sid, { router: 'jev', team: true });
     mgr.continueSession(p.id, sid, 'second', {});
@@ -227,18 +230,83 @@ describe('helpers combine', () => {
     expect(decide.mock.calls[1][1].team).toBeUndefined();
     expect(calls[2].prompt).not.toContain('Agent team this turn');
     await waitFor(() => !mgr.snapshot().running);
-    // Team without a picker, or a failed pick: today's fixed medium, no line.
-    // ('none' explicitly: with a keyed Jev, absent now means the Jev default.)
+    // Team without a picker, or a failed pick: today's fixed medium, so no
+    // pick in the line -- only the fork hint, which every Claude team turn
+    // with a fork backend carries ('none' explicitly: with a keyed Jev,
+    // absent now means the Jev default).
     mgr.setHelpers(p.id, sid, { team: true, router: 'none' });
     mgr.continueSession(p.id, sid, 'fourth', {});
     await waitFor(() => calls.length === 4);
-    expect(calls[3].prompt).not.toContain('Agent team this turn');
+    expect(calls[3].prompt).toContain(forkOnly);
+    expect(calls[3].prompt).not.toContain('Picked by');
     await waitFor(() => !mgr.snapshot().running);
     decide.mockImplementation(async (s) => ({ at: 't', sessionId: s, provider: 'claude', notes: [], latencyMs: 1, error: 'Jev unreachable' } as JevDecision));
     mgr.setHelpers(p.id, sid, { router: 'jev', team: true });
     mgr.continueSession(p.id, sid, 'fifth', {});
     await waitFor(() => calls.length === 5);
-    expect(calls[4].prompt).not.toContain('Agent team this turn');
+    expect(calls[4].prompt).toContain(forkOnly);
+    expect(calls[4].prompt).not.toContain('Picked by');
+    // The hint is stripped on read-back like the rest of the line.
+    expect(cleanMemorySource(calls[4].prompt)).toBe('fifth');
+  });
+
+  it('Claude fork hint: only with the team on AND a fork backend', () => {
+    expect(teamTurnLine('claude')).toBeUndefined();
+    expect(teamTurnLine('claude', undefined, 'jev', { forks: true })).toBe('[Agent team this turn: delegate the legwork to explorer, worker and researcher as the team brief says. Use quick_decision for small either-or forks (which file, which tool, retry or stop).]');
+    // Codex already uses the fork layer; its line is unchanged.
+    expect(teamTurnLine('codex', undefined, 'jev', { forks: true })).toBe(teamTurnLine('codex'));
+  });
+
+  // Claude Code's advisor is model-driven; a per-turn line says when to use it.
+  it('Claude advisor: one line on every advisor turn, stripped wherever prompts are read back', async () => {
+    expect(advisorTurnLine('codex')).toBeUndefined();
+    const line = advisorTurnLine('claude')!;
+    expect(line).toMatch(/^\[Advisor on: consult it before committing to an approach on multi-step work, when stuck, and before declaring done\.\]$/);
+    const sender = { kind: 'conversation' as const, projectId: 'p', sessionId: 's', messageId: 'm1' };
+    const both = withTeamLine(withTeamLine(withMessageSender(withMemoryContext('fix it', 'ctx'), sender), teamTurnLine('claude', { model: 'opus', effort: 'high' })), line);
+    expect(readMessageSender(both).sender).toEqual(sender);
+    expect(cleanMemorySource(both)).toBe('fix it');
+    expect(stripTeamLine('fix it\n\n' + line)).toBe('fix it');
+    expect(stripTeamLine(withTeamLine(withTeamLine('fix it', line), teamTurnLine('codex')))).toBe('fix it');
+    const { mgr, calls, dir } = fixture();
+    const p = mgr.createProject('P', dir);
+    const sid = mgr.start('first', undefined, { model: 'opus', effort: 'high' }, p.id);
+    await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
+    expect(calls[0].prompt).not.toContain('[Advisor on:');
+    mgr.setHelpers(p.id, sid, { advisor: true, router: 'none' });
+    mgr.continueSession(p.id, sid, 'second', {});
+    await waitFor(() => calls.length === 2 && !mgr.snapshot().running);
+    expect(calls[1].prompt).toContain(line);
+    expect(calls[1].appendSystemPrompt).not.toContain('[Advisor on:');
+    expect(cleanMemorySource(calls[1].prompt)).toBe('second');
+    // A slash command reaches the CLI byte for byte, team line or not.
+    mgr.setHelpers(p.id, sid, { advisor: true, team: true, router: 'none' });
+    mgr.continueSession(p.id, sid, '/compact', {});
+    await waitFor(() => calls.length === 3 && !mgr.snapshot().running);
+    expect(calls[2].prompt).toBe('/compact');
+    // History rows: the line never reaches what the gateway reads back.
+    const configDir = mkdtempSync(join(tmpdir(), 'x056-adv-hist-')); dirs.push(configDir);
+    mkdirSync(join(configDir, 'projects', '-p'), { recursive: true });
+    writeFileSync(join(configDir, 'projects', '-p', 'sid-adv.jsonl'), JSON.stringify({ type: 'user', message: { role: 'user', content: calls[1].prompt } }) + '\n');
+    expect(readSessionHistory([configDir], 'sid-adv').map((r) => r.text)).toEqual(['second']);
+  });
+
+  // Fable mains need a Fable advisor; an Opus one is silently dropped.
+  it('chooses the advisor from the model the turn runs on, after the pick', async () => {
+    const { mgr, calls, dir } = fixture();
+    const p = mgr.createProject('P', dir);
+    const sid = mgr.start('first', undefined, { model: 'opus', effort: 'high' }, p.id);
+    await waitFor(() => calls.length === 1 && !mgr.snapshot().running);
+    const decide = vi.spyOn(mgr.jev(), 'decide').mockImplementation(async (s) => ({ at: 't', sessionId: s, provider: 'claude', notes: ['model -> fable'], latencyMs: 1, model: 'fable' } as JevDecision));
+    mgr.setHelpers(p.id, sid, { advisor: true, router: 'jev' });
+    mgr.continueSession(p.id, sid, 'second', {});
+    await waitFor(() => calls.length === 2 && !mgr.snapshot().running);
+    expect(calls[1]).toMatchObject({ model: 'fable', advisor: 'fable' });
+    // A pick that keeps the saved Opus keeps the Opus advisor.
+    decide.mockImplementation(async (s) => ({ at: 't', sessionId: s, provider: 'claude', notes: [], latencyMs: 1 } as JevDecision));
+    mgr.continueSession(p.id, sid, 'third', {});
+    await waitFor(() => calls.length === 3 && !mgr.snapshot().running);
+    expect(calls[2]).toMatchObject({ model: 'opus', advisor: 'opus' });
   });
 
   // Codex overrides the brief unless the USER asks, so with the team on every

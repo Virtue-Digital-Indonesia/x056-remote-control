@@ -265,7 +265,7 @@
 
     // The gateway-built ChatGPT advisor: one line per consultation.
     function advisorLine(a) {
-      var what = { plan: 'reviewed the plan', stuck: 'looked at the repeated failure', done: 'reviewed the finished turn' }[a.trigger] || a.trigger;
+      var what = { plan: 'reviewed the plan', stuck: 'looked at the repeated failure', checkpoint: 'checkpoint, reviewed the work so far', done: 'reviewed the finished turn' }[a.trigger] || a.trigger;
       var did = { steered: 'steered into the turn', queued: 'queued a follow-up', 'too-late': 'turn had already ended', none: '' }[a.delivered] || '';
       var t = a.error ? 'advisor (' + a.model + ') ' + what + ' · ' + a.error
         : 'advisor (' + a.model + ') ' + what + ' · ' + a.verdict + (a.advice ? ': ' + a.advice : '') + (did ? ' → ' + did : '') +

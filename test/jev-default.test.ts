@@ -174,7 +174,9 @@ describe('SessionManager: Jev is the default picker', () => {
     mgr.patchHelpers(p.id, sid, { router: 'none' });
     mgr.continueSession(p.id, sid, 'third', {});
     await waitFor(() => calls.length === 3 && !mgr.snapshot().running);
-    expect(calls[2].prompt).not.toContain('Agent team this turn');
+    // No picker: no team pick, only the fork hint (forks need a key, not a picker).
+    expect(calls[2].prompt).not.toContain('Picked by');
+    expect(calls[2].prompt).toContain('Use quick_decision');
     // Forks: the default (no saved picker) goes to Jev...
     mgr.patchHelpers(p.id, sid, { router: 'jev' });
     mgr.setHelpers(p.id, sid, { team: true });

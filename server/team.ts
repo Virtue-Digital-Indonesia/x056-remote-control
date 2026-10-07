@@ -1,5 +1,5 @@
 import type { ProviderId } from '../src/provider.js';
-import { TEAM_LINE_PREFIX } from '../src/message-sender.js';
+import { ADVISOR_LINE_PREFIX, TEAM_LINE_PREFIX } from '../src/message-sender.js';
 
 /**
  * The agent team: the tree from the "advisor + Jev" thread, per conversation.
@@ -80,11 +80,14 @@ export function claudeTeamAgents(): string {
  * to come from the user's message. It still allows a solo turn for simple work,
  * as the owner asked. spawn_agent takes model and reasoning_effort per call.
  *
- * Claude: only when a picker chose the team's model/effort (nothing overrides
- * its brief). The Agent tool takes the model per call, the effort through the
- * variant's name. Returns undefined when there is nothing to say.
+ * Claude: when a picker chose the team's model/effort (the Agent tool takes
+ * the model per call, the effort through the variant's name), and, with a
+ * fork backend, on every team turn: the fork layer was in the brief alone and
+ * Claude made 0 quick_decision calls against Codex's 113 (2026-09-30..10-07),
+ * the per-turn line being what moved Codex. Returns undefined when there is
+ * nothing to say.
  */
-export function teamTurnLine(provider: ProviderId, team?: { model?: string; effort: string }, backend: 'jev' | 'openai' = 'jev'): string | undefined {
+export function teamTurnLine(provider: ProviderId, team?: { model?: string; effort: string }, backend: 'jev' | 'openai' = 'jev', opts: { forks?: boolean } = {}): string | undefined {
   const by = backend === 'openai' ? 'OpenAI Decisions' : 'Jev';
   if (provider === 'codex') {
     const what = team ? [team.model ? `model "${team.model}"` : '', `reasoning_effort "${team.effort}"`].filter(Boolean).join(' and ') : '';
@@ -92,11 +95,23 @@ export function teamTurnLine(provider: ProviderId, team?: { model?: string; effo
       + (what ? `, passing ${what} on every spawn_agent call (picked by ${by})` : '')
       + '. If the turn is small enough to do alone (one command, a one-file edit you already understand, a single deploy, a direct answer), do it alone and say why in one line.]';
   }
-  if (!team) return undefined;
+  const forks = opts.forks ? ' Use quick_decision for small either-or forks (which file, which tool, retry or stop).' : '';
+  if (!team) return forks ? `${TEAM_LINE_PREFIX}delegate the legwork to explorer, worker and researcher as the team brief says.${forks}]` : undefined;
   const effort = (CLAUDE_TEAM_EFFORTS as readonly string[]).includes(team.effort) ? team.effort : TEAM_EFFORT;
   const names = Object.keys(AGENTS).map((r) => roleName(r, effort));
   const types = `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`;
-  return `${TEAM_LINE_PREFIX}call the Agent tool with ${team.model ? `model "${team.model}" and ` : ''}subagent_type ${types}. Picked by ${by}.]`;
+  return `${TEAM_LINE_PREFIX}call the Agent tool with ${team.model ? `model "${team.model}" and ` : ''}subagent_type ${types}. Picked by ${by}.${forks}]`;
+}
+
+/**
+ * The advisor's per-turn line, Claude only (ChatGPT's advisor is run by the
+ * gateway). Claude Code's advisor is model-driven, and its only guidance was
+ * one sentence in the TEAM brief: some conversations with it on made 5 calls
+ * in 88 turns. Like the team line it rides in the MESSAGE, never the system
+ * prompt, which is process identity; `stripTeamLine` removes it on read-back.
+ */
+export function advisorTurnLine(provider: ProviderId): string | undefined {
+  return provider === 'claude' ? `${ADVISOR_LINE_PREFIX}consult it before committing to an approach on multi-step work, when stuck, and before declaring done.]` : undefined;
 }
 
 /** Thread config for Codex: its built-in roles, on medium effort. */

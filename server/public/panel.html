@@ -4330,7 +4330,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   // card is a single line (who reviewed, and how it answered); the gateway-built
   // ChatGPT advisor's card carries the verdict, the advice and what was done
   // with it. `pending` = Claude's advisor is reviewing right now.
-  var ADVISOR_TRIGGER = { plan: 'Reviewed the plan', stuck: 'Looked at the repeated failure', done: 'Reviewed the finished turn' };
+  var ADVISOR_TRIGGER = { plan: 'Reviewed the plan', stuck: 'Looked at the repeated failure', checkpoint: 'Checkpoint: reviewed the work so far', done: 'Reviewed the finished turn' };
   var ADVISOR_DELIVERED = { steered: 'Steered into the running turn', queued: 'Sent as a follow-up message', 'too-late': 'The turn had already ended' };
   var ADVISOR_VERDICT = { proceed: 'Proceed', looks_good: 'Looks good', adjust: 'Adjust', concern: 'Concern' };
   // A per-turn model/effort pick (Jev or OpenAI Decisions): one compact row
@@ -7892,7 +7892,10 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   modelEl.addEventListener('change', saveConversationPick);
   effortEl.addEventListener('change', saveConversationPick);
   $('helperBtn').addEventListener('click', function (e) { e.stopPropagation(); helperMenu(); });
-  $('helperMenu').addEventListener('click', function (e) { var it = e.target.closest('.helper-item'); if (it && !it.disabled) setHelper(it.dataset.kind, it.dataset.value); });
+  // A router item that is already the effective one is a no-op: "Your choice"
+  // shows checked while Jev is out of credits, and a click on it used to save
+  // an explicit 'none' that outlived the outage.
+  $('helperMenu').addEventListener('click', function (e) { var it = e.target.closest('.helper-item'); if (!it || it.disabled || (it.dataset.kind === 'router' && it.getAttribute('aria-checked') === 'true')) return; setHelper(it.dataset.kind, it.dataset.value); });
   $('helperLean').addEventListener('click', function (e) {
     var b = e.target.closest('.lean-seg'); if (!b || b.getAttribute('aria-checked') === 'true') return;
     setHelper('lean', b.dataset.lean);

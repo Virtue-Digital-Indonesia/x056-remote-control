@@ -528,7 +528,9 @@ the thread they come from uses them together, and so do we now.
   with no credits and no saved picker turns Auto into the house default
   (`AUTO_MODEL`), never the CLI default: a panel that believed Jev would pick
   sent `''`. The panel marks Jev "default" ("default while credits last") and
-  says "Jev unavailable: no credits" under "Your choice". The legacy
+  says "Jev unavailable: no credits" under "Your choice"; clicking the router
+  item that is already effective is a no-op (it used to save a `'none'` that
+  outlived the outage). The legacy
   decision-maker endpoint's `none`/`advisor` store `router: 'none'`. iOS reads
   `helpers.router` raw: it treats `'none'` as on and an absent router as off
   (not yet taught the default).
@@ -561,7 +563,9 @@ the thread they come from uses them together, and so do we now.
   turn with the team on carries an explicit ask in the USER message
   (`teamTurnLine('codex')`, picker or not): delegate per the brief, or do a
   genuinely small turn (one command, a known one-file edit, a single deploy,
-  a direct answer) alone and say why. Claude gets the line only with a pick.
+  a direct answer) alone and say why. Claude gets the line with a pick, and
+  with a fork backend on EVERY team turn, naming `quick_decision` for small
+  either-or forks (2026-10-07: 0 Claude forks vs 113 Codex in a week).
 - **With a picker on, it also picks the TEAM's model and effort per turn**
   (2026-09-30): two more questions in the same call (`subagent_model`,
   `subagent_effort`, written whole per lean like the main ones; model only
@@ -603,7 +607,13 @@ the thread they come from uses them together, and so do we now.
   is automatic -- verified on 2.1.280 that an Opus advisor on a Fable main
   model is NOT an error, Claude Code warns and runs WITHOUT it, which would
   look "on" while doing nothing -- so Fable mains get `fable`, everything else
-  `opus`. The advice comes back ENCRYPTED (`advisor_redacted_result`); only
+  `opus`, chosen from the model the turn RUNS on, after the Jev pick (it was
+  the saved model, so a Fable pick on an Opus conversation ran advisor-less).
+  Every advisor turn carries `[Advisor on: consult it before committing to an
+  approach ..., when stuck, and before declaring done.]` in the MESSAGE
+  (`advisorTurnLine`, same mechanism as the team line; `stripTeamLine` strips
+  both): the model-driven advisor got 5 calls in 88 turns on some
+  conversations. The advice comes back ENCRYPTED (`advisor_redacted_result`); only
   that it happened, and its tokens in the turn's `result.modelUsage`, are
   visible. Never use `/advisor` for this: it writes `advisorModel` into the
   account's settings.json and leaks to every conversation on that account.
@@ -620,7 +630,11 @@ the thread they come from uses them together, and so do we now.
   because Codex has none. `TurnWatcher` reads the turn's stream for the same
   three moments -- first plan (`turn/plan/updated`, translated into a
   `todo_list` item), the same command failing twice or three failures in a
-  row, `turn.completed` -- max 3 per turn. A consultation is `codex exec
+  row, `turn.completed` -- max 3 per turn. Codex never calls `update_plan`
+  (0 in 550 rollouts), so `plan` never fires; a **checkpoint** trigger
+  (`CHECKPOINT_POLICY`) fires after the first agent message + 5 commands,
+  then every 25 min or 40 items (>= 5 min apart), its own cap 4 per turn;
+  an `adjust` is steered like plan/stuck. A consultation is `codex exec
   --ephemeral --sandbox read-only --output-schema` on the strongest offered
   model (gpt-6-astra, effort high), from a scratch cwd. **`--ephemeral` is
   load-bearing**: without it every consultation writes a rollout into the
@@ -656,7 +670,10 @@ the thread they come from uses them together, and so do we now.
   `modelDownMin`) -- a wrong downgrade costs quality and a human round trip, a
   wrong upgrade only tokens. At 60-65% the live downgrades were a mix of right
   (a scheduled status check -> haiku 59%) and wrong (a feature build ->
-  sonnet 60%), which is where the down bar sits.
+  sonnet 60%), which is where the down bar sits. **Codex model RAISES need
+  0.1 less** at every lean (`leanBars`, `CODEX_MODEL_UP_RELIEF`; medium 50%):
+  its model confidence ran at a median 0.42 and 10 of 258 picks moved the
+  model. Down bars and Claude are unchanged.
 - **Auto model / Auto effort with a picker on = the picker decides**, with no
   confidence bar (`JevDecisionInput.auto`, `(auto)` in the notes). The panel
   sends Auto as `''` instead of resolving it to its house default (else Jev
@@ -749,6 +766,17 @@ only), and Jev gates which reports wake the orchestrator.
   `delegateInstructions(role)` appended to the
   system prompt: every turn ends in a REPORT whose first line is DONE / NEEDS
   ORCHESTRATOR / NEEDS HUMAN / BLOCKED.
+- **It works with its orchestrator's helpers** (2026-10-07; 230 delegate
+  turns had had no pick and no advisor): the parent's effective picker and
+  lean pick each delegate turn, its own saved model/effort being the base,
+  with the decisions keyed by the DELEGATE's session (its own process, its
+  own Claude switching gap). The advisor is on when the parent's is (or the
+  delegate asked): Claude gets `--advisor` from the picked model plus the
+  advisor line; Codex gets a `TurnWatcher` limited to stuck + checkpoint
+  (no done review: its follow-up would be another delegate turn), steered
+  into the delegate's own process. Picks and consultations go to
+  `delegate-events.jsonl` (and `jev/decisions/<delegateSid>`,
+  `advisor/<delegateSid>`), not to any conversation's events. No team.
 - **While a delegate works, its orchestrator counts as background work**
   (`backgroundSessions`, `providerActivity`): the violet spinner, Stop reaches
   it (`stopTurn` stops every delegate), and the deployer's idle check waits.
