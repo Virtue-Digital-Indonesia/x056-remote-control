@@ -2053,12 +2053,13 @@ export class SessionManager {
     const router = prompt.trimStart().startsWith('/') ? undefined : this.routerFor(parent);
     const advisorOn = !!d.advisor || !!parent.advisor;
     const advisorLine = advisorOn ? advisorTurnLine(d.provider) : undefined;
+    let ranModel = d.model;
     // ChatGPT: the gateway's advisor watches for repeated failures and
     // checkpoints only. No done-review: its follow-up would be one more
     // delegate turn, reviewed again. Steers land in this delegate's turn.
     const watcher = advisorOn && d.provider === 'codex'
       ? new TurnWatcher(cleanMemorySource(prompt), (trigger, transcript) => {
-          void this.runCodexAdvisor(parentPid, d.sessionId, trigger, transcript, d.account, d.model, () => this.delegateRuns.get(d.sessionId) === run, { parentSid, id: d.id, log }).catch(() => {});
+          void this.runCodexAdvisor(parentPid, d.sessionId, trigger, transcript, d.account, ranModel, () => this.delegateRuns.get(d.sessionId) === run, { parentSid, id: d.id, log }).catch(() => {});
         }, { reviewDone: false, triggers: ['stuck', 'checkpoint'] })
       : undefined;
     const start = async (): Promise<SessionResult> => {
@@ -2076,6 +2077,7 @@ export class SessionManager {
         model = dec.model ?? (dec.auto?.model ? dec.baseModel : undefined) ?? d.model;
         if (dec.effort) effort = dec.effort;
       }
+      ranModel = model;
       if (run.stopRequested) return { status: 'stopped', failovers: 0, reason: 'Stopped before the turn started.' };
       return runFn({
         registry: this.registry(),

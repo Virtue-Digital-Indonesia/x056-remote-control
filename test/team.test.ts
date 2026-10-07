@@ -279,6 +279,11 @@ describe('helpers combine', () => {
     expect(calls[1].prompt).toContain(line);
     expect(calls[1].appendSystemPrompt).not.toContain('[Advisor on:');
     expect(cleanMemorySource(calls[1].prompt)).toBe('second');
+    // A slash command reaches the CLI byte for byte, team line or not.
+    mgr.setHelpers(p.id, sid, { advisor: true, team: true, router: 'none' });
+    mgr.continueSession(p.id, sid, '/compact', {});
+    await waitFor(() => calls.length === 3 && !mgr.snapshot().running);
+    expect(calls[2].prompt).toBe('/compact');
     // History rows: the line never reaches what the gateway reads back.
     const configDir = mkdtempSync(join(tmpdir(), 'x056-adv-hist-')); dirs.push(configDir);
     mkdirSync(join(configDir, 'projects', '-p'), { recursive: true });

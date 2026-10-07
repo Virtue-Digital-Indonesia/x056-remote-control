@@ -528,7 +528,9 @@ the thread they come from uses them together, and so do we now.
   with no credits and no saved picker turns Auto into the house default
   (`AUTO_MODEL`), never the CLI default: a panel that believed Jev would pick
   sent `''`. The panel marks Jev "default" ("default while credits last") and
-  says "Jev unavailable: no credits" under "Your choice". The legacy
+  says "Jev unavailable: no credits" under "Your choice"; clicking the router
+  item that is already effective is a no-op (it used to save a `'none'` that
+  outlived the outage). The legacy
   decision-maker endpoint's `none`/`advisor` store `router: 'none'`. iOS reads
   `helpers.router` raw: it treats `'none'` as on and an absent router as off
   (not yet taught the default).
