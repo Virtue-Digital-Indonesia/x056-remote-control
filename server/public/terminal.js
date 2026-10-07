@@ -257,7 +257,7 @@
     // A Claude turn's final result, as `claude -p` prints it: the only place an
     // advisor model's cost shows up.
     function resultLine(r) {
-      var per = (r.models || []).map(function (m) { return m.model.replace(/^claude-/, '') + ' $' + (m.costUsd || 0).toFixed(3); }).join(' · ');
+      var per = (r.models || []).map(function (m) { return m.model.replace(/^claude-/, '') + (m.costUsd != null ? ' $' + m.costUsd.toFixed(3) : ' unpriced'); }).join(' · ');
       var t = (r.ok ? 'turn done' : 'turn failed') + (r.numTurns ? ' · ' + r.numTurns + ' step' + (r.numTurns === 1 ? '' : 's') : '') + (r.durationMs ? ' · ' + (r.durationMs / 1000).toFixed(1) + ' s' : '') +
         (r.totalCostUsd != null ? ' · $' + r.totalCostUsd.toFixed(3) : '') + (per ? ' (' + per + ')' : '');
       return line(r.at, r.ok ? 'sys' : 'err', r.ok ? '✓' : '✗', t, r);

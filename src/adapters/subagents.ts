@@ -32,6 +32,11 @@ export interface SubagentMeta {
   updatedAt?: number;
   /** Transcript size in bytes — cheap "did anything happen" signal. */
   bytes: number;
+  /** Codex: the task the parent named at spawn (humanised agent_path), the
+   *  child's nickname, and the raw path. */
+  task?: string;
+  nickname?: string;
+  agentPath?: string;
 }
 
 /** The transcript file for one subagent, or null. */

@@ -697,6 +697,9 @@ interface RolloutHead {
   depth: number;
   nickname?: string;
   role?: string;
+  /** Where the parent filed the child, e.g. `/root/implement_dev101_runner`:
+   *  the task name it gave at spawn. The spawn message itself is encrypted. */
+  agentPath?: string;
   startedAt?: number;
 }
 
@@ -728,8 +731,18 @@ function parseHead(file: string): RolloutHead | null {
     depth: typeof spawn.depth === 'number' ? spawn.depth : parent ? 1 : 0,
     nickname: firstStr(spawn.agent_nickname, meta.agent_nickname) || undefined,
     role: firstStr(spawn.agent_role) || undefined,
+    agentPath: firstStr(spawn.agent_path, meta.agent_path) || undefined,
     startedAt: Number.isFinite(ts) ? ts : undefined,
   };
+}
+
+/** `/root/implement_dev101_ssh_ingress` -> "Implement dev101 ssh ingress".
+ *  The last segment, so a grandchild names its own task, not its spawner's. */
+export function codexTaskName(agentPath: string | undefined): string | undefined {
+  const seg = (agentPath ?? '').split('/').filter(Boolean).pop();
+  if (!seg || seg === 'root') return undefined;
+  const words = seg.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : undefined;
 }
 
 /** First line of every rollout under the config dirs -- one readdir per request, each line read once ever. */
@@ -804,10 +817,16 @@ function listSubagents(configDirs: string[], providerSessionId: string): Subagen
     if (h.parent !== providerSessionId) continue;
     let bytes = 0; let updatedAt: number | undefined;
     try { const st = statSync(h.file); bytes = st.size; updatedAt = st.mtimeMs; } catch { /* raced */ }
+    const task = codexTaskName(h.agentPath);
     rows.push({
       agentId: h.id,
       agentType: 'codex-subagent',
-      description: [h.nickname, h.role].filter(Boolean).join(' · '),
+      // The task the parent named, with the nickname beside it; the role is
+      // null on every child seen so far (0.159), so it trails when present.
+      description: [task, h.nickname, h.role].filter(Boolean).join(' · '),
+      ...(task ? { task } : {}),
+      ...(h.nickname ? { nickname: h.nickname } : {}),
+      ...(h.agentPath ? { agentPath: h.agentPath } : {}),
       spawnDepth: h.depth,
       startedAt: h.startedAt,
       updatedAt,
@@ -827,15 +846,58 @@ interface OutcomeScan { offset: number; tail: string; decoder: StringDecoder; ou
 const outcomeByFile = new Map<string, OutcomeScan>();
 const OUTCOME_CACHE_MAX = 5_000;
 
+/** What a completed tool item was doing, short: the command, the MCP tool, the edited files. */
+function itemActivity(it: Record<string, unknown>): string | undefined {
+  const clip = (t: string) => { const one = t.replace(/\s+/g, ' ').trim(); return one.length > 80 ? one.slice(0, 79) + '…' : one; };
+  switch (String(it.type ?? '')) {
+    case 'CommandExecution': case 'commandExecution': case 'command_execution': {
+      const parsed = Array.isArray(it.parsed_cmd) ? asObj(it.parsed_cmd[0]) : {};
+      const cmd = Array.isArray(it.command) ? String(it.command[it.command.length - 1] ?? '') : String(it.command ?? '');
+      const text = firstStr(parsed.cmd) || cmd;
+      return text ? clip(text) : undefined;
+    }
+    case 'McpToolCall': case 'mcpToolCall': case 'mcp_tool_call': {
+      const t = [firstStr(it.server), firstStr(it.tool)].filter(Boolean).join('.');
+      return t ? clip('MCP ' + t) : undefined;
+    }
+    case 'FileChange': case 'fileChange': case 'file_change': {
+      // A list of {path} live; a map keyed by path in the rollout.
+      const paths = Array.isArray(it.changes) ? (it.changes as unknown[]).map((c) => firstStr(asObj(c).path)) : Object.keys(asObj(it.changes));
+      const files = paths.map((x) => x.split('/').pop()).filter(Boolean);
+      return clip('Edit ' + (files.join(', ') || 'files'));
+    }
+    case 'WebSearch': case 'webSearch': case 'web_search': return clip('Search ' + (firstStr(it.query) || 'the web'));
+    default: return undefined;
+  }
+}
+
 function foldOutcomeLine(out: SubagentOutcome, line: string): void {
   if (!line.startsWith('{')) return;
   let d: Record<string, unknown>;
   try { d = JSON.parse(line) as Record<string, unknown>; } catch { return; }
   const p = asObj(d.payload);
   const at = Date.parse(String(d.timestamp ?? ''));
-  if (d.type === 'event_msg' && p.type === 'task_started') {
+  if (d.type === 'turn_context') {
+    // The model and effort the child really runs on (session_meta has no
+    // model). Each task writes one; a later one wins, should a send change it.
+    const settings = asObj(asObj(p.collaboration_mode).settings);
+    const model = firstStr(p.model, settings.model), effort = firstStr(p.effort, settings.reasoning_effort);
+    if (model) out.model = model;
+    if (effort) out.effort = effort;
+  } else if (d.type === 'event_msg' && p.type === 'task_started') {
     out.done = false; out.status = 'running'; out.result = undefined; out.endedAt = undefined; out.error = undefined;
-    if (Number.isFinite(at)) out.startedAt = at;
+    out.current = undefined;
+    out.tasks = (out.tasks ?? 0) + 1;
+    const s = typeof p.started_at === 'number' ? p.started_at * 1000 : at;
+    if (Number.isFinite(s)) {
+      out.startedAt = s;
+      // A child given several tasks keeps its FIRST start: the span it worked,
+      // not just its latest task (5 tasks / 45 min used to read as 169 s).
+      if (out.firstStartedAt == null) out.firstStartedAt = s;
+    }
+  } else if (d.type === 'event_msg' && p.type === 'item_completed') {
+    const cur = itemActivity(asObj(p.item));
+    if (cur) out.current = cur;
   } else if (d.type === 'event_msg' && p.type === 'error') {
     // An error inside the task: whatever task_complete follows, it did not
     // finish cleanly. Cleared by the next task_started.
@@ -853,6 +915,7 @@ function foldOutcomeLine(out: SubagentOutcome, line: string): void {
     if (typeof s === 'number') out.startedAt = s * 1000;
     if (typeof c === 'number') out.endedAt = c * 1000;
     else if (Number.isFinite(at)) out.endedAt = at;
+    if (typeof p.duration_ms === 'number') out.activeMs = (out.activeMs ?? 0) + p.duration_ms;
   } else if (d.type === 'event_msg' && p.type === 'token_count') {
     const t = asObj(asObj(p.info).total_token_usage);
     if (typeof t.input_tokens === 'number') {

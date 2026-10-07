@@ -105,7 +105,13 @@ const SHOTS = '/tmp/x056-agent-tree';
     advisor: { on: true, kind: 'gateway', model: 'gpt-6-astra', checkpoints: true, calls: [
       { at: iso(100000), trigger: 'plan', verdict: 'proceed', delivered: 'none' }, { at: iso(30000), trigger: 'done', verdict: 'concern', delivered: 'queued', advice: 'Add a test for the expired cookie.' }] },
     team: { effort: 'medium', roles: ['explorer', 'worker', 'default'] }, forks: { total: 0, sharp: 0, split: 0, recent: [] }, gates: [], picks: [], delegates: [] };
-  const codexChildren = [{ agentId: 'child', agentType: 'codex-subagent', description: 'Astra review agent', status: 'running', startedAt: now - 30000, bytes: 1000 }];
+  const codexChildren = [
+    { agentId: 'child', agentType: 'codex-subagent', description: 'Astra review agent', status: 'running', startedAt: now - 30000, bytes: 1000 },
+    // The 0.159 shape: named by its agent_path task, its own model/effort, several tasks, a live step.
+    { agentId: 'godel', agentType: 'codex-subagent', task: 'Implement dev101 runner', nickname: 'Godel', agentPath: '/root/implement_dev101_runner', description: 'Implement dev101 runner · Godel',
+      status: 'running', startedAt: now - 90000, bytes: 5000, model: 'gpt-6-astra', effort: 'high', tasks: 3, activeMs: 60000, current: 'npm test -- tenancy',
+      brief: 'Task: Implement dev101 runner (agent Godel)\n\nGiven 3 tasks by its parent.', usage: { input: 1000, output: 50, cacheRead: 0, cacheWrite: 0 } },
+  ];
   let withTurns = true, historyCalls = [], runCalls = [];
 
   // Detail column: nothing clipped in the stats grid / header; shots for worker, delegate and Jev.
@@ -401,12 +407,38 @@ const SHOTS = '/tmp/x056-agent-tree';
     await row(page, 'sub:child').waitFor();
     assert.equal(await statusOf(page, 'sub:child'), 'run');
     assert.match(await row(page, 'sub:child').textContent(), /Codex agent.*Astra review agent/);
+    // Named by its task, its own model and effort, and what it is running now.
+    const godel = await row(page, 'sub:godel').textContent();
+    assert.match(godel, /Agent · Implement dev101 runner/);
+    assert.match(godel, /Running · npm test -- tenancy/);
+    assert.match(godel, /GPT-6 Astra · high/);
+    assert.match(godel, /3 tasks/);
+    await page.screenshot({ path: SHOTS + '/pane-codex-tree-dark-1440.png' });
+    await row(page, 'sub:godel').click();
+    await page.locator('#agentPaneHistBody').waitFor();
+    assert.equal(await page.locator('#agentPaneHistory .ap-hn').textContent(), 'Agent · Implement dev101 runner · Godel');
+    assert.match(await page.locator('#agentPaneHistory .ap-stats').textContent(), /ModelGPT-6 Astra · high/);
+    assert.match(await page.locator('#agentPaneHistory .ap-now').textContent(), /Now: npm test -- tenancy/);
+    await page.locator('#agentPaneHistory [data-tab=brief]').click();
+    assert.match(await page.locator('#agentPaneHistBody').textContent(), /Task: Implement dev101 runner/);
+    const clippedG = await page.evaluate(() => [...document.querySelectorAll('#agentPaneHistory .ap-stats dd, #agentPaneHistory .ap-hn')].filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent));
+    assert.deepEqual(clippedG, [], 'clipped Codex child detail');
+    await page.screenshot({ path: SHOTS + '/detail-codex-child-dark-1440.png' });
+    await page.locator('#agentPaneHistory [data-tab=conv]').click();
+    const backG = page.locator('#agentPaneHistory button[aria-label="Back to the tree"]');
+    if (await backG.count() && await backG.isVisible()) await backG.click();
     await row(page, 'advisor').click();
     await page.locator('#agentPaneHistBody .ap-card').first().waitFor();
     await page.screenshot({ path: SHOTS + '/pane-codex-dark.png' });
     await page.locator('#agentPaneExpand').click();
     await page.waitForSelector('#atree .at-check.lit');
     assert.deepEqual(await page.locator('#atree .at-check.lit').evaluateAll((l) => l.map((e) => e.dataset.trigger)), ['plan', 'done']);
+    // The console card: the task as its role, its OWN model and effort (not the team's "effort medium"), its live step.
+    const card = page.locator('#atree .at-card').filter({ hasText: 'Implement dev101 runner' }).first();
+    assert.equal(await card.locator('.at-card-role').textContent(), 'Agent · Implement dev101 runner');
+    assert.equal(await card.locator('.at-card-model').textContent(), 'GPT-6 Astra · high');
+    assert.equal(await card.locator('.at-card-desc').textContent(), 'Running · npm test -- tenancy');
+    await page.screenshot({ path: SHOTS + '/console-codex-dark-1440.png' });
     await page.locator('#atreeClose').click();
     assert.equal(await page.locator('main .scroll').isVisible(), true);
     assert.deepEqual(errors, []);

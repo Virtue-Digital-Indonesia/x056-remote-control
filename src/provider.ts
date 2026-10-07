@@ -118,6 +118,18 @@ export interface SubagentOutcome {
   /** The sub-agent's last message, when it finished. */
   result?: string;
   usage?: { input: number; output: number; cached?: number } | null;
+  /** First task's start: a child given several tasks spans from here
+   *  (startedAt is its latest task's). */
+  firstStartedAt?: number;
+  /** Tasks it was given (Codex: task_started count). */
+  tasks?: number;
+  /** Time spent inside finished tasks, summed (ms). */
+  activeMs?: number;
+  /** The model and effort it actually ran on (Codex: its turn_context). */
+  model?: string;
+  effort?: string;
+  /** Its last completed tool step, short (a command, an MCP tool, an edit). */
+  current?: string;
 }
 
 export interface ProviderAdapter {

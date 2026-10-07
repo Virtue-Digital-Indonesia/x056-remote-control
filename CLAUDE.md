@@ -967,7 +967,8 @@ CLI writes each subagent a complete transcript of its own:
   `adapter.id`. Only the first line of each rollout is read to find children —
   and the WHOLE first line: a real `session_meta` is ~14KB of base_instructions,
   and an 8KB read silently skipped every child until a live check caught it.
-  Cost is null on purpose: tokens are recorded, GPT prices are not in the table.
+  Cost is priced like Claude's: the GPT models are in `transcript-stats.ts`'s
+  table, and a model missing from it is named as unpriced.
   **Those reads are incremental, and must stay so.** The panel polls the list
   every 5s while a turn runs; a UAT thread with 39 children (359MB of rollouts)
   once cost 41 store scans and a full re-read of every child PER POLL, all
@@ -978,6 +979,23 @@ CLI writes each subagent a complete transcript of its own:
   `subagentStatus` folds only the bytes appended since its last call.
   `task_complete` is done only with a `last_agent_message`; empty is `ended`,
   and an `event_msg` `error` since `task_started` makes it `failed`.
+- **What a Codex child row carries (2026-10-07).** On 0.159 every child's
+  `agent_role` is null and its spawn message is encrypted, so the readable
+  name is `session_meta.agent_path` (`/root/implement_dev101_runner`): the
+  row has `agentPath`, `task` ("Implement dev101 runner", humanised last
+  segment) and `nickname`; the tree shows "Agent · <task>" and the Brief tab
+  "Task: ..." (never the result again). The same incremental fold now keeps
+  `model` / `effort` (its own `turn_context`; `session_meta.model` is null,
+  and the team's setting is not what it ran on), `tasks` (one per
+  `task_started` -- a child is sent several), `firstStartedAt` (the row's
+  `startedAt`, so its duration is the whole span and `inTurn` puts it in
+  every turn it spans, idle turns between tasks included), `activeMs` (summed
+  `duration_ms`) and `current` (its last completed command / MCP call / edit,
+  shown as "Running · <step>"). Codex turns get a `turn-results` row too
+  (`CodexTurnMeter`: the thread's `thread.tokenUsage.updated` growth, priced
+  with the model the turn ran on; steps = completed tool items), so the main
+  node's last turn, the terminal and Jev's context no longer go blank on
+  ChatGPT.
 
 ## Workflow runs (`src/adapters/workflows.ts`)
 

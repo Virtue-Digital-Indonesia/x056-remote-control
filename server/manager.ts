@@ -9,7 +9,7 @@ import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.j
 import { findRollout } from '../src/adapters/codex.js';
 import { advisorFor, AUTO_MODEL, CLAUDE_DEFAULT_EFFORT, jevCandidates, teamCandidates } from './decision-maker.js';
 import { CodexAdvisor, TurnWatcher, type AdvisorConsult, type AdvisorTrigger } from './codex-advisor.js';
-import { TurnResults } from './turn-results.js';
+import { CodexTurnMeter, TurnResults } from './turn-results.js';
 import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
 import { withMessageSender, withTeamLine, type MessageSender } from '../src/message-sender.js';
@@ -3482,12 +3482,17 @@ export class SessionManager {
       // conversation saved as Opus ran `--advisor opus` on a Fable main,
       // which Claude Code silently runs WITHOUT an advisor.
       let turnAdvisor = advisor;
+      // What the turn really runs on, for pricing its Codex turn result: the
+      // pick, then the per-account fallback (seen in the pool's wire below).
+      let turnModel = model;
+      const codexMeter = adapter.id === 'codex' ? new CodexTurnMeter() : undefined;
       const runWith: typeof runFn = router
         ? (async (o: Parameters<typeof runFn>[0]) => {
             const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort, sender, !!team);
             emit('jev_decision', d as unknown as Record<string, unknown>);
             // On Auto a failed pick still runs on the Auto baseline it started from.
             const useModel = d.model ?? (d.auto?.model ? d.baseModel : undefined);
+            if (useModel) turnModel = useModel;
             if (advisor && useModel) turnAdvisor = advisorFor(adapter.id as 'claude' | 'codex', useModel);
             const teamLine = team ? teamTurnLine(adapter.id, d.team && !d.error ? d.team : undefined, d.backend === 'openai' ? 'openai' : 'jev', { forks }) : undefined;
             return runFn({ ...o, prompt: withLines(o.prompt, teamLine), ...(useModel ? { model: useModel } : {}), ...(d.effort ? { effort: d.effort } : {}), ...(turnAdvisor !== advisor ? { advisor: turnAdvisor } : {}) });
@@ -3536,7 +3541,7 @@ export class SessionManager {
         appendSystemPrompt: team ? CONTAINER_SYSTEM_NOTE + '\n\n' + team.instructions : CONTAINER_SYSTEM_NOTE,
         mcp: this.mcpWiringFor(pid, sessionId),
         // Each provider has a pool; the transport inside it speaks that CLI.
-        startTurnFn: this.turnStarter(adapter, log, sessionId, (o) => ({
+        startTurnFn: this.turnStarter(adapter, log, sessionId, (o) => (turnModel = o.model ?? turnModel, {
             ...o,
             onProviderActivity: () => emit('background_state', this.providerActivity(sessionId)),
             // Work that happens AFTER a turn ends — a background task finishing
@@ -3567,6 +3572,19 @@ export class SessionManager {
           }
           if (adapter.id === 'claude' && e.type === 'result') {
             try { const r = this.turnResults().record(sessionId, e as Record<string, unknown>); if (r) emit('turn_result', r as unknown as Record<string, unknown>); } catch { /* never break the stream */ }
+          }
+          // Codex has no `result` event: its turn result is metered off the
+          // stream and written when the turn ends, so the agent tree's main
+          // node and the terminal get steps, time and cost for it too.
+          if (codexMeter) {
+            try {
+              codexMeter.observe(e as Record<string, unknown>);
+              if (e.type === 'turn.completed' || e.type === 'turn.failed') {
+                const m = codexMeter.result(this.projects().providerSessionId(pid, sessionId) ?? undefined);
+                const r = this.turnResults().recordCodex(sessionId, { ok: e.type === 'turn.completed', durationMs: run.startedAt ? Date.now() - Date.parse(run.startedAt) : undefined, steps: m.steps, model: turnModel, usage: m.usage });
+                if (r) emit('turn_result', r as unknown as Record<string, unknown>);
+              }
+            } catch { /* never break the stream */ }
           }
           saveStateOnce();
           // Persist the CLI's own session id THE MOMENT the stream reveals it

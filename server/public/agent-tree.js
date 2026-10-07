@@ -122,7 +122,16 @@
     if (cl) return cap(cl[1]) + ' ' + cl[2] + (cl[3] ? '.' + cl[3] : '');
     return m.split('-').map(cap).join(' ');
   }
-  function roleName(s) { return s.agentType === 'codex-subagent' ? 'Codex agent' : cap(s.agentType || 'agent'); }
+  /** A Codex child is named by the task its parent filed it under
+   *  ("Agent · Implement dev101 runner"); its nickname is not a role. */
+  function roleName(s) { return s.agentType === 'codex-subagent' ? (s.task ? 'Agent · ' + s.task : 'Codex agent') : cap(s.agentType || 'agent'); }
+  /** The model and effort a worker itself ran on, when its transcript says (Codex children). */
+  function subModel(s) { return s && s.model ? [modelName(s.model), s.effort].filter(Boolean).join(' · ') : ''; }
+  /** A worker's second line: what a running Codex child is doing right now, else who it is. */
+  function subLine(s) {
+    if (s.status === 'running' && s.current) return 'Running · ' + s.current;
+    return s.task ? (s.nickname || '') : (s.description || s.brief || '');
+  }
 
   // ---- turns and membership ---------------------------------------------------
   /** The turns to step through. Without `turns` from the server: one turn,
@@ -179,8 +188,8 @@
   }
   function subLeaf(s, fmt) {
     var u = usageTok(s.usage), cost = fmt && fmt.costLabel ? fmt.costLabel(s.cost) : '';
-    return { key: 'sub:' + s.agentId, id: 'sub:' + s.agentId, kind: 'sub', color: ROLE.sub, name: roleName(s), brief: one(s.description || s.brief, 120), status: subStatus(s.status),
-      bits: [dur(s.startedAt, s.endedAt || (s.status === 'running' ? null : s.updatedAt)), u ? tok(u) + ' tok' : '', cost].filter(Boolean).join(' · '), raw: s };
+    return { key: 'sub:' + s.agentId, id: 'sub:' + s.agentId, kind: 'sub', color: ROLE.sub, name: roleName(s), brief: one(subLine(s), 120), status: subStatus(s.status),
+      bits: [subModel(s), dur(s.startedAt, s.endedAt || (s.status === 'running' ? null : s.updatedAt)), s.tasks > 1 ? s.tasks + ' tasks' : '', u ? tok(u) + ' tok' : '', cost].filter(Boolean).join(' · '), raw: s };
   }
   /** Nest workers by spawner: parentAgentId first, else the older spawnedBy guess. */
   function nest(list, fmt) {
@@ -338,7 +347,7 @@
   var GATE = { needs_human: ['needs', 'Needs you'], needs_orchestrator: ['link', 'Needs orchestrator'], done: ['done', 'Done'], blocked: ['failed', 'Blocked'] };
   function gatePill(g) { var x = GATE[g] || ['idle', g]; return el('span', 'ap-gate ap-gate-' + x[0], x[1]); }
 
-  window.AgentTreeModel = { build: build, turnsOf: turnsOf, inTurn: inTurn, status: st, subStatus: subStatus, delegateStatus: delegateStatus, runStatus: runStatus, wfAgentStatus: wfAgentStatus, bySt: bySt, rankOf: rankOf, glyph: glyph, statusChip: statusChip, modelName: modelName, when: when, outlineItems: outlineItems };
+  window.AgentTreeModel = { build: build, turnsOf: turnsOf, inTurn: inTurn, status: st, subStatus: subStatus, delegateStatus: delegateStatus, runStatus: runStatus, wfAgentStatus: wfAgentStatus, bySt: bySt, rankOf: rankOf, glyph: glyph, statusChip: statusChip, modelName: modelName, when: when, outlineItems: outlineItems, roleName: roleName, subModel: subModel, subLine: subLine };
 
   // =========================================================================
   // The docked pane
@@ -579,7 +588,7 @@
       var hh = el('header', 'ap-hh');
       if (drill) { var bk = el('button', 'ap-ib'); bk.type = 'button'; bk.setAttribute('aria-label', 'Back to the tree'); bk.title = 'Back to the tree'; bk.appendChild(icon('left')); bk.addEventListener('click', closeNode); hh.appendChild(bk); }
       hh.appendChild(el('span', 'ap-dot' + (it.kind === 'wfagent' ? ' sq' : '')));
-      var hm = el('div', 'ap-hm'); add(hm, el('div', 'ap-hn', it.kind === 'sub' ? it.name + ' · ' + (it.raw.description || '') : it.name));
+      var hm = el('div', 'ap-hm'); add(hm, el('div', 'ap-hn', it.kind === 'sub' ? [it.name, it.raw.task ? it.raw.nickname : it.raw.description].filter(Boolean).join(' · ') : it.name));
       var meta = el('div', 'ap-hmeta'); if (it.status) meta.appendChild(statusChip(it.status)); if (it.brief && it.kind !== 'sub') meta.appendChild(el('span', '', it.brief));
       hm.appendChild(meta); hh.appendChild(hm);
       if (!drill) { var cx = el('button', 'ap-ib'); cx.type = 'button'; cx.setAttribute('aria-label', 'Close this history'); cx.title = 'Close this history'; cx.appendChild(icon('x')); cx.addEventListener('click', closeNode); hh.appendChild(cx); }
@@ -588,7 +597,10 @@
       var foot = null;
       if (it.kind === 'sub' || it.kind === 'wfagent') {
         var s = it.raw, u = s.usage;
-        box.appendChild(stats([['Tokens', u ? tok(usageTok(u)) : '—'], ['Cost', it.kind === 'wfagent' ? 'Not listed' : (engine.costLabel && engine.costLabel(s.cost)) || (u ? 'Not priced' : '—'), 'Tokens are recorded; not every model has a list price'], ['Time', dur(s.startedAt, s.endedAt) || '—'], ['Status', st(it.status).label]]));
+        var sm = subModel(s);
+        box.appendChild(stats([['Tokens', u ? tok(usageTok(u)) : '—'], ['Cost', it.kind === 'wfagent' ? 'Not listed' : (engine.costLabel && engine.costLabel(s.cost)) || (u ? 'Not priced' : '—'), 'Tokens are recorded; not every model has a list price'],
+          ['Time', (dur(s.startedAt, s.endedAt) || '—') + (s.tasks > 1 ? ' · ' + s.tasks + ' tasks' : ''), s.activeMs ? 'From its first task to its last; ' + dur(0, s.activeMs) + ' inside tasks' : ''], ['Status', st(it.status).label]].concat(sm ? [['Model', sm, 'What this agent itself ran on']] : [])));
+        if (it.status === 'run' && s.current) box.appendChild(add(el('p', 'ap-now'), el('span', 'ap-g ap-g-run'), el('span', '', 'Now: ' + s.current)));
         var tabs = el('div', 'ap-tabs'); tabs.setAttribute('role', 'tablist');
         [['conv', 'Conversation'], ['brief', 'Brief'], ['result', 'Result']].forEach(function (p) {
           var b = el('button', '', p[1]); b.type = 'button'; b.setAttribute('role', 'tab'); b.dataset.tab = p[0]; b.setAttribute('aria-selected', String(S.tab === p[0])); b.tabIndex = S.tab === p[0] ? 0 : -1;
@@ -1262,6 +1274,8 @@
       return [team.model && modelName(team.model), team.effort, (team.pickedBy === 'openai' ? 'Decisions' : 'Jev') + (team.confidence != null ? ' ' + Math.round(team.confidence * 100) + '%' : '')].filter(Boolean).join(' · ');
     }
     function workerLabel(s, t) {
+      // A Codex child's own transcript names what it ran on; prefer that to the team's setting.
+      var own = Model.subModel(s); if (own) return own;
       if (!t.team) return '';
       if (t.provider === 'codex') return (t.team.pickedBy && t.team.model ? modelName(t.team.model) + ' · ' : '') + 'effort ' + t.team.effort;
       // Claude roles come in effort variants (explorer-high); the suffix is the effort.
@@ -1273,10 +1287,11 @@
       var li = el('li', 'at-card ' + k);
       var b = put(li, el('button', 'at-card-btn')); b.type = 'button';
       var st = SUB_STATUS[k];
-      b.setAttribute('aria-label', (s.agentType || 'agent') + ', ' + st[1] + ': ' + (s.description || s.brief || ''));
-      add(b, el('span', 'at-card-role', s.agentType || 'agent'));
+      var role = s.agentType === 'codex-subagent' ? Model.roleName(s) : (s.agentType || 'agent');
+      b.setAttribute('aria-label', role + ', ' + st[1] + ': ' + (s.description || s.brief || ''));
+      add(b, el('span', 'at-card-role', role));
       var lab = workerLabel(s, t); if (lab) add(b, el('span', 'at-card-model', lab));
-      add(b, el('span', 'at-card-desc', one(s.description || s.brief || '', 60)));
+      add(b, el('span', 'at-card-desc', one(Model.subLine(s), 60)));
       var sEl = put(b, el('span', 'at-card-status', st[0] + ' ' + st[1])); sEl.dataset.status = k;
       b.addEventListener('click', function () { if (engine.openSubagent) engine.openSubagent(s); });
       if (kids.length) {
@@ -1421,8 +1436,9 @@
       var ev = [];
       var push = function (at, tag, cls, text) { at = ms(at); if (isFinite(at)) ev.push({ at: at, tag: tag, cls: cls, text: text }); };
       thisTurn.forEach(function (s) {
-        push(s.startedAt, s.agentType || 'agent', 'sub', 'started · ' + one(s.description || s.brief, 70));
-        if (s.endedAt) push(s.endedAt, s.agentType || 'agent', 'sub', SUB_STATUS[subStatusKey(s.status)][1] + ' · ' + one(s.description || s.brief, 60));
+        var tag = s.agentType === 'codex-subagent' ? 'agent' : s.agentType || 'agent';
+        push(s.startedAt, tag, 'sub', 'started · ' + one(s.description || s.brief, 70));
+        if (s.endedAt) push(s.endedAt, tag, 'sub', SUB_STATUS[subStatusKey(s.status)][1] + ' · ' + one(s.description || s.brief, 60));
       });
       ((t.forks && t.forks.recent) || []).forEach(function (f) {
         push(f.at, f.backend === 'openai' ? 'decisions' : 'jev', 'jev', one(f.question, 50) + (f.choice ? ' → ' + one(f.choice, 30) : '') + (f.confidence != null ? '  p=' + f.confidence.toFixed(2) : '') + '  ' + (f.verdict === 'sharp' ? 'SHARP → follow' : 'SPLIT → main model') + (f.error ? ' · ' + f.error : ''));

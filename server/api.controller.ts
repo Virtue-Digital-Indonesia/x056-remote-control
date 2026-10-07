@@ -148,6 +148,16 @@ const QUOTA_TTL_MS = 90_000;
 /** How quiet a subagent's transcript may go and still count as running. */
 const LIVE_SUBAGENT_MS = 10 * 60_000;
 
+/** A Codex child's Brief tab: the task the parent named, and how many it was
+ *  given. Its spawn message is encrypted on disk, so this is what is legible. */
+export function codexBrief(s: { task?: string; nickname?: string; agentPath?: string }, st: { tasks?: number } | null): string {
+  if (!s.task) return '';
+  const lines = ['Task: ' + s.task + (s.nickname ? ' (agent ' + s.nickname + ')' : '')];
+  if (st?.tasks && st.tasks > 1) lines.push('Given ' + st.tasks + ' tasks by its parent.');
+  if (s.agentPath) lines.push('Filed as `' + s.agentPath + '`. Codex keeps the spawn message itself encrypted, so the task name is all that can be shown.');
+  return lines.join('\n\n');
+}
+
 @Controller('api')
 export class ApiController {
   // The oauth usage endpoint rate-limits aggressively; cache per account and
@@ -965,10 +975,20 @@ export class ApiController {
           const status = live === true ? 'running' : st?.status === 'failed' || st?.status === 'ended' || st?.status === 'stopped' ? st.status : st?.done ? 'done' : live === undefined && running && fresh && st?.status === 'running' ? 'running' : 'unknown';
           return {
             ...s, status,
-            startedAt: st?.startedAt ?? s.startedAt,
-            endedAt: st?.endedAt,
-            brief: st?.result ? st.result.slice(0, 600) : '',
+            // The FIRST task's start: a child sent several tasks spans them
+            // all, so it shows in every turn it worked in (inTurn) and its
+            // duration is the whole span, not the latest task.
+            startedAt: st?.firstStartedAt ?? st?.startedAt ?? s.startedAt,
+            endedAt: status === 'running' ? undefined : st?.endedAt,
+            // The spawn message is encrypted in the rollout; the task name the
+            // parent filed it under is what is readable. Never the result.
+            brief: codexBrief(s, st),
             result: st?.result,
+            ...(st?.model ? { model: st.model } : {}),
+            ...(st?.effort ? { effort: st.effort } : {}),
+            ...(st?.tasks ? { tasks: st.tasks } : {}),
+            ...(st?.activeMs ? { activeMs: st.activeMs } : {}),
+            ...(st?.current ? { current: st.current } : {}),
             usage: usageStats?.usage ?? (st?.usage ? { input: Math.max(0, st.usage.input - (st.usage.cached ?? 0)), output: st.usage.output, cacheRead: st.usage.cached ?? 0, cacheWrite: 0 } : null),
             cost: usageStats ? estimateCost(usageStats.usage) : null,
             partial: usageStats?.partial ?? false,

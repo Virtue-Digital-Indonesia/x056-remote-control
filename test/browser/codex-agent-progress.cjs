@@ -9,10 +9,11 @@ const { chromium } = require('/usr/local/lib/node_modules/playwright');
     await context.addInitScript(() => localStorage.setItem('x056_token','browser-fixture-token-0123456789'));
     const page = await context.newPage(), errors=[];
     page.on('pageerror', e=>errors.push(e.message));
-    let polls=0, histories=0, message='Checking the child implementation';
+    let polls=0, histories=0, message='Checking the child implementation', step='rg -n jobRunDir server/tenancy';
     await page.route('**/api/conversations/subagents?**', route=>{
       polls++;
-      return route.fulfill({json:{subagents:[{agentId:'child',agentType:'codex-subagent',description:'Astra review agent',status:'running',startedAt:Date.now()-20000,bytes:1000}],self:null}});
+      return route.fulfill({json:{subagents:[{agentId:'child',agentType:'codex-subagent',description:'Astra review agent',status:'running',startedAt:Date.now()-20000,bytes:1000},
+        {agentId:'runner',agentType:'codex-subagent',task:'Implement dev101 runner',nickname:'Godel',description:'Implement dev101 runner · Godel',model:'gpt-6-astra',effort:'medium',current:step,status:'running',startedAt:Date.now()-40000,bytes:4000}],self:null}});
     });
     await page.route('**/api/conversations/subagent-history?**', route=>{histories++;return route.fulfill({json:{rows:[{role:'assistant',text:message}],done:true,cursor:0}});});
     await page.goto(process.argv[2]||'http://127.0.0.1:8798');
@@ -23,10 +24,17 @@ const { chromium } = require('/usr/local/lib/node_modules/playwright');
     assert.match(await child.textContent(), /Codex agent.*Astra review agent/);
     assert.equal(await child.locator('.ap-st').first().getAttribute('data-status'), 'run');
     assert.equal(await page.locator('#agentPaneLive').textContent(), 'Live');
+    // A 0.159 child: named by its task, its own model, and its latest step, which follows the polls.
+    const runner = page.locator('#agentPane .ap-row[data-key="sub:runner"]');
+    assert.match(await runner.textContent(), /Agent · Implement dev101 runner/);
+    assert.match(await runner.textContent(), /Running · rg -n jobRunDir server\/tenancy/);
+    assert.match(await runner.textContent(), /GPT-6 Astra · medium/);
+    step='npm test -- tenancy';
     // Child polling continues with the parent's turn idle and no reader open.
     const before=polls;
     await page.waitForTimeout(5500);
     assert.ok(polls>before, 'the running child keeps the list polling');
+    await runner.filter({hasText:'Running · npm test -- tenancy'}).waitFor({timeout:6000});
     // Its history opens beside the tree and follows the live transcript.
     await child.click();
     await page.locator('#agentPaneHistBody').filter({hasText:message}).waitFor();
@@ -35,6 +43,6 @@ const { chromium } = require('/usr/local/lib/node_modules/playwright');
     assert.ok(histories>=2);
     assert.ok(!(await page.locator('#chat').innerText()).includes(message));
     assert.deepEqual(errors,[]);
-    console.log('PASS: Codex child in the agent tree, running status, idle-parent polling, separate live transcript');
+    console.log('PASS: Codex child in the agent tree, running status, task name, own model, live step, idle-parent polling, separate live transcript');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});

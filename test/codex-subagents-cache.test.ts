@@ -84,6 +84,25 @@ describe('codex sub-agent reads are incremental', () => {
     expect(codexAdapter.subagentStatus!([h.dir], P, C1)).toMatchObject({ done: true, result: '42' });
   });
 
+  it('a second task given later is folded from the appended bytes only: model, effort, task count, first start, latest step', () => {
+    const h = home([{ id: P }, { id: C1, parent: P, body: [
+      line({ type: 'task_started', turn_id: 't1', started_at: 1788752575 }, '2026-09-07T03:42:55.500Z'),
+      JSON.stringify({ type: 'turn_context', timestamp: '2026-09-07T03:42:55.600Z', payload: { model: 'gpt-6-astra', effort: 'medium' } }),
+      tokens, complete,
+    ] }]);
+    expect(codexAdapter.subagentStatus!([h.dir], P, C1)).toMatchObject({ tasks: 1, model: 'gpt-6-astra', effort: 'medium', firstStartedAt: 1788752575000 });
+    const appended = [
+      line({ type: 'task_started', turn_id: 't2', started_at: 1788756000 }, '2026-09-07T04:40:00.000Z'),
+      JSON.stringify({ type: 'turn_context', timestamp: '2026-09-07T04:40:00.100Z', payload: { model: 'gpt-6-astra', effort: 'high' } }),
+      line({ type: 'item_completed', item: { type: 'CommandExecution', command: ['/bin/sh', '-lc', 'npm test'], parsed_cmd: [{ cmd: 'npm test' }], exit_code: 0 } }, '2026-09-07T04:40:05.000Z'),
+    ].join('\n') + '\n';
+    fs.appendFileSync(h.file(C1), appended);
+    const before = snap();
+    const st = codexAdapter.subagentStatus!([h.dir], P, C1)!;
+    expect(st).toMatchObject({ status: 'running', done: false, tasks: 2, effort: 'high', current: 'npm test', firstStartedAt: 1788752575000, startedAt: 1788756000000 });
+    expect(delta(before).bytes).toBeLessThanOrEqual(appended.length);
+  });
+
   it('a rollout that shrank is rescanned from the start', () => {
     const h = home([{ id: P }, { id: C1, parent: P, body: [complete] }]);
     expect(codexAdapter.subagentStatus!([h.dir], P, C1)).toMatchObject({ done: true });
