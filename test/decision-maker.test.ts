@@ -6,7 +6,7 @@ import { AccountRegistry } from '../src/accounts.js';
 import type { RunSessionOptions, SessionResult } from '../src/failover.js';
 import { ClaudeTransport } from '../src/persistent-transport.js';
 import { SessionManager, type GatewayEvent } from '../server/manager.js';
-import { JevService, JEV_POLICY, EFFORT_QUESTION, LEAN_BARS, applyPolicy, applySubagentPolicy, decisionState, effortQuestion, modelQuestion, subagentEffortQuestion, subagentModelQuestion, type JevDecision, type JevDecisionInput } from '../server/jev.js';
+import { JevService, JEV_POLICY, EFFORT_QUESTION, LEAN_BARS, applyPolicy, leanBars, applySubagentPolicy, decisionState, effortQuestion, modelQuestion, subagentEffortQuestion, subagentModelQuestion, type JevDecision, type JevDecisionInput } from '../server/jev.js';
 import { decisionsRequest } from '../server/openai-decisions.js';
 import { advisorFor, jevCandidates, teamCandidates } from '../server/decision-maker.js';
 import { OpenAIDecisionsService } from '../server/openai-decisions.js';
@@ -37,6 +37,30 @@ describe('advisor pairing', () => {
 });
 
 describe('Jev policy', () => {
+  // Codex model confidence ran at a median 0.42 (10 of 258 picks moved the
+  // model): only its RAISE bar is lower, by 0.1 at every lean.
+  it('Codex: a lower bar to raise the model, the same bars to lower it; Claude unchanged', () => {
+    const models = [{ id: 'gpt-6-luna', about: 'l' }, { id: 'gpt-5.6-terra', about: 't' }, { id: 'gpt-6-sol', about: 's' }, { id: 'gpt-6-astra', about: 'a' }];
+    const cx = (lean?: 'low' | 'high') => input({ provider: 'codex', currentModel: 'gpt-6-sol', currentEffort: 'medium', models, ...(lean ? { lean } : {}) });
+    const pick = (choice: string, confidence: number, lean?: 'low' | 'high') => applyPolicy({ ...base(), provider: 'codex' }, cx(lean), { model: { choice, confidence } }, []);
+    expect(leanBars('medium', 'codex').modelUp).toBe(0.5);
+    expect(leanBars('low', 'codex').modelUp).toBe(0.65);
+    expect(leanBars('high', 'codex').modelUp).toBe(0.4);
+    for (const l of ['low', 'medium', 'high'] as const) {
+      expect(leanBars(l, 'codex')).toMatchObject({ modelDown: LEAN_BARS[l].modelDown, effortUp: LEAN_BARS[l].effortUp, effortDown: LEAN_BARS[l].effortDown });
+      expect(leanBars(l, 'claude')).toEqual(LEAN_BARS[l]);
+    }
+    expect(pick('gpt-6-astra', 0.52).model).toBe('gpt-6-astra');
+    expect(pick('gpt-6-astra', 0.48).notes.join()).toMatch(/needs 50%/);
+    expect(pick('gpt-6-astra', 0.62, 'low').model).toBeUndefined();
+    expect(pick('gpt-6-astra', 0.42, 'high').model).toBe('gpt-6-astra');
+    // Down: still 65% at medium.
+    expect(pick('gpt-6-luna', 0.6).model).toBeUndefined();
+    expect(pick('gpt-6-luna', 0.66).model).toBe('gpt-6-luna');
+    // Claude: opus over sonnet still needs 60%.
+    expect(applyPolicy(base(), input({ currentModel: 'sonnet' }), { model: { choice: 'opus', confidence: 0.55 } }, []).model).toBeUndefined();
+  });
+
   it('applies a confident effort, and a model only above the higher bar', () => {
     const cur = input({ currentModel: 'sonnet' });
     const d = applyPolicy(base(), cur, { effort: { choice: 'low', confidence: 0.9 }, model: { choice: 'opus', confidence: 0.95 } }, []);

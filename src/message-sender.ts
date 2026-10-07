@@ -37,12 +37,16 @@ export function readMessageSender(text: string): { text: string; sender?: Messag
  * process every turn. It sits before the sender marker, which must stay last.
  */
 export const TEAM_LINE_PREFIX = '[Agent team this turn: ';
-const TEAM_LINE = /\n\n\[Agent team this turn: [^\n]*\]\s*$/;
+/** The advisor's per-turn line (Claude, advisor on), same mechanism. */
+export const ADVISOR_LINE_PREFIX = '[Advisor on: ';
+// Either line, or both stacked, at the end (before the sender marker).
+const TEAM_LINE = /(?:\n\n\[(?:Agent team this turn|Advisor on): [^\n]*\])+\s*$/;
 export function withTeamLine(text: string, line: string | undefined): string {
   if (!line || text.trimStart().startsWith('/')) return text;
   const r = readMessageSender(text);
   return r.sender ? r.text + '\n\n' + line + text.slice(r.text.length) : text + '\n\n' + line;
 }
+/** Removes the team line and the advisor line (whichever are there). */
 export function stripTeamLine(text: string): string {
   return text.replace(TEAM_LINE, '');
 }

@@ -39,6 +39,63 @@ describe('TurnWatcher: the three moments', () => {
   });
 });
 
+const say = (text: string) => ({ type: 'item.completed', item: { type: 'agent_message', text } });
+const edit = { type: 'item.completed', item: { type: 'file_change', changes: [{ path: 'a.ts' }] } };
+
+// Codex never calls update_plan, so `plan` never fired: checkpoints do not need it.
+describe('TurnWatcher: checkpoints', () => {
+  const MIN = 60_000;
+  const watch = (opts: Partial<ConstructorParameters<typeof TurnWatcher>[2]> = {}) => {
+    let now = 0;
+    const fired: string[] = [];
+    const w = new TurnWatcher('long task', (t) => fired.push(t), { reviewDone: true, now: () => now, ...opts });
+    return { w, fired, at: (ms: number) => { now = ms; } };
+  };
+
+  it('fires the first once the agent has spoken and run 5 commands, without a plan', () => {
+    const { w, fired } = watch();
+    for (let i = 0; i < 5; i++) w.observe(cmd('ls ' + i, 0));
+    expect(fired).toEqual([]); // commands, but no agent message yet
+    w.observe(say('Looking at the auth flow.'));
+    expect(fired).toEqual(['checkpoint']);
+    w.observe(cmd('ls 6', 0));
+    expect(fired).toEqual(['checkpoint']);
+  });
+
+  it('then every 25 minutes or 40 items, never closer than 5 minutes, capped at 4 apart from the other triggers', () => {
+    const { w, fired, at } = watch();
+    w.observe(say('start')); for (let i = 0; i < 5; i++) w.observe(cmd('ls ' + i, 0));
+    expect(fired).toEqual(['checkpoint']);
+    // 40 items in under 5 minutes: held by the minimum gap.
+    at(4 * MIN); for (let i = 0; i < 45; i++) w.observe(edit);
+    expect(fired).toHaveLength(1);
+    at(5 * MIN); w.observe(edit);
+    expect(fired).toHaveLength(2);
+    // Few items, but 25 minutes on.
+    at(29 * MIN); w.observe(edit);
+    expect(fired).toHaveLength(2);
+    at(30 * MIN); w.observe(edit);
+    expect(fired).toHaveLength(3);
+    // plan / stuck / done still have their own three.
+    w.observe(plan); w.observe(cmd('x', 1)); w.observe(cmd('x', 1));
+    at(60 * MIN); w.observe(edit);
+    at(120 * MIN); w.observe(edit);
+    w.observe({ type: 'turn.completed' });
+    expect(fired.filter((t) => t === 'checkpoint')).toHaveLength(4);
+    expect(fired.filter((t) => t !== 'checkpoint')).toEqual(['plan', 'stuck', 'done']);
+  });
+
+  it('can be limited to some triggers (delegates: stuck + checkpoint) or turned off', () => {
+    const d = watch({ reviewDone: false, triggers: ['stuck', 'checkpoint'] });
+    d.w.observe(plan); d.w.observe(say('go')); for (let i = 0; i < 5; i++) d.w.observe(cmd('y', 1));
+    d.w.observe({ type: 'turn.completed' });
+    expect(d.fired).toEqual(['stuck', 'checkpoint']);
+    const off = watch({ checkpoint: false });
+    off.w.observe(say('go')); for (let i = 0; i < 10; i++) off.w.observe(cmd('ls', 0));
+    expect(off.fired).toEqual([]);
+  });
+});
+
 const fakeExec = (answer: unknown, extra: Partial<{ code: number; timedOut: boolean }> = {}): AdvisorExec => async (_dir, args) => {
   const out = args[args.indexOf('-o') + 1];
   if (answer !== undefined) writeFileSync(out, JSON.stringify(answer));
@@ -105,5 +162,43 @@ describe('SessionManager: the ChatGPT advisor end to end', () => {
     expect(consult.mock.calls.filter((c) => c[1].trigger === 'done')).toHaveLength(1);
     expect(seen.filter((e) => e.kind === 'advisor_consult').map((e) => e.data.delivered)).toEqual(['steered', 'steered', 'queued']);
     expect(mgr.codexAdvisor().consultations(sid)).toHaveLength(3);
+  });
+
+  it('steers a checkpoint into the running turn, whether the steer answers a boolean or a promise', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-advc-')), stateDir = join(dir, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'g', configDir: join(dir, 'g'), provider: 'codex' }]);
+    let release: () => void = () => {};
+    let n = 0;
+    const runSessionFn = (async (o: RunSessionOptions) => {
+      if (++n >= 2) {
+        o.tap?.(say('Mapping the code first.') as never);
+        for (let i = 0; i < 5; i++) o.tap?.(cmd('rg auth ' + i, 0) as never);
+        await new Promise<void>((r) => { release = r; });
+      }
+      return { status: 'completed', finalAccount: 'g', failovers: 0 } as SessionResult;
+    }) as unknown as typeof import('../src/failover.js').runSession;
+    const mgr = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+    const p = mgr.createProject('C', dir, 'codex');
+    const sid = mgr.start('first', undefined, undefined, p.id);
+    for (let i = 0; i < 100 && mgr.snapshot().running; i++) await new Promise((r) => setTimeout(r, 10));
+    mgr.setHelpers(p.id, sid, { advisor: true, router: 'none' });
+    vi.spyOn(mgr.codexAdvisor(), 'consult').mockImplementation(async (_s, input) => ({
+      at: new Date().toISOString(), sessionId: sid, trigger: input.trigger, model: input.model, latencyMs: 5, delivered: 'none', verdict: 'adjust', advice: 'Check the session middleware first.',
+    }));
+    // The steer may become async (a transport ack): a Promise must count as its value.
+    const steer = vi.spyOn(mgr, 'steerSession').mockImplementation((() => Promise.resolve(false)) as never);
+    const seen: GatewayEvent[] = []; mgr.subscribe((e) => seen.push(e));
+    mgr.continueSession(p.id, sid, 'refactor auth', {});
+    for (let i = 0; i < 200 && !seen.some((e) => e.kind === 'advisor_consult'); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(steer).toHaveBeenCalledWith(p.id, sid, expect.stringMatching(/session middleware/), { humanOrigin: false });
+    expect(seen.find((e) => e.kind === 'advisor_consult')!.data).toMatchObject({ trigger: 'checkpoint', delivered: 'too-late' });
+    release();
+    for (let i = 0; i < 100 && mgr.snapshot().running; i++) await new Promise((r) => setTimeout(r, 10));
+    steer.mockReturnValue(true);
+    mgr.continueSession(p.id, sid, 'again', {});
+    for (let i = 0; i < 200 && seen.filter((e) => e.kind === 'advisor_consult').length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(seen.filter((e) => e.kind === 'advisor_consult')[1].data).toMatchObject({ trigger: 'checkpoint', delivered: 'steered' });
+    release();
   });
 });

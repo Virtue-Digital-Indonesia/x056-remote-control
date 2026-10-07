@@ -145,7 +145,19 @@ export const LEAN_BARS: Record<Lean, { effortUp: number; effortDown: number; mod
   medium: { effortUp: JEV_POLICY.effortMin, effortDown: JEV_POLICY.effortDownMin, modelUp: JEV_POLICY.modelMin, modelDown: JEV_POLICY.modelDownMin },
   high: { effortUp: 0.45, effortDown: 0.75, modelUp: 0.5, modelDown: 0.8 },
 };
-const LEAN_WORD: Record<Lean, string> = { low: 'leaning low', medium: '', high: 'leaning high' };
+/**
+ * Codex model picks run less sure than Claude's: over 2026-09-30..10-07 the
+ * median Codex model confidence was 0.42, and with the 60% raise bar only 10
+ * of 258 Codex picks moved the model (Claude: 50 of 336). So a Codex model
+ * RAISE needs 0.1 less at every lean (medium 60% -> 50%). Down bars stay as
+ * they are: a wrong downgrade is the costly mistake. Claude is unchanged.
+ */
+export const CODEX_MODEL_UP_RELIEF = 0.1;
+export function leanBars(lean: Lean, provider: 'claude' | 'codex'): (typeof LEAN_BARS)[Lean] {
+  const b = LEAN_BARS[lean];
+  return provider === 'codex' ? { ...b, modelUp: Math.round((b.modelUp - CODEX_MODEL_UP_RELIEF) * 100) / 100 } : b;
+}
+const LEAN_WORD: Record<Lean, string> ={ low: 'leaning low', medium: '', high: 'leaning high' };
 
 /** One small fork the agent team hands off (`quick_decision`): which file,
  *  which tool or subagent, retry or stop. SHARP = confident enough to follow;
@@ -462,7 +474,7 @@ export function applyPolicy(
 ): JevDecision {
   const out: JevDecision = { ...d, notes: [...d.notes], ...leanField(input.lean), ...autoField(input.auto) };
   const m = answers.model, e = answers.effort;
-  const lean: Lean = input.lean ?? 'medium', bars = LEAN_BARS[lean];
+  const lean: Lean = input.lean ?? 'medium', bars = leanBars(lean, input.provider);
   const leanNote = LEAN_WORD[lean] ? ', ' + LEAN_WORD[lean] : '';
   const autoModel = !!input.auto?.model, autoEffort = !!input.auto?.effort;
   let model = input.currentModel;
@@ -537,7 +549,7 @@ export function applySubagentPolicy(d: JevDecision, input: JevDecisionInput, ans
   const t = input.team;
   if (!t) return d;
   const out: JevDecision = { ...d, notes: [...d.notes] };
-  const lean: Lean = input.lean ?? 'medium', bars = LEAN_BARS[lean];
+  const lean: Lean = input.lean ?? 'medium', bars = leanBars(lean, input.provider);
   const leanNote = LEAN_WORD[lean] ? ', ' + LEAN_WORD[lean] : '';
   const baseModel = t.baseModel ?? d.model ?? input.currentModel;
   const team: TeamPick = { ...(baseModel ? { model: baseModel } : {}), effort: t.baseEffort, base: { ...(baseModel ? { model: baseModel } : {}), effort: t.baseEffort } };

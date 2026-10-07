@@ -88,6 +88,49 @@ describe('delegates on the gateway', () => {
     expect(f.mgr.listDelegates(pid, sid)[0]).toMatchObject({ id: d.id, working: true, status: 'working' });
   });
 
+  // Audit 2026-10-07: 230 delegate turns, no pick, no advisor.
+  it('works with its orchestrator\'s helpers: the picker (keyed per delegate) and the advisor', async () => {
+    const f = fixture(); const { pid, sid } = await orchestrator(f);
+    f.finish(sid, 'planned'); await tick();
+    f.mgr.setHelpers(pid, sid, { advisor: true, router: 'none', lean: 'high' });
+    vi.spyOn(f.mgr, 'routerFor').mockReturnValue('jev');
+    const decide = vi.spyOn(f.mgr.jev(), 'decide').mockImplementation(async (s, i) => ({ at: 't', sessionId: s, provider: i.provider, notes: ['model -> fable'], latencyMs: 1, baseModel: i.currentModel, model: 'fable', effort: 'high' }));
+    const d = f.mgr.startDelegate(pid, sid, { role: 'backend', brief: 'Fix the login test.', model: 'opus', effort: 'medium' });
+    await tick();
+    // Keyed by the delegate's own session; its saved model/effort are the base; the parent's lean.
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(decide.mock.calls[0][0]).toBe(d.sessionId);
+    expect(decide.mock.calls[0][1]).toMatchObject({ provider: 'claude', currentModel: 'opus', currentEffort: 'medium', lean: 'high', prompt: 'Fix the login test.' });
+    expect(decide.mock.calls[0][1].team).toBeUndefined();
+    // Applied like the main turn; the advisor follows the model it runs on.
+    const run = f.calls.at(-1)!;
+    expect(run).toMatchObject({ sessionId: d.sessionId, model: 'fable', effort: 'high', advisor: 'fable' });
+    expect(run.prompt).toMatch(/^Fix the login test\.\n\n\[Advisor on: /);
+    f.finish(d.sessionId, 'DONE\nfixed'); await tick();
+    // A Codex delegate: the gateway advisor, stuck + checkpoint only, steered into ITS turn.
+    const consult = vi.spyOn(f.mgr.codexAdvisor(), 'consult').mockImplementation(async (s, input) => ({ at: new Date().toISOString(), sessionId: s, trigger: input.trigger, model: input.model, latencyMs: 1, delivered: 'none', verdict: 'adjust', advice: 'Read the failing assertion.' }));
+    const inject = vi.spyOn(f.mgr as unknown as { injectIntoProcess(s: string, t: string): Promise<boolean> }, 'injectIntoProcess').mockResolvedValue(true);
+    const steer = vi.spyOn(f.mgr, 'steerSession');
+    const cx = f.mgr.startDelegate(pid, sid, { role: 'codex-side', brief: 'Port the parser.', provider: 'codex' });
+    await tick();
+    const cxRun = f.calls.at(-1)!;
+    expect(cxRun.sessionId).toBe(cx.sessionId);
+    expect(cxRun.advisor).toBeUndefined();
+    expect(cxRun.prompt).toBe('Port the parser.');
+    cxRun.tap?.({ type: 'item.completed', item: { type: 'agent_message', text: 'on it' } } as never);
+    for (let i = 0; i < 5; i++) cxRun.tap?.({ type: 'item.completed', item: { type: 'command_execution', command: 'make', exit_code: 2 } } as never);
+    cxRun.tap?.({ type: 'item.completed', item: { type: 'todo_list', items: [{ text: 'x' }] } } as never);
+    cxRun.tap?.({ type: 'turn.completed' } as never);
+    await tick();
+    expect(consult.mock.calls.map((c) => [c[0], c[1].trigger])).toEqual([[cx.sessionId, 'stuck'], [cx.sessionId, 'checkpoint']]);
+    expect(inject).toHaveBeenCalledWith(cx.sessionId, expect.stringMatching(/failing assertion/));
+    expect(steer).not.toHaveBeenCalled();
+    expect(f.mgr.codexAdvisor().consultations(cx.sessionId).map((c) => c.delivered)).toEqual(['steered', 'steered']);
+    expect(f.mgr.codexAdvisor().consultations(sid)).toEqual([]);
+    expect(decide.mock.calls.at(-1)![0]).toBe(cx.sessionId);
+    f.finish(cx.sessionId, 'DONE');
+  });
+
   it('holds "done" reports until the team is quiet, then wakes the orchestrator once', async () => {
     const f = fixture(); const { pid, sid } = await orchestrator(f);
     // Keep the orchestrator busy so its queue is inspectable.

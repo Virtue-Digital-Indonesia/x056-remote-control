@@ -2,7 +2,7 @@ import { codexTurnForAccount, currentCodexPrefs } from '../src/codex-model-polic
 import { currentClaudeModel } from '../src/claude-model-policy.js';
 import { checkFork, JEV_POLICY, JevService, type DecisionContext, type ForkDecision, type ForkInput, type JevDecision } from './jev.js';
 import { OpenAIDecisionsService } from './openai-decisions.js';
-import { claudeTeamAgents, codexTeamConfig, teamInstructions, teamTurnLine, TEAM_EFFORT } from './team.js';
+import { advisorTurnLine, claudeTeamAgents, codexTeamConfig, teamInstructions, teamTurnLine, TEAM_EFFORT } from './team.js';
 import { ClaudeAdvisorLog, buildTurns, forkSummary, mainRun, tailJsonl, teamRun } from './agent-tree.js';
 import { autoDismissible, checkBrief, checkRole, decideGate, isActive, delegateInstructions, DelegateStore, digest, GATE_OPTIONS, GATE_QUESTION, gateState, MAX_DELEGATES, reportKey, ROUND_LIMIT, shouldWake, type Delegate, type DelegateReport } from './delegates.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
@@ -1723,7 +1723,10 @@ export class SessionManager {
    *  mid-turn "adjust" is steered into the running turn; a post-turn "concern"
    *  becomes ONE queued follow-up from the Advisor (whose own turn is never
    *  reviewed again, so the two cannot loop). */
-  private async runCodexAdvisor(pid: string, sid: string, trigger: AdvisorTrigger, transcript: string, account: string | undefined, mainModel?: string, isCurrentTurn: () => boolean = () => this.runs.has(sid)): Promise<AdvisorConsult> {
+  /** A delegate's consultation passes `delegate`: its steer goes into the
+   *  delegate's own process, and the result goes to the delegate event log,
+   *  not into any conversation's events or journal. */
+  private async runCodexAdvisor(pid: string, sid: string, trigger: AdvisorTrigger, transcript: string, account: string | undefined, mainModel?: string, isCurrentTurn: () => boolean = () => this.runs.has(sid), delegate?: { parentSid: string; id: string; log: EventLog }): Promise<AdvisorConsult> {
     const codexAccounts = this.registry().list().filter((a) => a.provider === 'codex');
     const acct = codexAccounts.find((a) => a.name === account) ?? codexAccounts.find((a) => a.state?.kind === 'ok') ?? codexAccounts[0];
     const offered = getAdapter('codex').listModels?.(codexAccounts.map((a) => a.configDir)) ?? [];
@@ -1734,7 +1737,14 @@ export class SessionManager {
     if (!c.error && (c.verdict === 'adjust' || c.verdict === 'concern')) {
       const note = `[Advisor · ${model}] ${c.advice}`;
       // An advisor steer is not human: it keeps the relay and self brakes.
-      if (trigger !== 'done') c.delivered = isCurrentTurn() && this.steerSession(pid, sid, note, { humanOrigin: false }) ? 'steered' : 'too-late';
+      // `await Promise.resolve(...)`: a steer may answer synchronously or
+      // once the transport has acknowledged it.
+      if (trigger !== 'done') {
+        const steered = isCurrentTurn() && (delegate
+          ? await this.injectIntoProcess(sid, note)
+          : await Promise.resolve(this.steerSession(pid, sid, note, { humanOrigin: false })));
+        c.delivered = steered ? 'steered' : 'too-late';
+      } else if (delegate) c.delivered = 'none';
       else {
         try {
           this.enqueue(pid, { sessionId: sid, sender: { kind: 'advisor', projectName: model }, text: `The advisor (${model}) reviewed your work before you called it done:\n\n${c.advice}\n\nAddress this, or say briefly why it does not apply.` });
@@ -1743,8 +1753,17 @@ export class SessionManager {
       }
     }
     this.codexAdvisor().record(c);
-    this.emit('advisor_consult', { ...c, projectId: pid } as unknown as Record<string, unknown>);
+    if (delegate) delegate.log.append({ kind: 'advisor_consult', parentSessionId: delegate.parentSid, delegateId: delegate.id, ...c });
+    else this.emit('advisor_consult', { ...c, projectId: pid } as unknown as Record<string, unknown>);
     return c;
+  }
+
+  /** Steer text into a live process by its conversation key (a delegate has
+   *  no project conversation, so `steerSession` would refuse it). Works
+   *  whether a pool's injectMessage answers a boolean or a promise of one. */
+  private async injectIntoProcess(sessionId: string, text: string): Promise<boolean> {
+    for (const pool of this.pools()) if (await Promise.resolve(pool.injectMessage(sessionId, text))) return true;
+    return false;
   }
 
   private jevService?: JevService;
@@ -2025,30 +2044,67 @@ export class SessionManager {
     const log = new EventLog(join(this.opts.stateDir, 'delegate-events.jsonl'));
     const runFn = this.opts.runSessionFn ?? runSession;
     let providerSessionId = d.providerSessionId;
-    runFn({
-      registry: this.registry(),
-      accountLoads: () => this.accountLoads(d.sessionId),
-      analytics: new AccountAnalytics(this.opts.stateDir),
-      log,
-      sessionId: d.sessionId,
-      cwd: d.cwd,
-      prompt,
-      resume: d.turns > 0,
-      providerSessionId,
-      adapter,
-      claudePath: this.opts.claudePath,
-      model: d.model,
-      effort: d.effort,
-      advisor: d.advisor ? advisorFor(d.provider, d.model) : undefined,
-      appendSystemPrompt: CONTAINER_SYSTEM_NOTE + '\n\n' + delegateInstructions(d.role),
-      mcp: this.mcpWiringForDelegate(parentPid, parentSid, d),
-      startTurnFn: this.turnStarter(adapter, log, d.sessionId, (o) => ({ ...o, onProviderActivity: () => this.emitDelegates(parentPid, parentSid), onIdleEvent: () => {} })),
-      control: (c) => { run.control = c; },
-      tap: (e: RawEvent) => {
-        const captured = adapter.captureSessionId?.(e);
-        if (captured && captured !== providerSessionId) { providerSessionId = captured; try { store.update(parentPid, parentSid, d.id, { providerSessionId: captured }); } catch { /* stopped meanwhile */ } }
-      },
-    })
+    // A delegate works with its orchestrator's helpers (audit 2026-10-07: 230
+    // delegate turns had no pick and no advisor). The picker is the parent's
+    // effective one, with its lean; the decisions are keyed by the DELEGATE's
+    // session, so the Claude switching gap counts its own process. Its saved
+    // model/effort are the "saved choice". No team: one level deep.
+    const parent = helpersOf(this.projects().get(parentPid)?.conversations?.find((c) => c.sessionId === parentSid));
+    const router = prompt.trimStart().startsWith('/') ? undefined : this.routerFor(parent);
+    const advisorOn = !!d.advisor || !!parent.advisor;
+    const advisorLine = advisorOn ? advisorTurnLine(d.provider) : undefined;
+    // ChatGPT: the gateway's advisor watches for repeated failures and
+    // checkpoints only. No done-review: its follow-up would be one more
+    // delegate turn, reviewed again. Steers land in this delegate's turn.
+    const watcher = advisorOn && d.provider === 'codex'
+      ? new TurnWatcher(cleanMemorySource(prompt), (trigger, transcript) => {
+          void this.runCodexAdvisor(parentPid, d.sessionId, trigger, transcript, d.account, d.model, () => this.delegateRuns.get(d.sessionId) === run, { parentSid, id: d.id, log }).catch(() => {});
+        }, { reviewDone: false, triggers: ['stuck', 'checkpoint'] })
+      : undefined;
+    const start = async (): Promise<SessionResult> => {
+      let model = d.model, effort = d.effort;
+      if (router) {
+        const target = this.projects().get(d.projectId);
+        const last = d.lastReport;
+        const context: DecisionContext = { project: target?.name, origin: prompt.startsWith('[From the user, directly]') ? 'the user, to a delegate worker' : 'the orchestrator (a delegate worker\'s brief)',
+          ...(d.turns > 0 ? { previousRequest: d.brief.slice(0, 1200) } : {}),
+          ...(last?.text ? { previousReply: last.text.slice(-1500) } : {}),
+          ...(last?.durationMs ? { lastTurn: last.durationMs >= 60000 ? Math.round(last.durationMs / 60000) + ' min' : Math.round(last.durationMs / 1000) + ' s' } : {}) };
+        const dec = await this.decideModelEffort(router, parentPid, parentSid, d.provider, cleanMemorySource(prompt), d.model, d.effort, undefined, false,
+          { decisionSid: d.sessionId, context, title: `delegate ${d.role}` });
+        log.append({ kind: 'jev_decision', parentSessionId: parentSid, delegateId: d.id, ...dec });
+        model = dec.model ?? (dec.auto?.model ? dec.baseModel : undefined) ?? d.model;
+        if (dec.effort) effort = dec.effort;
+      }
+      if (run.stopRequested) return { status: 'stopped', failovers: 0, reason: 'Stopped before the turn started.' };
+      return runFn({
+        registry: this.registry(),
+        accountLoads: () => this.accountLoads(d.sessionId),
+        analytics: new AccountAnalytics(this.opts.stateDir),
+        log,
+        sessionId: d.sessionId,
+        cwd: d.cwd,
+        prompt: withTeamLine(prompt, advisorLine),
+        resume: d.turns > 0,
+        providerSessionId,
+        adapter,
+        claudePath: this.opts.claudePath,
+        model,
+        effort,
+        // From the model the turn runs on, after the pick (Fable -> fable).
+        advisor: advisorOn ? advisorFor(d.provider, model) : undefined,
+        appendSystemPrompt: CONTAINER_SYSTEM_NOTE + '\n\n' + delegateInstructions(d.role),
+        mcp: this.mcpWiringForDelegate(parentPid, parentSid, d),
+        startTurnFn: this.turnStarter(adapter, log, d.sessionId, (o) => ({ ...o, onProviderActivity: () => this.emitDelegates(parentPid, parentSid), onIdleEvent: () => {} })),
+        control: (c) => { run.control = c; },
+        tap: (e: RawEvent) => {
+          watcher?.observe(e);
+          const captured = adapter.captureSessionId?.(e);
+          if (captured && captured !== providerSessionId) { providerSessionId = captured; try { store.update(parentPid, parentSid, d.id, { providerSessionId: captured }); } catch { /* stopped meanwhile */ } }
+        },
+      });
+    };
+    start()
       .then((res) => this.settleDelegate(parentPid, parentSid, d.id, run, run.stopRequested ? 'stopped' : res.status === 'completed' ? 'completed' : 'failed', (res.resultText || res.reason || '').trim(), res.providerSessionId ?? providerSessionId, res.finalAccount))
       .catch((err: unknown) => this.settleDelegate(parentPid, parentSid, d.id, run, run.stopRequested ? 'stopped' : 'failed', (err as Error).message, providerSessionId));
   }
@@ -2153,15 +2209,18 @@ export class SessionManager {
    *  called a pick "unchanged" that the turn did not have, and the turn ran on
    *  the saved effort instead (seen live: medium at 71% became xhigh). The
    *  store is shared by both backends, so the switching gap counts either. */
-  private async decideModelEffort(backend: 'jev' | 'decisions', pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string, sender?: MessageSender, withTeam = false): Promise<JevDecision> {
-    const history = this.jev().decisions(sid);
+  private async decideModelEffort(backend: 'jev' | 'decisions', pid: string, sid: string, provider: 'claude' | 'codex', prompt: string, model?: string, effort?: string, sender?: MessageSender, withTeam = false, delegate?: { decisionSid: string; context: DecisionContext; title?: string }): Promise<JevDecision> {
+    // A delegate's picks are keyed by ITS session (its own process, so its
+    // own switching gap); title, lean and project come from the orchestrator.
+    const keySid = delegate?.decisionSid ?? sid;
+    const history = this.jev().decisions(keySid);
     const previousModel = history.at(-1)?.model;
-    const context = this.decisionContext(pid, sid, sender);
+    const context = delegate?.context ?? this.decisionContext(pid, sid, sender);
     const codexModels = provider === 'codex'
       ? (getAdapter('codex').listModels?.(this.registry().list().filter((a) => a.provider === 'codex').map((a) => a.configDir)) ?? [])
       : [];
     const { models, efforts } = jevCandidates(provider, codexModels);
-    const title = this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)?.title;
+    const title = delegate?.title ?? this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)?.title;
     const lean = helpersOf(this.projects().get(pid)?.conversations?.find((c) => c.sessionId === sid)).lean;
     // Auto model / Auto effort: the pick decides. The model a turn starts from
     // (and falls back to if the pick fails) is what the last routed turn ran
@@ -2178,7 +2237,7 @@ export class SessionManager {
     // The agent team on: its subagents' model/effort too, in the same call.
     const team = withTeam ? teamCandidates(provider, models, TEAM_EFFORT) : undefined;
     const input = { provider, prompt, title, currentModel: current, currentEffort: effort, previousModel, models, efforts, context, auto, ...(lean ? { lean } : {}), ...(baselineEffort ? { baselineEffort } : {}), ...(team ? { team } : {}) };
-    return backend === 'decisions' ? this.openaiDecisions().decide(sid, input) : this.jev().decide(sid, input);
+    return backend === 'decisions' ? this.openaiDecisions().decide(keySid, input) : this.jev().decide(keySid, input);
   }
   /** A generated title for this CHAT is queued or being written right now. */
   titlePending(pid: string, sid: string): boolean {
@@ -3358,21 +3417,30 @@ export class SessionManager {
       // the CLI's own default, which is the frontier model. (Only with a
       // key: without one no default picker ever saved an Auto.)
       const autoFallback = !router && !model && this.jev().configured() && !prompt.trimStart().startsWith('/') ? AUTO_MODEL[adapter.id as 'claude' | 'codex'] : undefined;
+      // The per-turn lines ride in THIS turn's message, never in the system
+      // prompt or --agents (process identity: it would respawn per turn).
+      // Team: the picked team model/effort, Codex's explicit ask, Claude's
+      // fork hint. Advisor (Claude): when to consult it.
+      const forks = !!team && !!this.forkBackend(helpers);
+      const advisorLine = advisor ? advisorTurnLine(adapter.id) : undefined;
+      const withLines = (p: string, teamLine?: string) => withTeamLine(withTeamLine(p, teamLine), advisorLine);
+      // The advisor that actually runs: chosen from the model the turn runs
+      // on AFTER the pick. Chosen from the saved one, a Fable pick on a
+      // conversation saved as Opus ran `--advisor opus` on a Fable main,
+      // which Claude Code silently runs WITHOUT an advisor.
+      let turnAdvisor = advisor;
       const runWith: typeof runFn = router
         ? (async (o: Parameters<typeof runFn>[0]) => {
             const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort, sender, !!team);
             emit('jev_decision', d as unknown as Record<string, unknown>);
             // On Auto a failed pick still runs on the Auto baseline it started from.
             const useModel = d.model ?? (d.auto?.model ? d.baseModel : undefined);
-            // The team's pick rides in THIS turn's message, never in the system
-            // prompt or --agents (process identity: it would respawn per turn).
-            const teamLine = team ? teamTurnLine(adapter.id, d.team && !d.error ? d.team : undefined, d.backend === 'openai' ? 'openai' : 'jev') : undefined;
-            return runFn({ ...o, ...(teamLine ? { prompt: withTeamLine(o.prompt, teamLine) } : {}), ...(useModel ? { model: useModel } : {}), ...(d.effort ? { effort: d.effort } : {}) });
+            if (advisor && useModel) turnAdvisor = advisorFor(adapter.id as 'claude' | 'codex', useModel);
+            const teamLine = team ? teamTurnLine(adapter.id, d.team && !d.error ? d.team : undefined, d.backend === 'openai' ? 'openai' : 'jev', { forks }) : undefined;
+            return runFn({ ...o, prompt: withLines(o.prompt, teamLine), ...(useModel ? { model: useModel } : {}), ...(d.effort ? { effort: d.effort } : {}), ...(turnAdvisor !== advisor ? { advisor: turnAdvisor } : {}) });
           }) as typeof runFn
         // No picker: Codex still needs the explicit ask (see teamTurnLine).
-        : team && adapter.id === 'codex'
-          ? ((o: Parameters<typeof runFn>[0]) => runFn({ ...o, prompt: withTeamLine(o.prompt, teamTurnLine('codex')) })) as typeof runFn
-          : runFn;
+        : ((o: Parameters<typeof runFn>[0]) => runFn({ ...o, prompt: withLines(o.prompt, team ? teamTurnLine(adapter.id, undefined, 'jev', { forks }) : undefined) })) as typeof runFn;
       if (advisor) emit('advisor_state', { advisor, model: model ?? null });
       // ChatGPT has no advisor of its own; the gateway watches the turn.
       const watcher = helpers.advisor && adapter.id === 'codex'
@@ -3434,13 +3502,13 @@ export class SessionManager {
           // Claude's advisor, live: a card while it reviews, its outcome after.
           if (advisor && e.type === 'assistant') {
             for (const b of ((e as { message?: { content?: unknown[] } }).message?.content ?? []) as { type?: string; name?: string; content?: { type?: string; error_code?: string } }[]) {
-              if (b.type === 'server_tool_use' && b.name === 'advisor') emit('advisor_call', { phase: 'start', model: advisor });
+              if (b.type === 'server_tool_use' && b.name === 'advisor') emit('advisor_call', { phase: 'start', model: turnAdvisor });
               if (b.type === 'advisor_tool_result') {
                 const t = b.content?.type ?? '';
                 const status = /error|unavailable/.test(t) ? 'unavailable' : /declin/.test(t) ? 'declined' : 'reviewed';
-                emit('advisor_call', { phase: 'done', model: advisor, status, ...(b.content?.error_code ? { error: b.content.error_code } : {}) });
+                emit('advisor_call', { phase: 'done', model: turnAdvisor, status, ...(b.content?.error_code ? { error: b.content.error_code } : {}) });
                 // The agent tree counts these; the stream is the only place they show.
-                try { this.claudeAdvisorLog().record(sessionId, { at: new Date().toISOString(), model: advisor, status, ...(b.content?.error_code ? { error: b.content.error_code } : {}) }); } catch { /* never break the stream */ }
+                try { this.claudeAdvisorLog().record(sessionId, { at: new Date().toISOString(), model: turnAdvisor ?? advisor, status, ...(b.content?.error_code ? { error: b.content.error_code } : {}) }); } catch { /* never break the stream */ }
               }
             }
           }

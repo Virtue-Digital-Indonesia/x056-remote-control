@@ -20,7 +20,7 @@ import type { RawEvent } from '../src/types.js';
  * consultation would write a rollout into the store all accounts share.
  */
 
-export type AdvisorTrigger = 'plan' | 'stuck' | 'done';
+export type AdvisorTrigger = 'plan' | 'stuck' | 'done' | 'checkpoint';
 export interface AdvisorConsult {
   at: string;
   sessionId: string;
@@ -43,6 +43,7 @@ export type AdvisorExec = (configDir: string, args: string[], timeoutMs: number)
 const QUESTIONS: Record<AdvisorTrigger, { ask: string; verdicts: [string, string] }> = {
   plan: { ask: 'The agent has just made its plan for this task. Is this the right approach? Use "proceed" if it is sound; "adjust" with the one concrete change it should make if not.', verdicts: ['proceed', 'adjust'] },
   stuck: { ask: 'A command keeps failing. Is the agent digging in the wrong place? Use "proceed" if its next step is still right; "adjust" with what to check or do instead.', verdicts: ['proceed', 'adjust'] },
+  checkpoint: { ask: 'The agent is partway through a long task and nobody has reviewed it yet. Is it still on the right track: the right files, the right approach, nothing it is about to break or forget? Use "proceed" if so; "adjust" with the one concrete change it should make now.', verdicts: ['proceed', 'adjust'] },
   done: { ask: 'The agent has declared the task done. What did it miss? Use "looks_good" if nothing important is missing; "concern" with the specific gap it should fix.', verdicts: ['looks_good', 'concern'] },
 };
 
@@ -118,9 +119,35 @@ const defaultExec: AdvisorExec = (configDir, args, timeoutMs) => new Promise((re
 });
 
 /**
+ * Mid-turn checkpoints that do not depend on `update_plan`: Codex never calls
+ * it (0 plan updates in 550 rollouts, 2026-10-07), so `plan` never fired and
+ * 29 of 36 Codex turns over 30 min got no advice until the final review. The
+ * first checkpoint comes once the agent has said something and run
+ * `firstAfterCommands` commands; later ones every `everyMs` or every
+ * `everyItems` completed items, whichever comes first, never closer together
+ * than `minGapMs`. They have their own per-turn cap, apart from plan/stuck/done.
+ */
+export interface CheckpointPolicy { firstAfterCommands: number; everyMs: number; everyItems: number; minGapMs: number; cap: number }
+export const CHECKPOINT_POLICY: CheckpointPolicy = { firstAfterCommands: 5, everyMs: 25 * 60_000, everyItems: 40, minGapMs: 5 * 60_000, cap: 4 };
+
+export interface TurnWatcherOptions {
+  /** Review the finished turn (`done`). Off for an advisor-started turn and
+   *  for delegates, whose follow-up would be one more turn. */
+  reviewDone: boolean;
+  /** Cap for plan / stuck / done together (default 3). */
+  cap?: number;
+  /** Which triggers may fire at all (default: every one). */
+  triggers?: AdvisorTrigger[];
+  /** The checkpoint schedule; `false` turns checkpoints off. */
+  checkpoint?: Partial<CheckpointPolicy> | false;
+  now?: () => number;
+}
+
+/**
  * Watches one turn's events (the flat `codex exec --json` shape the Codex
  * transport already produces) and says when to consult. At most `cap`
- * consultations per turn, and each trigger fires once.
+ * plan/stuck/done consultations per turn, each once; checkpoints are counted
+ * apart (`CHECKPOINT_POLICY.cap`).
  */
 export class TurnWatcher {
   private lines: string[] = [];
@@ -128,17 +155,29 @@ export class TurnWatcher {
   private failures = new Map<string, number>();
   private consecutiveFailures = 0;
   private count = 0;
-  constructor(request: string, private readonly onTrigger: (trigger: AdvisorTrigger, transcript: string) => void, private readonly opts: { reviewDone: boolean; cap?: number } = { reviewDone: true }) {
+  private readonly now: () => number;
+  private readonly cp?: CheckpointPolicy;
+  private sawAgentMessage = false;
+  private commands = 0;
+  private itemsSinceCheckpoint = 0;
+  private lastCheckpointAt = 0;
+  private checkpoints = 0;
+  constructor(request: string, private readonly onTrigger: (trigger: AdvisorTrigger, transcript: string) => void, private readonly opts: TurnWatcherOptions = { reviewDone: true }) {
     this.lines.push('USER REQUEST: ' + clip(request, 4000));
+    this.now = opts.now ?? Date.now;
+    if (opts.checkpoint !== false && this.allowed('checkpoint')) this.cp = { ...CHECKPOINT_POLICY, ...(opts.checkpoint ?? {}) };
   }
+
+  private allowed(t: AdvisorTrigger): boolean { return !this.opts.triggers || this.opts.triggers.includes(t); }
 
   observe(e: RawEvent): void {
     const t = String(e.type ?? '');
     if (t === 'turn.completed') { if (this.opts.reviewDone) this.fire('done'); return; }
     if (t !== 'item.completed') return;
     const it = (e.item ?? {}) as Record<string, unknown>;
+    this.itemsSinceCheckpoint++;
     switch (String(it.type ?? '')) {
-      case 'agent_message': this.lines.push('AGENT: ' + clip(String(it.text ?? ''), 1500)); break;
+      case 'agent_message': this.lines.push('AGENT: ' + clip(String(it.text ?? ''), 1500)); this.sawAgentMessage = true; break;
       case 'reasoning': break;
       case 'plan': case 'todo_list': {
         const items = Array.isArray(it.items) ? (it.items as { text?: string; step?: string; completed?: boolean; status?: string }[]).map((x) => '- ' + (x.text ?? x.step ?? '')).join('\n') : clip(String(it.text ?? ''), 1500);
@@ -150,6 +189,7 @@ export class TurnWatcher {
         const cmd = Array.isArray(it.command) ? (it.command as unknown[]).map(String).join(' ') : String(it.command ?? '');
         const code = typeof it.exit_code === 'number' ? it.exit_code : undefined;
         this.lines.push(`AGENT RAN: ${clip(cmd, 400)} -> exit ${code ?? '?'}\n` + clip(String(it.aggregated_output ?? ''), 600));
+        this.commands++;
         if (code !== undefined && code !== 0) {
           const key = cmd.replace(/\s+/g, ' ').trim();
           const n = (this.failures.get(key) ?? 0) + 1;
@@ -166,6 +206,19 @@ export class TurnWatcher {
       }
       default: break;
     }
+    this.maybeCheckpoint();
+  }
+
+  private maybeCheckpoint(): void {
+    const cp = this.cp;
+    if (!cp || this.checkpoints >= cp.cap) return;
+    const now = this.now(), since = now - this.lastCheckpointAt;
+    const due = this.checkpoints === 0
+      ? this.sawAgentMessage && this.commands >= cp.firstAfterCommands
+      : since >= cp.minGapMs && (since >= cp.everyMs || this.itemsSinceCheckpoint >= cp.everyItems);
+    if (!due) return;
+    this.checkpoints++; this.lastCheckpointAt = now; this.itemsSinceCheckpoint = 0;
+    this.onTrigger('checkpoint', this.transcript());
   }
 
   transcript(): string {
@@ -181,7 +234,7 @@ export class TurnWatcher {
   }
 
   private fire(trigger: AdvisorTrigger): void {
-    if (this.fired.has(trigger) || this.count >= (this.opts.cap ?? 3)) return;
+    if (!this.allowed(trigger) || this.fired.has(trigger) || this.count >= (this.opts.cap ?? 3)) return;
     this.fired.add(trigger); this.count++;
     this.onTrigger(trigger, this.transcript());
   }

@@ -738,7 +738,7 @@
           body.appendChild((a.calls || []).length ? cl : el('p', 'ap-empty', 'No advisor calls yet.'));
         } else {
           var cons = Array.isArray(c.data) && c.data.length ? c.data : (a.calls || []);
-          var TRIG = { plan: 'Before a plan', stuck: 'An error repeats', done: 'Before done' };
+          var TRIG = { plan: 'Before a plan', stuck: 'An error repeats', checkpoint: 'Checkpoint', done: 'Before done' };
           var ul = el('ol', 'ap-list');
           cons.slice().reverse().forEach(function (x) {
             var li = el('li', 'ap-card');
@@ -913,7 +913,7 @@
   var FAST_MS = 3000, SLOW_MS = 15000, SUBS_MIN_MS = 5000, RUNS_MIN_MS = 4000, REPORTS_MIN_MS = 8000, LOG_MAX = 15, FORKS_SHOWN = 4;
   var EVENTS = ['jev_fork', 'jev_decision', 'advisor_call', 'advisor_consult', 'delegate_update', 'delegate_report', 'turn_state', 'session_done'];
   var EFFORT_LEVEL = { minimal: 1, low: 1, medium: 2, high: 3, xhigh: 4, max: 4 };
-  var CHECKPOINTS = [['plan', 'before a plan'], ['stuck', 'error repeats'], ['done', 'before done']];
+  var CHECKPOINTS = [['plan', 'before a plan'], ['stuck', 'error repeats'], ['checkpoint', 'checkpoint'], ['done', 'before done']];
   var VERDICT = { proceed: 'proceed', adjust: 'adjust', looks_good: 'looks good', concern: 'concern' };
   // Every value the server can send, each with its own glyph and words.
   var SUB_STATUS = { running: ['◐', 'running'], done: ['✓', 'done'], ended: ['⊘', 'ended · no result'], stopped: ['■', 'stopped'], failed: ['✕', 'failed'], unknown: ['◌', 'status unknown'] };
