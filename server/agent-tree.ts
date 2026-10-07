@@ -171,13 +171,13 @@ export function inTurn(
  * have happened after it), else stays open.
  */
 export function buildTurns(
-  rows: { role: string; ts?: string; text: string; messageId?: string }[],
+  rows: { role: string; ts?: string; text: string; messageId?: string; steered?: boolean }[],
   ends: string[],
   running: boolean,
   fallbackEnd?: string,
   limit = 50,
 ): TurnWindow[] {
-  const prompts = rows.filter((r) => r.role === 'user' && r.ts && Number.isFinite(Date.parse(r.ts)))
+  const prompts = rows.filter((r) => r.role === 'user' && !r.steered && r.ts && Number.isFinite(Date.parse(r.ts)))
     .sort((a, b) => Date.parse(a.ts!) - Date.parse(b.ts!))
     .slice(-limit);
   return prompts.map((r, i) => {

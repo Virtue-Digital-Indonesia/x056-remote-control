@@ -19,6 +19,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
       {role:'assistant',text:'I will incorporate those findings.'},
       {role:'user',text:'Run the daily status check.',sender:{kind:'automation',messageId:'scheduled'}},
       {role:'user',text:'Continue the remaining work.',sender:{kind:'autopilot',messageId:'autopilot'}},
+      {role:'user',text:'Use the new tokens file.',sender:{...sender,messageId:'steer-hist'},messageId:'steer-hist',steered:true},
     ].map(row=>({...row,ts:new Date().toISOString()}));
     let target;
     await page.route('**/api/conversations/history-page?*', async route => {
@@ -32,7 +33,8 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
     assert.equal(await page.locator('#chat .msg.user:not(.from-sender) .role').textContent(),'you');
     assert.equal(await page.locator('#chat .message-sender strong').first().textContent(),sender.conversationTitle);
     assert.equal(await page.locator('#chat .message-sender small').first().textContent(),sender.projectName);
-    assert.equal(await page.locator('#chat .message-sender').count(),3);
+    assert.equal(await page.locator('#chat .message-sender').count(),4);
+    assert.equal(await page.locator('[data-message-source-id="steer-hist"] .steer-tag').textContent(),'Steered into the running turn');
     const event={...target,sender,displayPrompt:rows[1].text,resume:true};
     await page.evaluate(data => {for(let i=0;i<2;i++) window.__source.dispatchEvent(new MessageEvent('session_started',{data:JSON.stringify({data})}));},event);
     assert.equal(await page.locator('[data-message-source-id="sender-test"]').count(),1,'replayed live event cannot duplicate history');
@@ -40,6 +42,13 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
     assert.equal(await page.locator('[data-message-source-id="live-new"]').count(),1);
     assert.equal(await page.locator('[data-message-source-id="live-new"] img').count(),0);
     assert.match(await page.locator('[data-message-source-id="live-new"] strong').textContent(),/<img/);
+    // An AI steer into the running turn arrives as its own event, with the sender label.
+    const steer={...target,text:'Stop: the bug is in parse().',messageId:'steer-live',sender:{kind:'delegate',messageId:'steer-live',conversationTitle:'backend',projectName:'Delegate'}};
+    await page.evaluate(data => {for(let i=0;i<2;i++) window.__source.dispatchEvent(new MessageEvent('steered',{data:JSON.stringify({data})}));},steer);
+    assert.equal(await page.locator('[data-message-source-id="steer-live"]').count(),1,'a replayed steer cannot duplicate');
+    assert.equal(await page.locator('[data-message-source-id="steer-live"] .message-sender strong').textContent(),'backend');
+    assert.equal(await page.locator('[data-message-source-id="steer-live"] .steer-tag').textContent(),'Steered into the running turn');
+    assert(await page.locator('[data-message-source-id="steer-live"]').evaluate(el=>el.classList.contains('steered')));
     for(const theme of ['dark','light']) {
       await page.emulateMedia({colorScheme:theme});
       await page.waitForTimeout(200);
@@ -52,8 +61,8 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
     await page.reload();
     await page.locator('.cr-task').filter({hasText:'Update the component library'}).click();
     await page.locator('#chat [data-message-source-id="sender-test"]').waitFor();
-    assert.equal(await page.locator('#chat .message-sender').count(),3);
+    assert.equal(await page.locator('#chat .message-sender').count(),4);
     assert.deepEqual(errors,[]);
-    console.log('PASS sender labels, human label, automation/autopilot, live delivery and replay deduplication, refresh, escaped names and mobile fit');
+    console.log('PASS steered label (history + live event), human label, automation/autopilot, live delivery and replay deduplication, refresh, escaped names and mobile fit');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});

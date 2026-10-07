@@ -398,7 +398,7 @@ describe('steering a prompt into live work', () => {
     const { p, spawned } = pool();
     const h = p.startTurn(turn({ sessionId: 's1', mode: 'new', prompt: 'long task' }));
 
-    expect(p.injectMessage('s1', 'also do this')).toBe(true);
+    expect(await p.injectMessage('s1', 'also do this')).toBe(true);
     expect(spawned[0].cli.msgs().map((m) => m.message.content[0].text))
       .toEqual(['long task', 'also do this']);
 
@@ -412,13 +412,13 @@ describe('steering a prompt into live work', () => {
     spawned[0].cli.result('done');
     await h.done;
 
-    expect(p.injectMessage('s1', 'steer the background work')).toBe(true);
+    expect(await p.injectMessage('s1', 'steer the background work')).toBe(true);
     expect(spawned[0].cli.msgs().pop().message.content[0].text).toBe('steer the background work');
   });
 
-  it('refuses when there is no live process, so the caller can queue instead', () => {
+  it('refuses when there is no live process, so the caller can queue instead', async () => {
     const { p } = pool();
-    expect(p.injectMessage('never-started', 'hello')).toBe(false);
+    expect(await p.injectMessage('never-started', 'hello')).toBe(false);
   });
 
   it('counts as output, so the steered session cannot be evicted mid-write', () => {
@@ -452,7 +452,7 @@ describe('a session with more than one live process', () => {
     await h2.done;
 
     expect(spawned).toHaveLength(2); // two live entries, same sessionId
-    expect(p.injectMessage('s1', 'steer me')).toBe(true);
+    expect(await p.injectMessage('s1', 'steer me')).toBe(true);
 
     const steeredOld = spawned[0].cli.msgs().some((m) => m.message?.content?.[0]?.text === 'steer me');
     const steeredNew = spawned[1].cli.msgs().some((m) => m.message?.content?.[0]?.text === 'steer me');
@@ -512,7 +512,7 @@ describe('steering picks the right process', () => {
     t += 1_000;
     spawned[0].cli.result('stale background finished');
 
-    expect(p.injectMessage('s1', 'steer me')).toBe(true);
+    expect(await p.injectMessage('s1', 'steer me')).toBe(true);
     const got = (i: number) => spawned[i].cli.msgs().some((m) => m.message?.content?.[0]?.text === 'steer me');
     expect(got(0)).toBe(false);
     expect(got(1)).toBe(true);
@@ -525,7 +525,7 @@ describe('steering picks the right process', () => {
     await h.done;
 
     spawned[0].cli.stdin.destroyed = true; // died before 'close' was dispatched
-    expect(p.injectMessage('s1', 'steer me')).toBe(false);
+    expect(await p.injectMessage('s1', 'steer me')).toBe(false);
   });
 })
 

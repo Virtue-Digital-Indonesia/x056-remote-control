@@ -40,7 +40,7 @@ describe('Chat files HTTP', () => {
     const repeat = await json('/api/queue', queued); expect(repeat.status).toBe(200);
     const items = app.get(SessionManager).queues()[chat.id]; expect(items).toHaveLength(1); expect(items[0].fileRefs).toEqual(queued.fileRefs);
     expect(items[0].text).toBe('Use the attached files.');
-    const steer=vi.spyOn(app.get(SessionManager),'steerSession').mockReturnValue(true);
+    const steer=vi.spyOn(app.get(SessionManager),'steerSession').mockResolvedValue(true);
     try {
       const attachedSteer={...queued,requestId:'api-steer-files-0001',prompt:'Read this with the attachment'};
       const response=await json('/api/steer',attachedSteer);

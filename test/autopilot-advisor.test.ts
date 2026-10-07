@@ -80,7 +80,7 @@ describe('autopilot with the ChatGPT advisor', () => {
     await idle(mgr);
     mgr.setDecisionMaker(p.id, sid, 'advisor');
     consultAs(mgr, sid, (trigger) => trigger === 'plan' ? { verdict: 'adjust', advice: 'Check X.', delayMs: 250 } : { verdict: 'looks_good', advice: 'ok', delayMs: 1 });
-    const steer = vi.spyOn(mgr, 'steerSession').mockReturnValue(true);
+    const steer = vi.spyOn(mgr, 'steerSession').mockResolvedValue(true);
     mgr.continueSession(p.id, sid, 'turn two', {});
     await idle(mgr);
     mgr.continueSession(p.id, sid, 'turn three', {});
@@ -150,13 +150,13 @@ describe('steer origin and the relay brakes', () => {
     const sid = mgr.start('kick off', undefined, undefined, p.id);
     await idle(mgr);
     const inner = mgr as unknown as { pools: () => unknown[]; relayChains: Map<string, unknown>; selfQueueStreak: Map<string, number> };
-    vi.spyOn(inner, 'pools').mockReturnValue([{ injectMessage: () => true }]);
+    vi.spyOn(inner, 'pools').mockReturnValue([{ injectMessage: async () => true }]);
     inner.relayChains.set(sid, { id: 'chain', depth: 3, from: 'other' });
     inner.selfQueueStreak.set(sid, 2);
-    expect(mgr.steerSession(p.id, sid, '[Advisor] check X', { humanOrigin: false })).toBe(true);
+    expect(await mgr.steerSession(p.id, sid, '[Advisor] check X', { humanOrigin: false })).toBe(true);
     expect(mgr.relayDepth(sid)).toBe(3);
     expect(inner.selfQueueStreak.get(sid)).toBe(2);
-    expect(mgr.steerSession(p.id, sid, 'from the panel')).toBe(true);
+    expect(await mgr.steerSession(p.id, sid, 'from the panel')).toBe(true);
     expect(mgr.relayDepth(sid)).toBe(0);
     expect(inner.selfQueueStreak.get(sid)).toBeUndefined();
   });

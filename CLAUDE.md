@@ -1079,6 +1079,54 @@ gateway, not asked for in a prompt.
 
 Both counters are in memory. A restart re-earns them, deliberately.
 
+### AI steers (2026-10-07)
+
+An AI can put text INTO a running turn instead of queueing it after:
+`send_message {steer: true}`, the `steer` tool (`text`, optional
+`project_id`/`session_id`) and `message_self {steer: true}`.
+
+- **Only into a gateway turn in flight** (`SessionManager.steerFromAi`):
+  `runs` must hold the conversation AND the pool entry must be `busy`
+  (`injectMessage(..., {requireTurn})`). An idle process is never steered,
+  since it would start a turn no gateway run tracks. Not steerable = the
+  caller's old path: queue if busy, a new turn if idle. Receipts say which
+  (`steered` / `queued` / `started` / `pending_approval`).
+- The text carries its sender marker (`withMessageSender`), a live `steered`
+  event shows it at once, and the journal keeps it as a `user` row flagged
+  `steered`. `buildTurns` and `lastPromptAt` skip flagged rows, so a steer
+  never splits a turn. The panel labels it "Steered into the running turn".
+- **Brakes.** A cross-conversation steer is a relay hop (`deliverMcpSteer`),
+  so two conversations steering each other stop at 6. A self-steer (no
+  target) counts on the `message_self` streak (`steerSelf`). A delegate with
+  no target steers its ORCHESTRATOR (`steerFromDelegate`): no approval (the
+  owner's choice), counted on the orchestrator's relay chain, and only while
+  that delegate's own turn runs. The route (`POST /api/conversations/steer`)
+  decides who skips the approval gate from the caller's identity, not from a
+  flag the caller sets.
+- **Approval mode**: the card says "Steer into the running turn". Busy is
+  re-checked at approval. If the turn has ended, the message goes as an
+  ordinary send and the approval's `note` says "Delivered as a new message:
+  the turn had ended." An approved steer is human-origin, so the relay
+  count starts over. Delivery is async (`delivering`), and the tool polls
+  until it clears.
+- **Delegate reports** gated `needs_orchestrator`/`blocked` are steered into a
+  busy orchestrator's turn (unless an earlier wake is still queued; then
+  they merge into it). The report's `queueId` becomes `steered:<messageId>`,
+  never a queue id, so `autoDismissible` treats it as consumed. `done` and
+  `needs_human` keep their batching.
+- **Codex steers are acknowledged.** `turn/steer` (and a between-turn
+  `turn/start`) wait up to 3 s for the app-server's reply
+  (`CodexTransport.steerAck`). An error reply or no reply counts as not
+  steered and the caller queues. Before, replies were dropped, so a stale
+  `expectedTurnId` was reported as steered and the text was lost. That
+  includes the ChatGPT advisor's steers. A `turn/steer` while the turn id is
+  not back yet is refused rather than sent as a second `turn/start`.
+  `steerSession` is async now.
+- **Subagents**: a Claude Task subagent shares its parent's x056 MCP server
+  and env, so `steer` with no target lands in the parent's running turn
+  (tested through the tool, the route and a busy run). Codex child agents
+  inheriting the MCP server is **unverified**.
+
 ## Notifications (`server/notices.ts`, 2026-10-01)
 
 Three live days had pushed ~500 "finished - tap to continue" to both phones,

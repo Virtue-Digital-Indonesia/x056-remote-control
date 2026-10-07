@@ -66,6 +66,7 @@ export const TOOLS = [
         model: { type: 'string', description: 'Model id for the target conversation\'s provider. Omit to reuse that conversation\'s last selected model; new conversations use the project default. Empty string selects the provider default. The choice is retained through approval and queueing.' },
         effort: { type: 'string', description: 'Reasoning effort for the target provider. Omit to reuse the target conversation\'s last selection; empty string selects the provider default.' },
         waitSeconds: { type: 'number', description: 'wait up to this long for the reply (default 0 = don\'t wait)' },
+        steer: { type: 'boolean', description: 'STEER: if that conversation is mid-turn, put this message INTO its running turn (it reads it now, not after the turn) instead of queueing it. If it is not running a turn this is an ordinary send. Same approval mode and hop bound. Default false. See the steer tool for when to use it.' },
         helpers: { type: 'object', properties: { advisor: { type: 'boolean' }, team: { type: 'boolean' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'], description: 'per-turn model/effort picker; none = the conversation\'s own model/effort (saved, so the Jev default no longer applies)' }, lean: { type: 'string', enum: ['low', 'medium', 'high'], description: 'which way the picker errs: low = cheaper models and less effort, high = stronger ones' } }, additionalProperties: false, description: 'Turn helpers on or off for the target before this message runs (only those named change): advisor, the agent team, the Jev/OpenAI Decisions picker. Applied only if the send is delivered.' },
       },
       required: ['projectId', 'message'],
@@ -234,7 +235,7 @@ const QUEUE_TOOLS = [
       + 'Only available to a session running on this gateway. Bounded: a few consecutive self-messages with no human message in between are refused, so this cannot become a silent infinite loop.',
     inputSchema: {
       type: 'object',
-      properties: { message: { type: 'string' } },
+      properties: { message: { type: 'string' }, steer: { type: 'boolean', description: 'deliver INTO this turn now (same as the steer tool with no target) instead of after it; default false' } },
       required: ['message'],
       additionalProperties: false,
     },
@@ -322,6 +323,27 @@ QUEUE_TOOLS.push({
       dropQueued: { type: 'boolean', description: 'also discard its queued messages (default true)' },
     },
     required: ['projectId', 'sessionId'],
+    additionalProperties: false,
+  },
+});
+
+QUEUE_TOOLS.push({
+  name: 'steer',
+  description:
+    'STEER a running turn: your text reaches that conversation\'s model INSIDE the turn it is running now (a mid-turn correction, a finding it needs before it goes further, "stop, the bug is in X"), instead of waiting for the turn to end. '
+    + 'Pick the right tool: steer = the target is working right now and should change course on THIS turn; send_message = a new request or hand-off (it queues behind a running turn, or starts one); message_self = a note for your own NEXT turn. '
+    + 'No target = your own conversation (also what a subagent reaches: it shares your conversation) -- bounded like message_self, a few in a row without a human message are refused. '
+    + 'From a delegate, no target = your orchestrator (no approval; counts on its hop bound). '
+    + 'A target that is another conversation follows send_message\'s rules: the operator\'s approval mode applies and the AI-to-AI hop bound counts. '
+    + 'If nothing is running there it is NOT lost: your own conversation gets it as a queued message, another conversation as an ordinary send. The result says which: steered, queued, started or pending_approval.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'what the running turn should read now; say why it matters, it interrupts work in progress' },
+      project_id: { type: 'string', description: 'target project; omit to steer your own conversation (or, from a delegate, your orchestrator)' },
+      session_id: { type: 'string', description: 'target conversation; omit as project_id' },
+    },
+    required: ['text'],
     additionalProperties: false,
   },
 });
@@ -657,6 +679,38 @@ export async function callToolResult(api, name, args) {
         : `SPLIT${d.choice ? `: leaning ${d.choice}${sure}, too close to call` : ''}${d.error ? ` (${d.error})` : ''}. Decide this one yourself.`;
       return result(text, { verdict: d.verdict, backend: d.backend, latencyMs: d.latencyMs, ...(d.choice ? { choice: d.choice } : {}), ...(d.confidence != null ? { confidence: d.confidence } : {}), ...(d.error ? { error: d.error } : {}) });
     }
+    if (name === 'steer' || (name === 'message_self' && args.steer)) {
+      const text = name === 'steer' ? args.text : args.message;
+      const target = name === 'steer' && (args.project_id || args.session_id) ? { projectId: args.project_id, sessionId: args.session_id } : {};
+      const delegateOf = process.env.X056_DELEGATE_OF || '', delegateId = process.env.X056_DELEGATE_ID || '';
+      if (!target.sessionId && !(SELF.projectId && SELF.sessionId) && !(delegateOf && delegateId)) {
+        throw new Error(`${name} with no target is only available to a conversation (or delegate) running on this gateway; give project_id and session_id`);
+      }
+      if (target.sessionId && !target.projectId) throw new Error('give project_id with session_id');
+      const r = await api('/api/conversations/steer', {
+        method: 'POST',
+        body: JSON.stringify({ ...target, prompt: text, from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined,
+          ...(SELF.projectId && SELF.sessionId ? { self: SELF } : {}), ...(delegateOf && delegateId ? { delegate: { of: delegateOf, id: delegateId } } : {}) }),
+      });
+      let out = { delivered: r.delivered, ...(r.projectId ? { projectId: r.projectId } : {}), ...(r.sessionId ? { sessionId: r.sessionId } : {}), ...(r.messageId ? { messageId: r.messageId } : {}),
+        ...(typeof r.hopsLeft === 'number' ? { hopsLeft: r.hopsLeft } : {}), ...(typeof r.remaining === 'number' ? { remaining: r.remaining } : {}), ...(r.id ? { id: r.id } : {}), ...(r.approvalId ? { approvalId: r.approvalId } : {}) };
+      if (r.delivered === 'pending_approval') {
+        const a = await waitForApproval(api, r.approvalId);
+        const status = a.status === 'approved' ? (a.error ? 'failed' : a.delivered || (a.queued ? 'queued' : 'started')) : a.status;
+        out = { ...out, delivered: status, ...(a.resultSessionId ? { sessionId: a.resultSessionId } : {}), ...(a.note ? { note: a.note } : {}), ...(a.error ? { error: a.error } : {}) };
+      }
+      const said = {
+        steered: 'steered into the running turn: it reads this now, inside that turn.',
+        queued: 'not steered (no turn was running there to take it): queued, delivered when its current turn ends or right away if idle.',
+        started: 'not steered (that conversation was not running a turn): delivered as a new message, which started a turn.',
+        pending_approval: 'still awaiting the operator\'s approval: not delivered.',
+        denied: 'the operator DENIED it: not delivered.',
+        expired: 'the approval request expired: not delivered.',
+        failed: 'approved, but delivery failed: ' + (out.error || 'unknown error'),
+      }[out.delivered] || String(out.delivered);
+      const tail = [out.note, typeof out.hopsLeft === 'number' ? `${out.hopsLeft} hop(s) left in this exchange.` : '', typeof out.remaining === 'number' ? `${out.remaining} self-message(s) left before a human message is required.` : ''].filter(Boolean).join('\n');
+      return result(said + (tail ? '\n' + tail : ''), out);
+    }
     if (name === 'message_self') {
       if (!SELF.projectId || !SELF.sessionId) {
         throw new Error('message_self is only available to a conversation running on this gateway (no self identity in this client)');
@@ -722,7 +776,7 @@ export async function callToolResult(api, name, args) {
       // model chose: it is what lets the gateway count this exchange's hops.
       // A delegate has no identity of its own; its sends count against its
       // orchestrator's chain (X056_RELAY_FROM) rather than starting a new one.
-      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort, from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}) }),
+      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort, from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}), ...(args.steer ? { steer: true } : {}) }),
     });
     // Two modes, chosen by the OPERATOR in the panel (not by us): 'auto' delivers
     // straight away, 'approval' waits for them to approve it. Either way, if that
@@ -731,7 +785,9 @@ export async function callToolResult(api, name, args) {
       const sid = requested.sessionId;
       const delivery = { mode: 'auto', projectId: args.projectId, sessionId: sid, messageId: requested.messageId,
         ...(typeof requested.hopsLeft === 'number' ? { hopsLeft: requested.hopsLeft } : {}) };
-      const where = requested.queued
+      const where = requested.steered
+        ? `steered into its running turn — it reads this now, inside that turn.`
+        : requested.queued
         ? `queued — that conversation is mid-turn, so it will be delivered the moment its current turn ends.`
         : `delivered — its turn is running now.`;
       // Say how much of the exchange is left. Knowing there is one hop to go is
@@ -740,23 +796,16 @@ export async function callToolResult(api, name, args) {
         ? `\n${requested.hopsLeft} hop(s) left in this exchange before a human message is required.`
           + (requested.hopsLeft <= 1 ? ' Plan to finish here.' : '')
         : '';
-      if (!args.waitSeconds || requested.queued) {
-        return result(`sent (automatic mode). ${where}\nsessionId: ${sid}\nUse read_reply with this messageId to fetch the exact reply later.${left}`, { delivery: { ...delivery, status: requested.queued ? 'queued' : 'sent' } });
+      if (!args.waitSeconds || requested.queued || requested.steered) {
+        return result(`sent (automatic mode). ${where}\nsessionId: ${sid}\nUse read_reply with this messageId to fetch the exact reply later.${left}`, { delivery: { ...delivery, status: requested.steered ? 'steered' : requested.queued ? 'queued' : 'sent' } });
       }
       const { text, ...reply } = await waitForReply(api, args.projectId, sid, requested.messageId, args.waitSeconds);
       return result(text + left, { delivery: { ...delivery, ...reply } });
     }
     // Approval mode: the send does NOT happen yet — wait for the human operator's
     // decision in the panel (or the request to expire) before anything is sent.
-    const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000 + 15000; // give the server's own 10min timeout time to land first
-    const approvalDeadline = Date.now() + APPROVAL_TIMEOUT_MS;
-    const statusUrl = `/api/conversations/send-status?id=${encodeURIComponent(requested.approvalId)}`;
     const delivery = { mode: 'approval', projectId: args.projectId, approvalId: requested.approvalId, messageId: requested.messageId };
-    let approval = await api(statusUrl);
-    while (approval.status === 'pending' && Date.now() < approvalDeadline) {
-      await sleep(2000);
-      approval = await api(statusUrl).catch(() => approval);
-    }
+    const approval = await waitForApproval(api, requested.approvalId);
     if (approval.status === 'pending') return result('still awaiting the operator\'s approval — not sent. It will expire soon; try again later if this is still needed.', { delivery: { ...delivery, status: 'pending' } });
     if (approval.status === 'expired') return result('the approval request expired before the operator responded — not sent.', { delivery: { ...delivery, status: 'expired' } });
     if (approval.status === 'denied') return result('the operator DENIED this message — it was not sent.', { delivery: { ...delivery, status: 'denied' } });
@@ -764,6 +813,10 @@ export async function callToolResult(api, name, args) {
     const sid = approval.resultSessionId;
     delivery.sessionId = sid;
     delivery.messageId = requested.messageId || approval.sender?.messageId;
+    if (approval.note) delivery.note = approval.note;
+    if (approval.delivered === 'steered') {
+      return result(`approved and steered into its running turn — it reads this now.\nsessionId: ${sid}`, { delivery: { ...delivery, status: 'steered' } });
+    }
     if (approval.queued) {
       return result(`approved and queued — that conversation is mid-turn, so it will be delivered when its current turn ends.\nsessionId: ${sid}\nUse read_reply with this messageId to fetch the exact reply later.`, { delivery: { ...delivery, status: 'queued' } });
     }
@@ -775,4 +828,18 @@ export async function callToolResult(api, name, args) {
     return result(text, { delivery: { ...delivery, ...reply } });
   }
   throw new Error(`unknown tool: ${name}`);
+}
+
+/** Wait for the operator's decision on an approval -- and, for an approved
+ *  steer, for its delivery (`delivering`) -- or the request's expiry. */
+async function waitForApproval(api, approvalId) {
+  const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000 + 15000; // give the server's own 10min timeout time to land first
+  const approvalDeadline = Date.now() + APPROVAL_TIMEOUT_MS;
+  const statusUrl = `/api/conversations/send-status?id=${encodeURIComponent(approvalId)}`;
+  let approval = await api(statusUrl);
+  while ((approval.status === 'pending' || approval.delivering) && Date.now() < approvalDeadline) {
+    await sleep(approval.delivering ? 250 : 2000);
+    approval = await api(statusUrl).catch(() => approval);
+  }
+  return approval;
 }

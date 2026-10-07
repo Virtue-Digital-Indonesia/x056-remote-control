@@ -68,6 +68,10 @@ export class BusyError extends Error {
   }
 }
 
+/** The `queueId` a delegate report gets when its wake was steered into the
+ *  orchestrator's running turn rather than queued (never a real queue id). */
+export const STEERED_WAKE = 'steered:';
+
 /** A relay chain ran out of hops — see SessionManager.RELAY_HOP_LIMIT. */
 export class RelayLimitError extends Error {
   constructor(public readonly depth: number, public readonly limit: number) {
@@ -196,6 +200,15 @@ export interface McpApproval {
   /** Set if the approved send itself failed (e.g. the conversation started running
    *  again in the meantime) — approval isn't revoked, but nothing was sent. */
   error?: string;
+  /** The sender asked to STEER this into the target's running turn. */
+  steer?: boolean;
+  /** An approved steer is still being delivered (a Codex steer waits for the
+   *  app-server's ack); the MCP tool keeps polling while this is set. */
+  delivering?: boolean;
+  /** How an approved message landed. */
+  delivered?: 'steered' | 'queued' | 'started';
+  /** Why a requested steer was delivered some other way. */
+  note?: string;
 }
 
 /** A question the model ended its turn with, awaiting the user's answer. */
@@ -1734,7 +1747,7 @@ export class SessionManager {
     if (!c.error && (c.verdict === 'adjust' || c.verdict === 'concern')) {
       const note = `[Advisor · ${model}] ${c.advice}`;
       // An advisor steer is not human: it keeps the relay and self brakes.
-      if (trigger !== 'done') c.delivered = isCurrentTurn() && this.steerSession(pid, sid, note, { humanOrigin: false }) ? 'steered' : 'too-late';
+      if (trigger !== 'done') c.delivered = isCurrentTurn() && await this.steerSession(pid, sid, note, { humanOrigin: false }) ? 'steered' : 'too-late';
       else {
         try {
           this.enqueue(pid, { sessionId: sid, sender: { kind: 'advisor', projectName: model }, text: `The advisor (${model}) reviewed your work before you called it done:\n\n${c.advice}\n\nAddress this, or say briefly why it does not apply.` });
@@ -2091,21 +2104,32 @@ export class SessionManager {
     else this.emitDelegates(parentPid, parentSid);
     const othersWorking = [...this.delegateRuns.values()].some((r) => r.parentSid === parentSid);
     const waiting = store.reports(parentSid).filter((r) => !r.woke);
-    if (waiting.length && (shouldWake(report.gate, othersWorking) || !othersWorking)) this.wakeOrchestrator(parentPid, parentSid);
+    // needs_orchestrator / blocked wake at once, and into the orchestrator's
+    // running turn when it has one; done / needs_human keep their batching.
+    const urgent = report.gate === 'needs_orchestrator' || report.gate === 'blocked';
+    if (waiting.length && (shouldWake(report.gate, othersWorking) || !othersWorking)) await this.wakeOrchestrator(parentPid, parentSid, urgent);
   }
 
   /** Hand every report the orchestrator has not seen to it, as ONE message,
    *  merged into a wake that is still waiting in its queue. */
-  private wakeOrchestrator(parentPid: string, parentSid: string): void {
+  private async wakeOrchestrator(parentPid: string, parentSid: string, steer = false): Promise<void> {
     const store = this.delegateStore();
     const waiting = store.reports(parentSid).filter((r) => !r.woke);
     if (!waiting.length) return;
     const text = digest(waiting, store.list(parentPid, parentSid));
     try {
       const earlier = (this.loadQueues()[parentPid] ?? []).find((x) => x.sessionId === parentSid && x.sender?.kind === 'delegate' && !x.dispatching);
-      let queueId: string;
-      if (earlier) { this.editQueueItem(parentPid, earlier.id, { text: earlier.text + '\n\n---\n\n' + text }); queueId = earlier.id; }
-      else queueId = this.enqueue(parentPid, { sessionId: parentSid, sender: { kind: 'delegate' }, text }).id;
+      let queueId: string | undefined;
+      // Steered into the running turn: there is no queue item to wait for, so
+      // the marker is a synthetic id that is never in the queue -- which is
+      // exactly what `autoDismissible` reads as "handed over and consumed".
+      // An earlier wake still queued keeps the order: merge into it instead.
+      if (steer && !earlier) {
+        const r = await this.steerFromAi(parentPid, parentSid, text, { kind: 'delegate' });
+        if (r) queueId = STEERED_WAKE + r.messageId;
+      }
+      if (!queueId && earlier) { this.editQueueItem(parentPid, earlier.id, { text: earlier.text + '\n\n---\n\n' + text }); queueId = earlier.id; }
+      else if (!queueId) queueId = this.enqueue(parentPid, { sessionId: parentSid, sender: { kind: 'delegate' }, text }).id;
       const keys = new Set(waiting.map(reportKey));
       store.markWoke(parentSid, keys, queueId);
       // The roster's copy of each last report says so too (the panel reads it).
@@ -2140,7 +2164,7 @@ export class SessionManager {
         store.addReport(p.parentSessionId, report);
         store.update(p.parentProjectId, p.parentSessionId, d.id, { status: 'interrupted', turns: d.turns + 1, lastReport: report });
       }
-      if (hit) setTimeout(() => { try { this.wakeOrchestrator(p.parentProjectId, p.parentSessionId); } catch { /* the conversation may be gone */ } }, 0);
+      if (hit) setTimeout(() => { void this.wakeOrchestrator(p.parentProjectId, p.parentSessionId).catch(() => { /* the conversation may be gone */ }); }, 0);
       // DONE reports delivered before this boot (or before auto-dismiss
       // existed) are put away now, rather than sitting in the bar forever.
       try { this.dismissDeliveredNow(p.parentProjectId, p.parentSessionId); } catch { /* a broken roster stays as it is */ }
@@ -2902,6 +2926,8 @@ export class SessionManager {
     const rows = JSON.parse(readFileSync(this.approvalsFile, 'utf8')) as McpApproval[];
     if (!Array.isArray(rows) || rows.some(a => !a || typeof a.id !== 'string' || typeof a.projectId !== 'string' || !['pending','approved','denied','expired'].includes(a.status))) throw new Error('Repair the message approval journal before running');
     for (const a of rows) {
+      // A restart in the middle of an approved steer: whether it landed is unknown.
+      if (a.delivering) { delete a.delivering; a.error ??= 'The gateway restarted while this was being delivered; check the conversation before sending again.'; }
       const remaining = Date.parse(a.createdAt) + MCP_APPROVAL_TIMEOUT_MS - Date.now();
       if (a.status === 'pending' && (!Number.isFinite(remaining) || remaining <= 0)) a.status = 'expired';
       this.mcpApprovals.set(a.id, a);
@@ -2922,7 +2948,7 @@ export class SessionManager {
 
   /** An AI model asked (via MCP) to message projectId/sessionId. Records the
    *  request as 'pending' and returns immediately — it is NOT sent yet. */
-  requestMcpSend(projectId: string, sessionId: string | undefined, message: string, opts?: TurnRunOptions & { interactive?: boolean; from?: string }): McpApproval {
+  requestMcpSend(projectId: string, sessionId: string | undefined, message: string, opts?: TurnRunOptions & { interactive?: boolean; from?: string; steer?: boolean }): McpApproval {
     const proj = this.projects().get(projectId);
     if (opts?.helpers) this.checkHelperPatch(opts.helpers);
     const prefs = this.conversationRunPrefs(projectId, sessionId, opts);
@@ -2941,6 +2967,7 @@ export class SessionManager {
       effort: prefs.effort,
       ...(opts?.helpers ? { helpers: opts.helpers } : {}),
       interactive: opts?.interactive !== false,
+      ...(opts?.steer && sessionId ? { steer: true } : {}),
       createdAt: new Date().toISOString(),
       status: 'pending',
     };
@@ -2976,23 +3003,49 @@ export class SessionManager {
     a.status = approve ? 'approved' : 'denied';
     this.saveMcpApprovals();
     if (approve) {
-      try {
-        // No `from`: an approved send is human-origin by definition, so it
-        // starts the relay count over. In approval mode the operator IS the
-        // circuit breaker, and a hop cap on top of them would only block an
-        // exchange they are explicitly waving through, one card at a time.
-        const out = this.deliverMcpMessage(a.projectId, a.sessionId, a.message, {
-          model: a.model, effort: a.effort, interactive: a.interactive, sender: a.sender, helpers: a.helpers,
-        });
-        a.resultSessionId = out.sessionId;
-        a.queued = out.queued;
-      } catch (err) {
-        a.error = (err as Error).message;
-      }
+      // Busy is re-checked HERE, not when the card was raised: the turn the
+      // sender wanted to steer may have ended while the card waited.
+      const sid = a.sessionId;
+      if (a.steer && sid && this.sessionBusy(sid)) {
+        a.delivering = true;
+        const job = this.steerFromAi(a.projectId, sid, a.message, a.sender ?? { kind: 'mcp' }).then((r) => {
+          if (!r) { this.deliverApproved(a, 'the turn had ended'); return; }
+          // Approved = human origin, exactly as for a send: the count starts over.
+          this.setRelayChain(sid, this.nextRelayHop());
+          this.clearSelfQueueStreak(sid);
+          if (a.helpers) this.patchHelpers(a.projectId, sid, a.helpers);
+          a.resultSessionId = sid; a.queued = false; a.delivered = 'steered';
+        }).catch((err: unknown) => { a.error = (err as Error).message; })
+          .finally(() => { delete a.delivering; this.mcpApprovalDispatch.delete(id); this.emitMcpApproval(a); });
+        this.mcpApprovalDispatch.set(id, job);
+      } else this.deliverApproved(a, a.steer ? 'the turn had ended' : undefined);
     }
     this.emitMcpApproval(a);
     this.scheduleMcpApprovalCleanup(id, MCP_APPROVAL_RETAIN_MS);
     return a;
+  }
+
+  /** Approved steers still being delivered, so the HTTP decision can answer
+   *  with the outcome rather than "delivering". */
+  private mcpApprovalDispatch = new Map<string, Promise<void>>();
+  approvalSettled(id: string): Promise<void> { return this.mcpApprovalDispatch.get(id) ?? Promise.resolve(); }
+
+  private deliverApproved(a: McpApproval, steerMissed?: string): void {
+    try {
+      // No `from`: an approved send is human-origin by definition, so it
+      // starts the relay count over. In approval mode the operator IS the
+      // circuit breaker, and a hop cap on top of them would only block an
+      // exchange they are explicitly waving through, one card at a time.
+      const out = this.deliverMcpMessage(a.projectId, a.sessionId, a.message, {
+        model: a.model, effort: a.effort, interactive: a.interactive, sender: a.sender, helpers: a.helpers,
+      });
+      a.resultSessionId = out.sessionId;
+      a.queued = out.queued;
+      a.delivered = out.queued ? 'queued' : 'started';
+      if (steerMissed) a.note = `Delivered as a new message: ${steerMissed}.`;
+    } catch (err) {
+      a.error = (err as Error).message;
+    }
   }
 
   // Persisted to disk, not just held in memory: a container swap (every deploy)
@@ -3929,19 +3982,23 @@ export class SessionManager {
    * signal to queue instead. It must never both fail here AND drop the message:
    * a steer that cannot land is a queued message, not a lost one.
    *
-   * No MCP tool exposes this, so an AI drives another conversation through
-   * `deliverMcpMessage` and its relay-hop bound. That is a routing choice, NOT
+   * AI senders do not come here directly: they go through `steerFromAi`,
+   * which keeps the relay and self brakes. That is a routing choice, NOT
    * a security boundary: the gateway token authorizes every endpoint, and a
    * conversation that reads it from state/mcp-x056.json can already POST
    * /api/queue -- which clears the relay chain too. Steering opens no door that
    * the token did not already open. Bounding AI-origin traffic properly would
    * mean a separate credential, which is a bigger change than this.
    */
-  steerSession(projectId: string, sessionId: string, text: string, opts: { humanOrigin?: boolean } = {}): boolean {
+  async steerSession(projectId: string, sessionId: string, text: string, opts: { humanOrigin?: boolean; requireTurn?: boolean } = {}): Promise<boolean> {
     if (!this.pools().length) return false;
     const conv = this.projects().conversations(projectId).find((c) => c.sessionId === sessionId);
     if (!conv) return false;
-    if (!this.pools().some((p) => p.injectMessage(sessionId, text))) return false;
+    let hit = false;
+    // Sequential: each pool's answer is a promise (Codex waits for the
+    // app-server's ack), and only one pool holds this conversation.
+    for (const p of this.pools()) if (await p.injectMessage(sessionId, text, { requireTurn: opts.requireTurn })) { hit = true; break; }
+    if (!hit) return false;
     // A panel steer is human-origin, so it resets the same counters a panel
     // message does -- otherwise steering an exhausted pair would leave the
     // brakes on. The gateway's own steers (the ChatGPT advisor) are not.
@@ -3949,6 +4006,88 @@ export class SessionManager {
     this.clearSelfQueueStreak(sessionId);
     this.clearRelayChain(sessionId);
     return true;
+  }
+
+  /**
+   * An AI-origin steer: into the conversation's RUNNING gateway turn, or not
+   * at all. Never into an idle process, where it would start a turn no gateway
+   * run tracks (no queue, no relay accounting, no completion). The text
+   * carries its sender marker, so a reload attributes it; a live `steered`
+   * event (journalled) shows it at once. Keeps the relay chain and the self
+   * streak: the caller does the accounting. False = the caller falls back to
+   * its ordinary path (queue, or a new turn).
+   */
+  async steerFromAi(pid: string, sid: string, text: string, sender: MessageSender): Promise<{ steered: true; messageId: string } | false> {
+    if (!this.sessionBusy(sid) || !text.trim() || text.trimStart().startsWith('/')) return false;
+    const who: MessageSender = { ...sender, messageId: sender.messageId || randomUUID() };
+    const ok = await this.steerSession(pid, sid, withMessageSender(text, who), { humanOrigin: false, requireTurn: true });
+    if (!ok) return false;
+    this.emit('steered', { projectId: pid, sessionId: sid, text, sender: who, messageId: who.messageId });
+    return { steered: true, messageId: who.messageId! };
+  }
+
+  /**
+   * send_message with `steer`: into the target's running turn when there is
+   * one, else exactly `deliverMcpMessage` (queue, or a new turn). The hop is
+   * counted either way, so two conversations steering each other stop at
+   * RELAY_HOP_LIMIT like any other exchange.
+   */
+  async deliverMcpSteer(
+    projectId: string,
+    sessionId: string | undefined,
+    message: string,
+    opts: TurnRunOptions & { interactive?: boolean; from?: string } = {},
+  ): Promise<{ sessionId: string; queued: boolean; steered: boolean; hopsLeft: number; messageId: string }> {
+    if (sessionId && this.sessionBusy(sessionId)) {
+      const hop = this.nextRelayHop(opts.from);
+      if (hop.depth > SessionManager.RELAY_HOP_LIMIT) throw new RelayLimitError(hop.depth, SessionManager.RELAY_HOP_LIMIT);
+      if (opts.helpers) this.checkHelperPatch(opts.helpers);
+      const sender = { ...(opts.sender || this.messageSender(opts.from)), messageId: opts.sender?.messageId || randomUUID() };
+      const r = await this.steerFromAi(projectId, sessionId, message, sender);
+      if (r) {
+        this.setRelayChain(sessionId, hop);
+        this.clearSelfQueueStreak(sessionId);
+        if (opts.helpers) this.patchHelpers(projectId, sessionId, opts.helpers);
+        return { sessionId, queued: false, steered: true, hopsLeft: SessionManager.RELAY_HOP_LIMIT - hop.depth, messageId: r.messageId };
+      }
+      opts = { ...opts, sender };
+    }
+    return { ...this.deliverMcpMessage(projectId, sessionId, message, opts), steered: false };
+  }
+
+  /**
+   * A conversation steering ITSELF (the `steer` tool with no target, which
+   * is also what a Claude subagent reaches: it shares the parent's x056
+   * server). Counts on the same streak as message_self, so a loop of
+   * self-steers stops at SELF_QUEUE_LIMIT. Nothing running = queued, as
+   * message_self.
+   */
+  async steerSelf(pid: string, sid: string, text: string): Promise<{ delivered: 'steered' | 'queued'; messageId?: string; id?: string; remaining: number }> {
+    const used = this.selfQueueStreak.get(sid) ?? 0;
+    const limit = SessionManager.SELF_QUEUE_LIMIT;
+    if (used >= limit) throw new Error(`self-message limit reached (${limit} in a row). Waiting for a message from someone else before this conversation can message itself again.`);
+    const r = await this.steerFromAi(pid, sid, text, this.messageSender(sid));
+    if (r) {
+      this.selfQueueStreak.set(sid, used + 1);
+      return { delivered: 'steered', messageId: r.messageId, remaining: limit - (used + 1) };
+    }
+    const q = this.queueSelfMessage(pid, sid, text);
+    return { delivered: 'queued', id: q.id, remaining: q.remaining };
+  }
+
+  /**
+   * A delegate steering its ORCHESTRATOR (the `steer` tool with no target,
+   * from a delegate). No approval, by the owner's choice for delegates; it
+   * counts on the orchestrator's relay chain, the same one its sends use.
+   * Only a delegate whose turn is running may: the identity comes from its
+   * MCP config, and a stale or made-up id must not skip the approval gate.
+   */
+  async steerFromDelegate(parentPid: string, parentSid: string, delegateId: string, text: string): Promise<{ sessionId: string; queued: boolean; steered: boolean; hopsLeft: number; messageId: string }> {
+    const d = this.delegateStore().get(parentPid, parentSid, delegateId);
+    if (!d) throw new Error('unknown delegate');
+    if (![...this.delegateRuns.values()].some((r) => r.id === delegateId && r.parentSid === parentSid)) throw new Error('only a delegate whose turn is running can steer its orchestrator');
+    const sender: MessageSender = { kind: 'delegate', conversationTitle: d.role, projectName: 'Delegate', messageId: randomUUID() };
+    return this.deliverMcpSteer(parentPid, parentSid, text, { from: parentSid, sender, interactive: false });
   }
 
   /** Is a specific conversation currently running a turn? */

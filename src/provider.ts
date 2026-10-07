@@ -34,6 +34,9 @@ export interface AccountIdentity {
  *  transcript rather than stored separately. */
 export interface HistoryEntry {
   messageId?: string;
+  /** A message an AI steered INTO a running turn (journal only): shown in the
+   *  chat, but not the start of a turn. */
+  steered?: boolean;
   attachments?: { name: string; type: string; url: string }[];
   sender?: import('./message-sender.js').MessageSender;
   /** 'action' = a tool call reconstructed from the transcript, so the trail of

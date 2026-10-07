@@ -22,6 +22,10 @@ export class ConversationJournal {
     let row: HistoryEntry;
     if (kind === 'session_started' && typeof data.displayPrompt === 'string' && !data.displayPrompt.trimStart().startsWith('/')) {
       row = { role: 'user', text: data.displayPrompt, ts, messageId: String(data.messageId || ''), sender: data.sender as HistoryEntry['sender'] };
+    } else if (kind === 'steered' && typeof data.text === 'string' && data.messageId) {
+      // An AI's steer into a running turn. A `user` row so the chat shows it
+      // with its sender, but flagged: it is not the start of a turn.
+      row = { role: 'user', text: data.text, ts, messageId: String(data.messageId), sender: data.sender as HistoryEntry['sender'], steered: true };
     } else if (kind === 'session_error' || kind === 'message_rejected' || (kind === 'session_done' && data.status === 'failed')) {
       row = { role: 'error', messageId: data.requestId ? 'error:' + data.requestId : undefined, text: String(data.message || data.reason || 'Turn failed'), ts };
     } else if (kind === 'advisor_consult' && data.at) {
@@ -53,7 +57,7 @@ export class ConversationJournal {
   /** When the conversation's latest turn began: its last recorded prompt. */
   lastPromptAt(pid: string, sid: string): string | undefined {
     const rows = readState<HistoryEntry[]>(this.path(pid, sid), []);
-    for (let i = rows.length - 1; i >= 0; i--) if (rows[i].role === 'user' && rows[i].ts) return rows[i].ts;
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i].role === 'user' && !rows[i].steered && rows[i].ts) return rows[i].ts;
     return undefined;
   }
   /** What the agent tree's per-turn view is built from: the journal's rows
@@ -73,7 +77,7 @@ export class ConversationJournal {
         (entry.sender?.messageId && r.sender?.messageId === entry.sender.messageId) ||
         (r.text.trim() === entry.text.trim() && Math.abs(Date.parse(r.ts || '') - at) < 120000)
       ));
-      if (match) { match.messageId = entry.messageId; used.add(match); }
+      if (match) { match.messageId = entry.messageId; if (entry.steered) match.steered = true; used.add(match); }
       else if (at >= oldest && at <= latest) rows.push(entry);
     }
     return rows.sort((a,b) => Date.parse(a.ts || '') - Date.parse(b.ts || ''));

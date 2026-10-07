@@ -68,13 +68,13 @@ const queueItem = object({
   account: str, useReserve: bool, dispatching: bool, error: str, notBefore: num,
   afterSessionId: str, paused: bool, requestId: str, ...targetFields,
 }, ['projectId', 'id', 'text', 'at', ...Object.keys(targetFields)]);
-const deliveryFields = { messageId: str, mode: choices('auto', 'approval'), projectId: str, sessionId: str, approvalId: str, hopsLeft: num };
+const deliveryFields = { messageId: str, mode: choices('auto', 'approval'), projectId: str, sessionId: str, approvalId: str, hopsLeft: num, note: str };
 const delivery = (status, extra = {}, required = []) => object({ ...deliveryFields, status: literal(status), ...extra },
   ['mode', 'projectId', 'status', ...required]);
 const sendResult = { oneOf: [
   delivery('pending', {}, ['approvalId']), delivery('expired', {}, ['approvalId']),
   delivery('denied', {}, ['approvalId']), delivery('failed', { error: str }, ['approvalId', 'error']),
-  delivery('queued', {}, ['sessionId']), delivery('sent', {}, ['sessionId']),
+  delivery('queued', {}, ['sessionId']), delivery('sent', {}, ['sessionId']), delivery('steered', {}, ['sessionId']),
   delivery('reply', { messages: array(message), truncated: bool }, ['sessionId', 'messages']),
   delivery('reply_timeout', { waitSeconds: num }, ['sessionId', 'waitSeconds']),
 ] };
@@ -92,7 +92,9 @@ const schemas = {
   cancel_queued: object({ projectId: str, id: str, ok: bool }),
   edit_queued: object({ projectId: str, id: str, ok: bool }),
   stop_conversation: object({ projectId: str, sessionId: str, stopped: bool, dropped: num }),
-  message_self: object({ id: str, remaining: num }),
+  message_self: object({ id: str, remaining: num, delivered: choices('steered', 'queued'), projectId: str, sessionId: str, messageId: str }, ['remaining']),
+  steer: object({ delivered: choices('steered', 'queued', 'started', 'pending_approval', 'denied', 'expired', 'failed'), projectId: str, sessionId: str, messageId: str,
+    hopsLeft: num, remaining: num, id: str, approvalId: str, note: str, error: str }, ['delivered']),
   delegate: object({ id: str, role: str, provider, status: literal('working') }),
   delegate_followup: object({ id: str, status: choices('working', 'queued') }),
   list_delegates: object({ delegates: array(object({ id: str, role: str, provider, model: str, effort: str, status: choices('working', 'idle', 'failed', 'stopped', 'interrupted'), turns: integer, queued: integer, dismissed: bool,

@@ -429,6 +429,7 @@
   /* Steering is the same colour as the state it acts on, so the button reads as
      "act on the thing that is working" rather than as a second send. */
   .send.steer { background: var(--bgwork); color: var(--on-accent); margin-right: 6px; }
+  .message-sender .steer-tag { color: var(--bgwork); font-size: 11px; }
   /* `display: inline-grid` above outranks the browser's [hidden] rule, so the
      attribute alone left the button permanently on screen. */
   .send[hidden] { display: none; }
@@ -3703,8 +3704,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       var src=URL.createObjectURL(blob); im.onload=im.onerror=function(){URL.revokeObjectURL(src);}; im.src=src;
     }).catch(function(){ im.alt='Image unavailable · '+im.alt; im.classList.add('unavailable'); });
   }
-  function nodeMsg(role, text, atts, ts, provider, sender) {
-    var wrap = document.createElement('div'); wrap.className = 'msg ' + role; wrap._messageText = text; if(ts)wrap.dataset.messageTs=ts;
+  function nodeMsg(role, text, atts, ts, provider, sender, steered) {
+    var wrap = document.createElement('div'); wrap.className = 'msg ' + role + (steered ? ' steered' : ''); wrap._messageText = text; if(ts)wrap.dataset.messageTs=ts;
     var lab = document.createElement('div'); lab.className = 'role';
     lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
     if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor','delegate'].indexOf(sender.kind) >= 0) {
@@ -3713,10 +3714,13 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       lab.classList.add('message-sender'); lab.textContent = '';
       lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : sender.kind === 'delegate' ? 'fanout' : 'plug', 'sm'));
       var identity = document.createElement('span'), name = document.createElement('strong'), project = document.createElement('small');
-      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : sender.kind === 'delegate' ? 'Delegates' : 'External sender';
+      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : sender.kind === 'delegate' ? (sender.conversationTitle || 'Delegates') : 'External sender';
       project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : sender.kind === 'advisor' ? 'Review' : sender.kind === 'delegate' ? 'Reports' : 'MCP');
-      identity.appendChild(name); identity.appendChild(project); lab.appendChild(identity);
-      lab.title = 'From ' + name.textContent + ' · ' + project.textContent;
+      identity.appendChild(name); identity.appendChild(project);
+      // An AI's steer landed INSIDE a running turn, not as a turn of its own.
+      if (steered) { var how = document.createElement('small'); how.className = 'steer-tag'; how.textContent = 'Steered into the running turn'; identity.appendChild(how); }
+      lab.appendChild(identity);
+      lab.title = 'From ' + name.textContent + ' · ' + project.textContent + (steered ? ' · steered into the running turn' : '');
       lab.setAttribute('aria-label', lab.title);
     }
     wrap.appendChild(lab);
@@ -4196,6 +4200,16 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       if (mineConvo) { lastLabel = v.label; runningSubs = v.subCount; subs = v.subs; renderBusy(); }
       renderStrip();
     }
+    else if (kind === 'steered') {
+      // An AI (another conversation, a delegate, this conversation's own
+      // subagent) steered text INTO the running turn. The panel's own steer
+      // renders locally; this is the one it would otherwise never see.
+      if (data.messageId && typeof data.text === 'string') {
+        var steerHost = mineConvo ? chatEl : viewOf(pid, sid).frag;
+        var steerShown = Array.prototype.some.call(steerHost.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === data.messageId; });
+        if (!steerShown) { var steerNode = nodeMsg('user', data.text, null, data.ts, providerFor(pid, sid), data.sender, true); steerNode.dataset.messageSourceId = data.messageId; appendNode(pid, sid, steerNode); }
+      }
+    }
     else if (kind === 'session_started') {
       if ((data.messageId || data.sender?.messageId) && typeof data.displayPrompt === 'string' && !data.displayPrompt.trimStart().startsWith('/')) {
         var host = mineConvo ? chatEl : viewOf(pid, sid).frag;
@@ -4297,7 +4311,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       // Global, not conversation-scoped: the requesting AND target conversation
       // may be anywhere, so this must show regardless of what's on screen.
       if (data.status === 'pending') {
-        if (!mcpApprovals[data.id]) notify('AI wants to send a message', String(data.projectName || '') + ' · ' + String(data.targetLabel || '') + ': ' + String(data.message || '').slice(0, 80));
+        if (!mcpApprovals[data.id]) notify(data.steer ? 'AI wants to steer a running turn' : 'AI wants to send a message', String(data.projectName || '') + ' · ' + String(data.targetLabel || '') + ': ' + String(data.message || '').slice(0, 80));
         mcpApprovals[data.id] = data;
       } else {
         delete mcpApprovals[data.id];
@@ -4747,13 +4761,14 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       var card = document.createElement('div'); card.className = 'mcpbar';
       var hdr = document.createElement('div'); hdr.className = 'mcphdr';
       hdr.appendChild(icon('sparkles', 'sm'));
-      hdr.appendChild(document.createTextNode('AI wants to message another conversation'));
+      hdr.appendChild(document.createTextNode(a.steer ? 'AI wants to steer another conversation’s running turn' : 'AI wants to message another conversation'));
       card.appendChild(hdr);
       var to = document.createElement('div'); to.className = 'mcpto'; to.textContent = mcpToLine(a); card.appendChild(to);
       var msg = document.createElement('div'); msg.className = 'mcpmsg'; msg.textContent = a.message; card.appendChild(msg);
       var acts = document.createElement('div'); acts.className = 'mcpacts';
       var deny = document.createElement('button'); deny.className = 'deny'; deny.textContent = 'Deny';
-      var approve = document.createElement('button'); approve.className = 'approve'; approve.textContent = 'Approve & send';
+      var approve = document.createElement('button'); approve.className = 'approve'; approve.textContent = a.steer ? 'Steer into the running turn' : 'Approve & send';
+      if (a.steer) approve.title = 'If its turn has ended by then, this is delivered as a new message instead';
       if (mcpDeciding[id]) { deny.disabled = true; approve.disabled = true; }
       deny.addEventListener('click', function () { mcpDecide(id, false); });
       approve.addEventListener('click', function () { mcpDecide(id, true); });
@@ -4782,7 +4797,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       card.appendChild(msg);
       var actions = document.createElement('div'); actions.className = 'mcp-appr-actions';
       var deny = document.createElement('button'); deny.className = 'send ghost'; deny.textContent = 'Deny';
-      var approve = document.createElement('button'); approve.className = 'send'; approve.textContent = 'Approve';
+      var approve = document.createElement('button'); approve.className = 'send'; approve.textContent = a.steer ? 'Steer into the running turn' : 'Send';
       if (mcpDeciding[id]) { deny.disabled = true; approve.disabled = true; }
       deny.addEventListener('click', function () { mcpDecide(id, false); });
       approve.addEventListener('click', function () { mcpDecide(id, true); });
@@ -6021,7 +6036,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
                 ? function () { appendNode(pid, sid, nodeNotice(m.text)); }           // compacted / cleared divider
                 : m.role === 'summary'
                   ? function () { appendNode(pid, sid, nodeSummary(m.text, m.ts)); }  // post-compaction recap
-                  : function () { var n = m.role === 'error' ? nodeSys('error: ' + m.text, 'banner err') : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, m.attachments, m.ts, providerFor(pid,sid), m.sender); if(m.messageId)n.dataset.messageSourceId=m.messageId; appendNode(pid,sid,n); } });
+                  : function () { var n = m.role === 'error' ? nodeSys('error: ' + m.text, 'banner err') : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, m.attachments, m.ts, providerFor(pid,sid), m.sender, m.steered); if(m.messageId)n.dataset.messageSourceId=m.messageId; appendNode(pid,sid,n); } });
       });
       // The transcript now carries the action trail itself, so replaying the
       // in-memory log on top would double every row from this browser session.
@@ -6134,7 +6149,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
                   ? nodeNotice(m.text)
                   : m.role === 'summary'
                     ? nodeSummary(m.text, m.ts)
-                    : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, m.attachments, m.ts, providerFor(pid, sid), m.sender));
+                    : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, m.attachments, m.ts, providerFor(pid, sid), m.sender, m.steered));
         });
         chatEl.insertBefore(frag, chatEl.firstChild);
         scroller.scrollTop = scroller.scrollHeight - fromBottom;
@@ -6214,7 +6229,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); loadReadState(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'steered', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -6545,7 +6560,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
         : m.role === 'notice' ? nodeNotice(m.text)
         : m.role === 'summary' ? nodeSummary(m.text, m.ts)
         : m.role === 'model' ? nodeModelMark(m.text, m.ts)
-        : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, provider || 'claude', m.sender);
+        : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, provider || 'claude', m.sender, m.steered);
       fragment.appendChild(n);
     });
     box.replaceChildren(fragment);

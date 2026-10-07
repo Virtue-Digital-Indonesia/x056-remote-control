@@ -11,7 +11,7 @@ import type { RawEvent } from '../src/types.js';
  * answers the handshake and turn/start the way the real one does (verified
  * live on 0.153.4), and emits notifications when the test says so.
  */
-function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; skills?: {name:string;path:string;enabled:boolean}[]; deferThread?: boolean } = {}) {
+function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; skills?: {name:string;path:string;enabled:boolean}[]; deferThread?: boolean; steerReply?: 'error' | 'none' } = {}) {
   const child = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter; stdin: { write: (s: string) => void; destroyed: boolean; writableEnded: boolean };
     kill: (s?: string) => void; pid?: number;
@@ -40,7 +40,9 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
       } else if (m.method === 'turn/start') {
         if (opts.refuseTurn) out({ id: m.id, error: { code: -32600, message: 'model gpt-6-astra is not available on this account' } });
         else out({ id: m.id, result: { turn: { id: `turn_${++turnSeq}`, status: 'inProgress' } } });
-      } else if (m.id !== undefined) out({ id: m.id, result: {} }); // steer / interrupt acks
+      } else if (m.method === 'turn/steer' && opts.steerReply === 'error') out({ id: m.id, error: { code: -32600, message: 'expected active turn id turn_1 but found none' } });
+      else if (m.method === 'turn/steer' && opts.steerReply === 'none') return;
+      else if (m.id !== undefined) out({ id: m.id, result: {} }); // steer / interrupt acks
     },
   };
   let killed = false;
@@ -64,10 +66,12 @@ function fakeAppServer(opts: { threadId?: string; failThread?: boolean; noRollou
   };
 }
 
-function pool(o: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; skills?: {name:string;path:string;enabled:boolean}[]; deferThread?: boolean; workingGraceMs?: number; now?: () => number } = {}) {
+function pool(o: { threadId?: string; failThread?: boolean; noRollout?: boolean; refuseTurn?: boolean; skills?: {name:string;path:string;enabled:boolean}[]; deferThread?: boolean; workingGraceMs?: number; now?: () => number; steerReply?: 'error' | 'none'; steerAckMs?: number } = {}) {
   const spawned: ReturnType<typeof fakeAppServer>[] = [];
+  const transport = new CodexTransport();
+  if (o.steerAckMs !== undefined) transport.steerAckMs = o.steerAckMs;
   const p = new PersistentTurns({
-    transport: new CodexTransport(),
+    transport,
     workingGraceMs: o.workingGraceMs, now: o.now,
     spawnFn: () => { const f = fakeAppServer(o); spawned.push(f); return f.child as never; },
   });
@@ -104,7 +108,7 @@ describe('codex persistent: handshake', () => {
     f.notify('turn/started', { threadId: 'parent', turn: { id: 'automatic' } });
     expect(p.activeSessions()).toMatchObject([{ parentActive: true }]);
     f.complete(); expect(p.activeSessions()).toEqual([]);
-    expect(p.injectMessage('x056-conv', 'One more check')).toBe(true);
+    expect(await p.injectMessage('x056-conv', 'One more check')).toBe(true);
     expect(p.activeSessions()).toHaveLength(1);
     f.complete();
     expect(states.at(-1)).toMatchObject({ active: false }); // pending steer must publish its completion
@@ -239,10 +243,10 @@ describe('codex persistent: a turn', () => {
 });
 
 describe('codex persistent: steering and stopping', () => {
-  it('mid-turn steer is turn/steer bound to the running turn id', () => {
+  it('mid-turn steer is turn/steer bound to the running turn id', async () => {
     const { p, spawned } = pool();
     p.startTurn(turn({ sessionId: 's1' }));
-    expect(p.injectMessage('s1', 'also check the tests')).toBe(true);
+    expect(await p.injectMessage('s1', 'also check the tests')).toBe(true);
     const st = spawned[0].sent('turn/steer');
     expect(st).toHaveLength(1);
     expect(st[0].params).toMatchObject({ expectedTurnId: 'turn_1', input: [{ type: 'text', text: 'also check the tests' }] });
@@ -253,7 +257,7 @@ describe('codex persistent: steering and stopping', () => {
     const h1 = p.startTurn(turn({ sessionId: 's1', prompt: 'first' }));
     spawned[0].complete(); await h1.done;
 
-    expect(p.injectMessage('s1', 'background steer')).toBe(true);
+    expect(await p.injectMessage('s1', 'background steer')).toBe(true);
     expect(spawned[0].sent('turn/start')).toHaveLength(2);
     expect(spawned[0].sent('turn/steer')).toHaveLength(0);
 
@@ -266,12 +270,35 @@ describe('codex persistent: steering and stopping', () => {
     expect(await h2.done).toMatchObject({ code: 0 });
   });
 
-  it('cannot steer before the thread is open', () => {
+  it('a turn/steer the app-server answers with an error is NOT steered (the caller queues the text)', async () => {
+    const { p, spawned } = pool({ steerReply: 'error' });
+    p.startTurn(turn({ sessionId: 's1' }));
+    expect(await p.injectMessage('s1', 'too late')).toBe(false);
+    expect(spawned[0].sent('turn/steer')).toHaveLength(1);
+  });
+
+  it('no reply to turn/steer within the ack window is not steered either', async () => {
+    const { p } = pool({ steerReply: 'none', steerAckMs: 30 });
+    p.startTurn(turn({ sessionId: 's1' }));
+    const t0 = Date.now();
+    expect(await p.injectMessage('s1', 'anyone there?')).toBe(false);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(25);
+  });
+
+  it('requireTurn refuses an idle process instead of starting a turn no gateway run tracks', async () => {
+    const { p, spawned } = pool();
+    const h = p.startTurn(turn({ sessionId: 's1' }));
+    spawned[0].complete(); await h.done;
+    expect(await p.injectMessage('s1', 'from an AI', { requireTurn: true })).toBe(false);
+    expect(spawned[0].sent('turn/start')).toHaveLength(1);
+  });
+
+  it('cannot steer before the thread is open', async () => {
     const { p } = pool();
     // failThread keeps ext.threadId unset forever
     const q = pool({ failThread: true });
     q.p.startTurn(turn({ sessionId: 's9' }));
-    expect(q.p.injectMessage('s9', 'x')).toBe(false);
+    expect(await q.p.injectMessage('s9', 'x')).toBe(false);
     void p;
   });
 
@@ -534,7 +561,7 @@ describe('codex persistent: the conversation id is the identity, not the CLI id'
     spawned[0].complete(); await h1.done;
     p.startTurn(turn({ mode: 'resume', sessionId: 'thr_real', conversationId: 'x056-conv' }));
     expect(p.workingSessions().map((w) => w.sessionId)).toEqual(['x056-conv']);
-    expect(p.injectMessage('x056-conv', 'steer me')).toBe(true);
+    expect(await p.injectMessage('x056-conv', 'steer me')).toBe(true);
     expect(spawned[0].sent('turn/steer')).toHaveLength(1);
     expect(p.interruptSession('x056-conv')).toBe(true);
     expect(spawned[0].sent('turn/interrupt')).toHaveLength(1);

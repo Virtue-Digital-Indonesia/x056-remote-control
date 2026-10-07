@@ -231,6 +231,51 @@ describe('delegates on the gateway', () => {
       expect(dismissed(f.mgr, pid, sid)).toEqual({ backend: 'auto', dwh: null });
     });
 
+    it('a needs-orchestrator report is STEERED into the busy orchestrator turn, and still auto-dismisses when that turn ends', async () => {
+      const f = fixture(); const { pid, sid } = await orchestrator(f);
+      byRole(f.mgr, { backend: 'needs_orchestrator' });
+      const injected: string[] = [];
+      vi.spyOn(f.mgr as unknown as { pools: () => unknown[] }, 'pools').mockReturnValue([{
+        injectMessage: async (_s: string, text: string, o: { requireTurn?: boolean } = {}) => { expect(o.requireTurn).toBe(true); injected.push(text); return true; },
+        activeSessions: () => [], workingSessions: () => [], workingAccounts: () => [], agentRunning: () => undefined,
+        interruptSession: () => false, retireIdleSession: () => true, shutdown: () => {},
+      }]);
+      const a = f.mgr.startDelegate(pid, sid, { role: 'backend', brief: 'A' });
+      await tick();
+      f.finish(a.sessionId, 'DONE\nShipped.'); await tick(); await tick();
+      expect(injected).toHaveLength(1);
+      expect(readMessageSender(injected[0]).sender?.kind).toBe('delegate');
+      expect(readMessageSender(injected[0]).text).toMatch(/^\[Delegates\] 1 report[\s\S]*Shipped\./);
+      expect(queued(f.mgr, pid, sid)).toHaveLength(0); // nothing waits in the queue
+      const r = f.mgr.delegateStore().reports(sid)[0];
+      expect(r).toMatchObject({ woke: true });
+      expect(r.queueId).toMatch(/^steered:/);
+      expect(dismissed(f.mgr, pid, sid)).toEqual({ backend: null });
+      f.finish(sid, 'read it'); await tick(); await tick();
+      expect(dismissed(f.mgr, pid, sid)).toEqual({ backend: 'auto' }); // not stuck on the bar
+    });
+
+    it('a delegate steers its orchestrator only while its own turn runs; idle orchestrator = an ordinary send', async () => {
+      const f = fixture(); const { pid, sid } = await orchestrator(f);
+      const injected: string[] = [];
+      vi.spyOn(f.mgr as unknown as { pools: () => unknown[] }, 'pools').mockReturnValue([{
+        injectMessage: async (_s: string, text: string) => { injected.push(text); return true; },
+        activeSessions: () => [], workingSessions: () => [], workingAccounts: () => [], agentRunning: () => undefined,
+        interruptSession: () => false, retireIdleSession: () => true, shutdown: () => {},
+      }]);
+      const a = f.mgr.startDelegate(pid, sid, { role: 'backend', brief: 'A' });
+      await tick();
+      const out = await f.mgr.steerFromDelegate(pid, sid, a.id, 'heads-up: the schema changed');
+      expect(out).toMatchObject({ steered: true, hopsLeft: SessionManager.RELAY_HOP_LIMIT - (f.mgr.relayDepth(sid)) });
+      expect(readMessageSender(injected[0]).sender).toMatchObject({ kind: 'delegate', conversationTitle: 'backend' });
+      f.finish(sid, 'ok'); await tick();
+      const idle = await f.mgr.steerFromDelegate(pid, sid, a.id, 'second note');
+      expect(idle).toMatchObject({ steered: false, queued: false });
+      expect(injected).toHaveLength(1);
+      f.finish(sid, 'ok'); f.finish(a.sessionId, 'DONE'); await tick();
+      await expect(f.mgr.steerFromDelegate(pid, sid, a.id, 'after my turn')).rejects.toThrow(/whose turn is running/);
+    });
+
     it('puts a DONE delegate away when the orchestrator turn that read its report ends; needs-a-person stays', async () => {
       const f = fixture(); const { pid, sid } = await orchestrator(f);
       byRole(f.mgr, { backend: 'done', reviewer: 'needs_human' });

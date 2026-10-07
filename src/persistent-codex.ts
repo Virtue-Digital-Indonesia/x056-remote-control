@@ -59,6 +59,12 @@ interface Ext {
   turnStarts?: Set<number>;
   lastOptions?: TurnOptions;
   commands?: Map<number, { kind: string; name: string; args: string; opts: TurnOptions }>;
+  /** Steer requests (turn/steer, or a between-turn turn/start) awaiting their
+   *  reply: request id -> settle(ok). Registered BEFORE the line is written,
+   *  because the reply can arrive inside the write. */
+  steerAcks?: Map<number, (ok: boolean) => void>;
+  /** The ack promise for the steer line most recently built. */
+  lastSteerAck?: Promise<boolean>;
 }
 
 function ext(st: TransportState): Ext { return st.ext as Ext; }
@@ -181,14 +187,46 @@ export class CodexTransport implements Transport {
    */
   steerMessage(st: TransportState, text: string, turnInFlight: boolean): string | null {
     const x = ext(st);
+    x.lastSteerAck = undefined;
     if (!x.threadId) return null;
     if (/^\//.test(text.trim()) && x.lastOptions) return turnInFlight ? null : this.userMessage(st, x.lastOptions, text);
     if (turnInFlight && x.turnId) {
-      return JSON.stringify({ jsonrpc: '2.0', id: nextId(x), method: 'turn/steer',
+      const id = nextId(x); this.expectAck(x, id);
+      return JSON.stringify({ jsonrpc: '2.0', id, method: 'turn/steer',
         params: { threadId: x.threadId, expectedTurnId: x.turnId, input: [{ type: 'text', text }] } });
     }
-    const id = nextId(x); x.turnStarts!.add(id);
+    // A turn is in flight but its turn/start reply (the turn id) is not back
+    // yet: there is nothing to bind a turn/steer to, and a second turn/start
+    // would produce a result that settles the gateway turn early.
+    if (turnInFlight) return null;
+    const id = nextId(x); x.turnStarts!.add(id); this.expectAck(x, id);
     return JSON.stringify({ jsonrpc: '2.0', id, method: 'turn/start', params: { threadId: x.threadId, input: [{ type: 'text', text }] } });
+  }
+
+  /** How long a steer waits for the app-server's reply before it counts as
+   *  not delivered (the caller then queues the text instead). */
+  steerAckMs = 3000;
+
+  private expectAck(x: Ext, id: number): void {
+    const acks = (x.steerAcks ??= new Map());
+    x.lastSteerAck = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => { if (acks.delete(id)) resolve(false); }, this.steerAckMs);
+      timer.unref?.();
+      acks.set(id, (ok: boolean) => { clearTimeout(timer); acks.delete(id); resolve(ok); });
+    });
+  }
+
+  /**
+   * Whether the steer just written was accepted. The app-server answers
+   * turn/steer with an error when the turn it names is no longer the active
+   * one (it ended, or another started) -- reported as steered before this,
+   * and the text was lost. No reply within steerAckMs is also a miss.
+   */
+  steerAck(st: TransportState): Promise<boolean> | undefined {
+    const x = ext(st);
+    const ack = x.lastSteerAck;
+    x.lastSteerAck = undefined;
+    return ack;
   }
 
   interruptMessage(st: TransportState): string {
@@ -265,6 +303,7 @@ export class CodexTransport implements Transport {
         ...(command.opts.model?{model:command.opts.model}:{}),...(command.opts.effort?{effort:command.opts.effort}:{})}}));
       return {events:[],turnEnded:false};
     }
+    if (id !== undefined && x.steerAcks?.has(id)) x.steerAcks.get(id)!(!err && !!res);
     if (id !== undefined && x.turnStarts?.has(id)) {
       x.turnStarts.delete(id);
       if (err || !res) {

@@ -80,6 +80,9 @@ export interface Transport {
   /** The line that steers text into the turn in flight. With NO turn in flight
    *  (background work) a steer is a fresh turn -- the pool counts its result. */
   steerMessage(st: TransportState, text: string, turnInFlight: boolean): string | null;
+  /** Optional: the delivery verdict for the steer line just built, for a
+   *  protocol that answers it (Codex). Absent = the write itself is delivery. */
+  steerAck?(st: TransportState): Promise<boolean> | undefined;
   /** The line that interrupts the turn in flight. */
   interruptMessage(st: TransportState): string;
   /** One stdout line in; adapter events and a turn-ended flag out. May flip st.ext.ready. */

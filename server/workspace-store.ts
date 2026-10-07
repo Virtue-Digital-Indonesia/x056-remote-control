@@ -379,36 +379,49 @@ export class DeliveryStore {
       steered?: boolean;
     },
   ): DeliveryReceipt {
+    const begun = this.begin(body);
+    if ('done' in begun) return begun.done;
+    let result: { sessionId?: string; id?: string; queued?: boolean; steered?: boolean };
+    try { result = action(); } catch (e) { this.fail(begun.row, e); throw e; }
+    return this.finish(begun.row, result);
+  }
+  /** `run` for an action that has to wait (a steer waits for the provider's
+   *  ack). The `processing` marker is durable before the action starts, as
+   *  in `run`; a retry that arrives meanwhile gets that marker back. */
+  async runAsync<T extends { requestId?: string }>(
+    body: T,
+    action: () => Promise<{ sessionId?: string; id?: string; queued?: boolean; steered?: boolean }>,
+  ): Promise<DeliveryReceipt> {
+    const begun = this.begin(body);
+    if ('done' in begun) return begun.done;
+    let result: { sessionId?: string; id?: string; queued?: boolean; steered?: boolean };
+    try { result = await action(); } catch (e) { this.fail(begun.row, e); throw e; }
+    return this.finish(begun.row, result);
+  }
+  private begin<T extends { requestId?: string }>(body: T): { done: DeliveryReceipt } | { row: DeliveryReceipt } {
     const id = body.requestId || '';
     if (!/^[a-zA-Z0-9-]{16,80}$/.test(id)) throw new Error('Invalid request ID');
     const hash = createHash('sha256').update(JSON.stringify(body)).digest('hex'),
       previous = this.get(id);
     if (previous && previous.hash !== hash)
       throw new Error('Request ID was already used for another message');
-    if (previous && previous.status !== 'failed') return previous;
-    let row: DeliveryReceipt = { requestId: id, hash, status: 'processing', at: Date.now() };
+    if (previous && previous.status !== 'failed') return { done: previous };
+    const row: DeliveryReceipt = { requestId: id, hash, status: 'processing', at: Date.now() };
     this.put(row);
-    let result: {
-      sessionId?: string;
-      id?: string;
-      queued?: boolean;
-      steered?: boolean;
-    };
-    try {
-      result = action();
-    } catch (e) {
-      row = { ...row, status: 'failed', error: (e as Error).message };
-      this.put(row);
-      throw e;
-    }
-    row = {
+    return { row };
+  }
+  private fail(row: DeliveryReceipt, e: unknown): void {
+    this.put({ ...row, status: 'failed', error: (e as Error).message });
+  }
+  private finish(row: DeliveryReceipt, result: { sessionId?: string; id?: string; queued?: boolean; steered?: boolean }): DeliveryReceipt {
+    const done: DeliveryReceipt = {
       ...row,
       ...result,
       status: result.queued ? 'queued' : 'accepted',
     };
     // A persistence error after dispatch leaves the durable processing marker;
     // it must never turn an already-started request into a retryable failure.
-    this.put(row);
-    return row;
+    this.put(done);
+    return done;
   }
 }

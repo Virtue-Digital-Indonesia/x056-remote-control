@@ -198,6 +198,16 @@ export class ApiController {
       throw new BadRequestException((error as Error).message);
     }
   }
+  private async deliveryOnceAsync(body: SendBody, action: () => Promise<{ sessionId?: string; id?: string; queued?: boolean; steered?: boolean }>) {
+    try { return await this.deliveries.runAsync(body, action); }
+    catch (error) {
+      try {
+        if (body.projectId && body.sessionId) this.manager.reportDeliveryError(body.projectId, body.sessionId, (error as Error).message, body.requestId);
+      } catch (logError) { console.warn('Could not record rejected delivery', logError); }
+      if (error instanceof BadRequestException || error instanceof ConflictException) throw error;
+      throw new BadRequestException((error as Error).message);
+    }
+  }
   private quotaCacheFile(): string {
     return join(this.stateDir, 'quota-cache.json');
   }
@@ -780,8 +790,8 @@ export class ApiController {
    *  moves, the panel's "current" selection. */
   @Post('conversations/send')
   @HttpCode(200)
-  conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean; from?: string; helpers?: HelperPatch }):
-    { mode: 'auto'; sessionId: string; queued: boolean; hopsLeft: number; messageId: string } | { mode: 'approval'; approvalId: string; messageId?: string } {
+  async conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean; from?: string; helpers?: HelperPatch; steer?: boolean }):
+    Promise<{ mode: 'auto'; sessionId: string; queued: boolean; steered?: boolean; hopsLeft: number; messageId: string } | { mode: 'approval'; approvalId: string; messageId?: string; steer?: boolean }> {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
     if (body.sessionId) {
@@ -800,6 +810,10 @@ export class ApiController {
     // could ask for 'auto' would make the approval gate worthless.
     if (this.manager.mcpSendMode() === 'auto') {
       try {
+        if (body.steer && body.sessionId) {
+          const out = await this.manager.deliverMcpSteer(body.projectId, body.sessionId, body.prompt, opts);
+          return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued, steered: out.steered, hopsLeft: out.hopsLeft, messageId: out.messageId };
+        }
         const out = this.manager.deliverMcpMessage(body.projectId, body.sessionId, body.prompt, opts);
         return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued, hopsLeft: out.hopsLeft, messageId: out.messageId };
       } catch (err) {
@@ -808,8 +822,47 @@ export class ApiController {
         throw err;
       }
     }
-    const approval = this.manager.requestMcpSend(body.projectId, body.sessionId, body.prompt, opts);
-    return { mode: 'approval' as const, approvalId: approval.id, messageId: approval.sender?.messageId };
+    const approval = this.manager.requestMcpSend(body.projectId, body.sessionId, body.prompt, { ...opts, steer: !!body.steer });
+    return { mode: 'approval' as const, approvalId: approval.id, messageId: approval.sender?.messageId, ...(approval.steer ? { steer: true } : {}) };
+  }
+
+  /**
+   * The MCP `steer` tool: text INTO a running turn rather than after it.
+   * Who may skip the approval gate is decided here from the caller's
+   * identity (its per-turn MCP config), never from a flag it chooses:
+   *  - no target, or its own conversation as target (`self`): a self-steer,
+   *    bounded by the self-message streak;
+   *  - no target from a delegate: its orchestrator, no approval (the owner's
+   *    choice for delegates), on the orchestrator's relay chain;
+   *  - any other target: exactly send_message {steer: true}.
+   */
+  @Post('conversations/steer')
+  @HttpCode(200)
+  async conversationSteer(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; from?: string; self?: { projectId?: string; sessionId?: string }; delegate?: { of?: string; id?: string } }) {
+    if (!body?.prompt?.trim()) throw new BadRequestException('prompt required');
+    const self = body.self?.projectId && body.self?.sessionId ? { projectId: body.self.projectId, sessionId: body.self.sessionId } : undefined;
+    const toSelf = self && (!body.sessionId || (body.sessionId === self.sessionId && (!body.projectId || body.projectId === self.projectId)));
+    try {
+      if (toSelf) {
+        if (body.from !== self.sessionId) throw new BadRequestException('a self-steer must come from that conversation');
+        const r = await this.manager.steerSelf(self.projectId, self.sessionId, body.prompt);
+        return { delivered: r.delivered, projectId: self.projectId, sessionId: self.sessionId, remaining: r.remaining, ...(r.messageId ? { messageId: r.messageId } : {}), ...(r.id ? { id: r.id } : {}) };
+      }
+      if (!body.sessionId && body.delegate?.of && body.delegate.id) {
+        const [pid, sid] = body.delegate.of.split('/');
+        if (!pid || !sid) throw new BadRequestException('bad delegate identity');
+        const out = await this.manager.steerFromDelegate(pid, sid, body.delegate.id, body.prompt);
+        return { delivered: out.steered ? 'steered' : out.queued ? 'queued' : 'started', projectId: pid, sessionId: out.sessionId, hopsLeft: out.hopsLeft, messageId: out.messageId };
+      }
+    } catch (err) {
+      if (err instanceof RelayLimitError) throw new ConflictException(err.message);
+      if (err instanceof BadRequestException) throw err;
+      throw new ConflictException((err as Error).message);
+    }
+    if (!body.projectId || !body.sessionId) throw new BadRequestException('projectId and sessionId required (this client has no conversation of its own)');
+    const r = await this.conversationSend({ projectId: body.projectId, sessionId: body.sessionId, prompt: body.prompt, from: body.from, interactive: false, steer: true });
+    if (r.mode === 'approval') return { delivered: 'pending_approval', mode: 'approval', projectId: body.projectId, approvalId: r.approvalId, messageId: r.messageId };
+    return { delivered: r.steered ? 'steered' : r.queued ? 'queued' : 'started', mode: 'auto', projectId: body.projectId, sessionId: r.sessionId, hopsLeft: r.hopsLeft, messageId: r.messageId };
   }
 
   /**
@@ -1135,10 +1188,12 @@ export class ApiController {
    *  the send immediately; denying (or letting it expire) means it is never sent. */
   @Post('mcp/approvals/decide')
   @HttpCode(200)
-  mcpApprovalDecide(@Body() body: { id?: string; approve?: boolean; reviewedOperationId?: string }) {
+  async mcpApprovalDecide(@Body() body: { id?: string; approve?: boolean; reviewedOperationId?: string }) {
     if (!body?.id) throw new BadRequestException('id required');
     const a = this.manager.decideMcpApproval(body.id, !!body.approve, body.reviewedOperationId);
     if (!a) throw new BadRequestException('unknown or already-decided approval id');
+    // An approved steer is delivered asynchronously; answer with its outcome.
+    await this.manager.approvalSettled(a.id);
     return a;
   }
 
@@ -1884,17 +1939,17 @@ export class ApiController {
    */
   @Post('steer')
   @HttpCode(200)
-  steer(@Body() body: SendBody): {steered:boolean;queued:boolean;id?:string}|DeliveryReceipt {
+  async steer(@Body() body: SendBody): Promise<{steered:boolean;queued:boolean;id?:string}|DeliveryReceipt> {
     // Steering cannot carry attachment references. Keep the entire message together.
     if (hasAttachments(body)) {
       const queue = () => ({ ...this.enqueueInternal(body), steered: false });
       return body.requestId ? this.deliveryOnce(body, queue) : queue();
     }
-    if(body.requestId)return this.deliveryOnce(body,()=>{if(body.projectId&&body.sessionId&&body.prompt&&this.manager.steerSession(body.projectId,body.sessionId,body.prompt))return {steered:true,queued:false,sessionId:body.sessionId};return {...this.enqueueInternal(body),steered:false};});
+    if(body.requestId)return this.deliveryOnceAsync(body,async()=>{if(body.projectId&&body.sessionId&&body.prompt&&await this.manager.steerSession(body.projectId,body.sessionId,body.prompt))return {steered:true,queued:false,sessionId:body.sessionId};return {...this.enqueueInternal(body),steered:false};});
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.sessionId) throw new BadRequestException('sessionId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
-    if (this.manager.steerSession(body.projectId, body.sessionId, body.prompt)) {
+    if (await this.manager.steerSession(body.projectId, body.sessionId, body.prompt)) {
       return { steered: true, queued: false };
     }
     try {

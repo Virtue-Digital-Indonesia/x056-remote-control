@@ -86,7 +86,7 @@ describe('SessionManager: the ChatGPT advisor end to end', () => {
       at: new Date().toISOString(), sessionId: sid, trigger: input.trigger, model: input.model, latencyMs: 5, delivered: 'none',
       verdict: input.trigger === 'done' ? 'concern' : 'adjust', advice: input.trigger === 'done' ? 'You never re-ran the login test.' : 'Read the stack trace first.',
     }));
-    const steer = vi.spyOn(mgr, 'steerSession').mockReturnValue(true);
+    const steer = vi.spyOn(mgr, 'steerSession').mockResolvedValue(true);
     const seen: GatewayEvent[] = []; mgr.subscribe((e) => seen.push(e));
     mgr.continueSession(p.id, sid, 'fix /login', {});
     for (let i = 0; i < 100 && consult.mock.calls.length < 2; i++) await new Promise((r) => setTimeout(r, 10));

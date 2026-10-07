@@ -202,10 +202,17 @@ export class PersistentTurns {
    * mid-turn reaches the model inside that same turn, and the CLI records it as
    * an `attachment.type === 'queued_command'` entry.
    *
-   * Returns false when there is no live process -- the caller must fall back to
-   * the queue rather than drop the message on the floor.
+   * Resolves false when there is no live process, or the transport refused
+   * the steer (Codex answers turn/steer with an error once the turn it names
+   * is over) -- the caller must fall back to the queue rather than drop the
+   * message on the floor.
+   *
+   * `requireTurn`: only into a gateway turn in flight. Without it a process
+   * that is alive but idle takes the text as a turn of its own, which no
+   * gateway run tracks -- right for the panel's steer into background work,
+   * wrong for an AI sender, whose message must then queue.
    */
-  injectMessage(sessionId: string, text: string): boolean {
+  async injectMessage(sessionId: string, text: string, opts: { requireTurn?: boolean } = {}): Promise<boolean> {
     // One session can have SEVERAL live entries: the key includes model and
     // effort, so switching model mid-conversation spawns a second process while
     // the first stays alive finishing its work. Map order is insertion order,
@@ -222,24 +229,30 @@ export class PersistentTurns {
       if (!target || better(e, target)) target = e;
     }
     if (!target) return false;
+    if (opts.requireTurn && !target.busy) return false;
     // A transport still in its handshake has nothing to steer into yet.
     const line = this.transport.steerMessage(target.st, text, target.busy);
     if (line === null) return false;
-    // A pipe whose far end is gone accepts writes silently, so `write` alone
-    // cannot tell delivered from discarded -- and the caller would skip the
-    // queue fallback on the strength of it.
-    if (!this.writeLine(target, line)) return false;
-    // Steering is output-producing work; without this the entry looks idle
-    // to the eviction pass and can be culled between the write and the
-    // model's first token.
-    target.lastOutput = this.now();
+    const ack = this.transport.steerAck?.(target.st);
     // With a turn in flight the model folds the steer into it -- one result
     // for both. With no turn, the steer IS a turn and emits a result of its
     // own, which would otherwise settle whatever gateway turn came next:
     // `runSession` would return the steer's text as that turn's answer and
-    // drain the queue into a process that had not started on it.
-    if (!target.busy) { target.pendingSteers++; target.activity.start(); this.publishActivity(target); }
-    return true;
+    // drain the queue into a process that had not started on it. Counted
+    // BEFORE the write: a reply (a refused turn/start ends "a turn" in
+    // ingest) can arrive inside it, and must find the slot already taken.
+    const idle = !target.busy;
+    if (idle) target.pendingSteers++;
+    // A pipe whose far end is gone accepts writes silently, so `write` alone
+    // cannot tell delivered from discarded -- and the caller would skip the
+    // queue fallback on the strength of it.
+    if (!this.writeLine(target, line)) { if (idle) target.pendingSteers--; return false; }
+    // Steering is output-producing work; without this the entry looks idle
+    // to the eviction pass and can be culled between the write and the
+    // model's first token.
+    target.lastOutput = this.now();
+    if (idle) { target.activity.start(); this.publishActivity(target); }
+    return ack ? await ack : true;
   }
 
   /** Stop a conversation's background work without killing the process, so the

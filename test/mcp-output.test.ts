@@ -52,7 +52,7 @@ afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir
 
 describe('all advertised output contracts', () => {
   it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(60);
+    expect(TOOLS).toHaveLength(61);
     expect(validators.size).toBe(TOOLS.length);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
@@ -113,6 +113,17 @@ describe('all advertised output contracts', () => {
     await expect(self.callToolResult(async () => manager.queueSelfMessage('p', 's', 'fixture'), 'message_self', { message: 'fixture' })).rejects.toThrow(/self-message limit/);
     manager.haltConversation('p', 's');
     covered.add('message_self');
+
+    // steer with no target = this conversation; nothing running, so it queues
+    // (and counts on the same streak as message_self).
+    manager.clearSelfQueueStreak('s');
+    const steered = await self.callToolResult(api, 'steer', { text: 'fixture' });
+    expect(validateResult('steer', steered)).toMatchObject({ delivered: 'queued', sessionId: 's', remaining: SessionManager.SELF_QUEUE_LIMIT - 1 });
+    const viaSelf = await self.callToolResult(api, 'message_self', { message: 'fixture', steer: true });
+    expect(validateResult('message_self', viaSelf)).toMatchObject({ delivered: 'queued', remaining: SessionManager.SELF_QUEUE_LIMIT - 2 });
+    manager.haltConversation('p', 's');
+    manager.clearSelfQueueStreak('s');
+    covered.add('steer');
 
     // The agent team's fork layer: off without the team, SHARP/SPLIT with it.
     const fork = (args: Record<string, unknown>) => self.callToolResult(async (_path: string, o?: RequestInit) => manager.forkDecision('p', 's', JSON.parse(String(o?.body))), 'quick_decision', args);
@@ -435,6 +446,24 @@ describe('send polling variants with disposable responses and controlled time', 
     expect(r.content[0].text.length).toBeGreaterThan(10);
     expect(api.mock.calls.filter(([path]) => path === '/api/conversations/send')).toHaveLength(1);
     expect(r).not.toHaveProperty('isError'); // Denial/expiry remain business outcomes.
+  });
+  it('automatic steer reports steered, and an approved steer waits out its delivery', async () => {
+    vi.useFakeTimers();
+    const auto = vi.fn(async () => ({ mode: 'auto', sessionId: 's', queued: false, steered: true, hopsLeft: 2, messageId: 'fixture-message' }));
+    const a = await callToolResult(auto, 'send_message', { projectId: 'p', sessionId: 's', message: 'fixture', steer: true, waitSeconds: 5 });
+    expect(validateResult('send_message', a).delivery).toMatchObject({ status: 'steered', hopsLeft: 2 });
+    expect(JSON.parse(String((auto.mock.calls[0] as unknown[])[1] && ((auto.mock.calls[0] as unknown[])[1] as RequestInit).body)).steer).toBe(true);
+    let polls = 0;
+    const approval = vi.fn(async (path: string) => {
+      if (path === '/api/conversations/send') return { mode: 'approval', approvalId: 'fixture-approval', messageId: 'fixture-message' };
+      // pending, then approved but still delivering, then steered.
+      polls++;
+      return polls === 1 ? { status: 'pending' } : polls === 2 ? { status: 'approved', delivering: true } : { status: 'approved', resultSessionId: 's', queued: false, delivered: 'steered' };
+    });
+    const p = callToolResult(approval, 'send_message', { projectId: 'p', sessionId: 's', message: 'fixture', steer: true });
+    await vi.runAllTimersAsync();
+    expect(validateResult('send_message', await p).delivery.status).toBe('steered');
+    expect(polls).toBe(3);
   });
   it.each(['sent', 'queued', 'reply', 'reply_timeout'])('automatic %s retains hop counts and polling', async status => {
     vi.useFakeTimers();
