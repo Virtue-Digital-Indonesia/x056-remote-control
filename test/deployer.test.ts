@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -80,19 +80,30 @@ describe('idle-only release gate', () => {
 
 describe('offline Project release snapshot', () => {
   const functions = source.slice(source.indexOf('PREVIOUS_CONTAINER=""'), source.indexOf('\n{\n  echo "=== tick'));
-  function snapshot(options: { enabled?: boolean; idle?: boolean; busy?: boolean; fail?: boolean } = {}) {
+  function snapshot(options: { enabled?: boolean; idle?: boolean; busy?: boolean; fail?: boolean; timeout?: boolean; cleanupFailure?: boolean; signal?: boolean } = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'deploy-backup-'));
     mkdirSync(join(dir, '.deploy', 'backups'), { recursive: true });
     if (options.enabled !== false) writeFileSync(join(dir, '.deploy', 'backup-project-spaces'), '');
+    writeFileSync(join(dir, '.deploy', 'requested'), 'original-request');
     try {
-      const output = execFileSync('bash', ['-c', `
+      const result = spawnSync('bash', ['-c', `
+        FLAG="$DIR/.deploy/requested"; STATUS="$DIR/.deploy/status.json"
+        timeout() {
+          printf 'BOUND %s\\n' "$*" >> "$DIR/actions"
+          shift 2; "$@"
+        }
         docker() {
           printf 'DOCKER %s\\n' "$*" >> "$DIR/actions"
           case "$*" in
             *' ps -q x056') printf previous-container ;;
             *' config --format json') printf '%s' '{"name":"fixture","services":{"x056":{}}}' ;;
             'inspect '*) printf previous-image ;;
-            'run '*) [ "$FAIL_BACKUP" != 1 ] ;;
+            'start -a '*)
+              [ "$SIGNAL_BACKUP" != 1 ] || kill -TERM $$
+              [ "$TIMEOUT_BACKUP" != 1 ] || return 124
+              [ "$FAIL_BACKUP" != 1 ] ;;
+            'rm -f '*) [ "$CLEANUP_FAILURE" != 1 ] ;;
+
           esac
         }
         git() { printf release-revision; }
@@ -108,10 +119,17 @@ describe('offline Project release snapshot', () => {
       `], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: {
         ...process.env, DIR: dir, IDLE_ONLY: options.idle === false ? '0' : '1',
         IS_BUSY: options.busy ? '1' : '0', FAIL_BACKUP: options.fail ? '1' : '0',
+        TIMEOUT_BACKUP: options.timeout ? '1' : '0', CLEANUP_FAILURE: options.cleanupFailure ? '1' : '0',
+        SIGNAL_BACKUP: options.signal ? '1' : '0',
       } });
+      const output = result.stdout;
       let actions = '';
       try { actions = readFileSync(join(dir, 'actions'), 'utf8'); } catch { /* No Docker for a normal request. */ }
-      return { output, actions };
+      let status = '';
+      try { status = readFileSync(join(dir, '.deploy', 'status.json'), 'utf8'); } catch {}
+      const requested = existsSync(join(dir, '.deploy', 'requested'));
+      const archived = readdirSync(join(dir, '.deploy')).filter(name => name.startsWith('requested.paused-backup-failed-'));
+      return { output, actions, status, requested, archived };
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
   it('leaves normal releases unchanged and requires idle-only for an offline backup', () => {
@@ -124,15 +142,54 @@ describe('offline Project release snapshot', () => {
     expect(busy.output).toContain('activity changed before backup');
     expect(busy.output).not.toContain('READY_TO_SWAP');
     expect(busy.actions).not.toContain('DOCKER stop');
+    expect(busy.requested).toBe(true);
+    expect(busy.archived).toHaveLength(0);
+  });
+  it('the real timeout wrapper terminates a hung Docker client', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deploy-timeout-'));
+    try {
+      writeFileSync(join(dir, 'docker'), '#!/bin/sh\nsleep 30\n', { mode: 0o700 });
+      const wrapper = source.slice(source.indexOf('bounded_docker()'), source.indexOf('\npause_backup_request()'));
+      const result = spawnSync('bash', ['-c', `${wrapper}\nbounded_docker 1s start -a fixture`], {
+        encoding: 'utf8', timeout: 8000, env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(124);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('keeps writers stopped when helper removal fails', () => {
+    const failed = snapshot({ fail: true, cleanupFailure: true });
+    expect(failed.actions).not.toContain('DOCKER start previous-container');
+    expect(JSON.parse(failed.status).status).toBe('backup_recovery_required');
+    expect(failed.requested).toBe(false);
+  });
+  it('archives the request and removes the helper before writer recovery on TERM', () => {
+    const failed = snapshot({ signal: true });
+    expect(failed.actions.indexOf('DOCKER rm -f')).toBeLessThan(failed.actions.indexOf('DOCKER start previous-container'));
+    expect(failed.requested).toBe(false);
+    expect(JSON.parse(failed.status).status).toBe('backup_failed');
+  });
+  it('bounds helper execution and restores writers only after removing a timed-out helper', () => {
+    const failed = snapshot({ timeout: true });
+    expect(failed.actions).toMatch(/BOUND --kill-after=5s 120s docker start -a x056-release-backup-/);
+    expect(failed.actions.indexOf('DOCKER rm -f')).toBeLessThan(failed.actions.indexOf('DOCKER start previous-container'));
+    expect(failed.requested).toBe(false);
+    expect(JSON.parse(failed.status).status).toBe('backup_failed');
   });
   it('requires a completed offline snapshot before proceeding', () => {
     const success = snapshot();
     expect(success.output).toContain('offline Project snapshot saved:');
     expect(success.actions).toContain('DOCKER stop --time 30 previous-container');
     expect(success.actions).toContain('--entrypoint node fixture-x056 --import tsx scripts/project-spaces-recovery.ts backup /app/state /release-backup/state --offline');
-    expect(success.actions).not.toContain('DOCKER start');
+    expect(success.actions).not.toContain('DOCKER start previous-container');
+    expect(success.requested).toBe(true);
+    expect(success.archived).toHaveLength(0);
     const failed = snapshot({ fail: true });
     expect(failed.output).toContain('NOT_SWAPPING');
     expect(failed.actions).toContain('DOCKER start previous-container');
+    expect(failed.actions.indexOf('DOCKER rm -f')).toBeLessThan(failed.actions.indexOf('DOCKER start previous-container'));
+    expect(JSON.parse(failed.status).status).toBe('backup_failed');
+    expect(failed.requested).toBe(false);
+    expect(failed.archived).toHaveLength(1);
   });
 });

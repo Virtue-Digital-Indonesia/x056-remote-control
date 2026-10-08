@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 const { backup, DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { ProjectRegistry } from './projects.js';
 import { ProjectSpaceRegistry } from './project-space-registry.js';
@@ -15,38 +15,77 @@ const DIRECTORIES = ['artifacts','chats','project-files','memory-extractions'];
 interface SnapshotFile { path: string; hash?: string; link?: string; bytes?: number }
 interface Snapshot { schemaVersion: 1; createdAt: string; source: string; files: SnapshotFile[]; databases: string[] }
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
-function entries(root: string, name: string): SnapshotFile[] {
-  const full = join(root, name); if (!existsSync(full)) { try { lstatSync(full); } catch { return []; } }
-  const stat = lstatSync(full);
-  if (stat.isSymbolicLink()) return [{ path: name, link: readlinkSync(full) }];
-  if (stat.isDirectory()) return readdirSync(full).sort().flatMap(child => entries(root, join(name, child)));
-  if (!stat.isFile()) throw new Error('Backup contains an unsupported file: ' + name);
-  return [{ path: name, hash: hash(readFileSync(full)), bytes: stat.size }];
+// Hashing is synchronous; one reusable buffer bounds allocations even across
+// millions of small files, without retaining a whole workspace file in RAM.
+const hashBuffer = Buffer.allocUnsafe(1024 * 1024);
+function fileHash(path: string): string {
+  const fd = openSync(path, 'r'), digest = createHash('sha256');
+  try { let count: number; while ((count = readSync(fd, hashBuffer, 0, hashBuffer.length, null))) digest.update(hashBuffer.subarray(0, count)); }
+  finally { closeSync(fd); }
+  return digest.digest('hex');
 }
-function inventory(root: string, wal: boolean): SnapshotFile[] {
-  return [...JSON_FILES, ...DIRECTORIES, ...DATABASES, ...(wal ? DATABASES.map(p => p + '-wal') : [])].flatMap(p => entries(root, p))
-    // Opening an offline WAL database may create an empty WAL. It contains no
-    // frames and is not a source write; committed pages still change its hash.
-    .filter(e => !(DATABASES.some(db => e.path === db + '-wal') && e.link === undefined && (e.bytes ?? 0) <= 32)).sort((a,b) => a.path.localeCompare(b.path));
+function* entries(root: string, name: string): Generator<SnapshotFile> {
+  const full = join(root, name);
+  let stat;
+  try { stat = lstatSync(full); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  if (stat.isSymbolicLink()) { yield { path: name, link: readlinkSync(full) }; return; }
+  if (stat.isDirectory()) {
+    const directory = opendirSync(full);
+    try { let child; while ((child = directory.readSync())) yield* entries(root, join(name, child.name)); }
+    finally { directory.closeSync(); }
+    return;
+  }
+  if (!stat.isFile()) throw new Error('Backup contains an unsupported file: ' + name);
+  yield { path: name, hash: fileHash(full), bytes: stat.size };
+}
+function* inventory(root: string, wal: boolean): Generator<SnapshotFile> {
+  for (const name of [...JSON_FILES, ...DIRECTORIES, ...DATABASES, ...(wal ? DATABASES.map(p => p + '-wal') : [])]) {
+    for (const entry of entries(root, name)) {
+      // An empty WAL created by opening an offline database has no committed pages.
+      if (DATABASES.some(db => entry.path === db + '-wal') && entry.link === undefined && (entry.bytes ?? 0) <= 32) continue;
+      yield entry;
+    }
+  }
 }
 function checkPath(path: string) {
   if (path !== relative('.', path) || path.startsWith('..') || path.startsWith(sep)) throw new Error('Invalid backup path');
 }
 
+interface SnapshotSummary { saved: number; databases: string[] }
+
 /** Run only after all state writers have stopped. SQLite's backup API includes
- * WAL pages. A second inventory rejects writes racing the cross-store copy. */
-export async function backupProjectSpaces(source: string, output: string, offline: boolean): Promise<Snapshot> {
+ * WAL pages. A second inventory rejects writes racing the cross-store copy.
+ * summaryOnly also bounds the return value for the deployment CLI. */
+export function backupProjectSpaces(source: string, output: string, offline: boolean, options: { summaryOnly: true }): Promise<SnapshotSummary>;
+export function backupProjectSpaces(source: string, output: string, offline: boolean): Promise<Snapshot>;
+export async function backupProjectSpaces(source: string, output: string, offline: boolean, options?: { summaryOnly: true }): Promise<Snapshot | SnapshotSummary> {
   if (!offline) throw new Error('Stop all gateway and provider writers, then explicitly choose offline backup');
   source = realpathSync(source); output = resolve(output);
   if (output === source || output.startsWith(source + sep) || existsSync(output)) throw new Error('Choose a new backup directory outside the source state');
-  const before = inventory(source, true), databases: string[] = [];
   mkdirSync(output, { recursive: true, mode: 0o700 });
+  const indexPath = join(output, '.snapshot-inventory.sqlite');
+  let index: InstanceType<typeof DatabaseSync> | undefined;
   try {
-    for (const entry of before) {
-      if (DATABASES.some(db => entry.path === db || entry.path === db + '-wal')) continue;
+    // Inventories can contain millions of workspace files. Keep them on disk,
+    // including comparisons and sorting, instead of arrays and JSON strings.
+    index = new DatabaseSync(indexPath);
+    index.exec('PRAGMA journal_mode=OFF; PRAGMA cache_size=-2048; PRAGMA temp_store=FILE;');
+    for (const table of ['before_files', 'after_files', 'copied_files']) index.exec(`CREATE TABLE ${table} (path TEXT PRIMARY KEY, data TEXT NOT NULL) WITHOUT ROWID`);
+    const record = (table: string, root: string, wal: boolean) => {
+      const insert = index!.prepare(`INSERT INTO ${table} VALUES (?, ?)`);
+      index!.exec('BEGIN');
+      try { for (const entry of inventory(root, wal)) insert.run(entry.path, JSON.stringify(entry)); index!.exec('COMMIT'); }
+      catch (error) { index!.exec('ROLLBACK'); throw error; }
+    };
+    record('before_files', source, true);
+    const isDatabase = (path: string) => DATABASES.some(db => path === db || path === db + '-wal');
+    for (const row of index.prepare('SELECT data FROM before_files ORDER BY path').iterate()) {
+      const entry: SnapshotFile = JSON.parse(String(row.data));
+      if (isDatabase(entry.path)) continue;
       const dest = join(output, entry.path); mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
       if (entry.link !== undefined) symlinkSync(entry.link, dest); else copyFileSync(join(source, entry.path), dest);
     }
+    const databases: string[] = [];
     for (const name of DATABASES) {
       if (!existsSync(join(source, name))) continue;
       const db = new DatabaseSync(join(source, name), { readOnly: true });
@@ -55,16 +94,33 @@ export async function backupProjectSpaces(source: string, output: string, offlin
       try { if (Object.values(saved.prepare('PRAGMA integrity_check').get()!)[0] !== 'ok') throw new Error('Backup database failed integrity check'); } finally { saved.close(); }
       databases.push(name);
     }
-    if (JSON.stringify(before) !== JSON.stringify(inventory(source, true))) throw new Error('State changed during backup; stop writers and retry');
-    const files = inventory(output, false);
-    for (const original of before.filter(e => !DATABASES.some(db => e.path === db || e.path === db + '-wal'))) {
-      const copied = files.find(e => e.path === original.path);
-      if (!copied || copied.hash !== original.hash || copied.link !== original.link) throw new Error('Copied file differs: ' + original.path);
+    record('after_files', source, true);
+    if (index.prepare('SELECT data FROM before_files EXCEPT SELECT data FROM after_files LIMIT 1').get() ||
+        index.prepare('SELECT data FROM after_files EXCEPT SELECT data FROM before_files LIMIT 1').get()) throw new Error('State changed during backup; stop writers and retry');
+    record('copied_files', output, false);
+    for (const row of index.prepare('SELECT b.path FROM before_files b LEFT JOIN copied_files c ON b.path=c.path WHERE c.data IS NULL OR b.data != c.data').iterate()) {
+      if (!isDatabase(String(row.path))) throw new Error('Copied file differs: ' + row.path);
     }
-    const manifest: Snapshot = { schemaVersion: 1, createdAt: new Date().toISOString(), source, files, databases };
-    writeFileSync(join(output, 'project-spaces-snapshot.json'), JSON.stringify(manifest, null, 2), { mode: 0o600 });
-    return manifest;
-  } catch (error) { rmSync(output, { recursive: true, force: true }); throw error; }
+    const manifest: Snapshot = { schemaVersion: 1, createdAt: new Date().toISOString(), source, files: [], databases };
+    const fd = openSync(join(output, 'project-spaces-snapshot.json'), 'wx', 0o600);
+    let saved = 0;
+    try {
+      writeFileSync(fd, JSON.stringify({ schemaVersion: manifest.schemaVersion, createdAt: manifest.createdAt, source, databases }).slice(0, -1) + ',"files":[');
+      for (const row of index.prepare('SELECT data FROM copied_files ORDER BY path').iterate()) {
+        const data = String(row.data);
+        writeFileSync(fd, (saved++ ? ',\n' : '\n') + data);
+        // Existing programmatic callers may request the full legacy result;
+        // the deployment CLI uses summaryOnly to stay bounded end to end.
+        if (!options?.summaryOnly) manifest.files.push(JSON.parse(data));
+      }
+      writeFileSync(fd, '\n]}\n');
+    } finally { closeSync(fd); }
+    index.close(); index = undefined;
+    rmSync(indexPath);
+    return options?.summaryOnly ? { saved, databases } : manifest;
+  } catch (error) {
+    index?.close(); rmSync(output, { recursive: true, force: true }); throw error;
+  }
 }
 
 /** Restore into a new directory, never overwrite live state or newer writes. */
@@ -76,7 +132,7 @@ export function restoreProjectSpaces(snapshotPath: string, output: string): Snap
   for (const entry of snapshot.files) {
     checkPath(entry.path);
     if (links.some(prefix => entry.path.startsWith(prefix))) throw new Error('Snapshot paths cannot descend through a symlink');
-    const actual = entries(snapshotPath, entry.path);
+    const actual = [...entries(snapshotPath, entry.path)];
     if (actual.length !== 1 || actual[0].hash !== entry.hash || actual[0].link !== entry.link) throw new Error('Snapshot verification failed: ' + entry.path);
   }
   mkdirSync(output, { recursive: true, mode: 0o700 });

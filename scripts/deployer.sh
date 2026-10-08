@@ -109,36 +109,89 @@ if runs:
 # Schema releases opt in to an offline snapshot immediately before the swap.
 # The helper runs only the recovery CLI from the new image, never a second server.
 PREVIOUS_CONTAINER=""
+BACKUP_HELPER=""
+BACKUP_ACTIVE=0
+BACKUP_FAILED=0
+# Bound the offline interval, including Docker RPCs. A stuck daemon may prevent
+# recovery; never restart writers until helper removal has been acknowledged.
+BACKUP_TIMEOUT="${X056_DEPLOY_BACKUP_TIMEOUT:-120}"
+case "$BACKUP_TIMEOUT" in ''|*[!0-9]*|0) echo "invalid backup timeout" >&2; exit 1;; esac
+bounded_docker() { timeout --kill-after=5s "$1" docker "${@:2}"; }
+pause_backup_request() {
+  local state="$1" archived="requested.paused-backup-failed-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  if [ -f "$FLAG" ]; then mv "$FLAG" "$DIR/.deploy/$archived"; fi
+  printf '{"status":"%s","ts":"%s","request":"%s","helper":"%s","previousContainer":"%s"}\n' \
+    "$state" "$(date -Is)" "$archived" "$BACKUP_HELPER" "$PREVIOUS_CONTAINER" > "$STATUS"
+  echo "backup failed — request paused; inspect $STATUS before explicitly requeueing"
+}
 resume_previous() {
-  if [ -n "$PREVIOUS_CONTAINER" ]; then
-    docker start "$PREVIOUS_CONTAINER" >/dev/null || echo "previous container could not restart — inspect host Docker"
+  local result=$? recovery_failed=0
+  set +e # A failed status write must never skip helper cleanup or recovery.
+  # A second signal must not interrupt helper cleanup or writer recovery.
+  trap '' INT TERM
+  if [ "$BACKUP_ACTIVE" = 1 ] || [ "$BACKUP_FAILED" = 1 ] || [ -n "$PREVIOUS_CONTAINER" ]; then
+    pause_backup_request backup_failed
   fi
+  if [ -n "$BACKUP_HELPER" ]; then
+    if bounded_docker 15s rm -f "$BACKUP_HELPER" >/dev/null; then
+      BACKUP_HELPER=""
+    else
+      echo "backup helper removal unconfirmed — previous writers MUST remain stopped"
+      recovery_failed=1
+    fi
+  fi
+  if [ "$recovery_failed" = 0 ] && [ -n "$PREVIOUS_CONTAINER" ]; then
+    if bounded_docker 30s start "$PREVIOUS_CONTAINER" >/dev/null; then
+      echo "Docker acknowledged restart of previous gateway $PREVIOUS_CONTAINER after backup helper cleanup"
+    else
+      recovery_failed=1
+    fi
+  fi
+  if [ "$recovery_failed" = 1 ]; then
+    pause_backup_request backup_recovery_required
+    echo "automatic recovery failed — inspect host Docker"
+    return 1
+  fi
+  return "$result"
 }
 backup_project_spaces() {
   [ -f "$DIR/.deploy/backup-project-spaces" ] || return 0
   [ "$IDLE_ONLY" = 1 ] || { echo "Project backup requires an idle-only request"; return 1; }
   local container image backup_dir
-  container=$(docker compose --project-directory "$DIR" ps -q x056)
+  container=$(bounded_docker 15s compose --project-directory "$DIR" ps -q x056) || return 1
   [ -n "$container" ] || { echo "No running gateway to snapshot"; return 1; }
-  image=$(docker compose --project-directory "$DIR" config --format json | python3 -c \
+  image=$(bounded_docker 15s compose --project-directory "$DIR" config --format json | python3 -c \
     'import json,sys; c=json.load(sys.stdin); print(c["services"]["x056"].get("image") or c["name"]+"-x056")') || return 1
   [ -n "$image" ] || return 1
-  # Check again immediately before stopping writers; build and inspection may be slow.
+  # Activity changes are a deferral, not a failed backup.
   if [ -n "$(live_workflows)" ] || busy; then
     echo "activity changed before backup — idle-only release stays pending"
-    return 1
+    return 2
   fi
-  backup_dir="$DIR/.deploy/backups/project-spaces-$(date -u +%Y%m%dT%H%M%SZ)"
+  BACKUP_ACTIVE=1
+  backup_dir="$DIR/.deploy/backups/project-spaces-$(date -u +%Y%m%dT%H%M%SZ)-$$"
   mkdir -m 700 "$backup_dir" || return 1
   git -C "$DIR" rev-parse HEAD > "$backup_dir/revision" || return 1
-  docker inspect "$container" --format '{{.Image}}' > "$backup_dir/previous-image" || return 1
-  PREVIOUS_CONTAINER="$container"
-  docker stop --time 30 "$container" || return 1
-  docker run --rm --network none --volumes-from "$container" \
+  bounded_docker 15s inspect "$container" --format '{{.Image}}' > "$backup_dir/previous-image" || return 1
+  # Create before stopping writers. A timed-out start can leave a running helper;
+  # its known name lets the EXIT trap terminate it before restoring the gateway.
+  BACKUP_HELPER="x056-release-backup-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  bounded_docker 15s create --name "$BACKUP_HELPER" --network none --volumes-from "$container" \
     --mount "type=bind,src=$backup_dir,dst=/release-backup" \
     --entrypoint node "$image" --import tsx scripts/project-spaces-recovery.ts \
-    backup /app/state /release-backup/state --offline || return 1
-  printf '%s\n' "$backup_dir" > "$DIR/.deploy/last-backup"
+    backup /app/state /release-backup/state --offline >/dev/null || return 1
+  PREVIOUS_CONTAINER="$container"
+  bounded_docker 40s stop --time 30 "$container" || return 1
+  bounded_docker "${BACKUP_TIMEOUT}s" start -a "$BACKUP_HELPER" || {
+    local backup_exit=$?
+    echo "offline Project backup failed (exit $backup_exit; helper limit ${BACKUP_TIMEOUT}s)"
+    return 1
+  }
+  # Removal acknowledges the helper is gone before either swap or recovery.
+  bounded_docker 15s rm -f "$BACKUP_HELPER" >/dev/null || return 1
+  BACKUP_HELPER=""
+  printf '%s\n' "$backup_dir" > "$DIR/.deploy/last-backup" || return 1
+  BACKUP_ACTIVE=0
   echo "offline Project snapshot saved: $backup_dir"
 }
 trap resume_previous EXIT
@@ -216,8 +269,11 @@ trap 'exit 143' TERM
     echo "pinned release changed during build — NOT swapping"
     exit 0
   fi
-  if ! backup_project_spaces; then
-    echo "backup not completed — release remains pending"
+  if backup_project_spaces; then
+    :
+  else
+    backup_result=$?
+    if [ "$backup_result" != 2 ]; then BACKUP_FAILED=1; fi
     exit 0
   fi
   if ! release_unchanged; then
