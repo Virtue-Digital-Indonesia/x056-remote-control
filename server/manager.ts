@@ -110,7 +110,7 @@ export interface SessionManagerOptions {
   /** Called after a new provider account is registered, so it can be brought up to
    *  the fleet's plugin/skill baseline. Fire-and-forget: onboarding must not fail
    *  because provisioning did. */
-  onAccountAdded?: (account: { name: string; configDir: string; provider?: ProviderId }) => void;
+  onAccountAdded?: (account: { name: string; configDir: string; provider?: ProviderId }) => void | Promise<unknown>;
   /** The gateway's MCP bridge wiring, handed to every spawned turn so sessions
    *  get tools to read/message other conversations and projects (built by the
    *  server entrypoint, which knows the token + port; absent in tests). */
@@ -1129,6 +1129,14 @@ export class SessionManager {
   private pendingCodexLogins = new Map<string, { configDir: string; child: ChildProcess; buf: string }>();
   private get accountsDir(): string { return join(this.opts.stateDir, 'accounts'); }
 
+  /** Setup is optional background work after registration, including async hooks. */
+  private notifyAccountAdded(account: { name: string; configDir: string; provider: ProviderId }): void {
+    try {
+      void Promise.resolve(this.opts.onAccountAdded?.(account)).catch(() => { /* never block onboarding */ });
+    } catch { /* never block onboarding */ }
+  }
+
+
   /** Public snapshot of accounts for the panel, tagging the one the NEXT turn
    *  would run on so the UI can show "this prompt will use X". */
   accountsInfo(): { name: string; configDir: string; nextUp: boolean }[] {
@@ -1180,7 +1188,7 @@ export class SessionManager {
     }
     const name = this.nextAccountName();
     reg.add(name, dir, 'codex');
-    try { this.opts.onAccountAdded?.({ name, configDir: dir, provider: 'codex' }); } catch { /* never block onboarding */ }
+    this.notifyAccountAdded({ name, configDir: dir, provider: 'codex' });
     this.emitAccounts();
     return { name, email: identity.email, displayName: identity.displayName };
   }
@@ -1262,7 +1270,7 @@ export class SessionManager {
     // turn. The router skips the account until it is done.
     void prepareCodexHome(dir);
     reg.add(name, dir, 'codex');
-    try { this.opts.onAccountAdded?.({ name, configDir: dir, provider: 'codex' }); } catch { /* never block onboarding */ }
+    this.notifyAccountAdded({ name, configDir: dir, provider: 'codex' });
     this.emitAccounts();
     return { done: true, account: { name, email: identity.email, displayName: identity.displayName } };
   }
@@ -1435,7 +1443,7 @@ export class SessionManager {
     this.emitAccounts();
     // Bring it up to the baseline the other accounts already have; a new account
     // that silently lacks last week's plugins is a failover that loses capability.
-    try { this.opts.onAccountAdded?.({ name, configDir: finalDir, provider: 'claude' }); } catch { /* never block onboarding */ }
+    this.notifyAccountAdded({ name, configDir: finalDir, provider: 'claude' });
     return { name, email: identity.email, displayName: identity.displayName };
   }
 

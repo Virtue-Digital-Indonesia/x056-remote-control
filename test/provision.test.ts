@@ -219,4 +219,62 @@ describe('provider-aware account setup', () => {
     await new AccountProvisioner(()=>accounts,fakePlugins()).provision(accounts[2]);
     expect(readFileSync(join(accounts[2].configDir,'skills','linked','SKILL.md'),'utf8')).toBe('shared');
   });
+  it('resolves registry and plan failures as errors, and retains copied skills when capability setup throws', async () => {
+    const {accounts}=fleet();
+    const unavailable = new AccountProvisioner(() => { throw Error('registry unavailable'); }, fakePlugins());
+    await expect(unavailable.provision(accounts[2])).resolves.toMatchObject({ errors: ['accounts: could not read registry', 'baseline: could not read plan'] });
+    const {deps}=capabilities(accounts[2]);
+    const failedPlan = new AccountProvisioner(()=>accounts,fakePlugins(),undefined,deps);
+    failedPlan.plan = () => { throw Error('plan unavailable'); };
+    const planResult = await failedPlan.provision(accounts[2]);
+    expect(planResult.errors).toContain('baseline: could not read plan');
+    expect(planResult.mcpServers).toEqual(['shared']);
+    addSkill(accounts[0].configDir,'retained');
+    deps.mcp.forAccounts = () => { throw Error('setup unavailable'); };
+    deps.plugins.forAccounts = () => { throw Error('setup unavailable'); };
+    const setupResult = await new AccountProvisioner(()=>accounts,fakePlugins(),undefined,deps).provision(accounts[2]);
+    expect(setupResult.skills).toEqual(['retained']);
+    expect(setupResult.errors).toEqual(['MCP: could not read target account inventory','plugins: could not read account inventories']);
+  });
+
+  it('continues healthy peer inventories, preserves cross-peer conflicts and local disables, and completes MCP before optional setup', async () => {
+    const {root,accounts}=fleet();
+    const target=accounts[2];
+    const second={name:'d',configDir:join(root,'d')};mkdirSync(second.configDir);accounts.push(second);
+    const calls:string[]=[], installed=new Set(['disabled@m']);
+    const ok=()=>({ok:true,perDir:[]});
+    const deps={
+      plugins:{forAccounts:(scope:ProvisionAccount[])=>{
+        expect(scope).toHaveLength(1);const account=scope[0];
+        if(account.name==='a') throw Error('broken peer');
+        return {
+          list:async()=>({marketplaces:account===target?[]:[{name:'custom',repo:'owner/custom'}],plugins:(account===target?[...installed]:['healthy@m','disabled@m']).map(id=>({id,enabledCount:id==='disabled@m'&&account===target?0:1}))}),
+          addMarketplace:async()=>{expect(account).toBe(target);calls.push('marketplace');return ok();},
+          install:async(id:string)=>{expect(account).toBe(target);calls.push(`plugin:${id}`);installed.add(id);return ok();},
+          setEnabled:async()=>ok(),
+        };
+      }},
+      mcp:{forAccounts:(scope:ProvisionAccount[])=>{
+        expect(scope).toHaveLength(1);const account=scope[0];
+        return {
+          list:async()=>{
+            if(account.name==='a')throw Error('broken peer');
+            return {servers:account===target?[{name:'local'}]:[
+              {name:'healthy',transport:'stdio',command:'node',env:account===second?{B:'2',A:'1'}:{A:'1',B:'2'},differing:[]},
+              {name:'conflict',transport:'http',url:'https://same.example',headers:{Authorization:account.name},differing:[]},
+              {name:'local',differing:[]},
+            ]};
+          },
+          add:async(_provider:string,server:{name:string})=>{expect(account).toBe(target);calls.push(`mcp:${server.name}`);return ok();},
+        };
+      }},
+    } as unknown as NonNullable<ConstructorParameters<typeof AccountProvisioner>[3]>;
+    const result=await new AccountProvisioner(()=>accounts,fakePlugins(),{grant:async()=>{calls.push('consent');return {ok:true,message:'granted'};}},deps).provision(target);
+    expect(result.mcpServers).toEqual(['healthy']);
+    expect(result.plugins).toEqual(['healthy@m']);
+    expect(result.marketplaces).toEqual(['custom']);
+    expect(result.errors).toEqual(['MCP: could not read account a inventory','MCP conflict: peers use different definitions; choose one in Connections','plugins: could not read account a inventory']);
+    expect(calls).toEqual(['mcp:healthy','marketplace','plugin:healthy@m','consent']);
+  });
+
 });

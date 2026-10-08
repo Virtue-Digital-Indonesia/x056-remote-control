@@ -1114,7 +1114,7 @@ describe('Codex onboarding inherits account setup', () => {
     mkdirSync(state);mkdirSync(home);AccountRegistry.init(join(state,'accounts.json'),[]);
     writeFileSync(join(home,'auth.json'),JSON.stringify({tokens:{id_token:'x.'+Buffer.from(JSON.stringify({email:'fixture@example.test'})).toString('base64url')+'.x'}}));
     const added: unknown[]=[];
-    const mgr=new SessionManager({stateDir:state,workspaceRoot:root,onAccountAdded:a=>added.push(a)});
+    const mgr=new SessionManager({stateDir:state,workspaceRoot:root,onAccountAdded:a=>{added.push(a);}});
     const result=mgr.registerCodexAccount(home);
     expect(added).toEqual([{name:result.name,configDir:home,provider:'codex'}]);
   });
@@ -1123,7 +1123,7 @@ describe('Codex onboarding inherits account setup', () => {
     mkdirSync(home,{recursive:true});AccountRegistry.init(join(state,'accounts.json'),[]);
     writeFileSync(join(home,'auth.json'),JSON.stringify({tokens:{id_token:'x.'+Buffer.from(JSON.stringify({email:'device@example.test'})).toString('base64url')+'.x'}}));
     const added: unknown[]=[];
-    const mgr=new SessionManager({stateDir:state,workspaceRoot:root,onAccountAdded:a=>added.push(a)});
+    const mgr=new SessionManager({stateDir:state,workspaceRoot:root,onAccountAdded:a=>{added.push(a);}});
     (mgr as unknown as {pendingCodexLogins:Map<string,unknown>}).pendingCodexLogins.set('fixture',{configDir:home,child:{kill(){}},buf:''});
     const result=mgr.codexLoginStatus('fixture');expect(result.done).toBe(true);
     expect(added).toEqual([{name:result.account!.name,configDir:join(state,'accounts',result.account!.name),provider:'codex'}]);
@@ -1156,4 +1156,58 @@ it('broadcasts and retains queued human prompts with stable delivery IDs and fai
   const rows=new ConversationJournal(stateDir).merge(pid,sid,[],true);
   expect(rows.filter(r=>r.role==='user')).toHaveLength(2);expect(rows.filter(r=>r.role==='error')).toHaveLength(2);
   mgr.onModuleDestroy();
+});
+
+
+describe('account setup failures do not block onboarding', () => {
+  for (const flow of ['claude', 'codex-register', 'codex-device'] as const) {
+    for (const failure of ['throw', 'reject', 'pending'] as const) {
+      it(`${flow} keeps the account registered with ${failure} setup`, async () => {
+        const root = mkdtempSync(join(tmpdir(), 'x056-setup-failure-'));
+        const state = join(root, 'state'), seed = join(root, 'seed');
+        mkdirSync(state); mkdirSync(seed);
+        AccountRegistry.init(join(state, 'accounts.json'), [{ name: 'a', configDir: seed }]);
+        let registeredBeforeSetup = false;
+        let calls = 0, rejectSetup: ((reason: Error) => void) | undefined;
+        const mgr = new SessionManager({
+          stateDir: state, workspaceRoot: root,
+          loginSpawnFn: fakeLoginSpawn('new@example.test', 'New account'),
+          onAccountAdded: account => {
+            calls++;
+            // The durable registration must precede optional setup.
+            registeredBeforeSetup = AccountRegistry.load(join(state, 'accounts.json')).has(account.name);
+            if (failure === 'throw') throw new Error('setup unavailable');
+            if (failure === 'reject') return Promise.reject(new Error('setup unavailable'));
+            return new Promise<void>((_resolve, reject) => { rejectSetup = reject; });
+          },
+        });
+        let result: { name: string; email?: string };
+        if (flow === 'claude') {
+          const { loginId } = await mgr.startAccountLogin();
+          result = await mgr.submitAccountLoginCode(loginId, 'CODE');
+        } else {
+          const home = join(state, 'accounts', 'codex-pending-fixture');
+          mkdirSync(home, { recursive: true });
+          writeFileSync(join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: 'x.' + Buffer.from(JSON.stringify({ email: 'new@example.test' })).toString('base64url') + '.x' } }));
+          if (flow === 'codex-register') result = mgr.registerCodexAccount(home);
+          else {
+            (mgr as unknown as { pendingCodexLogins: Map<string, unknown> }).pendingCodexLogins.set('fixture', { configDir: home, child: { kill() {} }, buf: '' });
+            const status = mgr.codexLoginStatus('fixture');
+            expect(status.done).toBe(true);
+            result = status.account!;
+          }
+        }
+        expect(result).toMatchObject({ name: 'b', email: 'new@example.test' });
+        expect(calls).toBe(1);
+        expect(registeredBeforeSetup).toBe(true);
+        // In the pending case, onboarding returned before setup settled.
+        rejectSetup?.(new Error('late setup failure'));
+        await new Promise<void>(resolve => setImmediate(resolve));
+        const accounts = AccountRegistry.load(join(state, 'accounts.json')).list();
+        expect(accounts.map(a => a.name)).toEqual(['a', 'b']);
+        expect(existsSync(join(accounts[1].configDir, flow === 'claude' ? '.credentials.json' : 'auth.json'))).toBe(true);
+        expect(accounts[0].configDir).toBe(seed);
+      });
+    }
+  }
 });

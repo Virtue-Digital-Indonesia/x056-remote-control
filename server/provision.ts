@@ -1,8 +1,9 @@
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { ProviderId } from '../src/provider.js';
 import type { PluginManager, OpResult } from './plugins.js';
-import type { McpServerManager } from './mcp-servers.js';
+import type { McpServerManager, McpServerInfo, McpServerSpec } from './mcp-servers.js';
 
 /**
  * Bring a newly-onboarded account up to the same baseline as the ones
@@ -107,9 +108,8 @@ export class AccountProvisioner {
   }
 
   /**
-   * Apply the fleet baseline to one account. Never throws: a half-provisioned
-   * account is worse than a failed login, but a failed login because a
-   * marketplace was briefly unreachable is worse still.
+   * Apply the fleet baseline to one account. Setup failures are reported in
+   * the result and never prevent account onboarding.
    */
   private readonly pending = new Map<string, Promise<ProvisionResult>>();
 
@@ -123,114 +123,133 @@ export class AccountProvisioner {
 
   private async apply(target: ProvisionAccount): Promise<ProvisionResult> {
     const provider = target.provider ?? 'claude';
-    const peers = this.allAccounts().filter(a => a.configDir !== target.configDir && (a.provider ?? 'claude') === provider);
-    const p = provider === 'claude' ? this.plan(target.configDir) : { marketplaces: [], plugins: [], skills: [...new Set(peers.flatMap(a => listDirs(join(a.configDir, 'skills')).filter(n => !n.startsWith('.'))))].sort(), flags: [] };
     const errors: string[] = [];
     const done: ProvisionPlan = { marketplaces: [], plugins: [], skills: [], flags: [] };
-
-    // Legacy callers can supply simple plugin operations. The runtime uses
-    // capability managers below, scoped exclusively to the target account.
-    if (!this.capabilities) {
-    for (const m of p.marketplaces) {
-      try { await this.plugins.addMarketplace(m); done.marketplaces.push(m); }
-      catch (err) { errors.push(`marketplace ${m}: ${(err as Error).message}`); }
-    }
-    for (const id of p.plugins) {
-      try {
-        await this.plugins.install(id);
-        await this.plugins.setEnabled(id, true);
-        done.plugins.push(id);
-      } catch (err) { errors.push(`plugin ${id}: ${(err as Error).message}`); }
-    }
-
-    }
-
-    // Skills and flags are plain files; copy from the first account that has one.
-    // A skill the fleet SHARES (a symlink into state/skills, so that an edit --
-    // /pushback rewriting rules.json -- lands on every account at once) is
-    // linked the same way, not copied: a copy would drift from the first edit.
-    for (const skill of p.skills) {
-      const src = peers.map(a => join(a.configDir, 'skills', skill)).find(path => existsSync(path));
-      const dest = join(target.configDir, 'skills', skill);
-      if (!src || existsSync(dest)) continue;
-      try {
-        mkdirSync(join(target.configDir, 'skills'), { recursive: true });
-        if (lstatSync(src).isSymbolicLink()) symlinkSync(resolve(dirname(src), readlinkSync(src)), dest);
-        else cpSync(src, dest, { recursive: true });
-        done.skills.push(skill);
-      } catch (err) { errors.push(`skill ${skill}: ${(err as Error).message}`); }
-    }
-    for (const flag of p.flags) {
-      const dest = join(target.configDir, flag);
-      if (existsSync(dest)) continue;
-      try { writeFileSync(dest, ''); done.flags.push(flag); }
-      catch (err) { errors.push(`flag ${flag}: ${(err as Error).message}`); }
-    }
-
-    // Design agent access last: it reaches the network, and a failure here says
-    // nothing about the plugins and skills already in place.
-    let designConsent: string | undefined;
-    if (provider === 'claude' && this.designConsent) {
-      try {
-        const res = await this.designConsent.grant(target);
-        designConsent = res.message;
-        if (!res.ok) errors.push(`design consent: ${res.message}`);
-      } catch (err) { errors.push(`design consent: ${(err as Error).message}`); }
-    }
-
     const mcpServers: string[] = [], needsAuthorization: string[] = [];
-    if (this.capabilities) {
-      const sourcePlugins = this.capabilities.plugins.forAccounts(peers, provider);
-      const targetPlugins = this.capabilities.plugins.forAccounts([target], provider);
-      const targetMcp = this.capabilities.mcp.forAccounts([target], provider);
-      const check = (result: OpResult) => {
-        if (!result.ok) throw new Error(result.perDir.filter(r => !r.ok).map(r => r.message).join('; ') || 'Setup did not complete');
-      };
+    const result: ProvisionResult = { account: target.name, provider, ...done, mcpServers, needsAuthorization, errors };
+    try {
+      let peers: ProvisionAccount[] = [];
+      try { peers = this.allAccounts().filter(a => a.configDir !== target.configDir && (a.provider ?? 'claude') === provider); }
+      catch { errors.push('accounts: could not read registry'); }
+      let p: ProvisionPlan = { marketplaces: [], plugins: [], skills: [], flags: [] };
       try {
-        const baseline = await sourcePlugins.list(provider), current = await targetPlugins.list(provider);
-        const installed = new Set(current.plugins.map(p => p.id));
-        // Built-in remote marketplaces need no cloning. Custom sources come
-        // from each peer, since the first peer may itself be missing one.
-        const marketplaces = new Map<string, string>();
-        for (const peer of peers) {
-          const inventory = await this.capabilities.plugins.forAccounts([peer], provider).list(provider);
-          for (const m of inventory.marketplaces) if (m.repo || m.installLocation) marketplaces.set(m.name, m.repo || m.installLocation!);
+        p = provider === 'claude' ? this.plan(target.configDir) : { ...p, skills: [...new Set(peers.flatMap(a => listDirs(join(a.configDir, 'skills')).filter(n => !n.startsWith('.'))))].sort() };
+      } catch { errors.push('baseline: could not read plan'); }
+
+      // Legacy callers can supply simple plugin operations. The runtime uses
+      // capability managers below, scoped exclusively to the target account.
+      if (!this.capabilities) {
+        for (const m of p.marketplaces) {
+          try { await this.plugins.addMarketplace(m); done.marketplaces.push(m); }
+          catch (err) { errors.push(`marketplace ${m}: ${(err as Error).message}`); }
         }
-        for (const [name, source] of marketplaces) {
-          if (current.marketplaces.some(m => m.name === name)) continue;
-          try { check(await targetPlugins.addMarketplace(source, provider)); done.marketplaces.push(name); }
-          catch { errors.push(`marketplace ${name}: could not register source`); }
-        }
-        for (const plugin of baseline.plugins.filter(p => p.enabledCount > 0)) {
-          if (installed.has(plugin.id)) continue; // preserve explicit local enable/disable choices
+        for (const id of p.plugins) {
           try {
-            check(await targetPlugins.install(plugin.id, provider));
-            if (provider === 'claude') check(await targetPlugins.setEnabled(plugin.id, true, provider));
-            // Remote connector installation may only start authorization. Verify
-            // the target's own inventory; never copy another account's OAuth.
-            const verified = await targetPlugins.list(provider);
-            if (!verified.plugins.some(p => p.id === plugin.id && p.enabledCount > 0)) {
-              if (plugin.id.endsWith('@openai-curated-remote')) needsAuthorization.push(plugin.id);
-              else errors.push(`plugin ${plugin.id}: installation not confirmed`);
-            } else done.plugins.push(plugin.id);
-          } catch {
-            if (plugin.id.endsWith('@openai-curated-remote')) needsAuthorization.push(plugin.id);
-            else errors.push(`plugin ${plugin.id}: installation failed; retry from Connections`);
+            await this.plugins.install(id);
+            await this.plugins.setEnabled(id, true);
+            done.plugins.push(id);
+          } catch (err) { errors.push(`plugin ${id}: ${(err as Error).message}`); }
+        }
+
+      }
+
+      // Skills and flags are plain files; copy from the first account that has one.
+      // A skill the fleet SHARES (a symlink into state/skills, so that an edit --
+      // /pushback rewriting rules.json -- lands on every account at once) is
+      // linked the same way, not copied: a copy would drift from the first edit.
+      for (const skill of p.skills) {
+        const src = peers.map(a => join(a.configDir, 'skills', skill)).find(path => existsSync(path));
+        const dest = join(target.configDir, 'skills', skill);
+        if (!src || existsSync(dest)) continue;
+        try {
+          mkdirSync(join(target.configDir, 'skills'), { recursive: true });
+          if (lstatSync(src).isSymbolicLink()) symlinkSync(resolve(dirname(src), readlinkSync(src)), dest);
+          else cpSync(src, dest, { recursive: true });
+          done.skills.push(skill);
+        } catch (err) { errors.push(`skill ${skill}: ${(err as Error).message}`); }
+      }
+      for (const flag of p.flags) {
+        const dest = join(target.configDir, flag);
+        if (existsSync(dest)) continue;
+        try { writeFileSync(dest, ''); done.flags.push(flag); }
+        catch (err) { errors.push(`flag ${flag}: ${(err as Error).message}`); }
+      }
+
+      if (this.capabilities) {
+        const check = (result: OpResult) => {
+          if (!result.ok) throw new Error(result.perDir.filter(r => !r.ok).map(r => r.message).join('; ') || 'Setup did not complete');
+        };
+        // Finish MCP before optional plugin installs or network consent. All
+        // writes remain sequential because the CLIs share the target config.
+        try {
+          const targetMcp = this.capabilities.mcp.forAccounts([target], provider);
+          const current = await targetMcp.list();
+          const baseline = new Map<string, McpServerInfo>();
+          const definition = (s: McpServerSpec) => ({ transport: s.transport, command: s.command ?? '', args: s.args ?? [], env: s.env ?? {}, url: s.url ?? '', headers: s.headers ?? {} });
+          for (const peer of peers) {
+            try {
+              const inventory = await this.capabilities.mcp.forAccounts([peer], provider).list();
+              for (const server of inventory.servers) {
+                const prior = baseline.get(server.name);
+                if (!prior) baseline.set(server.name, { ...server, differing: [...server.differing] });
+                else if (server.differing.length || !isDeepStrictEqual(definition(prior), definition(server))) prior.differing.push(peer.name);
+              }
+            } catch { errors.push(`MCP: could not read account ${peer.name} inventory`); }
           }
-        }
-      } catch { errors.push('plugins: could not read account inventories'); }
-      try {
-        const baseline = await this.capabilities.mcp.forAccounts(peers, provider).list();
-        const current = await targetMcp.list();
-        for (const server of baseline.servers) {
-          if (current.servers.some(s => s.name === server.name)) continue;
-          if (server.differing.length) { errors.push(`MCP ${server.name}: peers use different definitions; choose one in Connections`); continue; }
-          try { check(await targetMcp.add(provider, server)); mcpServers.push(server.name); }
-          catch { errors.push(`MCP ${server.name}: could not install configuration`); }
-        }
-      } catch { errors.push('MCP: could not read account inventories'); }
-    }
-    return { account: target.name, provider, ...done, mcpServers, needsAuthorization, designConsent, errors };
+          for (const server of baseline.values()) {
+            if (current.servers.some(s => s.name === server.name)) continue;
+            if (server.differing.length) { errors.push(`MCP ${server.name}: peers use different definitions; choose one in Connections`); continue; }
+            try { check(await targetMcp.add(provider, server)); mcpServers.push(server.name); }
+            catch { errors.push(`MCP ${server.name}: could not install configuration`); }
+          }
+        } catch { errors.push('MCP: could not read target account inventory'); }
+        try {
+          const targetPlugins = this.capabilities.plugins.forAccounts([target], provider);
+          const current = await targetPlugins.list(provider);
+          const installed = new Set(current.plugins.map(p => p.id));
+          const baseline = new Set<string>();
+          const marketplaces = new Map<string, string>();
+          for (const peer of peers) {
+            try {
+              const inventory = await this.capabilities.plugins.forAccounts([peer], provider).list(provider);
+              for (const plugin of inventory.plugins) if (plugin.enabledCount > 0) baseline.add(plugin.id);
+              for (const m of inventory.marketplaces) if (m.repo || m.installLocation) marketplaces.set(m.name, m.repo || m.installLocation!);
+            } catch { errors.push(`plugins: could not read account ${peer.name} inventory`); }
+          }
+          for (const [name, source] of marketplaces) {
+            if (current.marketplaces.some(m => m.name === name)) continue;
+            try { check(await targetPlugins.addMarketplace(source, provider)); done.marketplaces.push(name); }
+            catch { errors.push(`marketplace ${name}: could not register source`); }
+          }
+          for (const id of baseline) {
+            if (installed.has(id)) continue; // preserve explicit local enable/disable choices
+            try {
+              check(await targetPlugins.install(id, provider));
+              if (provider === 'claude') check(await targetPlugins.setEnabled(id, true, provider));
+              // Remote connector installation may only start authorization. Verify
+              // the target's own inventory; never copy another account's OAuth.
+              const verified = await targetPlugins.list(provider);
+              if (!verified.plugins.some(p => p.id === id && p.enabledCount > 0)) {
+                if (id.endsWith('@openai-curated-remote')) needsAuthorization.push(id);
+                else errors.push(`plugin ${id}: installation not confirmed`);
+              } else done.plugins.push(id);
+            } catch {
+              if (id.endsWith('@openai-curated-remote')) needsAuthorization.push(id);
+              else errors.push(`plugin ${id}: installation failed; retry from Connections`);
+            }
+          }
+        } catch { errors.push('plugins: could not read account inventories'); }
+      }
+      // Consent is optional and may wait on the network, so it runs last.
+      if (provider === 'claude' && this.designConsent) {
+        try {
+          const res = await this.designConsent.grant(target);
+          result.designConsent = res.message;
+          if (!res.ok) errors.push(`design consent: ${res.message}`);
+        } catch { errors.push('design consent: could not grant access'); }
+      }
+    } catch { errors.push('provisioning: unexpected setup failure'); }
+    return result;
   }
 
   /** Set or clear an opt-in flag file on EVERY Claude account at once. */
