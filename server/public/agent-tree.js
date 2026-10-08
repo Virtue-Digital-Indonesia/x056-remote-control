@@ -494,7 +494,16 @@
       if (it.brief || it.bits) {
         var l2 = el('span', 'ap-l2');
         if (it.brief) add(l2, el('span', 'ap-brief', it.brief));
-        if (it.bits) add(l2, el('span', 'ap-bits', it.bits));
+        if (it.bits) {
+          var bits = el('span', 'ap-bits');
+          // Wrap between metadata fields so amounts and token counts stay together.
+          var fields = it.bits.split(' · ');
+          fields.forEach(function (field, i) {
+            add(bits, el('span', 'ap-bit', field + (i < fields.length - 1 ? ' ·' : '')));
+            if (i < fields.length - 1) bits.appendChild(document.createTextNode(' '));
+          });
+          add(l2, bits);
+        }
         add(tx, l2);
       }
       add(row, chev, mark, tx);

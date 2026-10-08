@@ -1,0 +1,25 @@
+/* Run against an isolated chat-enabled browser fixture. */
+const assert=require('node:assert/strict'),{randomUUID}=require('node:crypto'),{mkdirSync}=require('node:fs');
+const {chromium}=require('/usr/local/lib/node_modules/playwright');
+const base=process.argv[2]||'http://127.0.0.1:8789',token='browser-fixture-token-0123456789';
+if(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base))throw Error('Use the isolated localhost fixture');
+(async()=>{const browser=await chromium.launch({args:['--no-sandbox']});try{
+const context=await browser.newContext({viewport:{width:1440,height:950}});await context.addInitScript(t=>localStorage.setItem('x056_token',t),token);
+const response=await context.request.post(base+'/api/project-spaces',{headers:{Authorization:'Bearer '+token},data:{requestId:randomUUID(),name:'Sidebar Project'}});assert(response.ok());const space=await response.json();
+const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base+'/projects/'+space.id+'/overview');await page.locator('#workspaceSidebarToggle').waitFor();
+const nav=page.locator('#crProjectNav'),split=page.locator('#workspaceSidebarResize'),toggle=page.locator('#workspaceSidebarToggle'),fly=page.locator('#workspaceProjectFlyout');
+const width=async()=>Math.round((await nav.boundingBox()).width);
+await split.focus();await page.keyboard.press('End');assert.equal(await width(),420);await page.keyboard.press('Home');assert.equal(await width(),200);await page.keyboard.press('ArrowRight');assert.equal(await width(),210);
+let r=await split.boundingBox();await page.mouse.move(r.x+3,200);await page.mouse.down();await page.mouse.move(340,200);await page.mouse.up();assert.equal(await width(),340);
+await page.reload();await toggle.waitFor();assert.equal(await width(),340);mkdirSync('/tmp/workspace-sidebar',{recursive:true});await page.screenshot({path:'/tmp/workspace-sidebar/expanded-resized.png'});await toggle.click();assert.equal(await width(),64);
+const folder=page.locator('[data-sidebar-project="'+space.id+'"] .workspace-project-heading>a');
+await folder.hover();await fly.waitFor();assert.equal(await fly.locator('.workspace-flyout-links').isHidden(),true);await fly.locator('button').hover();assert.equal(await fly.locator('a').count(),5);assert.equal(await fly.locator('a').first().isVisible(),true);await page.waitForTimeout(300);assert(await fly.isVisible());
+mkdirSync('/tmp/workspace-sidebar',{recursive:true});await page.screenshot({path:'/tmp/workspace-sidebar/collapsed-project.png'});await page.evaluate(()=>document.documentElement.dataset.theme='dark');await page.waitForTimeout(400);await page.screenshot({path:'/tmp/workspace-sidebar/collapsed-project-dark.png'});await page.evaluate(()=>document.documentElement.dataset.theme='light');
+for(const [label,tab] of [['Files','files'],['Chat','chat'],['Work','work'],['Memory','memory'],['Overview','overview']]){if(await fly.isHidden())await folder.click();await fly.locator('a').filter({hasText:label}).click();await page.waitForURL(base+'/projects/'+space.id+'/'+tab);assert(await fly.isHidden());}
+await folder.focus();await page.keyboard.press('Tab');assert.equal(await page.locator(':focus').textContent(),'Overview');await page.keyboard.press('Escape');assert(await fly.isHidden());assert.equal(await folder.evaluate(e=>e===document.activeElement),true);
+await page.keyboard.press('Enter');await fly.locator('a').first().waitFor();await page.keyboard.press('Shift+Tab');assert(await fly.isHidden());assert.equal(await folder.evaluate(e=>e===document.activeElement),true);await page.keyboard.press('Enter');await fly.locator('a').last().focus();await page.keyboard.press('Tab');assert.equal(await page.locator(':focus').evaluate(e=>document.getElementById('crProjectNav').contains(e)),true);assert.equal(await folder.evaluate(e=>e===document.activeElement),false);await page.keyboard.press('Escape');
+await page.reload();await toggle.waitFor();assert.equal(await width(),64);await toggle.click();assert.equal(await width(),340);
+await page.setViewportSize({width:900,height:800});await split.focus();await page.keyboard.press('End');assert.equal(await width(),340);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+await toggle.click();await page.setViewportSize({width:390,height:844});assert(await toggle.isHidden());assert(await split.isHidden());await page.locator('#crProjects').click();assert.equal(await width(),260);assert(await folder.isVisible());assert.equal(await folder.getAttribute('role'),null);await page.screenshot({path:'/tmp/workspace-sidebar/mobile-drawer.png'});await page.keyboard.press('Escape');assert.equal(await nav.evaluate(e=>e.inert),true);
+await page.setViewportSize({width:1440,height:950});assert.equal(await width(),64);assert.deepEqual(errors,[]);console.log('PASS sidebar resize bounds, keyboard and drag, persistence, collapsed hover transfer, five routes, keyboard/Escape, and mobile drawer');
+}finally{await browser.close();}})().catch(e=>{console.error(e);process.exit(1)});

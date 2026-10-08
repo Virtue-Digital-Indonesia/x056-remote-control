@@ -1164,7 +1164,7 @@ html[data-theme="dark"] #agentPane {
 .ap-sheet .ap-grip { display: none; }
 .ap-resizing { user-select: none; }
 
-.ap-head { display: flex; align-items: center; gap: 7px; min-height: 52px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--border); flex: none; min-width: 0; }
+.ap-head { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-height: 52px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--border); flex: none; min-width: 0; }
 .ap-hicon { display: grid; place-items: center; color: var(--muted); }
 .ap-title { font-weight: 600; font-size: 13px; white-space: nowrap; }
 .ap-sp { flex: 1; min-width: 0; }
@@ -1222,9 +1222,12 @@ html[data-theme="dark"] #agentPane {
 .ap-tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; padding-top: 2px; }
 .ap-l1 { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 19px; }
 .ap-l1 b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.ap-l2 { display: flex; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
-.ap-brief { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-bits { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; margin-left: auto; }
+.ap-l2 { display: flex; flex-wrap: wrap; gap: 1px 8px; min-width: 0; color: var(--muted); font-size: 12px; }
+.ap-brief { flex: 1 1 10ch; min-width: 0; overflow-wrap: anywhere; }
+/* Metadata must fit the available row width, including nested workers and costs. */
+.ap-bits { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; margin-left: auto; }
+.ap-bits:only-child { margin-left: 0; }
+.ap-bit { display: inline-block; max-width: 100%; vertical-align: top; }
 .ap-pick { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 550; color: var(--ap-jev); background: color-mix(in srgb, var(--ap-jev) 14%, transparent); white-space: nowrap; flex: none; }
 .ap-gate { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 550; white-space: nowrap; flex: none; }
 .ap-gate-needs { color: var(--amber); background: var(--amber-bg); }
