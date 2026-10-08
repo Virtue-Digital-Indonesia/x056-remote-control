@@ -80,14 +80,15 @@ describe('idle-only release gate', () => {
 
 describe('offline Project release snapshot', () => {
   const functions = source.slice(source.indexOf('PREVIOUS_CONTAINER=""'), source.indexOf('\n{\n  echo "=== tick'));
-  function snapshot(options: { enabled?: boolean; idle?: boolean; busy?: boolean; fail?: boolean; timeout?: boolean; cleanupFailure?: boolean; signal?: boolean } = {}) {
+  function snapshot(options: { enabled?: boolean; idle?: boolean; busy?: boolean; fail?: boolean; timeout?: boolean; cleanupFailure?: boolean; signal?: boolean; scope?: string; swap?: 'success' | 'failure' } = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'deploy-backup-'));
     mkdirSync(join(dir, '.deploy', 'backups'), { recursive: true });
     if (options.enabled !== false) writeFileSync(join(dir, '.deploy', 'backup-project-spaces'), '');
+    if (options.scope !== undefined) writeFileSync(join(dir, '.deploy', 'backup-scope'), options.scope);
     writeFileSync(join(dir, '.deploy', 'requested'), 'original-request');
     try {
       const result = spawnSync('bash', ['-c', `
-        FLAG="$DIR/.deploy/requested"; STATUS="$DIR/.deploy/status.json"
+        FLAG="$DIR/.deploy/requested"; STATUS="$DIR/.deploy/status.json"; FORCE="$DIR/.deploy/force"
         timeout() {
           printf 'BOUND %s\\n' "$*" >> "$DIR/actions"
           shift 2; "$@"
@@ -103,6 +104,7 @@ describe('offline Project release snapshot', () => {
               [ "$TIMEOUT_BACKUP" != 1 ] || return 124
               [ "$FAIL_BACKUP" != 1 ] ;;
             'rm -f '*) [ "$CLEANUP_FAILURE" != 1 ] ;;
+            *' up -d '*) [ "$SWAP_RESULT" != failure ] ;;
 
           esac
         }
@@ -112,7 +114,7 @@ describe('offline Project release snapshot', () => {
         ${functions}
         if backup_project_spaces; then
           echo READY_TO_SWAP
-          PREVIOUS_CONTAINER=""
+          ${options.swap ? source.slice(source.indexOf('  swap_args=(up -d)'), source.indexOf('\n} >> "$LOG"')) : 'PREVIOUS_CONTAINER=""'}
         else
           echo NOT_SWAPPING
         fi
@@ -121,6 +123,7 @@ describe('offline Project release snapshot', () => {
         IS_BUSY: options.busy ? '1' : '0', FAIL_BACKUP: options.fail ? '1' : '0',
         TIMEOUT_BACKUP: options.timeout ? '1' : '0', CLEANUP_FAILURE: options.cleanupFailure ? '1' : '0',
         SIGNAL_BACKUP: options.signal ? '1' : '0',
+        SWAP_RESULT: options.swap ?? '',
       } });
       const output = result.stdout;
       let actions = '';
@@ -129,7 +132,9 @@ describe('offline Project release snapshot', () => {
       try { status = readFileSync(join(dir, '.deploy', 'status.json'), 'utf8'); } catch {}
       const requested = existsSync(join(dir, '.deploy', 'requested'));
       const archived = readdirSync(join(dir, '.deploy')).filter(name => name.startsWith('requested.paused-backup-failed-'));
-      return { output, actions, status, requested, archived };
+      return { output, actions, status, requested, archived, exitCode: result.status, error: result.stderr,
+        scopeMarker: existsSync(join(dir, '.deploy', 'backup-scope')),
+        backupMarker: existsSync(join(dir, '.deploy', 'backup-project-spaces')) };
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
   it('leaves normal releases unchanged and requires idle-only for an offline backup', () => {
@@ -144,6 +149,38 @@ describe('offline Project release snapshot', () => {
     expect(busy.actions).not.toContain('DOCKER stop');
     expect(busy.requested).toBe(true);
     expect(busy.archived).toHaveLength(0);
+  });
+  it('defaults to full and propagates an explicitly selected application-state scope', () => {
+    const full = snapshot();
+    expect(full.actions).toContain('--offline --scope=full');
+    expect(full.output).toContain('backup scope: full');
+    expect(full.output).not.toContain('excluded from rollback snapshot');
+    const selected = snapshot({ scope: 'application-state\n' });
+    expect(selected.actions).toContain('--offline --scope=application-state');
+    expect(selected.output).toContain('backup scope: application-state');
+    expect(selected.output).toContain('chats/*/work subtrees (exactly chats/<one chat id>/work relative to the state root)');
+    expect(snapshot({ scope: 'full' }).actions).toContain('--offline --scope=full');
+  });
+  it.each(['', 'unknown', 'application-state extra', ' full', 'full\napplication-state'])('rejects invalid scope %j before any Docker action', scope => {
+    const invalid = snapshot({ scope });
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.error).toContain('invalid backup scope');
+    expect(invalid.actions).toBe('');
+    expect(invalid.requested).toBe(true);
+    expect(invalid.scopeMarker).toBe(true);
+    expect(source.indexOf('BACKUP_SCOPE=full')).toBeLessThan(source.indexOf('  # 1. Build ahead'));
+  });
+  it('retains the scope marker on failures and clears it only after a successful swap', () => {
+    for (const options of [{ fail: true }, { timeout: true }, { busy: true }, { swap: 'failure' as const }]) {
+      const failed = snapshot({ scope: 'application-state', ...options });
+      expect(failed.scopeMarker).toBe(true);
+      expect(failed.backupMarker).toBe(true);
+    }
+    const success = snapshot({ scope: 'application-state', swap: 'success' });
+    expect(success.output).toContain('deploy OK');
+    expect(success.scopeMarker).toBe(false);
+    expect(success.backupMarker).toBe(false);
+    expect(success.actions).not.toContain('DOCKER start previous-container');
   });
   it('the real timeout wrapper terminates a hung Docker client', () => {
     const dir = mkdtempSync(join(tmpdir(), 'deploy-timeout-'));

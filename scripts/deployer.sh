@@ -112,6 +112,16 @@ PREVIOUS_CONTAINER=""
 BACKUP_HELPER=""
 BACKUP_ACTIVE=0
 BACKUP_FAILED=0
+# Scope is an explicit per-request choice. Validate before building or stopping
+# writers; leave the marker in place on failure for an operator to inspect.
+BACKUP_SCOPE=full
+if [ -f "$DIR/.deploy/backup-scope" ]; then
+  BACKUP_SCOPE=$(cat "$DIR/.deploy/backup-scope") || exit 1
+fi
+case "$BACKUP_SCOPE" in
+  full|application-state) ;;
+  *) echo "invalid backup scope: expected full or application-state" | tee -a "$DIR/.deploy/last.log" >&2; exit 1;;
+esac
 # Bound the offline interval, including Docker RPCs. A stuck daemon may prevent
 # recovery; never restart writers until helper removal has been acknowledged.
 BACKUP_TIMEOUT="${X056_DEPLOY_BACKUP_TIMEOUT:-120}"
@@ -156,6 +166,10 @@ resume_previous() {
 }
 backup_project_spaces() {
   [ -f "$DIR/.deploy/backup-project-spaces" ] || return 0
+  echo "offline Project backup scope: $BACKUP_SCOPE"
+  if [ "$BACKUP_SCOPE" = application-state ]; then
+    echo 'excluded from rollback snapshot: chats/*/work subtrees (exactly chats/<one chat id>/work relative to the state root)'
+  fi
   [ "$IDLE_ONLY" = 1 ] || { echo "Project backup requires an idle-only request"; return 1; }
   local container image backup_dir
   container=$(bounded_docker 15s compose --project-directory "$DIR" ps -q x056) || return 1
@@ -179,7 +193,7 @@ backup_project_spaces() {
   bounded_docker 15s create --name "$BACKUP_HELPER" --network none --volumes-from "$container" \
     --mount "type=bind,src=$backup_dir,dst=/release-backup" \
     --entrypoint node "$image" --import tsx scripts/project-spaces-recovery.ts \
-    backup /app/state /release-backup/state --offline >/dev/null || return 1
+    backup /app/state /release-backup/state --offline "--scope=$BACKUP_SCOPE" >/dev/null || return 1
   PREVIOUS_CONTAINER="$container"
   bounded_docker 40s stop --time 30 "$container" || return 1
   bounded_docker "${BACKUP_TIMEOUT}s" start -a "$BACKUP_HELPER" || {
@@ -286,7 +300,7 @@ trap 'exit 143' TERM
   if docker compose --project-directory "$DIR" "${swap_args[@]}"; then
     PREVIOUS_CONTAINER=""
     rm -f "$FLAG" "$FORCE"
-    rm -f "$DIR/.deploy/backup-project-spaces"
+    rm -f "$DIR/.deploy/backup-project-spaces" "$DIR/.deploy/backup-scope"
     rm -f "$DIR/.deploy/idle-only"
     rm -f "$DIR/.deploy/revision"
     printf '{"status":"ok","commit":"%s","ts":"%s"}\n' "$(git -C "$DIR" rev-parse --short HEAD)" "$(date -Is)" > "$STATUS"

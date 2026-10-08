@@ -13,7 +13,17 @@ const JSON_FILES = ['project-space-runtime.json','project-dispatches.jsonl','pro
 const DATABASES = ['chat-files.sqlite','memory.sqlite','gateway.sqlite'];
 const DIRECTORIES = ['artifacts','chats','project-files','memory-extractions'];
 interface SnapshotFile { path: string; hash?: string; link?: string; bytes?: number }
-interface Snapshot { schemaVersion: 1; createdAt: string; source: string; files: SnapshotFile[]; databases: string[] }
+export type BackupScope = 'full' | 'application-state';
+const WORKTREE_EXCLUSION = 'chats/*/work';
+function backupScope(value: unknown): BackupScope {
+  if (value !== 'full' && value !== 'application-state') throw new Error('Invalid backup scope: ' + String(value));
+  return value;
+}
+function excludedWorktree(path: string): boolean {
+  const parts = path.split(sep);
+  return parts.length >= 3 && parts[0] === 'chats' && parts[2] === 'work';
+}
+interface Snapshot { scope: BackupScope; excludedPathPatterns: string[]; schemaVersion: 1 | 2; createdAt: string; source: string; files: SnapshotFile[]; databases: string[] }
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 // Hashing is synchronous; one reusable buffer bounds allocations even across
 // millions of small files, without retaining a whole workspace file in RAM.
@@ -24,23 +34,24 @@ function fileHash(path: string): string {
   finally { closeSync(fd); }
   return digest.digest('hex');
 }
-function* entries(root: string, name: string): Generator<SnapshotFile> {
+function* entries(root: string, name: string, scope: BackupScope = 'full'): Generator<SnapshotFile> {
+  if (scope === 'application-state' && excludedWorktree(name)) return;
   const full = join(root, name);
   let stat;
   try { stat = lstatSync(full); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
   if (stat.isSymbolicLink()) { yield { path: name, link: readlinkSync(full) }; return; }
   if (stat.isDirectory()) {
     const directory = opendirSync(full);
-    try { let child; while ((child = directory.readSync())) yield* entries(root, join(name, child.name)); }
+    try { let child; while ((child = directory.readSync())) yield* entries(root, join(name, child.name), scope); }
     finally { directory.closeSync(); }
     return;
   }
   if (!stat.isFile()) throw new Error('Backup contains an unsupported file: ' + name);
   yield { path: name, hash: fileHash(full), bytes: stat.size };
 }
-function* inventory(root: string, wal: boolean): Generator<SnapshotFile> {
+function* inventory(root: string, wal: boolean, scope: BackupScope): Generator<SnapshotFile> {
   for (const name of [...JSON_FILES, ...DIRECTORIES, ...DATABASES, ...(wal ? DATABASES.map(p => p + '-wal') : [])]) {
-    for (const entry of entries(root, name)) {
+    for (const entry of entries(root, name, scope)) {
       // An empty WAL created by opening an offline database has no committed pages.
       if (DATABASES.some(db => entry.path === db + '-wal') && entry.link === undefined && (entry.bytes ?? 0) <= 32) continue;
       yield entry;
@@ -51,14 +62,17 @@ function checkPath(path: string) {
   if (path !== relative('.', path) || path.startsWith('..') || path.startsWith(sep)) throw new Error('Invalid backup path');
 }
 
-interface SnapshotSummary { saved: number; databases: string[] }
+interface SnapshotSummary { saved: number; databases: string[]; scope: BackupScope; excludedPathPatterns: string[] }
+interface BackupOptions { summaryOnly?: boolean; scope?: BackupScope }
 
 /** Run only after all state writers have stopped. SQLite's backup API includes
  * WAL pages. A second inventory rejects writes racing the cross-store copy.
  * summaryOnly also bounds the return value for the deployment CLI. */
-export function backupProjectSpaces(source: string, output: string, offline: boolean, options: { summaryOnly: true }): Promise<SnapshotSummary>;
-export function backupProjectSpaces(source: string, output: string, offline: boolean): Promise<Snapshot>;
-export async function backupProjectSpaces(source: string, output: string, offline: boolean, options?: { summaryOnly: true }): Promise<Snapshot | SnapshotSummary> {
+export function backupProjectSpaces(source: string, output: string, offline: boolean, options: BackupOptions & { summaryOnly: true }): Promise<SnapshotSummary>;
+export function backupProjectSpaces(source: string, output: string, offline: boolean, options?: BackupOptions & { summaryOnly?: false }): Promise<Snapshot>;
+export async function backupProjectSpaces(source: string, output: string, offline: boolean, options?: BackupOptions): Promise<Snapshot | SnapshotSummary> {
+  const scope = backupScope(options?.scope ?? 'full');
+  const excludedPathPatterns = scope === 'application-state' ? [WORKTREE_EXCLUSION] : [];
   if (!offline) throw new Error('Stop all gateway and provider writers, then explicitly choose offline backup');
   source = realpathSync(source); output = resolve(output);
   if (output === source || output.startsWith(source + sep) || existsSync(output)) throw new Error('Choose a new backup directory outside the source state');
@@ -74,7 +88,7 @@ export async function backupProjectSpaces(source: string, output: string, offlin
     const record = (table: string, root: string, wal: boolean) => {
       const insert = index!.prepare(`INSERT INTO ${table} VALUES (?, ?)`);
       index!.exec('BEGIN');
-      try { for (const entry of inventory(root, wal)) insert.run(entry.path, JSON.stringify(entry)); index!.exec('COMMIT'); }
+      try { for (const entry of inventory(root, wal, scope)) insert.run(entry.path, JSON.stringify(entry)); index!.exec('COMMIT'); }
       catch (error) { index!.exec('ROLLBACK'); throw error; }
     };
     record('before_files', source, true);
@@ -101,11 +115,11 @@ export async function backupProjectSpaces(source: string, output: string, offlin
     for (const row of index.prepare('SELECT b.path FROM before_files b LEFT JOIN copied_files c ON b.path=c.path WHERE c.data IS NULL OR b.data != c.data').iterate()) {
       if (!isDatabase(String(row.path))) throw new Error('Copied file differs: ' + row.path);
     }
-    const manifest: Snapshot = { schemaVersion: 1, createdAt: new Date().toISOString(), source, files: [], databases };
+    const manifest: Snapshot = { scope, excludedPathPatterns, schemaVersion: scope === 'full' ? 1 : 2, createdAt: new Date().toISOString(), source, files: [], databases };
     const fd = openSync(join(output, 'project-spaces-snapshot.json'), 'wx', 0o600);
     let saved = 0;
     try {
-      writeFileSync(fd, JSON.stringify({ schemaVersion: manifest.schemaVersion, createdAt: manifest.createdAt, source, databases }).slice(0, -1) + ',"files":[');
+      writeFileSync(fd, JSON.stringify({ scope, excludedPathPatterns, schemaVersion: manifest.schemaVersion, createdAt: manifest.createdAt, source, databases }).slice(0, -1) + ',"files":[');
       for (const row of index.prepare('SELECT data FROM copied_files ORDER BY path').iterate()) {
         const data = String(row.data);
         writeFileSync(fd, (saved++ ? ',\n' : '\n') + data);
@@ -117,7 +131,7 @@ export async function backupProjectSpaces(source: string, output: string, offlin
     } finally { closeSync(fd); }
     index.close(); index = undefined;
     rmSync(indexPath);
-    return options?.summaryOnly ? { saved, databases } : manifest;
+    return options?.summaryOnly ? { saved, databases, scope, excludedPathPatterns } : manifest;
   } catch (error) {
     index?.close(); rmSync(output, { recursive: true, force: true }); throw error;
   }
@@ -126,11 +140,20 @@ export async function backupProjectSpaces(source: string, output: string, offlin
 /** Restore into a new directory, never overwrite live state or newer writes. */
 export function restoreProjectSpaces(snapshotPath: string, output: string): Snapshot {
   const snapshot: Snapshot = JSON.parse(readFileSync(join(snapshotPath, 'project-spaces-snapshot.json'), 'utf8'));
-  if (snapshot.schemaVersion !== 1 || !Array.isArray(snapshot.files)) throw new Error('Invalid snapshot manifest');
+  if (![1, 2].includes(snapshot.schemaVersion) || !Array.isArray(snapshot.files)) throw new Error('Invalid snapshot manifest');
+  // Legacy schema-1 manifests predate scope and always used the full selected roots.
+  if (snapshot.schemaVersion === 2 && snapshot.scope !== 'application-state') throw new Error('Scoped snapshot must declare application-state scope');
+  if (snapshot.schemaVersion === 1 && snapshot.scope !== undefined && snapshot.scope !== 'full') throw new Error('Scoped snapshot requires schema version 2');
+  snapshot.scope = backupScope(snapshot.scope ?? 'full');
+  const expectedExclusions = snapshot.scope === 'application-state' ? [WORKTREE_EXCLUSION] : [];
+  if (snapshot.excludedPathPatterns !== undefined && JSON.stringify(snapshot.excludedPathPatterns) !== JSON.stringify(expectedExclusions)) throw new Error('Invalid snapshot exclusions');
+  if (snapshot.scope === 'application-state' && snapshot.excludedPathPatterns === undefined) throw new Error('Scoped snapshot must declare exclusions');
+  snapshot.excludedPathPatterns = expectedExclusions;
   if (existsSync(output)) throw new Error('Restore requires a new empty location; preserve the current state first');
   const links = snapshot.files.filter(e => e.link !== undefined).map(e => e.path + sep);
   for (const entry of snapshot.files) {
     checkPath(entry.path);
+    if (snapshot.scope === 'application-state' && excludedWorktree(entry.path)) throw new Error('Snapshot contains an excluded worktree path');
     if (links.some(prefix => entry.path.startsWith(prefix))) throw new Error('Snapshot paths cannot descend through a symlink');
     const actual = [...entries(snapshotPath, entry.path)];
     if (actual.length !== 1 || actual[0].hash !== entry.hash || actual[0].link !== entry.link) throw new Error('Snapshot verification failed: ' + entry.path);
