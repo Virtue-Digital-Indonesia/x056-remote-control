@@ -293,5 +293,6 @@ it('reuses exact agent proposals within an owner without widening scope or creat
   expect(store.propose({...input,sessionId:'s2'}).id).not.toBe(original.id);
   expect(store.propose({...input,scope:'global'}).id).not.toBe(original.id);
   expect(store.settings().autoApproveConversationNotes).toBe(false);
+  expect(store.settings().autoManage).toBe(false);
   expect(store.propose({...input,content:'A separate local fact'},true).status).toBe('confirmed');
 });

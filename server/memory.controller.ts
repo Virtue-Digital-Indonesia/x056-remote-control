@@ -84,7 +84,7 @@ export class MemoryController {
       if (callerPid && callerSid) {
         this.validateProject(callerPid, callerSid);
         const caller = this.manager.historyContext(callerPid, callerSid).adapter.id;
-        const reason = this.store().contextProblem(entry, { projectId: callerPid, sessionId: callerSid, requestId:this.manager.memoryRequestId(callerPid,callerSid),provider: caller, access: 'context' });
+        const reason = this.entryReadProblem(entry, { projectId: callerPid, sessionId: callerSid, requestId:this.manager.memoryRequestId(callerPid,callerSid),provider: caller, access: 'context' });
         if (reason) throw new Error(reason);
       }
       if (
@@ -95,8 +95,8 @@ export class MemoryController {
       if(contextQuery)this.store().access.recordRead({kind:'entry',id,version:String(entry.revision)},callerPid!,callerSid!,contextQuery.requestId);
       return {
         entry,
-        revisions: this.store().revisions(id).filter(e => !contextQuery || !this.store().contextProblem(e, contextQuery)),
-        related: this.store().related(id).filter(link => !contextQuery || (link.entry && !this.store().contextProblem(link.entry, contextQuery))),
+        revisions: this.store().revisions(id).filter(e => !contextQuery || !this.entryReadProblem(e, contextQuery)),
+        related: this.store().related(id).filter(link => !contextQuery || (link.entry && !this.entryReadProblem(link.entry, contextQuery))),
         sources: entry.sources.map(ref => {
           const current=ref.id?this.store().source(ref.id):undefined, original=ref.id&&(ref.versionId||ref.hash)?this.store().sourceVersion(ref.id,ref.versionId||ref.hash!):undefined;
           const problem=contextQuery&&current?this.store().sourceContextProblem(current,contextQuery):undefined;
@@ -104,6 +104,11 @@ export class MemoryController {
         }),
       };
     });
+  }
+  private entryReadProblem(entry: MemoryEntry, q: MemoryQuery): string | undefined {
+    if (entry.status === 'proposed' && this.store().settings().autoManage && !this.store().agentWriteProblem(entry,q))
+      return this.store().contextProblem({...entry,status:'confirmed'},q);
+    return this.store().contextProblem(entry,q);
   }
   @Post('entry') @HttpCode(200) save(
     @Body() body: { entry: Partial<MemoryEntry>; id?: string; revision?: number },
@@ -124,11 +129,30 @@ export class MemoryController {
       if (!body?.entry) throw new Error('Memory required');
       this.validateEntry({ ...(body.id ? this.store().get(body.id) : {}), ...body.entry });
       const q=this.callerQuery(body);
+      const full = this.store().settings().autoManage && !!body.callerProjectId && !!body.callerSessionId;
+      const current = body.id ? this.store().get(body.id) : undefined;
+      if (full) {
+        const candidate = {...current, ...body.entry};
+        const problem = this.store().agentWriteProblem(candidate, q);
+        if (problem) throw new Error(problem);
+        if (body.id) {
+          if (!current) throw new Error('Memory not found');
+          const ownerProblem = this.store().agentWriteProblem(current, q);
+          if (ownerProblem) throw new Error(ownerProblem);
+          if (!['proposed','confirmed'].includes(current.status)) throw new Error('Restore this memory before editing');
+          for (const key of Object.keys(body.entry))
+            if (!['title','content','sources'].includes(key)) throw new Error('Automatic corrections may change only title, content and sources');
+        }
+      }
       if(body.callerProjectId&&body.callerSessionId){
-        if(body.id){const current=this.store().get(body.id);if(!current)throw new Error('Memory not found');const problem=this.store().contextProblem(current,q);if(problem)throw new Error(problem);}
+        if(body.id&&!full){const current=this.store().get(body.id);if(!current)throw new Error('Memory not found');const problem=this.store().contextProblem(current,q);if(problem)throw new Error(problem);}
         for(const ref of body.entry.sources||[]){if(!ref.id)continue;const pinned=this.store().access.references(body.callerProjectId,body.callerSessionId,q.requestId)?.selections.find(r=>r.kind==='source'&&r.id===ref.id);const version=ref.versionId||pinned?.version;const source=version?this.store().sourceVersion(ref.id,version):this.store().source(ref.id);if(!source)throw new Error('Source unavailable');const reason=this.store().sourceContextProblem(source,q);if(reason)throw new Error(reason);const grant=this.store().access.eligible({kind:'source',id:ref.id},body.callerProjectId,body.callerSessionId);ref.grantId=grant?.id;ref.grantRevision=grant?.revision;ref.hash=source.hash;ref.versionId=source.versionId;ref.spaceId=source.spaceId;}
       }
-      const entry = { ...body.entry, status: 'proposed' as const };
+      const automatic = full && (current?.status === 'confirmed' || !['shared','global'].includes(current?.scope || body.entry.scope || 'project') && !(current?.sharedProjectIds || body.entry.sharedProjectIds)?.length);
+      const entry: Partial<MemoryEntry> = { ...body.entry, status: automatic ? 'confirmed' : 'proposed' };
+      if (automatic && current) {
+        this.validateAutomaticEntry({...current,...entry},q);
+      }
       const settings = this.store().settings();
       const localNote = entry.scope === 'conversation' && !!body.callerProjectId && !!body.callerSessionId &&
         entry.projectId === body.callerProjectId && entry.sessionId === body.callerSessionId &&
@@ -137,8 +161,53 @@ export class MemoryController {
         !settings.excludedProjects.includes(body.callerProjectId!) &&
         !settings.excludedSpaces.includes(this.manager.projectContext().resolve(body.callerProjectId!, body.callerSessionId).spaceId || '');
       return body.id
-        ? this.store().update(body.id, body.revision!, entry, 'agent proposal')
-        : this.store().propose(entry, !!autoApprove);
+        ? this.store().update(body.id, body.revision!, entry, full ? this.agentActor(q, 'edit') : 'agent proposal')
+        : this.store().propose(entry, automatic || !!autoApprove, automatic ? this.agentActor(q, 'save') : undefined, automatic ? candidate => this.validateAutomaticEntry(candidate,q) : undefined);
+    });
+  }
+  private validateAutomaticEntry(entry: Partial<MemoryEntry>, q: MemoryQuery): void {
+    for (const ref of entry.sources || []) {
+      if (!ref.id) continue;
+      const source = ref.versionId || ref.hash ? this.store().sourceVersion(ref.id,ref.versionId || ref.hash!) : this.store().source(ref.id);
+      if (!source) throw new Error('Source unavailable');
+      const problem = this.store().sourceContextProblem(source,q);
+      if (problem) throw new Error(problem);
+    }
+    const problem = this.store().contextProblem({...entry,status:'confirmed'} as MemoryEntry,q);
+    if (problem) throw new Error(problem);
+  }
+  private agentActor(q: MemoryQuery, action: string, reason?: string): string {
+    return `agent · ${action} · ${q.provider} · ${q.projectId}/${q.sessionId}${reason ? ' · ' + reason : ''}`.slice(0, 300);
+  }
+  private managedEntry(body: {id:string;revision:number;callerProjectId?:string;callerSessionId?:string}) {
+    if (!body?.callerProjectId || !body.callerSessionId) throw new Error('A verified caller conversation is required');
+    const q = this.callerQuery(body);
+    if (!this.store().settings().autoManage) throw new Error('Automatic memory management is disabled');
+    const entry = this.store().get(body.id);
+    if (!entry) throw new Error('Memory not found');
+    if (!Number.isSafeInteger(body.revision) || body.revision !== entry.revision) throw new MemoryConflict('Memory changed. Reload the latest revision before saving.');
+    const problem = this.store().agentWriteProblem(entry,q);
+    if (problem) throw new Error(problem);
+    if (!['proposed','confirmed'].includes(entry.status)) throw new Error('Restore this memory before changing it');
+    return {entry,q};
+  }
+  @Post('delete') @HttpCode(200) deleteEntry(
+    @Body() body: {id:string;revision:number;reason:string;callerProjectId?:string;callerSessionId?:string},
+  ) {
+    return this.call(() => {
+      const {entry,q} = this.managedEntry(body);
+      if (typeof body.reason !== 'string' || !body.reason.trim() || body.reason.length > 160) throw new Error('Provide a deletion reason of 1–160 characters');
+      return this.store().update(entry.id,body.revision,{status:'deleted'},this.agentActor(q,'delete',body.reason.trim()));
+    });
+  }
+  @Post('approve') @HttpCode(200) approveEntry(
+    @Body() body: {id:string;revision:number;callerProjectId?:string;callerSessionId?:string},
+  ) {
+    return this.call(() => {
+      const {entry,q} = this.managedEntry(body);
+      if (entry.scope === 'global' || entry.scope === 'shared' || entry.sharedProjectIds.length) throw new Error('Review expanded memory sharing in the Memory page');
+      this.validateAutomaticEntry(entry,q);
+      return this.store().update(entry.id,body.revision,{status:'confirmed'},this.agentActor(q,'approve'));
     });
   }
   @Post('bulk') @HttpCode(200) bulk(

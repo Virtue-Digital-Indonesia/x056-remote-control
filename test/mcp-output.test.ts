@@ -52,7 +52,7 @@ afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir
 
 describe('all advertised output contracts', () => {
   it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(61);
+    expect(TOOLS).toHaveLength(63);
     expect(validators.size).toBe(TOOLS.length);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
@@ -226,8 +226,10 @@ describe('all advertised output contracts', () => {
     const linked = await tool('memory_link', { from: proposed.id, to: saved.data.id, kind: 'supports' });
     expect(linked.data.relationships).toHaveLength(1);
     const read = await tool('memory_read', { id: saved.data.id });
-    expect(read.data.sources[0].current.content).toBe('Fixture source');
-    expect(read.data.sources[0].original.content).toBe('Fixture source');
+    expect(read.data.sources[0].current.hash).toBe(read.data.sources[0].hash);
+    expect(read.data.sources[0].current.content).toBeUndefined();
+    expect(read.data.sources[0].original.hash).toBe(read.data.sources[0].hash);
+    expect(read.data.sources[0].original.content).toBeUndefined();
     expect((await tool('memory_read', { id: proposed.id })).data.revisions.length).toBeGreaterThan(1);
     expect((await tool('memory_search', { query: 'Contract', crossProject: true })).data.items).toHaveLength(1);
     const context = await tool('memory_context', { projectId: 'p', sessionId: 's', query: 'Contract' });
@@ -237,6 +239,8 @@ describe('all advertised output contracts', () => {
     manager.memory().setPreferences('p', 's', { enabled: false, excludedIds: [proposed.id], pinnedIds: [] });
     expect((await tool('memory_context', { projectId: 'p', sessionId: 's', query: 'Contract' })).data.enabled).toBe(false);
     expect((await tool('memory_read', { id: 'missing' })).isError).toBe(true);
+    expect((await tool('memory_approve', { id: proposed.id, revision: changed.revision })).isError).toBe(true);
+    expect((await tool('memory_delete', { id: proposed.id, revision: changed.revision, reason: 'Obsolete fixture' })).isError).toBe(true);
   });
 
   it('validates code/wiki service return shapes through the actual gateway route', async () => {

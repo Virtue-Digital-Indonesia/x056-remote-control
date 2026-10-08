@@ -1,3 +1,4 @@
+import { compactMemoryResult } from './x056-mcp-memory-results.mjs';
 import { Ajv } from 'ajv';
 import { WORKSPACE_TOOLS, callWorkspaceTool } from './x056-mcp-workspace.mjs';
 import { CHAT_TOOLS, CHAT_OUTPUT, callChatTool } from './x056-mcp-chat.mjs';
@@ -441,28 +442,29 @@ async function waitForReply(api, projectId, sid, messageId, waitSeconds) {
 const MEMORY_TOOLS = [
   [
     'memory_search',
-    'Search reviewed gateway memory across conversations, projects and providers. Omit projectId for the current project; crossProject=true searches all shared knowledge. Results include source links and revisions.',
+    'Search reviewed gateway memory across conversations, projects and providers. Omit projectId for the current project; crossProject=true searches all shared knowledge. Results include bounded content excerpts, source links and revisions. Use nextOffset to continue and memory_read for the full note.',
     {
       query: { type: 'string' },
       projectId: { type: 'string' },
       sessionId: { type: 'string' },
       crossProject: { type: 'boolean' },
+      offset: { type: 'integer', minimum: 0 },
       kind: { type: 'string' },
       limit: { type: 'number' },
     },
     ['query'],
   ],
-  ['memory_source_search','Search eligible document passages with exact file versions and locators. Results respect memory settings, ownership, sharing grants, and this turn’s selected references.',{query:{type:'string'},limit:{type:'number'},offset:{type:'number'}},['query']],
-  ['memory_source_read','Read up to five cited passages from an eligible source version. A source grant allows reading, never file editing.',{id:{type:'string'},versionId:{type:'string'},passageId:{type:'string'},offset:{type:'number'},limit:{type:'number'}},['id']],
+  ['memory_source_search','Search eligible document passages with exact file versions and locators. Responses are bounded; pass nextOffset as offset to continue. Results respect memory settings, ownership, sharing grants, and this turn’s selected references.',{query:{type:'string'},limit:{type:'number'},offset:{type:'number'}},['query']],
+  ['memory_source_read','Read up to five cited passages within a bounded response. Pass nextOffset as offset to continue. A source grant allows reading, never file editing.',{id:{type:'string'},versionId:{type:'string'},passageId:{type:'string'},offset:{type:'number'},limit:{type:'number'}},['id']],
   [
     'memory_read',
-    'Read a shared memory, its source evidence, revision history and relationships.',
-    { id: { type: 'string' } },
+    'Read a shared memory body in bounded character pages. Pass nextOffset as offset to continue. Revisions, relationships and sources are metadata only; use memory_source_read for cited source passages. metadataTruncated reports omitted metadata.',
+    { id: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 8000 } },
     ['id'],
   ],
   [
     'memory_propose',
-    'Save durable facts, decisions or procedures automatically as memory proposals, with source references. No approval is needed to save. Keep conversation and Work knowledge local; use scope space and spaceId for knowledge intended for the owning Project bank. memory_context returns the current scope. Search existing memory first. Identical notes are reused; same-title corrections must use memory_update. New conversation facts/decisions can be auto-approved only when the operator enables that setting; shared notes and corrections require review.',
+    'Save durable facts, decisions or procedures automatically as memory proposals, with source references. No approval is needed to save. Keep conversation and Work knowledge local; use scope space and spaceId for knowledge intended for the owning Project bank. memory_context returns the current scope. Search existing memory first. Identical notes are reused; same-title corrections must use memory_update. The memory automation setting controls review: limited mode confirms new local conversation facts/decisions; full automatic mode also confirms eligible owned memories and corrections. Sharing grants only allow reading, never editing.',
     {
       title: { type: 'string' },
       content: { type: 'string' },
@@ -479,14 +481,27 @@ const MEMORY_TOOLS = [
   ],
   [
     'memory_update',
-    'Propose a correction to an existing memory using its current revision. The correction needs review before automatic context inclusion.',
+    'Correct an existing memory using its current revision. Full automatic memory management confirms eligible owned corrections immediately; other modes keep corrections for review. Shared read access does not permit editing.',
     {
       id: { type: 'string' },
       revision: { type: 'number' },
       title: { type: 'string' },
       content: { type: 'string' },
+      sources:{type:'array',maxItems:20,items:{type:'object',properties:{id:{type:'string'},label:{type:'string'},versionId:{type:'string'}},required:['id','label'],additionalProperties:false}},
     },
     ['id', 'revision', 'content'],
+  ],
+  [
+    'memory_approve',
+    'Confirm an existing proposed memory owned by this conversation or its Project using the current revision. Requires full automatic memory management. Read the note and its sources first; shared read access does not permit approval.',
+    { id: { type: 'string' }, revision: { type: 'integer', minimum: 1 } },
+    ['id', 'revision'],
+  ],
+  [
+    'memory_delete',
+    'Move an owned memory to recoverable trash using its current revision and a concise reason. Requires full automatic memory management. Sources and version history remain available; shared read access does not permit deletion.',
+    { id: { type: 'string' }, revision: { type: 'integer', minimum: 1 }, reason: { type: 'string', minLength: 1, maxLength: 160 } },
+    ['id', 'revision', 'reason'],
   ],
   [
     'memory_context',
@@ -520,7 +535,7 @@ for (const tool of TOOLS) {
   if (!OUTPUT_SCHEMAS[tool.name]) throw new Error(`missing output schema: ${tool.name}`);
   tool.outputSchema = OUTPUT_SCHEMAS[tool.name];
   const readOnly = /^(list_|read_|search_|get_|code_|wiki_)/.test(tool.name) || ['chat_status', 'memory_search', 'memory_read', 'memory_context','memory_source_search','memory_source_read'].includes(tool.name);
-  tool.annotations = { readOnlyHint: readOnly, destructiveHint: ['stop_chat', 'update_chat', 'stop_conversation', 'cancel_queued', 'cancel_scheduled', 'edit_queued', 'pause_scheduled', 'memory_update'].includes(tool.name), idempotentHint: readOnly, openWorldHint: ['send_chat_message', 'send_message', 'message_self', 'schedule_task'].includes(tool.name) };
+  tool.annotations = { readOnlyHint: readOnly, destructiveHint: ['stop_chat', 'update_chat', 'stop_conversation', 'cancel_queued', 'cancel_scheduled', 'edit_queued', 'pause_scheduled', 'memory_update', 'memory_approve', 'memory_delete'].includes(tool.name), idempotentHint: readOnly, openWorldHint: ['send_chat_message', 'send_message', 'message_self', 'schedule_task'].includes(tool.name) };
 
 }
 
@@ -559,13 +574,14 @@ export async function callToolResult(api, name, args) {
   if(MEMORY_TOOLS.some(t=>t[0]===name)){
     const pid=args.projectId||SELF.projectId,sid=args.sessionId||(pid===SELF.projectId?SELF.sessionId:'');
     let path,body;
-    if(name==='memory_search'){const query=new URLSearchParams({query:args.query||'',status:'confirmed',...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{}),limit:String(Math.min(100,args.limit||20)),...(args.kind?{kind:args.kind}:{}),...(!args.crossProject&&pid?{projectId:pid,sessionId:sid||'',access:'context'}:{})});path='/api/memory/search?'+query;}
+    if(name==='memory_search'){const query=new URLSearchParams({query:args.query||'',status:'confirmed',...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{}),limit:String(Math.min(100,args.limit||20)),offset:String(args.offset||0),...(args.kind?{kind:args.kind}:{}),...(!args.crossProject&&pid?{projectId:pid,sessionId:sid||'',access:'context'}:{})});path='/api/memory/search?'+query;}
     else if(name==='memory_source_search'||name==='memory_source_read')path='/api/memory/source/'+(name==='memory_source_search'?'search':'read')+'?'+new URLSearchParams({...args,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{projectId:pid||'',sessionId:sid||'',access:'context'})});
     else if(name==='memory_read')path='/api/memory/entry?'+new URLSearchParams({id:args.id,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})});
     else if(name==='memory_context')path='/api/memory/context?'+new URLSearchParams({projectId:pid,sessionId:sid||'',query:args.query||'',...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})});
     else if(name==='memory_link'){path='/api/memory/link';body={from:args.from,to:args.to,kind:args.kind,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})};}
+    else if(name==='memory_approve'||name==='memory_delete'){path='/api/memory/'+(name==='memory_approve'?'approve':'delete');body={...args};}
     else {path='/api/memory/propose';const {id,revision,...entry}=args;body={id,revision,entry:name==='memory_update'?entry:{...entry,projectId:entry.spaceId?undefined:pid,sessionId:entry.spaceId?undefined:sid,sources:entry.sources||[{label:'Agent proposal',projectId:pid,sessionId:sid}]}};}
-    if(body&&['memory_propose','memory_update'].includes(name)&&SELF.projectId&&SELF.sessionId)Object.assign(body,{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId});
+    if(body&&['memory_propose','memory_update','memory_approve','memory_delete'].includes(name)&&SELF.projectId&&SELF.sessionId)Object.assign(body,{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId});
     if (name === 'memory_propose') {
       const query = new URLSearchParams({ query: args.title, limit: '20', ...(SELF.projectId && SELF.sessionId ? { callerProjectId: SELF.projectId, callerSessionId: SELF.sessionId } : { projectId: pid || '', sessionId: sid || '' }) });
       const known = await api('/api/memory/search?' + query);
@@ -573,10 +589,11 @@ export async function callToolResult(api, name, args) {
       const conflict = (known.entries || known.items || []).find(e => normalize(e.title) === normalize(args.title) && e.scope === (args.scope || 'project') && (args.spaceId ? e.spaceId === args.spaceId : e.projectId === pid) && normalize(e.content) !== normalize(args.content));
       if (conflict) throw new Error('Related memory already exists: ' + conflict.id + ' (revision ' + conflict.revision + '). Read it with memory_read and use memory_update for a correction. Use a distinct title if this is a separate fact.');
     }
-    const data = await api(path,body?{method:'POST',body:JSON.stringify(body)}:undefined);
+    const rawData = await api(path,body?{method:'POST',body:JSON.stringify(body)}:undefined);
+    const data = compactMemoryResult(name, rawData, args);
     const structured = name === 'memory_link' ? { relationships: data }
-      : name === 'memory_propose' || name === 'memory_update' ? { entry: data } : data;
-    return result(JSON.stringify(data,null,2), structured);
+      : ['memory_propose','memory_update','memory_approve','memory_delete'].includes(name) ? { entry: data } : data;
+    return result(JSON.stringify(data), structured);
   }
 
   if (CRON_TOOL_NAMES.has(name)) {

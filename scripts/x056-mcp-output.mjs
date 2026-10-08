@@ -42,6 +42,9 @@ const source = object({ document:object({contentHash:str,file:savedFile,extracto
   title: str, content: str, projectId: str, sessionId: str, provider: str, ref: str,
   at: num, hash: str, excluded: bool,
 }, ['id', 'key', 'kind', 'title', 'content', 'projectId', 'at', 'hash', 'excluded']);
+const compactEntry = object({ ...entry.properties, contentTruncated: bool, metadataTruncated: bool }, [...entry.required, 'contentTruncated', 'metadataTruncated']);
+const revisionMetadata = object({id:str,revision:integer,title:str,updatedAt:num,status:entry.properties.status});
+const sourceMetadata = object({id:str,versionId:str,title:str,kind:source.properties.kind,projectId:str,sessionId:str,spaceId:str,hash:str,ref:str},['id','title','kind','projectId','hash']);
 const relationship = object({ id: str, from_id: str, to_id: str,
   kind: choices('related', 'supports', 'contradicts', 'depends_on'), at: num, entry: ref('entry'),
 }, ['id', 'from_id', 'to_id', 'kind', 'at']);
@@ -106,14 +109,16 @@ const schemas = {
   cancel_scheduled: object({ id: str, ok: bool }),
   list_scheduled: object({ jobs: array(object({ ...jobFields, ...targetFields }, [...jobRequired, ...Object.keys(targetFields)])), defaultTz: str }),
   save_memory: object({ id: str, file: str, accounts: array(str), existed: bool, status: entry.properties.status, shared: literal(true) }),
-  memory_search: object({ items: array(object({ ...entry.properties, staleReason: str, expired: bool, score: num, reason: str },
-    [...entry.required, 'expired', 'score', 'reason'])), total: integer, limit: num, offset: num, truncated: bool }),
-  memory_source_search:object({items:array(passage),total:integer}),
-  memory_source_read:object({sourceId:str,versionId:str,title:str,items:array(passage),total:integer,offset:integer,limit:integer,downloadPath:str},['sourceId','versionId','title','items','total','offset','limit']),
-  memory_read: object({ entry: ref('entry'), revisions: array(ref('entry')), related: array(ref('relationship')),
-    sources: array(object({ ...sourceRef.properties,unavailable:str, current: ref('source'), original: ref('source') }, sourceRef.required)) }),
+  memory_search: object({ items: array(object({ ...compactEntry.properties, staleReason: str, expired: bool, score: num, reason: str },
+    [...compactEntry.required, 'expired', 'score', 'reason'])), total: integer, limit: num, offset: num, truncated: bool, nextOffset:integer }, ['items','total','limit','offset','truncated']),
+  memory_source_search:object({items:array(passage),total:integer,offset:integer,limit:integer,truncated:bool,nextOffset:integer},['items','total','offset','limit','truncated']),
+  memory_source_read:object({sourceId:str,versionId:str,title:str,items:array(passage),total:integer,offset:integer,limit:integer,downloadPath:str,truncated:bool,nextOffset:integer},['sourceId','versionId','title','items','total','offset','limit']),
+  memory_read: object({ entry: compactEntry, revisions: array(revisionMetadata), related: array(object({...relationship.properties,entry:revisionMetadata},relationship.required)),
+    sources: array(object({ ...sourceRef.properties,unavailable:str, current: sourceMetadata, original: sourceMetadata }, sourceRef.required)),offset:integer,limit:integer,totalCharacters:integer,revisionsTotal:integer,relatedTotal:integer,sourcesTotal:integer,truncated:bool,metadataTruncated:bool,nextOffset:integer },['entry','revisions','related','sources','offset','limit','totalCharacters','revisionsTotal','relatedTotal','sourcesTotal','truncated','metadataTruncated']),
   memory_propose: object({ entry: ref('entry') }),
   memory_update: object({ entry: ref('entry') }),
+  memory_approve: object({ entry: ref('entry') }),
+  memory_delete: object({ entry: ref('entry') }),
   memory_link: object({ relationships: array(ref('relationship')) }),
   memory_context: object({ text: str, ...contextFields, provider, preview: bool,
     preferences: object({ enabled: bool, excludedIds: array(str), pinnedIds: array(str) }, []),

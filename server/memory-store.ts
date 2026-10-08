@@ -96,6 +96,7 @@ export interface MemorySettings {
   enabled: boolean;
   autoCapture: boolean;
   autoApproveConversationNotes: boolean;
+  autoManage: boolean;
   crossProject: boolean;
   maxTokens: number;
   maxEntries: number;
@@ -125,6 +126,7 @@ const defaults: MemorySettings = {
   enabled: true,
   autoCapture: true,
   autoApproveConversationNotes: false,
+  autoManage: false,
   crossProject: true,
   maxTokens: 2400,
   maxEntries: 12,
@@ -335,12 +337,12 @@ export class MemoryStore {
   }
   /** Repeated agent proposals must not fill the inbox with the same fact. Scope,
    * provider availability and ownership must match; no widening via dedup. */
-  propose(input: Partial<MemoryEntry>, autoApprove = false): MemoryEntry {
+  propose(input: Partial<MemoryEntry>, autoApprove = false, automaticActor?: string, beforeConfirm?: (entry: Partial<MemoryEntry>) => void): MemoryEntry {
     input = { ...input, kind: input.kind || 'fact', status: 'proposed', scope: input.scope || 'project',
       summary: input.summary || '', providers: input.providers || ['claude','codex'],
       tags: input.tags || [], sharedProjectIds: input.sharedProjectIds || [], pinned: input.pinned ?? false, sources: input.sources || [] };
     this.validate(input);
-    autoApprove = autoApprove && input.scope === 'conversation' && ['fact','decision'].includes(input.kind!);
+    autoApprove = autoApprove && (!!automaticActor || input.scope === 'conversation' && ['fact','decision'].includes(input.kind!));
     const signature = (e: Partial<MemoryEntry>) => JSON.stringify([
       e.scope || 'project', e.projectId || '', e.spaceId || '',
       e.scope === 'conversation' ? e.sessionId || '' : '',
@@ -352,8 +354,10 @@ export class MemoryStore {
     const candidates = this.db.prepare("SELECT data FROM memory_entries WHERE status IN ('proposed','confirmed') AND scope=? AND kind=? AND trim(replace(json_extract(data,'$.content'),char(13)||char(10),char(10)))=?")
       .all(input.scope!, input.kind!, input.content!.replace(/\r\n/g, '\n').trim());
     const same = candidates.map(row => this.projectEntry(this.decode<MemoryEntry>(row))).find(e => e && signature(e) === wanted);
-    if (same) return same;
-    return this.create({ ...input, status: autoApprove ? 'confirmed' : 'proposed' }, autoApprove ? 'agent · automatic conversation note' : 'agent proposal');
+    if (autoApprove && automaticActor) beforeConfirm?.(same || input);
+    if (same) return autoApprove && automaticActor && same.status === 'proposed'
+      ? this.update(same.id, same.revision, {status:'confirmed'}, automaticActor) : same;
+    return this.create({ ...input, status: autoApprove ? 'confirmed' : 'proposed' }, automaticActor || (autoApprove ? 'agent · automatic conversation note' : 'agent proposal'));
   }
   create(input: Partial<MemoryEntry>, actor = 'operator'): MemoryEntry {
     const now = Date.now(),
@@ -456,7 +460,7 @@ export class MemoryStore {
   }
   setSettings(patch: Partial<MemorySettings>) {
     const s = { ...this.settings(), ...patch };
-    for (const k of ['enabled', 'autoCapture', 'autoApproveConversationNotes', 'crossProject'] as const)
+    for (const k of ['enabled', 'autoCapture', 'autoApproveConversationNotes', 'autoManage', 'crossProject'] as const)
       if (typeof s[k] !== 'boolean') throw new Error('Invalid setting');
     if (
       !Number.isInteger(s.maxTokens) ||
@@ -516,6 +520,23 @@ export class MemoryStore {
   }
   private sourceProblem(e:MemoryEntry):string|undefined {
     for(const ref of e.sources){if(!ref.id)continue;const source=this.source(ref.id);if(!source||source.excluded)return 'Source excluded or removed';if((ref.hash&&ref.hash!==source.hash)||(ref.versionId&&ref.versionId!==source.versionId))return 'Source changed; review required';}
+    return;
+  }
+  /** Write authority is ownership, never a read grant or a selected reference. */
+  agentWriteProblem(e: Partial<MemoryEntry>, q: MemoryQuery): string | undefined {
+    if (!q.projectId || !q.sessionId || !q.provider) return 'A verified caller conversation is required';
+    const settings = this.settings(), scope = this.resolver?.resolve(q.projectId, q.sessionId);
+    if (!settings.enabled || !settings.providers.includes(q.provider) || this.preferences(q.projectId,q.sessionId).enabled === false) return 'Memory disabled';
+    if (scope?.spaceArchived) return 'Primary Project archived';
+    if (settings.excludedProjects.includes(q.projectId) || e.projectId && settings.excludedProjects.includes(e.projectId) || e.sources?.some(s=>s.projectId && settings.excludedProjects.includes(s.projectId))) return 'Project excluded';
+    if (scope?.spaceId && settings.excludedSpaces.includes(scope.spaceId) || e.spaceId && settings.excludedSpaces.includes(e.spaceId)) return 'Project space excluded';
+    if (e.providers && !e.providers.includes(q.provider)) return 'Memory unavailable to this provider';
+    const excluded = this.preferences(q.projectId,q.sessionId).excludedIds || [];
+    if (e.id && excluded.includes(e.id) || e.sources?.some(s=>s.id && excluded.includes(s.id))) return 'Excluded from this conversation';
+    if (e.spaceId) {
+      if (!scope?.spaceId || e.spaceId !== scope.spaceId) return 'Memory belongs to another Project';
+    } else if (!e.projectId || e.projectId !== q.projectId) return 'Memory belongs to another execution';
+    if (e.scope === 'conversation' && e.sessionId !== q.sessionId) return 'Memory belongs to another conversation';
     return;
   }
   contextProblem(e:MemoryEntry,q:MemoryQuery):string|undefined {
