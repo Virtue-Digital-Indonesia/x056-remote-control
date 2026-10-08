@@ -28,7 +28,11 @@ The dashboard now groups recorded usage by project and conversation, including n
 
 The display identifies incomplete scans, missing transcripts, and unpriced models. Figures estimate standard API token costs, not subscription charges or future project costs. They exclude tool fees, priority tiers, fast tiers, and long-context premiums. Cache writes use the five-minute rate.
 
-Rates were checked against the [OpenAI model documentation](https://developers.openai.com/api/docs/models) and [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing) on 7 September 2026.
+Rates were checked against the [OpenAI model documentation](https://developers.openai.com/api/docs/models) and [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing) on 8 October 2026. Cached input for GPT-6.1 Sol and Sonnet 5.5 is $0.10 per million tokens. All recorded usage is valued at current standard API rates. IDR figures use [Bank Indonesia JISDOR](https://www.bi.go.id/id/statistik/informasi-kurs/jisdor/default.aspx) of Rp17,880 per USD, dated 7 October 2026.
+
+Recovery can include token counters from complete v4 archived scans when transcripts are missing. Stored recovery records contain counters and attribution metadata, with no messages or tasks. A matching active logical transcript takes precedence over its archive, so the same usage is counted once. The snapshot date does not establish lifetime completeness, and missing transcript warnings remain visible.
+
+This update uses the existing idle-only backend deployment procedure. The host actuator waits for active turns, background providers, and workflows to finish before replacing the gateway.
 
 ## Flexible questions
 

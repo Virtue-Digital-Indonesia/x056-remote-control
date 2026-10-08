@@ -125,9 +125,20 @@ describe('cost estimation', () => {
     expect(estimateCost(usage({ 'claude-sonnet-5': { output: 1e6 } })).usd).toBeCloseTo(10);
   });
 
-  it('charges cache reads at a tenth of input', () => {
+  it('charges cache reads at the model-specific rate', () => {
     expect(estimateCost(usage({ 'claude-opus-5': { cacheRead: 1e6 } })).usd).toBeCloseTo(0.5);
     expect(estimateCost(usage({ 'claude-opus-5-5': { cacheRead: 1e6 } })).usd).toBeCloseTo(0.2);
+  });
+
+  it('prices Sonnet 5.5 across all token categories at current rates', () => {
+    const c = estimateCost(usage({ 'claude-sonnet-5-5': { input: 1e6, output: 1e6, cacheRead: 1e6, cacheWrite: 1e6 } }));
+    expect(c.usd).toBeCloseTo(14.6);
+    expect(c.unpriced).toEqual([]);
+  });
+
+  it('distinguishes GPT-6.1 Sol cache reads from GPT-6 Sol', () => {
+    expect(estimateCost(usage({ 'gpt-6.1-sol': { cacheRead: 1e6 } })).usd).toBeCloseTo(0.1);
+    expect(estimateCost(usage({ 'gpt-6-sol': { cacheRead: 1e6 } })).usd).toBeCloseTo(0.2);
   });
 
   it('names an unpriced model instead of blanking the whole figure', () => {
@@ -298,7 +309,7 @@ describe('Codex cumulative token accounting', () => {
   });
 });
 
-it('prices GPT-6 replacements without changing retired models historical rates', () => {
+it('prices GPT-6 replacements without changing the listed rates of older models', () => {
   const byModel = Object.fromEntries(['gpt-6-sol','gpt-6-luna','gpt-5.6-sol','gpt-5.6-luna'].map(model => [model, { input:1e6, output:1e6, cacheRead:0, cacheWrite:0 }]));
   expect(estimateCost({input:4e6,output:4e6,cacheRead:0,cacheWrite:0,messages:4,byModel})).toEqual({usd:38,unpriced:[]});
 });

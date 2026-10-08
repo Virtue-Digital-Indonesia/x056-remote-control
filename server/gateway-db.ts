@@ -78,6 +78,12 @@ const MIGRATIONS: Migration[] = [
     CREATE TABLE mcp_oauth(name TEXT PRIMARY KEY, issuer TEXT NOT NULL, token_endpoint TEXT NOT NULL, client_id TEXT NOT NULL, client_secret TEXT, auth_method TEXT NOT NULL, redirect_uri TEXT NOT NULL, resource TEXT, scope TEXT,
       access_token TEXT, refresh_token TEXT, expires_at INTEGER, signed_in_at INTEGER NOT NULL, last_refresh_at INTEGER, applied_hash TEXT, apply_error TEXT, error TEXT, failures INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER);
   `),
+  // Usage evidence survives provider transcript retention; no messages or tasks.
+  (db) => db.exec(`
+    CREATE TABLE archived_usage(identity TEXT PRIMARY KEY, parent_id TEXT NOT NULL, data TEXT NOT NULL);
+    CREATE INDEX archived_usage_parent ON archived_usage(parent_id);
+    CREATE TABLE archived_usage_imports(source TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime REAL NOT NULL);
+  `),
 ];
 
 type Row = Record<string, unknown>;

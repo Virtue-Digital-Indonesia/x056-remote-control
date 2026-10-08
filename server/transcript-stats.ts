@@ -1,5 +1,7 @@
 import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
 import { gatewayDb, transaction } from './gateway-db.js';
+import { ArchivedUsageLedger } from './archived-usage.js';
+import { join } from 'node:path';
 
 /**
  * Token totals and Task outcomes, read straight out of a transcript.
@@ -68,6 +70,8 @@ export interface TranscriptStats {
 
 interface CacheEntry extends TranscriptStats {
   offset: number;
+  /** When this complete/incremental scan was saved (older caches lack this). */
+  scannedAt?: string;
   codexModel?: string;
   codexTotals?: { input: number; output: number; cached: number; written: number };
 }
@@ -80,16 +84,16 @@ interface CacheEntry extends TranscriptStats {
  * unknown model is priced at null rather than guessed, so a new model shows its
  * tokens and no invented number.
  */
-// Standard text rates verified 2026-09-07. Exact model/version matching avoids
+// Current Standard short-context text rates verified 2026-10-08, not historical bills.
+// Exact model/version matching avoids
 // silently applying an old family's rate to a future model.
 // https://developers.openai.com/api/docs/models
 // https://platform.claude.com/docs/en/about-claude/pricing
-export const PRICE_DATE = '2026-09-07';
+export const PRICE_DATE = '2026-10-08';
 const PRICES: Record<string, { in: number; out: number; cached?: number }> = {
-  // GPT-6 Sol/Luna standard rates verified 2026-09-23 against official model pages.
-  // GPT-6.1-Sol launched 2026-09-29 at GPT-6-Sol's rates (launch coverage;
-  // not yet on the official model page).
-  'gpt-6.1-sol': { in: 2, out: 10, cached: 0.2 },
+  // GPT-6.1 Sol has a lower cache-read rate than GPT-6 Sol.
+  // https://developers.openai.com/api/docs/models/gpt-6.1-sol
+  'gpt-6.1-sol': { in: 2, out: 10, cached: 0.1 },
   'gpt-6-sol': { in: 2, out: 10, cached: 0.2 },
   'gpt-6-luna': { in: 0.1, out: 0.5, cached: 0.01 },
   'gpt-6-astra': { in: 10, out: 50 },
@@ -103,6 +107,8 @@ const PRICES: Record<string, { in: number; out: number; cached?: number }> = {
   ...Object.fromEntries(['opus-5','opus-4-8','opus-4-7','opus-4-6','opus-4-5'].map(m => ['claude-'+m, { in: 5, out: 25 }])),
   ...Object.fromEntries(['opus-4-1','opus-4'].map(m => ['claude-'+m, { in: 15, out: 75 }])),
   'claude-sonnet-5': { in: 2, out: 10 },
+  // Current cache-read rate after the 2026-10-07 reduction from $0.20/MTok.
+  'claude-sonnet-5-5': { in: 2, out: 10, cached: 0.1 },
   ...Object.fromEntries(['sonnet-4-6','sonnet-4-5','sonnet-4'].map(m => ['claude-'+m, { in: 3, out: 15 }])),
   'claude-haiku-4-5': { in: 1, out: 5 },
   'claude-haiku-3-5': { in: 0.8, out: 4 },
@@ -127,7 +133,8 @@ export function estimateCost(u: TokenUsage): { usd: number; unpriced: string[] }
     if (!(t.input + t.output + t.cacheRead + t.cacheWrite)) continue; // e.g. <synthetic>
     const p = priceFor(model);
     if (!p) { unpriced.push(model); continue; }
-    // Cache reads bill at a tenth of input; 5-minute cache writes at 1.25x.
+    // Use model-specific cache-read rates; remaining listed models use 10% of input.
+    // Cache writes assume the 5-minute rate (1.25x input), not the 1-hour rate.
     usd += (t.input * p.in + t.cacheRead * (p.cached ?? p.in * 0.1) + t.cacheWrite * p.in * 1.25 + t.output * p.out) / 1e6;
   }
   return { usd, unpriced };
@@ -164,8 +171,12 @@ function gone(path: string): boolean {
 
 export class TranscriptStatsReader {
   private cache = new Map<string, CacheEntry>();
+  readonly archives: ArchivedUsageLedger;
 
-  constructor(private readonly stateDir: string) { this.load(); }
+  constructor(private readonly stateDir: string) {
+    this.archives = new ArchivedUsageLedger(stateDir);
+    this.load();
+  }
 
   /** Paths whose entry changed since the last save: only those are written. */
   private dirty = new Set<string>();
@@ -181,8 +192,13 @@ export class TranscriptStatsReader {
       const db = gatewayDb(this.stateDir), drop: string[] = [];
       for (const row of db.prepare('SELECT path, version, data FROM transcript_stats').all()) {
         const path = String(row.path);
-        if (Number(row.version) !== CACHE_VERSION || gone(path)) { drop.push(path); continue; }
-        try { this.cache.set(path, JSON.parse(String(row.data)) as CacheEntry); } catch { drop.push(path); }
+        if (Number(row.version) !== CACHE_VERSION) { drop.push(path); continue; }
+        let entry: CacheEntry;
+        try { entry = JSON.parse(String(row.data)) as CacheEntry; } catch { drop.push(path); continue; }
+        // Archive evidence before discarding a vanished transcript's cache.
+        this.archives.preserve(path, entry, CACHE_VERSION, join(this.stateDir, 'gateway.sqlite'), entry.scannedAt || null);
+        if (gone(path)) { drop.push(path); continue; }
+        this.cache.set(path, entry);
       }
       if (drop.length) {
         const del = db.prepare('DELETE FROM transcript_stats WHERE path=?');
@@ -200,7 +216,10 @@ export class TranscriptStatsReader {
       transaction(db, () => {
         for (const path of this.dirty) {
           const entry = this.cache.get(path);
-          if (entry) put.run(path, CACHE_VERSION, JSON.stringify(entry));
+          if (entry) {
+            put.run(path, CACHE_VERSION, JSON.stringify(entry));
+            this.archives.preserve(path, entry, CACHE_VERSION, join(this.stateDir, 'gateway.sqlite'), entry.scannedAt || null);
+          }
         }
       });
       this.dirty.clear();
@@ -231,6 +250,7 @@ export class TranscriptStatsReader {
     entry.size = size;
     entry.scanned = end;
     entry.partial = end < size;
+    entry.scannedAt = new Date().toISOString();
     this.cache.set(path, entry);
     this.dirty.add(path);
     this.save();
