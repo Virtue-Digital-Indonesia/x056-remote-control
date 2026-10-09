@@ -718,8 +718,9 @@ the thread they come from uses them together, and so do we now.
   follow-up at high 90%. With no effort saved (and not on Auto) up and down are
   measured from what the CLI runs with (`baselineEffort`:
   `CLAUDE_DEFAULT_EFFORT` -- opus/Opus 5.5 and sonnet/Sonnet 5.5 medium (the `sonnet` alias
-  resolves to claude-sonnet-5-5 since 2026-10; plain Sonnet 5 stays high), fable
-  high, per the model-config docs and the aliases seen in real transcripts;
+  resolves to claude-sonnet-5-5 since 2026-10; plain Sonnet 5 stays high), haiku
+  medium (the `haiku` alias resolves to claude-haiku-5-5 since CLI 2.1.293, 1M
+  context; Haiku 4.5 took no effort), fable high, per the model-config docs and the aliases seen in real transcripts;
   Codex: the model's catalog `defaultEffort`), or Low would need the raise
   bar even to pick `low`. A move the ranks cannot place (Fable, an
   unknown Codex slug) keeps the plain 60% bar; the "model stays" rule and the

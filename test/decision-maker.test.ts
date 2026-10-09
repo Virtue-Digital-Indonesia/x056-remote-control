@@ -8,7 +8,7 @@ import { ClaudeTransport } from '../src/persistent-transport.js';
 import { SessionManager, type GatewayEvent } from '../server/manager.js';
 import { JevService, JEV_POLICY, EFFORT_QUESTION, LEAN_BARS, applyPolicy, leanBars, applySubagentPolicy, decisionState, effortQuestion, modelQuestion, subagentEffortQuestion, subagentModelQuestion, type JevDecision, type JevDecisionInput } from '../server/jev.js';
 import { decisionsRequest } from '../server/openai-decisions.js';
-import { advisorFor, jevCandidates, teamCandidates } from '../server/decision-maker.js';
+import { CLAUDE_DEFAULT_EFFORT, advisorFor, jevCandidates, teamCandidates } from '../server/decision-maker.js';
 import { OpenAIDecisionsService } from '../server/openai-decisions.js';
 
 const input = (over: Partial<JevDecisionInput> = {}): JevDecisionInput => ({
@@ -226,8 +226,14 @@ describe('Jev policy', () => {
     expect(applyPolicy({ ...base(), provider: 'codex' }, codex, { model: { choice: 'gpt-b', confidence: 0.9 } }, [{ ...base(), model: 'gpt-a' }]).model).toBe('gpt-b');
   });
 
+  it('knows Haiku 5.5 takes effort and defaults to medium', () => {
+    expect(CLAUDE_DEFAULT_EFFORT.haiku).toBe('medium');
+    expect(CLAUDE_DEFAULT_EFFORT['claude-haiku-5-5']).toBe('medium');
+  });
+
   // Owner, 2026-10-05: Haiku's context window is too short for these
   // conversations, so Jev never gets it as an option and a pick of it is refused.
+  // (Said of Haiku 4.5's 200K; Haiku 5.5 has 1M, but the rule stands.)
   it('never offers Haiku on Claude, and refuses a pick of it', async () => {
     expect(jevCandidates('claude', []).models.map((m) => m.id)).not.toContain('haiku');
     const d = applyPolicy(base(), input({ currentModel: 'sonnet' }), { model: { choice: 'haiku', confidence: 0.99 } }, []);

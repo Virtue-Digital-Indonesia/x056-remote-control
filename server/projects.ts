@@ -2,6 +2,12 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import type { ProviderId } from '../src/provider.js';
+import { currentClaudeModel } from '../src/claude-model-policy.js';
+import { currentCodexModel } from '../src/codex-model-policy.js';
+
+/** A saved model id moved to the one dispatch would run. The two maps never
+ *  share an id, so a project default needs no provider to pick one. */
+const currentSavedModel = (m: string) => currentCodexModel(currentClaudeModel(m));
 
 export interface ModeDefaults { provider?: ProviderId; model?: string; effort?: string; account?: string }
 export function validateModeDefaults(defaults: Project['defaults']): void {
@@ -417,7 +423,8 @@ export class ProjectRegistry {
   }
 
   /** Backfill: a project that predates conversations but has a lastSessionId gets
-   *  that session registered as its first conversation. */
+   *  that session registered as its first conversation. Saved models that
+   *  were replaced move to their successor. Runs at boot. */
   migrateConversations(): void {
     let changed = false;
     for (const p of this.data.projects) {
@@ -430,6 +437,14 @@ export class ProjectRegistry {
       if (p.lastSessionId && (!p.conversations || p.conversations.length === 0)) {
         p.conversations = [{ sessionId: p.lastSessionId, title: 'Conversation 1', createdAt: Date.now() }];
         changed = true;
+      }
+      // Saved choices naming a replaced model are rewritten to its successor,
+      // which is what dispatch already runs, so pickers and lists stop showing
+      // the old name.
+      for (const holder of [p, p.defaults?.chat, p.defaults?.work, ...(p.conversations ?? [])]) {
+        if (!holder?.model) continue;
+        const next = currentSavedModel(holder.model);
+        if (next !== holder.model) { holder.model = next; changed = true; }
       }
     }
     if (changed) this.save();

@@ -110,12 +110,31 @@ const PRICES: Record<string, { in: number; out: number; cached?: number }> = {
   // Current cache-read rate after the 2026-10-07 reduction from $0.20/MTok.
   'claude-sonnet-5-5': { in: 2, out: 10, cached: 0.1 },
   ...Object.fromEntries(['sonnet-4-6','sonnet-4-5','sonnet-4'].map(m => ['claude-'+m, { in: 3, out: 15 }])),
+  // Haiku 5.5 (CLI 2.1.293+): cache writes 0.125 = 1.25x input, as assumed below.
+  'claude-haiku-5-5': { in: 0.1, out: 0.5, cached: 0.01 },
   'claude-haiku-4-5': { in: 1, out: 5 },
   'claude-haiku-3-5': { in: 0.8, out: 4 },
 };
+/**
+ * Long-prompt tier: a request whose prompt (input + cache write + cache read)
+ * exceeds LONG_PROMPT_TOKENS is billed at these rates for the WHOLE request.
+ * Prices are applied to per-model totals, so the scanner files such an entry
+ * under `<model> (long prompt)` and it is priced here. Only models listed get
+ * the split; for every other model a long entry stays under its plain id.
+ */
+const LONG_PROMPT_TOKENS = 100_000;
+export const LONG_PROMPT_SUFFIX = ' (long prompt)';
+const LONG_PRICES: Record<string, { in: number; out: number; cached?: number }> = {
+  'claude-haiku-5-5': { in: 0.5, out: 2.5, cached: 0.05 },
+};
+const baseModel = (model: string) => model.toLowerCase().replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, '');
+/** The byModel key an assistant entry is counted under. */
+export function usageModelKey(model: string, promptTokens: number): string {
+  return promptTokens > LONG_PROMPT_TOKENS && LONG_PRICES[baseModel(model)] ? model + LONG_PROMPT_SUFFIX : model;
+}
 function priceFor(model: string): { in: number; out: number; cached?: number } | null {
-  const m = model.toLowerCase().replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, '');
-  return PRICES[m] ?? null;
+  if (model.endsWith(LONG_PROMPT_SUFFIX)) return LONG_PRICES[baseModel(model.slice(0, -LONG_PROMPT_SUFFIX.length))] ?? null;
+  return PRICES[baseModel(model)] ?? null;
 }
 
 /**
@@ -371,7 +390,7 @@ export class TranscriptStatsReader {
       entry.usage.cacheRead += cr;
       entry.usage.cacheWrite += cw;
       entry.usage.messages += 1;
-      const m = (entry.usage.byModel[model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+      const m = (entry.usage.byModel[usageModelKey(model, inp + cw + cr)] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
       m.input += inp; m.output += out; m.cacheRead += cr; m.cacheWrite += cw;
     }
 

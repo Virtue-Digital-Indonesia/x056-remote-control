@@ -17,6 +17,7 @@ export function advisorFor(provider: 'claude' | 'codex', model: string | undefin
 
 /** What Jev may choose between on Claude. Haiku is left out (owner,
  *  2026-10-05): its context window is too short for these conversations.
+ *  (Said of Haiku 4.5's 200K; Haiku 5.5 has 1M, but the rule stands.)
  *  Fable is in (owner, same day), although it bills to usage credits. A user
  *  can still pick Haiku by hand. */
 export const CLAUDE_CANDIDATES: JevCandidate[] = [
@@ -31,7 +32,8 @@ export const CLAUDE_CANDIDATES: JevCandidate[] = [
  * 5.5 default to medium"). Aliases as they resolve here, checked against real
  * transcripts: opus -> claude-opus-5-5, sonnet -> claude-sonnet-5-5 (it was
  * claude-sonnet-5 until Sonnet 5.5; 427 live entries by 2026-10-09), fable ->
- * claude-fable-5-1. Haiku 4.5 takes no effort, so it has no entry.
+ * claude-fable-5-1, haiku -> claude-haiku-5-5 (since CLI 2.1.293; medium
+ * default, low..max -- Haiku 4.5 took no effort at all).
  */
 /** What "Auto model" runs when the picker cannot decide: the house defaults,
  *  a balanced everyday model rather than the frontier one each CLI would pick.
@@ -40,6 +42,7 @@ export const AUTO_MODEL: Record<'claude' | 'codex', string> = { claude: 'sonnet'
 
 export const CLAUDE_DEFAULT_EFFORT: Record<string, string> = {
   opus: 'medium', 'claude-opus-5-5': 'medium', sonnet: 'medium', 'claude-sonnet-5-5': 'medium', 'claude-sonnet-5': 'high', fable: 'high', 'claude-fable-5-1': 'high',
+  haiku: 'medium', 'claude-haiku-5-5': 'medium',
 };
 
 export const EFFORT_CRITERIA: Record<string, string> = {

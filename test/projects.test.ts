@@ -74,6 +74,30 @@ describe('ProjectRegistry', () => {
     r.migrateConversations();
     expect(r.conversations('p1')).toEqual([{ sessionId: 'legacy-sess', title: 'Conversation 1', createdAt: expect.any(Number) }]);
   });
+
+  it('migrateConversations rewrites saved models that were replaced, and keeps current ones', () => {
+    const f = join(stateDir(), 'projects.json');
+    writeFileSync(f, JSON.stringify({ current: 'p1', projects: [
+      { id: 'p1', name: 'Claude', cwd: '/w', model: 'claude-opus-5', conversations: [
+        { sessionId: 'c1', title: 'a', createdAt: 1, model: 'claude-opus-5' },
+        { sessionId: 'c2', title: 'b', createdAt: 1, model: 'sonnet' },
+        { sessionId: 'c3', title: 'c', createdAt: 1, model: '' },
+      ] },
+      { id: 'p2', name: 'Codex', cwd: '/w', provider: 'codex', model: 'gpt-5.6-sol', defaults: { work: { model: 'gpt-6-sol' } }, conversations: [
+        { sessionId: 'x1', title: 'a', createdAt: 1, provider: 'codex', model: 'gpt-5.6-sol' },
+        { sessionId: 'x2', title: 'b', createdAt: 1, provider: 'codex', model: 'gpt-5.6-terra' },
+        { sessionId: 'x3', title: 'c', createdAt: 1, provider: 'codex', model: 'gpt-5.6-luna' },
+      ] },
+    ] }));
+    ProjectRegistry.load(f).migrateConversations();
+    const saved = JSON.parse(readFileSync(f, 'utf8')) as { projects: { model?: string; defaults?: { work?: { model?: string } }; conversations: { model?: string }[] }[] };
+    const [claude, codex] = saved.projects;
+    expect(claude.model).toBe('opus');
+    expect(claude.conversations.map((c) => c.model)).toEqual(['opus', 'sonnet', '']);
+    expect(codex.model).toBe('gpt-6.1-sol');
+    expect(codex.defaults?.work?.model).toBe('gpt-6.1-sol');
+    expect(codex.conversations.map((c) => c.model)).toEqual(['gpt-6.1-sol', 'gpt-5.6-terra', 'gpt-6-luna']);
+  });
 });
 
 describe('SessionManager projects', () => {

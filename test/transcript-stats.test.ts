@@ -136,6 +136,30 @@ describe('cost estimation', () => {
     expect(c.unpriced).toEqual([]);
   });
 
+  it('prices Haiku 5.5 at its base rates, and its long-prompt tier above 100K', () => {
+    const all = { input: 1e6, output: 1e6, cacheRead: 1e6, cacheWrite: 1e6 };
+    expect(estimateCost(usage({ 'claude-haiku-5-5': all })).usd).toBeCloseTo(0.735);
+    const long = estimateCost(usage({ 'claude-haiku-5-5-20261001 (long prompt)': all }));
+    expect(long.usd).toBeCloseTo(3.675);
+    expect(long.unpriced).toEqual([]);
+  });
+
+  it('files a Haiku 5.5 entry over 100K prompt tokens under the long-prompt key', () => {
+    const d = dir();
+    const f = join(d, 't.jsonl');
+    writeFileSync(f, assistant('claude-haiku-5-5', { input_tokens: 40_000, cache_read_input_tokens: 50_000, cache_creation_input_tokens: 10_000, output_tokens: 3 }) // exactly 100K: base
+      + assistant('claude-haiku-5-5', { input_tokens: 1, cache_read_input_tokens: 100_000, output_tokens: 5 }) // 100,001: long
+      + assistant('claude-opus-5-5', { cache_read_input_tokens: 500_000, output_tokens: 7 })); // no tier listed: plain
+    const s = new TranscriptStatsReader(d).statsFor(f);
+    expect(s.usage.byModel['claude-haiku-5-5']).toEqual({ input: 40_000, output: 3, cacheRead: 50_000, cacheWrite: 10_000 });
+    expect(s.usage.byModel['claude-haiku-5-5 (long prompt)']).toEqual({ input: 1, output: 5, cacheRead: 100_000, cacheWrite: 0 });
+    expect(s.usage.byModel['claude-opus-5-5'].output).toBe(7);
+    expect(s.usage.output).toBe(15);
+    const c = estimateCost(s.usage);
+    expect(c.unpriced).toEqual([]);
+    expect(c.usd).toBeCloseTo((40_000 * 0.1 + 3 * 0.5 + 50_000 * 0.01 + 10_000 * 0.125 + 1 * 0.5 + 5 * 2.5 + 100_000 * 0.05 + 500_000 * 0.2 + 7 * 20) / 1e6, 10);
+  });
+
   it('distinguishes GPT-6.1 Sol cache reads from GPT-6 Sol', () => {
     expect(estimateCost(usage({ 'gpt-6.1-sol': { cacheRead: 1e6 } })).usd).toBeCloseTo(0.1);
     expect(estimateCost(usage({ 'gpt-6-sol': { cacheRead: 1e6 } })).usd).toBeCloseTo(0.2);
