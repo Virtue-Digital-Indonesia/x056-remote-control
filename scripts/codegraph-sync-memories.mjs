@@ -26,10 +26,23 @@ const TOKEN = process.env.KNOWLEDGE_API_TOKEN || readTokenFile();
 const SERVICE_ID = process.env.KNOWLEDGE_SERVICE_ID || 'x056';
 const TEAM_ID = process.env.KNOWLEDGE_TEAM_ID || 'x056';
 const WIKI_ID = process.env.KNOWLEDGE_WIKI_ID || readFileMaybe('/app/state/tools/wikiid-memories.txt');
-// Accounts share one memory tree (b/c are mirrors of a); read one to avoid
-// writing every page N times.
-const SOURCE_ACCOUNT = process.env.X056_MEMORY_ACCOUNT || 'a';
-const PROJECTS_DIR = `/app/state/accounts/${SOURCE_ACCOUNT}/projects`;
+// Every Claude account links its projects/ to ONE shared tree, so read one
+// account to avoid writing every page N times. Account `a` used to be that
+// one; it has no projects/ now and the hourly job synced 0 pages for days, so
+// the default is the first account that has one.
+const ACCOUNTS_DIR = '/app/state/accounts';
+function sourceProjectsDir() {
+  const named = process.env.X056_MEMORY_ACCOUNT;
+  if (named) return join(ACCOUNTS_DIR, named, 'projects');
+  let accounts = [];
+  try { accounts = readdirSync(ACCOUNTS_DIR).filter((n) => !/^(pending-|codex-pending-)/.test(n)).sort(); } catch { /* fall through */ }
+  for (const a of accounts) {
+    const dir = join(ACCOUNTS_DIR, a, 'projects');
+    try { if (statSync(dir).isDirectory()) return dir; } catch { /* no projects/ here */ }
+  }
+  return join(ACCOUNTS_DIR, 'a', 'projects');
+}
+const PROJECTS_DIR = sourceProjectsDir();
 
 const dryRun = process.argv.includes('--dry-run');
 const prune = process.argv.includes('--prune');

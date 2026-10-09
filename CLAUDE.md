@@ -179,7 +179,7 @@ you can search memories from projects other than the one you're in — the
 auto-memory injection only ever gives you the *current* project's.
 
 - **Wiki id: `wiki-h0cbwx1t`** (`wiki_search`, `wiki_read`, `wiki_list`,
-  `wiki_graph`). 176 memories across 9 projects.
+  `wiki_graph`). 368 memories across 23 projects.
 - Reach for it when a problem smells like one already solved elsewhere —
   deployment, auth, e2e, dind networking. Your own project's memories are
   already in context; this is for the other eight.

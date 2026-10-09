@@ -79,7 +79,7 @@ server env. Verified: unauthenticated request → `401`.
 
 `scripts/codegraph-sync-memories.mjs` mirrors every project's auto-memory files
 into a wiki so any session can search **all** projects' memories, not just its
-own. 176 files across 9 projects; re-run the script to refresh (idempotent,
+own. 368 files across 23 projects (2026-10-09); re-run the script to refresh (idempotent,
 upserts by ref; `--dry-run` to preview, `--prune` to drop pages whose source
 file is gone).
 
