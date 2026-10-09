@@ -410,7 +410,7 @@ describe('SessionManager: exactly one decision maker per conversation', () => {
     expect(decide.mock.calls[0][1].context).toMatchObject({ project: 'P', origin: 'the user' });
     expect(decide.mock.calls[0][1].lean).toBeUndefined();
     // Sonnet saved with no effort: Jev is told what the CLI runs with.
-    expect(decide.mock.calls[0][1]).toMatchObject({ currentModel: 'sonnet', baselineEffort: 'high', auto: { model: false, effort: true } });
+    expect(decide.mock.calls[0][1]).toMatchObject({ currentModel: 'sonnet', baselineEffort: 'medium', auto: { model: false, effort: true } });
     // The user's own saved choice is untouched by Jev's per-turn pick.
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.model).toBe('sonnet');
     expect(mgr.listConversations(p.id).find((c) => c.sessionId === sid)?.decisionMaker).toBe('jev');

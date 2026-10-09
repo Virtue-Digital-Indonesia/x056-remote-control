@@ -717,7 +717,8 @@ the thread they come from uses them together, and so do we now.
   refactor's effort from high 58% to medium 65% but left the big-task
   follow-up at high 90%. With no effort saved (and not on Auto) up and down are
   measured from what the CLI runs with (`baselineEffort`:
-  `CLAUDE_DEFAULT_EFFORT` -- opus/Opus 5.5 medium, sonnet/Sonnet 5 and fable
+  `CLAUDE_DEFAULT_EFFORT` -- opus/Opus 5.5 and sonnet/Sonnet 5.5 medium (the `sonnet` alias
+  resolves to claude-sonnet-5-5 since 2026-10; plain Sonnet 5 stays high), fable
   high, per the model-config docs and the aliases seen in real transcripts;
   Codex: the model's catalog `defaultEffort`), or Low would need the raise
   bar even to pick `low`. A move the ranks cannot place (Fable, an

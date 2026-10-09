@@ -29,8 +29,9 @@ export const CLAUDE_CANDIDATES: JevCandidate[] = [
  * What Claude Code runs with when no --effort is given (docs, model-config:
  * "high on every model that supports effort, except that Opus 5.5 and Sonnet
  * 5.5 default to medium"). Aliases as they resolve here, checked against real
- * transcripts 2026-09-30: opus -> claude-opus-5-5, sonnet -> claude-sonnet-5,
- * fable -> claude-fable-5-1. Haiku 4.5 takes no effort, so it has no entry.
+ * transcripts: opus -> claude-opus-5-5, sonnet -> claude-sonnet-5-5 (it was
+ * claude-sonnet-5 until Sonnet 5.5; 427 live entries by 2026-10-09), fable ->
+ * claude-fable-5-1. Haiku 4.5 takes no effort, so it has no entry.
  */
 /** What "Auto model" runs when the picker cannot decide: the house defaults,
  *  a balanced everyday model rather than the frontier one each CLI would pick.
@@ -38,7 +39,7 @@ export const CLAUDE_CANDIDATES: JevCandidate[] = [
 export const AUTO_MODEL: Record<'claude' | 'codex', string> = { claude: 'sonnet', codex: 'gpt-5.6-terra' };
 
 export const CLAUDE_DEFAULT_EFFORT: Record<string, string> = {
-  opus: 'medium', 'claude-opus-5-5': 'medium', sonnet: 'high', 'claude-sonnet-5': 'high', fable: 'high', 'claude-fable-5-1': 'high',
+  opus: 'medium', 'claude-opus-5-5': 'medium', sonnet: 'medium', 'claude-sonnet-5-5': 'medium', 'claude-sonnet-5': 'high', fable: 'high', 'claude-fable-5-1': 'high',
 };
 
 export const EFFORT_CRITERIA: Record<string, string> = {
