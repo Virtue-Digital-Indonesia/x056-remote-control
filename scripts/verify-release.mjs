@@ -20,17 +20,27 @@ if (version.backend.revision !== expected.slice(0, 7))
   );
 if (!(await (await get('/healthz')).json()).ok) throw new Error('Backend health check failed');
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+// Keep the order aligned with VersionInfo.current(): these are the image's
+// fingerprinted assets, all of which VersionInfo.html() versions in the page.
+const fingerprinted = ['panel.html', 'control-room.js', 'control-room.css', 'rc-chat.js', 'rc-chat.css', 'project-spaces.js', 'project-spaces.css', 'workspace.js', 'workspace.css'];
+const fingerprint = createHash('sha256');
+for (const name of fingerprinted) {
+  fingerprint.update(name);
+  fingerprint.update(readFileSync(resolve(assets, name)));
+}
+if (fingerprint.digest('hex') !== version.ui.fingerprint)
+  throw new Error('Interface fingerprint mismatch');
 const checks = {};
-for (const [name, path] of [
-  ['panel.html', '/'],
-  ['control-room.js', '/control-room.js'],
-  ['control-room.css', '/control-room.css'],
-]) {
+for (const name of [...fingerprinted, 'agent-tree.js']) {
+  const path = name === 'panel.html' ? '/' : '/' + name;
   let served = await (await get(path)).text();
   if (name === 'panel.html')
     served = served
       .replace(/<script>window\.X056_RELEASE=[\s\S]*?;<\/script>/, '')
-      .replace(/(\/control-room\.(?:js|css))\?v=[a-f0-9]+(?=["'])/g, '$1');
+      .replace(/(\/(?:control-room|rc-chat|project-spaces|workspace)\.(?:js|css))\?v=([^"']+)(?=["'])/g, (_match, asset, value) => {
+        if (value !== version.ui.fingerprint) throw new Error('Asset fingerprint mismatch: ' + asset);
+        return asset;
+      });
   checks[name] = digest(served) === digest(readFileSync(resolve(assets, name)));
   if (!checks[name]) throw new Error('Interface mismatch: ' + name);
 }
