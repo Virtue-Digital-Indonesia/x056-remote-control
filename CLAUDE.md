@@ -737,8 +737,9 @@ the thread they come from uses them together, and so do we now.
   "and UTC?" after a one-line answer got haiku 95% / low 98% with it. Each pick is a compact card in the
   chat ("Jev · Opus · Medium · Changed this turn") via the conversation
   journal, so reloads keep it. Slow (3 s), failed or keyless = no change. Candidates:
-  sonnet/opus/fable on Claude (Haiku excluded: context too short; Fable
-  allowed despite usage credits; owner, 2026-10-05), and on Codex the
+  haiku/sonnet/opus/fable on Claude (Haiku offered again since Haiku 5.5, 1M
+  context, owner 2026-10-09; Fable allowed despite usage credits, owner
+  2026-10-05), and on Codex the
   account-advertised models of the luna/terra/sol/astra families (a legacy
   slug like gpt-5.5 is never offered to the picker). Key: `state/secrets/typesafe.json`
   (0600). Decisions: `state/jev/decisions/<sid>.jsonl`.

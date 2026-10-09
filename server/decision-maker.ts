@@ -15,12 +15,11 @@ export function advisorFor(provider: 'claude' | 'codex', model: string | undefin
   return /fable/i.test(model || '') ? 'fable' : 'opus';
 }
 
-/** What Jev may choose between on Claude. Haiku is left out (owner,
- *  2026-10-05): its context window is too short for these conversations.
- *  (Said of Haiku 4.5's 200K; Haiku 5.5 has 1M, but the rule stands.)
- *  Fable is in (owner, same day), although it bills to usage credits. A user
- *  can still pick Haiku by hand. */
+/** What Jev may choose between on Claude. Haiku is in since Haiku 5.5 (1M
+ *  context; owner, 2026-10-09); it was out while Haiku 4.5's 200K was too short.
+ *  Fable is in (owner, 2026-10-05), although it bills to usage credits. */
 export const CLAUDE_CANDIDATES: JevCandidate[] = [
+  { id: 'haiku', about: 'Fastest and cheapest. Quick answers, lookups, small edits. Weaker on hard multi-step work.' },
   { id: 'sonnet', about: 'Strong everyday model. Normal coding, writing, explanations, features of moderate size.' },
   { id: 'opus', about: 'Strongest affordable reasoning. Hard debugging, architecture, large or risky refactors, ambiguous problems.' },
   { id: 'fable', about: 'Frontier model, billed to usage credits. Only the hardest work: deep multi-step reasoning, critical or very large changes.' },
