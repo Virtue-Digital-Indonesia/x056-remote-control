@@ -114,6 +114,7 @@ interface SendBody {
   cwd?: string;
   model?: string;
   effort?: string;
+  speed?: string;
   image?: string; // legacy single-image field (kept for back-compat)
   images?: string[]; // legacy image-only attachments (data URLs)
   attachments?: Attachment[]; // any file type, with original name
@@ -302,7 +303,7 @@ export class ApiController {
     // it into the command's arguments and break the invocation.
     const isSlashCommand = (body.prompt ?? '').trimStart().startsWith('/');
     if (body.interactive !== false && !isSlashCommand) prompt = withAskInstructions(prompt);
-    return { prompt, opts: { fileRefs: body.fileRefs, requestId: body.requestId, model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve } };
+    return { prompt, opts: { fileRefs: body.fileRefs, requestId: body.requestId, model: body.model, effort: body.effort, speed: body.speed, account:body.account, useReserve:body.useReserve } };
   }
 
   @Post('sessions')
@@ -541,10 +542,10 @@ export class ApiController {
 
   @Post('conversations/preferences')
   @HttpCode(200)
-  conversationPreferences(@Body() body: { projectId?: string; sessionId?: string; model?: string; effort?: string }): { ok: boolean } {
-    if (!body?.projectId || !body.sessionId || (body.model === undefined && body.effort === undefined)) throw new BadRequestException('projectId, sessionId and model or effort required');
+  conversationPreferences(@Body() body: { projectId?: string; sessionId?: string; model?: string; effort?: string; speed?: string }): { ok: boolean } {
+    if (!body?.projectId || !body.sessionId || (body.model === undefined && body.effort === undefined && body.speed === undefined)) throw new BadRequestException('projectId, sessionId and model, effort or speed required');
     try {
-      this.manager.setConversationRunPrefs(body.projectId, body.sessionId, { model: body.model, effort: body.effort });
+      this.manager.setConversationRunPrefs(body.projectId, body.sessionId, { model: body.model, effort: body.effort, speed: body.speed });
       return { ok: true };
     } catch (err) { throw new BadRequestException((err as Error).message); }
   }
@@ -592,7 +593,7 @@ export class ApiController {
     const conv = projectId && sessionId ? this.manager.listConversations(projectId).find((c) => c.sessionId === sessionId) : undefined;
     if (!conv) throw new BadRequestException('unknown conversation for that project');
     const helpers = helpersOf(conv);
-    return { helpers, effectiveRouter: this.manager.routerFor(helpers) ?? null, delegates: this.manager.listDelegates(projectId, sessionId) };
+    return { helpers, ...(conv.provider === 'codex' ? { speed: conv.speed ?? 'off' } : {}), effectiveRouter: this.manager.routerFor(helpers) ?? null, delegates: this.manager.listDelegates(projectId, sessionId) };
   }
 
   /** Change only the helpers named; router "none" saves "Your choice". */
@@ -800,7 +801,7 @@ export class ApiController {
    *  moves, the panel's "current" selection. */
   @Post('conversations/send')
   @HttpCode(200)
-  async conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; interactive?: boolean; from?: string; helpers?: HelperPatch; steer?: boolean }):
+  async conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; speed?: string; interactive?: boolean; from?: string; helpers?: HelperPatch; steer?: boolean }):
     Promise<{ mode: 'auto'; sessionId: string; queued: boolean; steered?: boolean; hopsLeft: number; messageId: string } | { mode: 'approval'; approvalId: string; messageId?: string; steer?: boolean }> {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
@@ -813,7 +814,7 @@ export class ApiController {
     // `from` is the CALLING conversation, supplied by the per-turn MCP config
     // rather than the model, so a caller cannot disown its own chain by leaving
     // it out — an external client (Claude Desktop) genuinely has none.
-    const opts = { model: body.model, effort: body.effort, interactive: body.interactive, from: body.from, ...(body.helpers ? { helpers: body.helpers } : {}) };
+    const opts = { model: body.model, effort: body.effort, speed: body.speed, interactive: body.interactive, from: body.from, ...(body.helpers ? { helpers: body.helpers } : {}) };
     try { this.manager.validateConversationRunPrefs(body.projectId, body.sessionId, opts); if (body.helpers) this.manager.checkHelperPatch(body.helpers); }
     catch (err) { throw new BadRequestException((err as Error).message); }
     // The MODE is the operator's setting, never the caller's choice — an AI that
@@ -1672,7 +1673,9 @@ export class ApiController {
     for (const [provider, dirs] of dirsByProvider) {
       const adapter = getAdapter(provider);
       if (!adapter.listModels) continue;
-      const models = adapter.listModels(dirs);
+      // Config dirs are paths: the panel gets account names instead.
+      const names = new Map(registry.list().map((a) => [a.configDir, a.name]));
+      const models = adapter.listModels(dirs).map((m) => m.tiers ? { ...m, tiers: m.tiers.map(({ configDirs, ...t }) => ({ ...t, accounts: configDirs.map((d) => names.get(d) ?? d) })) } : m);
       if (models.length) out[provider] = models;
     }
     return out;
@@ -1945,7 +1948,7 @@ export class ApiController {
       if(body.sessionId&&!this.manager.listConversations(body.projectId).some(c=>c.sessionId===body.sessionId))throw new BadRequestException('Conversation not found');
       const attachmentPrompt = hasAttachments(body) ? this.composePrompt({ ...body, prompt: '', interactive: false }).prompt : undefined;
       const prompt = body.prompt ?? '';
-      const item = this.manager.enqueue(body.projectId, { text: prompt, attachmentPrompt, fileRefs: body.fileRefs, model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId });
+      const item = this.manager.enqueue(body.projectId, { text: prompt, attachmentPrompt, fileRefs: body.fileRefs, model: body.model, effort: body.effort, speed: body.speed, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId });
       return { queued: true, id: item.id, sessionId:item.sessionId };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
@@ -1979,7 +1982,7 @@ export class ApiController {
       this.manager.clearSelfQueueStreak(body.sessionId);
       this.manager.clearRelayChain(body.sessionId);
       const item = this.manager.enqueue(body.projectId, {
-        text: body.prompt, model: body.model, effort: body.effort, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId,
+        text: body.prompt, model: body.model, effort: body.effort, speed: body.speed, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId,
       });
       return { steered: false, queued: true, id: item.id };
     } catch (err) {
@@ -1989,9 +1992,9 @@ export class ApiController {
 
   @Post('queue/edit')
   @HttpCode(200)
-  editQueue(@Body() body: { projectId?: string; id?: string; prompt?: string; model?: string; effort?: string; notBefore?:number; afterSessionId?:string; paused?:boolean }): { ok: boolean } {
+  editQueue(@Body() body: { projectId?: string; id?: string; prompt?: string; model?: string; effort?: string; speed?: string; notBefore?:number; afterSessionId?:string; paused?:boolean }): { ok: boolean } {
     if (!body?.projectId || !body?.id) throw new BadRequestException('projectId and id required');
-    try{this.manager.editQueueItem(body.projectId, body.id, { text: body.prompt, model: body.model, effort: body.effort, notBefore:body.notBefore, afterSessionId:body.afterSessionId, paused:body.paused });}catch(e){throw new BadRequestException((e as Error).message);}
+    try{this.manager.editQueueItem(body.projectId, body.id, { text: body.prompt, model: body.model, effort: body.effort, speed: body.speed, notBefore:body.notBefore, afterSessionId:body.afterSessionId, paused:body.paused });}catch(e){throw new BadRequestException((e as Error).message);}
     return { ok: true };
   }
 

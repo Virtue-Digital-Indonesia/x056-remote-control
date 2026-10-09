@@ -123,6 +123,17 @@ describe('x056 MCP bridge (real script against a live gateway)', () => {
     const sendTool = (tools.result as {tools:{name:string;inputSchema:{properties:Record<string,{description?:string}>}}[]}).tools.find(t=>t.name==='send_message');
     expect(sendTool?.inputSchema.properties.model.description).toContain('last selected model');
     expect(sendTool?.inputSchema.properties.effort).toBeTruthy();
+    expect((sendTool?.inputSchema.properties.speed as unknown as { enum: string[] }).enum).toEqual(['off', 'fast', 'ultrafast']);
+  });
+
+  it('Speed is a ChatGPT switch: a Claude conversation refuses it and reports none', async () => {
+    const pref = await fetch(`${base}/api/conversations/preferences`, { method: 'POST', headers: auth, body: JSON.stringify({ projectId: 'p1', sessionId: 'seeded-conv-1', speed: 'fast' }) });
+    expect(pref.status).toBe(400);
+    const sent = await rpc('tools/call', { name: 'send_message', arguments: { projectId: 'p1', sessionId: 'seeded-conv-1', message: 'go fast', speed: 'fast' } });
+    expect((sent.result as { isError?: boolean }).isError).toBe(true);
+    expect(toolText(sent)).toMatch(/ChatGPT/);
+    const convs = JSON.parse(toolText(await rpc('tools/call', { name: 'list_conversations', arguments: { projectId: 'p1' } })));
+    expect(convs.find((c: { sessionId: string }) => c.sessionId === 'seeded-conv-1')).not.toHaveProperty('speed');
   });
 
   it('list_projects / list_conversations expose the gateway state with providers', async () => {

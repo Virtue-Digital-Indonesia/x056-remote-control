@@ -243,6 +243,43 @@ describe('SessionManager', () => {
     await waitFor(()=>!mgr.snapshot().running);
   });
 
+  it('saves Speed on a ChatGPT conversation, sends it per turn, and keeps it through a queue and approval; Claude refuses it', async () => {
+    const { mgr, calls } = fixture(COMPLETED, { delayMs: 80 });
+    const cx = mgr.createProject('Speed', undefined, 'codex');
+    const sid = mgr.start('first', undefined, { model: 'gpt-6.1-sol', effort: 'high' }, cx.id);
+    await waitFor(() => !mgr.snapshot().running);
+    expect(calls[0].speed).toBeUndefined();
+    mgr.setConversationRunPrefs(cx.id, sid, { speed: 'ultrafast' });
+    expect(mgr.conversationRunPrefs(cx.id, sid)).toMatchObject({ speed: 'ultrafast' });
+    expect(mgr.listConversations(cx.id).find((c) => c.sessionId === sid)?.speed).toBe('ultrafast');
+    mgr.setConversationRunPrefs(cx.id, sid, { model: 'gpt-6-astra' }); // fields not named stay
+    expect(mgr.conversationRunPrefs(cx.id, sid)).toMatchObject({ model: 'gpt-6-astra', speed: 'ultrafast' });
+    mgr.continueSession(cx.id, sid, 'second');
+    expect(calls.at(-1)?.speed).toBe('ultrafast');
+    // Busy now: the queued turn keeps what it was sent with, and an explicit off beats the saved one.
+    const q = mgr.enqueue(cx.id, { text: 'queued', sessionId: sid, speed: 'fast' });
+    expect(mgr.queues()[cx.id].at(-1)).toMatchObject({ id: q.id, speed: 'fast' });
+    mgr.editQueueItem(cx.id, q.id, { speed: 'ultrafast' });
+    expect(mgr.queues()[cx.id].at(-1)?.speed).toBe('ultrafast');
+    await waitFor(() => calls.length === 3 && !mgr.snapshot().running);
+    expect(calls[2].speed).toBe('ultrafast');
+    mgr.continueSession(cx.id, sid, 'explicit off', { speed: 'off' });
+    expect(calls.at(-1)?.speed).toBeUndefined();
+    await waitFor(() => !mgr.snapshot().running);
+    expect(mgr.requestMcpSend(cx.id, sid, 'approval', {})).toMatchObject({ speed: 'ultrafast' });
+    mgr.setConversationRunPrefs(cx.id, sid, { speed: 'off' });
+    expect(mgr.conversationRunPrefs(cx.id, sid).speed).toBeUndefined();
+    expect(() => mgr.validateConversationRunPrefs(cx.id, sid, { speed: 'turbo' })).toThrow(/invalid speed/);
+
+    const cl = mgr.createProject('No speed', undefined, 'claude');
+    const csid = mgr.start('hello', undefined, { model: 'sonnet' }, cl.id);
+    expect(() => mgr.setConversationRunPrefs(cl.id, csid, { speed: 'fast' })).toThrow(/ChatGPT/);
+    expect(() => mgr.validateConversationRunPrefs(cl.id, csid, { speed: 'ultrafast' })).toThrow(/ChatGPT/);
+    mgr.setConversationRunPrefs(cl.id, csid, { speed: 'off' }); // off is always fine
+    await waitFor(() => !mgr.snapshot().running);
+    expect(calls.at(-1)?.speed).toBeUndefined();
+  });
+
   it('persists the model->effort default map, replacing on save and dropping blank entries', () => {
     const { mgr, stateDir } = fixture(COMPLETED);
     expect(mgr.getSettings()).toEqual({ modelEffort: {}, mcpSendMode: 'approval' }); // approval is the default

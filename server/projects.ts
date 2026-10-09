@@ -88,6 +88,8 @@ export interface Conversation {
   /** Last selected model/effort for this conversation. Empty means provider default. */
   model?: string;
   effort?: string;
+  /** ChatGPT Speed: absent = standard. fast = the `priority` service tier. */
+  speed?: 'fast' | 'ultrafast';
   /** LEGACY single helper (before helpers combined): `advisor`, or a
    *  model/effort picker. Read through `helpersOf`; `helpers` replaces it. */
   decisionMaker?: 'advisor' | 'jev' | 'decisions';
@@ -467,13 +469,17 @@ export class ProjectRegistry {
     this.save();
   }
 
-  setConversationPrefs(id: string, sessionId: string, prefs: { model?: string; effort?: string }): void {
+  setConversationPrefs(id: string, sessionId: string, prefs: { model?: string; effort?: string; speed?: string }): void {
     const p = this.data.projects.find((x) => x.id === id);
     const c = p?.conversations?.find((x) => x.sessionId === sessionId);
     if (!c) throw new Error('unknown conversation for that project');
     let changed = false;
     for (const key of ['model', 'effort'] as const) {
       if (prefs[key] !== undefined && prefs[key] !== c[key]) { c[key] = prefs[key]; changed = true; }
+    }
+    if (prefs.speed !== undefined) {
+      const speed = prefs.speed === 'fast' || prefs.speed === 'ultrafast' ? prefs.speed : undefined;
+      if (speed !== c.speed) { if (speed) c.speed = speed; else delete c.speed; changed = true; }
     }
     if (changed) this.save();
   }

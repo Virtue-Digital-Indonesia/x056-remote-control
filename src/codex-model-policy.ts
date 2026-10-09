@@ -77,3 +77,47 @@ export function codexTurnForAccount(configDir: string, model: string | undefined
   const fits = !effort || !levels.length || levels.includes(effort);
   return { model: fallback, effort: fits ? effort : levels.includes('max') ? 'max' : levels[levels.length - 1] };
 }
+
+/** The Speed switch: what the user picks, and the service-tier id Codex knows
+ *  it by. Off is "no tier", never a value. */
+export type Speed = 'fast' | 'ultrafast';
+export const SPEED_TIER: Record<Speed, string> = { fast: 'priority', ultrafast: 'ultrafast' };
+
+/** Anything that is not a known speed is off. */
+export function asSpeed(value: unknown): Speed | undefined {
+  return value === 'fast' || value === 'ultrafast' ? value : undefined;
+}
+
+interface CachedTierModel { slug?: string; visibility?: string; service_tiers?: { id?: string }[] }
+
+/** Service-tier ids each model offers on this account, from its own catalog;
+ *  undefined when the catalog is unknown. */
+export function offeredCodexTiers(configDir: string): Map<string, string[]> | undefined {
+  try {
+    const cache = JSON.parse(readFileSync(join(configDir, 'models_cache.json'), 'utf8')) as { models?: CachedTierModel[] };
+    if (!Array.isArray(cache.models) || !cache.models.length) return undefined;
+    return new Map(cache.models.filter((m) => m.slug && m.visibility !== 'hide').map((m) => [m.slug!, (m.service_tiers ?? []).map((t) => t.id ?? '').filter(Boolean)]));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The speed one turn really runs at on this account and model. Plans differ
+ * (Ultrafast is on the highest plan and on two models only), so a request the
+ * account/model does not list steps down: Ultrafast to Fast, Fast to off. A
+ * tier is never sent unless the catalog lists it; an unknown catalog is off.
+ * With no model named the CLI default applies, so the tier must be on every
+ * listed model.
+ */
+export function codexSpeedForAccount(configDir: string, model: string | undefined, speed: Speed | undefined, tiers = offeredCodexTiers(configDir)): { speed?: Speed; from?: Speed } {
+  if (!speed) return {};
+  const has = (tier: string) => {
+    if (!tiers) return false;
+    if (model) return !!tiers.get(model)?.includes(tier);
+    return tiers.size > 0 && [...tiers.values()].every((t) => t.includes(tier));
+  };
+  const order: Speed[] = speed === 'ultrafast' ? ['ultrafast', 'fast'] : ['fast'];
+  const got = order.find((s) => has(SPEED_TIER[s]));
+  return got === speed ? { speed } : { ...(got ? { speed: got } : {}), from: speed };
+}

@@ -1440,6 +1440,7 @@ main.atree-open .composer-wrap { display: none !important; }
 .run-menu { width: 360px; }
 .run-menu .cp-seg button { padding: 0 6px; }
 .run-menu .cp-pad { padding: 2px 6px 6px; }
+.run-menu .cp-cap { padding: 6px 4px 0; font-size: 12px; line-height: 1.35; color: var(--muted); }
 .run-menu .cp-prov-seg { margin: 0 6px 4px; }
 .run-menu .helper-item[aria-checked=true] .hi-title { font-weight: 600; }
 .run-menu .hi-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2118,6 +2119,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
           <div class="select"><select id="effort" title="effort">
             <option value="">Auto effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option><option value="ultracode">Ultracode</option>
           </select></div>
+          <div class="select"><select id="speed" title="speed (ChatGPT)"><option value="off">Speed off</option><option value="fast">Fast</option><option value="ultrafast">Ultrafast</option></select></div>
           </div>
           <div class="helper-menu run-menu" id="runMenu" role="dialog" aria-label="Model and effort" hidden></div>
         </div>
@@ -2315,6 +2317,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (!currentProjectId) return;
     var pid = currentProjectId, sid = lastSessionId, key = viewKey(pid, sid);
     var pick = {model: modelEl.value, effort: effortEl.value};
+    // Speed is a ChatGPT switch; a Claude conversation never carries one.
+    if (currentProvider() === 'codex') pick.speed = speedEl.value;
     conversationPicks[key] = pick;
     // Switching views only caches the draft; an actual selection is shared with
     // the gateway immediately, even before the next message is sent.
@@ -2325,7 +2329,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     }).then(function (response) {
       if (!response.ok) throw new Error('Could not save the conversation’s model selection.');
       var c = ((projCache[pid] || {}).conversations || []).find(function (row) { return row.sessionId === sid; });
-      if (c) { c.model = pick.model; c.effort = pick.effort; }
+      if (c) { c.model = pick.model; c.effort = pick.effort; if (pick.speed !== undefined) { if (pick.speed === 'off') delete c.speed; else c.speed = pick.speed; } }
     }).catch(function () {
       if (pid === currentProjectId && sid === lastSessionId) addSys('Could not save the model selection. Select it again to retry.', 'banner');
     }).finally(function () { conversationPickPending[key]--; });
@@ -2343,7 +2347,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   var token = localStorage.getItem(TOKEN_KEY) || ''; // may be empty — a passkey session (cookie) also authenticates
   var $ = function (id) { return document.getElementById(id); };
   var dot = $('dot'), chatEl = $('chat'), promptEl = $('prompt'), sendBtn = $('sendBtn');
-  var modelEl = $('model'), effortEl = $('effort'), fileEl = $('file'), attachRow = $('attachRow'), busyEl = $('busy');
+  var modelEl = $('model'), effortEl = $('effort'), speedEl = $('speed'), fileEl = $('file'), attachRow = $('attachRow'), busyEl = $('busy');
   // The composer's model list is per-provider: Claude's presets are baked into
   // the markup; a Codex account publishes its OWN catalog (GPT-5.6-Sol etc.),
   // which the backend reads from that account and serves at /api/models. Capture
@@ -2423,6 +2427,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var auto = !!pickerName(), m = effectiveModel();
     if (m || auto) b.model = m;
     if (effortEl.value || auto) b.effort = effortEl.value;
+    if (currentProvider() === 'codex') b.speed = speedEl.value;
     return b;
   }
   // The Auto rows name who decides: the picker, or the house default. Short,
@@ -3133,6 +3138,9 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var key = viewKey(pid, lastSessionId), c = ((projCache[pid] || {}).conversations || []).find(function (row) { return row.sessionId === lastSessionId; });
     var pick = conversationPickPending[key] || !c || c.model === undefined ? conversationPicks[key] : null;
     if (pick) { modelEl.value = pick.model; if (currentProvider() === 'codex') syncEffortOptionsForCodexModel(pick.effort); else effortEl.value = pick.effort; }
+    // Speed: this conversation's saved one (a draft keeps its own); new ones start Off.
+    speedEl.value = currentProvider() !== 'codex' ? 'off' : pick && pick.speed !== undefined ? pick.speed : c && c.speed ? c.speed : 'off';
+    if (speedEl.value !== 'off' && !speedAllowed(speedEl.value)) speedEl.value = speedStepDown(speedEl.value);
     syncDecider(pid);
   }
   // ---- helpers: advisor + agent team + a model/effort picker (Jev or OpenAI Decisions) ----
@@ -4179,7 +4187,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (kind === 'assistant_text') appendNode(pid, sid, nodeMsg('assistant', data.text, null, data.ts, providerFor(pid, sid)));
     else if (kind === 'supervisor') {
       if (data.type === 'turn_started' && data.account) { activeAccount[viewKey(pid, sid)] = data.account; if (mineConvo) { renderBusy(); renderAccountChip(); refreshAccountsPop(); } }
-      var l = BANNERS[data.type]; if (data.type === 'model_fallback' && data.from && data.to) l = (data.account ? 'account ' + data.account + ' does not have ' : 'this account does not have ') + data.from + ' yet — ran on ' + data.to; if(data.type==='waiting_for_reset' && data.until) l='Waiting for account reset at '+new Date(data.until*1000).toLocaleString()+'. Stop cancels the wait.'; if (l) appendNode(pid, sid, nodeSys(l, 'banner'));
+      var l = BANNERS[data.type]; if (data.type === 'model_fallback' && data.from && data.to) l = (data.account ? 'account ' + data.account + ' does not have ' : 'this account does not have ') + data.from + ' yet — ran on ' + data.to; if (data.type === 'speed_fallback') { var sm = (providerModels.codex || []).filter(function (x) { return x.slug === data.model; })[0]; l = (SPEED_LABEL[data.from] || 'Speed') + ' isn’t on ' + (data.account ? 'account ' + data.account : 'this account') + (data.model ? ' for ' + (sm ? sm.label : data.model) : '') + '; ran ' + (data.to ? SPEED_LABEL[data.to] : 'at standard speed'); } if(data.type==='waiting_for_reset' && data.until) l='Waiting for account reset at '+new Date(data.until*1000).toLocaleString()+'. Stop cancels the wait.'; if (l) appendNode(pid, sid, nodeSys(l, 'banner'));
     }
     else if (kind === 'active_model') {
       if (data.model) {
@@ -6986,6 +6994,27 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     'gpt-6.1-sol': 'Newest frontier model, rolling out by plan',
     'gpt-5.6-terra': 'Fast and balanced, the house default'
   };
+  // ---- Speed (ChatGPT): a service tier per model, from the account catalogs ----
+  var SPEED_LABEL = { off: 'Off', fast: 'Fast', ultrafast: 'Ultrafast' }, SPEED_TIER_ID = { fast: 'priority', ultrafast: 'ultrafast' };
+  // Tiers the selected model offers on at least one account. Auto names no
+  // model, so it offers what any model has (the account check steps down).
+  function modelTiers(slug) {
+    var ms = (providerModels.codex || []).filter(function (m) { return !slug || m.slug === slug; }), out = {};
+    ms.forEach(function (m) { (m.tiers || []).forEach(function (t) { if (!out[t.id]) out[t.id] = t; }); });
+    return out;
+  }
+  function speedAllowed(v) { return v === 'off' || !(providerModels.codex || []).length || !!modelTiers(effectiveModel())[SPEED_TIER_ID[v]]; }
+  function speedStepDown(v) { return v === 'ultrafast' && speedAllowed('fast') ? 'fast' : 'off'; }
+  function speedOptions() {
+    var t = modelTiers(effectiveModel()), out = [{ id: 'off', label: 'Off', desc: 'Standard speed' }];
+    ['fast', 'ultrafast'].forEach(function (id) {
+      var tier = t[SPEED_TIER_ID[id]];
+      if (tier) out.push({ id: id, label: SPEED_LABEL[id], desc: (tier.description || tier.name) + (id === 'ultrafast' && tier.accounts && tier.accounts.length ? ' · accounts ' + tier.accounts.join(', ') : '') });
+    });
+    return out;
+  }
+  // A model without the chosen tier steps the choice down before it is saved.
+  modelEl.addEventListener('change', function () { if (currentProvider() === 'codex' && !speedAllowed(speedEl.value)) speedEl.value = speedStepDown(speedEl.value); });
   var EFFORT_SHORT = { low: 'Low', medium: 'Med', high: 'High', xhigh: 'X-high', max: 'Max', ultra: 'Ultra', ultracode: 'Ultracode' };
   function escHtml(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function modelDescription(v, prov) {
@@ -6998,8 +7027,10 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   function runChipText() {
     var opt = function (sel) { var o = sel && sel.options[sel.selectedIndex]; return o ? o.textContent.trim() : ''; };
     var m = opt(modelEl), e = opt(effortEl);
-    return m && m === e ? m : [m, e].filter(Boolean).join(' · ');
+    return (m && m === e ? m : [m, e].filter(Boolean).join(' · ')) + speedSuffix();
   }
+  // Speed, shown only while it is on (ChatGPT conversations only).
+  function speedSuffix() { return currentProvider() === 'codex' && speedEl.value !== 'off' ? ' · ' + SPEED_LABEL[speedEl.value] : ''; }
   // Fixed, placed from its anchor: the composer clips anything that overflows
   // it. Phones get a bottom sheet from CSS, so no inline position there.
   function placeComposerMenu(menu, anchor, width, alignRight) {
@@ -7042,6 +7073,12 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
         if (!v) return ['', who || 'Auto', who ? who + ' picks the effort' : 'Auto effort'];
         return [v, EFFORT_SHORT[v] || o.textContent.trim(), o.textContent.trim()];
       }), effortEl.value) + '</div>';
+    if (prov === 'codex') {
+      var sp = speedOptions(), spCur = speedEl.value;
+      html += '<div class="helper-head sub">Speed <span class="helper-hint">' + (sp.length > 1 ? 'faster answers, more credits' : 'not on this model') + '</span></div><div class="cp-pad">'
+        + seg('speed', 'Speed', sp.map(function (o) { return [o.id, o.label, o.desc]; }), sp.some(function (o) { return o.id === spCur; }) ? spCur : 'off')
+        + '<div class="cp-cap" id="speedCaption">' + escHtml((sp.filter(function (o) { return o.id === spCur; })[0] || sp[0]).desc) + '</div></div>';
+    }
     if (html === runMenuSig && !force) return;
     runMenuSig = html;
     var f = document.activeElement, fk = f && runMenuEl.contains(f) ? [f.dataset.run, f.dataset.value] : null;
@@ -7062,7 +7099,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     (sel || runMenuEl.querySelector('button')).focus({ preventScroll: true });
   }
   function pickRun(kind, value) {
-    var el = kind === 'model' ? modelEl : kind === 'effort' ? effortEl : providerEl;
+    var el = kind === 'model' ? modelEl : kind === 'effort' ? effortEl : kind === 'speed' ? speedEl : providerEl;
     if (!el || el.value === value) return;
     el.value = value;
     el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -7091,10 +7128,10 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   // click reaches the document its target is detached from the popover.
   document.addEventListener('click', function (e) { if (runMenuEl.hidden || runMenuOpening) return; var path = e.composedPath(); if (path.indexOf(runMenuEl) < 0 && path.indexOf(runChipEl) < 0) runMenu(false); });
   window.addEventListener('resize', function () { if (!runMenuEl.hidden) placeComposerMenu(runMenuEl, runChipEl, 360, true); });
-  [modelEl, effortEl, providerEl].forEach(function (el) { if (el) el.addEventListener('change', function () { renderRunMenu(); }); });
+  [modelEl, effortEl, speedEl, providerEl].forEach(function (el) { if (el) el.addEventListener('change', function () { renderRunMenu(); }); });
   if (window.MutationObserver) {
     var runObs = new MutationObserver(function () { renderRunMenu(); });
-    [modelEl, effortEl].forEach(function (el) { runObs.observe(el, { childList: true, subtree: true, characterData: true }); });
+    [modelEl, effortEl, speedEl].forEach(function (el) { runObs.observe(el, { childList: true, subtree: true, characterData: true }); });
   }
   // ---- the quiet pill ------------------------------------------------------
   // One line at rest; open (data-qp-open on .composer-wrap) while focus is in
@@ -7115,6 +7152,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // Both on Auto with a picker read "Jev picks": say it once, and do not
     // name the picker again among the helpers.
     var parts = m && m === e ? [m + ' model and effort'] : [m, e].filter(Boolean);
+    if (speedSuffix()) parts.push(SPEED_LABEL[speedEl.value]);
     var hb = $('helperBtn'), hl = $('helperLabel');
     if (hb && hb.dataset.state === 'on' && hl) {
       hl.textContent.split(' · ').map(function (s) { return s.trim(); }).filter(function (h) { return h && !(parts[0] || '').startsWith(h + ' '); }).forEach(function (h) { parts.push(h); });
@@ -7185,7 +7223,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   promptEl.addEventListener('input', syncComposer);
   $('composerAttachBadge').addEventListener('click', function () { promptEl.focus(); });
   $('composerCaption').addEventListener('click', function () { runMenu(true); });
-  [modelEl, effortEl, providerEl].forEach(function (el) { if (el) el.addEventListener('change', syncComposer); });
+  [modelEl, effortEl, speedEl, providerEl].forEach(function (el) { if (el) el.addEventListener('change', syncComposer); });
   if (window.MutationObserver) {
     var qpObs = new MutationObserver(syncComposer);
     qpObs.observe(attachRow, { childList: true });
@@ -7896,6 +7934,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   window.rcWorkspace = typeof window.createProjectWorkspace === 'function' ? window.createProjectWorkspace(rcEngine, controlRoom, rcChat, window.rcProjectSpaces) : null;
   modelEl.addEventListener('change', saveConversationPick);
   effortEl.addEventListener('change', saveConversationPick);
+  speedEl.addEventListener('change', saveConversationPick);
   $('helperBtn').addEventListener('click', function (e) { e.stopPropagation(); helperMenu(); });
   // A router item that is already the effective one is a no-op: "Your choice"
   // shows checked while Jev is out of credits, and a click on it used to save

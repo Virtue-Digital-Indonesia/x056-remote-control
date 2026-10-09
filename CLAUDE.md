@@ -294,6 +294,23 @@ failover happens to land on the right one — which reads as "randomly broken":
   Dockerfile, add it to `SUCCESSOR` and the panel's `LEGACY_MODEL_IDS`, price it
   in `transcript-stats.ts`.
 
+- **Speed (ChatGPT only, 2026-10-09).** `Conversation.speed` (`fast` | `ultrafast`,
+  absent = off) is saved beside model/effort (`/api/conversations/preferences`,
+  `send_message {speed}`, queue items and approvals keep it; an explicit `off`
+  beats the saved one; a Claude conversation refuses it, since Claude's fast
+  mode bills usage credits). It rides on every Codex `turn/start` as
+  `serviceTierForTurn` (`priority` = Fast, `ultrafast`; `default` when off, so
+  a thread tier is never left stuck) and as `-c service_tier=` on the one-shot
+  path. It is NOT process identity, so toggling it never respawns. Tiers come
+  from each account's `models_cache.json` `service_tiers`; Ultrafast is on the
+  highest plans and on GPT-6.1-Sol / GPT-6-Astra only. `turnStarter` runs
+  `codexSpeedForAccount` on the account AND the model the turn really runs on
+  (after the model fallback and a Jev pick): Ultrafast steps down to Fast, Fast
+  to off, with a `speed_fallback` event and banner, and a tier the catalog does
+  not list is never sent. The panel's Speed row (model popover) shows only the
+  tiers the selected model offers on some account; `/api/models` carries
+  `tiers` with the account names. Not shown in the agent tree yet.
+
 ## Background work SURVIVES a turn (persistent sessions)
 
 Turns used to be one `claude -p` process each, so "the turn ended" and "the

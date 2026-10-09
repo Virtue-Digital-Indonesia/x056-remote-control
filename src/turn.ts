@@ -34,6 +34,8 @@ export interface TurnOptions {
   prompt: string;
   model?: string;
   effort?: string;
+  /** Codex service tier for THIS turn (the Speed switch). Not process identity: it rides on every turn/start. */
+  speed?: 'fast' | 'ultrafast';
   /** Claude Code's advisor model (`--advisor`), consulted by the main model at
    *  decision points. Claude only; Codex ignores it. */
   advisor?: string;

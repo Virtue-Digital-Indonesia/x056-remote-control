@@ -66,6 +66,7 @@ export const TOOLS = [
         message: { type: 'string' },
         model: { type: 'string', description: 'Model id for the target conversation\'s provider. Omit to reuse that conversation\'s last selected model; new conversations use the project default. Empty string selects the provider default. The choice is retained through approval and queueing.' },
         effort: { type: 'string', description: 'Reasoning effort for the target provider. Omit to reuse the target conversation\'s last selection; empty string selects the provider default.' },
+        speed: { type: 'string', enum: ['off', 'fast', 'ultrafast'], description: 'ChatGPT conversations only: Fast (priority service tier, 1.5-2x speed, uses more credits) or Ultrafast (highest plans, GPT-6.1-Sol and GPT-6-Astra only). Omit to keep the conversation\'s saved speed; off = standard. An account or model without the tier runs one step slower. Rejected for a Claude conversation. Retained through approval and queue.' },
         waitSeconds: { type: 'number', description: 'wait up to this long for the reply (default 0 = don\'t wait)' },
         steer: { type: 'boolean', description: 'STEER: if that conversation is mid-turn, put this message INTO its running turn (it reads it now, not after the turn) instead of queueing it. If it is not running a turn this is an ordinary send. Same approval mode and hop bound. Default false. See the steer tool for when to use it.' },
         helpers: { type: 'object', properties: { advisor: { type: 'boolean' }, team: { type: 'boolean' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'], description: 'per-turn model/effort picker; none = the conversation\'s own model/effort (saved, so the Jev default no longer applies)' }, lean: { type: 'string', enum: ['low', 'medium', 'high'], description: 'which way the picker errs: low = cheaper models and less effort, high = stronger ones' } }, additionalProperties: false, description: 'Turn helpers on or off for the target before this message runs (only those named change): advisor, the agent team, the Jev/OpenAI Decisions picker. Applied only if the send is delivered.' },
@@ -774,7 +775,7 @@ export async function callToolResult(api, name, args) {
     const reg = await api('/api/projects');
     const p = (reg.projects || reg || []).find((x) => x.id === args.projectId);
     if (!p) throw new Error('unknown projectId — use list_projects');
-    const convs = (p.conversations || []).map((c) => ({ sessionId: c.sessionId, title: c.title, provider: c.provider || 'claude', model: c.model, effort: c.effort, createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : undefined, current: c.sessionId === p.lastSessionId, helpers: helpersOfRow(c), ...(c.effectiveRouter !== undefined ? { effectiveRouter: c.effectiveRouter } : {}) }));
+    const convs = (p.conversations || []).map((c) => ({ sessionId: c.sessionId, title: c.title, provider: c.provider || 'claude', model: c.model, effort: c.effort, ...(c.provider === 'codex' ? { speed: c.speed || 'off' } : {}), createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : undefined, current: c.sessionId === p.lastSessionId, helpers: helpersOfRow(c), ...(c.effectiveRouter !== undefined ? { effectiveRouter: c.effectiveRouter } : {}) }));
     return result(JSON.stringify(convs, null, 2), { conversations: convs });
   }
   if (name === 'read_conversation') {
@@ -783,8 +784,8 @@ export async function callToolResult(api, name, args) {
     // Its helpers and delegates, so a reader can see and then steer them.
     const state = await api(`/api/conversations/helpers?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}`).catch(() => null);
     const team = (state?.delegates || []).filter((d) => !d.dismissedAt).map((d) => ({ id: d.id, role: d.role, provider: d.provider, status: d.working ? 'working' : d.status }));
-    const head = state ? `[helpers: ${helperText(state.helpers, state.effectiveRouter)}${team.length ? ` · delegates: ${team.map((d) => d.role + ' ' + d.status).join(', ')}` : ''}]\n\n` : '';
-    return result(head + fmtHistory(rows), { messages: messages(rows), ...(state ? { helpers: state.helpers, ...(state.effectiveRouter !== undefined ? { effectiveRouter: state.effectiveRouter } : {}), delegates: team } : {}) });
+    const head = state ? `[helpers: ${helperText(state.helpers, state.effectiveRouter)}${state.speed && state.speed !== 'off' ? ` · speed: ${state.speed}` : ''}${team.length ? ` · delegates: ${team.map((d) => d.role + ' ' + d.status).join(', ')}` : ''}]\n\n` : '';
+    return result(head + fmtHistory(rows), { messages: messages(rows), ...(state ? { helpers: state.helpers, ...(state.speed ? { speed: state.speed } : {}), ...(state.effectiveRouter !== undefined ? { effectiveRouter: state.effectiveRouter } : {}), delegates: team } : {}) });
   }
   if (name === 'send_message') {
     const requested = await api('/api/conversations/send', {
@@ -793,7 +794,7 @@ export async function callToolResult(api, name, args) {
       // model chose: it is what lets the gateway count this exchange's hops.
       // A delegate has no identity of its own; its sends count against its
       // orchestrator's chain (X056_RELAY_FROM) rather than starting a new one.
-      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort, from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}), ...(args.steer ? { steer: true } : {}) }),
+      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort, ...(args.speed !== undefined ? { speed: args.speed } : {}), from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}), ...(args.steer ? { steer: true } : {}) }),
     });
     // Two modes, chosen by the OPERATOR in the panel (not by us): 'auto' delivers
     // straight away, 'approval' waits for them to approve it. Either way, if that

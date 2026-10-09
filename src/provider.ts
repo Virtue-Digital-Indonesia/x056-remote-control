@@ -84,6 +84,9 @@ export interface ProviderModel {
   /** Reasoning levels this model accepts, when the provider says. */
   efforts?: string[];
   defaultEffort?: string;
+  /** Service tiers (Codex Speed): the union over accounts, each with the
+   *  config dirs that offer it. `priority` = Fast, `ultrafast` = Ultrafast. */
+  tiers?: { id: string; name: string; description?: string; configDirs: string[] }[];
 }
 
 export type ProviderId = 'claude' | 'codex';

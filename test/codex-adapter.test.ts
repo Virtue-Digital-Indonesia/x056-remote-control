@@ -274,6 +274,17 @@ describe('codexAdapter.startTurn argv (real spawn, via a stub codex binary)', ()
     expect(argv[argv.length - 1]).toBe('- do the thing'); // nothing sneaks in after the prompt
   });
 
+  it('passes the Speed tier as -c service_tier, and nothing when it is off', async () => {
+    const run = async (speed?: 'fast' | 'ultrafast') => {
+      const { events, onEvent } = collect();
+      await codexAdapter.startTurn({ binPath: STUB, configDir: '/tmp/cfg-cx', cwd: process.cwd(), sessionId: 'unused', mode: 'new', prompt: 'go', speed, onEvent }).done;
+      return argvOf(events).join(' ');
+    };
+    expect(await run('fast')).toContain('-c service_tier="priority"');
+    expect(await run('ultrafast')).toContain('-c service_tier="ultrafast"');
+    expect(await run()).not.toContain('service_tier');
+  });
+
   it('wires the x056 MCP bridge as -c mcp_servers overrides (codex has no --mcp-config flag)', async () => {
     const { events, onEvent } = collect();
     const h = codexAdapter.startTurn({

@@ -47,6 +47,8 @@ export interface RunSessionOptions {
   claudePath?: string;
   model?: string;
   effort?: string;
+  /** Codex Speed (fast | ultrafast); absent = off. */
+  speed?: 'fast' | 'ultrafast';
   /** Claude advisor model, passed to every turn of this session. */
   advisor?: string;
   /** Agent team wiring (see TurnOptions.subagents / codexConfig). */
@@ -299,6 +301,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         prompt,
         model: opts.model,
         effort: opts.effort,
+        speed: opts.speed,
         advisor: opts.advisor,
         subagents: opts.subagents,
         codexConfig: opts.codexConfig,

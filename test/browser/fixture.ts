@@ -37,6 +37,18 @@ if (process.env.X056_TEST_SESSION_TIMER === '1') {
   ];
   appendFileSync(join(specs[0].configDir, 'projects', 'fixture', first + '.jsonl'), timer.map(row => JSON.stringify(row)).join('\n') + '\n');
 }
+// X056_TEST_CODEX_TIERS=1: a ChatGPT catalog with service tiers (Ultrafast on
+// two models only) and a ChatGPT conversation to pick a Speed on.
+if (process.env.X056_TEST_CODEX_TIERS === '1') {
+  const tier = (ids: string[]) => ids.map((id) => id === 'priority' ? { id, name: 'Fast', description: '2x speed, increased usage' } : { id, name: 'Ultrafast', description: 'The fastest available responses for latency-sensitive work.' });
+  const levels = ['low', 'medium', 'high', 'xhigh', 'ultra'].map((effort) => ({ effort }));
+  writeFileSync(join(specs[2].configDir, 'models_cache.json'), JSON.stringify({ models: [
+    { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', visibility: 'list', supported_reasoning_levels: levels, service_tiers: tier(['priority', 'ultrafast']) },
+    { slug: 'gpt-6-astra', display_name: 'GPT-6-Astra', visibility: 'list', supported_reasoning_levels: levels, service_tiers: tier(['priority', 'ultrafast']) },
+    { slug: 'gpt-5.6-terra', display_name: 'GPT-5.6-Terra', visibility: 'list', supported_reasoning_levels: levels, service_tiers: tier(['priority']) },
+  ] }));
+  projects.addConversation(p2.id, randomUUID(), 'Speed ChatGPT chat', 'codex');
+}
 if (many) {
   registry.markOk('backup');
   projects.addConversation(p2.id,randomUUID(),'ChatGPT research notes','codex');

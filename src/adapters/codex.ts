@@ -1,4 +1,4 @@
-import { supersededCodexModel } from '../codex-model-policy.js';
+import { SPEED_TIER, supersededCodexModel } from '../codex-model-policy.js';
 import { CODEX_INDEXING_REASON, codexHomePreparing } from '../codex-home.js';
 import { readMessageSender, stripTeamLine } from '../message-sender.js';
 import { toolImagePaths } from '../artifact-references.js';
@@ -525,13 +525,14 @@ function listModels(configDirs: string[]): ProviderModel[] {
     slug?: string; display_name?: string; description?: string; visibility?: string;
     default_reasoning_level?: string;
     supported_reasoning_levels?: { effort?: string }[];
+    service_tiers?: { id?: string; name?: string; description?: string }[];
   };
-  const caches: { mtime: number; models: Cached[] }[] = [];
+  const caches: { mtime: number; dir: string; models: Cached[] }[] = [];
   for (const dir of configDirs) {
     const path = join(dir, 'models_cache.json');
     try {
       const cache = JSON.parse(readFileSync(path, 'utf8')) as { models?: Cached[] };
-      caches.push({ mtime: statSync(path).mtimeMs, models: cache.models ?? [] });
+      caches.push({ mtime: statSync(path).mtimeMs, dir, models: cache.models ?? [] });
     } catch {
       // no cache yet (account never ran a turn) — contributes nothing
     }
@@ -543,6 +544,24 @@ function listModels(configDirs: string[]): ProviderModel[] {
   const offered = new Set(caches.flatMap(({ models }) => models.filter((m) => m.slug && m.visibility === 'list').map((m) => m.slug!)));
   const seen = new Set<string>();
   const out: ProviderModel[] = [];
+  // Service tiers (the Speed switch) differ per account and model: the union,
+  // with the config dirs that offer each, so the panel shows only what exists.
+  const tiersOf = (slug: string): NonNullable<ProviderModel['tiers']> => {
+    const byId = new Map<string, NonNullable<ProviderModel['tiers']>[number]>();
+    for (const { dir, models } of caches) {
+      for (const m of models) {
+        if (m.slug !== slug) continue;
+        for (const t of m.service_tiers ?? []) {
+          if (!t.id) continue;
+          const row = byId.get(t.id) ?? { id: t.id, name: t.name || t.id, description: t.description, configDirs: [] };
+          if (!row.description && t.description) row.description = t.description;
+          if (!row.configDirs.includes(dir)) row.configDirs.push(dir);
+          byId.set(t.id, row);
+        }
+      }
+    }
+    return [...byId.values()];
+  };
   for (const { models } of caches) {
     for (const m of models) {
       if (!m.slug || supersededCodexModel(m.slug, offered) || m.visibility !== 'list' || seen.has(m.slug)) continue;
@@ -553,6 +572,7 @@ function listModels(configDirs: string[]): ProviderModel[] {
         description: m.description,
         efforts: (m.supported_reasoning_levels ?? []).map((e) => e.effort).filter((e): e is string => !!e),
         defaultEffort: m.default_reasoning_level,
+        tiers: tiersOf(m.slug),
       });
     }
   }
@@ -1013,6 +1033,8 @@ function startCodexTurn(opts: TurnOptions): TurnHandle {
     // value passed here (tested "high" and "ultra" — a level only some GPT
     // models support, e.g. gpt-5.6-sol; Claude has no equivalent).
     ...(opts.effort ? ['-c', `model_reasoning_effort="${opts.effort}"`] : []),
+    // The Speed switch: the account/model check already ran, so this is listed.
+    ...(opts.speed ? ['-c', `service_tier="${SPEED_TIER[opts.speed]}"`] : []),
     ...configOverrides(opts.codexConfig),
     // The gateway's MCP bridge, as config overrides (codex has no --mcp-config
     // file flag; -c takes dotted TOML keys, values parsed as TOML).

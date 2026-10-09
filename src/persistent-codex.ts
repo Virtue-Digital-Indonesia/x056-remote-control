@@ -1,6 +1,7 @@
 import type { RawEvent } from './types.js';
 import type { TurnOptions } from './turn.js';
 import { hashText, type Ingested, type Transport, type TransportState } from './persistent-transport.js';
+import { SPEED_TIER } from './codex-model-policy.js';
 import { codexAppServerArgs } from './codex-marketplace-args.js';
 
 /**
@@ -176,6 +177,8 @@ export class CodexTransport implements Transport {
         input: [{ type: 'text', text }],
         ...(o.model ? { model: o.model } : {}),
         ...(o.effort ? { effort: o.effort } : {}),
+        // This turn only; 'default' = standard speed, so a thread tier is never left stuck.
+        serviceTierForTurn: o.speed ? SPEED_TIER[o.speed] : 'default',
       },
     });
   }
@@ -300,7 +303,7 @@ export class CodexTransport implements Transport {
       const next = nextId(x); x.turnStarts!.add(next);
       x.write?.(JSON.stringify({jsonrpc:'2.0',id:next,method:'turn/start',params:{threadId:x.threadId,
         input:[{type:'skill',name:skill.name,path:skill.path},{type:'text',text:'$'+command.name+(command.args?' '+command.args:'')}],
-        ...(command.opts.model?{model:command.opts.model}:{}),...(command.opts.effort?{effort:command.opts.effort}:{})}}));
+        ...(command.opts.model?{model:command.opts.model}:{}),...(command.opts.effort?{effort:command.opts.effort}:{}),serviceTierForTurn:command.opts.speed?SPEED_TIER[command.opts.speed]:'default'}}));
       return {events:[],turnEnded:false};
     }
     // JSON-RPC success is "no error member" -- `result: null` included. A

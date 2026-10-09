@@ -409,6 +409,20 @@ describe('codex persistent: identity and a failed handshake', () => {
     spawned[0].complete(); await h2.done;
   });
 
+  // Speed rides on turn/start as serviceTierForTurn ("default" = standard), so a
+  // thread's tier is never left stuck, and toggling it never respawns.
+  it('carries the Speed tier per turn and reuses the process when it changes', async () => {
+    const { p, spawned } = pool({ threadId: 'thr_speed' });
+    const h1 = p.startTurn(turn({ model: 'gpt-6-astra', speed: 'ultrafast' }));
+    spawned[0].complete(); await h1.done;
+    const h2 = p.startTurn(turn({ model: 'gpt-6-astra', speed: 'fast', mode: 'resume' }));
+    spawned[0].complete(); await h2.done;
+    const h3 = p.startTurn(turn({ model: 'gpt-6-astra', mode: 'resume' }));
+    spawned[0].complete(); await h3.done;
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].sent('turn/start').map((m) => m.params.serviceTierForTurn)).toEqual(['ultrafast', 'priority', 'default']);
+  });
+
   it('still keys on the account: another configDir is another process', async () => {
     const { p, spawned } = pool();
     const h1 = p.startTurn(turn({ configDir: '/cfg/g' }));

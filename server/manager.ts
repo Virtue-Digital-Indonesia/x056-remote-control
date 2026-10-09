@@ -1,4 +1,4 @@
-import { codexTurnForAccount, currentCodexPrefs } from '../src/codex-model-policy.js';
+import { asSpeed, codexSpeedForAccount, codexTurnForAccount, currentCodexPrefs, SPEED_TIER } from '../src/codex-model-policy.js';
 import { currentClaudeModel } from '../src/claude-model-policy.js';
 import { checkFork, JEV_POLICY, JevService, type DecisionContext, type ForkDecision, type ForkInput, type JevDecision } from './jev.js';
 import { OpenAIDecisionsService } from './openai-decisions.js';
@@ -140,6 +140,8 @@ export interface TurnRunOptions {
   sender?: MessageSender;
   model?: string;
   effort?: string;
+  /** ChatGPT Speed: '' | 'off' = standard, 'fast', 'ultrafast'. Absent = the conversation's saved one. */
+  speed?: string;
   account?: string;
   useReserve?: boolean;
 }
@@ -163,6 +165,7 @@ export interface QueueItem {
   text: string;
   model?: string;
   effort?: string;
+  speed?: string;
   at: number;
   /** The conversation this follow-up is for; it drains into THIS session, and
    *  the panel shows it only under that conversation. Absent on legacy items. */
@@ -186,6 +189,7 @@ export interface McpApproval {
   message: string;
   model?: string;
   effort?: string;
+  speed?: string;
   /** Helper changes the sender asked for, applied only if this is approved. */
   helpers?: HelperPatch;
   /** Whether the ASK-protocol convention should be appended at dispatch time
@@ -942,7 +946,7 @@ export class SessionManager {
   clearSelfQueueStreak(sessionId: string): void { this.selfQueueStreak.delete(sessionId); }
 
 
-  enqueue(pid: string, item: { text: string; attachmentPrompt?: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
+  enqueue(pid: string, item: { text: string; attachmentPrompt?: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; speed?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
     const text = (item.text ?? '').trim() || (item.fileRefs?.length || item.attachmentPrompt ? 'Use the attached files.' : '');
@@ -958,7 +962,7 @@ export class SessionManager {
     if (item.afterSessionId && !this.listProjects().projects.some(p=>p.conversations?.some(c=>c.sessionId===item.afterSessionId))) throw new Error('Dependency conversation not found');
     if (item.afterSessionId && item.afterSessionId === sessionId) throw new Error('A queue item cannot wait for its own conversation');
     const map = this.loadQueues();
-    const q: QueueItem = { id: randomUUID(), text, attachmentPrompt: item.attachmentPrompt, fileRefs: item.fileRefs, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
+    const q: QueueItem = { id: randomUUID(), text, attachmentPrompt: item.attachmentPrompt, fileRefs: item.fileRefs, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
     (map[pid] ??= []).push(q);
     this.saveQueues(map);
     this.emitQueue(pid, map);
@@ -971,7 +975,7 @@ export class SessionManager {
     return q;
   }
 
-  editQueueItem(pid: string, id: string, patch: { text?: string; model?: string; effort?: string; notBefore?: number; afterSessionId?: string; paused?: boolean }): void {
+  editQueueItem(pid: string, id: string, patch: { text?: string; model?: string; effort?: string; speed?: string; notBefore?: number; afterSessionId?: string; paused?: boolean }): void {
     const map = this.loadQueues();
     const it = (map[pid] ?? []).find((x) => x.id === id);
     if (!it) throw new Error('Queued message no longer exists');
@@ -985,6 +989,7 @@ export class SessionManager {
     if (typeof patch.text === 'string' && (patch.text.trim() || it.fileRefs?.length || it.attachmentPrompt)) it.text = patch.text.trim() || 'Use the attached files.';
     if (patch.model !== undefined) it.model = patch.model || undefined;
     if (patch.effort !== undefined) it.effort = patch.effort || undefined;
+    if (patch.speed !== undefined) it.speed = asSpeed(patch.speed);
     this.saveQueues(map);
     this.emitQueue(pid, map);
   }
@@ -1039,7 +1044,7 @@ export class SessionManager {
       try {this.saveQueues(current);} catch {return;} // Never send before the recovery marker is durable.
       if(item.requestId)this.emit('message_delivery',{requestId:item.requestId,sessionId,projectId:pid,status:'uncertain'});
       try {
-        this.continueSession(pid, sessionId, item.text + (item.attachmentPrompt || ''), { fileRefs: item.fileRefs, requestId: item.requestId, sender: item.sender, model: item.model, effort: item.effort, account: item.account, useReserve: item.useReserve });
+        this.continueSession(pid, sessionId, item.text + (item.attachmentPrompt || ''), { fileRefs: item.fileRefs, requestId: item.requestId, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve });
       } catch(e) {
         if (e instanceof BusyError) {
           item.dispatching=false;
@@ -1579,12 +1584,15 @@ export class SessionManager {
     return (o) => {
       const run = codexTurnForAccount(o.configDir, o.model, o.effort);
       if (run.model !== o.model) log.append({ type: 'model_fallback', sessionId, account: this.registry().list().find((a) => a.configDir === o.configDir)?.name ?? null, from: o.model ?? null, to: run.model ?? null, effort: run.effort ?? null });
-      const opts = { ...o, model: run.model, effort: run.effort };
+      // Speed is checked against the same account and the model it will really run.
+      const sp = codexSpeedForAccount(o.configDir, run.model, o.speed);
+      if (sp.from) log.append({ type: 'speed_fallback', sessionId, account: this.registry().list().find((a) => a.configDir === o.configDir)?.name ?? null, model: run.model ?? null, from: sp.from, to: sp.speed ?? null });
+      const opts = { ...o, model: run.model, effort: run.effort, speed: sp.speed };
       return pool ? pool.startTurn(wire(opts)) : adapter.startTurn(opts);
     };
   }
 
-  conversationRunPrefs(projectId: string, sessionId?: string, opts: TurnRunOptions = {}): Pick<TurnRunOptions, 'model' | 'effort'> {
+  conversationRunPrefs(projectId: string, sessionId?: string, opts: TurnRunOptions = {}): Pick<TurnRunOptions, 'model' | 'effort' | 'speed'> {
     const project = this.projects().get(projectId);
     if (!project) throw new Error('unknown project');
     const conversation = project.conversations?.find(c => c.sessionId === sessionId);
@@ -1595,10 +1603,13 @@ export class SessionManager {
     const fitsEffort = (value?: string) => !value || (provider === 'codex' ? value !== 'ultracode' : value !== 'ultra');
     const model = [opts.model, conversation?.model, defaults?.model, project.model].find(value => value !== undefined && fitsModel(value)) ?? '';
     const effort = [opts.effort, conversation?.effort, defaults?.effort, project.effort].find(value => value !== undefined && fitsEffort(value)) ?? '';
-    return provider === 'codex' ? currentCodexPrefs(model, effort) : { model: currentClaudeModel(model), effort };
+    // Speed is ChatGPT only; an explicit 'off' beats the saved one.
+    const speed = provider === 'codex' ? asSpeed(opts.speed !== undefined ? opts.speed : conversation?.speed) : undefined;
+    return provider === 'codex' ? { ...currentCodexPrefs(model, effort), ...(speed ? { speed } : {}) } : { model: currentClaudeModel(model), effort };
   }
 
-  validateConversationRunPrefs(projectId: string, sessionId: string | undefined, prefs: Pick<TurnRunOptions, 'model' | 'effort'>): void {
+  validateConversationRunPrefs(projectId: string, sessionId: string | undefined, prefs: Pick<TurnRunOptions, 'model' | 'effort' | 'speed'>): void {
+    if (prefs.speed !== undefined && !['', 'off', 'fast', 'ultrafast'].includes(prefs.speed as string)) throw new Error('invalid speed');
     for (const key of ['model', 'effort'] as const) {
       const value = prefs[key];
       if (value !== undefined && (typeof value !== 'string' || value.length > 200 || value.trim() !== value || /[\x00-\x1f]/.test(value))) throw new Error('invalid ' + key);
@@ -1609,14 +1620,16 @@ export class SessionManager {
     for (const key of ['model', 'effort'] as const) {
       if (prefs[key] !== undefined && expected[key] !== resolved[key]) throw new Error(key + ' is not compatible with this conversation’s provider');
     }
+    if (asSpeed(prefs.speed) && resolved.speed !== prefs.speed) throw new Error('speed is only available on ChatGPT conversations');
   }
 
-  setConversationRunPrefs(projectId: string, sessionId: string, prefs: Pick<TurnRunOptions, 'model' | 'effort'>): void {
+  setConversationRunPrefs(projectId: string, sessionId: string, prefs: Pick<TurnRunOptions, 'model' | 'effort' | 'speed'>): void {
     this.validateConversationRunPrefs(projectId, sessionId, prefs);
     const resolved = this.conversationRunPrefs(projectId, sessionId, prefs);
     this.projects().setConversationPrefs(projectId, sessionId, {
       ...(prefs.model !== undefined ? { model: resolved.model } : {}),
       ...(prefs.effort !== undefined ? { effort: resolved.effort } : {}),
+      ...(prefs.speed !== undefined ? { speed: resolved.speed ?? '' } : {}),
     });
     this.emitConversations(projectId);
   }
@@ -3032,6 +3045,7 @@ export class SessionManager {
       message,
       model: prefs.model,
       effort: prefs.effort,
+      ...(prefs.speed ? { speed: prefs.speed } : {}),
       ...(opts?.helpers ? { helpers: opts.helpers } : {}),
       interactive: opts?.interactive !== false,
       ...(opts?.steer && sessionId ? { steer: true } : {}),
@@ -3104,7 +3118,7 @@ export class SessionManager {
       // circuit breaker, and a hop cap on top of them would only block an
       // exchange they are explicitly waving through, one card at a time.
       const out = this.deliverMcpMessage(a.projectId, a.sessionId, a.message, {
-        model: a.model, effort: a.effort, interactive: a.interactive, sender: a.sender, helpers: a.helpers,
+        model: a.model, effort: a.effort, speed: a.speed, interactive: a.interactive, sender: a.sender, helpers: a.helpers,
       });
       a.resultSessionId = out.sessionId;
       a.queued = out.queued;
@@ -3370,7 +3384,7 @@ export class SessionManager {
     const reg = this.projects();
     const adapter = this.adapterFor(pid, sessionId);
     const prefs = this.conversationRunPrefs(pid, sessionId, runOpts);
-    const model = prefs.model || undefined, effort = prefs.effort || undefined;
+    const model = prefs.model || undefined, effort = prefs.effort || undefined, speed = asSpeed(prefs.speed);
     const helpers = helpersOf(reg.get(pid)?.conversations?.find((c) => c.sessionId === sessionId));
     const advisor = helpers.advisor ? advisorFor(adapter.id as 'claude' | 'codex', model) : undefined;
     // The agent team: subagents on argv (Claude) or thread config (Codex),
@@ -3462,7 +3476,7 @@ export class SessionManager {
         }
       };
       this.writeMarker(pid, sessionId, cwd, prompt);
-      emit('session_started', { sessionId, cwd, resume, prompt, model, effort, sender, messageId: sender?.messageId || memoryRequestId, displayPrompt: cleanMemorySource(prompt), attachments: messageImages(prompt, owner => '/api/' + (this.fileOwner(owner).kind === 'chat' ? 'chats/' : 'project-spaces/') + encodeURIComponent(owner)) });
+      emit('session_started', { sessionId, cwd, resume, prompt, model, effort, ...(speed ? { speed } : {}), sender, messageId: sender?.messageId || memoryRequestId, displayPrompt: cleanMemorySource(prompt), attachments: messageImages(prompt, owner => '/api/' + (this.fileOwner(owner).kind === 'chat' ? 'chats/' : 'project-spaces/') + encodeURIComponent(owner)) });
       emit('turn_state', { active: true });
       if(memoryRecord)emit('memory_context',memoryRecord);
       if(memoryWarning)emit('memory_warning',{message:memoryWarning});
@@ -3543,6 +3557,7 @@ export class SessionManager {
         claudePath: this.opts.claudePath,
         model: model ?? autoFallback,
         effort,
+        speed,
         advisor,
         subagents: team?.subagents,
         codexConfig: team?.codexConfig,
