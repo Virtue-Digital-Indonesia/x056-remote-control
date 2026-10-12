@@ -150,7 +150,7 @@ describe('turns', () => {
     const t = buildTurns(rows, [], true);
     expect(t).toEqual([
       { n: 1, messageId: 'm1', startedAt: '2026-09-30T10:00:00.000Z', endedAt: '2026-09-30T10:10:00.000Z', prompt: 'first ask', running: false },
-      { n: 2, startedAt: '2026-09-30T10:10:00.000Z', endedAt: null, prompt: 'second', running: true },
+      { n: 2, startedAt: '2026-09-30T10:10:00.000Z', endedAt: null, prompt: 'second', running: true, open: true },
     ]);
   });
 
@@ -200,6 +200,23 @@ describe('inTurn', () => {
   it('falls back to updatedAt when there is no end, and an open turn has no upper bound', () => {
     expect(inTurn({ startedAt: '2026-09-30T09:00:00Z', updatedAt: ms('2026-09-30T10:00:00Z'), status: 'stopped' }, turn)).toBe(true);
     expect(inTurn({ startedAt: '2026-10-01T00:00:00Z', endedAt: '2026-10-01T00:01:00Z', status: 'done' }, { startedAt: turn.startedAt, endedAt: null })).toBe(true);
+  });
+  it('an open (latest) turn takes work started after its recorded end, and an earlier turn does not', () => {
+    const agent = { startedAt: '2026-09-30T10:30:00Z', status: 'running' };
+    // A woken continuation launched an explorer 20 min after the last turn's recorded end.
+    expect(inTurn(agent, { ...turn, open: true })).toBe(true);
+    expect(inTurn(agent, turn)).toBe(false);
+  });
+  it('buildTurns marks only the latest turn open', () => {
+    const rows = [
+      { role: 'user', ts: '2026-09-30T10:00:00Z', text: 'first', messageId: 'a' },
+      { role: 'user', ts: '2026-09-30T11:00:00Z', text: 'second', messageId: 'b' },
+    ];
+    const t = buildTurns(rows, ['2026-09-30T10:05:00.000Z'], false);
+    expect(t[0].open).toBeUndefined();
+    expect(t[1].open).toBe(true);
+    expect(inTurn({ startedAt: '2026-09-30T11:40:00Z', status: 'running' }, t[1])).toBe(true);
+    expect(inTurn({ startedAt: '2026-09-30T11:40:00Z', status: 'running' }, t[0])).toBe(false);
   });
 });
 

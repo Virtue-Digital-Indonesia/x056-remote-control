@@ -26,7 +26,7 @@ describe('manager activity and completion integration', () => {
       expect(manager.snapshot().backgroundProjects).toEqual([project.id]);
       expect(manager.listProjects().projects.find(p => p.id === project.id)?.backgroundSessionIds).toEqual([]);
       active = true;
-      expect((manager as any).providerActivity('session')).toEqual({active:true, parentActive:false, agents:1, tasks:0});
+      expect((manager as any).providerActivity('session')).toEqual({active:true, parentActive:false, agents:1, shells:0, tasks:0});
       expect(manager.listProjects().projects.find(p => p.id === project.id)?.backgroundSessionIds).toEqual(['session']);
       const events: GatewayEvent[] = [];
       manager.subscribe(e => events.push(e));

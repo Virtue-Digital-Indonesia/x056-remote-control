@@ -1,20 +1,54 @@
+/** Claude CLI task_type values that are agents (the rest are shells or monitors). */
+// A Workflow run is agents too; shells and monitors are the rest.
+const AGENT_TASK_TYPES = new Set(['local_agent', 'remote_agent', 'in_process_teammate', 'local_workflow']);
+
 /** Provider lifecycle evidence, separate from the pool's eviction grace period.
  * No transcript text is retained here. Foreign-thread messages never become
  * parent messages; only registered descendants contribute to activity. */
 export class ProviderActivity {
   private parent = false;
   private agents = new Map<string, boolean>();
+  /** Claude top-level tasks (task_started/task_progress/task_notification), by task_id. */
+  private claudeTasks = new Map<string, { agent: boolean; running: boolean }>();
   private commands = new Map<string, string>();
   private earlyChildren = new Map<string, boolean>();
 
   start(): void { this.parent = true; }
   endTurn(): void { this.parent = false; }
-  agentRunning(id: string): boolean | undefined { return this.agents.get(id); }
-  stop(): void { this.parent = false; this.agents.clear(); this.commands.clear(); }
+  agentRunning(id: string): boolean | undefined {
+    return this.agents.get(id) ?? this.claudeTasks.get(id)?.running;
+  }
+  stop(): void { this.parent = false; this.agents.clear(); this.claudeTasks.clear(); this.commands.clear(); }
+  /** Running work by kind. `agents` = subagents (Claude agent-type tasks and Codex children);
+   * `shells` = Claude background shells and any other top-level Claude task whose kind is not an agent. */
+  counts(): { agents: number; shells: number; total: number } {
+    let agents = [...this.agents.values()].filter(Boolean).length;
+    let shells = 0;
+    for (const t of this.claudeTasks.values()) {
+      if (!t.running) continue;
+      if (t.agent) agents++; else shells++;
+    }
+    return { agents, shells, total: agents + shells };
+  }
   snapshot() {
-    const agents = [...this.agents.values()].filter(Boolean).length;
+    const { agents, shells } = this.counts();
     const tasks = this.commands.size;
-    return { active: this.parent || agents > 0 || tasks > 0, parentActive: this.parent, agents, tasks };
+    return { active: this.parent || agents > 0 || shells > 0 || tasks > 0, parentActive: this.parent, agents, tasks };
+  }
+
+  /** Top-level Claude task. Agent-type when task_type says so; otherwise a Task-tool subagent
+   * (subagent_type set) is an agent, and anything else (local_bash, monitors, workflows, unknown) is a shell. */
+  private claudeTask(m: any): void {
+    const id: string = m.task_id;
+    const prev = this.claudeTasks.get(id);
+    if (m.subtype === 'task_notification') { if (prev) prev.running = false; return; }
+    // task_progress carries no type; it keeps the kind task_started gave the task.
+    if (m.subtype === 'task_started' || !prev) {
+      const agent = typeof m.task_type === 'string' ? AGENT_TASK_TYPES.has(m.task_type)
+        : typeof m.subagent_type === 'string' && m.subagent_type !== '';
+      this.claudeTasks.set(id, { agent, running: true });
+    } else prev.running = true;
+    if (this.claudeTasks.size > 512) for (const [key, t] of this.claudeTasks) if (!t.running) { this.claudeTasks.delete(key); break; }
   }
 
   private agent(id: unknown, active: boolean): void {
@@ -30,11 +64,13 @@ export class ProviderActivity {
     if (provider === 'claude') {
       // Claude task lifecycle survives a parent `result`. A subagent's result
       // is not a result for the parent conversation.
-      if (m.type === 'system' && typeof m.task_id === 'string') {
-        if (m.subtype === 'task_started' || m.subtype === 'task_progress') this.agents.set(m.task_id, true);
-        if (m.subtype === 'task_notification') this.agents.set(m.task_id, false);
-      }
+      // Only top-level tasks count. A task started inside a subagent carries a
+      // parent_tool_use_id, and its notification may never reach this stream, so it
+      // is ignored entirely rather than marked running.
       if (m.parent_tool_use_id) return;
+      if (m.type === 'system' && typeof m.task_id === 'string' && ['task_started', 'task_progress', 'task_notification'].includes(m.subtype)) {
+        this.claudeTask(m);
+      }
       if (m.type === 'result') this.parent = false;
       else if (['assistant', 'stream_event', 'tool_progress'].includes(m.type)) this.parent = true;
       return;

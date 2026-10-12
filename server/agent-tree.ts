@@ -140,6 +140,10 @@ export interface TurnWindow {
   endedAt: string | null;
   prompt: string;
   running: boolean;
+  /** The latest turn of the window. Its membership window is open-ended: work
+   *  a woken continuation starts after the last recorded turn end still
+   *  belongs to it (a background agent outlives the turn that launched it). */
+  open?: boolean;
 }
 
 type Instant = string | number | null | undefined;
@@ -155,9 +159,9 @@ const instant = (v: Instant): number => (v == null || v === '' ? NaN : typeof v 
  */
 export function inTurn(
   node: { startedAt?: Instant; endedAt?: Instant; updatedAt?: Instant; status?: string },
-  turn: { startedAt: Instant; endedAt?: Instant },
+  turn: { startedAt: Instant; endedAt?: Instant; open?: boolean },
 ): boolean {
-  const turnEnd = turn.endedAt == null ? Infinity : instant(turn.endedAt);
+  const turnEnd = turn.open || turn.endedAt == null ? Infinity : instant(turn.endedAt);
   if (!(instant(node.startedAt) < turnEnd)) return false;
   if (node.status === 'running') return true;
   return instant(node.endedAt ?? node.updatedAt) >= instant(turn.startedAt);
@@ -199,6 +203,7 @@ export function buildTurns(
       endedAt,
       prompt: prompt.length > 140 ? prompt.slice(0, 139) + '…' : prompt,
       running: !next && running,
+      ...(next ? {} : { open: true }),
     };
   });
 }

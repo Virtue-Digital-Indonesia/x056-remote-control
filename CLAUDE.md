@@ -355,6 +355,26 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   turn after it (`isStale`): it is never reused -- destroyed if idle, moved to
   a `#retired:N` key if still working -- and a new spawn destroys its idle
   siblings (`retireSiblings`). Jev on Auto made this routine.
+- **A Claude conversation that is still working keeps ONE process too
+  (2026-10-12).** A Jev effort pick (high, then the saved xhigh) keyed a
+  new process while the first still ran background agents: two writers on
+  one transcript (it forked), and the old process, woken by its own agent,
+  never saw the user's message and told them "another instance of this
+  conversation" had it. Now `startTurn` runs the turn ON the conversation's
+  active process (busy, tasks running, or mid-reply; never a stale one) and
+  `onHeld` logs it; `launch()` asks `heldIdentity()` first and, when held,
+  skips the picker, runs on that process's model/effort/advisor and emits
+  `identity_held` (one line in the chat) if the saved choice differed.
+  A model change once nothing runs still respawns. **Mid-reply** (`queryOpen`:
+  a top-level assistant/stream event since the last `result`, silent less
+  than the working grace) holds a new prompt (`deferred`) until that reply's
+  own `result`, which never ends the new turn; a Stop meanwhile drops it
+  unsent. **A panel steer with no gateway turn running becomes a tracked
+  turn** (`/api/steer` answers `{started: true}`), and a human steer closes
+  a pending ASK question (`question_answered`). `background_state` carries
+  `agents` (top-level agent tasks, workflows included) and `shells` (other
+  top-level tasks); nested tasks are not counted. The agent tree's latest
+  turn is open-ended, so agents launched after it ended show there.
 - **A Codex thread takes ONE writer, so a Codex conversation gets one
   process.** codex 0.159 holds `<CODEX_HOME>/thread-writer-locks/<thread>.lock`
   (an flock) for the life of the app-server that opened the thread. A helper

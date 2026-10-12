@@ -45,6 +45,10 @@ export interface PersistentOptions {
   spawnFn?: (bin: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) => ChildProcess;
   /** Which CLI wire format this pool speaks. Default: Claude stream-json. */
   transport?: Transport;
+  /** A turn ran on the conversation's working process although it asked for
+   *  another identity (startTurn). Logged: it should be rare once the manager
+   *  pins the identity itself. */
+  onHeld?: (info: { sessionId: string; wanted: string; kept: string }) => void;
 }
 
 interface Live {
@@ -92,6 +96,16 @@ interface Live {
   early: RawEvent[];
   endedEarly: boolean;
   exited: boolean;
+  /**
+   * The main session is mid-reply: it has streamed since its last `result`.
+   * Between gateway turns this is a background task's notification waking
+   * the model. A prompt written now could be folded into that reply or
+   * answered after it, so its result count is unknowable; runOn holds it.
+   */
+  queryOpen?: boolean;
+  /** A turn's prompt held until the reply in progress ends (see queryOpen),
+   *  with the turn's own sink; `cancelled` once Stop was pressed meanwhile. */
+  deferred?: { line: string; sink: (e: RawEvent) => void; cancelled?: boolean };
   /** Where this turn's events go, and how it is finished. */
   sink?: (e: RawEvent) => void;
   finish?: (exit: TurnExit) => void;
@@ -156,7 +170,7 @@ export class PersistentTurns {
   /** Actual provider work; output grace remains exclusively a safety guard. */
   activeSessions() {
     return [...this.live.values()].filter(e => e.busy || e.activity.snapshot().active)
-      .map(e => ({ sessionId: e.sessionId, busy: e.busy, ...e.activity.snapshot() }));
+      .map(e => ({ sessionId: e.sessionId, busy: e.busy, ...e.activity.snapshot(), shells: e.activity.counts().shells }));
   }
 
   agentRunning(sessionId: string, agentId: string): boolean | undefined {
@@ -285,6 +299,26 @@ export class PersistentTurns {
     // fail loudly rather than corrupt a session.
     if (entry?.busy) return deadHandle(`persistent session already running a turn: ${o.sessionId}`);
 
+    // One conversation, one process while it works. Model and effort are
+    // Claude argv, so a turn on a different one keys elsewhere; spawning it
+    // while the first process still ran background agents gave the
+    // conversation two writers on one transcript: the old one, woken by its
+    // own agent, never saw the user's message and told them "another
+    // instance of this conversation" had it (seen live 2026-10-09). The turn
+    // runs on the working process instead, on that process's model; the
+    // manager holds the picker's change for the same reason (heldIdentity).
+    // Codex is single-writer and keeps its own rule below.
+    if (!this.transport.singleWriter) {
+      const active = this.activeProcess(o.conversationId ?? o.sessionId);
+      if (active) {
+        if (active.busy) return deadHandle(`persistent session already running a turn: ${o.sessionId}`);
+        // Its own key too: an active process is never parked as stale
+        // below and replaced, for the same reason.
+        if (active !== entry) this.opts.onHeld?.({ sessionId: active.sessionId, wanted: key, kept: active.key });
+        return this.runOn(active, o);
+      }
+    }
+
     // A conversation that switched model (sonnet -> opus -> sonnet) finds its
     // FIRST process again under this key -- but that process never saw the turns
     // that ran on the other one, and would answer from a stale context. Any
@@ -325,6 +359,39 @@ export class PersistentTurns {
       this.evictOverCap(entry);
     }
     return this.runOn(entry, o);
+  }
+
+  /**
+   * The conversation's process that is doing work right now: a gateway turn,
+   * background tasks still running, or a reply in progress. Not the output
+   * grace of working(): a turn that just ended on a model the user then
+   * changed must respawn on the new one. Newest turn first.
+   */
+  /** Mid-reply, and not a flag left behind: a reply in progress writes,
+   *  and one silent past the grace is taken as over. */
+  private replying(e: Live): boolean {
+    return !!e.queryOpen && this.now() - e.lastOutput < this.workingGraceMs;
+  }
+
+  private activeProcess(conversationId: string): Live | undefined {
+    let best: Live | undefined;
+    for (const e of this.live.values()) {
+      if (e.sessionId !== conversationId || e.exited) continue;
+      if (!(e.busy || this.replying(e) || e.activity.snapshot().active)) continue;
+      // A process a newer sibling has moved past is parked work, not the
+      // conversation: its context lacks that sibling's turns (see isStale).
+      if (this.isStale(e)) continue;
+      if (!best || e.busy || (!best.busy && e.lastTurnStart > best.lastTurnStart)) best = e;
+    }
+    return best;
+  }
+
+  /** The model, effort and advisor the conversation's working process runs
+   *  with, so the manager can run a turn on it as it is (see startTurn). */
+  heldIdentity(conversationId: string): { model?: string; effort?: string; advisor?: string } | undefined {
+    if (this.transport.singleWriter) return undefined;
+    const e = this.activeProcess(conversationId);
+    return e?.opts ? { model: e.opts.model, effort: e.opts.effort, advisor: e.opts.advisor } : undefined;
   }
 
   /** Has another process of this conversation started a turn after this one? */
@@ -398,6 +465,14 @@ export class PersistentTurns {
       const { events, turnEnded, readyNow } = this.transport.ingest(entry.st, line);
       entry.activity.observe(this.transport.id, line, entry.st.ext.threadId);
       if (turnEnded) entry.activity.endTurn();
+      // The main session's reply is in progress from its first message until
+      // its result. Subagent traffic (parent_tool_use_id) is not the main reply.
+      if (this.transport.id === 'claude') {
+        for (const e of events) {
+          if ((e.type === 'assistant' || e.type === 'stream_event') && !(e as { parent_tool_use_id?: unknown }).parent_tool_use_id) entry.queryOpen = true;
+        }
+        if (turnEnded) entry.queryOpen = false;
+      }
       // The handshake finished: send the prompt runOn had to hold back.
       if (readyNow && entry.pendingPrompt !== undefined) {
         const prompt = entry.pendingPrompt; entry.pendingPrompt = undefined;
@@ -429,6 +504,22 @@ export class PersistentTurns {
         // stdin is FIFO, so results come back in the order the messages went
         // in: the first ones belong to the steers that were injected first.
         if (entry.pendingSteers > 0) { entry.pendingSteers--; this.publishActivity(entry); continue; }
+        // The reply that was in progress when this turn started has ended
+        // (runOn held the prompt). Its result was not this turn's: send the
+        // prompt now and hand the turn its sink. Stopped meanwhile: the turn
+        // ends here and the prompt is never sent.
+        const held = entry.deferred;
+        if (held) {
+          entry.deferred = undefined;
+          if (!held.cancelled) {
+            if (!this.writeLine(entry, held.line)) { this.destroy(entry); return; }
+            entry.sink = held.sink;
+            entry.queryOpen = true;
+            entry.activity.start();
+            this.publishActivity(entry);
+            continue;
+          }
+        }
         this.settleTurn(entry, { code: 0, signal: null });
         // A turn that ended before the process was ever ready is a failed
         // handshake (Codex could not open its thread). The process is alive
@@ -465,6 +556,10 @@ export class PersistentTurns {
     // has run, and it fires `finish` — which is only attached below. A handle
     // returned here would leave the caller waiting forever.
     if (entry.exited) return deadHandle(`persistent session died before its turn started: ${o.sessionId}`);
+    // Read before lastOutput is refreshed below, which would make any old
+    // flag look like a reply in progress.
+    const midReply = this.replying(entry);
+    if (!midReply) entry.queryOpen = false;
     entry.busy = true;
     entry.lastUsed = this.now();
     entry.lastTurnStart = this.now();
@@ -490,7 +585,17 @@ export class PersistentTurns {
     }
 
     if (entry.st.ext.ready) {
-      if (!this.writeLine(entry, this.transport.userMessage(entry.st, o, o.prompt))) {
+      const line = this.transport.userMessage(entry.st, o, o.prompt);
+      if (midReply) {
+        // A background task woke the model and its reply is still running.
+        // Written now, the prompt is folded into that reply (one result) or
+        // answered after it (two), and the first result would end this turn
+        // with the wrong answer while the real one arrived out of turn. So it
+        // waits for that reply's result (onData); the reply itself keeps
+        // going to the idle sink, as background work.
+        entry.deferred = { line, sink: o.onEvent };
+        entry.sink = undefined;
+      } else if (!this.writeLine(entry, line)) {
         this.destroy(entry);
         return deadHandle('persistent session stdin is closed');
       }
@@ -504,7 +609,11 @@ export class PersistentTurns {
       // usage limit and then resumes this session on ANOTHER account, which
       // cannot happen while the old process still holds the session.
       kill: () => this.destroy(entry),
-      interrupt: () => { this.writeLine(entry, this.transport.interruptMessage(entry.st)); },
+      interrupt: () => {
+        // Stop before the held prompt went out: it never will.
+        if (entry.deferred) entry.deferred.cancelled = true;
+        this.writeLine(entry, this.transport.interruptMessage(entry.st));
+      },
       done,
     };
   }

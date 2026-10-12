@@ -4043,8 +4043,12 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     try { localStorage.setItem(SEEN_KEY, JSON.stringify(seenSeq)); localStorage.setItem(QSEEN_KEY, JSON.stringify(qSeen)); } catch (e) {}
     applyNotifs();
   }
+  var bgDoneOwed = {};
   function setConvNotif(pid, sid, kind) {
     if (!pid) return;
+    // A finished turn is not a finished conversation while its background work
+    // runs. Owed instead: shown when that work ends (background_state).
+    if (kind === 'done' && isSessionBackground(pid, sid)) { bgDoneOwed[viewKey(pid, sid)] = true; return; }
     // Never flag the conversation that's on screen — you are, by definition,
     // reading it. Callers already try to check this, but they raced boot: a
     // hydration that ran before lastSessionId was known belled the very
@@ -4107,6 +4111,17 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   function effortLabel(effort) {
     return effort ? (EFFORT_LABELS[effort] || effort) : 'Auto effort';
   }
+  /** "1 agent running" / "2 agents · 1 shell running" / "1 background shell running". */
+  function bgCountsLabel(data) {
+    var a = Math.max(0, Number(data.agents) || 0), s = Math.max(0, Number(data.shells) || 0);
+    if (!a && !s) return '';
+    var ag = a ? (a === 1 ? '1 agent' : a + ' agents') : '';
+    // The rest are background shells and monitors: "tasks", which covers both.
+    if (a && s) return ag + ' · ' + (s === 1 ? '1 task' : s + ' tasks') + ' running';
+    if (a) return ag + ' running';
+    return (s === 1 ? '1 background task' : s + ' background tasks') + ' running';
+  }
+  function openAgentTreeFromLabel() { if (agentTree) agentTree.show(); }
   function renderBusy() {
     syncSteerBtn();
     busyEl.textContent = '';
@@ -4115,7 +4130,14 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var bgHere = !active && isSessionBackground(currentProjectId, lastSessionId);
     if (!active && !bgHere) return;
     var s = document.createElement('span'); s.className = 'spin' + (bgHere ? ' bgspin' : ''); busyEl.appendChild(s);
-    var l = document.createElement('span'); l.className = 'lbl'; l.textContent = lastLabel || (bgHere ? 'working in the background' : 'working…'); busyEl.appendChild(l);
+    var l = document.createElement('span'); l.className = 'lbl'; l.textContent = lastLabel || (bgHere ? 'working in the background' : 'working…');
+    if (bgHere) {
+      // The background label opens the Agent tree, where those agents are listed.
+      l.classList.add('tree-link'); l.title = 'Open the Agent tree'; l.setAttribute('role', 'button'); l.tabIndex = 0;
+      l.addEventListener('click', openAgentTreeFromLabel);
+      l.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAgentTreeFromLabel(); } });
+    }
+    busyEl.appendChild(l);
     if (runningSubs > 0) { var t = document.createElement('span'); t.className = 'tasks'; t.textContent = '· ' + runningSubs + ' running'; busyEl.appendChild(t); }
     var stop = document.createElement('button'); stop.className = 'stopbtn'; stop.title = bgHere ? 'interrupt the background work (keeps the session)' : 'stop this turn'; stop.appendChild(icon('x', 'sm'));
     var sl = document.createElement('span'); sl.textContent = 'Stop'; stop.appendChild(sl);
@@ -4151,7 +4173,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   function handleEvent(kind, data) {
     if (kind === 'read_state') { if (data.projectId && data.sessionId) { applyServerRead(viewKey(data.projectId, data.sessionId), data); applyNotifs(); } return; }
     if(kind==='message_delivery'){var receipt=deliveryRecords&&deliveryRecords.get(data.requestId);if(receipt){receipt.status=data.status;receipt.sessionId=data.sessionId||receipt.sessionId;saveDelivery(receipt).catch(function(){});}return;}
-    if (['question','question_dismissed','session_started'].indexOf(kind) >= 0) questionsVersion++;
+    if (['question','question_dismissed','question_answered','session_started'].indexOf(kind) >= 0) questionsVersion++;
     if (controlRoom) controlRoom.event(kind, data);
     if (terminalView) terminalView.event(kind, data);
     if (agentTree) agentTree.event(kind, data);
@@ -4166,7 +4188,11 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       var bg = bgSessionIds[pid] = bgSessionIds[pid] || {};
       if (data.active) bg[sid] = true; else delete bg[sid];
       var bv = viewOf(pid, sid);
-      bv.label = !data.active ? '' : data.agents ? data.agents + (data.agents === 1 ? ' agent running' : ' agents running') : isSessionRunning(pid, sid) ? (bv.label || 'Working') : 'Working in the background';
+      bv.label = !data.active ? '' : bgCountsLabel(data) || (isSessionRunning(pid, sid) ? (bv.label || 'Working') : 'Working in the background');
+      // Background work wins over a stale "done" bell: the conversation is not finished.
+      if (data.active && convNotif[viewKey(pid, sid)] === 'done') { delete convNotif[viewKey(pid, sid)]; bgDoneOwed[viewKey(pid, sid)] = true; applyNotifs(); }
+      // The work ended: now the conversation is done, if a "done" was held back.
+      if (!data.active && bgDoneOwed[viewKey(pid, sid)] && !isSessionRunning(pid, sid)) { delete bgDoneOwed[viewKey(pid, sid)]; setConvNotif(pid, sid, 'done'); }
       markConvBg(pid, sid); markRunning(); renderStrip();
       if (mineConvo) { lastLabel = bv.label; renderBusy(); renderAccountChip(); }
       return;
@@ -4184,7 +4210,10 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       if (mineConvo) { active = v.active; if (!active) { lastLabel = ''; runningSubs = 0; subs = {}; } renderBusy(); renderAccountChip(); refreshAccountsPop(); }
       return;
     }
-    if (kind === 'assistant_text') appendNode(pid, sid, nodeMsg('assistant', data.text, null, data.ts, providerFor(pid, sid)));
+    // A subagent's own text and tool calls carry parentToolUseId. They live in the
+    // subagent's transcript (the agent tree and its reader), never in this thread:
+    // a reload drops them, so a live row would only be a phantom.
+    if (kind === 'assistant_text') { if (!data.parentToolUseId) appendNode(pid, sid, nodeMsg('assistant', data.text, null, data.ts, providerFor(pid, sid))); }
     else if (kind === 'supervisor') {
       if (data.type === 'turn_started' && data.account) { activeAccount[viewKey(pid, sid)] = data.account; if (mineConvo) { renderBusy(); renderAccountChip(); refreshAccountsPop(); } }
       var l = BANNERS[data.type]; if (data.type === 'model_fallback' && data.from && data.to) l = (data.account ? 'account ' + data.account + ' does not have ' : 'this account does not have ') + data.from + ' yet — ran on ' + data.to; if (data.type === 'speed_fallback') { var sm = (providerModels.codex || []).filter(function (x) { return x.slug === data.model; })[0]; l = (SPEED_LABEL[data.from] || 'Speed') + ' isn’t on ' + (data.account ? 'account ' + data.account : 'this account') + (data.model ? ' for ' + (sm ? sm.label : data.model) : '') + '; ran ' + (data.to ? SPEED_LABEL[data.to] : 'at standard speed'); } if(data.type==='waiting_for_reset' && data.until) l='Waiting for account reset at '+new Date(data.until*1000).toLocaleString()+'. Stop cancels the wait.'; if (l) appendNode(pid, sid, nodeSys(l, 'banner'));
@@ -4201,8 +4230,12 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       // Derive the running-subagent count from the tracked set (idempotent), so a
       // replayed/duplicated 'start' can't inflate it (the "· N running" drift).
       var v = viewOf(pid, sid);
+      // A subagent's own tool call (parentToolUseId set) is not this thread's step:
+      // no row, and it must not become the bar's label either. Its nested
+      // subagents still count toward the running total below.
+      var fromSub = !!data.parentToolUseId;
       if (data.status === 'start') {
-        v.label = data.label; appendNode(pid, sid, nodeAct(data.label, data.isSubagent, data.isSubagent ? data.toolUseId : null, data.detail));
+        if (!fromSub) { v.label = data.label; appendNode(pid, sid, nodeAct(data.label, data.isSubagent, data.isSubagent ? data.toolUseId : null, data.detail)); }
         v.activityLog.push({ label: data.label, detail: data.detail, isSubagent: !!data.isSubagent, agentId: data.isSubagent ? data.toolUseId : null, ts: data.ts || new Date().toISOString() });
         if (v.activityLog.length > ACTIVITY_LOG_CAP) v.activityLog.splice(0, v.activityLog.length - ACTIVITY_LOG_CAP);
         if (data.isSubagent && data.toolUseId) v.subs[data.toolUseId] = 1;
@@ -4243,7 +4276,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       var doneLine = 'done: ' + data.status
         + (data.finalAccount ? ' · ' + acctName(data.finalAccount) : '')
         + (data.failovers ? ' · ' + data.failovers + ' switch(es)' : '')
-        + (data.status !== 'completed' && data.reason ? ' · ' + data.reason : '');
+        + (data.status !== 'completed' && data.reason ? ' · ' + data.reason : '')
+        + (isSessionBackground(pid, sid) ? ' · Working in background' : '');
       appendNode(pid, sid, nodeSys(doneLine, data.status === 'failed' ? 'banner err' : ''));
       if (mineConvo) { active = false; renderBusy(); }
       if (data.status === 'stopped') clearConvNotif(pid, sid);
@@ -4259,6 +4293,14 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     }
     else if (kind === 'question_dismissed') {
       dismissedQuestions[sid] = data.at; if (!pendingQ[sid] || pendingQ[sid].at === data.at) { clearQuestion(pid,sid); clearConvNotif(pid,sid); }
+    }
+    else if (kind === 'question_answered') {
+      // Answered by send, steer or queue: resolved, not dismissed, so dismissedQuestions stays as it is.
+      clearQuestion(pid, sid); clearConvNotif(pid, sid);
+    }
+    else if (kind === 'identity_held') {
+      // The turn kept the running process's model and effort because background work was still going.
+      appendNode(pid, sid, nodeSys('Kept ' + (modelLabel(data.model) || data.model || 'model') + ' · ' + effortLabel(data.effort) + ': this conversation was still working in the background'));
     }
     else if (kind === 'advisor_call') {
       // Claude's advisor: a pending card while it reviews, settled when it answers.
@@ -6242,7 +6284,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); loadReadState(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'steered', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'question_answered', 'identity_held', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'steered', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }
@@ -6943,6 +6985,9 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
         if (!res.ok) { if (stillHere()) addSys('Message was not sent. Open Message delivery to retry or edit it.', 'banner'); return; }
+        // No live turn: the server started a tracked turn. The session_started
+        // event renders the user's message, so no local bubble here.
+        if (res.j.started) return;
         if (res.j.steered) {
           if (pendingFiles.length && stillHere()) addSys('files can’t be steered — sent the text only, files still attached', 'banner');
           // The CLI records it as an attachment, which history renders on
@@ -7180,8 +7225,11 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     }
     sendBtn.hidden = running && !content;
     var keys = 'Enter · Shift+Enter for a new line' + (typeof K_CMD === 'string' ? ' · ' + K_CMD + '+Enter steers a running turn' : '');
-    sendBtn.title = running ? 'Queue for after this turn · ' + keys : 'Send · ' + keys;
-    sendBtn.setAttribute('aria-label', running ? 'Queue for after this turn' : 'Send');
+    // Background work only (no gateway turn): Send goes to the conversation as a
+    // tracked turn, it does not queue behind anything.
+    var sendLabel = bg ? 'Send to the running conversation' : running ? 'Queue for after this turn' : 'Send';
+    sendBtn.title = sendLabel + ' · ' + keys;
+    sendBtn.setAttribute('aria-label', sendLabel);
     var n = attachRow ? attachRow.querySelectorAll('.chip').length : 0, badge = $('composerAttachBadge');
     if (badge) {
       badge.hidden = !n;

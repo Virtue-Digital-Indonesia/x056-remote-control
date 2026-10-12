@@ -203,3 +203,21 @@ describe('dismiss a question without sending a reply', () => {
     } finally { await app2.close(); }
   });
 });
+
+describe('a steer with no turn running becomes a tracked turn', () => {
+  it('answers the question, and the response says a turn started (not "steered")', async () => {
+    const started = await (await fetch(`${base}/api/sessions`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ prompt: 'Ask me before migrating' }),
+    })).json() as { sessionId: string };
+    const q = await waitForQuestion(started.sessionId);
+    expect(q).toBeTruthy();
+    await turnIdle(started.sessionId);
+    const res = await fetch(`${base}/api/steer`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ projectId: q!.projectId, sessionId: q!.sessionId, prompt: 'Yes' }),
+    });
+    expect(res.ok).toBe(true);
+    expect(await res.json()).toMatchObject({ started: true, steered: false, queued: false, sessionId: q!.sessionId });
+    expect((await questions()).some((x) => x.sessionId === q!.sessionId)).toBe(false);
+    await turnIdle(q!.sessionId);
+  }, 30000);
+});

@@ -1968,10 +1968,19 @@ export class ApiController {
       const queue = () => ({ ...this.enqueueInternal(body), steered: false });
       return body.requestId ? this.deliveryOnce(body, queue) : queue();
     }
-    if(body.requestId)return this.deliveryOnceAsync(body,async()=>{if(body.projectId&&body.sessionId&&body.prompt&&await this.manager.steerSession(body.projectId,body.sessionId,body.prompt))return {steered:true,queued:false,sessionId:body.sessionId};return {...this.enqueueInternal(body),steered:false};});
+    // No gateway turn to steer into (the conversation is working in the
+    // background, or has just gone idle): the message becomes a tracked turn
+    // on the same process. Injected bare, it ran as a turn nothing tracked:
+    // no Stop, no reply attributed, and the "done" state stayed up.
+    const startTurn = () => ({ ...this.continueSessionInternal(body), started: true, steered: false, queued: false });
+    const idle = () => !!body.projectId && !!body.sessionId && !this.manager.isSessionRunning(body.sessionId);
+    if(body.requestId)return this.deliveryOnceAsync(body,async()=>{if(idle())return startTurn();if(body.projectId&&body.sessionId&&body.prompt&&await this.manager.steerSession(body.projectId,body.sessionId,body.prompt))return {steered:true,queued:false,sessionId:body.sessionId};return {...this.enqueueInternal(body),steered:false};});
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.sessionId) throw new BadRequestException('sessionId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
+    if (idle()) {
+      try { return startTurn(); } catch (err) { if (!(err instanceof ConflictException)) throw err; /* a turn began meanwhile: steer into it */ }
+    }
     if (await this.manager.steerSession(body.projectId, body.sessionId, body.prompt)) {
       return { steered: true, queued: false };
     }

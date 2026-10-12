@@ -490,6 +490,13 @@ export class SessionManager {
     // wins, so leaving 4 here made the pool's 6 dead code and silently held the
     // cap below the number of conversations in play.
     maxSessions: Number(process.env.X056_PERSISTENT_MAX) || 6,
+    // The pool ran a turn on the conversation's working process instead of
+    // spawning the identity it asked for. launch() pins the identity first,
+    // so this firing means a path that does not: loud on purpose.
+    onHeld: (info) => {
+      console.warn(`[persistent] turn kept on the working process of ${info.sessionId} (identity differed)`);
+      try { new EventLog(join(this.opts.stateDir, 'events.jsonl')).append({ type: 'process_reused', sessionId: info.sessionId, at: new Date().toISOString() }); } catch { /* logging only */ }
+    },
   });
   /** Same pool mechanics over `codex app-server` (JSON-RPC) instead of stream-json. */
   private readonly persistentCodex = process.env.X056_PERSISTENT === 'off' ? null : new PersistentTurns({
@@ -3309,6 +3316,17 @@ export class SessionManager {
     return true;
   }
 
+  /** The user answered the pending question by a route that starts no new
+   *  turn of its own (a steer, a queued reply): close the card everywhere. */
+  resolvePendingQuestion(projectId: string, sessionId: string, by: 'steer' | 'queue'): boolean {
+    const question = this.pendingQuestions.get(sessionId);
+    if (!question) return false;
+    this.pendingQuestions.delete(sessionId);
+    this.savePendingQuestions();
+    this.emit('question_answered', { projectId, sessionId, at: question.at, by });
+    return true;
+  }
+
   /**
    * A per-turn MCP config so the bridge knows WHICH conversation it is running
    * in. The shared config written at boot cannot carry this: one file, every
@@ -3484,29 +3502,41 @@ export class SessionManager {
       // it starts -- inside the async run, so sending a message never waits on
       // it. A failed or unsure pick leaves the conversation's own choice in
       // place. Both report as `jev_decision`, told apart by `backend`.
-      const router = this.routerFor(helpers);
+      // Still working in the background (agents running, or a reply in
+      // progress): this turn runs ON that process, as it is. A Claude model
+      // or effort is argv, so a pick or a changed choice would start a
+      // second process beside the working one -- two writers on one
+      // transcript, and the old one, woken by its own agent, never sees this
+      // message (seen live 2026-10-09). So no pick this turn, and the
+      // conversation is told why when its own choice was set aside.
+      const held = adapter.id === 'claude' ? this.persistent?.heldIdentity(sessionId) : undefined;
+      if (held && (held.model !== model || held.effort !== effort)) {
+        emit('identity_held', { model: held.model ?? null, effort: held.effort ?? null, wantedModel: model ?? null, wantedEffort: effort ?? null, reason: 'background_work' });
+      }
+      const router = held ? undefined : this.routerFor(helpers);
+      const runModel = held ? held.model : model, runEffort = held ? held.effort : effort, runAdvisor = held ? held.advisor : advisor;
       // Auto with no picker running: the panel thought one would (the Jev
       // default, out of credits at turn time), or Auto was saved under the
       // default and the user then chose "Your choice" ('none') -- a later
       // cron or queued turn reuses that ''. Run on the house default, never
       // the CLI's own default, which is the frontier model. (Only with a
       // key: without one no default picker ever saved an Auto.)
-      const autoFallback = !router && !model && this.jev().configured() && !prompt.trimStart().startsWith('/') ? AUTO_MODEL[adapter.id as 'claude' | 'codex'] : undefined;
+      const autoFallback = !router && !held && !model && this.jev().configured() && !prompt.trimStart().startsWith('/') ? AUTO_MODEL[adapter.id as 'claude' | 'codex'] : undefined;
       // The per-turn lines ride in THIS turn's message, never in the system
       // prompt or --agents (process identity: it would respawn per turn).
       // Team: the picked team model/effort, Codex's explicit ask, Claude's
       // fork hint. Advisor (Claude): when to consult it.
       const forks = !!team && !!this.forkBackend(helpers);
-      const advisorLine = advisor ? advisorTurnLine(adapter.id) : undefined;
+      const advisorLine = runAdvisor ? advisorTurnLine(adapter.id) : undefined;
       const withLines = (p: string, teamLine?: string) => withTeamLine(withTeamLine(p, teamLine), advisorLine);
       // The advisor that actually runs: chosen from the model the turn runs
       // on AFTER the pick. Chosen from the saved one, a Fable pick on a
       // conversation saved as Opus ran `--advisor opus` on a Fable main,
       // which Claude Code silently runs WITHOUT an advisor.
-      let turnAdvisor = advisor;
+      let turnAdvisor = runAdvisor;
       // What the turn really runs on, for pricing its Codex turn result: the
       // pick, then the per-account fallback (seen in the pool's wire below).
-      let turnModel = model;
+      let turnModel = runModel;
       const codexMeter = adapter.id === 'codex' ? new CodexTurnMeter() : undefined;
       const runWith: typeof runFn = router
         ? (async (o: Parameters<typeof runFn>[0]) => {
@@ -3521,7 +3551,7 @@ export class SessionManager {
           }) as typeof runFn
         // No picker: Codex still needs the explicit ask (see teamTurnLine).
         : ((o: Parameters<typeof runFn>[0]) => runFn({ ...o, prompt: withLines(o.prompt, team ? teamTurnLine(adapter.id, undefined, 'jev', { forks }) : undefined) })) as typeof runFn;
-      if (advisor) emit('advisor_state', { advisor, model: model ?? null });
+      if (runAdvisor) emit('advisor_state', { advisor: runAdvisor, model: runModel ?? null });
       // ChatGPT has no advisor of its own; the gateway watches the turn.
       const watcher = helpers.advisor && adapter.id === 'codex'
         ? new TurnWatcher(cleanMemorySource(prompt), (trigger, transcript) => {
@@ -3555,10 +3585,10 @@ export class SessionManager {
         providerSessionId,
         adapter,
         claudePath: this.opts.claudePath,
-        model: model ?? autoFallback,
-        effort,
+        model: runModel ?? autoFallback,
+        effort: runEffort,
         speed,
-        advisor,
+        advisor: runAdvisor,
         subagents: team?.subagents,
         codexConfig: team?.codexConfig,
         appendSystemPrompt: team ? CONTAINER_SYSTEM_NOTE + '\n\n' + team.instructions : CONTAINER_SYSTEM_NOTE,
@@ -4078,7 +4108,7 @@ export class SessionManager {
     const delegating = [...this.delegateRuns.values()].some((r) => r.parentSid === sessionId);
     return {
       active: delegating || states.some(s => s.active), parentActive: states.some(s => s.parentActive),
-      agents: states.reduce((n, s) => n + (s.agents || 0), 0), tasks: states.reduce((n, s) => n + (s.tasks || 0), 0),
+      agents: states.reduce((n, s) => n + (s.agents || 0), 0), shells: states.reduce((n, s) => n + (s.shells || 0), 0), tasks: states.reduce((n, s) => n + (s.tasks || 0), 0),
     };
   }
 
@@ -4114,6 +4144,8 @@ export class SessionManager {
     if (opts.humanOrigin === false) return true;
     this.clearSelfQueueStreak(sessionId);
     this.clearRelayChain(sessionId);
+    // A human steer while a question waits is the answer to it.
+    this.resolvePendingQuestion(projectId, sessionId, 'steer');
     return true;
   }
 

@@ -39,6 +39,15 @@ describe('ReadState rules (the ones both clients used)', () => {
     expect(rs.view('p', 'q').unread).toBe(false);
   });
 
+  it('clears an unread question when it is answered by any route', () => {
+    const { rs, tick } = svc();
+    rs.observe('question', { projectId: 'p', sessionId: 'z' });
+    tick();
+    expect(rs.view('p', 'z').unread).toBe(true);
+    rs.observe('question_answered', { projectId: 'p', sessionId: 'z', at: 1, by: 'steer' });
+    expect(rs.view('p', 'z').unread).toBe(false);
+  });
+
   it('keeps an unread question a question when its turn then finishes, but not after a read', () => {
     const { rs, tick } = svc();
     rs.observe('question', { projectId: 'p', sessionId: 's' });

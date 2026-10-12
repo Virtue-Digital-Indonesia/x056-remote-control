@@ -153,7 +153,10 @@
    *  ended / last moved after the turn began). */
   function inTurn(turn, start, end, running) {
     var s = isFinite(start) ? start : -Infinity;
-    if (!(s < turn.end)) return false;
+    // The latest turn is open-ended: a background agent a woken continuation
+    // starts after the last recorded turn end still belongs to it (mirrors
+    // server/agent-tree.ts, where buildTurns marks the last turn open).
+    if (!(s < (turn.last ? Infinity : turn.end))) return false;
     if (running) return true;
     // Mirrors server/agent-tree.ts: no end and no last update means not in it.
     return isFinite(end) && end >= turn.start;
@@ -269,7 +272,7 @@
     }
     var dgs = (t.delegates || []).filter(function (d) {
       var tt = dgTimes(d, reports), running = delegateStatus(d) === 'run';
-      if (running) return tt.start < turn.end || !isFinite(tt.start);
+      if (running) return tt.start < (turn.last ? Infinity : turn.end) || !isFinite(tt.start);
       return tt.reports.some(function (a) { return a >= turn.start && a < turn.end; }) || within(turn, d.createdAt) || inTurn(turn, tt.start, tt.end, false);
     });
     if (dgs.length) {
@@ -1184,7 +1187,7 @@
       var thisTurn = workingFirst(list.filter(function (s) { return Model.inTurn(turn, ms(s.startedAt), isFinite(ms(s.endedAt)) ? ms(s.endedAt) : ms(s.updatedAt), s.status === 'running'); }));
       var M = Model.build({ tree: t, subs: list, runs: runs, runAgents: runAgents, reports: reports }, null, engine);
       // Rule (d) here too: forks, gates, picks, advisor calls and delegates of THIS turn only.
-      var inT = function (x) { var a = ms(x.at); return isFinite(a) && a >= turn.start && a < turn.end; };
+      var inT = function (x) { var a = ms(x.at); return isFinite(a) && a >= turn.start && a < (turn.last ? Infinity : turn.end); };
       var recent = ((t.forks && t.forks.recent) || []).filter(inT);
       var dgs = []; M.tiers.forEach(function (x) { if (x.kind === 'dgroup') x.kids.forEach(function (k) { dgs.push(k.raw); }); });
       t = Object.assign({}, t, {

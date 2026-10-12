@@ -96,6 +96,7 @@ export class ReadState {
         if (tier === 'urgent') this.notice(pid, sid, 'question');
         return;
       case 'question_dismissed':
+      case 'question_answered':
         this.read(pid, sid);
         return;
     }

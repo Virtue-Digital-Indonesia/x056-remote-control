@@ -91,7 +91,10 @@ describe('one process across many turns', () => {
 
     // An event arriving between turns belongs to nobody and must not be
     // replayed into the next turn's classifier.
+    // (A woken reply ends with its own result; one still running would hold
+    // the next prompt -- see 'one process per conversation while it works'.)
     spawned[0].cli.emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'stray' }] } });
+    spawned[0].cli.result('stray done');
     const seen2: unknown[] = [];
     const h2 = p.startTurn(turn({ mode: 'resume', onEvent: (e) => seen2.push(e) }));
     spawned[0].cli.result('b');
@@ -599,6 +602,114 @@ describe('switching model and back does not reuse a stale process', () => {
     expect(spawned).toHaveLength(1);
     expect(spawned[0].cli.killed).toBe(false);
     expect(spawned[0].cli.msgs().map((m) => m.message.content[0].text)).toEqual(['one', 'two', 'three']);
+    p.shutdown();
+  });
+});
+
+// Live 2026-10-09: a Jev effort pick (xhigh -> high -> xhigh) keyed a new
+// Claude process while the first still ran background agents. Both wrote the
+// same transcript; the old one, woken by its own agent, never saw the user's
+// message and said "another instance of this conversation" had it.
+describe('one process per conversation while it works', () => {
+  const taskStarted = { type: 'system', subtype: 'task_started', task_id: 'bg1', task_type: 'local_agent', description: 'explorer' };
+  const reply = (text: string) => ({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+  const texts = (cli: ReturnType<typeof fakeCli>) => cli.msgs().filter((m) => m.type === 'user').map((m) => m.message.content[0].text);
+
+  function heldPool(opts: { now?: () => number; workingGraceMs?: number } = {}) {
+    const spawned: ReturnType<typeof fakeCli>[] = [];
+    const held: unknown[] = [];
+    const p = new PersistentTurns({
+      ...opts,
+      onHeld: (info) => held.push(info),
+      spawnFn: () => { const cli = fakeCli(); spawned.push(cli); return cli.child as never; },
+    });
+    return { p, spawned, held };
+  }
+
+  it('runs a turn on another model ON the working process instead of spawning a second one', async () => {
+    const { p, spawned, held } = heldPool();
+    const h1 = p.startTurn(turn({ model: 'opus', effort: 'high' }));
+    spawned[0].emit(taskStarted);            // a background agent keeps running
+    spawned[0].result('launched it');
+    await h1.done;
+
+    const h2 = p.startTurn(turn({ model: 'opus', effort: 'xhigh', mode: 'resume', prompt: 'the architecture is attached' }));
+    expect(spawned).toHaveLength(1);         // no second writer
+    expect(texts(spawned[0])).toEqual(['hello', 'the architecture is attached']);
+    expect(held).toHaveLength(1);
+    spawned[0].result('read it');
+    expect(await h2.done).toMatchObject({ code: 0 });
+    p.shutdown();
+  });
+
+  it('reports the working process identity so the manager can pin it', async () => {
+    const { p, spawned } = heldPool();
+    const h1 = p.startTurn(turn({ model: 'opus', effort: 'high', advisor: 'opus' }));
+    spawned[0].emit(taskStarted);
+    spawned[0].result('ok'); await h1.done;
+    expect(p.heldIdentity('s1')).toEqual({ model: 'opus', effort: 'high', advisor: 'opus' });
+    p.shutdown();
+  });
+
+  it('still respawns on a new model once nothing is running', async () => {
+    const { p, spawned, held } = heldPool();
+    const h1 = p.startTurn(turn({ model: 'sonnet' }));
+    spawned[0].result('done'); await h1.done;
+    expect(p.heldIdentity('s1')).toBeUndefined();
+    p.startTurn(turn({ model: 'opus', mode: 'resume' }));
+    expect(spawned).toHaveLength(2);
+    expect(held).toHaveLength(0);
+    p.shutdown();
+  });
+
+  it('holds the prompt while a woken reply runs, then ends the turn at ITS result', async () => {
+    const { p, spawned } = heldPool();
+    const h1 = p.startTurn(turn());
+    spawned[0].result('turn over'); await h1.done;
+    spawned[0].emit(reply('a background agent finished; reading its result'));
+
+    const toTurn: { type?: string; result?: string }[] = [];
+    let ended = false;
+    const h2 = p.startTurn(turn({ mode: 'resume', prompt: 'answer me', onEvent: (e) => toTurn.push(e as never) }));
+    void h2.done.then(() => { ended = true; });
+    expect(texts(spawned[0])).toEqual(['hello']);       // held, not folded blind
+
+    spawned[0].result('continuation done');             // the woken reply's own result
+    await Promise.resolve();
+    expect(ended).toBe(false);                           // not this turn's end
+    expect(texts(spawned[0])).toEqual(['hello', 'answer me']);
+    expect(toTurn.some((e) => e.result === 'continuation done')).toBe(false);
+
+    spawned[0].result('here is your answer');
+    await h2.done;
+    expect(toTurn.map((e) => e.result).filter(Boolean)).toEqual(['here is your answer']);
+    p.shutdown();
+  });
+
+  it('a Stop while the prompt is held ends the turn without ever sending it', async () => {
+    const { p, spawned } = heldPool();
+    const h1 = p.startTurn(turn());
+    spawned[0].result('turn over'); await h1.done;
+    spawned[0].emit(reply('woken'));
+    const h2 = p.startTurn(turn({ mode: 'resume', prompt: 'never mind' }));
+    h2.interrupt();
+    spawned[0].result('interrupted');
+    await h2.done;
+    expect(texts(spawned[0])).toEqual(['hello']);
+    expect(spawned[0].msgs().some((m) => m.type === 'control_request')).toBe(true);
+    p.shutdown();
+  });
+
+  it('a reply flag left behind does not hold the next prompt', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = heldPool({ now: () => t, workingGraceMs: 60_000 });
+    const h1 = p.startTurn(turn());
+    spawned[0].result('turn over'); await h1.done;
+    spawned[0].emit(reply('half a reply, then silence'));
+    t += 61_000;
+    const h2 = p.startTurn(turn({ mode: 'resume', prompt: 'next' }));
+    expect(texts(spawned[0])).toEqual(['hello', 'next']);
+    spawned[0].result('ok'); await h2.done;
     p.shutdown();
   });
 });
