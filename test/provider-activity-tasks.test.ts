@@ -69,3 +69,25 @@ describe('Claude task counts', () => {
     expect(activity.counts().total).toBe(0);
   });
 });
+
+// The shape CLI 2.1.295 really emits: no parent_tool_use_id on system task
+// events; nesting is owned_by_subagent / parent_task_id / spawn_depth.
+describe('nesting as the CLI marks it', () => {
+  const started = (over: Record<string, unknown>) => JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 't', description: 'x', ...over });
+  it('counts a main-session agent (spawn_depth 1, not owned by a subagent)', () => {
+    const a = new ProviderActivity();
+    a.observe('claude', started({ task_id: 'top', task_type: 'local_agent', spawn_depth: 1, owned_by_subagent: false }));
+    expect(a.counts()).toEqual({ agents: 1, shells: 0, total: 1 });
+  });
+  it('ignores a Bash a subagent started, and its progress', () => {
+    const a = new ProviderActivity();
+    a.observe('claude', started({ task_id: 'b1', task_type: 'local_bash', owned_by_subagent: true }));
+    a.observe('claude', JSON.stringify({ type: 'system', subtype: 'task_progress', task_id: 'b1' }));
+    expect(a.counts()).toEqual({ agents: 0, shells: 0, total: 0 });
+  });
+  it('ignores an agent spawned by an agent', () => {
+    const a = new ProviderActivity();
+    a.observe('claude', started({ task_id: 'n1', task_type: 'local_agent', parent_task_id: 'top', spawn_depth: 2 }));
+    expect(a.counts().total).toBe(0);
+  });
+});

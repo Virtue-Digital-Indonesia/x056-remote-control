@@ -42,6 +42,13 @@ export class ProviderActivity {
     const id: string = m.task_id;
     const prev = this.claudeTasks.get(id);
     if (m.subtype === 'task_notification') { if (prev) prev.running = false; return; }
+    // Nested: started inside a subagent. The CLI's task_started carries no
+    // parent_tool_use_id; it marks nesting with owned_by_subagent,
+    // parent_task_id and spawn_depth (read from CLI 2.1.295). Such a task's
+    // notification may never reach this stream, so it is never tracked.
+    if (m.subtype === 'task_started' && (m.owned_by_subagent === true || !!m.parent_task_id || (typeof m.spawn_depth === 'number' && m.spawn_depth > 1))) return;
+    // Progress for a task we never saw start (a nested one) is not tracked either.
+    if (!prev && m.subtype !== 'task_started') return;
     // task_progress carries no type; it keeps the kind task_started gave the task.
     if (m.subtype === 'task_started' || !prev) {
       const agent = typeof m.task_type === 'string' ? AGENT_TASK_TYPES.has(m.task_type)
@@ -64,9 +71,8 @@ export class ProviderActivity {
     if (provider === 'claude') {
       // Claude task lifecycle survives a parent `result`. A subagent's result
       // is not a result for the parent conversation.
-      // Only top-level tasks count. A task started inside a subagent carries a
-      // parent_tool_use_id, and its notification may never reach this stream, so it
-      // is ignored entirely rather than marked running.
+      // Only top-level tasks count (see claudeTask for how nesting is marked);
+      // a subagent's own stream events carry parent_tool_use_id.
       if (m.parent_tool_use_id) return;
       if (m.type === 'system' && typeof m.task_id === 'string' && ['task_started', 'task_progress', 'task_notification'].includes(m.subtype)) {
         this.claudeTask(m);
