@@ -20,6 +20,7 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
       {role:'user',text:'Run the daily status check.',sender:{kind:'automation',messageId:'scheduled'}},
       {role:'user',text:'Continue the remaining work.',sender:{kind:'autopilot',messageId:'autopilot'}},
       {role:'user',text:'Use the new tokens file.',sender:{...sender,messageId:'steer-hist'},messageId:'steer-hist',steered:true},
+      {role:'user',text:'Autopilot finished (the stop phrase was reached, 3 steps). Recap the whole run.',sender:{kind:'recap',recap:'autopilot',messageId:'recap-hist'}},
     ].map(row=>({...row,ts:new Date().toISOString()}));
     let target;
     await page.route('**/api/conversations/history-page?*', async route => {
@@ -33,7 +34,10 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
     assert.equal(await page.locator('#chat .msg.user:not(.from-sender) .role').textContent(),'you');
     assert.equal(await page.locator('#chat .message-sender strong').first().textContent(),sender.conversationTitle);
     assert.equal(await page.locator('#chat .message-sender small').first().textContent(),sender.projectName);
-    assert.equal(await page.locator('#chat .message-sender').count(),4);
+    assert.equal(await page.locator('#chat .message-sender').count(),5);
+    assert.equal(await page.locator('[data-message-source-id="recap-hist"] .message-sender strong').textContent(),'Recap requested by the gateway');
+    assert.equal(await page.locator('[data-message-source-id="recap-hist"] .message-sender small').textContent(),'Autopilot finished');
+    assert.equal(await page.locator('[data-message-source-id="recap-hist"] details.recap-digest summary').textContent(),'Recap the autopilot run and re-ask open questions');
     assert.equal(await page.locator('[data-message-source-id="steer-hist"] .steer-tag').textContent(),'Steered into the running turn');
     const event={...target,sender,displayPrompt:rows[1].text,resume:true};
     await page.evaluate(data => {for(let i=0;i<2;i++) window.__source.dispatchEvent(new MessageEvent('session_started',{data:JSON.stringify({data})}));},event);
@@ -61,7 +65,10 @@ const base = process.argv[2] || 'http://127.0.0.1:8795';
     await page.reload();
     await page.locator('.cr-task').filter({hasText:'Update the component library'}).click();
     await page.locator('#chat [data-message-source-id="sender-test"]').waitFor();
-    assert.equal(await page.locator('#chat .message-sender').count(),4);
+    assert.equal(await page.locator('#chat .message-sender').count(),5);
+    assert.equal(await page.locator('[data-message-source-id="recap-hist"] .message-sender strong').textContent(),'Recap requested by the gateway');
+    assert.equal(await page.locator('[data-message-source-id="recap-hist"] .message-sender small').textContent(),'Autopilot finished');
+    assert.equal(await page.locator('[data-message-source-id="recap-hist"] details.recap-digest summary').textContent(),'Recap the autopilot run and re-ask open questions');
     assert.deepEqual(errors,[]);
     console.log('PASS steered label (history + live event), human label, automation/autopilot, live delivery and replay deduplication, refresh, escaped names and mobile fit');
   } finally { await browser.close(); }

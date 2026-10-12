@@ -308,8 +308,59 @@ interface AutopilotEntry {
   instruction?: string;
   paused?: boolean;
   pauseReason?: string;
+  /** When this run was armed (ms): one end-of-run recap per run. */
+  startedAt?: number;
+  /** Questions the run's steps asked and autopilot swallowed, re-asked by
+   *  the recap when the run ends. Newest AUTOPILOT_QUESTIONS_MAX kept. */
+  questions?: string[];
 }
 type AutopilotLast = { count?: number; instruction?: string };
+
+const AUTOPILOT_QUESTIONS_MAX = 12;
+const AUTOPILOT_QUESTION_CHARS = 400;
+/** How long the conversation must be quiet before a recap is sent. */
+const RECAP_QUIET_MS = 2000;
+const RECAP_POLL_MS = 500;
+/** Past this the recap is queued anyway: it waits behind whatever runs. */
+const RECAP_WAIT_CAP_MS = 30 * 60_000;
+
+/** What a Claude conversation did after its turn ended (background work, a
+ *  woken reply), so its settle can quote the real ending. */
+interface AfterTurn {
+  sawWork: boolean;
+  /** Order of out-of-turn events, so "a reply after the last task" holds
+   *  even inside one millisecond. */
+  seq: number;
+  lastTaskDone?: number;
+  lastText?: string;
+  reply?: { text: string; seq: number; at: string };
+}
+
+/** One line per question for the recap prompt: question, then options. */
+function renderAutopilotQuestions(q: { question: string; options: string[]; questions?: { question: string; options: string[] }[] }): string[] {
+  return (q.questions ?? [q]).map((x) => {
+    const line = x.question.trim() + (x.options.length ? ` (options: ${x.options.join(' | ')})` : '');
+    return line.length > AUTOPILOT_QUESTION_CHARS ? line.slice(0, AUTOPILOT_QUESTION_CHARS - 1) + '…' : line;
+  });
+}
+
+export const BACKGROUND_RECAP_PROMPT =
+  'Background work your last turn left running has finished, and the turn ended before it did, so the user has not seen an ending. ' +
+  'Write it now: what was done and the outcome in a few lines, then anything left. ' +
+  'If anything needs the user (a decision, a confirmation, an approval, missing input), ask it with the x056 question protocol below. ' +
+  'If nothing does, say so in one line. Do not start new work.';
+
+export function autopilotRecapPrompt(reason: string, steps: number, questions: string[]): string {
+  const why = reason === 'done' ? 'the stop phrase was reached' : 'the step budget was used up';
+  const asked = questions.length
+    ? 'Questions recorded during the run:\n' + questions.map((q) => '- ' + q).join('\n') + '\n'
+    : 'No questions were recorded during the run.\n';
+  return `Autopilot finished (${why}, ${steps} step${steps === 1 ? '' : 's'}). ` +
+    'Recap the whole run in a few lines: what was done, the outcome, anything left. ' +
+    'Then re-ask, with the x056 question protocol below, every question or confirmation raised during the run ' +
+    'and every decision you took without the user that they should confirm.\n' + asked +
+    'If nothing needs the user, say so in one line. Do not start new work.';
+}
 
 /** A question nobody answered in this long stops lighting the bell... */
 const QUESTION_STALE_MS = 3 * 24 * 3600_000;
@@ -477,7 +528,7 @@ export class SessionManager {
   private runs = new Map<string, ActiveRun>();
   private readonly completions = new CompletionGate(
     sid => this.sessionBusy(sid) || this.pools().some(p => p.activeSessions().some(s => s.sessionId === sid)),
-    data => this.emit('conversation_settled', data),
+    data => this.onSettled(data),
   );
   /**
    * One long-lived CLI process per Claude conversation, so background work —
@@ -747,7 +798,9 @@ export class SessionManager {
       stopPhrase,
       instruction: normalizeAutopilotInstruction(opts.instruction) || undefined,
       projectId,
+      startedAt: Date.now(),
     };
+    this.cancelAutopilotRecap(sessionId);
     this.saveAutopilot(map);
     this.rememberAutopilot(sessionId, map[sessionId]);
     const run = this.runs.get(sessionId);
@@ -757,6 +810,7 @@ export class SessionManager {
   }
 
   stopAutopilot(sessionId: string): void {
+    this.cancelAutopilotRecap(sessionId);
     const map = this.loadAutopilot();
     const pid = map[sessionId]?.projectId;
     this.completions.cancel(sessionId);
@@ -826,11 +880,160 @@ export class SessionManager {
   }
   private disarmAutopilot(pid: string, sessionId: string, reason: string): void {
     const map = this.loadAutopilot();
-    const steps = map[sessionId] ? autopilotSteps(map[sessionId]) : {};
-    if (map[sessionId]) { this.rememberAutopilot(sessionId, map[sessionId]); delete map[sessionId]; this.saveAutopilot(map); }
+    const entry = map[sessionId];
+    const steps = entry ? autopilotSteps(entry) : {};
+    if (entry) { this.rememberAutopilot(sessionId, entry); delete map[sessionId]; this.saveAutopilot(map); }
     const t = this.autopilotTimers.get(sessionId);
     if (t) { clearTimeout(t); this.autopilotTimers.delete(sessionId); }
-    this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason, ...steps });
+    // A run that ENDED (not paused, not stopped) gets one recap turn, which
+    // re-asks what the run swallowed. Its ending is then the one push.
+    const recap = !!entry && (reason === 'done' || reason === 'exhausted')
+      && this.scheduleAutopilotRecap(pid, sessionId, entry, reason, this.runs.get(sessionId)?.pendingAdvice);
+    this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason, ...steps, ...(recap ? { recap: true } : {}) });
+  }
+
+  // ---- end-of-work recaps ----
+  private readonly autopilotRecaps = new Map<string, { cancelled: boolean }>();
+  private readonly recappedRuns = new Set<string>();
+  /** How many turns a human started in each conversation (this process). */
+  private readonly humanTurns = new Map<string, number>();
+  private readonly afterTurns = new Map<string, AfterTurn>();
+
+  private cancelAutopilotRecap(sessionId: string): void {
+    const pending = this.autopilotRecaps.get(sessionId);
+    if (pending) { pending.cancelled = true; this.autopilotRecaps.delete(sessionId); }
+  }
+
+  /** Arms one recap for a run that ended. False when there is nothing to do. */
+  private scheduleAutopilotRecap(pid: string, sessionId: string, entry: AutopilotEntry, reason: string, advice?: Promise<unknown>): boolean {
+    if (this.destroyed) return false;
+    const key = `${sessionId}:${entry.startedAt ?? Date.now()}`;
+    if (this.recappedRuns.has(key)) return false;
+    this.recappedRuns.add(key);
+    this.cancelAutopilotRecap(sessionId);
+    const token = { cancelled: false };
+    this.autopilotRecaps.set(sessionId, token);
+    const steps = autopilotSteps(entry).steps ?? entry.count;
+    void this.recapAfterAutopilot(pid, sessionId, token, { reason, steps, questions: entry.questions ?? [], humanTurns: this.humanTurns.get(sessionId) ?? 0, advice })
+      .catch((error) => console.warn('[autopilot] recap failed:', (error as Error).message))
+      .finally(() => { if (this.autopilotRecaps.get(sessionId) === token) this.autopilotRecaps.delete(sessionId); });
+    return true;
+  }
+
+  private quietFor(sessionId: string): boolean {
+    return !this.sessionBusy(sessionId) && !this.pools().some((p) => p.activeSessions().some((s) => s.sessionId === sessionId));
+  }
+
+  /** Waits for the run's last advisor review and for the conversation to go
+   *  quiet, then queues the recap, unless someone took over meanwhile. */
+  private async recapAfterAutopilot(pid: string, sessionId: string, token: { cancelled: boolean }, info: { reason: string; steps: number; questions: string[]; humanTurns: number; advice?: Promise<unknown> }): Promise<void> {
+    const sleep = (ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); t.unref?.(); });
+    if (info.advice) {
+      let cap: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        info.advice.catch(() => {}),
+        new Promise<void>((r) => { cap = setTimeout(r, this.opts.advisorWaitMs ?? 60_000); cap.unref?.(); }),
+      ]);
+      clearTimeout(cap);
+    }
+    const began = Date.now();
+    let quietSince: number | undefined;
+    for (;;) {
+      if (token.cancelled || this.destroyed) return;
+      if (!this.quietFor(sessionId)) quietSince = undefined;
+      else if (Date.now() - (quietSince ??= Date.now()) >= RECAP_QUIET_MS) break;
+      if (Date.now() - began >= RECAP_WAIT_CAP_MS) break;
+      await sleep(RECAP_POLL_MS);
+    }
+    if (token.cancelled || this.destroyed) return;
+    if (this.loadAutopilot()[sessionId]) return; // re-armed: the new run recaps itself
+    if (!this.conversationExists(pid, sessionId)) return;
+    if ((this.humanTurns.get(sessionId) ?? 0) !== info.humanTurns) return; // the user is already back
+    if ((this.loadQueues()[pid] ?? []).some((x) => (x.sessionId ?? pid) === sessionId)) return;
+    this.autopilotRecaps.delete(sessionId);
+    this.enqueue(pid, { sessionId, sender: { kind: 'recap', recap: 'autopilot' }, text: withAskInstructions(autopilotRecapPrompt(info.reason, info.steps, info.questions)) });
+  }
+
+  private conversationExists(pid: string, sessionId: string): boolean {
+    try { return !!this.projects().get(pid)?.conversations?.some((c) => c.sessionId === sessionId); } catch { return false; }
+  }
+
+  /** Autopilot swallowed this step's question: keep it for the end-of-run recap. */
+  private recordAutopilotQuestion(sessionId: string, q: ReturnType<typeof parseQuestion>): void {
+    if (!q) return;
+    const map = this.loadAutopilot(), ap = map[sessionId];
+    if (!ap) return;
+    ap.questions = [...(ap.questions ?? []), ...renderAutopilotQuestions(q)].slice(-AUTOPILOT_QUESTIONS_MAX);
+    this.saveAutopilot(map);
+  }
+
+  /** Out-of-turn stream events of a Claude conversation whose turn ended:
+   *  background tasks finishing, and the reply they woke. */
+  private observeIdle(adapter: ProviderAdapter, sessionId: string, e: RawEvent): void {
+    if (adapter.id !== 'claude') return;
+    const st = this.afterTurns.get(sessionId);
+    if (!st || this.runs.has(sessionId)) return;
+    if ((e as { parent_tool_use_id?: unknown }).parent_tool_use_id) return;
+    const seq = ++st.seq;
+    if (e.type === 'system' && (e as { subtype?: unknown }).subtype === 'task_notification') { st.sawWork = true; st.lastTaskDone = seq; return; }
+    if (e.type === 'assistant') {
+      st.sawWork = true;
+      const text = (adapter.assistantText?.(e) ?? []).join('\n\n');
+      if (text) st.lastText = text;
+      return;
+    }
+    if (e.type === 'result') {
+      const text = adapter.resultText(e) || st.lastText;
+      if (text) st.reply = { text, seq, at: new Date().toISOString() };
+      st.lastText = undefined;
+    }
+  }
+
+  /** The completion gate found the conversation quiet. A turn whose
+   *  background work ran on is settled by what happened AFTER it: a woken
+   *  reply's question becomes the card, its text the notice, and work that
+   *  never got an ending gets one recap turn. */
+  private onSettled(data: Record<string, unknown>): void {
+    const sid = typeof data.sessionId === 'string' ? data.sessionId : '';
+    const pid = typeof data.projectId === 'string' ? data.projectId : '';
+    const st = sid ? this.afterTurns.get(sid) : undefined;
+    if (st) this.afterTurns.delete(sid);
+    if (!st?.sawWork || data.notificationSuppressed) { this.emit('conversation_settled', data); return; }
+    const reply = st.reply && (st.lastTaskDone === undefined || st.reply.seq > st.lastTaskDone) ? st.reply : undefined;
+    if (reply) {
+      const ap = this.loadAutopilot()[sid];
+      const q = (!ap || ap.paused) && !this.pendingQuestions.has(sid) && !this.sessionBusy(sid) ? parseQuestion(reply.text) : null;
+      if (q) {
+        // Same as a question at a turn's end: the card replaces the done notice.
+        const pending = { projectId: pid, sessionId: sid, ...q, at: new Date().toISOString() };
+        this.pendingQuestions.set(sid, pending);
+        this.savePendingQuestions();
+        this.emit('question', { ...(data.requestId ? { requestId: data.requestId } : {}), ...pending });
+        return;
+      }
+      this.emit('conversation_settled', { ...data, resultText: reply.text, woken: true });
+      return;
+    }
+    if (this.backgroundRecapAllowed(pid, sid, data)) {
+      try {
+        this.emit('conversation_settled', { ...data, notificationSuppressed: true, recap: true });
+        this.enqueue(pid, { sessionId: sid, sender: { kind: 'recap', recap: 'background' }, text: withAskInstructions(BACKGROUND_RECAP_PROMPT) });
+        return;
+      } catch (error) {
+        console.warn('[recap] could not queue the background recap:', (error as Error).message);
+      }
+    }
+    this.emit('conversation_settled', data);
+  }
+
+  private backgroundRecapAllowed(pid: string, sid: string, data: Record<string, unknown>): boolean {
+    if (!pid || !sid || data.origin !== 'human') return false; // a recap turn is origin 'recap'
+    if (!this.conversationExists(pid, sid)) return false;
+    try { if (this.adapterFor(pid, sid).id !== 'claude') return false; } catch { return false; }
+    if (this.sessionBusy(sid) || this.pendingQuestions.has(sid)) return false;
+    const ap = this.loadAutopilot()[sid];
+    if (ap && !ap.paused) return false;
+    return !(this.loadQueues()[pid] ?? []).some((x) => (x.sessionId ?? pid) === sid);
   }
 
   /** After a turn whose queue had nothing: wait for that turn's pending advisor
@@ -892,7 +1095,9 @@ export class SessionManager {
     let stagger = 1000;
     for (const [sessionId, ap] of Object.entries(map)) {
       if (ap.paused) continue;
-      if (ap.remaining <= 0) continue;
+      // Its last step ran before the restart: the run is over, so end it
+      // properly (with its recap) instead of leaving it armed forever.
+      if (ap.remaining <= 0) { this.disarmAutopilot(ap.projectId, sessionId, 'exhausted'); continue; }
       const t = setTimeout(() => {
         this.autopilotTimers.delete(sessionId);
         const current = this.loadAutopilot()[sessionId];
@@ -1670,6 +1875,8 @@ export class SessionManager {
     if (this.sessionBusy(sessionId)) throw new BusyError();
     this.assertRemovalAllowed(projectId, sessionId);
     this.stopAutopilot(sessionId); // don't leave its autopilot armed against a removed conversation
+    this.afterTurns.delete(sessionId);
+    this.humanTurns.delete(sessionId);
     const reg = this.projects();
     reg.removeConversation(projectId, sessionId);
     const proj = reg.get(projectId);
@@ -1835,7 +2042,7 @@ export class SessionManager {
    */
   private decisionContext(pid: string, sid: string, sender?: MessageSender): DecisionContext {
     const ctx: DecisionContext = { project: this.projects().get(pid)?.name };
-    const origin: Record<string, string> = { autopilot: 'autopilot (continue the current task)', delegate: 'delegate reports for the orchestrator', advisor: 'the advisor (review follow-up)', automation: 'a scheduled task', conversation: 'another conversation', mcp: 'an external client' };
+    const origin: Record<string, string> = { autopilot: 'autopilot (continue the current task)', delegate: 'delegate reports for the orchestrator', advisor: 'the advisor (review follow-up)', automation: 'a scheduled task', conversation: 'another conversation', mcp: 'an external client', recap: 'the gateway (write the ending of finished work)' };
     ctx.origin = sender ? origin[sender.kind] ?? sender.kind : 'the user';
     try {
       const { adapter, providerSessionId, configDirs } = this.historyContext(pid, sid);
@@ -2897,6 +3104,10 @@ export class SessionManager {
       if (kind === 'session_done' && (data.status === 'stopped' || run?.stopRequested || (data.status === 'completed' && run?.suppressCompletion))) data = { ...data, notificationSuppressed: true };
       if (['session_started', 'session_error', 'turn_orphaned', 'question'].includes(kind)) this.completions.cancel(sid);
       if (['background_state', 'assistant_text', 'activity'].includes(kind)) this.completions.touch(sid);
+      if (kind === 'background_state' && data.active === true && !this.runs.has(sid)) {
+        const st = this.afterTurns.get(sid);
+        if (st) st.sawWork = true;
+      }
       // An orchestrator turn that ended (not one stopped) has read the
       // delegate reports it was handed: DONE ones are put away.
       if ((kind === 'session_done' && data.status !== 'stopped') || kind === 'session_error') {
@@ -3399,6 +3610,8 @@ export class SessionManager {
     // Any new turn for this conversation supersedes its unanswered question
     // (answering one IS a new turn), so the card never outlives its moment.
     if (this.pendingQuestions.delete(sessionId)) this.savePendingQuestions();
+    // ...and whatever the previous turn's background work did is now history.
+    this.afterTurns.delete(sessionId);
     const reg = this.projects();
     const adapter = this.adapterFor(pid, sessionId);
     const prefs = this.conversationRunPrefs(pid, sessionId, runOpts);
@@ -3446,6 +3659,7 @@ export class SessionManager {
     // Who started this turn, for the notice policy. Read from the request,
     // not `sender`, which is dropped for slash commands.
     const origin = originOf(runOpts?.sender);
+    if (origin === 'human') this.humanTurns.set(sessionId, (this.humanTurns.get(sessionId) ?? 0) + 1);
     const autopilot = this.loadAutopilot()[sessionId];
     // Keep the turn's notification ownership even if autopilot is disabled later.
     const run: ActiveRun = { startedAt: new Date().toISOString(), sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId, suppressCompletion: sender?.kind === 'autopilot' || (!!autopilot && !autopilot.paused) };
@@ -3603,6 +3817,7 @@ export class SessionManager {
             // transcript: the panel showed nothing and the conversation looked
             // dead while it was still working.
             onIdleEvent: (e: RawEvent) => {
+              try { this.observeIdle(adapter, sessionId, e); } catch { /* never break the stream */ }
               try { this.tapToEvents(e, emit, adapter, pid, sessionId); } catch { /* never break the stream */ }
             },
           })),
@@ -3707,6 +3922,14 @@ export class SessionManager {
           const currentAutopilot = this.loadAutopilot()[sessionId];
           const onAutopilot = !!currentAutopilot && !currentAutopilot.paused;
           const q = res.status !== 'completed' || run.suppressCompletion || onAutopilot || drained ? null : parseQuestion(res.resultText ?? '');
+          // Autopilot swallows its steps' questions (the final step's too:
+          // this runs before evaluateAutopilot disarms); its recap re-asks them.
+          if (res.status === 'completed' && currentAutopilot && (onAutopilot || sender?.kind === 'autopilot')) {
+            try { this.recordAutopilotQuestion(sessionId, parseQuestion(res.resultText ?? '')); } catch { /* never break the result */ }
+          }
+          // From here a Claude conversation's out-of-turn work is watched, so
+          // its settle can quote the reply that work woke.
+          if (res.status === 'completed' && adapter.id === 'claude') this.afterTurns.set(sessionId, { sawWork: this.providerActivity(sessionId).active, seq: 0 });
           if (q) {
             // Persist alongside the event so the card can be rehydrated after a
             // refresh/reconnect/swap — the turn is over and waiting on a human.

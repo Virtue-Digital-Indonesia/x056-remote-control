@@ -375,6 +375,27 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   `agents` (top-level agent tasks, workflows included) and `shells` (other
   top-level tasks); nested tasks are not counted. The agent tree's latest
   turn is open-ended, so agents launched after it ended show there.
+- **The real ending of background work and autopilot (2026-10-12).** A turn
+  often ends "agents launched"; the summary and the ASK question come later in
+  the reply a finished task WAKES. That reply was stripped of its ASK and
+  ignored, and the settle notice quoted the turn's own text. Now the manager
+  watches a Claude conversation's out-of-turn events after its turn
+  (`afterTurns`, `observeIdle`) and the completion gate calls `onSettled`:
+  a woken reply with an ASK becomes the question card (no done notice), one
+  without becomes the notice text, and work that never got a reply after its
+  last task gets ONE recap turn (sender kind `recap`, origin `recap`, tier
+  normal; only after a human-origin turn, never after a recap, not while a
+  turn runs, a queue item waits, a question is pending or autopilot is armed).
+  **The silent gap**: after a top-level `task_notification` the model thinks
+  without writing (no partial messages), so `ProviderActivity.waking()` keeps
+  the conversation active for up to `WAKE_WINDOW_MS` (3 min) until the woken
+  reply's result; the pool holds a new prompt through it, and
+  `startDeferWatch` releases a held prompt if the wake never comes.
+  **Autopilot** records the questions its steps asked (`AutopilotEntry.questions`,
+  the final step's included) and, on `done` / `exhausted` only, sends one
+  recap turn after the advisor review and background quiet, re-asking them;
+  the end notice is then quiet. A boot-time entry with no steps left is
+  disarmed as `exhausted` (it used to stay armed forever).
 - **A Codex thread takes ONE writer, so a Codex conversation gets one
   process.** codex 0.159 holds `<CODEX_HOME>/thread-writer-locks/<thread>.lock`
   (an flock) for the life of the app-server that opened the thread. A helper

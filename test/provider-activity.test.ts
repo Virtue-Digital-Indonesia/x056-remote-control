@@ -77,6 +77,22 @@ describe('provider activity evidence', () => {
     emit({ type: 'result' });
     expect(a.snapshot()).toMatchObject({ parentActive: false, active: true });
     emit({ type: 'system', subtype: 'task_notification', task_id: 'task', status: 'completed' });
+    // The finished task wakes the model; silent until its reply, still active.
+    expect(a.snapshot().active).toBe(true);
+    emit({ type: 'assistant', message: { content: [] } });
+    emit({ type: 'result' });
+    expect(a.snapshot().active).toBe(false);
+  });
+
+  it('a wake that never comes stops counting after the window', () => {
+    let t = 0;
+    const a = new ProviderActivity(() => t);
+    const emit = (m: object) => a.observe('claude', JSON.stringify(m));
+    emit({ type: 'system', subtype: 'task_started', task_id: 'task' });
+    emit({ type: 'system', subtype: 'task_notification', task_id: 'task', status: 'completed' });
+    expect(a.waking()).toBe(true);
+    t += 3 * 60_000;
+    expect(a.waking()).toBe(false);
     expect(a.snapshot().active).toBe(false);
   });
 });

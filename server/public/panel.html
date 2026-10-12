@@ -3721,14 +3721,14 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role + (steered ? ' steered' : ''); wrap._messageText = text; if(ts)wrap.dataset.messageTs=ts;
     var lab = document.createElement('div'); lab.className = 'role';
     lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
-    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor','delegate'].indexOf(sender.kind) >= 0) {
+    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor','delegate','recap'].indexOf(sender.kind) >= 0) {
       wrap.classList.add('from-sender');
       if (sender.messageId) wrap.dataset.messageSourceId = sender.messageId;
       lab.classList.add('message-sender'); lab.textContent = '';
-      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : sender.kind === 'delegate' ? 'fanout' : 'plug', 'sm'));
+      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : sender.kind === 'delegate' ? 'fanout' : sender.kind === 'recap' ? 'results' : 'plug', 'sm'));
       var identity = document.createElement('span'), name = document.createElement('strong'), project = document.createElement('small');
-      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : sender.kind === 'delegate' ? (sender.conversationTitle || 'Delegates') : 'External sender';
-      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : sender.kind === 'advisor' ? 'Review' : sender.kind === 'delegate' ? 'Reports' : 'MCP');
+      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : sender.kind === 'delegate' ? (sender.conversationTitle || 'Delegates') : sender.kind === 'recap' ? 'Recap requested by the gateway' : 'External sender';
+      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : sender.kind === 'advisor' ? 'Review' : sender.kind === 'delegate' ? 'Reports' : sender.kind === 'recap' ? (sender.recap === 'autopilot' ? 'Autopilot finished' : 'Background work finished') : 'MCP');
       identity.appendChild(name); identity.appendChild(project);
       // An AI's steer landed INSIDE a running turn, not as a turn of its own.
       if (steered) { var how = document.createElement('small'); how.className = 'steer-tag'; how.textContent = 'Steered into the running turn'; identity.appendChild(how); }
@@ -3747,6 +3747,13 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       var instructionAt = String(text).indexOf(marker), instruction = instructionAt < 0 ? '' : String(text).slice(instructionAt + marker.length).trim();
       sum.textContent = instruction ? 'Continue task · ' + instruction.replace(/\s+/g, ' ') : 'Continue task';
       sum.title = instruction || 'Autopilot continuation';
+      var full = document.createElement('div'); full.className = 'delegate-digest-body'; full.appendChild(renderMarkdown(text));
+      det.appendChild(sum); det.appendChild(full); content.appendChild(det);
+    }
+    // The gateway asking for an ending: one line until opened, like the delegate wake.
+    else if (role === 'user' && sender && sender.kind === 'recap') {
+      var det = document.createElement('details'); det.className = 'delegate-digest recap-digest';
+      var sum = document.createElement('summary'); sum.textContent = sender.recap === 'autopilot' ? 'Recap the autopilot run and re-ask open questions' : 'Write the ending the background work never got';
       var full = document.createElement('div'); full.className = 'delegate-digest-body'; full.appendChild(renderMarkdown(text));
       det.appendChild(sum); det.appendChild(full); content.appendChild(det);
     }

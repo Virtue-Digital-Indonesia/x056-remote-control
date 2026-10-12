@@ -1,7 +1,9 @@
 /** Display attribution, carried with the prompt so either provider retains it. */
 export interface MessageSender {
   messageId?: string;
-  kind: 'conversation' | 'automation' | 'autopilot' | 'mcp' | 'advisor' | 'delegate';
+  kind: 'conversation' | 'automation' | 'autopilot' | 'mcp' | 'advisor' | 'delegate' | 'recap';
+  /** For kind `recap`: which ending the gateway asked for. */
+  recap?: 'background' | 'autopilot';
   projectId?: string;
   sessionId?: string;
   projectName?: string;
@@ -17,8 +19,12 @@ export function readMessageSender(text: string): { text: string; sender?: Messag
   if (index < 0 || text.length - index > 8000) return { text };
   try {
     const raw = JSON.parse(text.slice(index + MARKER.length));
-    if (!raw || !['conversation', 'automation', 'autopilot', 'mcp', 'advisor', 'delegate'].includes(raw.kind)) return { text };
+    if (!raw || !['conversation', 'automation', 'autopilot', 'mcp', 'advisor', 'delegate', 'recap'].includes(raw.kind)) return { text };
     const sender: MessageSender = { kind: raw.kind };
+    if (raw.recap !== undefined) {
+      if (raw.recap !== 'background' && raw.recap !== 'autopilot') return { text };
+      sender.recap = raw.recap;
+    }
     for (const key of ['messageId', 'projectId', 'sessionId', 'projectName', 'conversationTitle'] as const) {
       if (raw[key] !== undefined) {
         if (typeof raw[key] !== 'string' || raw[key].length > 1000) return { text };

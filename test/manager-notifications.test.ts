@@ -113,7 +113,10 @@ it('an autopilot run ends in one notice that counts its steps', async () => {
   const sid=manager.start('go',undefined,undefined,pid);
   manager.setAutopilot(pid,sid,{count:5});
   (manager as unknown as {disarmAutopilot:(p:string,s:string,r:string)=>void}).disarmAutopilot(pid,sid,'done');
-  expect(events.filter(e=>e.kind==='autopilot'&&e.data.active===false).at(-1)!.data.notice).toMatchObject({tier:'normal',body:'Notifications · Claude\nAutopilot finished'});
+  // A recap turn follows the run's end, and its ending is the one push.
+  const end=events.filter(e=>e.kind==='autopilot'&&e.data.active===false).at(-1)!.data;
+  expect(end).toMatchObject({recap:true});
+  expect(end.notice).toMatchObject({tier:'quiet',body:'Notifications · Claude\nAutopilot finished'});
   turns[0].resolve(complete);await flush();
 });
 it('MCP approvals push while pending only', () => {

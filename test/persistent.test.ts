@@ -713,3 +713,83 @@ describe('one process per conversation while it works', () => {
     p.shutdown();
   });
 });
+
+// The silent gap: a background task finishes, the CLI wakes the model, and
+// nothing is written until the woken reply's first message (no partial
+// messages). That silence is not idle (advisor review, 2026-10-12).
+describe('a woken reply that has not started yet', () => {
+  const started = { type: 'system', subtype: 'task_started', task_id: 'bg1', task_type: 'local_agent', description: 'explorer' };
+  const finished = { type: 'system', subtype: 'task_notification', task_id: 'bg1', status: 'completed' };
+  const texts = (cli: ReturnType<typeof fakeCli>) => cli.msgs().filter((m) => m.type === 'user').map((m) => m.message.content[0].text);
+  function wakePool(now: () => number) {
+    const spawned: ReturnType<typeof fakeCli>[] = [];
+    const p = new PersistentTurns({ now, deferPollMs: 5, spawnFn: () => { const cli = fakeCli(); spawned.push(cli); return cli.child as never; } });
+    return { p, spawned };
+  }
+  const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
+
+  it('stays active through the silence, and holds a new prompt until the woken reply ends', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = wakePool(() => t);
+    const h1 = p.startTurn(turn());
+    spawned[0].emit(started);
+    spawned[0].result('launched'); await h1.done;
+    spawned[0].emit(finished);               // the agent is done; the model is woken
+    t += 5_000;                              // 5 s of silent thinking
+    expect(p.activeSessions().some((s) => s.sessionId === 's1')).toBe(true);
+    const h2 = p.startTurn(turn({ mode: 'resume', prompt: 'answer' }));
+    await tick();
+    expect(texts(spawned[0])).toEqual(['hello']);   // held, not raced
+    spawned[0].emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'the agent found it' }] } });
+    spawned[0].result('woken reply');
+    expect(texts(spawned[0])).toEqual(['hello', 'answer']);
+    spawned[0].result('answered'); await h2.done;
+    p.shutdown();
+  });
+
+  it('a wake that never comes stops counting, and the held prompt goes out', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = wakePool(() => t);
+    const h1 = p.startTurn(turn());
+    spawned[0].emit(started);
+    spawned[0].result('launched'); await h1.done;
+    spawned[0].emit(finished);
+    const h2 = p.startTurn(turn({ mode: 'resume', prompt: 'still there?' }));
+    await tick();
+    expect(texts(spawned[0])).toEqual(['hello']);
+    t += 3 * 60_000 + 1;                     // past the wake window, nothing written
+    await tick();
+    expect(p.activeSessions().some((s) => s.sessionId === 's1' && !s.busy && s.active)).toBe(false);
+    expect(texts(spawned[0])).toEqual(['hello', 'still there?']);
+    spawned[0].result('yes'); await h2.done;
+    p.shutdown();
+  });
+
+  it('a Stop while waiting for a wake that never comes ends the turn without sending', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = wakePool(() => t);
+    const h1 = p.startTurn(turn());
+    spawned[0].emit(started);
+    spawned[0].result('launched'); await h1.done;
+    spawned[0].emit(finished);
+    const h2 = p.startTurn(turn({ mode: 'resume', prompt: 'never mind' }));
+    h2.interrupt();
+    t += 3 * 60_000 + 1;
+    await tick();
+    await h2.done;
+    expect(texts(spawned[0])).toEqual(['hello']);
+    p.shutdown();
+  });
+
+  it('a notification during a running turn is part of that turn, not a wake', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = wakePool(() => t);
+    const h1 = p.startTurn(turn());
+    spawned[0].emit(started);
+    spawned[0].emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'working' }] } });
+    spawned[0].emit(finished);               // folded into the running turn
+    spawned[0].result('done'); await h1.done;
+    expect(p.activeSessions().some((s) => s.sessionId === 's1')).toBe(false);
+    p.shutdown();
+  });
+});

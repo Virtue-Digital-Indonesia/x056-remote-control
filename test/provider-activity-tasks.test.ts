@@ -37,6 +37,9 @@ describe('Claude task counts', () => {
     expect(activity.agentRunning('a1')).toBe(false);
     emit({ type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'completed' });
     expect(activity.counts()).toEqual({ agents: 0, shells: 0, total: 0 });
+    // The last one wakes the model: active until the woken reply's result.
+    expect(activity.snapshot().active).toBe(true);
+    emit({ type: 'result' });
     expect(activity.snapshot().active).toBe(false);
   });
 

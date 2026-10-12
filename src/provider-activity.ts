@@ -5,8 +5,21 @@ const AGENT_TASK_TYPES = new Set(['local_agent', 'remote_agent', 'in_process_tea
 /** Provider lifecycle evidence, separate from the pool's eviction grace period.
  * No transcript text is retained here. Foreign-thread messages never become
  * parent messages; only registered descendants contribute to activity. */
+/** How long a finished background task may be followed by silence before
+ *  the reply it should wake is taken as not coming. */
+export const WAKE_WINDOW_MS = 3 * 60_000;
+
 export class ProviderActivity {
   private parent = false;
+  /** When a top-level background task finished between replies: the CLI
+   *  wakes the model, which then thinks in silence (no partial messages)
+   *  until its first message. null = no wake pending. */
+  private wakeAt: number | null = null;
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  /** A woken reply is expected and has not started yet (see wakeAt). */
+  waking(): boolean { return this.wakeAt !== null && this.now() - this.wakeAt < WAKE_WINDOW_MS; }
   private agents = new Map<string, boolean>();
   /** Claude top-level tasks (task_started/task_progress/task_notification), by task_id. */
   private claudeTasks = new Map<string, { agent: boolean; running: boolean }>();
@@ -18,7 +31,7 @@ export class ProviderActivity {
   agentRunning(id: string): boolean | undefined {
     return this.agents.get(id) ?? this.claudeTasks.get(id)?.running;
   }
-  stop(): void { this.parent = false; this.agents.clear(); this.claudeTasks.clear(); this.commands.clear(); }
+  stop(): void { this.parent = false; this.wakeAt = null; this.agents.clear(); this.claudeTasks.clear(); this.commands.clear(); }
   /** Running work by kind. `agents` = subagents (Claude agent-type tasks and Codex children);
    * `shells` = Claude background shells and any other top-level Claude task whose kind is not an agent. */
   counts(): { agents: number; shells: number; total: number } {
@@ -33,7 +46,7 @@ export class ProviderActivity {
   snapshot() {
     const { agents, shells } = this.counts();
     const tasks = this.commands.size;
-    return { active: this.parent || agents > 0 || shells > 0 || tasks > 0, parentActive: this.parent, agents, tasks };
+    return { active: this.parent || this.waking() || agents > 0 || shells > 0 || tasks > 0, parentActive: this.parent, agents, tasks };
   }
 
   /** Top-level Claude task. Agent-type when task_type says so; otherwise a Task-tool subagent
@@ -41,7 +54,14 @@ export class ProviderActivity {
   private claudeTask(m: any): void {
     const id: string = m.task_id;
     const prev = this.claudeTasks.get(id);
-    if (m.subtype === 'task_notification') { if (prev) prev.running = false; return; }
+    if (m.subtype === 'task_notification') {
+      if (!prev) return;
+      prev.running = false;
+      // Between replies, a finished task wakes the model; until its first
+      // message nothing is written, and that silence must not read as idle.
+      if (!this.parent) this.wakeAt = this.now();
+      return;
+    }
     // Nested: started inside a subagent. The CLI's task_started carries no
     // parent_tool_use_id; it marks nesting with owned_by_subagent,
     // parent_task_id and spawn_depth (read from CLI 2.1.295). Such a task's
@@ -77,8 +97,8 @@ export class ProviderActivity {
       if (m.type === 'system' && typeof m.task_id === 'string' && ['task_started', 'task_progress', 'task_notification'].includes(m.subtype)) {
         this.claudeTask(m);
       }
-      if (m.type === 'result') this.parent = false;
-      else if (['assistant', 'stream_event', 'tool_progress'].includes(m.type)) this.parent = true;
+      if (m.type === 'result') { this.parent = false; this.wakeAt = null; }
+      else if (['assistant', 'stream_event', 'tool_progress'].includes(m.type)) { this.parent = true; this.wakeAt = null; }
       return;
     }
     const p = m.params;

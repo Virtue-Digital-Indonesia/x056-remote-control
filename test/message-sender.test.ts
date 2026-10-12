@@ -16,6 +16,12 @@ describe('message sender envelope', () => {
     expect(withMessageSender('/model gpt-6-astra', sender)).toBe('/model gpt-6-astra');
     expect(readMessageSender('hello')).toEqual({ text: 'hello' });
   });
+  it('keeps which ending a recap asked for, and refuses an unknown one', () => {
+    const recap = { kind: 'recap' as const, recap: 'autopilot' as const, messageId: 'r1' };
+    expect(readMessageSender(withMessageSender('Recap the run', recap))).toEqual({ text: 'Recap the run', sender: recap });
+    const bad = 'hello\n\n[x056 message sender v1] ' + JSON.stringify({ kind: 'recap', recap: 'elsewhere' });
+    expect(readMessageSender(bad)).toEqual({ text: bad });
+  });
   it('preserves malformed or oversized envelopes instead of deleting message text', () => {
     for (const raw of ['no json', '{"kind":"human"}', '{"kind":"mcp","projectName":42}', 'x'.repeat(9000)]) {
       const text = 'hello\n\n[x056 message sender v1] ' + raw;

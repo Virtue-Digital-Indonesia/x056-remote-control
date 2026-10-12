@@ -15,12 +15,15 @@ describe('noticeFor: tiers by event × origin × duration', () => {
     ['delegate', 600_000, 'quiet'],
     ['advisor', 600_000, 'quiet'],
     ['autopilot', 600_000, 'none'],
+    // A recap is the real end of background work or an autopilot run.
+    ['recap', 600_000, 'normal'],
+    ['recap', 5_000, 'normal'],
   ] as [TurnOrigin, number, string][])('finished, %s, %i ms → %s', (origin, ms, tier) => {
     expect(settledTier(origin, ms)).toBe(tier);
   });
   it.each([
     ['human', 'urgent'], ['relay', 'urgent'], ['cron', 'urgent'], ['delegate', 'urgent'],
-    ['advisor', 'normal'], ['autopilot', 'normal'],
+    ['advisor', 'normal'], ['autopilot', 'normal'], ['recap', 'urgent'],
   ] as [TurnOrigin, string][])('failed, %s → %s', (origin, tier) => {
     expect(noticeFor('session_done', turn({ status: 'failed', reason: 'boom', origin }), work)?.tier).toBe(tier);
     expect(noticeFor('session_error', turn({ message: 'boom', origin }), work)?.tier).toBe(tier);
@@ -50,6 +53,9 @@ describe('noticeFor: tiers by event × origin × duration', () => {
     expect(noticeFor('session_done', turn({ status: 'parked', parkedUntil: 1 }), work)?.tier).toBe('urgent');
     expect(noticeFor('session_done', turn({ status: 'parked', reason: 'Automatic switching is disabled for this provider.' }), work)?.tier).toBe('normal');
     expect(noticeFor('autopilot', { active: false, reason: 'exhausted' }, work)?.tier).toBe('normal');
+    // A recap follows: its ending is the one push, the end notice goes quiet.
+    expect(noticeFor('autopilot', { active: false, reason: 'exhausted', recap: true }, work)?.tier).toBe('quiet');
+    expect(noticeFor('autopilot', { active: false, reason: 'done', recap: true }, work)?.tier).toBe('quiet');
     expect(noticeFor('cron_failed', { jobId: 'j', name: 'Nightly', reason: 'x' }, work)?.tier).toBe('urgent');
     expect(noticeFor('restart_interrupted', { count: 2, bootAt: 'b' }, work)?.tier).toBe('normal');
   });
@@ -131,6 +137,7 @@ describe('helpers', () => {
     expect(originOf({ kind: 'delegate' })).toBe('delegate');
     expect(originOf({ kind: 'advisor' })).toBe('advisor');
     expect(originOf({ kind: 'autopilot' })).toBe('autopilot');
+    expect(originOf({ kind: 'recap' })).toBe('recap');
   });
   it('durations and cuts', () => {
     expect(formatDuration(42_000)).toBe('42s');

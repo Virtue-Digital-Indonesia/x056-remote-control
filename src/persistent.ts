@@ -49,6 +49,9 @@ export interface PersistentOptions {
    *  another identity (startTurn). Logged: it should be rare once the manager
    *  pins the identity itself. */
   onHeld?: (info: { sessionId: string; wanted: string; kept: string }) => void;
+  /** How often a held prompt checks whether the reply it waits on still
+   *  exists (see startDeferWatch). Tests shorten it. */
+  deferPollMs?: number;
 }
 
 interface Live {
@@ -367,10 +370,34 @@ export class PersistentTurns {
    * grace of working(): a turn that just ended on a model the user then
    * changed must respawn on the new one. Newest turn first.
    */
+  /**
+   * A held prompt is released by the awaited reply's `result` (onData). This
+   * covers the cases with no such result: the expected wake never came
+   * (waking expired) or the reply went silent past the grace. Then the
+   * prompt goes out now, or, Stopped meanwhile, the turn just ends.
+   */
+  private startDeferWatch(entry: Live): void {
+    const timer = setInterval(() => {
+      const held = entry.deferred;
+      if (!held || entry.exited) { clearInterval(timer); return; }
+      if (this.replying(entry)) return;
+      clearInterval(timer);
+      entry.deferred = undefined;
+      if (held.cancelled) { this.settleTurn(entry, { code: 0, signal: null }); return; }
+      if (!this.writeLine(entry, held.line)) { this.destroy(entry); return; }
+      entry.sink = held.sink;
+      entry.queryOpen = true;
+      entry.lastOutput = this.now();
+      entry.activity.start();
+      this.publishActivity(entry);
+    }, this.opts.deferPollMs ?? 1000);
+    timer.unref?.();
+  }
+
   /** Mid-reply, and not a flag left behind: a reply in progress writes,
    *  and one silent past the grace is taken as over. */
   private replying(e: Live): boolean {
-    return !!e.queryOpen && this.now() - e.lastOutput < this.workingGraceMs;
+    return (!!e.queryOpen && this.now() - e.lastOutput < this.workingGraceMs) || e.activity.waking();
   }
 
   private activeProcess(conversationId: string): Live | undefined {
@@ -429,7 +456,7 @@ export class PersistentTurns {
 
     // Looked up by the gateway's conversation id (steer, interrupt, "working"),
     // which for Codex is not what the CLI was handed after the first turn.
-    const entry: Live = { key, child, sessionId: o.conversationId ?? o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), activity: new ProviderActivity(), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false };
+    const entry: Live = { key, child, sessionId: o.conversationId ?? o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), activity: new ProviderActivity(() => this.now()), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false };
     child.stdout?.on('data', (d: Buffer) => this.onData(entry, d));
     child.on('error', (err) => this.settle(entry, { code: null, signal: null, spawnError: err.message }));
     child.on('close', (code, signal) => this.settle(entry, { code, signal }));
@@ -595,6 +622,7 @@ export class PersistentTurns {
         // going to the idle sink, as background work.
         entry.deferred = { line, sink: o.onEvent };
         entry.sink = undefined;
+        this.startDeferWatch(entry);
       } else if (!this.writeLine(entry, line)) {
         this.destroy(entry);
         return deadHandle('persistent session stdin is closed');

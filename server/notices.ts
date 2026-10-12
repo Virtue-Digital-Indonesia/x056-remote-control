@@ -10,7 +10,8 @@
  *           needs a human, no account able to take a turn, a failed turn, a
  *           failed scheduled task. Pushed even when the turn was automated.
  *   normal  worth a buzz when you are away: a long turn you started finished,
- *           an autopilot run ended, a parked turn, a restart interrupted work.
+ *           a recap turn finished, an autopilot run ended (quiet when a recap
+ *           follows), a parked turn, a restart interrupted work.
  *   quiet   bell + dot only: short turns, relays, cron, delegate wakes,
  *           advisor follow-ups, delegate progress, a failover that worked.
  *   none    nothing at all: stopped turns, autopilot steps, per-conversation
@@ -22,7 +23,7 @@ import { serverLabel } from './mcp-oauth.js';
 export type NoticeTier = 'urgent' | 'normal' | 'quiet' | 'none';
 /** What a device's settings switch on or off. `needs_you` cannot be turned off. */
 export type NoticeCategory = 'needs_you' | 'finished' | 'automation';
-export type TurnOrigin = 'human' | 'relay' | 'cron' | 'autopilot' | 'advisor' | 'delegate';
+export type TurnOrigin = 'human' | 'relay' | 'cron' | 'autopilot' | 'advisor' | 'delegate' | 'recap';
 
 export interface Notice {
   tier: NoticeTier;
@@ -72,6 +73,8 @@ export function originOf(sender?: { kind?: string } | null): TurnOrigin {
     case 'autopilot': return 'autopilot';
     case 'advisor': return 'advisor';
     case 'delegate': return 'delegate';
+    // The gateway asked for the ending of a long piece of work.
+    case 'recap': return 'recap';
     default: return 'relay';
   }
 }
@@ -243,6 +246,9 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         const head = Number.isFinite(dur) && dur > 0 ? formatDuration(dur) : '';
         const excerpt = replyExcerpt(String(data.resultText || ''));
         const body = withPrefix(ctx, [head, excerpt || 'Finished.'].filter(Boolean).join(' · '));
+        // A recap is the real end of background work or an autopilot run:
+        // the one buzz for that ending.
+        if (origin === 'recap') return make('normal', 'finished', body, id);
         if (origin !== 'human') return make('quiet', 'automation', body, id);
         return make(Number.isFinite(dur) && dur >= LONG_TURN_MS ? 'normal' : 'quiet', 'finished', body, id);
       }
@@ -287,7 +293,8 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         : reason === 'failed' ? 'Autopilot paused: a turn failed'
         : reason === 'parked' ? 'Autopilot paused: no account could take the next step'
         : `Autopilot paused: ${cutWords(reason, 80)}`;
-      return make('normal', 'finished', withPrefix(ctx, body), `autopilot:${sid}:${reason}:${data.notificationId || ctx.at || ''}`);
+      // A recap turn follows and its own ending is the one push.
+      return make(data.recap ? 'quiet' : 'normal', 'finished', withPrefix(ctx, body), `autopilot:${sid}:${reason}:${data.notificationId || ctx.at || ''}`);
     }
 
     case 'delegate_report': {
