@@ -57,7 +57,7 @@ export const TOOLS = [
       'The operator chooses the delivery mode in the panel: in APPROVAL mode (the default) this call pauses until they approve or deny it — it is not sent until approved, and may be denied; in AUTOMATIC mode it is delivered immediately. You cannot choose the mode. '
       + 'If that conversation is mid-turn the message is QUEUED and delivered when its current turn ends, ahead of any autopilot continuation. ' +
       'Set waitSeconds > 0 to additionally wait for and return the reply once sent; otherwise returns as soon as it is sent. Use read_reply with the returned messageId for the exact reply later, including queued messages. Reply text may still be streaming; it does not prove task completion. The receiving AI may take minutes on hard tasks — prefer a short wait plus polling over a long block. '
-      + 'BOUNDED: an AI-to-AI exchange may run a limited number of hops before the gateway refuses further sends and requires a human message. Two conversations passing a task back and forth cannot tell that they are stuck, so treat a refusal as the answer: write up what you have, unresolved parts included, for the person. Use stop_conversation to end a runaway exchange early.',
+      + 'RELAY CHECKPOINTS: in an AI-to-AI exchange with no human message in between, the first 6 hops are free; at hop 7 and every 6 hops after (7, 13, 19, ...) the gateway holds the send and asks you to confirm it; the result then starts "Not sent yet (relay checkpoint):". That is a question, not a block: if the exchange is converging, call again with confirm_relay: true; if the other side is repeating itself or you are going back and forth, stop and report to the person instead. A human message starts the count over. Use stop_conversation to end a runaway exchange early.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -68,7 +68,8 @@ export const TOOLS = [
         effort: { type: 'string', description: 'Reasoning effort for the target provider. Omit to reuse the target conversation\'s last selection; empty string selects the provider default.' },
         speed: { type: 'string', enum: ['off', 'fast', 'ultrafast'], description: 'ChatGPT conversations only: Fast (priority service tier, 1.5-2x speed, uses more credits) or Ultrafast (highest plans, GPT-6.1-Sol and GPT-6-Astra only). Omit to keep the conversation\'s saved speed; off = standard. An account or model without the tier runs one step slower. Rejected for a Claude conversation. Retained through approval and queue.' },
         waitSeconds: { type: 'number', description: 'wait up to this long for the reply (default 0 = don\'t wait)' },
-        steer: { type: 'boolean', description: 'STEER: if that conversation is mid-turn, put this message INTO its running turn (it reads it now, not after the turn) instead of queueing it. If it is not running a turn this is an ordinary send. Same approval mode and hop bound. Default false. See the steer tool for when to use it.' },
+        steer: { type: 'boolean', description: 'STEER: if that conversation is mid-turn, put this message INTO its running turn (it reads it now, not after the turn) instead of queueing it. If it is not running a turn this is an ordinary send. Same approval mode and relay checkpoints. Default false. See the steer tool for when to use it.' },
+        confirm_relay: { type: 'boolean', description: 'Confirm a relay checkpoint: set it only when a previous call answered "Not sent yet (relay checkpoint)" and you have decided the exchange is converging. Ignored when no checkpoint is due.' },
         helpers: { type: 'object', properties: { advisor: { type: 'boolean' }, team: { type: 'boolean' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'], description: 'per-turn model/effort picker; none = the conversation\'s own model/effort (saved, so the Jev default no longer applies)' }, lean: { type: 'string', enum: ['low', 'medium', 'high'], description: 'which way the picker errs: low = cheaper models and less effort, high = stronger ones' } }, additionalProperties: false, description: 'Turn helpers on or off for the target before this message runs (only those named change): advisor, the agent team, the Jev/OpenAI Decisions picker. Applied only if the send is delivered.' },
       },
       required: ['projectId', 'message'],
@@ -335,8 +336,8 @@ QUEUE_TOOLS.push({
     'STEER a running turn: your text reaches that conversation\'s model INSIDE the turn it is running now (a mid-turn correction, a finding it needs before it goes further, "stop, the bug is in X"), instead of waiting for the turn to end. '
     + 'Pick the right tool: steer = the target is working right now and should change course on THIS turn; send_message = a new request or hand-off (it queues behind a running turn, or starts one); message_self = a note for your own NEXT turn. '
     + 'No target = your own conversation (also what a subagent reaches: it shares your conversation) -- bounded like message_self, a few in a row without a human message are refused. '
-    + 'From a delegate, no target = your orchestrator (no approval; counts on its hop bound). '
-    + 'A target that is another conversation follows send_message\'s rules: the operator\'s approval mode applies and the AI-to-AI hop bound counts. '
+    + 'From a delegate, no target = your orchestrator (no approval; counts on its relay chain). '
+    + 'A target that is another conversation follows send_message\'s rules: the operator\'s approval mode applies and the AI-to-AI hops count toward a relay checkpoint (the first 6 hops are free; hop 7 and every 6 after ask for confirmation), where the result starts "Not sent yet (relay checkpoint):" and you either stop and report, or call again with confirm_relay: true. '
     + 'If nothing is running there it is NOT lost: your own conversation gets it as a queued message, another conversation as an ordinary send. The result says which: steered, queued, started or pending_approval.',
   inputSchema: {
     type: 'object',
@@ -344,6 +345,7 @@ QUEUE_TOOLS.push({
       text: { type: 'string', description: 'what the running turn should read now; say why it matters, it interrupts work in progress' },
       project_id: { type: 'string', description: 'target project; omit to steer your own conversation (or, from a delegate, your orchestrator)' },
       session_id: { type: 'string', description: 'target conversation; omit as project_id' },
+      confirm_relay: { type: 'boolean', description: 'Confirm a relay checkpoint after a "Not sent yet (relay checkpoint)" answer, once you have decided the exchange is converging. Ignored when no checkpoint is due.' },
     },
     required: ['text'],
     additionalProperties: false,
@@ -555,6 +557,23 @@ const helperText = (h = {}, eff) => {
   return [h.advisor && 'advisor', h.team && 'agent team', picker || (h.router === 'none' ? 'own model/effort (chosen)' : '')].filter(Boolean).join(', ') || 'none';
 };
 const result = (text, structuredContent) => ({ content: [{ type: 'text', text: text + (structuredContent.delivery?.messageId ? `\nmessageId: ${structuredContent.delivery.messageId}` : '') }], structuredContent });
+/** A relay checkpoint (HTTP 409 `relay_confirm_required`) from the gateway, or
+ *  null for any other error. The api helpers attach the parsed body as
+ *  `err.body`; the message test covers a helper that does not. */
+const relayCheckpointOf = (err) => {
+  const b = err?.body;
+  if (b && b.error === 'relay_confirm_required') return { hops: b.hops, checkpointEvery: b.checkpointEvery, message: b.message || err.message };
+  if (/call again with confirm_relay: true/.test(err?.message || '')) return { message: err.message };
+  return null;
+};
+export const RELAY_CHECKPOINT_PREFIX = 'Not sent yet (relay checkpoint):';
+const relayFields = (r) => ({ ...(typeof r.hopsUntilCheck === 'number' ? { hopsUntilCheck: r.hopsUntilCheck } : {}),
+  ...(typeof (r.hopsUntilCheck ?? r.hopsLeft) === 'number' ? { hopsLeft: r.hopsUntilCheck ?? r.hopsLeft } : {}), ...(r.confirmedCheckpoint ? { confirmedCheckpoint: true } : {}) });
+const relayTail = (r) => {
+  const n = r.hopsUntilCheck ?? r.hopsLeft;
+  return [r.confirmedCheckpoint ? 'Relay checkpoint confirmed.' : '',
+    typeof n === 'number' ? `${n} hop(s) until the next relay checkpoint (it asks you to confirm; it does not block).` : ''].filter(Boolean).join(' ');
+};
 const messages = (rows) => (Array.isArray(rows) ? rows : [])
   .filter((r) => r.role === 'user' || r.role === 'assistant')
   .map(({ role, text, ts, sender }) => ({ role, text, ...(ts !== undefined ? { ts } : {}), ...(sender ? { sender } : {}) }));
@@ -705,13 +724,22 @@ export async function callToolResult(api, name, args) {
         throw new Error(`${name} with no target is only available to a conversation (or delegate) running on this gateway; give project_id and session_id`);
       }
       if (target.sessionId && !target.projectId) throw new Error('give project_id with session_id');
-      const r = await api('/api/conversations/steer', {
-        method: 'POST',
-        body: JSON.stringify({ ...target, prompt: text, from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined,
-          ...(SELF.projectId && SELF.sessionId ? { self: SELF } : {}), ...(delegateOf && delegateId ? { delegate: { of: delegateOf, id: delegateId } } : {}) }),
-      });
+      let r;
+      try {
+        r = await api('/api/conversations/steer', {
+          method: 'POST',
+          body: JSON.stringify({ ...target, prompt: text, from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined,
+            ...(SELF.projectId && SELF.sessionId ? { self: SELF } : {}), ...(delegateOf && delegateId ? { delegate: { of: delegateOf, id: delegateId } } : {}),
+            ...(name === 'steer' && args.confirm_relay ? { confirmRelay: true } : {}) }),
+        });
+      } catch (err) {
+        const cp = relayCheckpointOf(err);
+        if (!cp) throw err;
+        return result(`${RELAY_CHECKPOINT_PREFIX} ${cp.message}`, { delivered: 'relay_checkpoint', ...(target.projectId ? { projectId: target.projectId } : {}), ...(target.sessionId ? { sessionId: target.sessionId } : {}),
+          ...(typeof cp.hops === 'number' ? { hops: cp.hops } : {}), ...(typeof cp.checkpointEvery === 'number' ? { checkpointEvery: cp.checkpointEvery } : {}), note: cp.message });
+      }
       let out = { delivered: r.delivered, ...(r.projectId ? { projectId: r.projectId } : {}), ...(r.sessionId ? { sessionId: r.sessionId } : {}), ...(r.messageId ? { messageId: r.messageId } : {}),
-        ...(typeof r.hopsLeft === 'number' ? { hopsLeft: r.hopsLeft } : {}), ...(typeof r.remaining === 'number' ? { remaining: r.remaining } : {}), ...(r.id ? { id: r.id } : {}), ...(r.approvalId ? { approvalId: r.approvalId } : {}) };
+        ...relayFields(r), ...(typeof r.remaining === 'number' ? { remaining: r.remaining } : {}), ...(r.id ? { id: r.id } : {}), ...(r.approvalId ? { approvalId: r.approvalId } : {}) };
       if (r.delivered === 'pending_approval') {
         const a = await waitForApproval(api, r.approvalId);
         const status = a.status === 'approved' ? (a.error ? 'failed' : a.delivered || (a.queued ? 'queued' : 'started')) : a.status === 'pending' ? 'pending_approval' : a.status;
@@ -726,7 +754,7 @@ export async function callToolResult(api, name, args) {
         expired: 'the approval request expired: not delivered.',
         failed: 'approved, but delivery failed: ' + (out.error || 'unknown error'),
       }[out.delivered] || String(out.delivered);
-      const tail = [out.note, typeof out.hopsLeft === 'number' ? `${out.hopsLeft} hop(s) left in this exchange.` : '', typeof out.remaining === 'number' ? `${out.remaining} self-message(s) left before a human message is required.` : ''].filter(Boolean).join('\n');
+      const tail = [out.note, relayTail(out), typeof out.remaining === 'number' ? `${out.remaining} self-message(s) left before a human message is required.` : ''].filter(Boolean).join('\n');
       return result(said + (tail ? '\n' + tail : ''), out);
     }
     if (name === 'message_self') {
@@ -788,32 +816,37 @@ export async function callToolResult(api, name, args) {
     return result(head + fmtHistory(rows), { messages: messages(rows), ...(state ? { helpers: state.helpers, ...(state.speed ? { speed: state.speed } : {}), ...(state.effectiveRouter !== undefined ? { effectiveRouter: state.effectiveRouter } : {}), delegates: team } : {}) });
   }
   if (name === 'send_message') {
-    const requested = await api('/api/conversations/send', {
+    let requested;
+    try { requested = await api('/api/conversations/send', {
       method: 'POST',
       // `from` is OUR identity from the per-turn config, not something the
       // model chose: it is what lets the gateway count this exchange's hops.
       // A delegate has no identity of its own; its sends count against its
       // orchestrator's chain (X056_RELAY_FROM) rather than starting a new one.
-      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort, ...(args.speed !== undefined ? { speed: args.speed } : {}), from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}), ...(args.steer ? { steer: true } : {}) }),
-    });
+      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort, ...(args.speed !== undefined ? { speed: args.speed } : {}), from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}), ...(args.steer ? { steer: true } : {}), ...(args.confirm_relay ? { confirmRelay: true } : {}) }),
+    }); } catch (err) {
+      // A relay checkpoint is a question for the model, not a failure: plain
+      // text it answers by stopping or by calling again with confirm_relay.
+      const cp = relayCheckpointOf(err);
+      if (!cp) throw err;
+      return result(`${RELAY_CHECKPOINT_PREFIX} ${cp.message}`, { delivery: { mode: 'auto', projectId: args.projectId, ...(args.sessionId ? { sessionId: args.sessionId } : {}), status: 'relay_checkpoint',
+        ...(typeof cp.hops === 'number' ? { hops: cp.hops } : {}), ...(typeof cp.checkpointEvery === 'number' ? { checkpointEvery: cp.checkpointEvery } : {}), note: cp.message } });
+    }
     // Two modes, chosen by the OPERATOR in the panel (not by us): 'auto' delivers
     // straight away, 'approval' waits for them to approve it. Either way, if that
     // conversation is mid-turn the message goes on its queue rather than failing.
     if (requested.mode === 'auto') {
       const sid = requested.sessionId;
-      const delivery = { mode: 'auto', projectId: args.projectId, sessionId: sid, messageId: requested.messageId,
-        ...(typeof requested.hopsLeft === 'number' ? { hopsLeft: requested.hopsLeft } : {}) };
+      const delivery = { mode: 'auto', projectId: args.projectId, sessionId: sid, messageId: requested.messageId, ...relayFields(requested) };
       const where = requested.steered
         ? `steered into its running turn — it reads this now, inside that turn.`
         : requested.queued
         ? `queued — that conversation is mid-turn, so it will be delivered the moment its current turn ends.`
         : `delivered — its turn is running now.`;
-      // Say how much of the exchange is left. Knowing there is one hop to go is
-      // what lets a caller close the loop deliberately instead of being cut off.
-      const left = typeof requested.hopsLeft === 'number'
-        ? `\n${requested.hopsLeft} hop(s) left in this exchange before a human message is required.`
-          + (requested.hopsLeft <= 1 ? ' Plan to finish here.' : '')
-        : '';
+      // Say how far the next relay checkpoint is, so a caller can close the
+      // loop deliberately rather than only when it is asked to confirm.
+      const tail = relayTail(requested);
+      const left = tail ? `\n${tail}` : '';
       if (!args.waitSeconds || requested.queued || requested.steered) {
         return result(`sent (automatic mode). ${where}\nsessionId: ${sid}\nUse read_reply with this messageId to fetch the exact reply later.${left}`, { delivery: { ...delivery, status: requested.steered ? 'steered' : requested.queued ? 'queued' : 'sent' } });
       }

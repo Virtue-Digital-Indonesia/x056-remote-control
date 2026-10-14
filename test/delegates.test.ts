@@ -309,7 +309,7 @@ describe('delegates on the gateway', () => {
       const a = f.mgr.startDelegate(pid, sid, { role: 'backend', brief: 'A' });
       await tick();
       const out = await f.mgr.steerFromDelegate(pid, sid, a.id, 'heads-up: the schema changed');
-      expect(out).toMatchObject({ steered: true, hopsLeft: SessionManager.RELAY_HOP_LIMIT - (f.mgr.relayDepth(sid)) });
+      expect(out).toMatchObject({ steered: true, hopsLeft: SessionManager.RELAY_HOP_LIMIT - ((f.mgr.relayDepth(sid) - 1) % SessionManager.RELAY_HOP_LIMIT) });
       expect(readMessageSender(injected[0]).sender).toMatchObject({ kind: 'delegate', conversationTitle: 'backend' });
       f.finish(sid, 'ok'); await tick();
       const idle = await f.mgr.steerFromDelegate(pid, sid, a.id, 'second note');

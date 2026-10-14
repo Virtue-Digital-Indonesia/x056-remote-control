@@ -5,7 +5,7 @@ import type { INestApplication } from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AccountRegistry } from '../src/accounts.js';
 import { readMessageSender } from '../src/message-sender.js';
-import { RelayLimitError, SessionManager } from '../server/manager.js';
+import { RelayCheckpointError, SessionManager } from '../server/manager.js';
 import { ConversationJournal } from '../server/conversation-journal.js';
 import { buildTurns } from '../server/agent-tree.js';
 import { createApp } from '../server/main.js';
@@ -66,7 +66,7 @@ describe('steerFromAi: only into a running gateway turn', () => {
     const f = fixture(); const injected = stubPools(f.mgr);
     expect(await f.mgr.steerFromAi('p1', 'b', 'look at X', { kind: 'mcp' })).toBe(false);
     const out = await f.mgr.deliverMcpSteer('p1', 'b', 'look at X', { from: 'a', interactive: false });
-    expect(out).toMatchObject({ steered: false, queued: false, sessionId: 'b', hopsLeft: SessionManager.RELAY_HOP_LIMIT - 1 });
+    expect(out).toMatchObject({ steered: false, queued: false, sessionId: 'b', hopsLeft: SessionManager.RELAY_HOP_LIMIT });
     expect(injected).toEqual([]);
     expect(f.busy('b')).toBe(true); // the send started a turn instead
     await f.end('b');
@@ -76,7 +76,7 @@ describe('steerFromAi: only into a running gateway turn', () => {
     const f = fixture(); const injected = stubPools(f.mgr);
     run(f, 'b');
     const out = await f.mgr.deliverMcpSteer('p1', 'b', 'the bug is in parse()', { from: 'a', interactive: false });
-    expect(out).toMatchObject({ steered: true, queued: false, hopsLeft: SessionManager.RELAY_HOP_LIMIT - 1 });
+    expect(out).toMatchObject({ steered: true, queued: false, hopsLeft: SessionManager.RELAY_HOP_LIMIT });
     expect(injected).toHaveLength(1);
     expect(injected[0].requireTurn).toBe(true); // never an idle process
     const parsed = readMessageSender(injected[0].text);
@@ -102,16 +102,30 @@ describe('steerFromAi: only into a running gateway turn', () => {
     await f.end('b');
   });
 
-  it('two conversations steering each other stop at the relay bound', async () => {
-    const f = fixture(); stubPools(f.mgr);
+  it('two conversations steering each other reach the same relay checkpoint: free to 6, held at 7, confirmed, then free to 12', async () => {
+    const f = fixture(); const injected = stubPools(f.mgr);
     run(f, 'a'); run(f, 'b');
     f.mgr.clearRelayChain('a'); f.mgr.clearRelayChain('b'); // as if a person started both
+    const LIMIT = SessionManager.RELAY_HOP_LIMIT;
     let [from, to] = ['a', 'b'];
-    for (let i = 1; i <= SessionManager.RELAY_HOP_LIMIT; i++) {
-      expect((await f.mgr.deliverMcpSteer('p1', to, `round ${i}`, { from, interactive: false })).hopsLeft).toBe(SessionManager.RELAY_HOP_LIMIT - i);
+    for (let i = 1; i <= LIMIT; i++) {
+      expect((await f.mgr.deliverMcpSteer('p1', to, `round ${i}`, { from, interactive: false })).hopsUntilCheck).toBe(LIMIT + 1 - i);
       [from, to] = [to, from];
     }
-    await expect(f.mgr.deliverMcpSteer('p1', to, 'one more', { from, interactive: false })).rejects.toBeInstanceOf(RelayLimitError);
+    const steeredBefore = injected.length;
+    const held = await f.mgr.deliverMcpSteer('p1', to, 'round 7', { from, interactive: false }).catch((e) => e);
+    expect(held).toBeInstanceOf(RelayCheckpointError);
+    expect((held as RelayCheckpointError).body()).toMatchObject({ error: 'relay_confirm_required', hops: LIMIT + 1, checkpointEvery: LIMIT });
+    expect(injected).toHaveLength(steeredBefore); // nothing reached the running turn
+    expect(f.mgr.queues()['p1'] ?? []).toEqual([]); // nor its queue
+    expect(await f.mgr.deliverMcpSteer('p1', to, 'round 7', { from, interactive: false, confirmRelay: true }))
+      .toMatchObject({ steered: true, confirmedCheckpoint: true, hopsUntilCheck: LIMIT, hopsLeft: LIMIT });
+    [from, to] = [to, from];
+    for (let i = LIMIT + 2; i <= 2 * LIMIT; i++) {
+      expect((await f.mgr.deliverMcpSteer('p1', to, `round ${i}`, { from, interactive: false })).hopsUntilCheck).toBe(2 * LIMIT + 1 - i);
+      [from, to] = [to, from];
+    }
+    await expect(f.mgr.deliverMcpSteer('p1', to, 'round 13', { from, interactive: false })).rejects.toBeInstanceOf(RelayCheckpointError);
     await f.end('a'); await f.end('b');
   });
 });
@@ -193,5 +207,44 @@ describe('the steer tool over HTTP (what a Claude subagent reaches: it shares th
     await expect(api('/api/conversations/steer', { method: 'POST', body: JSON.stringify({ prompt: 'x', self: { projectId: 'p', sessionId: 's' }, from: 't' }) })).rejects.toThrow(/must come from that conversation/);
     // A made-up delegate cannot skip the approval gate.
     await expect(api('/api/conversations/steer', { method: 'POST', body: JSON.stringify({ prompt: 'x', delegate: { of: 'p/s', id: 'd-nope' } }) })).rejects.toThrow(/unknown delegate/);
+  });
+
+  it('the routes answer a checkpoint with 409 relay_confirm_required, and confirmRelay goes through', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'x056-relay-http-')); dirs.push(dir);
+    mkdirSync(join(dir, 'work'));
+    AccountRegistry.init(join(dir, 'accounts.json'), [{ name: 'fixture', configDir: join(dir, 'account') }]);
+    writeFileSync(join(dir, 'projects.json'), JSON.stringify({ current: 'p', projects: [
+      { id: 'p', name: 'Fixture', cwd: join(dir, 'work'), conversations: [{ sessionId: 's', title: 'One' }, { sessionId: 't', title: 'Two' }] }] }));
+    const token = 'relay-fixture-token-0123456789';
+    app = await createApp({ token, stateDir: dir, workspaceRoot: dir });
+    await app.listen(0, '127.0.0.1');
+    const base = await app.getUrl();
+    const mgr = app.get(SessionManager);
+    mgr.setMcpSendMode('auto');
+    // The relay logic is real; only the turn itself is stubbed (no CLI here).
+    const landed: string[] = [];
+    vi.spyOn(mgr, 'continueSession').mockImplementation(((_pid: string, sid: string) => { landed.push(sid); return sid; }) as never);
+    const post = (path: string, body: unknown) => fetch(base + path, { method: 'POST', body: JSON.stringify(body), headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } });
+    const LIMIT = SessionManager.RELAY_HOP_LIMIT;
+    let [from, to] = ['s', 't'];
+    for (let i = 1; i <= LIMIT; i++) {
+      const r = await post('/api/conversations/send', { projectId: 'p', sessionId: to, prompt: 'x', from, interactive: false });
+      expect(r.status).toBe(200);
+      expect(await r.json()).toMatchObject({ mode: 'auto', hopsUntilCheck: LIMIT + 1 - i, hopsLeft: LIMIT + 1 - i });
+      [from, to] = [to, from];
+    }
+    const held = await post('/api/conversations/send', { projectId: 'p', sessionId: to, prompt: 'x', from, interactive: false });
+    expect(held.status).toBe(409);
+    const body = await held.json();
+    expect(body).toMatchObject({ error: 'relay_confirm_required', hops: LIMIT + 1, checkpointEvery: LIMIT });
+    expect(body.message).toMatch(/^This is hop 7 of an AI-to-AI exchange/);
+    expect(landed).toHaveLength(LIMIT);
+    // The steer route (another conversation as target) answers the same way.
+    const steerHeld = await post('/api/conversations/steer', { projectId: 'p', sessionId: to, prompt: 'x', from });
+    expect(steerHeld.status).toBe(409);
+    expect(await steerHeld.json()).toMatchObject({ error: 'relay_confirm_required', hops: LIMIT + 1 });
+    const ok = await post('/api/conversations/steer', { projectId: 'p', sessionId: to, prompt: 'x', from, confirmRelay: true });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ delivered: 'started', hopsUntilCheck: LIMIT, confirmedCheckpoint: true });
   });
 });

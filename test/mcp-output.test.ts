@@ -203,7 +203,7 @@ describe('all advertised output contracts', () => {
     expect((await tool('cancel_scheduled', { id })).data.ok).toBe(false);
     for (const j of cron.list()) cron.remove(j.id);
     const recurring = await tool('schedule_task', { projectId: 'p', schedule: '0 9 * * *', tz: 'UTC', prompt: 'fixture' });
-    vi.spyOn(manager, 'deliverMcpMessage').mockReturnValue({ sessionId: 's', queued: true, hopsLeft: 3, messageId: 'fixture-message' });
+    vi.spyOn(manager, 'deliverMcpMessage').mockReturnValue({ sessionId: 's', queued: true, hopsUntilCheck: 3, hopsLeft: 3, messageId: 'fixture-message' });
     cron.tick(new Date('2030-01-01T09:00:00Z'));
     expect((await tool('list_scheduled')).data.jobs[0]).toMatchObject({ runCount: 1, lastResult: 'queued', sessionId: 's' });
     await tool('cancel_scheduled', { id: recurring.data.job.id });
@@ -265,10 +265,10 @@ describe('all advertised output contracts', () => {
   });
 
   it('keeps HTTP approval denial and auto queue states distinct, with the same delivery selection', async () => {
-    const delivered = vi.spyOn(manager, 'deliverMcpMessage').mockReturnValue({ sessionId: 's', queued: true, hopsLeft: 0, messageId: 'fixture-message' });
+    const delivered = vi.spyOn(manager, 'deliverMcpMessage').mockReturnValue({ sessionId: 's', queued: true, hopsUntilCheck: 1, hopsLeft: 1, messageId: 'fixture-message' });
     manager.setMcpSendMode('auto');
     const automatic = await tool('send_message', { projectId: 'p', sessionId: 's', message: 'fixture', model: '', effort: '' });
-    expect(automatic.data.delivery).toMatchObject({ mode: 'auto', status: 'queued', hopsLeft: 0, messageId: 'fixture-message' });
+    expect(automatic.data.delivery).toMatchObject({ mode: 'auto', status: 'queued', hopsUntilCheck: 1, hopsLeft: 1, messageId: 'fixture-message' });
     expect(delivered.mock.calls[0][3]).toMatchObject({ model: '', effort: '' });
     manager.setMcpSendMode('approval');
     const request = tool('send_message', { projectId: 'p', sessionId: 's', message: 'deny fixture' });
@@ -490,6 +490,6 @@ describe('send polling variants with disposable responses and controlled time', 
     await vi.runAllTimersAsync();
     const r = await p;
     expect(validateResult('send_message', r).delivery).toMatchObject({ status, hopsLeft: 1, messageId: 'fixture-message' });
-    expect(r.content[0].text).toContain('1 hop(s) left');
+    expect(r.content[0].text).toContain('1 hop(s) until the next relay checkpoint');
   });
 });

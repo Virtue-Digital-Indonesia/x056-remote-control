@@ -47,7 +47,7 @@ import { getAdapter } from '../src/adapters/registry.js';
 import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles } from '../src/adapters/subagents.js';
 import { listWorkflowAgents, listWorkflowRuns, liveWorkflowRuns, readWorkflowAgentPage } from '../src/adapters/workflows.js';
 import { join } from 'node:path';
-import { BusyError, RelayLimitError, SessionManager, type TurnRunOptions } from './manager.js';
+import { BusyError, RelayCheckpointError, SessionManager, type RelayReceipt, type TurnRunOptions } from './manager.js';
 import { PluginManager } from './plugins.js';
 import { readRawEntry, readRawPage } from './raw-transcript.js';
 import { MCP_OAUTH } from './mcp-oauth.controller.js';
@@ -143,6 +143,17 @@ export const WEBAUTHN_SERVICE = Symbol('x056-webauthn-service');
 export const SESSION_STORE = Symbol('x056-session-store');
 export const PLUGIN_MANAGER = Symbol('x056-plugin-manager');
 export const MCP_SERVER_MANAGER = Symbol('x056-mcp-server-manager');
+
+/** A relay checkpoint as HTTP: 409 (nothing was sent, so old clients that read
+ *  409 as "not sent" stay right) with `error: 'relay_confirm_required'`. */
+function relayCheckpointConflict(err: RelayCheckpointError): ConflictException {
+  return new ConflictException(err.body());
+}
+
+/** The relay fields of a receipt, copied (never the whole manager object). */
+function relayReceipt(r: RelayReceipt): RelayReceipt {
+  return { hopsUntilCheck: r.hopsUntilCheck, hopsLeft: r.hopsLeft, ...(r.confirmedCheckpoint ? { confirmedCheckpoint: true as const } : {}) };
+}
 
 const QUOTA_TTL_MS = 90_000;
 
@@ -801,8 +812,8 @@ export class ApiController {
    *  moves, the panel's "current" selection. */
   @Post('conversations/send')
   @HttpCode(200)
-  async conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; speed?: string; interactive?: boolean; from?: string; helpers?: HelperPatch; steer?: boolean }):
-    Promise<{ mode: 'auto'; sessionId: string; queued: boolean; steered?: boolean; hopsLeft: number; messageId: string } | { mode: 'approval'; approvalId: string; messageId?: string; steer?: boolean }> {
+  async conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; speed?: string; interactive?: boolean; from?: string; helpers?: HelperPatch; steer?: boolean; confirmRelay?: boolean }):
+    Promise<({ mode: 'auto'; sessionId: string; queued: boolean; steered?: boolean; messageId: string } & RelayReceipt) | { mode: 'approval'; approvalId: string; messageId?: string; steer?: boolean }> {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
     if (body.sessionId) {
@@ -815,6 +826,8 @@ export class ApiController {
     // rather than the model, so a caller cannot disown its own chain by leaving
     // it out — an external client (Claude Desktop) genuinely has none.
     const opts = { model: body.model, effort: body.effort, speed: body.speed, interactive: body.interactive, from: body.from, ...(body.helpers ? { helpers: body.helpers } : {}) };
+    // Confirms a relay checkpoint (every RELAY_HOP_LIMIT hops); ignored when none is due.
+    const relay = { ...opts, confirmRelay: body.confirmRelay === true };
     try { this.manager.validateConversationRunPrefs(body.projectId, body.sessionId, opts); if (body.helpers) this.manager.checkHelperPatch(body.helpers); }
     catch (err) { throw new BadRequestException((err as Error).message); }
     // The MODE is the operator's setting, never the caller's choice — an AI that
@@ -822,14 +835,15 @@ export class ApiController {
     if (this.manager.mcpSendMode() === 'auto') {
       try {
         if (body.steer && body.sessionId) {
-          const out = await this.manager.deliverMcpSteer(body.projectId, body.sessionId, body.prompt, opts);
-          return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued, steered: out.steered, hopsLeft: out.hopsLeft, messageId: out.messageId };
+          const out = await this.manager.deliverMcpSteer(body.projectId, body.sessionId, body.prompt, relay);
+          return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued, steered: out.steered, ...relayReceipt(out), messageId: out.messageId };
         }
-        const out = this.manager.deliverMcpMessage(body.projectId, body.sessionId, body.prompt, opts);
-        return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued, hopsLeft: out.hopsLeft, messageId: out.messageId };
+        const out = this.manager.deliverMcpMessage(body.projectId, body.sessionId, body.prompt, relay);
+        return { mode: 'auto' as const, sessionId: out.sessionId, queued: out.queued, ...relayReceipt(out), messageId: out.messageId };
       } catch (err) {
-        // 409, not 400: the request is well-formed, the exchange is just over.
-        if (err instanceof RelayLimitError) throw new ConflictException(err.message);
+        // 409 (not sent), with a body the MCP tools read as a question to
+        // answer rather than a failure: see relayCheckpointConflict.
+        if (err instanceof RelayCheckpointError) throw relayCheckpointConflict(err);
         throw err;
       }
     }
@@ -849,7 +863,7 @@ export class ApiController {
    */
   @Post('conversations/steer')
   @HttpCode(200)
-  async conversationSteer(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; from?: string; self?: { projectId?: string; sessionId?: string }; delegate?: { of?: string; id?: string } }) {
+  async conversationSteer(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; from?: string; self?: { projectId?: string; sessionId?: string }; delegate?: { of?: string; id?: string }; confirmRelay?: boolean }) {
     if (!body?.prompt?.trim()) throw new BadRequestException('prompt required');
     const self = body.self?.projectId && body.self?.sessionId ? { projectId: body.self.projectId, sessionId: body.self.sessionId } : undefined;
     const toSelf = self && (!body.sessionId || (body.sessionId === self.sessionId && (!body.projectId || body.projectId === self.projectId)));
@@ -862,18 +876,18 @@ export class ApiController {
       if (!body.sessionId && body.delegate?.of && body.delegate.id) {
         const [pid, sid] = body.delegate.of.split('/');
         if (!pid || !sid) throw new BadRequestException('bad delegate identity');
-        const out = await this.manager.steerFromDelegate(pid, sid, body.delegate.id, body.prompt);
-        return { delivered: out.steered ? 'steered' : out.queued ? 'queued' : 'started', projectId: pid, sessionId: out.sessionId, hopsLeft: out.hopsLeft, messageId: out.messageId };
+        const out = await this.manager.steerFromDelegate(pid, sid, body.delegate.id, body.prompt, body.confirmRelay === true);
+        return { delivered: out.steered ? 'steered' : out.queued ? 'queued' : 'started', projectId: pid, sessionId: out.sessionId, ...relayReceipt(out), messageId: out.messageId };
       }
     } catch (err) {
-      if (err instanceof RelayLimitError) throw new ConflictException(err.message);
+      if (err instanceof RelayCheckpointError) throw relayCheckpointConflict(err);
       if (err instanceof BadRequestException) throw err;
       throw new ConflictException((err as Error).message);
     }
     if (!body.projectId || !body.sessionId) throw new BadRequestException('projectId and sessionId required (this client has no conversation of its own)');
-    const r = await this.conversationSend({ projectId: body.projectId, sessionId: body.sessionId, prompt: body.prompt, from: body.from, interactive: false, steer: true });
+    const r = await this.conversationSend({ projectId: body.projectId, sessionId: body.sessionId, prompt: body.prompt, from: body.from, interactive: false, steer: true, confirmRelay: body.confirmRelay });
     if (r.mode === 'approval') return { delivered: 'pending_approval', mode: 'approval', projectId: body.projectId, approvalId: r.approvalId, messageId: r.messageId };
-    return { delivered: r.steered ? 'steered' : r.queued ? 'queued' : 'started', mode: 'auto', projectId: body.projectId, sessionId: r.sessionId, hopsLeft: r.hopsLeft, messageId: r.messageId };
+    return { delivered: r.steered ? 'steered' : r.queued ? 'queued' : 'started', mode: 'auto', projectId: body.projectId, sessionId: r.sessionId, ...relayReceipt(r), messageId: r.messageId };
   }
 
   /**

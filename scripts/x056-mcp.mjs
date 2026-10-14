@@ -23,7 +23,9 @@ async function api(path, opts = {}) {
     headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', ...(opts.headers || {}) },
   });
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error((body && body.message) || `gateway returned ${res.status}`);
+  // status + body ride on the error, so a tool can tell a relay checkpoint
+  // (409 relay_confirm_required) from a failure.
+  if (!res.ok) throw Object.assign(new Error((body && body.message) || `gateway returned ${res.status}`), { status: res.status, body });
   return body;
 }
 

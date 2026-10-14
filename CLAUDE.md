@@ -1166,17 +1166,31 @@ get stuck: A asks B to debug something, B reports back, A asks a follow-up, and
 neither can see that the pair is going nowhere. Both brakes are enforced in the
 gateway, not asked for in a prompt.
 
-- **Relay depth** (`SessionManager.RELAY_HOP_LIMIT`, 6). Every AI→AI send belongs
-  to a chain; each hop increments its depth, and past the cap `deliverMcpMessage`
-  throws `RelayLimitError` (HTTP 409) and nothing is sent. Depth follows the
-  CHAIN, not the pair, so routing through a third conversation does not dodge it.
-  `send_message` reports the hops left on every send, so a caller can wrap up
-  before it is cut off.
+- **Relay checkpoints, not a cap (2026-10-14, owner's request: "make it a
+  confirmation/nudge for the AI instead of blocking it").** Every AI→AI send
+  belongs to a chain and each hop increments its depth. The first
+  `SessionManager.RELAY_HOP_LIMIT` (6) hops are free, as under the old cap; at
+  hop 7 and every 6 hops after (7, 13, 19, ...) a send or steer that did not pass `confirmRelay: true` is held: nothing is sent, and
+  the route answers HTTP 409 `{error: 'relay_confirm_required', hops,
+  checkpointEvery: 6, message}` (`RelayCheckpointError`). The MCP tools
+  (`send_message`, `steer`, `send_chat_message`, all with `confirm_relay`)
+  turn that into plain text starting "Not sent yet (relay checkpoint):" plus
+  the nudge (`relayNudge`): is this converging? if the other side repeats
+  itself, stop and report to the user; to send anyway, call again with
+  `confirm_relay: true`. A confirmed call is delivered (receipt
+  `confirmedCheckpoint: true`) and the next check is 6 hops later (13 after a
+  confirmed 7). There is
+  no hard cap. `confirmRelay` with no checkpoint due is ignored. Depth
+  follows the CHAIN, not the pair, so routing through a third conversation
+  does not dodge it. Every AI send's receipt carries `hopsUntilCheck`
+  (6 at hop 1, 1 at hop 6, 6 again after a confirmed 7; `hopsLeft` is the
+  same value under the old name). Delegates' sends and
+  steers count on their orchestrator's chain and confirm the same way.
 - **Only a human resets it.** A panel message clears the chain
-  (`clearRelayChain`). Stopping a conversation does NOT — otherwise an exhausted
-  pair could halt each other to buy another round. In **approval** mode the
+  (`clearRelayChain`). Stopping a conversation does NOT, otherwise a pair
+  could halt each other to skip the checkpoint. In **approval** mode the
   operator is the reset: an approved send is human-origin, so the count starts
-  over and the cap never fires on an exchange they are waving through.
+  over and the checkpoint never fires on an exchange they are waving through.
 - **`stop_conversation`** aborts a conversation's turn AND drops its queue —
   stopping the turn alone just lets the queue drain into a new one. Ungated,
   unlike a send: a brake that waits for a human is not a brake, and the worst it
@@ -1203,7 +1217,8 @@ An AI can put text INTO a running turn instead of queueing it after:
   `steered`. `buildTurns` and `lastPromptAt` skip flagged rows, so a steer
   never splits a turn. The panel labels it "Steered into the running turn".
 - **Brakes.** A cross-conversation steer is a relay hop (`deliverMcpSteer`),
-  so two conversations steering each other stop at 6. A self-steer (no
+  so two conversations steering each other hit the same checkpoint at 7
+  (and 13, ...), confirmed with `confirm_relay`. A self-steer (no
   target) counts on the `message_self` streak (`steerSelf`). A delegate with
   no target steers its ORCHESTRATOR (`steerFromDelegate`): no approval (the
   owner's choice), counted on the orchestrator's relay chain, and only while
