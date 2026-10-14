@@ -98,7 +98,7 @@ window.createRCChat = function (engine, room) {
     const chats = state.projects.filter(p => p.kind === 'chat' && (!filter?.value || (filter.value==='standalone'?!p.spaceId:p.spaceId===filter.value)) && !!p.archivedAt === showArchived && (p.name + ' ' + p.conversations?.[0]?.title).toLowerCase().includes(query));
     chats.sort((a,b) => (b.conversations?.[0]?.lastMessageAt || b.conversations?.[0]?.createdAt || 0) - (a.conversations?.[0]?.lastMessageAt || a.conversations?.[0]?.createdAt || 0));
     $('rcChatArchives').textContent = showArchived ? 'Active chats' : 'Archived chats';
-    $('rcChatList').innerHTML = chats.map(p => `<a class="rc-chat-item ${p.id === active ? 'selected' : ''}" href="${chatPath(p.id)}" data-chat-link data-chat="${esc(p.id)}" ${p.id === active ? 'aria-current="page"' : ''}><strong>${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small></a>`).join('') || '<p class="rc-chat-empty">No chats found.</p>';
+    $('rcChatList').innerHTML = chats.map(p => `<a class="rc-chat-item ${p.id === active ? 'selected' : ''}" href="${chatPath(p.id)}" data-chat-link data-chat="${esc(p.id)}" ${(p.conversations?.[0]?.sessionId || p.lastSessionId) ? `data-conv-project="${esc(p.id)}" data-conv-session="${esc(p.conversations?.[0]?.sessionId || p.lastSessionId)}"` : ''} ${p.id === active ? 'aria-current="page"' : ''}><strong>${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small></a>`).join('') || '<p class="rc-chat-empty">No chats found.</p>';
   }
   function sync() {
     if (!mounted) return;

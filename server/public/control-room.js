@@ -353,7 +353,7 @@ window.createControlRoom = function (engine) {
     if (mode !== 'closed') restorePosition();
     renderStage();
   }
-  function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode('page'); window.rcMotion?.fade(main); requestAnimationFrame(() => $('chatClose').focus()); } updateTitle(); }
+  function open(remember = true) { if(remember)rememberStage(); if (mode === 'closed') { returnFocus = document.activeElement; setMode('page'); window.rcMotion?.fade(main); requestAnimationFrame(() => { if (!(window.rcFocusPrompt && window.rcFocusPrompt())) $('chatClose').focus(); }); } updateTitle(); }
   function close(preserveRoute=false) { if(!preserveRoute&&window.rcWorkspace?.ready()&&window.rcWorkspace.closeConversation){window.rcWorkspace.closeConversation();return;}if(!preserveRoute&&window.rcProjectSpaces?.enabled() && /^\/work\/.+/.test(location.pathname)) history.replaceState({}, '', '/work'); engine.closePops(); engine.nav(false); setMode('closed'); if (returnFocus?.isConnected) returnFocus.focus(); else $('crBoardTab').focus(); }
   function pageFor(name) { return $('cr'+({board:'Board',accounts:'Accounts',automations:'Automations',artifacts:'Artifacts',planner:'Planner',memory:'Memory'}[name])); }
   function showSection(next,preserveRoute=false) {
@@ -1188,11 +1188,31 @@ window.createControlRoom = function (engine) {
       {label:'Remove from panel',icon:'trash',disabled:running,run:()=>engine.removeConversation(pid,sid)},
     ],point);
   }
+  // Every list that shows a conversation opens the same menu. Rows carry either data-project/data-session
+  // (the board) or data-conv-project/data-conv-session (project pages, the /chat list; project-spaces.js, rc-chat.js).
+  const CONV_ROW='.cr-task,.stage-conversation,.automation-ap-open,.automation-work-open,.running-conversation,[data-conversation-menu],[data-conv-project]';
+  const convIds=row=>row.dataset.convProject?[row.dataset.convProject,row.dataset.convSession]:[row.dataset.project,row.dataset.session||row.dataset.conversationMenu];
   document.addEventListener('contextmenu',e=>{
-    const row=e.target.closest('.cr-task,.stage-conversation,.automation-ap-open,[data-conversation-menu]'),project=e.target.closest('.cr-project-link[data-scope]');
-    if(row){e.preventDefault();e.stopPropagation();rowConversationMenu(row,row.dataset.project,row.dataset.session||row.dataset.conversationMenu,{x:e.clientX,y:e.clientY});}
+    const row=e.target.closest(CONV_ROW),project=e.target.closest('.cr-project-link[data-scope]');
+    if(row){e.preventDefault();e.stopPropagation();rowConversationMenu(row,...convIds(row),{x:e.clientX,y:e.clientY});}
     else if(project?.dataset.scope){e.preventDefault();e.stopPropagation();projectMenu(project,project.dataset.scope,{x:e.clientX,y:e.clientY});}
   });
+  // Touch has no right-click (iOS fires no contextmenu): a 500 ms hold opens the menu, and the click that
+  // follows the release is swallowed so the row's link does not also navigate.
+  {
+    let timer=0,start=null,fired=false;
+    const cancel=()=>{clearTimeout(timer);timer=0;};
+    document.addEventListener('touchstart',e=>{
+      cancel();fired=false;
+      const row=e.touches.length===1&&e.target.closest(CONV_ROW);
+      if(!row||row.matches('[data-conversation-menu]'))return;
+      const t=e.touches[0];start={x:t.clientX,y:t.clientY};
+      timer=setTimeout(()=>{timer=0;fired=true;rowConversationMenu(row,...convIds(row),start);},500);
+    },{passive:true});
+    document.addEventListener('touchmove',e=>{const t=e.touches[0];if(timer&&start&&t&&Math.hypot(t.clientX-start.x,t.clientY-start.y)>10)cancel();},{passive:true});
+    document.addEventListener('touchend',cancel,{passive:true});document.addEventListener('touchcancel',cancel,{passive:true});
+    document.addEventListener('click',e=>{if(fired){fired=false;e.preventDefault();e.stopPropagation();}},true);
+  }
   document.addEventListener('click',e=>{const button=e.target.closest('[data-conversation-menu]');if(button)rowConversationMenu(button,button.dataset.project,button.dataset.conversationMenu);});
   $('crScopeActions').onclick=e=>projectMenu(e.currentTarget,selectedProject);
   $('projTitle').onclick=()=>engine.renameConversation();

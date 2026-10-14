@@ -5158,6 +5158,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       if (projCache[projectId]) projCache[projectId].lastSessionId = sessionId;
       lastSessionId = sessionId; chatEl.textContent = '';
       if (controlRoom) controlRoom.open();
+      setTimeout(maybeFocusPrompt, 80);
       // Each conversation is bound to its own provider (see currentProvider()) —
       // re-sync the model/effort/provider picker AND the account chip to THIS
       // one, not whatever the previously-viewed conversation left showing (the
@@ -6279,7 +6280,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       return loadQuestions().then(loadHistory);
     });
     connect();
-    Promise.all([projectsReady, snapshotReady]).then(async function () { loadDeliveries(); if (rcChat) await rcChat.init(); if (window.rcProjectSpaces) await window.rcProjectSpaces.init(); if (window.rcWorkspace) await window.rcWorkspace.init(); }).finally(settle);
+    Promise.all([projectsReady, snapshotReady]).then(async function () { loadDeliveries(); if (rcChat) await rcChat.init(); if (window.rcProjectSpaces) await window.rcProjectSpaces.init(); if (window.rcWorkspace) await window.rcWorkspace.init(); }).finally(settle).then(function () { setTimeout(maybeFocusPrompt, 150); });
   }
 
   // ---- SSE ----
@@ -7258,6 +7259,30 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (!composerBox || !composerBox.contains(el)) return;
     qpForce = true; syncComposer(); qpForce = false;
   }
+  /**
+   * Put the caret in the prompt when a conversation is on screen, so you can type at once. Never
+   * steals focus: not from another field, an open dialog or menu, a hidden tab, a view that hides
+   * the composer, and not on touch devices (it would raise the keyboard). Returns whether it focused.
+   */
+  function maybeFocusPrompt() {
+    try {
+      if (!promptEl || promptEl.disabled || document.hidden) return false;
+      if (coarsePointer && coarsePointer.matches) return false;
+      var a = document.activeElement;
+      if (a === promptEl) return true;
+      var typing = a && a !== document.body && a.id !== 'chatClose' && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable);
+      if (typing) return false;
+      if (document.querySelector('dialog[open]') || ctxEl || composerMenuOpen() || document.querySelector('.cr-menu')) return false;
+      if (terminalView && terminalView.isOpen()) return false;
+      if (agentTree && agentTree.isExpanded()) return false;
+      if (controlRoom && !controlRoom.isOpen()) return false;
+      if (!lastSessionId && !pendingNew) return false;
+      if (promptEl.offsetParent === null) return false;
+      promptEl.focus({ preventScroll: true });
+      return document.activeElement === promptEl;
+    } catch (e) { return false; }
+  }
+  window.rcFocusPrompt = maybeFocusPrompt;
   composerBox.addEventListener('focusin', syncComposer);
   document.addEventListener('x056:composer-menu', function () { syncComposer(); });
   // A tap on the account chip under an OPEN pill must not fold it on the way to
