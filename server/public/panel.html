@@ -1992,6 +1992,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
   <symbol id="i-repeat" viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4"/><circle cx="12" cy="3" r="1"/><path d="M9 13v1M15 13v1M9.5 17h5"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
@@ -3721,14 +3722,14 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role + (steered ? ' steered' : ''); wrap._messageText = text; if(ts)wrap.dataset.messageTs=ts;
     var lab = document.createElement('div'); lab.className = 'role';
     lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
-    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor','delegate','recap'].indexOf(sender.kind) >= 0) {
+    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor','delegate','recap','bot_event','bot_brief'].indexOf(sender.kind) >= 0) {
       wrap.classList.add('from-sender');
       if (sender.messageId) wrap.dataset.messageSourceId = sender.messageId;
       lab.classList.add('message-sender'); lab.textContent = '';
-      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : sender.kind === 'delegate' ? 'fanout' : sender.kind === 'recap' ? 'results' : 'plug', 'sm'));
+      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : sender.kind === 'delegate' ? 'fanout' : sender.kind === 'recap' ? 'results' : sender.kind === 'bot_event' ? 'bell' : sender.kind === 'bot_brief' ? 'sun' : 'plug', 'sm'));
       var identity = document.createElement('span'), name = document.createElement('strong'), project = document.createElement('small');
-      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : sender.kind === 'delegate' ? (sender.conversationTitle || 'Delegates') : sender.kind === 'recap' ? 'Recap requested by the gateway' : 'External sender';
-      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : sender.kind === 'advisor' ? 'Review' : sender.kind === 'delegate' ? 'Reports' : sender.kind === 'recap' ? (sender.recap === 'autopilot' ? 'Autopilot finished' : 'Background work finished') : 'MCP');
+      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : sender.kind === 'delegate' ? (sender.conversationTitle || 'Delegates') : sender.kind === 'recap' ? 'Recap requested by the gateway' : sender.kind === 'bot_event' ? 'Bot digest' : sender.kind === 'bot_brief' ? 'Morning brief' : 'External sender';
+      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : sender.kind === 'advisor' ? 'Review' : sender.kind === 'delegate' ? 'Reports' : sender.kind === 'recap' ? (sender.recap === 'autopilot' ? 'Autopilot finished' : 'Background work finished') : sender.kind === 'bot_event' ? 'Things that need you' : sender.kind === 'bot_brief' ? 'Scheduled by the gateway' : 'MCP');
       identity.appendChild(name); identity.appendChild(project);
       // An AI's steer landed INSIDE a running turn, not as a turn of its own.
       if (steered) { var how = document.createElement('small'); how.className = 'steer-tag'; how.textContent = 'Steered into the running turn'; identity.appendChild(how); }
@@ -3754,6 +3755,13 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     else if (role === 'user' && sender && sender.kind === 'recap') {
       var det = document.createElement('details'); det.className = 'delegate-digest recap-digest';
       var sum = document.createElement('summary'); sum.textContent = sender.recap === 'autopilot' ? 'Recap the autopilot run and re-ask open questions' : 'Write the ending the background work never got';
+      var full = document.createElement('div'); full.className = 'delegate-digest-body'; full.appendChild(renderMarkdown(text));
+      det.appendChild(sum); det.appendChild(full); content.appendChild(det);
+    }
+    // The Bot's digest and morning-brief prompts come from the gateway: one line until opened.
+    else if (role === 'user' && sender && (sender.kind === 'bot_event' || sender.kind === 'bot_brief')) {
+      var det = document.createElement('details'); det.className = 'delegate-digest bot-digest';
+      var sum = document.createElement('summary'); sum.textContent = sender.kind === 'bot_brief' ? 'Write the morning brief' : (String(text).split('\n').filter(function (l) { return l.trim(); })[0] || 'Things that need you').replace(/^\[[^\]]*\]\s*/, '');
       var full = document.createElement('div'); full.className = 'delegate-digest-body'; full.appendChild(renderMarkdown(text));
       det.appendChild(sum); det.appendChild(full); content.appendChild(det);
     }
@@ -4190,7 +4198,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var sid = data.sessionId;
     var mineConvo = mine && (!sid || sid === lastSessionId);
     if (data.notice && data.notice.tier && data.notice.tier !== 'none') onNotice(kind, data, pid, sid);
-    if (kind === 'cron_failed' || kind === 'restart_interrupted') return;
+    if (kind === 'cron_failed' || kind === 'restart_interrupted' || kind === 'bot_notice') return;
     if (kind === 'background_state') {
       var bg = bgSessionIds[pid] = bgSessionIds[pid] || {};
       if (data.active) bg[sid] = true; else delete bg[sid];
@@ -4892,6 +4900,12 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     else if (sid && !viewingConv(pid, sid)) convNotice[viewKey(pid, sid)] = { notice: n, ts: data.ts || new Date().toISOString() };
     if (kind === 'cron_failed' && sid) setConvNotif(pid, sid, 'failed');
     if (kind === 'delegate_report' && n.tier === 'urgent' && sid) setConvNotif(pid, sid, 'question');
+    // The Bot's own push (notify_user): it lights the Bot chat in the bell like any
+    // other notice. The notice names the Bot conversation when the event does not.
+    if (kind === 'bot_notice') {
+      var bpid = data.projectId || n.projectId, bsid = sid || n.sessionId;
+      if (bpid && bsid) { if (!viewingConv(bpid, bsid)) convNotice[viewKey(bpid, bsid)] = { notice: n, ts: data.ts || new Date().toISOString() }; setConvNotif(bpid, bsid, n.tier === 'urgent' ? 'question' : 'done'); }
+    }
     // Only what just happened: a reload replays the server's whole buffer.
     var at = Date.parse(data.ts || '');
     if ((n.tier === 'urgent' || n.tier === 'normal') && !(viewingConv(pid, sid) && !document.hidden) && (!isFinite(at) || Date.now() - at < 60000)) notify(n, data);
@@ -6292,7 +6306,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); loadReadState(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'question_answered', 'identity_held', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'steered', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'question_answered', 'identity_held', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'steered', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state', 'bot_notice'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }

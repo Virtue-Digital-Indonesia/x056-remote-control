@@ -143,3 +143,33 @@ body.rc-chat-home-view #rcChatWelcome{display:flex;flex-direction:column;min-wid
   body.rc-chat-active #rcChatMenu{display:none}
   body.rc-chat-active #rcChatControls .cr-icon{width:28px;height:28px;min-height:28px;padding:4px}
 }
+
+/* The Bot: a badge on its chat row and header, its header actions, and the /bot setup card. */
+.rc-bot-badge{display:inline-flex;align-items:center;gap:4px;flex:none;padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent);font-size:11px;font-weight:600;line-height:18px;letter-spacing:.01em;vertical-align:1px}
+.rc-bot-badge .ic{width:12px;height:12px}
+.rc-chat-item .rc-bot-badge{margin-right:7px}
+#rcBotHead{display:flex;align-items:center;gap:8px;flex:none;min-width:0;font-size:12px;color:var(--muted)}
+#rcBotHead[hidden]{display:none}
+#rcBotBriefAt{white-space:nowrap;font-variant-numeric:tabular-nums}
+#rcBotBriefNow{padding:5px 10px;font-size:12px;line-height:1.3;white-space:nowrap}
+#rcBotBriefNow[aria-busy=true]{opacity:.6}
+#rcBotBriefStatus{font-size:12px;white-space:nowrap}
+#rcBotBriefStatus:empty{display:none}
+#rcBotBriefStatus.error{color:#e5484d}
+#rcBotSetup{display:none}
+body.rc-bot-setup #rcChatNav,body.rc-bot-setup #rcChatWelcome{display:none!important}
+body.rc-bot-setup #conversationSurface{grid-template-columns:minmax(0,1fr)}
+body.rc-bot-setup #rcBotSetup{display:flex;flex:1;flex-direction:column;min-width:0;overflow:auto;padding:28px;background:var(--bg)}
+.rc-bot-card{margin:auto;width:100%;max-width:420px;display:flex;flex-direction:column;align-items:flex-start;gap:12px;padding:30px 0 80px}
+.rc-bot-card>svg{width:34px;height:34px;color:var(--accent);margin-bottom:6px}
+.rc-bot-card h1{font-size:28px;font-weight:550;letter-spacing:-.8px;line-height:1.2;margin:0 0 4px}
+.rc-bot-card p{font-size:14px;line-height:1.65;color:var(--muted);margin:0}
+.rc-bot-time{display:flex;flex-direction:column;gap:6px;margin-top:10px;font-size:13px;font-weight:550;color:var(--text)}
+.rc-bot-time input{width:9em;padding:9px 11px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:inherit;font:inherit;font-weight:400}
+.rc-bot-tz{font-size:12px;color:var(--muted);margin-top:-6px}
+.rc-bot-card .rc-bot-error{color:#e5484d;font-size:13px}
+.rc-bot-card .rc-bot-error:empty{display:none}
+.rc-bot-card button[type=submit]{margin-top:6px}
+#rcBotHead #rcBotBriefNow{padding:4px 10px;min-height:0;height:auto}
+/* Phones: the Bot row gets a line of its own under the title, so the title keeps its room. */
+@media(max-width:480px){body.rc-bot-chat .focus-main>.topbar{flex-wrap:wrap;height:auto;row-gap:4px;padding-bottom:6px}body.rc-bot-chat .focus-main>.topbar .project-heading{flex:1 1 0}body.rc-bot-chat .focus-main>.topbar #rcBotHead{order:99;flex:1 0 100%;gap:8px;padding-left:2px}#rcBotHead #rcBotBriefNow{font-size:11px}#rcBotBriefAt{font-size:11px}body.rc-bot-setup #rcBotSetup{padding:20px}.rc-bot-card h1{font-size:24px}}

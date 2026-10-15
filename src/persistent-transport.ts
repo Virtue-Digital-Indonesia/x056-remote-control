@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { RawEvent } from './types.js';
-import type { TurnOptions } from './turn.js';
+import { disallowedToolsArgs, normalizeDisallowedTools, type TurnOptions } from './turn.js';
 
 /**
  * The wire-format-specific half of a persistent session.
@@ -94,7 +94,11 @@ export class ClaudeTransport implements Transport {
   readonly id = 'claude' as const;
 
   identity(o: TurnOptions): string {
-    return [o.configDir, o.conversationId ?? o.sessionId, o.model ?? '', o.effort ?? '', o.advisor ?? '', hashText(o.subagents ?? ''), o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? '')].join('\0');
+    // The deny list is a segment ONLY when non-empty, so every conversation
+    // without one keeps its exact pre-existing key and is not respawned.
+    const denied = normalizeDisallowedTools(o.disallowedTools);
+    return [o.configDir, o.conversationId ?? o.sessionId, o.model ?? '', o.effort ?? '', o.advisor ?? '', hashText(o.subagents ?? ''), o.mcp?.configPath ?? '', hashText(o.appendSystemPrompt ?? ''),
+      ...(denied.length ? [`deny:${hashText([...denied].sort().join(','))}`] : [])].join('\0');
   }
 
   spawnSpec(o: TurnOptions) {
@@ -110,6 +114,8 @@ export class ClaudeTransport implements Transport {
       ...(o.effort ? ['--effort', o.effort] : []),
       ...(o.advisor ? ['--advisor', o.advisor] : []),
       ...(o.subagents ? ['--agents', o.subagents] : []),
+      // Variadic: must be followed by a `--flag` (the session flag below).
+      ...disallowedToolsArgs(o.disallowedTools),
       ...(o.mode === 'new' ? ['--session-id', o.sessionId] : ['--resume', o.sessionId]),
     ];
     return { bin: o.claudePath ?? o.binPath ?? 'claude', args, env: { ...process.env, CLAUDE_CONFIG_DIR: o.configDir } };

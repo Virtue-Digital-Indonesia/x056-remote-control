@@ -67,7 +67,7 @@ window.createProjectSpaces = function (engine, room, chat) {
       const state = conversationRoute(url) ? { returnTo: location.pathname } : {};
       history[replace ? 'replaceState' : 'pushState'](state, '', url);
     }
-    if (url.startsWith('/chat')) { generation++;leave(); return chat?.navigate(url); }
+    if (url.startsWith('/chat') || url === '/bot') { generation++;leave(); return chat?.navigate(url); }
     return route();
   }
   async function load() { const result = await request('/api/project-spaces'); projects = result.projects || []; registryRevision = result.revision; topology = result.topology; if(mounted&&enabled)updateChatFilter(); return result; }

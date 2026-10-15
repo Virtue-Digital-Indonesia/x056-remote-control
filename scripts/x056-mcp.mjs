@@ -12,7 +12,7 @@
 //   X056_URL   gateway base URL (default http://localhost:4056)
 //   X056_TOKEN bearer token (required)
 import { createInterface } from 'node:readline';
-import { SERVER_INFO, TOOLS, callToolResult } from './x056-mcp-tools.mjs';
+import { SERVER_INFO, callToolResult, listTools } from './x056-mcp-tools.mjs';
 
 const BASE = process.env.X056_URL || 'http://localhost:4056';
 const TOKEN = process.env.X056_TOKEN || '';
@@ -47,7 +47,8 @@ rl.on('line', async (line) => {
   }
   if (method === 'notifications/initialized' || String(method || '').startsWith('notifications/')) return; // notifications need no reply
   if (method === 'ping') { out({ jsonrpc: '2.0', id, result: {} }); return; }
-  if (method === 'tools/list') { out({ jsonrpc: '2.0', id, result: { tools: TOOLS } }); return; }
+  // The Bot's own tools are listed only inside a Bot turn (X056_BOT=1).
+  if (method === 'tools/list') { out({ jsonrpc: '2.0', id, result: { tools: listTools() } }); return; }
   if (method === 'tools/call') {
     try {
       const result = await callToolResult(api, params?.name, params?.arguments || {});

@@ -95,6 +95,9 @@ export class ReadState {
       case 'delegate_report':
         if (tier === 'urgent') this.notice(pid, sid, 'question');
         return;
+      // The Bot's notify_user push (it carries the Bot conversation's ids).
+      case 'bot_notice':
+        return this.notice(pid, sid, tier === 'urgent' ? 'question' : 'done');
       case 'question_dismissed':
       case 'question_answered':
         this.read(pid, sid);

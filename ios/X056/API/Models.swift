@@ -82,8 +82,11 @@ struct Project: Decodable, Sendable, Identifiable, Hashable {
     var runningSessionIds: [String]?
     var runningAccounts: [String: String]?
     var backgroundSessionIds: [String]?
+    /// The owner's Bot chat; absent on every other row and on older servers.
+    var bot: Bool?
 
     var isChat: Bool { kind == "chat" }
+    var isBot: Bool { bot == true }
     var providerName: String { provider ?? "claude" }
 }
 

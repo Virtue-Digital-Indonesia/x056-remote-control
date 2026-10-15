@@ -44,6 +44,11 @@ export interface TurnOptions {
   /** Extra config for the Codex thread (merged into thread/start `config`).
    *  Codex only; the agent team sets its subagents' effort here. */
   codexConfig?: Record<string, unknown>;
+  /** Tools the session may not use (`--disallowedTools`), e.g. the Bot's
+   *  `Bash`, `Edit`, `mcp__x056__commit_project_file`. Claude only, and part of
+   *  the persistent process identity; Codex ignores it. Absent or empty = no
+   *  flag and today's identity, byte for byte. */
+  disallowedTools?: string[];
   appendSystemPrompt?: string;
   /** The gateway's MCP bridge (scripts/x056-mcp.mjs), giving the session tools
    *  to read/message OTHER conversations and projects through the gateway. Each
@@ -121,6 +126,31 @@ export function spawnJsonlTurn(
 }
 
 
+/** The deny list as the CLI is given it: trimmed, empties and duplicates dropped,
+ *  first occurrence order kept. Empty = no flag at all. */
+export function normalizeDisallowedTools(list: string[] | undefined): string[] {
+  const out: string[] = [];
+  for (const t of list ?? []) {
+    const v = typeof t === 'string' ? t.trim() : '';
+    if (v && !out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
+/**
+ * `--disallowedTools A,B,C` as ONE comma-joined value, or nothing.
+ *
+ * The CLI declares the option variadic (`<tools...>`), so it would also take
+ * any non-dash argument after it. Both Claude builders therefore place these
+ * two elements IMMEDIATELY before `--session-id` / `--resume`, which is always
+ * present and always starts with `--`: the parser stops there, so neither the
+ * session id nor the positional prompt (one-shot, after `--`) can be swallowed.
+ */
+export function disallowedToolsArgs(list: string[] | undefined): string[] {
+  const tools = normalizeDisallowedTools(list);
+  return tools.length ? ['--disallowedTools', tools.join(',')] : [];
+}
+
 export function startTurn(opts: TurnOptions): TurnHandle {
   const args = [
     '-p',
@@ -134,6 +164,8 @@ export function startTurn(opts: TurnOptions): TurnHandle {
     ...(opts.effort ? ['--effort', opts.effort] : []),
     ...(opts.advisor ? ['--advisor', opts.advisor] : []),
     ...(opts.subagents ? ['--agents', opts.subagents] : []),
+    // Variadic: must be followed by a `--flag` (the session flag below).
+    ...disallowedToolsArgs(opts.disallowedTools),
     ...(opts.mode === 'new' ? ['--session-id', opts.sessionId] : ['--resume', opts.sessionId]),
     // `--` ends option parsing so a prompt beginning with '-' (e.g. a markdown
     // bullet list) is taken as the positional prompt, not an unknown flag.

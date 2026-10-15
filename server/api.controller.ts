@@ -18,6 +18,7 @@ import {
   Body,
   ConflictException,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   Inject,
@@ -831,8 +832,12 @@ export class ApiController {
     try { this.manager.validateConversationRunPrefs(body.projectId, body.sessionId, opts); if (body.helpers) this.manager.checkHelperPatch(body.helpers); }
     catch (err) { throw new BadRequestException((err as Error).message); }
     // The MODE is the operator's setting, never the caller's choice — an AI that
-    // could ask for 'auto' would make the approval gate worthless.
-    if (this.manager.mcpSendMode() === 'auto') {
+    // could ask for 'auto' would make the approval gate worthless. The one
+    // exception is also decided here, from the caller's identity (its per-turn
+    // MCP config), never from a flag: the owner chose to let their Bot send
+    // without approval. Relay checkpoints still apply to it.
+    const botSend = !!body.from && this.manager.bot().active() && this.manager.bot().isBotSession(body.from);
+    if (botSend || this.manager.mcpSendMode() === 'auto') {
       try {
         if (body.steer && body.sessionId) {
           const out = await this.manager.deliverMcpSteer(body.projectId, body.sessionId, body.prompt, relay);
@@ -1210,6 +1215,72 @@ export class ApiController {
     const a = this.manager.mcpApprovalStatus(id);
     if (!a) throw new BadRequestException('unknown approval id');
     return a;
+  }
+
+  // ---- the Bot (server/bot.ts): panel routes, plus the two its own MCP
+  //      tools call. NOT exposed as MCP tools to anyone else. ----
+
+  @Get('bot')
+  botStatus() {
+    return this.manager.bot().status();
+  }
+
+  /** {enabled?, briefAt?: 'HH:MM' before 12:00, tz?: IANA}. enabled: true
+   *  creates the Chat (or reuses it); false stops the brief and the digest. */
+  @Post('bot')
+  @HttpCode(200)
+  botUpdate(@Body() body: { enabled?: boolean; briefAt?: string; tz?: string }) {
+    try { return this.manager.bot().update(body ?? {}); }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** Today's brief, now (manual trigger). */
+  @Post('bot/brief')
+  @HttpCode(200)
+  botBrief() {
+    try { return { ok: true, ...this.manager.bot().sendBrief() }; }
+    catch (err) { throw new BadRequestException((err as Error).message); }
+  }
+
+  /** The Bot's notify_user. Only a conversation of the Bot may call it. */
+  @Post('bot/notify')
+  @HttpCode(200)
+  botNotify(@Body() body: { from?: string; title?: string; body?: string; tier?: string; link?: string }) {
+    if (!this.manager.bot().isBotSession(body?.from)) throw new ForbiddenException('only the Bot can notify the owner');
+    if (typeof body.title !== 'string' || !body.title.trim() || body.title.length > 200) throw new BadRequestException('title required (1-200 characters)');
+    if (typeof body.body !== 'string' || body.body.length > 4000) throw new BadRequestException('body required (up to 4000 characters)');
+    if (body.tier !== undefined && body.tier !== 'urgent' && body.tier !== 'normal') throw new BadRequestException('tier must be urgent or normal');
+    // A link must stay inside the panel: a relative path, else it is dropped.
+    const link = typeof body.link === 'string' && body.link.startsWith('/') && !body.link.startsWith('//') && body.link.length <= 500 ? body.link : undefined;
+    const out = this.manager.botNotify(body.from as string, { title: body.title.trim(), body: body.body, tier: body.tier as 'urgent' | 'normal' | undefined, link });
+    return { ok: true, id: out.id, tier: body.tier === 'urgent' ? 'urgent' : 'normal', ...(link ? { link } : {}) };
+  }
+
+  /** What the Bot reads first: cheap reads only (no transcript scans, no
+   *  usage probes). Only a conversation of the Bot may read it. */
+  @Get('bot/overview')
+  botOverview(@Query('from') from?: string) {
+    const bot = this.manager.bot();
+    if (!bot.isBotSession(from)) throw new ForbiddenException('only the Bot can read its overview');
+    const state = bot.snapshot();
+    const nowMs = Date.now(), nowSec = Math.floor(nowMs / 1000);
+    const scheduled = this.cron.list().filter((j) => j.contextReview || (j.lastResult && j.lastResult !== 'queued' && j.lastResult !== 'delivered'))
+      .map((j) => ({ id: j.id, label: j.label ?? null, schedule: j.schedule, tz: j.tz, once: !!j.once, enabled: j.enabled, projectId: j.projectId, sessionId: j.sessionId ?? null,
+        lastRunAt: j.lastRunAt ? new Date(j.lastRunAt).toISOString() : null, lastResult: j.contextReview?.reason ?? j.lastResult ?? null }));
+    let accounts: { name: string; label: string | null; provider: string; state: string; until: string | null; estimated: boolean; paused: boolean; usable: boolean }[] = [];
+    try {
+      // The registry's own record and its quota-aware verdict: no upstream
+      // usage call (a Codex usage probe spawns an app-server).
+      const registry = AccountRegistry.load(join(this.stateDir, 'accounts.json'));
+      accounts = registry.list().map((a) => {
+        const st = registry.effectiveState(a.name, nowSec);
+        const until = st.kind === 'limited' ? st.until : undefined;
+        return { name: a.name, label: a.label ?? null, provider: a.provider, state: st.kind, until: until ? new Date(until * 1000).toISOString() : null,
+          estimated: st.kind === 'limited' && !!st.estimated, paused: !!a.paused, usable: !a.paused && st.kind !== 'unauthenticated' && st.kind !== 'limited' };
+      });
+    } catch { /* no accounts file: nothing to report */ }
+    return { now: new Date(nowMs).toISOString(), tz: state.tz, briefAt: state.briefAt, lastBriefDate: state.lastBriefDate ?? null,
+      ...this.manager.botOverview(), recent: bot.recentEvents(), scheduled, accounts };
   }
 
   /** Pending cross-conversation sends awaiting the operator's decision — what

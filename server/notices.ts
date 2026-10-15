@@ -11,7 +11,8 @@
  *           failed scheduled task. Pushed even when the turn was automated.
  *   normal  worth a buzz when you are away: a long turn you started finished,
  *           a recap turn finished, an autopilot run ended (quiet when a recap
- *           follows), a parked turn, a restart interrupted work.
+ *           follows), a parked turn, a restart interrupted work, the Bot's
+ *           morning brief, a Bot notify_user that is not urgent.
  *   quiet   bell + dot only: short turns, relays, cron, delegate wakes,
  *           advisor follow-ups, delegate progress, a failover that worked.
  *   none    nothing at all: stopped turns, autopilot steps, per-conversation
@@ -23,7 +24,7 @@ import { serverLabel } from './mcp-oauth.js';
 export type NoticeTier = 'urgent' | 'normal' | 'quiet' | 'none';
 /** What a device's settings switch on or off. `needs_you` cannot be turned off. */
 export type NoticeCategory = 'needs_you' | 'finished' | 'automation';
-export type TurnOrigin = 'human' | 'relay' | 'cron' | 'autopilot' | 'advisor' | 'delegate' | 'recap';
+export type TurnOrigin = 'human' | 'relay' | 'cron' | 'autopilot' | 'advisor' | 'delegate' | 'recap' | 'brief';
 
 export interface Notice {
   tier: NoticeTier;
@@ -61,6 +62,8 @@ export const LONG_TURN_MS = 45_000;
 export const TITLE_MAX = 60;
 export const EXCERPT_MAX = 110;
 export const QUESTION_MAX = 140;
+/** The morning brief's push body. */
+export const BRIEF_MAX = 240;
 export const DEFAULT_NOTICE_TZ = 'Asia/Jakarta';
 
 const PROVIDER_LABEL: Record<string, string> = { claude: 'Claude', codex: 'ChatGPT' };
@@ -75,6 +78,10 @@ export function originOf(sender?: { kind?: string } | null): TurnOrigin {
     case 'delegate': return 'delegate';
     // The gateway asked for the ending of a long piece of work.
     case 'recap': return 'recap';
+    // The Bot's morning brief: its reply is the push.
+    case 'bot_brief': return 'brief';
+    // A digest handed to the Bot: its reply is silent unless it notifies.
+    case 'bot_event': return 'relay';
     default: return 'relay';
   }
 }
@@ -102,7 +109,7 @@ export function formatDuration(ms: number): string {
 /** A reply as a sentence a lock screen can hold: no markdown, no protocol
  *  blocks, no memory preamble. A reply that ends by asking something leads
  *  with that question. */
-export function replyExcerpt(text: string, max = EXCERPT_MAX): string {
+export function replyExcerpt(text: string, max = EXCERPT_MAX, leadWithQuestion = true): string {
   let s = stripTeamLine(String(text || ''));
   s = s
     .replace(/<<<ASK[\s\S]*?(>>>|$)/g, ' ')
@@ -127,7 +134,7 @@ export function replyExcerpt(text: string, max = EXCERPT_MAX): string {
   while (lines.length > 1 && /^(done|ok(ay)?|all set|here(?:'s| is) (?:what|the)[^.]*:?|summary:?)\.?!?$/i.test(lines[0])) lines.shift();
   const flat = lines.join(' ').replace(/\s+/g, ' ').trim();
   if (!flat) return '';
-  if (/\?\s*$/.test(flat)) {
+  if (leadWithQuestion && /\?\s*$/.test(flat)) {
     const sentences = flat.match(/[^.!?]+[.!?]+/g) ?? [flat];
     const q = sentences[sentences.length - 1].trim();
     if (q.length < flat.length) return cutWords(q + ' ' + flat.slice(0, flat.length - q.length).trim(), max);
@@ -249,6 +256,9 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         // A recap is the real end of background work or an autopilot run:
         // the one buzz for that ending.
         if (origin === 'recap') return make('normal', 'finished', body, id);
+        // The Bot's morning brief pushes even when short: the reply IS the
+        // brief, in its own order (its closing question stays last).
+        if (origin === 'brief') return make('normal', 'finished', withPrefix(ctx, replyExcerpt(String(data.resultText || ''), BRIEF_MAX, false) || 'Your morning brief is ready.'), id);
         if (origin !== 'human') return make('quiet', 'automation', body, id);
         return make(Number.isFinite(dur) && dur >= LONG_TURN_MS ? 'normal' : 'quiet', 'finished', body, id);
       }
@@ -321,6 +331,15 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         { title: 'MCP sign-in', tag: `x056-mcp-oauth-${name}`, link: '/?mcp=servers' });
     }
 
+    case 'bot_notice': {
+      // The Bot's own push (notify_user): its words, its link.
+      const at = String(data.at || ctx.at || '');
+      const urgent = data.tier === 'urgent';
+      const link = typeof data.link === 'string' && data.link.startsWith('/') && !data.link.startsWith('//') ? data.link : ctx.link || '/';
+      return make(urgent ? 'urgent' : 'normal', urgent ? 'needs_you' : 'finished', String(data.body || ''), `bot:${at}`,
+        { title: cutWords(String(data.title || 'Bot'), TITLE_MAX), link, tag: `x056-bot-${at}` });
+    }
+
     case 'turn_orphaned':
       return none();
 
@@ -335,4 +354,4 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
 }
 
 /** Which kinds noticeFor can answer, so the emitter skips the rest cheaply. */
-export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted']);
+export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted', 'bot_notice']);

@@ -54,6 +54,8 @@ export interface RunSessionOptions {
   /** Agent team wiring (see TurnOptions.subagents / codexConfig). */
   subagents?: string;
   codexConfig?: Record<string, unknown>;
+  /** Tools denied to every turn of this session (see TurnOptions.disallowedTools). Claude only. */
+  disallowedTools?: string[];
   appendSystemPrompt?: string;
   /** The gateway's MCP bridge wiring, passed through to every turn (see
    *  TurnOptions.mcp) so sessions can read/message other conversations. */
@@ -305,6 +307,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         advisor: opts.advisor,
         subagents: opts.subagents,
         codexConfig: opts.codexConfig,
+        disallowedTools: opts.disallowedTools,
         appendSystemPrompt: opts.appendSystemPrompt,
         mcp: opts.mcp,
         onEvent: (e) => processEvent(e),

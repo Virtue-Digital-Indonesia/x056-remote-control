@@ -7,6 +7,10 @@ window.createRCChat = function (engine, room) {
   let routing = false, routeQueue = Promise.resolve();
   const chatPath = id => '/chat' + (id ? '/' + encodeURIComponent(id) : '');
   const inChat = () => /^\/chat(?:\/|$)/.test(location.pathname);
+  // The Bot (the owner's assistant) is one ordinary Chat; /bot opens it, or sets it up.
+  const inBot = () => location.pathname === '/bot';
+  const botIcon = '<svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg>';
+  let bot = null, botRequest = null, briefTimer;
   const icon = name => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ({edit:'<path d="m16 3 5 5-12 12-6 1 1-6Z M14 5l5 5"/>',archive:'<path d="M4 9h16v12H4z M3 3h18v6H3z M9 13h6"/>',controls:'<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',link:'<path d="m9 15 6-6 M8 16l-1 1a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0 M16 8l1-1a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0"/>',chevron:'<path d="m9 5 7 7-7 7"/>',chat:'<path d="M21 11a9 9 0 0 1-9 9H4l-3 2 2-6A9 9 0 1 1 21 11Z"/>'}[name] || '') + '</svg>';
   const current = () => engine.state().projects.find(p => p.id === engine.state().projectId && p.kind === 'chat');
   const request = async (url, body) => { const response = await engine.api(url, body === undefined ? undefined : { method: 'POST', body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Request failed'); return data; };
@@ -30,6 +34,14 @@ window.createRCChat = function (engine, room) {
     const welcome = document.createElement('section'); welcome.id = 'rcChatWelcome';
     welcome.innerHTML = `<button class="cr-secondary" id="rcChatWelcomeMenu">Chats</button><div class="rc-chat-welcome-copy">${icon('chat')}<h1>What are we working on?</h1><p>Start a conversation, bring your files, and pick up where you left off.</p><button class="cr-primary" id="rcChatWelcomeNew">New chat</button></div>`;
     $('conversationSurface').append(welcome);
+    const setup = document.createElement('section'); setup.id = 'rcBotSetup';
+    setup.innerHTML = `<form class="rc-bot-card" id="rcBotSetupForm" aria-labelledby="rcBotSetupTitle" novalidate>${botIcon}<h1 id="rcBotSetupTitle">Set up your Bot</h1><p>Your Bot is a personal assistant chat. It hands work to the right conversation, follows up on it, and reports back.</p><p>It briefs you every morning, and messages you when something needs you.</p><label class="rc-bot-time">Morning brief<input type="time" name="briefAt" value="07:30" required></label><small class="rc-bot-tz">Asia/Jakarta time</small><p class="rc-bot-error" role="alert"></p><button class="cr-primary" type="submit">Enable Bot</button></form>`;
+    $('conversationSurface').append(setup);
+    $('rcBotSetupForm').onsubmit = enableBot;
+    const botHead = document.createElement('div'); botHead.id = 'rcBotHead'; botHead.hidden = true;
+    botHead.innerHTML = `<span class="rc-bot-badge">${botIcon}Bot</span><span id="rcBotBriefAt"></span><button type="button" class="cr-secondary" id="rcBotBriefNow">Brief me now</button><span id="rcBotBriefStatus" role="status"></span>`;
+    ($('projTitle')?.closest('.project-heading') || $('projTitle'))?.after(botHead);
+    $('rcBotBriefNow').onclick = briefNow;
     const panel = document.createElement('aside'); panel.id = 'rcChatInspector'; panel.setAttribute('aria-label', 'Chat files and references');
     panel.innerHTML = `<header><strong>Workspace</strong><button class="cr-icon" id="rcChatPanelClose" aria-label="Close file panel">×</button></header><div class="rc-chat-tabs"><button data-chat-tab="files" aria-pressed="true">Files</button><button data-chat-tab="preview">Preview</button><button data-chat-tab="references">References</button></div><div id="rcChatUploads" role="status"></div><div id="rcChatPanelBody"></div>`;
     $('conversationSurface').append(panel);
@@ -56,6 +68,13 @@ window.createRCChat = function (engine, room) {
       routing = true;
       try {
         document.querySelectorAll('.rc-chat-dialog[open]').forEach(d => d.close());
+        if (inBot()) {
+          let data = null, error = '';
+          try { data = await loadBot(); } catch (e) { error = e.message; }
+          if (!inBot()) return;
+          if (data?.enabled && data.url) window.history.replaceState({}, '', data.url);
+          else { showBotSetup(data, error); return; }
+        }
         if (!inChat()) { leave(false, !!window.rcProjectSpaces?.handles(location.pathname)); return; }
         const path = location.pathname;
         await engine.reloadProjects();
@@ -65,7 +84,7 @@ window.createRCChat = function (engine, room) {
         document.body.classList.add('rc-chat-active');
         document.body.classList.toggle('rc-chat-home-view', !chat);
         document.body.classList.toggle('rc-chat-unavailable', !!id && !chat);
-        document.body.classList.remove('rc-chat-nav-open', 'rc-chat-panel-open');
+        document.body.classList.remove('rc-chat-nav-open', 'rc-chat-panel-open', 'rc-bot-setup');
         if (chat) {
           showArchived = !!chat.archivedAt;
           await engine.select(chat.id, chat.lastSessionId);
@@ -85,7 +104,8 @@ window.createRCChat = function (engine, room) {
   function open(chat) { return navigate(chatPath(chat.id)); }
   function leave(updateURL = true, keepRoom = false) {
     if (updateURL && inChat()) window.history.pushState({}, '', '/');
-    document.body.classList.remove('rc-chat-active','rc-chat-home-view','rc-chat-unavailable','rc-chat-nav-open','rc-chat-panel-open');
+    document.body.classList.remove('rc-chat-active','rc-chat-home-view','rc-chat-unavailable','rc-chat-nav-open','rc-chat-panel-open','rc-bot-setup','rc-bot-chat');
+    if ($('rcBotHead')) $('rcBotHead').hidden = true;
     $('crChatTab')?.removeAttribute('aria-current'); cleanupPreview(); if (!keepRoom) room.showBoard();
   }
   function closePanel() {
@@ -96,12 +116,13 @@ window.createRCChat = function (engine, room) {
     const query = $('rcChatSearch').value.toLowerCase(), state = engine.state();
     const filter = $('rcChatProjectFilter');
     const chats = state.projects.filter(p => p.kind === 'chat' && (!filter?.value || (filter.value==='standalone'?!p.spaceId:p.spaceId===filter.value)) && !!p.archivedAt === showArchived && (p.name + ' ' + p.conversations?.[0]?.title).toLowerCase().includes(query));
-    chats.sort((a,b) => (b.conversations?.[0]?.lastMessageAt || b.conversations?.[0]?.createdAt || 0) - (a.conversations?.[0]?.lastMessageAt || a.conversations?.[0]?.createdAt || 0));
+    chats.sort((a,b) => (!!b.bot - !!a.bot) || (b.conversations?.[0]?.lastMessageAt || b.conversations?.[0]?.createdAt || 0) - (a.conversations?.[0]?.lastMessageAt || a.conversations?.[0]?.createdAt || 0));
     $('rcChatArchives').textContent = showArchived ? 'Active chats' : 'Archived chats';
-    $('rcChatList').innerHTML = chats.map(p => `<a class="rc-chat-item ${p.id === active ? 'selected' : ''}" href="${chatPath(p.id)}" data-chat-link data-chat="${esc(p.id)}" ${(p.conversations?.[0]?.sessionId || p.lastSessionId) ? `data-conv-project="${esc(p.id)}" data-conv-session="${esc(p.conversations?.[0]?.sessionId || p.lastSessionId)}"` : ''} ${p.id === active ? 'aria-current="page"' : ''}><strong>${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small></a>`).join('') || '<p class="rc-chat-empty">No chats found.</p>';
+    $('rcChatList').innerHTML = chats.map(p => `<a class="rc-chat-item ${p.id === active ? 'selected' : ''}" href="${chatPath(p.id)}" data-chat-link data-chat="${esc(p.id)}" ${(p.conversations?.[0]?.sessionId || p.lastSessionId) ? `data-conv-project="${esc(p.id)}" data-conv-session="${esc(p.conversations?.[0]?.sessionId || p.lastSessionId)}"` : ''} ${p.id === active ? 'aria-current="page"' : ''}><strong>${p.bot ? '<span class="rc-bot-badge">Bot</span>' : ''}${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small></a>`).join('') || '<p class="rc-chat-empty">No chats found.</p>';
   }
   function sync() {
     if (!mounted) return;
+    if (inBot()) return;
     if (!inChat()) { if (!routing && current() && room.isOpen() && !window.rcProjectSpaces?.handles(location.pathname)) navigate(chatPath(current().id)); return; }
     if (document.body.classList.contains('rc-chat-home-view')) { renderChats(); return; }
     const chat = current();
@@ -109,7 +130,53 @@ window.createRCChat = function (engine, room) {
     if (room.isOpen()) document.body.classList.add('rc-chat-active');
     $('rcChatProvider').textContent = chat.provider === 'codex' ? 'Codex' : 'Claude';
     if (active !== chat.id) { active = chat.id; selectedFile = ''; selectedVersion = ''; files = []; loadFiles(); }
-    renderChats(); renderUploads();
+    renderChats(); renderUploads(); renderBotHead(chat);
+  }
+  function loadBot() { return botRequest = request('/api/bot').then(data => (bot = data)); }
+  function showBotSetup(data, error) {
+    active = ''; cleanupPreview();
+    document.body.classList.add('rc-chat-active', 'rc-chat-home-view', 'rc-bot-setup');
+    document.body.classList.remove('rc-chat-unavailable', 'rc-chat-nav-open', 'rc-chat-panel-open', 'rc-bot-chat');
+    $('rcBotHead').hidden = true; $('crChatTab')?.removeAttribute('aria-current');
+    room.openChat();
+    const form = $('rcBotSetupForm');
+    if (data?.briefAt) form.elements.briefAt.value = data.briefAt;
+    form.querySelector('.rc-bot-tz').textContent = (data?.tz || 'Asia/Jakarta') + ' time';
+    form.querySelector('[role=alert]').textContent = error ? 'Could not load the Bot: ' + error : '';
+  }
+  async function enableBot(event) {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector('button[type=submit]'), alert = form.querySelector('[role=alert]'), briefAt = form.elements.briefAt.value;
+    alert.textContent = '';
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(briefAt)) { alert.textContent = 'Choose a brief time, such as 07:30.'; form.elements.briefAt.focus(); return; }
+    button.disabled = true; button.textContent = 'Enabling…';
+    try {
+      const data = await request('/api/bot', { enabled: true, briefAt });
+      bot = data; botRequest = Promise.resolve(data);
+      if (!data.enabled || !data.url) throw new Error('The Bot did not start. Try again.');
+      await engine.reloadProjects();
+      await navigate(data.url, true);
+    } catch (error) { alert.textContent = error.message || 'Could not enable the Bot.'; }
+    finally { button.disabled = false; button.textContent = 'Enable Bot'; }
+  }
+  function renderBotHead(chat) {
+    const head = $('rcBotHead'); if (!head) return;
+    const on = !!chat?.bot && room.isOpen() !== false && !document.body.classList.contains('rc-chat-home-view');
+    head.hidden = !on; document.body.classList.toggle('rc-bot-chat', on);
+    if (!on) return;
+    if (!bot && !botRequest) loadBot().then(() => renderBotHead(current()), () => {});
+    const at = $('rcBotBriefAt');
+    at.textContent = bot?.briefAt ? 'Brief ' + bot.briefAt : '';
+    at.title = bot?.briefAt ? 'Morning brief at ' + bot.briefAt + ', ' + (bot.tz || 'Asia/Jakarta') + ' time' : '';
+  }
+  async function briefNow() {
+    const button = $('rcBotBriefNow'), status = $('rcBotBriefStatus');
+    if (button.disabled) return;
+    clearTimeout(briefTimer); button.disabled = true; button.setAttribute('aria-busy', 'true');
+    status.classList.remove('error'); status.textContent = 'Asking…';
+    try { await request('/api/bot/brief', {}); status.textContent = 'Brief requested'; }
+    catch (error) { status.classList.add('error'); status.textContent = error.message || 'Brief failed'; }
+    finally { button.disabled = false; button.removeAttribute('aria-busy'); briefTimer = setTimeout(() => { status.textContent = ''; status.classList.remove('error'); }, 5000); }
   }
   function newChat() {
     const d = dialog('New chat', `<form class="workspace-form"><p class="rc-chat-note">Start with your saved choices. You can change them here or from the composer.</p><details class="rc-chat-new-options"><summary>Provider, model, effort, and account</summary><div class="rc-chat-form-grid"><label>Provider<select name="provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><label>Account<select name="account"></select></label><label>Model<select name="model"></select></label><label>Effort<select name="effort"></select></label></div></details><p class="rc-chat-note">The chat is named from your first message. Automatic account selection keeps work moving across available accounts.</p><p role="alert"></p><button class="cr-primary">Start chat</button></form>`);
@@ -314,5 +381,5 @@ window.createRCChat = function (engine, room) {
   document.addEventListener('x056:reconnected',()=>{if(enabled)loadFiles();});
   document.addEventListener('x056:mode',event=>{if(event.detail.mode==='closed'){document.body.classList.remove('rc-chat-active','rc-chat-home-view');if(!routing&&inChat())window.history.pushState({},'', '/');}else setTimeout(sync,0);});
   document.addEventListener('x056:event',event=>{const {kind,data}=event.detail;if(kind==='chat_files'&&data.projectId===active)loadFiles();if(kind==='projects')engine.reloadProjects().then(sync);else if(kind==='conversation')setTimeout(sync,100);});
-  return { navigate, leave, newChat, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat())await applyRoute();else sync();}}catch(error){if(inChat())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
+  return { navigate, leave, newChat, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat()||inBot())await applyRoute();else sync();}else if(inBot())notify('Chat is turned off on this gateway, so the Bot is unavailable.');}catch(error){if(inChat()||inBot())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
 };

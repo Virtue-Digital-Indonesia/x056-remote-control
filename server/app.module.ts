@@ -166,6 +166,9 @@ export function buildModule(cfg: GatewayConfig): unknown {
       : targets.futureWorkProjectIds.includes(job.projectId)) cron.pauseForContext(job.id, reason, operationId);
   }, () => cron.list());
   cron.start();
+  // The Bot's clock: the morning brief and the digest flush (server/bot.ts).
+  // Unref'd; stopped in manager.onModuleDestroy. Idle while the Bot is off.
+  manager.bot().start();
 
   // Claude Design's browser login, per account. Must outlive a turn: the
   // operator authorizes in a browser and pastes a code back.
@@ -215,6 +218,6 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: APP_GUARD, useFactory: (reflector: Reflector) => new AuthGuard(cfg.token, sessions, reflector, oauth), inject: [Reflector] },
     ],
   })
-  class AppModule { onModuleDestroy(): void { mcpOAuth.stop(); } }
+  class AppModule { onModuleDestroy(): void { mcpOAuth.stop(); manager.bot().stop(); } }
   return AppModule;
 }

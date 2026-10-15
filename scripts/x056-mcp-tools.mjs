@@ -3,6 +3,7 @@ import { Ajv } from 'ajv';
 import { WORKSPACE_TOOLS, callWorkspaceTool } from './x056-mcp-workspace.mjs';
 import { CHAT_TOOLS, CHAT_OUTPUT, callChatTool } from './x056-mcp-chat.mjs';
 import { PROJECT_FILE_TOOLS, callProjectFileTool } from './x056-mcp-project-files.mjs';
+import { BOT_TOOLS, BOT_TOOL_NAMES, callBotTool } from './x056-mcp-bot.mjs';
 // Tool definitions + implementations for the x056 MCP bridge, shared by BOTH
 // transports: the stdio server the gateway spawns per turn (scripts/x056-mcp.mjs)
 // and the Streamable HTTP endpoint the gateway serves at /mcp for external
@@ -188,6 +189,14 @@ const SELF = {
   projectId: process.env.X056_SELF_PROJECT_ID || '',
   sessionId: process.env.X056_SELF_SESSION_ID || '',
 };
+
+/** This bridge runs inside a turn of the Bot (the manager sets X056_BOT=1 in
+ *  the Bot's per-turn MCP config). Never true on the HTTP bridge, which runs in
+ *  the gateway process and serves external clients. */
+const IS_BOT = process.env.X056_BOT === '1' && !!SELF.sessionId;
+
+/** The tools this bridge advertises: everyone's, plus the Bot's own for the Bot. */
+export function listTools() { return IS_BOT ? [...TOOLS, ...BOT_TOOLS] : TOOLS; }
 
 const QUEUE_TOOLS = [
   {
@@ -544,6 +553,7 @@ for (const tool of TOOLS) {
 
 const inputValidator = new Ajv({ strict: true, allErrors: true });
 const inputs = new Map(TOOLS.map(tool => [tool.name, inputValidator.compile(tool.inputSchema)]));
+const botInputs = new Map(BOT_TOOLS.map(tool => [tool.name, inputValidator.compile(tool.inputSchema)]));
 
 // A conversation's helpers as stored (older rows keep one `decisionMaker`).
 const helpersOfRow = (c) => c.helpers || (c.decisionMaker === 'advisor' ? { advisor: true } : c.decisionMaker ? { router: c.decisionMaker } : {});
@@ -585,6 +595,12 @@ export async function callTool(api, name, args) {
 
 /** One execution produces both representations; neither transport replays calls. */
 export async function callToolResult(api, name, args) {
+  if (BOT_TOOL_NAMES.has(name)) {
+    if (!IS_BOT) throw new Error(`${name} is only available to the Bot`);
+    const check = botInputs.get(name);
+    if (!check(args)) throw new Error('Invalid tool arguments: ' + inputValidator.errorsText(check.errors));
+    return callBotTool(api, name, args, SELF);
+  }
   const validate = inputs.get(name);
   if (!validate) throw new Error(`unknown tool: ${name}`);
   if (!validate(args)) throw new Error('Invalid tool arguments: ' + inputValidator.errorsText(validate.errors));

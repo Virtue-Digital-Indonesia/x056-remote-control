@@ -9,7 +9,7 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
   for(const [url] of settingsSections)globals[url]='preferences';
   const aliases={'/dashboard':'/accounts','/queue':'/activity/queue','/automations':'/activity/automations','/artifacts':'/activity/outputs'};
   const canonical=p=>aliases[p]||(/^\/settings\//.test(p)&&!settingsRoute(p)?'/settings':p);
-  const labels={'/':'Home','/home':'Home','/activity':'Activity','/activity/queue':'Activity / Queued messages','/activity/automations':'Activity / Automations','/activity/outputs':'Activity / Outputs','/accounts':'Accounts & tools','/accounts/tools':'Accounts & tools / Tools','/memory':'Workspace memory','/settings':'Settings','/work/unassigned':'Unassigned Work'};
+  const labels={'/':'Home','/home':'Home','/activity':'Activity','/activity/queue':'Activity / Queued messages','/activity/automations':'Activity / Automations','/activity/outputs':'Activity / Outputs','/accounts':'Accounts & tools','/accounts/tools':'Accounts & tools / Tools','/memory':'Workspace memory','/settings':'Settings','/work/unassigned':'Unassigned Work','/bot':'Bot'};
   for(const [url,name] of settingsSections)if(url!=='/settings')labels[url]='Settings / '+name;
   const settingsRoute=p=>settingsSections.some(([url])=>url===p);
   const sectionOf=p=>(settingsSections.find(([url])=>url===p)||settingsSections[0])[2];
@@ -94,9 +94,9 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     nav.insertAdjacentHTML('afterbegin','<button id="workspaceNavClose" class="cr-icon" aria-label="Close workspace navigation">'+icon('x')+'</button>');
     $('workspaceNavClose').onclick=()=>{closeDrawer();focusNavigation();};
     $('workspaceSearch').onclick=()=>$('searchChatsBtn').click();
-    const destinations=[['crHomeTab','/home','Home','home'],['crSpacesTab','/projects','All Projects','folder'],['workspaceActivity','/activity','Activity','activity'],['crAccountsTab','/accounts','Accounts & tools','user'],['crMemoryTab','/memory','Workspace memory','snippet'],['sidebarSettings','/settings','Settings','gear']];
+    const destinations=[['crHomeTab','/home','Home','home'],['crSpacesTab','/projects','All Projects','folder'],['workspaceBot','/bot','Bot','bot'],['workspaceActivity','/activity','Activity','activity'],['crAccountsTab','/accounts','Accounts & tools','user'],['crMemoryTab','/memory','Workspace memory','snippet'],['sidebarSettings','/settings','Settings','gear']];
     const bottom=document.createElement('nav');bottom.className='cr-primary-nav workspace-global-nav';bottom.setAttribute('aria-label','Workspace tools');nav.append(bottom);
-    for(const [id,url,label,ic] of destinations){let a=document.createElement('a');a.id=id;a.href=url;a.dataset.workspaceLink='';a.dataset.globalDestination='';a.innerHTML=icon(ic)+'<span>'+label+'</span>';const old=$(id);if(old)old.replaceWith(a);(url==='/home'||url==='/projects'?primary:bottom).append(a);}
+    for(const [id,url,label,ic] of destinations){let a=document.createElement('a');a.id=id;a.href=url;a.dataset.workspaceLink='';a.dataset.globalDestination='';a.innerHTML=icon(ic)+'<span>'+label+'</span>';const old=$(id);if(old)old.replaceWith(a);(url==='/home'||url==='/projects'||url==='/bot'?primary:bottom).append(a);}
     // Preserve the all-Work route and repository management without listing every
     // repository a second time in the Project sidebar.
     for(const id of ['crBoardTab','crChatTab','crManageProjects','crAutomationsTab','crArtifactsTab','crPlannerTab','crSettings'])$(id).hidden=true;

@@ -106,6 +106,9 @@ export class McpHttpController {
       });
     }
     if (method === 'ping') return ok(id, {});
+    // TOOLS only, never the Bot's notify_user / status_overview: this endpoint
+    // serves external clients, which are never the Bot (a Bot turn uses the
+    // stdio bridge with X056_BOT=1), and callToolResult refuses them here too.
     if (method === 'tools/list') return ok(id, { tools: TOOLS });
     if (method === 'tools/call') {
       const name = typeof params?.name === 'string' ? params.name : '';

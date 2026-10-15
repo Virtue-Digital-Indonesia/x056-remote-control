@@ -54,6 +54,7 @@ import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
 import { parseQuestion, stripAsk, stripAskInstructions, withAskInstructions } from '../src/question.js';
 import { closeAllGatewayDbs, closeGatewayDb, gatewayDb } from './gateway-db.js';
+import { BOT_CHAT_NAME, BOT_DENIED_TOOLS, BOT_REQUEST_ID, BOT_SYSTEM_NOTE, BotService, type BotOptions } from './bot.js';
 
 export interface GatewayEvent {
   seq: number;
@@ -131,6 +132,8 @@ export interface SessionManagerOptions {
    *  get tools to read/message other conversations and projects (built by the
    *  server entrypoint, which knows the token + port; absent in tests). */
   mcp?: TurnOptions['mcp'];
+  /** The Bot's clock and digest timings (tests). */
+  bot?: BotOptions;
 }
 
 /** A pending account login, keyed by an opaque id the panel holds. */
@@ -494,6 +497,7 @@ export class SessionManager {
   private readonly queueChecks = new Set<string>();
   onModuleDestroy(): void {
     this.destroyed = true;
+    this.botService?.stop();
     this.completions.close();
     for (const timer of this.queueTimers.values()) clearTimeout(timer);
     for (const timer of this.autopilotTimers.values()) clearTimeout(timer);
@@ -1777,7 +1781,8 @@ export class SessionManager {
         const runningAccounts = Object.fromEntries([...this.runs.values()].filter(r => r.projectId === p.id && r.account).map(r => [r.sessionId, r.account!]));
         const conversations = (p.conversations || []).map(c => ({ ...c, provider: reg.conversationProvider(p.id, c.sessionId), effectiveRouter: effectiveRouter(helpersOf(c), jev) ?? null, ...(spaceView ? spaceView.resolve(p.id, c.sessionId) : {}) }));
         return { ...p, conversations, spaceId: p.kind === 'chat' ? conversations[0]?.spaceId : undefined, workSpaceId: p.kind !== 'chat' ? spaceView?.defaultForWork(p.id) : undefined,
-          running: running.length > 0, runningSessionIds: running, runningAccounts, backgroundSessionIds: background };
+          running: running.length > 0, runningSessionIds: running, runningAccounts, backgroundSessionIds: background,
+          ...(p.kind === 'chat' && this.bot().isBotProject(p.id) ? { bot: true as const } : {}) };
       }),
     };
   }
@@ -2079,6 +2084,7 @@ export class SessionManager {
     if (helpers.router !== undefined && !['jev', 'decisions', 'none'].includes(helpers.router)) throw new Error('router must be jev, decisions or none');
     if (helpers.lean !== undefined && !['low', 'high'].includes(helpers.lean)) throw new Error('lean must be low, medium or high');
     this.projects().conversationProvider(pid, sid); // unknown conversation throws here
+    if (helpers.team && this.bot().isBotProject(pid)) throw new Error('The Bot does not use an agent team: it delegates the work instead');
     if (helpers.router === 'jev' && !this.jev().configured()) throw new Error('No Jev API key is configured');
     if (helpers.router === 'decisions' && !this.openaiDecisions().configured()) throw new Error('No OpenAI API key is configured for the Decisions API');
     this.projects().setHelpers(pid, sid, helpers);
@@ -2132,6 +2138,73 @@ export class SessionManager {
     const d = backend === 'decisions' ? await this.openaiDecisions().fork(sid, fork) : await this.jev().fork(sid, fork);
     this.emit('jev_fork', { ...d, projectId: pid } as unknown as Record<string, unknown>);
     return d;
+  }
+
+  // ---- the Bot: the owner's personal assistant (server/bot.ts) ----
+  private botService?: BotService;
+  bot(): BotService {
+    return this.botService ??= new BotService(this.opts.stateDir, {
+      project: (pid) => this.projects().get(pid),
+      // FIXED input: createChat fingerprints it, so re-enabling finds the same Chat.
+      createChat: () => this.createChat({ requestId: BOT_REQUEST_ID, name: BOT_CHAT_NAME, provider: 'claude' }),
+      unarchiveChat: (pid) => { this.projects().archiveChat(pid, false); this.emit('projects', { id: pid, kind: 'chat' }); },
+      queue: (pid) => this.loadQueues()[pid] ?? [],
+      enqueue: (pid, item) => this.enqueue(pid, item),
+      appendToQueued: (pid, id, text) => {
+        const it = (this.loadQueues()[pid] ?? []).find((x) => x.id === id);
+        if (!it) throw new Error('Queued message no longer exists');
+        this.editQueueItem(pid, id, { text: it.text + '\n\n---\n\n' + text });
+      },
+      warn: (message) => console.warn('[bot] ' + message),
+    }, this.opts.bot);
+  }
+
+  /** The Bot's notify_user: one push in its own words. `from` must be a
+   *  conversation of the Bot (the route checks it too). */
+  botNotify(from: string, input: { title: string; body: string; tier?: 'urgent' | 'normal'; link?: string }): { id: string } {
+    const bot = this.bot();
+    if (!bot.isBotSession(from)) throw new Error('only the Bot can notify the owner');
+    const at = new Date().toISOString();
+    const pid = bot.snapshot().projectId!;
+    this.emit('bot_notice', { projectId: pid, sessionId: from, title: input.title, body: input.body, tier: input.tier === 'urgent' ? 'urgent' : 'normal',
+      ...(input.link ? { link: input.link } : {}), at });
+    return { id: 'bot:' + at };
+  }
+
+  /** The cheap half of the Bot's overview: no transcript scans, no network. */
+  botOverview(): {
+    running: { projectId: string; projectName: string; sessionId: string; title: string; state: 'turn' | 'background'; since: string | null; account: string | null }[];
+    needsYou: { kind: 'question' | 'approval'; projectId: string; projectName: string; sessionId: string | null; title: string; text: string; at: string; approvalId?: string; target?: string }[];
+    delegates: { orchestratorProjectId: string; orchestratorSessionId: string; orchestratorTitle: string; id: string; role: string; status: string; working: boolean; provider: string; updatedAt: string }[];
+  } {
+    const reg = this.projects();
+    const projects = reg.list();
+    const label = (pid: string, sid?: string) => {
+      const p = projects.find((x) => x.id === pid);
+      const c = sid ? p?.conversations?.find((x) => x.sessionId === sid) : undefined;
+      return { projectName: p?.name ?? pid, title: (p?.kind === 'chat' ? c?.title || p.name : c?.title) ?? sid ?? '' };
+    };
+    const running: ReturnType<SessionManager['botOverview']>['running'] = [];
+    for (const r of this.runs.values()) running.push({ projectId: r.projectId, sessionId: r.sessionId, ...label(r.projectId, r.sessionId), state: 'turn', since: r.startedAt ?? null, account: r.account ?? null });
+    for (const b of this.backgroundSessions(false)) if (!running.some((x) => x.sessionId === b.sessionId)) running.push({ ...b, ...label(b.projectId, b.sessionId), state: 'background', since: null, account: null });
+    const needsYou: ReturnType<SessionManager['botOverview']>['needsYou'] = [];
+    for (const q of this.listPendingQuestions()) if (!q.stale) needsYou.push({ kind: 'question', projectId: q.projectId, sessionId: q.sessionId, ...label(q.projectId, q.sessionId), text: q.question, at: q.at });
+    for (const a of this.listMcpApprovals()) {
+      const from = a.sender?.projectId ? label(a.sender.projectId, a.sender.sessionId) : undefined;
+      needsYou.push({ kind: 'approval', approvalId: a.id, projectId: a.sender?.projectId ?? a.projectId, sessionId: a.sender?.sessionId ?? null,
+        projectName: from?.projectName ?? a.projectName, title: from?.title ?? a.sender?.conversationTitle ?? 'An assistant', target: `${a.projectName} · ${a.targetLabel}`,
+        text: a.message.length > 300 ? a.message.slice(0, 299) + '…' : a.message, at: a.createdAt });
+    }
+    const store = this.delegateStore();
+    const delegates: ReturnType<SessionManager['botOverview']>['delegates'] = [];
+    for (const parent of store.parents()) {
+      for (const d of store.list(parent.parentProjectId, parent.parentSessionId)) {
+        if (!isActive(d)) continue;
+        delegates.push({ orchestratorProjectId: parent.parentProjectId, orchestratorSessionId: parent.parentSessionId, orchestratorTitle: label(parent.parentProjectId, parent.parentSessionId).title,
+          id: d.id, role: d.role, status: d.status, working: [...this.delegateRuns.values()].some((r) => r.id === d.id && r.parentSid === parent.parentSessionId), provider: d.provider, updatedAt: d.updatedAt });
+      }
+    }
+    return { running, needsYou, delegates };
   }
 
   // ---- delegates: an orchestrator's hidden workers (server/delegates.ts) ----
@@ -2925,6 +2998,7 @@ export class SessionManager {
     const p = this.chat(id), reg = this.projects();
     if (patch.archived !== undefined) {
       if (typeof patch.archived !== 'boolean') throw new Error('Invalid archive state');
+      if (patch.archived && this.bot().isBotProject(id)) throw new Error('The Bot\'s Chat cannot be archived: turn the Bot off instead');
       if (this.projectBusy(id) || (patch.archived && (this.queues()[id]?.length || this.hasAutopilot(p.lastSessionId!)))) throw new Error('Stop Chat and clear pending work before archiving');
       reg.archiveChat(id, patch.archived);
     }
@@ -2968,6 +3042,7 @@ export class SessionManager {
   /** Change the provider NEW conversations in a project start on. Existing
    *  conversations keep theirs (a Claude thread can't resume on GPT). */
   setProjectProvider(projectId: string, provider: ProviderId): void {
+    if (provider !== 'claude' && this.bot().isBotProject(projectId)) throw new Error('The Bot runs on Claude only');
     this.projects().setProvider(projectId, provider);
     this.emit('projects', { id: projectId, provider });
   }
@@ -3148,6 +3223,12 @@ export class SessionManager {
     if (NOTICE_KINDS.has(kind)) {
       const notice = this.noticeOf(kind, data, ts);
       if (notice) data = { ...data, notice };
+      // The Bot's digest and event log. Only buffers: the flush runs on its
+      // own timer, never inside event delivery, and a throw here must never
+      // stop an event from reaching the journal, the push or the panel.
+      if (notice) {
+        try { this.bot().observe(kind, data, notice); } catch (error) { console.warn('[bot] could not observe an event', error); }
+      }
     }
     const e: GatewayEvent = { seq: ++this.seq, ts, kind, data };
     try { new ConversationJournal(this.opts.stateDir).record(kind, data, e.ts); } catch (error) { console.error('Could not persist conversation event', error); }
@@ -3583,7 +3664,9 @@ export class SessionManager {
     try {
       const dir = join(this.opts.stateDir, 'mcp');
       mkdirSync(dir, { recursive: true });
-      const env = { ...base.env, X056_SELF_PROJECT_ID: pid, X056_SELF_SESSION_ID: sessionId };
+      // X056_BOT lists the Bot's own tools (notify_user, status_overview);
+      // the routes behind them still check the caller is the Bot.
+      const env = { ...base.env, X056_SELF_PROJECT_ID: pid, X056_SELF_SESSION_ID: sessionId, ...(this.bot().isBotProject(pid) ? { X056_BOT: '1' } : {}) };
       const configPath = join(dir, `${sessionId}.json`);
       writeFileSync(configPath, JSON.stringify({ mcpServers: { x056: { command: base.command, args: base.args, env } } }, null, 2));
       return { ...base, configPath, env };
@@ -3646,9 +3729,13 @@ export class SessionManager {
     const model = prefs.model || undefined, effort = prefs.effort || undefined, speed = asSpeed(prefs.speed);
     const helpers = helpersOf(reg.get(pid)?.conversations?.find((c) => c.sessionId === sessionId));
     const advisor = helpers.advisor ? advisorFor(adapter.id as 'claude' | 'codex', model) : undefined;
+    // The Bot delegates, reports and monitors: its own system note (never the
+    // container note or the host note), no shell, edits or subagents, and
+    // never the agent team. Claude only.
+    const isBot = adapter.id === 'claude' && this.bot().isBotProject(pid);
     // The agent team: subagents on argv (Claude) or thread config (Codex),
     // and the main session told how to use them and the fork layer.
-    const team = helpers.team ? {
+    const team = helpers.team && !isBot ? {
       subagents: adapter.id === 'claude' ? claudeTeamAgents() : undefined,
       codexConfig: adapter.id === 'codex' ? codexTeamConfig() : undefined,
       instructions: teamInstructions(adapter.id, { advisor: !!helpers.advisor, forks: !!this.forkBackend(helpers) }),
@@ -3833,7 +3920,8 @@ export class SessionManager {
         advisor: runAdvisor,
         subagents: team?.subagents,
         codexConfig: team?.codexConfig,
-        appendSystemPrompt: team ? CONTAINER_SYSTEM_NOTE + '\n\n' + team.instructions : CONTAINER_SYSTEM_NOTE,
+        appendSystemPrompt: isBot ? BOT_SYSTEM_NOTE : team ? CONTAINER_SYSTEM_NOTE + '\n\n' + team.instructions : CONTAINER_SYSTEM_NOTE,
+        ...(isBot ? { disallowedTools: BOT_DENIED_TOOLS } : {}),
         mcp: this.mcpWiringFor(pid, sessionId),
         // Each provider has a pool; the transport inside it speaks that CLI.
         startTurnFn: this.turnStarter(adapter, log, sessionId, (o) => (turnModel = o.model ?? turnModel, {
@@ -3949,7 +4037,10 @@ export class SessionManager {
           // an answerable card (only when not on autopilot/queue, which drive it).
           const currentAutopilot = this.loadAutopilot()[sessionId];
           const onAutopilot = !!currentAutopilot && !currentAutopilot.paused;
-          const q = res.status !== 'completed' || run.suppressCompletion || onAutopilot || drained ? null : parseQuestion(res.resultText ?? '');
+          // The Bot's brief and digest replies are never question cards: an ASK
+          // there would cancel the brief's push and make a digest reply loud.
+          const botReply = sender?.kind === 'bot_brief' || sender?.kind === 'bot_event';
+          const q = res.status !== 'completed' || run.suppressCompletion || onAutopilot || drained || botReply ? null : parseQuestion(res.resultText ?? '');
           // Autopilot swallows its steps' questions (the final step's too:
           // this runs before evaluateAutopilot disarms); its recap re-asks them.
           if (res.status === 'completed' && currentAutopilot && (onAutopilot || sender?.kind === 'autopilot')) {

@@ -1,7 +1,9 @@
 /** Display attribution, carried with the prompt so either provider retains it. */
 export interface MessageSender {
   messageId?: string;
-  kind: 'conversation' | 'automation' | 'autopilot' | 'mcp' | 'advisor' | 'delegate' | 'recap';
+  /** `bot_event`: a digest of things that need the owner, handed to the Bot.
+   *  `bot_brief`: the Bot's morning brief prompt. */
+  kind: 'conversation' | 'automation' | 'autopilot' | 'mcp' | 'advisor' | 'delegate' | 'recap' | 'bot_event' | 'bot_brief';
   /** For kind `recap`: which ending the gateway asked for. */
   recap?: 'background' | 'autopilot';
   projectId?: string;
@@ -10,6 +12,7 @@ export interface MessageSender {
   conversationTitle?: string;
 }
 const MARKER = '\n\n[x056 message sender v1] ';
+const SENDER_KINDS: readonly string[] = ['conversation', 'automation', 'autopilot', 'mcp', 'advisor', 'delegate', 'recap', 'bot_event', 'bot_brief'];
 export function withMessageSender(text: string, sender?: MessageSender): string {
   // Commands must reach the provider byte-for-byte, without appended arguments.
   return sender && !text.trimStart().startsWith('/') ? text + MARKER + JSON.stringify(sender) : text;
@@ -19,7 +22,7 @@ export function readMessageSender(text: string): { text: string; sender?: Messag
   if (index < 0 || text.length - index > 8000) return { text };
   try {
     const raw = JSON.parse(text.slice(index + MARKER.length));
-    if (!raw || !['conversation', 'automation', 'autopilot', 'mcp', 'advisor', 'delegate', 'recap'].includes(raw.kind)) return { text };
+    if (!raw || !SENDER_KINDS.includes(raw.kind)) return { text };
     const sender: MessageSender = { kind: raw.kind };
     if (raw.recap !== undefined) {
       if (raw.recap !== 'background' && raw.recap !== 'autopilot') return { text };

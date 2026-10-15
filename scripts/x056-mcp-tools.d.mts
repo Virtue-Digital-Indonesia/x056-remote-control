@@ -10,6 +10,10 @@ export declare const TOOLS: {
   annotations: { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean };
 }[];
 
+/** The tools a bridge advertises: TOOLS, plus the Bot's own (notify_user,
+ *  status_overview) only inside a Bot turn (X056_BOT=1 with a self session). */
+export declare function listTools(): typeof TOOLS;
+
 /** Run one tool. `api` is the caller's authenticated fetch into the gateway.
  *  Returns the text payload for the MCP `content` block; throws on failure. */
 export declare function callTool(

@@ -47,7 +47,7 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.type('application/json').send(JSON.stringify(appleAppSiteAssociation()));
   });
-  express.get(['/', '/home', '/dashboard', '/activity', '/activity/queue', '/activity/automations', '/activity/outputs', '/accounts', '/accounts/tools', '/automations', '/artifacts', '/queue', '/memory', '/settings', '/settings/:section', '/chat', '/chat/:chatId', '/projects', '/projects/:projectId', '/projects/:projectId/:tab', '/work', '/work/:projectId', '/work/:projectId/:sessionId'], (_req, res) => {
+  express.get(['/', '/home', '/dashboard', '/activity', '/activity/queue', '/activity/automations', '/activity/outputs', '/accounts', '/accounts/tools', '/automations', '/artifacts', '/queue', '/memory', '/settings', '/settings/:section', '/chat', '/chat/:chatId', '/bot', '/projects', '/projects/:projectId', '/projects/:projectId/:tab', '/work', '/work/:projectId', '/work/:projectId/:sessionId'], (_req, res) => {
     try {
       res.setHeader('Cache-Control','no-cache');
       const active=frontend.current();

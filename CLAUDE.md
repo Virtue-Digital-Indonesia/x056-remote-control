@@ -807,6 +807,65 @@ the thread they come from uses them together, and so do we now.
   Disabled until `state/secrets/openai.json` (0600) holds `{apiKey, model?,
   endpoint?}`; `GET /api/decisions/status` never returns the key.
 
+## The Bot: the owner's assistant (`server/bot.ts`, 2026-10-15)
+
+The owner asked for a personal assistant that "doesn't do the tasks, just
+delegates, reports, monitors". Their answers: the web panel and the iOS app
+only; it may do **everything** without approval; it briefs **every morning
+and when something needs them**. Contract: `docs/bot-v0-contract.md`.
+
+- **It is one ordinary Chat**, created by `POST /api/bot {enabled: true}`
+  through `createChat` with a fixed input (`x056-bot-singleton`, Claude), so
+  enabling is idempotent and survives restarts. `state/bot.json` holds
+  `{enabled, projectId, sessionId, briefAt, tz, lastBriefDate}`. Everything
+  keys on the Bot's PROJECT (`isBotSession(sid)` = a conversation of it);
+  the brief and the digest go to its `lastSessionId`. Rows carry `bot: true`
+  in `/api/projects` and `/api/chats`. Claude only; team refused; archive
+  and provider change refused (a Chat already refuses both).
+- **Its own system note, not the container's.** `BOT_SYSTEM_NOTE` REPLACES
+  `CONTAINER_SYSTEM_NOTE` (which says sends wait for approval, prefers
+  subagents, and teaches ssh/dind) and `X056_HOST_NOTE` never reaches it.
+  `BOT_DENIED_TOOLS` go on argv as `--disallowedTools` (one comma-joined
+  value placed just before `--session-id`/`--resume`, since the option is
+  variadic): Bash, Edit, Write, NotebookEdit, Agent, Task, Workflow and the
+  x056 file-write tools. `TurnOptions.disallowedTools` is part of the Claude
+  process identity only when non-empty, so other conversations kept their
+  keys. Both apply to the Bot's Chat even while the Bot is off (constant
+  identity).
+- **No approval for its sends**: `conversationSend` delivers directly when
+  the Bot is on and `isBotSession(from)`; steers inherit it. Its delegates
+  send with the Bot as `from`, so they inherit it too. Relay checkpoints
+  still apply.
+- **Bot-only MCP tools** `notify_user` (`POST /api/bot/notify` -> a
+  `bot_notice` event, urgent = `needs_you`, else normal `finished`) and
+  `status_overview` (`GET /api/bot/overview`: running, needsYou, delegates,
+  recent bot-events, failed cron jobs, accounts; cheap reads only). Listed
+  only by the stdio bridge with `X056_BOT=1` (set by `mcpWiringFor` for the
+  Bot's project); refused elsewhere; the routes re-check `isBotSession`.
+  `read-state` counts `bot_notice` like `delegate_report`.
+- **"When something needs me" = the digest.** `emit()` (in try/catch) hands
+  every `urgent` notice not about the Bot to `BotDigest`: deduped by notice
+  id, 60 s debounce, ONE `bot_event` queue item (merged into a waiting one),
+  at most 6 wakes per rolling hour, 50 lines. A `bot_event` turn is QUIET:
+  the owner hears only what the Bot sends with `notify_user`. The existing
+  urgent pushes are unchanged. `bot_event` never clears the relay chain.
+  **Known gap**: a Bot turn woken by a digest starts a fresh relay chain, so
+  "Bot sends to X, X fails, digest, Bot resends" is braked only by the
+  hourly wake cap, never by a checkpoint.
+- **Morning brief** is a gateway timer, not a cron.json job (no AI can
+  cancel it): at `briefAt` in `tz` (default 07:30 Asia/Jakarta, must be
+  before 12:00), once per day, catching up until noon after a swap.
+  `lastBriefDate` is written before the enqueue. Sender `bot_brief` -> origin
+  `brief` -> tier normal, so the brief PUSHES (body = cleaned reply, 240
+  chars). `POST /api/bot/brief` sends one now and counts as today's. A
+  `bot_event` or `bot_brief` reply never becomes a question card.
+- **Panel**: `/bot` (setup card, else the Bot chat), a Bot destination in the
+  sidebar, the Bot chat pinned first in `/chat`, and a header with a Bot
+  badge, the brief time and "Brief me now". Sender labels "Bot digest" and
+  "Morning brief". **iOS**: a pinned Bot section on Home (`Project.bot`);
+  written without a Swift toolchain, so it is uncompiled until the next
+  Xcode build.
+
 ## Delegates: an orchestrator's hidden workers (`server/delegates.ts`)
 
 Built 2026-09-30 to replace how the AHU "AI Progress Scoring" chat ran a team:

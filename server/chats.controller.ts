@@ -20,7 +20,8 @@ export class ChatsController {
 
   @Get(':id')
   get(@Param('id') id: string) {
-    try { return this.manager.chat(id); }
+    // The list's rows carry `bot: true` from listProjects; the single read does too.
+    try { const chat = this.manager.chat(id); return this.manager.bot().isBotProject(chat.id) ? { ...chat, bot: true as const } : chat; }
     catch (error) { throw new NotFoundException((error as Error).message); }
   }
 
