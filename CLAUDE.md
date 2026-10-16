@@ -876,7 +876,19 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   `animation:none!important`, so every element's BASE style must be the
   visible one and entrances animate FROM hidden. The hero shows only once
   history has loaded (`x056-history` event) and `#chat` is empty. Tests:
-  `test/browser/bot-visuals.cjs`. Sender labels "Bot digest" and
+  `test/browser/bot-visuals.cjs`. **Header (2026-10-16)**: on `body.rc-bot-chat`
+  only, CSS hides Autopilot, Activity, refresh, close and Results (still in
+  the "..." menu; ordinary chats unchanged) and the header is an identity
+  strip: state-aware 36 px orb, "Bot", and a status line ("Idle · Next brief
+  07:30" from `lastBriefDate`/`briefAt`/`tz`, "Working..." from `#busy`). It
+  adds a "needs you" chip (from `GET /api/bot/overview?from=<bot sid>`, once
+  on open then every 30 s while the Bot chat and tab are visible), the
+  gradient "Brief me now" pill (idle / "Requesting..." / "Brief requested" /
+  red error), a Today popover (needs you, running, delegates, failed
+  schedules), and a Bot settings dialog (brief time, on/off; the setup card's
+  hero look shown again). The aurora backs the whole Bot chat, and a quick
+  row of the hero's four chips sits above the composer when the chat is
+  non-empty, idle and the box is empty. Tests: `test/browser/bot-header.cjs`. Sender labels "Bot digest" and
   "Morning brief". **iOS**: a pinned Bot section on Home (`Project.bot`);
   written without a Swift toolchain, so it is uncompiled until the next
   Xcode build.

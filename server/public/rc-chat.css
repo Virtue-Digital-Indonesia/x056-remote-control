@@ -148,14 +148,6 @@ body.rc-chat-home-view #rcChatWelcome{display:flex;flex-direction:column;min-wid
 .rc-bot-badge{display:inline-flex;align-items:center;gap:4px;flex:none;padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent);font-size:11px;font-weight:600;line-height:18px;letter-spacing:.01em;vertical-align:1px}
 .rc-bot-badge .ic{width:12px;height:12px}
 .rc-chat-item .rc-bot-badge{margin-right:7px}
-#rcBotHead{display:flex;align-items:center;gap:8px;flex:none;min-width:0;font-size:12px;color:var(--muted)}
-#rcBotHead[hidden]{display:none}
-#rcBotBriefAt{white-space:nowrap;font-variant-numeric:tabular-nums}
-#rcBotBriefNow{padding:5px 10px;font-size:12px;line-height:1.3;white-space:nowrap}
-#rcBotBriefNow[aria-busy=true]{opacity:.6}
-#rcBotBriefStatus{font-size:12px;white-space:nowrap}
-#rcBotBriefStatus:empty{display:none}
-#rcBotBriefStatus.error{color:#e5484d}
 #rcBotSetup{display:none}
 body.rc-bot-setup #rcChatNav,body.rc-bot-setup #rcChatWelcome{display:none!important}
 body.rc-bot-setup #conversationSurface{grid-template-columns:minmax(0,1fr)}
@@ -170,9 +162,7 @@ body.rc-bot-setup #rcBotSetup{position:relative;isolation:isolate;display:flex;f
 .rc-bot-card .rc-bot-error{color:#e5484d;font-size:13px}
 .rc-bot-card .rc-bot-error:empty{display:none}
 .rc-bot-card button[type=submit]{margin-top:6px}
-#rcBotHead #rcBotBriefNow{padding:4px 10px;min-height:0;height:auto}
-/* Phones: the Bot row gets a line of its own under the title, so the title keeps its room. */
-@media(max-width:480px){body.rc-bot-chat .focus-main>.topbar{flex-wrap:wrap;height:auto;row-gap:4px;padding-bottom:6px}body.rc-bot-chat .focus-main>.topbar .project-heading{flex:1 1 0}body.rc-bot-chat .focus-main>.topbar #rcBotHead{order:99;flex:1 0 100%;gap:8px;padding-left:2px}#rcBotHead #rcBotBriefNow{font-size:11px}#rcBotBriefAt{font-size:11px}body.rc-bot-setup #rcBotSetup{padding:20px}.rc-bot-card h1{font-size:24px}}
+@media(max-width:480px){body.rc-bot-setup #rcBotSetup{padding:20px}.rc-bot-card h1{font-size:24px}}
 
 /* The Bot's look: a sky / cyan / peach orb. Violet is --bgwork and the state colours stay theirs, so none of them appear here. */
 :root{--bot-1:#4c8dff;--bot-2:#34c8e8;--bot-3:#ffb59a;--bot-ink:#16324f;--bot-orb:radial-gradient(circle at 31% 24%,#fffc 0,#fff0 30%),radial-gradient(circle at 70% 82%,#0f2d6b2e,#0f2d6b00 55%),conic-gradient(from 210deg,var(--bot-1),var(--bot-2),var(--bot-3),var(--bot-1));--bot-aurora-a:16%}
@@ -233,3 +223,96 @@ body.rc-bot-chat #chat>.msg.assistant::before{content:"";position:absolute;left:
 .msg.sender-bot_event .role svg{transform-origin:50% 10%;animation:bot-ring 14s ease-in-out infinite;color:color-mix(in srgb,var(--bot-1) 70%,var(--text))}
 @keyframes bot-ring{0%,10%,100%{transform:rotate(0)}2%{transform:rotate(14deg)}4%{transform:rotate(-12deg)}6%{transform:rotate(8deg)}8%{transform:rotate(-5deg)}}
 @media(max-width:480px){body.rc-bot-chat #chat>.msg.assistant{padding-left:30px}#rcBotHero h2{font-size:24px}.rc-bot-chips{gap:7px}}
+
+/* ---- Bot header: an identity strip (orb, name, status) plus the Bot's own actions. Other chats keep their header. ---- */
+#rcBotHead{display:flex;align-items:center;gap:10px;flex:1 1 0;min-width:0;container-type:inline-size;font-size:12px;color:var(--muted)}
+#rcBotHead[hidden]{display:none}
+body.rc-bot-chat .focus-main>.topbar .project-heading{display:none}
+body.rc-bot-chat #conversationSurface .topbar :is(#chatActivity,#chatRefresh,#autopilotBtn,#chatClose,#chatResults,#chatTools){display:none!important}
+.rcb-id{display:flex;align-items:center;gap:12px;flex:1 1 auto;min-width:0}
+.rcb-name{display:flex;flex-direction:column;gap:1px;min-width:0;line-height:1.25}
+#rcBotHead .rc-bot-badge{align-self:flex-start;padding:0;background:none;color:var(--text);font-size:15px;font-weight:600;letter-spacing:-.2px;line-height:1.2}
+.rcb-sub{display:flex;min-width:0;white-space:nowrap;overflow:hidden;font-size:12px;color:var(--muted)}
+#rcBotStatus{flex:none}
+.rcb-id[data-state=working] #rcBotStatus{color:var(--text)}
+#rcBotBriefAt{min-width:0;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+#rcBotBriefAt:not(:empty)::before{content:"\00b7";margin:0 6px}
+.rcb-actions{position:relative;display:flex;align-items:center;gap:6px;flex:none}
+.rcb-actions>.cr-icon{color:var(--muted)}.rcb-actions>.cr-icon:hover{color:var(--text)}
+.rcb-actions>.cr-icon[aria-expanded=true]{color:var(--text);background:var(--surface-2)}
+.rcb-actions>.cr-icon:focus-visible,.rcb-needs:focus-visible{outline:2px solid var(--bot-1);outline-offset:2px}
+@media(min-width:481px){.rcb-actions{padding-right:10px;margin-right:2px;border-right:1px solid var(--border)}}
+/* Needs you: a count that exists only while something does. The dot borrows the panel's own question colour. */
+.rcb-needs{display:inline-flex;align-items:center;gap:6px;flex:none;padding:3px 10px;border-radius:999px;border:1px solid color-mix(in srgb,var(--chat-question) 50%,var(--border));background:color-mix(in srgb,var(--chat-question) 11%,var(--bg));color:var(--text);font:inherit;font-size:12px;font-weight:550;line-height:1.4;cursor:pointer;white-space:nowrap}
+.rcb-needs[hidden]{display:none}
+.rcb-needs .rn-dot{width:7px;height:7px;border-radius:50%;background:var(--chat-question)}
+.rcb-needs .rn-count{font-variant-numeric:tabular-nums}
+.rcb-needs .rn-txt{font-weight:400}
+.rcb-needs:hover{border-color:var(--chat-question)}
+/* Brief me now: the Bot gradient as a border and a faint tint; the text stays the panel's own colour for contrast in both themes. */
+.rc-brief{position:relative;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;gap:7px;flex:none;border:1.5px solid transparent;border-radius:999px;padding:4px 13px 4px 10px;font:inherit;font-size:12.5px;font-weight:550;line-height:1.35;color:var(--text);white-space:nowrap;cursor:pointer;
+ background:linear-gradient(color-mix(in srgb,var(--bot-1) 9%,var(--bg)),color-mix(in srgb,var(--bot-3) 11%,var(--bg))) padding-box,linear-gradient(110deg,var(--bot-1),var(--bot-2),var(--bot-3)) border-box;
+ box-shadow:0 1px 12px -3px color-mix(in srgb,var(--bot-2) 55%,transparent);transition:transform .18s ease,box-shadow .18s ease}
+.rc-brief .rb-ic,.rc-brief .rb-ck{width:15px;height:15px;flex:none;color:var(--bot-1)}
+.rc-brief .rb-spin,.rc-brief .rb-ck{display:none}
+.rc-brief .rb-spin{width:12px;height:12px;flex:none;border-radius:50%;border:2px solid color-mix(in srgb,var(--bot-1) 28%,transparent);border-top-color:var(--bot-1);border-right-color:var(--bot-2);animation:bot-orbit .8s linear infinite}
+.rc-brief[data-state=busy] .rb-ic,.rc-brief[data-state=done] .rb-ic{display:none}
+.rc-brief[data-state=busy] .rb-spin{display:inline-block}
+.rc-brief[data-state=done] .rb-ck{display:inline-block;color:var(--bot-ink)}
+html[data-theme=dark] .rc-brief[data-state=done] .rb-ck{color:var(--bot-2)}
+.rc-brief[data-state=done]{background:linear-gradient(color-mix(in srgb,var(--bot-2) 20%,var(--bg)),color-mix(in srgb,var(--bot-1) 14%,var(--bg))) padding-box,linear-gradient(110deg,var(--bot-1),var(--bot-2),var(--bot-3)) border-box}
+.rc-brief:disabled{cursor:progress;color:var(--text);opacity:1}
+#rcBotBriefNow .rb-label{display:inline-block;min-width:8.4em;text-align:center}
+.rc-brief::after{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 35%,#fff7 50%,transparent 65%);transform:translateX(-120%);pointer-events:none}
+html[data-theme=dark] .rc-brief::after{background:linear-gradient(105deg,transparent 35%,#ffffff2b 50%,transparent 65%)}
+.rc-brief:focus-visible{outline:2px solid var(--bot-1);outline-offset:2px}
+.rc-brief:active:not(:disabled){transform:scale(.97)}
+@media(prefers-reduced-motion:no-preference){.rc-brief:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 16px -6px color-mix(in srgb,var(--bot-2) 80%,transparent)}.rc-brief:hover:not(:disabled)::after{transform:translateX(120%);transition:transform .7s ease}.rc-brief:active:not(:disabled){transform:scale(.97)}}
+.rc-bot-chip.rc-brief{padding:8px 15px 8px 12px;font-size:13px;font-weight:500;line-height:1.3;border:1.5px solid transparent}
+.rc-bot-chip.rc-brief:hover{border-color:transparent}
+/* Brief status: spoken to screen readers always, drawn only as an error. */
+#rcBotBriefStatus:empty{display:none}
+#rcBotBriefStatus:not(.error){position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+#rcBotBriefStatus.error{position:absolute;top:calc(100% + 10px);right:0;z-index:6;max-width:min(320px,calc(100vw - 24px));padding:6px 12px;border-radius:10px;border:1px solid color-mix(in srgb,#e5484d 45%,var(--bg));background:color-mix(in srgb,#e5484d 11%,var(--bg));color:#b42327;font-size:12px;line-height:1.4;white-space:normal;box-shadow:0 8px 24px -10px #0003}
+html[data-theme=dark] #rcBotBriefStatus.error{color:#ff9fa2}
+/* Persistent backdrop: the hero's aurora behind the whole Bot chat. One pseudo-element, transform-only drift, no blur. */
+body.rc-bot-chat .focus-main{overflow:clip;isolation:isolate}
+body.rc-bot-chat .focus-main::before{content:"";position:absolute;inset:-12%;z-index:0;pointer-events:none;background:radial-gradient(42% 46% at 22% 28%,color-mix(in srgb,var(--bot-1) var(--bot-aurora-a),transparent),transparent 70%),radial-gradient(40% 44% at 80% 24%,color-mix(in srgb,var(--bot-2) var(--bot-aurora-a),transparent),transparent 70%),radial-gradient(44% 40% at 56% 66%,color-mix(in srgb,var(--bot-3) var(--bot-aurora-a),transparent),transparent 70%);animation:bot-drift 22s ease-in-out infinite}
+body.rc-bot-chat .focus-main>:where(.scroll,.composer-wrap,.stream-status){z-index:1}
+body.rc-bot-chat .focus-main>.topbar{z-index:3}
+body.rc-bot-chat #rcBotHero .bot-aurora{display:none}
+/* Quick actions above the composer: in the composer-wrap, never taking focus, never moving the composer (it is bottom-anchored). */
+#rcBotQuick{display:flex;gap:8px;max-width:780px;margin:0 auto 8px;padding:3px 2px;overflow-x:auto;scrollbar-width:none}
+#rcBotQuick::-webkit-scrollbar{display:none}
+#rcBotQuick[hidden]{display:none}
+#rcBotQuick .rc-bot-chip{flex:none;padding:6px 12px;font-size:12.5px;animation:none}
+#rcBotQuick .rc-bot-chip.rc-brief{padding:6px 13px 6px 10px}
+/* Today popover. */
+.rcb-pop{position:fixed;z-index:130;width:min(360px,calc(100vw - 20px));max-height:min(540px,calc(100dvh - 96px));overflow:auto;box-sizing:border-box;padding:14px 16px 10px;border:1px solid var(--border-strong);border-radius:16px;color:var(--text);font-size:13px;outline:none;box-shadow:0 22px 50px -16px #0004,0 2px 10px #0001;background:linear-gradient(180deg,color-mix(in srgb,var(--bot-2) 10%,var(--bg)),var(--bg) 110px),var(--bg)}
+.rcb-pop>header{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:10px}
+.rcb-pop>header strong{font-size:15px;letter-spacing:-.2px}.rcb-pop>header span{font-size:12px;color:var(--muted)}
+.rcb-calm{display:flex;align-items:center;gap:14px;padding:6px 2px 12px}.rcb-calm strong{display:block;font-size:14px}.rcb-calm span{display:block;font-size:12.5px;color:var(--muted);margin-top:2px}
+.rcb-pop section{padding:10px 0 4px;border-top:1px solid var(--border)}
+.rcb-pop h3{display:flex;align-items:center;gap:7px;margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.rcb-pop h3 b{padding:0 6px;border-radius:99px;background:var(--surface-2);font-weight:600;color:var(--text);letter-spacing:0}
+.rcb-pop ul{list-style:none;margin:0;padding:0}.rcb-pop li{display:flex;flex-direction:column;gap:1px;padding:5px 0;line-height:1.4}
+.rcb-pop li strong{font-weight:550;overflow-wrap:anywhere}.rcb-pop li span,.rcb-pop li p{font-size:12px;color:var(--muted)}.rcb-pop li p{margin:2px 0 0;overflow-wrap:anywhere}
+.rcb-pop .rcb-kind{align-self:flex-start;padding:0 7px;border-radius:99px;font-size:10.5px;font-weight:600;color:var(--text);background:color-mix(in srgb,var(--chat-question) 16%,var(--bg));border:1px solid color-mix(in srgb,var(--chat-question) 40%,var(--border))}
+.rcb-pop .rcb-fail strong::before{content:"";display:inline-block;width:6px;height:6px;margin-right:7px;border-radius:50%;background:#e5484d;vertical-align:middle}
+.rcb-pop .rcb-more,.rcb-empty{font-size:12px;color:var(--muted)}.rcb-empty{margin:4px 0 8px}
+/* Bot settings dialog: the setup card's hero again. */
+.rc-bot-settings{width:min(440px,calc(100vw - 28px))}
+.rcb-settings{display:flex;flex-direction:column;align-items:center;gap:12px;padding:0 24px 22px;text-align:center}
+.rcb-hero{position:relative;isolation:isolate;overflow:hidden;align-self:stretch;margin:0 -24px;padding:24px 28px 18px;display:flex;flex-direction:column;align-items:center;gap:14px}
+.rcb-hero p{margin:0;font-size:13.5px;line-height:1.6;color:var(--muted)}
+.rcb-settings .rc-bot-error{margin:0;color:#e5484d;font-size:13px}.rcb-settings .rc-bot-error:empty{display:none}
+html[data-theme=dark] .rcb-settings .rc-bot-error{color:#ff8b8e}
+.rcb-off{align-self:stretch;display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:8px;padding-top:16px;border-top:1px solid var(--border);text-align:left}
+.rcb-off strong{display:block;font-size:13px}.rcb-off span{display:block;font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5}.rcb-off .cr-secondary{flex:none}
+/* Narrow header (a docked agent tree, a phone): measured on the strip itself, not the window. */
+@container (max-width:580px){.rcb-needs .rn-txt{display:none}}
+@container (max-width:470px){#rcBotBriefNow .rb-label{display:none}.rc-brief:not(.rc-bot-chip){padding:0;width:32px;height:32px}}
+@container (max-width:380px){#rcBotBriefAt{display:none}}
+@media(max-width:480px){body.rc-bot-chat .focus-main>.topbar{padding-left:10px;padding-right:10px;gap:6px}.rcb-actions{gap:4px}#rcBotQuick{margin-bottom:6px}}
+body.rc-bot-chat #conversationSurface .composer-wrap{background:transparent}
+.rcb-hero .bot-aurora{-webkit-mask-image:linear-gradient(#000 55%,transparent);mask-image:linear-gradient(#000 55%,transparent)}

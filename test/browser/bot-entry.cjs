@@ -66,7 +66,7 @@ if(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base))throw Error('Use the isolated local
   const head=page.locator('#rcBotHead');
   await head.waitFor({state:'visible',timeout:5000});
   check('the Bot chat header has a Bot badge',await head.locator('.rc-bot-badge').innerText()==='Bot');
-  check('the header shows the brief time',(await page.locator('#rcBotBriefAt').innerText())==='Brief 06:45');
+  check('the header shows the next brief time',(await page.locator('#rcBotBriefAt').innerText())==='Next brief 06:45');
   const brief=head.getByRole('button',{name:'Brief me now'});
   await brief.click();
   check('Brief me now is disabled while pending',await brief.isDisabled());

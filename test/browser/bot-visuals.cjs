@@ -46,7 +46,7 @@ if(!/^http:\/\/127\.0\.0\.1:\d+$/.test(base))throw Error('Use the isolated local
   // 2. Header orb and the empty-chat hero.
   const head=page.locator('#rcBotHead');await head.waitFor({state:'visible',timeout:5000});
   const hOrb=head.locator('.bot-orb');
-  check('the header has a 16px orb',await hOrb.evaluate(o=>o.offsetWidth===16));
+  check('the header has a 36px orb (the identity strip)',await hOrb.evaluate(o=>o.offsetWidth===36));
   check('the header orb is idle and labelled',await hOrb.getAttribute('data-state')==='idle'&&await hOrb.getAttribute('aria-label')==='Bot is idle');
   check('the badge still reads Bot',await head.locator('.rc-bot-badge').innerText()==='Bot');
   const hero=page.locator('#rcBotHero');await hero.waitFor({state:'visible',timeout:5000});

@@ -11,7 +11,19 @@ window.createRCChat = function (engine, room) {
   const inBot = () => location.pathname === '/bot';
   // The orb: the Bot's one avatar, pure CSS (rc-chat.css). state: idle | working; `happy` is a class added for ~1.5 s.
   const orb = (px, state = 'idle', label = '') => `<span class="bot-orb" data-state="${state}" style="--s:${px}px;--d:${(Math.random() * 4).toFixed(1)}s"${label ? ` role="img" aria-label="${label}" title="${label}"` : ' aria-hidden="true"'}><i class="bo-body"></i><i class="bo-eyes"><b></b><b></b></i></span>`;
-  let bot = null, botRequest = null, briefTimer, leanFrame = 0, leanEvent;
+  let bot = null, botRequest = null, briefTimer, leanFrame = 0, leanEvent, doneTimer, briefing = false, overview = null, overviewAt = 0, needsTimer = 0, wasBot = false, todayPop = null;
+  // Small inline glyphs for the Bot's header (the sun is the panel's own #i-sun path).
+  const SVG = {
+    sun: '<svg class="rb-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>',
+    check: '<svg class="rb-ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
+    today: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M8 3v4M16 3v4M3.5 10h17"/><circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"/></svg>',
+    gear: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>'
+  };
+  // "Brief me now": the Bot's signature action. One look on the header, the hero chip and the quick row (state lives in data-state).
+  const briefButton = (id, cls = '') => `<button type="button" class="rc-brief ${cls}"${id ? ` id="${id}"` : ''} aria-label="Brief me now" title="Brief me now" data-state="idle">${SVG.sun}<span class="rb-spin" aria-hidden="true"></span>${SVG.check}<span class="rb-label">Brief me now</span></button>`;
+  const QUICK = [["What's running right now?", "What's running right now?"], ['Does anything need me?', 'Does anything need me?'], ['Delegate a task…', 'Delegate: ']];
+  const chipsHTML = () => QUICK.map(([label, text]) => `<button type="button" class="rc-bot-chip" data-text="${esc(text)}">${esc(label)}</button>`).join('') + briefButton('', 'rc-bot-chip');
+  const wireChip = chip => { chip.onmousedown = event => event.preventDefault(); chip.onclick = () => chip.classList.contains('rc-brief') ? briefNow() : engine.insertPrompt(chip.dataset.text); };
   const icon = name => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ({edit:'<path d="m16 3 5 5-12 12-6 1 1-6Z M14 5l5 5"/>',archive:'<path d="M4 9h16v12H4z M3 3h18v6H3z M9 13h6"/>',controls:'<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',link:'<path d="m9 15 6-6 M8 16l-1 1a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0 M16 8l1-1a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0"/>',chevron:'<path d="m9 5 7 7-7 7"/>',chat:'<path d="M21 11a9 9 0 0 1-9 9H4l-3 2 2-6A9 9 0 1 1 21 11Z"/>'}[name] || '') + '</svg>';
   const current = () => engine.state().projects.find(p => p.id === engine.state().projectId && p.kind === 'chat');
   const request = async (url, body) => { const response = await engine.api(url, body === undefined ? undefined : { method: 'POST', body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Request failed'); return data; };
@@ -40,18 +52,25 @@ window.createRCChat = function (engine, room) {
     $('conversationSurface').append(setup);
     $('rcBotSetupForm').onsubmit = enableBot;
     const hero = document.createElement('section'); hero.id = 'rcBotHero'; hero.setAttribute('aria-label', 'Bot welcome');
-    hero.innerHTML = `<span class="bot-aurora" aria-hidden="true"></span>${orb(72)}<h2 id="rcBotGreeting">Hello</h2><p>What can I take off your plate?</p><div class="rc-bot-chips">${[["What's running right now?", "What's running right now?"], ['Does anything need me?', 'Does anything need me?'], ['Delegate a task…', 'Delegate: '], ['Brief me now', '']].map(([label, text]) => `<button type="button" class="rc-bot-chip" data-text="${esc(text)}">${esc(label)}</button>`).join('')}</div>`;
+    hero.innerHTML = `<span class="bot-aurora" aria-hidden="true"></span>${orb(72)}<h2 id="rcBotGreeting">Hello</h2><p>What can I take off your plate?</p><div class="rc-bot-chips">${chipsHTML()}</div>`;
     $('chat').before(hero);
-    hero.querySelectorAll('.rc-bot-chip').forEach(chip => chip.onclick = () => chip.dataset.text ? engine.insertPrompt(chip.dataset.text) : briefNow());
+    hero.querySelectorAll('.rc-bot-chip').forEach(wireChip);
     new MutationObserver(syncBotWork).observe($('busy'), { childList: true });
     new MutationObserver(syncBotHero).observe($('chat'), { childList: true });
     document.addEventListener('x056-history', syncBotHero);
-    document.addEventListener('visibilitychange', () => document.documentElement.classList.toggle('bot-hidden', document.hidden));
+    document.addEventListener('visibilitychange', () => { document.documentElement.classList.toggle('bot-hidden', document.hidden); if (botVisible() && Date.now() - overviewAt > 10000) loadOverview(); });
     if (matchMedia('(hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference)').matches) document.addEventListener('pointermove', leanEyes, { passive: true });
     const botHead = document.createElement('div'); botHead.id = 'rcBotHead'; botHead.hidden = true;
-    botHead.innerHTML = `<span class="rc-bot-badge">${orb(16, 'idle', 'Bot is idle')}Bot</span><span id="rcBotBriefAt"></span><button type="button" class="cr-secondary" id="rcBotBriefNow">Brief me now</button><span id="rcBotBriefStatus" role="status"></span>`;
+    botHead.innerHTML = `<div class="rcb-id">${orb(36, 'idle', 'Bot is idle')}<span class="rcb-name"><span class="rc-bot-badge">Bot</span><span class="rcb-sub"><span id="rcBotStatus">Idle</span><span id="rcBotBriefAt"></span></span></span></div><div class="rcb-actions"><button type="button" class="rcb-needs" id="rcBotNeeds" hidden aria-haspopup="dialog"><span class="rn-dot" aria-hidden="true"></span><span class="rn-count"></span><span class="rn-txt"></span></button>${briefButton('rcBotBriefNow')}<span id="rcBotBriefStatus" role="status"></span><button type="button" class="cr-icon" id="rcBotToday" aria-label="Today" title="Today: what needs you, what is running" aria-haspopup="dialog" aria-expanded="false">${SVG.today}</button><button type="button" class="cr-icon" id="rcBotSettings" aria-label="Bot settings" title="Bot settings" aria-haspopup="dialog">${SVG.gear}</button></div>`;
     ($('projTitle')?.closest('.project-heading') || $('projTitle'))?.after(botHead);
-    $('rcBotBriefNow').onclick = briefNow;
+    $('rcBotBriefNow').onclick = briefNow; $('rcBotNeeds').onclick = $('rcBotToday').onclick = () => toggleToday(); $('rcBotSettings').onclick = openSettings;
+    const quick = document.createElement('div'); quick.id = 'rcBotQuick'; quick.hidden = true; quick.setAttribute('role', 'group'); quick.setAttribute('aria-label', 'Quick actions');
+    quick.innerHTML = chipsHTML();
+    ($('composerBox') || document.querySelector('.composer-wrap').lastElementChild).before(quick);
+    quick.querySelectorAll('.rc-bot-chip').forEach(wireChip);
+    for (const type of ['input', 'focusin', 'focusout']) $('prompt')?.addEventListener(type, syncBotQuick);
+    document.addEventListener('click', () => setTimeout(syncBotQuick));
+    new MutationObserver(syncBotQuick).observe($('attachRow') || document.body, { childList: true });
     const panel = document.createElement('aside'); panel.id = 'rcChatInspector'; panel.setAttribute('aria-label', 'Chat files and references');
     panel.innerHTML = `<header><strong>Workspace</strong><button class="cr-icon" id="rcChatPanelClose" aria-label="Close file panel">×</button></header><div class="rc-chat-tabs"><button data-chat-tab="files" aria-pressed="true">Files</button><button data-chat-tab="preview">Preview</button><button data-chat-tab="references">References</button></div><div id="rcChatUploads" role="status"></div><div id="rcChatPanelBody"></div>`;
     $('conversationSurface').append(panel);
@@ -116,6 +135,7 @@ window.createRCChat = function (engine, room) {
     if (updateURL && inChat()) window.history.pushState({}, '', '/');
     document.body.classList.remove('rc-chat-active','rc-chat-home-view','rc-chat-unavailable','rc-chat-nav-open','rc-chat-panel-open','rc-bot-setup','rc-bot-chat');
     if ($('rcBotHead')) $('rcBotHead').hidden = true;
+    stopNeeds(); closeToday(); if ($('rcBotQuick')) $('rcBotQuick').hidden = true;
     $('crChatTab')?.removeAttribute('aria-current'); cleanupPreview(); if (!keepRoom) room.showBoard();
   }
   function closePanel() {
@@ -147,7 +167,7 @@ window.createRCChat = function (engine, room) {
     active = ''; cleanupPreview();
     document.body.classList.add('rc-chat-active', 'rc-chat-home-view', 'rc-bot-setup');
     document.body.classList.remove('rc-chat-unavailable', 'rc-chat-nav-open', 'rc-chat-panel-open', 'rc-bot-chat');
-    $('rcBotHead').hidden = true; $('crChatTab')?.removeAttribute('aria-current');
+    $('rcBotHead').hidden = true; stopNeeds(); closeToday(); $('rcBotQuick').hidden = true; $('crChatTab')?.removeAttribute('aria-current');
     room.openChat();
     const form = $('rcBotSetupForm');
     if (data?.briefAt) form.elements.briefAt.value = data.briefAt;
@@ -173,32 +193,127 @@ window.createRCChat = function (engine, room) {
     const head = $('rcBotHead'); if (!head) return;
     const on = !!chat?.bot && room.isOpen() !== false && !document.body.classList.contains('rc-chat-home-view');
     head.hidden = !on; document.body.classList.toggle('rc-bot-chat', on);
-    syncBotHero(); if (!on) return;
-    syncBotWork();
+    syncBotHero(); if (!on) { stopNeeds(); closeToday(); syncBotQuick(); return; }
+    syncBotWork(); syncBotQuick();
     if (!bot && !botRequest) loadBot().then(() => renderBotHead(current()), () => {});
-    const at = $('rcBotBriefAt');
-    at.textContent = bot?.briefAt ? 'Brief ' + bot.briefAt : '';
+    const at = $('rcBotBriefAt'), next = nextBrief();
+    at.textContent = next;
     at.title = bot?.briefAt ? 'Morning brief at ' + bot.briefAt + ', ' + (bot.tz || 'Asia/Jakarta') + ' time' : '';
+    if (!wasBot) { wasBot = true; loadOverview(); }
+    startNeeds();
   }
-  // Header orb: working while the open Bot conversation has a turn or background work (the panel's own #busy bar shows exactly that).
+  // When the next morning brief runs: today's time, or tomorrow's once today's brief has gone out (lastBriefDate is a date in the Bot's zone).
+  function nextBrief() {
+    if (!bot?.briefAt) return '';
+    let today = ''; try { today = new Intl.DateTimeFormat('en-CA', { timeZone: bot.tz || 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()); } catch {}
+    return 'Next brief ' + (today && bot.lastBriefDate === today ? 'tomorrow ' : '') + bot.briefAt;
+  }
+  // Header orb and status line: working while the open Bot conversation has a turn or background work (the panel's own #busy bar shows exactly that).
   function syncBotWork() {
     const o = document.querySelector('#rcBotHead .bot-orb'), busy = $('busy'); if (!o) return;
     const state = busy && busy.childElementCount ? 'working' : 'idle';
+    $('rcBotStatus').textContent = state === 'working' ? 'Working…' : 'Idle'; $('rcBotHead').querySelector('.rcb-id').dataset.state = state;
+    syncBotQuick();
     if (o.dataset.state === state) return;
     o.dataset.state = state; const label = state === 'working' ? 'Bot is working' : 'Bot is idle';
     o.setAttribute('aria-label', label); o.title = label;
+  }
+  // The quick-action row above the composer: only for a Bot chat that has messages, with nothing typed and no turn running.
+  function syncBotQuick() {
+    const q = $('rcBotQuick'); if (!q) return;
+    const p = $('prompt'), busy = $('busy'), chatEl = $('chat');
+    const show = document.body.classList.contains('rc-bot-chat') && !document.body.classList.contains('rc-bot-empty') && !!chatEl && chatEl.childElementCount > 0 && !(busy && busy.childElementCount) && !!p && !p.value.trim() && !$('attachRow')?.childElementCount;
+    if (q.hidden === !show) return; q.hidden = !show;
+  }
+  // "Needs you": polled only while a Bot chat is on screen and the tab is visible.
+  const botVisible = () => document.body.classList.contains('rc-bot-chat') && !document.hidden;
+  function startNeeds() { if (!needsTimer) needsTimer = setInterval(() => { if (botVisible()) loadOverview(); }, 30000); }
+  function stopNeeds() { clearInterval(needsTimer); needsTimer = 0; wasBot = false; }
+  async function loadOverview() {
+    if (!bot?.sessionId) { try { await (botRequest || loadBot()); } catch { return overview; } }
+    if (!bot?.sessionId) return overview;
+    try { overview = await request('/api/bot/overview?from=' + encodeURIComponent(bot.sessionId)); overviewAt = Date.now(); } catch { /* keep the last answer */ }
+    renderNeeds(); if (todayPop?.isConnected) renderToday(todayPop);
+    return overview;
+  }
+  function renderNeeds() {
+    const b = $('rcBotNeeds'); if (!b) return;
+    const n = overview?.needsYou?.length || 0; b.hidden = !n; if (!n) return;
+    b.querySelector('.rn-count').textContent = n; b.querySelector('.rn-txt').textContent = n === 1 ? ' needs you' : ' need you';
+    b.setAttribute('aria-label', n + (n === 1 ? ' thing needs you' : ' things need you') + '. Open Today.'); b.title = 'Open Today';
+  }
+  const since = iso => { const t = Date.parse(iso || ''); if (!t) return ''; const s = Math.max(0, (Date.now() - t) / 1000); return s < 90 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min' : s < 86400 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' d'; };
+  const clip = (text, n) => { text = String(text ?? '').replace(/\s+/g, ' ').trim(); return text.length > n ? text.slice(0, n - 1) + '…' : text; };
+  function renderToday(pop) {
+    const o = overview, own = bot?.sessionId;
+    const needs = o?.needsYou || [], running = (o?.running || []).filter(r => !own || r.sessionId !== own), delegates = o?.delegates || [];
+    const failed = (o?.scheduled || []).filter(j => j.lastResult && !/^(queued|delivered|ok)$/i.test(j.lastResult));
+    const list = (rows, cap = 5) => rows.slice(0, cap).join('') + (rows.length > cap ? `<li class="rcb-more">+${rows.length - cap} more</li>` : '');
+    let html = `<header><strong>Today</strong><span>${esc(nextBrief())}</span></header>`;
+    if (!o) html += '<p class="rcb-empty">Checking…</p>';
+    else if (!needs.length) html += `<div class="rcb-calm">${orb(40, 'idle').replace('class="bot-orb"', 'class="bot-orb happy"')}<div><strong>Nothing needs you</strong><span>I will tell you when something does.</span></div></div>`;
+    else html += `<section><h3>Needs you <b>${needs.length}</b></h3><ul>${list(needs.map(n => `<li class="rcb-need"><span class="rcb-kind">${n.kind === 'approval' ? 'Approval' : 'Question'}</span><strong>${esc(clip(n.title || n.projectName, 60))}</strong><p>${esc(clip(n.text, 150))}</p></li>`))}</ul></section>`;
+    if (o && running.length) html += `<section><h3>Running <b>${running.length}</b></h3><ul>${list(running.map(r => `<li><strong>${esc(clip(r.title || r.projectName, 50))}</strong><span>${esc(r.projectName && r.title ? clip(r.projectName, 24) + ' · ' : '')}${r.state === 'background' ? 'Background' : 'Working'}${r.since ? ' · ' + esc(since(r.since)) : ''}</span></li>`))}</ul></section>`;
+    if (o && delegates.length) html += `<section><h3>Delegates <b>${delegates.length}</b></h3><ul>${list(delegates.map(d => `<li><strong>${esc(clip(d.role, 40))}</strong><span>${d.working ? 'Working' : esc(d.status || '')}${d.orchestratorTitle ? ' · ' + esc(clip(d.orchestratorTitle, 30)) : ''}</span></li>`))}</ul></section>`;
+    if (o && failed.length) html += `<section><h3>Failed schedules <b>${failed.length}</b></h3><ul>${list(failed.map(j => `<li class="rcb-fail"><strong>${esc(clip(j.label || j.schedule, 50))}</strong><span>${esc(clip(j.lastResult, 80))}${j.lastRunAt ? ' · ' + esc(since(j.lastRunAt)) + ' ago' : ''}</span></li>`))}</ul></section>`;
+    if (o && !running.length && !delegates.length && !failed.length) html += '<p class="rcb-empty">Nothing running right now.</p>';
+    pop.innerHTML = html;
+  }
+  function toggleToday() { todayPop?.isConnected ? closeToday(true) : openToday(); }
+  function openToday() {
+    const anchor = $('rcBotToday'); if (!anchor || anchor.offsetParent === null) return;
+    const pop = document.createElement('div'); pop.id = 'rcBotTodayPop'; pop.className = 'rcb-pop'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', 'Today'); pop.tabIndex = -1;
+    document.body.append(pop); todayPop = pop; renderToday(pop);
+    const r = anchor.getBoundingClientRect(), w = Math.min(360, innerWidth - 20);
+    pop.style.top = Math.round(r.bottom + 8) + 'px'; pop.style.left = Math.max(10, Math.min(innerWidth - w - 10, r.right - w)) + 'px';
+    anchor.setAttribute('aria-expanded', 'true'); pop.focus({ preventScroll: true });
+    const away = event => { if (!pop.contains(event.target) && !event.target.closest?.('#rcBotToday,#rcBotNeeds')) closeToday(); };
+    const keys = event => { if (event.key === 'Escape') { event.stopPropagation(); closeToday(true); } };
+    document.addEventListener('pointerdown', away, true); document.addEventListener('keydown', keys, true);
+    pop._off = () => { document.removeEventListener('pointerdown', away, true); document.removeEventListener('keydown', keys, true); };
+    loadOverview();
+  }
+  function closeToday(refocus = false) {
+    const pop = todayPop; if (!pop) return; todayPop = null; pop._off?.(); pop.remove();
+    $('rcBotToday')?.setAttribute('aria-expanded', 'false'); if (refocus) $('rcBotToday')?.focus();
+  }
+  // Bot settings: the setup card's look again (orb, aurora), the brief time, and the on/off switch.
+  function openSettings() {
+    closeToday();
+    const on = bot?.enabled !== false;
+    const d = dialog('Bot settings', `<form class="rcb-settings" novalidate><div class="rcb-hero"><span class="bot-aurora" aria-hidden="true"></span>${orb(72)}<p>Your Bot briefs you every morning and messages you when something needs you.</p></div><label class="rc-bot-time">Morning brief<input type="time" name="briefAt" value="${esc(bot?.briefAt || '07:30')}" required></label><small class="rc-bot-tz">${esc(bot?.tz || 'Asia/Jakarta')} time</small><p class="rc-bot-error" role="alert"></p><button class="cr-primary" type="submit">Save</button><div class="rcb-off"><div><strong>Bot is ${on ? 'on' : 'off'}</strong><span>${on ? 'Turning it off stops morning briefs and notices. The chat stays.' : 'Turn it on to get morning briefs again.'}</span></div><button type="button" class="cr-secondary" data-toggle>${on ? 'Turn Bot off' : 'Turn Bot on'}</button></div></form>`, 'rc-bot-settings');
+    const form = d.querySelector('form'), alert = form.querySelector('[role=alert]'), save = form.querySelector('button[type=submit]'), toggle = form.querySelector('[data-toggle]');
+    let armed = 0;
+    form.onsubmit = async event => {
+      event.preventDefault(); alert.textContent = ''; const briefAt = form.elements.briefAt.value;
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(briefAt)) { alert.textContent = 'Choose a brief time, such as 07:30.'; form.elements.briefAt.focus(); return; }
+      save.disabled = true; save.textContent = 'Saving…'; form.querySelector('.bot-orb').dataset.state = 'working';
+      try { bot = await request('/api/bot', { briefAt }); botRequest = Promise.resolve(bot); renderBotHead(current()); save.textContent = 'Saved'; happy(); setTimeout(() => d.isConnected && d.close(), 700); }
+      catch (error) { alert.textContent = error.message || 'Could not save.'; save.textContent = 'Save'; save.disabled = false; }
+      finally { form.querySelector('.bot-orb') && (form.querySelector('.bot-orb').dataset.state = 'idle'); }
+    };
+    toggle.onclick = async () => {
+      if (on && !armed) { armed = setTimeout(() => { armed = 0; toggle.textContent = 'Turn Bot off'; }, 4000); toggle.textContent = 'Tap again to turn off'; return; }
+      clearTimeout(armed); toggle.disabled = true; alert.textContent = '';
+      try {
+        const data = await request('/api/bot', { enabled: !on }); bot = data; botRequest = Promise.resolve(data); overview = null;
+        d.close(); await engine.reloadProjects();
+        await navigate(on || !data.url ? '/bot' : data.url, true);
+      } catch (error) { alert.textContent = error.message || 'Could not change the Bot.'; toggle.disabled = false; toggle.textContent = on ? 'Turn Bot off' : 'Turn Bot on'; armed = 0; }
+    };
   }
   // The hero shows for the open Bot chat once its history has loaded and the thread has no nodes; the first message removes it.
   function syncBotHero() {
     const s = engine.state(), chatEl = $('chat');
     const empty = document.body.classList.contains('rc-bot-chat') && !!s.sessionId && !!s.views?.[s.projectId + '::' + s.sessionId]?.loaded && !!chatEl && chatEl.childElementCount === 0;
+    syncBotQuick();
     if (empty === document.body.classList.contains('rc-bot-empty')) return;
     if (empty) {
       let hour = new Date().getHours();
       try { hour = +new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: bot?.tz || 'Asia/Jakarta' }).format(new Date()); } catch {}
       $('rcBotGreeting').textContent = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
     }
-    document.body.classList.toggle('rc-bot-empty', empty);
+    document.body.classList.toggle('rc-bot-empty', empty); syncBotQuick();
   }
   function leanEyes(event) {
     if (!document.body.classList.contains('rc-bot-empty')) return;
@@ -212,14 +327,21 @@ window.createRCChat = function (engine, room) {
   function happy() {
     document.querySelectorAll('#rcBotHead .bot-orb, #rcBotHero .bot-orb').forEach(o => { o.classList.remove('happy'); void o.offsetWidth; o.classList.add('happy'); setTimeout(() => o.classList.remove('happy'), 1500); });
   }
+  const BRIEF_LABEL = { idle: 'Brief me now', busy: 'Requesting…', done: 'Brief requested' };
+  function setBriefState(state) {
+    document.querySelectorAll('.rc-brief').forEach(b => {
+      b.dataset.state = state; b.disabled = state === 'busy'; b.querySelector('.rb-label').textContent = BRIEF_LABEL[state];
+      if (state === 'busy') b.setAttribute('aria-busy', 'true'); else b.removeAttribute('aria-busy');
+    });
+  }
   async function briefNow() {
-    const button = $('rcBotBriefNow'), status = $('rcBotBriefStatus');
-    if (button.disabled) return;
-    clearTimeout(briefTimer); button.disabled = true; button.setAttribute('aria-busy', 'true');
-    status.classList.remove('error'); status.textContent = 'Asking…';
-    try { await request('/api/bot/brief', {}); status.textContent = 'Brief requested'; happy(); }
-    catch (error) { status.classList.add('error'); status.textContent = error.message || 'Brief failed'; }
-    finally { button.disabled = false; button.removeAttribute('aria-busy'); briefTimer = setTimeout(() => { status.textContent = ''; status.classList.remove('error'); }, 5000); }
+    if (briefing) return;
+    const status = $('rcBotBriefStatus');
+    briefing = true; clearTimeout(briefTimer); clearTimeout(doneTimer);
+    status.classList.remove('error'); status.textContent = 'Asking…'; setBriefState('busy');
+    try { await request('/api/bot/brief', {}); status.textContent = 'Brief requested'; setBriefState('done'); happy(); doneTimer = setTimeout(() => setBriefState('idle'), 2200); }
+    catch (error) { status.classList.add('error'); status.textContent = error.message || 'Brief failed'; setBriefState('idle'); }
+    finally { briefing = false; briefTimer = setTimeout(() => { status.textContent = ''; status.classList.remove('error'); }, 5000); }
   }
   function newChat() {
     const d = dialog('New chat', `<form class="workspace-form"><p class="rc-chat-note">Start with your saved choices. You can change them here or from the composer.</p><details class="rc-chat-new-options"><summary>Provider, model, effort, and account</summary><div class="rc-chat-form-grid"><label>Provider<select name="provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><label>Account<select name="account"></select></label><label>Model<select name="model"></select></label><label>Effort<select name="effort"></select></label></div></details><p class="rc-chat-note">The chat is named from your first message. Automatic account selection keeps work moving across available accounts.</p><p role="alert"></p><button class="cr-primary">Start chat</button></form>`);
