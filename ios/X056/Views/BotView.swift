@@ -71,13 +71,13 @@ struct BotView: View {
         error = nil
         defer { waking = false }
         do {
-            let (pid, sid) = try await app.wakeBot()
+            let (pid, sid, serverBot) = try await app.wakeBot()
             let m = ConversationModel(projectId: pid, sessionId: sid)
             m.liveActivity = false
             model = m
             app.attach(m)
             app.setVisible(projectId: pid, sessionId: sid)
-            await m.send(AppModel.botSetupPrompt, files: [])
+            if serverBot { await m.load() } else { await m.send(AppModel.botSetupPrompt, files: []) }
         } catch {
             self.error = error.localizedDescription
         }

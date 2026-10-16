@@ -611,6 +611,12 @@ final class AppModel {
     /// The Bot: a chat on this gateway named "Bot", so every device finds the
     /// same one. The ids seen last are kept to find it before the list loads.
     var bot: (projectId: String, sessionId: String)? {
+        // The gateway's own Bot (`bot: true`, made by POST /api/bot) wins over
+        // any chat merely named "Bot": it has the Bot's persona and tools.
+        if let p = projects.first(where: { $0.isBot && $0.archivedAt == nil }),
+           let sid = p.lastSessionId ?? p.conversations?.first?.sessionId {
+            return (p.id, sid)
+        }
         let d = UserDefaults.standard
         if let pid = d.string(forKey: "botProjectId"), let sid = d.string(forKey: "botSessionId"),
            project(pid)?.conversations?.contains(where: { $0.sessionId == sid }) == true || !projectsLoaded {
@@ -635,14 +641,23 @@ final class AppModel {
         "Reply to this with a one-line greeting.",
     ].joined(separator: "\n")
 
-    /// Makes the Bot: a Claude chat, renamed "Bot" so other devices find it.
-    func wakeBot() async throws -> (projectId: String, sessionId: String) {
+    /// Makes the Bot. A gateway that has the Bot (`POST /api/bot`) turns it on
+    /// and answers with its chat, which already carries the Bot's persona, so
+    /// `serverBot` is true and no setup message is sent. An older gateway gets
+    /// a plain Claude chat renamed "Bot" so other devices find it.
+    func wakeBot() async throws -> (projectId: String, sessionId: String, serverBot: Bool) {
+        if let reply = try? await client?.post("/api/bot", BotEnableBody(enabled: true), as: BotStatusReply.self),
+           reply.enabled == true, let pid = reply.projectId, let sid = reply.sessionId {
+            rememberBot(pid, sid)
+            await refreshProjects()
+            return (pid, sid, true)
+        }
         let (pid, sid) = try await newChat(provider: "claude", model: "", effort: "", account: nil)
         _ = try? await client?.post("/api/projects/rename", ProjectRenameBody(id: pid, name: "Bot"))
         try? await rename(pid, sid, to: "Bot")
         rememberBot(pid, sid)
         await refreshProjects()
-        return (pid, sid)
+        return (pid, sid, false)
     }
 
     func rememberBot(_ projectId: String, _ sessionId: String) {

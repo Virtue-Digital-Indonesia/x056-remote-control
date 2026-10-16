@@ -22,16 +22,11 @@ struct HomeView: View {
         let attention = items.filter { !$0.unread && $0.status.needsAttention }
         let progress = items.filter { !$0.unread && $0.status.inProgress }
         let drafts = items.filter { $0.draft && !$0.unread && $0.status.settled }
-        let bot = app.projects.first { $0.isBot && $0.archivedAt == nil }
-        // The pinned Bot row stands in for its settled conversations; a search still finds them.
-        let recentAll = items.filter { !$0.draft && !$0.unread && $0.status.settled && (!$0.dismissed || !query.isEmpty || showDismissed) && (!$0.project.isBot || !query.isEmpty) }
+        let recentAll = items.filter { !$0.draft && !$0.unread && $0.status.settled && (!$0.dismissed || !query.isEmpty || showDismissed) }
         let cutoff = Date().timeIntervalSince1970 * 1000 - recentDays * 86_400_000
         let recent = query.isEmpty ? Array(recentAll.filter { $0.recentActivity >= cutoff }.prefix(recentMax)) : recentAll
         let dismissedCount = items.filter { $0.dismissed && !$0.draft && !$0.unread && $0.status.settled }.count
         List {
-            if let bot, query.isEmpty {
-                Section("Bot") { botRow(bot) }
-            }
             if !app.approvals.isEmpty && query.isEmpty {
                 Section {
                     ForEach(app.approvals) { ApprovalRow(approval: $0) }
@@ -124,34 +119,6 @@ struct HomeView: View {
             } header: {
                 header(title, rows.count)
             }
-        }
-    }
-
-    /// Opens the Bot's most recently active conversation, through the same path a notification tap uses.
-    private func botRow(_ bot: Project) -> some View {
-        let sid = bot.conversations?.max { $0.recency < $1.recency }?.sessionId ?? bot.lastSessionId
-        return Button {
-            app.open(projectId: bot.id, sessionId: sid)
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "sparkles")
-                    .foregroundStyle(Palette.clay)
-                    .frame(width: 22)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(bot.name.isEmpty ? "Bot" : bot.name)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text("Your assistant")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.vertical, 2)
         }
     }
 

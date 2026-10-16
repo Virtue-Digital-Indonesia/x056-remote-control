@@ -464,6 +464,11 @@ struct ReadAllBody: Encodable, Sendable {}
 
 struct ProjectRenameBody: Encodable, Sendable { let id: String; let name: String }
 
+/// POST /api/bot: turn the gateway's Bot on (it creates its chat once).
+struct BotEnableBody: Encodable, Sendable { let enabled: Bool }
+/// GET/POST /api/bot reply; only the fields the app reads.
+struct BotStatusReply: Decodable, Sendable { let enabled: Bool?; let projectId: String?; let sessionId: String? }
+
 struct RenameBody: Encodable, Sendable {
     let projectId: String
     let sessionId: String

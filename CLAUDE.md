@@ -889,9 +889,12 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   hero look shown again). The aurora backs the whole Bot chat, and a quick
   row of the hero's four chips sits above the composer when the chat is
   non-empty, idle and the box is empty. Tests: `test/browser/bot-header.cjs`. Sender labels "Bot digest" and
-  "Morning brief". **iOS**: a pinned Bot section on Home (`Project.bot`);
-  written without a Swift toolchain, so it is uncompiled until the next
-  Xcode build.
+  "Morning brief". **iOS**: the app's Bot tab (`BotView`, 1f48915) resolves the
+  Bot as the row with `bot: true` first, then its remembered ids, then a chat
+  named "Bot"; its wake button calls `POST /api/bot {enabled: true}` and, when
+  that answers, sends NO "[Bot setup]" message (that prompt says "read only,
+  ask first", which contradicts the owner's "everything"). Older gateways keep
+  the plain renamed chat. The wiring is uncompiled until the next Xcode build.
 
 ## Delegates: an orchestrator's hidden workers (`server/delegates.ts`)
 
