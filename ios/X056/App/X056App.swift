@@ -64,6 +64,11 @@ struct MainView: View {
                 }
             }
             .badge(app.needsYouCount)
+            Tab("Bot", systemImage: "sparkles", value: AppTab.bot) {
+                NavigationStack(path: $app.botPath) {
+                    BotView().routes()
+                }
+            }
             Tab("Projects", systemImage: "folder", value: AppTab.projects) {
                 NavigationStack(path: $app.path) {
                     ProjectsView().routes()
@@ -92,6 +97,8 @@ extension View {
             switch route {
             case .project(let id):
                 ConversationsView(projectId: id)
+            case .space(let id):
+                SpaceView(spaceId: id)
             case .conversation(let pid, let sid):
                 ConversationView(projectId: pid, sessionId: sid)
             case .draft(let pid, let id):

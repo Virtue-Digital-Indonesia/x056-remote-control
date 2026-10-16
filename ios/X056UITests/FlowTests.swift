@@ -445,6 +445,136 @@ final class FlowTests: XCTestCase {
         }
     }
 
+    /// New work started inside a Project (space) belongs to it on the
+    /// gateway. It used to go to the repository route and land in none. A
+    /// new Project has no repository of its own: any one can be chosen.
+    func testNewWorkLandsInItsProject() throws {
+        let name = "Phone project " + String(UUID().uuidString.prefix(4))
+        let space = try XCTUnwrap(api("POST", "/api/project-spaces", ["requestId": UUID().uuidString.lowercased(), "name": name]))
+        let spaceId = try XCTUnwrap(space["id"] as? String)
+        let app = signInToFixture()
+        app.buttons["Projects"].firstMatch.tap()
+        let row = app.staticTexts[name].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        app.buttons["New conversation"].firstMatch.tap()
+        let work = app.buttons["Work"].firstMatch
+        if work.waitForExistence(timeout: 5) { work.tap() }
+        XCTAssertFalse(app.buttons["Create"].firstMatch.isEnabled, "no repository chosen yet")
+        // A menu picker's button is labelled by its value.
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@ OR label CONTAINS %@", "Repository", "Choose one")).firstMatch.tap()
+        let repo = app.buttons["Website refresh"].firstMatch
+        XCTAssertTrue(repo.waitForExistence(timeout: 5))
+        repo.tap()
+        snapshot(app, "50-new-work-in-project")
+        app.buttons["Create"].firstMatch.tap()
+        XCTAssertTrue(app.textViews["composer"].waitForExistence(timeout: 10))
+        let inSpace = { () -> Int in
+            let projects = self.api("GET", "/api/projects")?["projects"] as? [[String: Any]] ?? []
+            return projects.flatMap { ($0["conversations"] as? [[String: Any]]) ?? [] }.filter { $0["spaceId"] as? String == spaceId }.count
+        }
+        XCTAssertEqual(inSpace(), 1, "the new work belongs to the project it was made in")
+    }
+
+    /// A message queued elsewhere (here: the API, as the web panel does)
+    /// shows over the message box, not behind a chip off the screen.
+    func testQueuedMessagesShowOverTheComposer() throws {
+        let app = signInToFixture()
+        app.buttons["Projects"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Website refresh"].waitForExistence(timeout: 10))
+        app.staticTexts["Website refresh"].tap()
+        let title = "Update the component library"
+        XCTAssertTrue(app.staticTexts[title].waitForExistence(timeout: 10))
+        app.staticTexts[title].tap()
+        XCTAssertTrue(app.textViews["composer"].waitForExistence(timeout: 10))
+        let ref = try conversationRef(title)
+        _ = api("POST", "/api/sessions/current/messages", ref.merging(["prompt": "Run the checks."]) { a, _ in a })
+        sleep(1)
+        _ = api("POST", "/api/queue", ref.merging(["prompt": "Then deploy it"]) { a, _ in a })
+        XCTAssertTrue(app.staticTexts["1 queued"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Then deploy it"].exists)
+        snapshot(app, "51-queue-strip")
+    }
+
+    /// A long message shows Expand. Reading back while a turn runs stays
+    /// where it was: the turn's steps used to scroll the view back down
+    /// under the finger.
+    func testExpandAndReadingBackDuringATurn() throws {
+        let app = signInToFixture()
+        app.buttons["Projects"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Website refresh"].waitForExistence(timeout: 10))
+        app.staticTexts["Website refresh"].tap()
+        let title = "Review accessibility findings"
+        XCTAssertTrue(app.staticTexts[title].waitForExistence(timeout: 10))
+        let ref = try conversationRef(title)
+        for q in apiList("/api/questions") where q["sessionId"] as? String == ref["sessionId"] as? String {
+            _ = api("POST", "/api/questions/dismiss", ref.merging(["at": q["at"]!]) { a, _ in a })
+        }
+        app.staticTexts[title].tap()
+        XCTAssertTrue(app.textViews["composer"].waitForExistence(timeout: 10))
+        let long = (["Run the checks, in this order:"] + (1...20).map { "step \($0) of the list" }).joined(separator: "\n")
+        _ = api("POST", "/api/sessions/current/messages", ref.merging(["prompt": long]) { a, _ in a })
+        XCTAssertTrue(app.buttons["steps"].firstMatch.waitForExistence(timeout: 15), "the turn is running")
+
+        let expand = app.buttons["Expand"].firstMatch
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "a cut message says it can be expanded")
+        snapshot(app, "53-expand")
+        expand.tap()
+        XCTAssertTrue(app.buttons["Collapse"].firstMatch.waitForExistence(timeout: 3))
+        app.buttons["Collapse"].firstMatch.tap()
+
+        app.swipeDown()
+        app.swipeDown()
+        sleep(2)
+        let marker = try XCTUnwrap(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "(#")).allElementsBoundByIndex.first {
+            $0.isHittable && $0.frame.minY > 200 && $0.frame.minY < 600
+        })
+        let before = marker.frame.minY
+        sleep(6) // more steps arrive meanwhile
+        XCTAssertEqual(marker.frame.minY, before, accuracy: 2, "the turn's steps must not move what you are reading")
+        XCTAssertTrue(app.buttons["Latest"].exists)
+        snapshot(app, "52-reading-back-mid-turn")
+        app.buttons["Latest"].tap()
+        XCTAssertTrue(app.buttons["Collapse"].firstMatch.exists || app.buttons["Expand"].firstMatch.waitForExistence(timeout: 5), "Latest goes back to the end")
+    }
+
+    /// The Bot: woken from its tab, it answers; its setup message stays out
+    /// of sight, and the chat is named Bot on the gateway.
+    func testBotWakesAndAnswers() throws {
+        // A Bot an earlier run left would skip the welcome.
+        for p in (api("GET", "/api/projects")?["projects"] as? [[String: Any]] ?? []) where (p["name"] as? String) == "Bot" {
+            _ = api("POST", "/api/projects/rename", ["id": p["id"]!, "name": "Old bot"])
+        }
+        let app = signInToFixture()
+        // Right after sign-in the side bar can still be laying out (hit
+        // point -1,-1): wait until the tab can take a tap.
+        let botTab = app.buttons["Bot"].firstMatch
+        XCTAssertTrue(botTab.waitForExistence(timeout: 10))
+        for _ in 0..<20 where !botTab.isHittable { usleep(250_000) }
+        botTab.tap()
+        XCTAssertTrue(app.staticTexts["Meet your Bot"].waitForExistence(timeout: 10))
+        sleep(2)
+        snapshot(app, "40-bot-welcome")
+        app.buttons["Wake the Bot"].tap()
+        XCTAssertTrue(app.staticTexts["Fixture response received."].waitForExistence(timeout: 40))
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "[Bot setup]")).firstMatch.exists, "the setup message is hidden")
+        sleep(2)
+        snapshot(app, "41-bot-home")
+        app.buttons["What's running?"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["What's running?"].waitForExistence(timeout: 5))
+        sleep(2)
+        snapshot(app, "42-bot-thinking")
+        let named = (api("GET", "/api/projects")?["projects"] as? [[String: Any]] ?? []).filter { ($0["name"] as? String) == "Bot" }
+        XCTAssertEqual(named.count, 1, "the chat is named Bot, so other devices find it")
+    }
+
+    private func conversationRef(_ title: String) throws -> [String: Any] {
+        let projects = try XCTUnwrap(api("GET", "/api/projects")?["projects"] as? [[String: Any]])
+        let site = try XCTUnwrap(projects.first { ($0["name"] as? String) == "Website refresh" })
+        let conv = try XCTUnwrap((site["conversations"] as? [[String: Any]])?.first { ($0["title"] as? String) == title })
+        return ["projectId": site["id"]!, "sessionId": conv["sessionId"]!]
+    }
+
     /// Read state is shared through the gateway: what the web marks shows on
     /// the phone, and the phone's reads reach the gateway. "The web" here is
     /// plain API calls to the fixture with its token.

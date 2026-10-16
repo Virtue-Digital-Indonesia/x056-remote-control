@@ -589,9 +589,9 @@ the thread they come from uses them together, and so do we now.
   says "Jev unavailable: no credits" under "Your choice"; clicking the router
   item that is already effective is a no-op (it used to save a `'none'` that
   outlived the outage). The legacy
-  decision-maker endpoint's `none`/`advisor` store `router: 'none'`. iOS reads
-  `helpers.router` raw: it treats `'none'` as on and an absent router as off
-  (not yet taught the default).
+  decision-maker endpoint's `none`/`advisor` store `router: 'none'`. iOS uses the
+  row's `effectiveRouter` (`AppModel.effectiveRouter`); its "Your choice"
+  saves `'none'`.
 
 - **Agent team** (`server/team.ts`) is that thread's tree: the main session
   (its own model/effort) plans and decides; **explorer** (reads code,

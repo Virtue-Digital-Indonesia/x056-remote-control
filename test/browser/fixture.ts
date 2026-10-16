@@ -1,5 +1,5 @@
 // Isolated gateway for browser checks. All identities and transcripts are fixtures.
-import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,7 +9,8 @@ import { ChatCapabilities } from '../../server/chat-capabilities.js';
 import { AccountRegistry } from '../../src/accounts.js';
 import { ProjectRegistry } from '../../server/projects.js';
 import { AccountAnalytics } from '../../src/account-analytics.js';
-const fixtureRoot=process.env.X056_TEST_CHAT?resolve('.deploy/chat-browser'):tmpdir();mkdirSync(fixtureRoot,{recursive:true});
+// realpath: macOS's tmpdir is under the /var symlink, and a Chat's cwd check compares real paths.
+const fixtureRoot=process.env.X056_TEST_CHAT?resolve('.deploy/chat-browser'):realpathSync(tmpdir());mkdirSync(fixtureRoot,{recursive:true});
 const dir=mkdtempSync(join(fixtureRoot,'x056-browser-')), state=join(dir,'state'), pub=join(dir,'public');
 mkdirSync(state,{recursive:true});mkdirSync(pub);
 for(const file of ['panel.html','control-room.js','control-room.css','rc-chat.js','rc-chat.css','project-spaces.js','project-spaces.css','webauthn.js','sw.js','manifest.webmanifest']) symlinkSync(file==='panel.html' && process.env.X056_TEST_PANEL ? process.env.X056_TEST_PANEL : resolve(['control-room.js','control-room.css'].includes(file) ? process.env.X056_TEST_ASSETS || 'server/public' : 'server/public',file),join(pub,file));

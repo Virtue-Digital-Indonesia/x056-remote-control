@@ -14,11 +14,17 @@ struct NewConversationSheet: View {
 
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
+    /// A repository to start work in.
     var initialProject: String?
+    /// A Project (space) to start in.
+    var initialSpace: String?
     var onCreated: (Route) -> Void = { _ in }
 
     @State private var kind: Kind = .chat
+    /// The repository work runs in.
     @State private var projectId: String?
+    /// The Project (space) it belongs to; nil = none.
+    @State private var spaceId: String?
     @State private var provider = "codex"
     @State private var model = ""
     @State private var effort = ""
@@ -27,7 +33,14 @@ struct NewConversationSheet: View {
     @State private var error: String?
 
     var body: some View {
-        let workProjects = app.projects.filter { !$0.isChat }.sorted { app.lastActivity($0) > app.lastActivity($1) }
+        let spaced = app.spacesEnabled && !app.spaces.isEmpty
+        let workProjects = (spaced ? app.repos(inSpace: spaceId) : app.projects.filter { !$0.isChat })
+            .sorted { app.lastActivity($0) > app.lastActivity($1) }
+        // Any repository can take a Project's work, as in the panel: its own
+        // first, then the rest (a new Project has none of its own yet).
+        let otherRepos = spaced && spaceId != nil
+            ? app.repos(inSpace: nil).filter { r in !workProjects.contains { $0.id == r.id } }.sorted { app.lastActivity($0) > app.lastActivity($1) }
+            : []
         let fixedProvider = kind == .work && !app.spacesEnabled
         let providerNow = fixedProvider ? (app.project(projectId ?? "")?.providerName ?? provider) : provider
         let models = ModelCatalog.models(provider: providerNow, codex: app.codexModels)
@@ -43,7 +56,37 @@ struct NewConversationSheet: View {
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
                 }
-                if kind == .work {
+                if let error {
+                    // At the top: below the form it was off screen.
+                    Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red) }
+                }
+                if spaced {
+                    Section {
+                        Picker("Project", selection: $spaceId) {
+                            Text("None").tag(String?.none)
+                            ForEach(app.spaces) { s in Text(s.name).tag(Optional(s.id)) }
+                        }
+                        if kind == .work {
+                            Picker("Repository", selection: $projectId) {
+                                if projectId == nil { Text("Choose one").tag(String?.none) }
+                                Section { ForEach(workProjects) { p in Text(p.name).tag(Optional(p.id)) } }
+                                if !otherRepos.isEmpty {
+                                    Section(workProjects.isEmpty ? "Repositories" : "Other repositories") {
+                                        ForEach(otherRepos) { p in Text(p.name).tag(Optional(p.id)) }
+                                    }
+                                }
+                            }
+                        }
+                    } footer: {
+                        if spaceId == nil {
+                            Text("It belongs to no project, like Unassigned work in the panel.")
+                        } else if kind == .work && workProjects.isEmpty {
+                            Text("This project has no repository yet. Choose the one the work runs in; the conversation shows in this project.")
+                        } else {
+                            Text("It shows in this project on the phone and in the panel.")
+                        }
+                    }
+                } else if kind == .work {
                     Section("Project") {
                         Picker("Project", selection: $projectId) {
                             ForEach(workProjects) { p in Text(p.name).tag(Optional(p.id)) }
@@ -79,9 +122,6 @@ struct NewConversationSheet: View {
                 } footer: {
                     Text(kind == .chat ? "The chat is named from your first message." : "Automatic routing picks the account; a chosen one stays with this conversation.")
                 }
-                if let error {
-                    Section { Text(error).foregroundStyle(.red) }
-                }
             }
             .navigationTitle(kind == .chat ? "New chat" : "New work")
             .navigationBarTitleDisplayMode(.inline)
@@ -97,15 +137,34 @@ struct NewConversationSheet: View {
                 }
             }
             .onChange(of: provider) { model = ""; effort = "" }
+            .onChange(of: spaceId) {
+                // The Project's default repository, else keep one it lists,
+                // else its first; with none of its own, the person chooses.
+                let repos = app.repos(inSpace: spaceId).sorted { app.lastActivity($0) > app.lastActivity($1) }
+                if let def = spaceId.flatMap({ app.space($0)?.defaultWorkProjectId }), app.project(def) != nil {
+                    projectId = def
+                } else if !repos.contains(where: { $0.id == projectId }) {
+                    projectId = repos.first?.id
+                }
+            }
             .onChange(of: kind) { model = ""; effort = "" }
+            // New work starts on its repository's provider, as in the panel.
+            .onChange(of: projectId) { if spaced, let p = projectId.flatMap(app.project) { provider = p.providerName } }
             .onAppear {
-                if let initialProject {
+                if let initialSpace {
+                    spaceId = initialSpace
+                    projectId = app.space(initialSpace)?.defaultWorkProjectId ?? workProjects.first?.id
+                    if !app.chatsEnabled { kind = .work }
+                } else if let initialProject {
                     kind = .work
                     projectId = initialProject
+                    // Work from a repository belongs where the repository does.
+                    if spaced { spaceId = app.defaultSpace(forRepo: initialProject) }
                 } else if !app.chatsEnabled {
                     kind = .work
                 }
                 if projectId == nil { projectId = workProjects.first?.id }
+                if spaced, kind == .work, let p = projectId.flatMap(app.project) { provider = p.providerName }
             }
         }
         .presentationDetents([.medium, .large])
@@ -117,11 +176,11 @@ struct NewConversationSheet: View {
         do {
             switch kind {
             case .chat:
-                let (pid, sid) = try await app.newChat(provider: provider, model: model, effort: effort, account: account)
+                let (pid, sid) = try await app.newChat(provider: provider, model: model, effort: effort, account: account, spaceId: spaceId)
                 finish(.conversation(projectId: pid, sessionId: sid))
             case .work:
                 guard let projectId else { return }
-                if let (pid, sid) = try await app.newWork(projectId: projectId, provider: provider, model: model, effort: effort, account: account) {
+                if let (pid, sid) = try await app.newWork(projectId: projectId, provider: provider, model: model, effort: effort, account: account, spaceId: spaceId) {
                     finish(.conversation(projectId: pid, sessionId: sid))
                 } else {
                     let id = UUID()
