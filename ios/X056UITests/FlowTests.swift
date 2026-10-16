@@ -556,16 +556,22 @@ final class FlowTests: XCTestCase {
         sleep(2)
         snapshot(app, "40-bot-welcome")
         app.buttons["Wake the Bot"].tap()
-        XCTAssertTrue(app.staticTexts["Fixture response received."].waitForExistence(timeout: 40))
-        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "[Bot setup]")).firstMatch.exists, "the setup message is hidden")
+        // The gateway's Bot has its own persona, so waking sends nothing:
+        // the home shows with its suggestions.
+        let chip = app.buttons["What's running?"].firstMatch
+        XCTAssertTrue(chip.waitForExistence(timeout: 20))
+        XCTAssertEqual(api("GET", "/api/bot")?["enabled"] as? Bool, true, "Wake turns the gateway's Bot on")
         sleep(2)
         snapshot(app, "41-bot-home")
-        app.buttons["What's running?"].firstMatch.tap()
+        chip.tap()
         XCTAssertTrue(app.staticTexts["What's running?"].waitForExistence(timeout: 5))
-        sleep(2)
+        sleep(1)
         snapshot(app, "42-bot-thinking")
+        XCTAssertTrue(app.staticTexts["Fixture response received."].waitForExistence(timeout: 40))
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "[Bot setup]")).firstMatch.exists, "the gateway's Bot gets no setup message")
         let named = (api("GET", "/api/projects")?["projects"] as? [[String: Any]] ?? []).filter { ($0["name"] as? String) == "Bot" }
-        XCTAssertEqual(named.count, 1, "the chat is named Bot, so other devices find it")
+        XCTAssertEqual(named.count, 1, "one Bot: the gateway's own")
+        XCTAssertEqual(named.first?["bot"] as? Bool, true)
     }
 
     private func conversationRef(_ title: String) throws -> [String: Any] {

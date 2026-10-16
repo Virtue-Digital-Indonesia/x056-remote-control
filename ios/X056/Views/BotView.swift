@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// The Bot: a personal assistant that keeps an eye on your conversations and
-/// answers in plain words. It is a chat on the gateway named "Bot" with the
-/// x056 tools every conversation has; its first message (hidden here) says
-/// how to use them and what to ask before doing.
+/// answers in plain words. It is the gateway's own Bot chat (`POST /api/bot`),
+/// which has its persona and acts on its own. An older gateway gets a chat
+/// named "Bot" whose first message (hidden here) says how to use the x056
+/// tools and what to ask before doing.
 struct BotView: View {
     @Environment(AppModel.self) private var app
     @State private var model: ConversationModel?
@@ -129,7 +130,7 @@ private struct BotWelcome: View {
                     .multilineTextAlignment(.center)
             }
             Spacer()
-            Text("It is a Claude chat on your gateway named Bot, so the panel and your other devices see the same one. It reads before it acts, and asks before it messages, stops or schedules anything.")
+            Text("It is a Claude chat on your gateway named Bot, so the panel and your other devices see the same one. It hands work to your conversations, follows it and reports back, without asking you first.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

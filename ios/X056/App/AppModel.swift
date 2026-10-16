@@ -646,11 +646,18 @@ final class AppModel {
     /// `serverBot` is true and no setup message is sent. An older gateway gets
     /// a plain Claude chat renamed "Bot" so other devices find it.
     func wakeBot() async throws -> (projectId: String, sessionId: String, serverBot: Bool) {
-        if let reply = try? await client?.post("/api/bot", BotEnableBody(enabled: true), as: BotStatusReply.self),
-           reply.enabled == true, let pid = reply.projectId, let sid = reply.sessionId {
-            rememberBot(pid, sid)
-            await refreshProjects()
-            return (pid, sid, true)
+        do {
+            if let reply = try await client?.post("/api/bot", BotEnableBody(enabled: true), as: BotStatusReply.self) {
+                guard reply.enabled == true, let pid = reply.projectId, let sid = reply.sessionId else {
+                    throw APIError(status: 0, message: "The gateway did not start the Bot.")
+                }
+                rememberBot(pid, sid)
+                await refreshProjects()
+                return (pid, sid, true)
+            }
+        } catch let error as APIError where error.status == 404 {
+            // Only a gateway without the route gets the old chat: any other
+            // failure would leave a second Bot beside the gateway's own.
         }
         let (pid, sid) = try await newChat(provider: "claude", model: "", effort: "", account: nil)
         _ = try? await client?.post("/api/projects/rename", ProjectRenameBody(id: pid, name: "Bot"))
