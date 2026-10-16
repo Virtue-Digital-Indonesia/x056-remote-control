@@ -3723,7 +3723,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var lab = document.createElement('div'); lab.className = 'role';
     lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
     if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor','delegate','recap','bot_event','bot_brief'].indexOf(sender.kind) >= 0) {
-      wrap.classList.add('from-sender');
+      wrap.classList.add('from-sender', 'sender-' + sender.kind);
       if (sender.messageId) wrap.dataset.messageSourceId = sender.messageId;
       lab.classList.add('message-sender'); lab.textContent = '';
       lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : sender.kind === 'delegate' ? 'fanout' : sender.kind === 'recap' ? 'results' : sender.kind === 'bot_event' ? 'bell' : sender.kind === 'bot_brief' ? 'sun' : 'plug', 'sm'));
@@ -6158,6 +6158,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       // The subagent list belongs to THIS conversation, so it is refetched with
       // its history rather than carried over from whatever was on screen before.
       refreshSubagents();
+      document.dispatchEvent(new Event('x056-history'));
     }).catch(function (err) { if(reportErrors===true)throw err; });
   }
 

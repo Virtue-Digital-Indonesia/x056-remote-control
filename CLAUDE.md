@@ -861,7 +861,22 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   `bot_event` or `bot_brief` reply never becomes a question card.
 - **Panel**: `/bot` (setup card, else the Bot chat), a Bot destination in the
   sidebar, the Bot chat pinned first in `/chat`, and a header with a Bot
-  badge, the brief time and "Brief me now". Sender labels "Bot digest" and
+  badge, the brief time and "Brief me now". **Visuals (2026-10-16)**: one
+  CSS-only avatar, the orb (`orb()` in `rc-chat.js`, `.bot-orb`, sized by
+  `--s`), with states `idle` (breathe), `working` (orbit ring, driven by the
+  `#busy` bar's MutationObserver, so a running turn and background work both
+  count, no polling) and a short `happy` hop after "Brief me now". It sits in
+  the header badge, the `/chat` row, the setup card and an empty-chat hero
+  (greeting in the Bot's timezone, four chips that PREFILL `#prompt` and never
+  send, a drifting aurora), and beside every assistant message while
+  `body.rc-bot-chat` (a `::before`, so history and live rows both get it).
+  Palette is Bot-only (`--bot-1/2/3`: sky blue, cyan, peach); never violet
+  (`--bgwork`), green, amber or red, which carry state. Animate only
+  `transform`/`opacity`. **Reduced motion**: `control-room.css` forces
+  `animation:none!important`, so every element's BASE style must be the
+  visible one and entrances animate FROM hidden. The hero shows only once
+  history has loaded (`x056-history` event) and `#chat` is empty. Tests:
+  `test/browser/bot-visuals.cjs`. Sender labels "Bot digest" and
   "Morning brief". **iOS**: a pinned Bot section on Home (`Project.bot`);
   written without a Swift toolchain, so it is uncompiled until the next
   Xcode build.

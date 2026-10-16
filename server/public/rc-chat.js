@@ -9,8 +9,9 @@ window.createRCChat = function (engine, room) {
   const inChat = () => /^\/chat(?:\/|$)/.test(location.pathname);
   // The Bot (the owner's assistant) is one ordinary Chat; /bot opens it, or sets it up.
   const inBot = () => location.pathname === '/bot';
-  const botIcon = '<svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg>';
-  let bot = null, botRequest = null, briefTimer;
+  // The orb: the Bot's one avatar, pure CSS (rc-chat.css). state: idle | working; `happy` is a class added for ~1.5 s.
+  const orb = (px, state = 'idle', label = '') => `<span class="bot-orb" data-state="${state}" style="--s:${px}px;--d:${(Math.random() * 4).toFixed(1)}s"${label ? ` role="img" aria-label="${label}" title="${label}"` : ' aria-hidden="true"'}><i class="bo-body"></i><i class="bo-eyes"><b></b><b></b></i></span>`;
+  let bot = null, botRequest = null, briefTimer, leanFrame = 0, leanEvent;
   const icon = name => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ({edit:'<path d="m16 3 5 5-12 12-6 1 1-6Z M14 5l5 5"/>',archive:'<path d="M4 9h16v12H4z M3 3h18v6H3z M9 13h6"/>',controls:'<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',link:'<path d="m9 15 6-6 M8 16l-1 1a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0 M16 8l1-1a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0"/>',chevron:'<path d="m9 5 7 7-7 7"/>',chat:'<path d="M21 11a9 9 0 0 1-9 9H4l-3 2 2-6A9 9 0 1 1 21 11Z"/>'}[name] || '') + '</svg>';
   const current = () => engine.state().projects.find(p => p.id === engine.state().projectId && p.kind === 'chat');
   const request = async (url, body) => { const response = await engine.api(url, body === undefined ? undefined : { method: 'POST', body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Request failed'); return data; };
@@ -35,11 +36,20 @@ window.createRCChat = function (engine, room) {
     welcome.innerHTML = `<button class="cr-secondary" id="rcChatWelcomeMenu">Chats</button><div class="rc-chat-welcome-copy">${icon('chat')}<h1>What are we working on?</h1><p>Start a conversation, bring your files, and pick up where you left off.</p><button class="cr-primary" id="rcChatWelcomeNew">New chat</button></div>`;
     $('conversationSurface').append(welcome);
     const setup = document.createElement('section'); setup.id = 'rcBotSetup';
-    setup.innerHTML = `<form class="rc-bot-card" id="rcBotSetupForm" aria-labelledby="rcBotSetupTitle" novalidate>${botIcon}<h1 id="rcBotSetupTitle">Set up your Bot</h1><p>Your Bot is a personal assistant chat. It hands work to the right conversation, follows up on it, and reports back.</p><p>It briefs you every morning, and messages you when something needs you.</p><label class="rc-bot-time">Morning brief<input type="time" name="briefAt" value="07:30" required></label><small class="rc-bot-tz">Asia/Jakarta time</small><p class="rc-bot-error" role="alert"></p><button class="cr-primary" type="submit">Enable Bot</button></form>`;
+    setup.innerHTML = `<span class="bot-aurora" aria-hidden="true"></span><form class="rc-bot-card" id="rcBotSetupForm" aria-labelledby="rcBotSetupTitle" novalidate>${orb(72)}<h1 id="rcBotSetupTitle">Set up your Bot</h1><p>Your Bot is a personal assistant chat. It hands work to the right conversation, follows up on it, and reports back.</p><p>It briefs you every morning, and messages you when something needs you.</p><label class="rc-bot-time">Morning brief<input type="time" name="briefAt" value="07:30" required></label><small class="rc-bot-tz">Asia/Jakarta time</small><p class="rc-bot-error" role="alert"></p><button class="cr-primary" type="submit">Enable Bot</button></form>`;
     $('conversationSurface').append(setup);
     $('rcBotSetupForm').onsubmit = enableBot;
+    const hero = document.createElement('section'); hero.id = 'rcBotHero'; hero.setAttribute('aria-label', 'Bot welcome');
+    hero.innerHTML = `<span class="bot-aurora" aria-hidden="true"></span>${orb(72)}<h2 id="rcBotGreeting">Hello</h2><p>What can I take off your plate?</p><div class="rc-bot-chips">${[["What's running right now?", "What's running right now?"], ['Does anything need me?', 'Does anything need me?'], ['Delegate a task…', 'Delegate: '], ['Brief me now', '']].map(([label, text]) => `<button type="button" class="rc-bot-chip" data-text="${esc(text)}">${esc(label)}</button>`).join('')}</div>`;
+    $('chat').before(hero);
+    hero.querySelectorAll('.rc-bot-chip').forEach(chip => chip.onclick = () => chip.dataset.text ? engine.insertPrompt(chip.dataset.text) : briefNow());
+    new MutationObserver(syncBotWork).observe($('busy'), { childList: true });
+    new MutationObserver(syncBotHero).observe($('chat'), { childList: true });
+    document.addEventListener('x056-history', syncBotHero);
+    document.addEventListener('visibilitychange', () => document.documentElement.classList.toggle('bot-hidden', document.hidden));
+    if (matchMedia('(hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference)').matches) document.addEventListener('pointermove', leanEyes, { passive: true });
     const botHead = document.createElement('div'); botHead.id = 'rcBotHead'; botHead.hidden = true;
-    botHead.innerHTML = `<span class="rc-bot-badge">${botIcon}Bot</span><span id="rcBotBriefAt"></span><button type="button" class="cr-secondary" id="rcBotBriefNow">Brief me now</button><span id="rcBotBriefStatus" role="status"></span>`;
+    botHead.innerHTML = `<span class="rc-bot-badge">${orb(16, 'idle', 'Bot is idle')}Bot</span><span id="rcBotBriefAt"></span><button type="button" class="cr-secondary" id="rcBotBriefNow">Brief me now</button><span id="rcBotBriefStatus" role="status"></span>`;
     ($('projTitle')?.closest('.project-heading') || $('projTitle'))?.after(botHead);
     $('rcBotBriefNow').onclick = briefNow;
     const panel = document.createElement('aside'); panel.id = 'rcChatInspector'; panel.setAttribute('aria-label', 'Chat files and references');
@@ -118,7 +128,7 @@ window.createRCChat = function (engine, room) {
     const chats = state.projects.filter(p => p.kind === 'chat' && (!filter?.value || (filter.value==='standalone'?!p.spaceId:p.spaceId===filter.value)) && !!p.archivedAt === showArchived && (p.name + ' ' + p.conversations?.[0]?.title).toLowerCase().includes(query));
     chats.sort((a,b) => (!!b.bot - !!a.bot) || (b.conversations?.[0]?.lastMessageAt || b.conversations?.[0]?.createdAt || 0) - (a.conversations?.[0]?.lastMessageAt || a.conversations?.[0]?.createdAt || 0));
     $('rcChatArchives').textContent = showArchived ? 'Active chats' : 'Archived chats';
-    $('rcChatList').innerHTML = chats.map(p => `<a class="rc-chat-item ${p.id === active ? 'selected' : ''}" href="${chatPath(p.id)}" data-chat-link data-chat="${esc(p.id)}" ${(p.conversations?.[0]?.sessionId || p.lastSessionId) ? `data-conv-project="${esc(p.id)}" data-conv-session="${esc(p.conversations?.[0]?.sessionId || p.lastSessionId)}"` : ''} ${p.id === active ? 'aria-current="page"' : ''}><strong>${p.bot ? '<span class="rc-bot-badge">Bot</span>' : ''}${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small></a>`).join('') || '<p class="rc-chat-empty">No chats found.</p>';
+    $('rcChatList').innerHTML = chats.map(p => `<a class="rc-chat-item ${p.id === active ? 'selected' : ''}" href="${chatPath(p.id)}" data-chat-link data-chat="${esc(p.id)}" ${(p.conversations?.[0]?.sessionId || p.lastSessionId) ? `data-conv-project="${esc(p.id)}" data-conv-session="${esc(p.conversations?.[0]?.sessionId || p.lastSessionId)}"` : ''} ${p.id === active ? 'aria-current="page"' : ''}><strong>${p.bot ? orb(16, p.running ? 'working' : 'idle') + '<span class="rc-bot-badge">Bot</span>' : ''}${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small></a>`).join('') || '<p class="rc-chat-empty">No chats found.</p>';
   }
   function sync() {
     if (!mounted) return;
@@ -149,7 +159,7 @@ window.createRCChat = function (engine, room) {
     const form = event.target, button = form.querySelector('button[type=submit]'), alert = form.querySelector('[role=alert]'), briefAt = form.elements.briefAt.value;
     alert.textContent = '';
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(briefAt)) { alert.textContent = 'Choose a brief time, such as 07:30.'; form.elements.briefAt.focus(); return; }
-    button.disabled = true; button.textContent = 'Enabling…';
+    button.disabled = true; button.textContent = 'Enabling…'; form.querySelector('.bot-orb').dataset.state = 'working';
     try {
       const data = await request('/api/bot', { enabled: true, briefAt });
       bot = data; botRequest = Promise.resolve(data);
@@ -157,24 +167,57 @@ window.createRCChat = function (engine, room) {
       await engine.reloadProjects();
       await navigate(data.url, true);
     } catch (error) { alert.textContent = error.message || 'Could not enable the Bot.'; }
-    finally { button.disabled = false; button.textContent = 'Enable Bot'; }
+    finally { button.disabled = false; button.textContent = 'Enable Bot'; form.querySelector('.bot-orb').dataset.state = 'idle'; }
   }
   function renderBotHead(chat) {
     const head = $('rcBotHead'); if (!head) return;
     const on = !!chat?.bot && room.isOpen() !== false && !document.body.classList.contains('rc-chat-home-view');
     head.hidden = !on; document.body.classList.toggle('rc-bot-chat', on);
-    if (!on) return;
+    syncBotHero(); if (!on) return;
+    syncBotWork();
     if (!bot && !botRequest) loadBot().then(() => renderBotHead(current()), () => {});
     const at = $('rcBotBriefAt');
     at.textContent = bot?.briefAt ? 'Brief ' + bot.briefAt : '';
     at.title = bot?.briefAt ? 'Morning brief at ' + bot.briefAt + ', ' + (bot.tz || 'Asia/Jakarta') + ' time' : '';
+  }
+  // Header orb: working while the open Bot conversation has a turn or background work (the panel's own #busy bar shows exactly that).
+  function syncBotWork() {
+    const o = document.querySelector('#rcBotHead .bot-orb'), busy = $('busy'); if (!o) return;
+    const state = busy && busy.childElementCount ? 'working' : 'idle';
+    if (o.dataset.state === state) return;
+    o.dataset.state = state; const label = state === 'working' ? 'Bot is working' : 'Bot is idle';
+    o.setAttribute('aria-label', label); o.title = label;
+  }
+  // The hero shows for the open Bot chat once its history has loaded and the thread has no nodes; the first message removes it.
+  function syncBotHero() {
+    const s = engine.state(), chatEl = $('chat');
+    const empty = document.body.classList.contains('rc-bot-chat') && !!s.sessionId && !!s.views?.[s.projectId + '::' + s.sessionId]?.loaded && !!chatEl && chatEl.childElementCount === 0;
+    if (empty === document.body.classList.contains('rc-bot-empty')) return;
+    if (empty) {
+      let hour = new Date().getHours();
+      try { hour = +new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: bot?.tz || 'Asia/Jakarta' }).format(new Date()); } catch {}
+      $('rcBotGreeting').textContent = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+    }
+    document.body.classList.toggle('rc-bot-empty', empty);
+  }
+  function leanEyes(event) {
+    if (!document.body.classList.contains('rc-bot-empty')) return;
+    leanEvent = event; if (leanFrame) return;
+    leanFrame = requestAnimationFrame(() => {
+      leanFrame = 0; const o = document.querySelector('#rcBotHero .bot-orb'); if (!o) return;
+      const r = o.getBoundingClientRect(), dx = leanEvent.clientX - r.left - r.width / 2, dy = leanEvent.clientY - r.top - r.height / 2, d = Math.hypot(dx, dy) || 1, k = Math.min(1, d / 160) * 3 / d;
+      o.style.setProperty('--lx', (dx * k).toFixed(2) + 'px'); o.style.setProperty('--ly', (dy * k).toFixed(2) + 'px');
+    });
+  }
+  function happy() {
+    document.querySelectorAll('#rcBotHead .bot-orb, #rcBotHero .bot-orb').forEach(o => { o.classList.remove('happy'); void o.offsetWidth; o.classList.add('happy'); setTimeout(() => o.classList.remove('happy'), 1500); });
   }
   async function briefNow() {
     const button = $('rcBotBriefNow'), status = $('rcBotBriefStatus');
     if (button.disabled) return;
     clearTimeout(briefTimer); button.disabled = true; button.setAttribute('aria-busy', 'true');
     status.classList.remove('error'); status.textContent = 'Asking…';
-    try { await request('/api/bot/brief', {}); status.textContent = 'Brief requested'; }
+    try { await request('/api/bot/brief', {}); status.textContent = 'Brief requested'; happy(); }
     catch (error) { status.classList.add('error'); status.textContent = error.message || 'Brief failed'; }
     finally { button.disabled = false; button.removeAttribute('aria-busy'); briefTimer = setTimeout(() => { status.textContent = ''; status.classList.remove('error'); }, 5000); }
   }

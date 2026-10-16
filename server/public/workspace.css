@@ -195,3 +195,6 @@ body.rc-workspace-ready :is(a,button):focus-visible{outline:2px solid var(--acce
  .workspace-sidebar-collapsed #crProjectNav .workspace-global-nav{margin-top:8px}
  .workspace-sidebar-collapsed .workspace-nav-empty{font-size:10px;overflow-wrap:anywhere;padding:6px 0}
 }
+
+#workspaceBot svg{transform-origin:50% 60%}
+@media(prefers-reduced-motion:no-preference){#workspaceBot:hover svg,#workspaceBot:focus-visible svg{animation:ws-bot-wiggle .6s ease-in-out}@keyframes ws-bot-wiggle{25%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}75%{transform:rotate(-3deg)}}}

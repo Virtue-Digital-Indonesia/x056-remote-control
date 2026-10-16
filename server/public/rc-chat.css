@@ -159,9 +159,9 @@ body.rc-chat-home-view #rcChatWelcome{display:flex;flex-direction:column;min-wid
 #rcBotSetup{display:none}
 body.rc-bot-setup #rcChatNav,body.rc-bot-setup #rcChatWelcome{display:none!important}
 body.rc-bot-setup #conversationSurface{grid-template-columns:minmax(0,1fr)}
-body.rc-bot-setup #rcBotSetup{display:flex;flex:1;flex-direction:column;min-width:0;overflow:auto;padding:28px;background:var(--bg)}
-.rc-bot-card{margin:auto;width:100%;max-width:420px;display:flex;flex-direction:column;align-items:flex-start;gap:12px;padding:30px 0 80px}
-.rc-bot-card>svg{width:34px;height:34px;color:var(--accent);margin-bottom:6px}
+body.rc-bot-setup #rcBotSetup{position:relative;isolation:isolate;display:flex;flex:1;flex-direction:column;min-width:0;overflow:auto;padding:28px;background:var(--bg)}
+.rc-bot-card{position:relative;margin:auto;width:100%;max-width:420px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px;padding:30px 0 80px}
+.rc-bot-card>.bot-orb{margin:0 auto 8px}
 .rc-bot-card h1{font-size:28px;font-weight:550;letter-spacing:-.8px;line-height:1.2;margin:0 0 4px}
 .rc-bot-card p{font-size:14px;line-height:1.65;color:var(--muted);margin:0}
 .rc-bot-time{display:flex;flex-direction:column;gap:6px;margin-top:10px;font-size:13px;font-weight:550;color:var(--text)}
@@ -173,3 +173,63 @@ body.rc-bot-setup #rcBotSetup{display:flex;flex:1;flex-direction:column;min-widt
 #rcBotHead #rcBotBriefNow{padding:4px 10px;min-height:0;height:auto}
 /* Phones: the Bot row gets a line of its own under the title, so the title keeps its room. */
 @media(max-width:480px){body.rc-bot-chat .focus-main>.topbar{flex-wrap:wrap;height:auto;row-gap:4px;padding-bottom:6px}body.rc-bot-chat .focus-main>.topbar .project-heading{flex:1 1 0}body.rc-bot-chat .focus-main>.topbar #rcBotHead{order:99;flex:1 0 100%;gap:8px;padding-left:2px}#rcBotHead #rcBotBriefNow{font-size:11px}#rcBotBriefAt{font-size:11px}body.rc-bot-setup #rcBotSetup{padding:20px}.rc-bot-card h1{font-size:24px}}
+
+/* The Bot's look: a sky / cyan / peach orb. Violet is --bgwork and the state colours stay theirs, so none of them appear here. */
+:root{--bot-1:#4c8dff;--bot-2:#34c8e8;--bot-3:#ffb59a;--bot-ink:#16324f;--bot-orb:radial-gradient(circle at 31% 24%,#fffc 0,#fff0 30%),radial-gradient(circle at 70% 82%,#0f2d6b2e,#0f2d6b00 55%),conic-gradient(from 210deg,var(--bot-1),var(--bot-2),var(--bot-3),var(--bot-1));--bot-aurora-a:16%}
+html[data-theme=dark]{--bot-1:#6ea2ff;--bot-2:#52d4ee;--bot-3:#ffc3ab;--bot-aurora-a:13%}
+.bot-orb{position:relative;display:inline-block;flex:none;width:var(--s,28px);height:var(--s,28px);vertical-align:middle;border-radius:50%;animation:bot-breathe 5s ease-in-out infinite}
+.bot-orb::before{content:"";position:absolute;inset:-22%;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--bot-2) 55%,transparent),transparent 68%);opacity:.4;animation:bot-glow 5s ease-in-out infinite;pointer-events:none}
+.bot-orb::after{content:"";position:absolute;inset:-13%;border-radius:50%;border:max(1.5px,calc(var(--s) * .035)) solid transparent;border-top-color:var(--bot-2);border-right-color:color-mix(in srgb,var(--bot-3) 70%,transparent);opacity:0;transition:opacity .3s;pointer-events:none}
+.bot-orb .bo-body{position:absolute;inset:0;border-radius:50%;background:var(--bot-orb)}
+.bot-orb .bo-eyes{position:absolute;left:50%;top:43%;width:calc(var(--s) * .46);margin-left:calc(var(--s) * -.23);display:flex;justify-content:space-between;translate:var(--lx,0px) var(--ly,0px);transition:translate .14s ease-out}
+.bot-orb .bo-eyes b{box-sizing:border-box;width:calc(var(--s) * .12);height:calc(var(--s) * .17);border-radius:50%;background:var(--bot-ink);animation:bot-blink 5.2s infinite;animation-delay:calc(var(--d,0s) * -1)}
+.bot-orb .bo-eyes b+b{animation-delay:calc(var(--d,0s) * -1 + .07s)}
+.bot-orb[data-state=working]::after{opacity:1;animation:bot-orbit 1.3s linear infinite}
+.bot-orb[data-state=working]::before{animation-duration:1.8s;opacity:.7}
+.bot-orb[data-state=working] .bo-eyes{animation:bot-think 2.6s ease-in-out infinite}
+.bot-orb.happy{animation:bot-hop 1.5s ease-out both}
+.bot-orb.happy .bo-eyes b{background:none;height:calc(var(--s) * .09);border:calc(var(--s) * .04) solid var(--bot-ink);border-bottom:0;border-radius:99px 99px 0 0;animation:none}
+.rc-bot-badge:has(.bot-orb){padding-left:3px}.rc-bot-badge .bot-orb{margin:0 1px 0 0}
+.rc-chat-item strong>.bot-orb{margin-right:6px}
+@keyframes bot-breathe{50%{transform:scale(1.04)}}
+@keyframes bot-glow{50%{opacity:.75;transform:scale(1.08)}}
+@keyframes bot-blink{0%,92%,100%{transform:scaleY(1)}95%{transform:scaleY(.12)}}
+@keyframes bot-orbit{to{transform:rotate(360deg)}}
+@keyframes bot-think{0%,100%{transform:translate(0,0)}30%{transform:translate(calc(var(--s) * .05),calc(var(--s) * -.04))}65%{transform:translate(calc(var(--s) * -.05),calc(var(--s) * -.02))}}
+@keyframes bot-hop{0%,100%{transform:translateY(0) scale(1)}25%{transform:translateY(calc(var(--s) * -.22)) scale(1.04,.98)}45%{transform:translateY(0) scale(1.06,.92)}60%{transform:translateY(calc(var(--s) * -.08))}75%{transform:translateY(0)}}
+@keyframes bot-rise{from{opacity:0;transform:translateY(10px)}}
+@keyframes bot-drift{50%{transform:translate3d(4%,3%,0) scale(1.06)}}
+html.bot-hidden *,html.bot-hidden *::before,html.bot-hidden *::after{animation-play-state:paused!important}
+/* Aurora: three faint static radial layers on a clipped wrapper; only a transform drifts. */
+.bot-aurora{position:absolute;inset:0;overflow:hidden;z-index:-1;pointer-events:none}
+.bot-aurora::before{content:"";position:absolute;inset:-12%;background:radial-gradient(42% 46% at 22% 28%,color-mix(in srgb,var(--bot-1) var(--bot-aurora-a),transparent),transparent 70%),radial-gradient(40% 44% at 80% 24%,color-mix(in srgb,var(--bot-2) var(--bot-aurora-a),transparent),transparent 70%),radial-gradient(44% 40% at 56% 66%,color-mix(in srgb,var(--bot-3) var(--bot-aurora-a),transparent),transparent 70%);animation:bot-drift 22s ease-in-out infinite}
+/* Hero for an empty Bot chat: a sibling of the thread, never over the composer. */
+#rcBotHero{display:none}
+body.rc-bot-empty #rcBotHero{position:relative;isolation:isolate;overflow:hidden;flex:1 0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:6px;padding:36px 20px 48px}
+body.rc-bot-empty .scroll{display:flex;flex-direction:column}
+body.rc-bot-empty #chat{padding:0}
+#rcBotHero .bot-orb{margin-bottom:14px}
+#rcBotHero h2{margin:0;font-size:27px;font-weight:550;letter-spacing:-.7px;line-height:1.2}
+#rcBotHero p{margin:0;font-size:15px;color:var(--muted)}
+.rc-bot-chips{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:22px;max-width:480px}
+.rc-bot-chip{border:1px solid var(--border-strong);background:color-mix(in srgb,var(--bg) 88%,transparent);color:var(--text);border-radius:999px;padding:8px 14px;font-size:13px;line-height:1.3;transition:transform .18s,border-color .18s,background-color .18s}
+.rc-bot-chip:hover{transform:translateY(-1px);border-color:var(--bot-1);background:color-mix(in srgb,var(--bot-1) 9%,var(--bg))}
+.rc-bot-chip:focus-visible{outline:2px solid var(--bot-1);outline-offset:2px}
+#rcBotHero h2{animation:bot-rise .6s .1s both}
+#rcBotHero p{animation:bot-rise .6s .18s both}
+.rc-bot-chip{animation:bot-rise .55s both}
+.rc-bot-chip:nth-child(1){animation-delay:.3s}.rc-bot-chip:nth-child(2){animation-delay:.38s}.rc-bot-chip:nth-child(3){animation-delay:.46s}.rc-bot-chip:nth-child(4){animation-delay:.54s}
+/* Setup card: orb, staggered entrance, a sheen on Enable. */
+.rc-bot-card>:not(.bot-orb){animation:bot-rise .6s both}
+.rc-bot-card>:nth-child(2){animation-delay:.08s}.rc-bot-card>:nth-child(3){animation-delay:.16s}.rc-bot-card>:nth-child(4){animation-delay:.24s}.rc-bot-card>:nth-child(5){animation-delay:.32s}.rc-bot-card>:nth-child(6){animation-delay:.38s}.rc-bot-card>:nth-child(7){animation-delay:.42s}.rc-bot-card>:nth-child(8){animation-delay:.46s}
+.rc-bot-card button[type=submit]{position:relative;overflow:hidden}
+.rc-bot-card button[type=submit]::after{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 35%,#fff5 50%,transparent 65%);transform:translateX(-110%);pointer-events:none}
+.rc-bot-card button[type=submit]:hover:not(:disabled)::after{transform:translateX(110%);transition:transform .7s ease}
+/* Persistent chat visuals: a small orb beside each reply, sunrise and bell on the gateway's own prompts. */
+body.rc-bot-chat #chat>.msg.assistant{position:relative;padding-left:34px}
+body.rc-bot-chat #chat>.msg.assistant::before{content:"";position:absolute;left:0;top:-1px;width:22px;height:22px;border-radius:50%;background:var(--bot-orb)}
+.msg.sender-bot_brief .role.message-sender{background:linear-gradient(90deg,color-mix(in srgb,var(--bot-3) 32%,transparent),color-mix(in srgb,var(--bot-1) 7%,transparent) 85%);border-radius:9px;padding:5px 10px}
+.msg.sender-bot_brief .role svg{animation:bot-orbit 40s linear infinite;color:color-mix(in srgb,var(--bot-3) 60%,var(--text))}
+.msg.sender-bot_event .role svg{transform-origin:50% 10%;animation:bot-ring 14s ease-in-out infinite;color:color-mix(in srgb,var(--bot-1) 70%,var(--text))}
+@keyframes bot-ring{0%,10%,100%{transform:rotate(0)}2%{transform:rotate(14deg)}4%{transform:rotate(-12deg)}6%{transform:rotate(8deg)}8%{transform:rotate(-5deg)}}
+@media(max-width:480px){body.rc-bot-chat #chat>.msg.assistant{padding-left:30px}#rcBotHero h2{font-size:24px}.rc-bot-chips{gap:7px}}
