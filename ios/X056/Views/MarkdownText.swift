@@ -9,7 +9,7 @@ struct MarkdownText: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(Self.blocks(text).enumerated()), id: \.offset) { _, block in
+            ForEach(Array(Self.cachedBlocks(text).enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .code(let lang, let code):
                     CodeBlock(language: lang, code: code)
@@ -31,6 +31,17 @@ struct MarkdownText: View {
         case heading(Int, String)
         case code(String, String)
         case table([String], [[String]])
+    }
+
+    /// Parsed once per text: a redraw of the list must not re-parse every reply.
+    @MainActor private static var cache: [String: [Block]] = [:]
+
+    @MainActor static func cachedBlocks(_ text: String) -> [Block] {
+        if let hit = cache[text] { return hit }
+        let parsed = blocks(text)
+        if cache.count > 400 { cache.removeAll(keepingCapacity: true) }
+        cache[text] = parsed
+        return parsed
     }
 
     nonisolated static func blocks(_ text: String) -> [Block] {

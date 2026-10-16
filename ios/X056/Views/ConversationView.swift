@@ -4,28 +4,18 @@ import SwiftUI
 struct ConversationView: View {
     @Environment(AppModel.self) private var app
     @State private var model: ConversationModel
-    @State private var nearBottom = true
-    /// Keep the newest message in view as it arrives. Scrolling up by hand
-    /// stops it; sending, reaching the bottom or the Latest button resumes it.
+    /// Keep the newest message in view as it arrives. A drag up stops it;
+    /// sending, reaching the bottom or Latest resumes it.
     @State private var following = true
-    @State private var userScrolling = false
-    /// Reading back through history folds the composer away.
+    /// The newest message is out of view (shows Latest).
+    @State private var awayFromEnd = false
+    /// Reading back through history slides the composer out of the way.
     @State private var composerFolded = false
+    /// Bumped to ask the scroll view for the end (Latest, Write).
+    @State private var toEnd = 0
     @State private var showTree = false
     @State private var showAutopilot = false
     @State private var showTranscript = false
-    @State private var position = ScrollPosition(edge: .bottom)
-    @State private var offsetY: CGFloat = 0
-    @State private var contentHeight: CGFloat = 0
-    /// While earlier messages load: where the view was, so their height can
-    /// be added to the offset and the screen stays on what you were reading.
-    @State private var holdPlace: HoldPlace?
-
-    private struct HoldPlace: Equatable {
-        let offset: CGFloat
-        let height: CGFloat
-        let rows: Int
-    }
 
     init(projectId: String, sessionId: String?, draftID: UUID? = nil) {
         let model = ConversationModel(projectId: projectId, sessionId: sessionId)
@@ -37,7 +27,106 @@ struct ConversationView: View {
         _model = State(initialValue: model)
     }
 
-    private func toLatest(animated: Bool = true) {
+    var body: some View {
+        // The scroll view is its own view: what changes while it scrolls stays
+        // inside it, and this one (composer, toolbar) redraws only when a
+        // threshold is crossed.
+        ChatScroll(model: model, following: $following, awayFromEnd: $awayFromEnd, folded: $composerFolded, toEnd: toEnd)
+            .safeAreaBar(edge: .bottom) {
+                ComposerArea(model: model, folded: $composerFolded, jumpToLatest: { toEnd += 1 }) { showAutopilot = true }
+            }
+            // A conversation gets the whole screen: no tab bar (on iPhone Duo,
+            // no tabs or Search in the rail), only its own toolbar.
+            .toolbar(.hidden, for: .tabBar)
+            .navigationTitle(model.conversation?.title ?? (model.sessionId == nil ? "New conversation" : "Conversation"))
+            .navigationSubtitle(model.project?.name ?? "")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                if let sid = model.sessionId {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Agents", systemImage: "point.3.connected.trianglepath.dotted") { showTree = true }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu("More", systemImage: "ellipsis") {
+                            Button(app.autopilot[sid] == nil ? "Autopilot…" : "Autopilot", systemImage: "repeat") { showAutopilot = true }
+                            Button("Transcript", systemImage: "terminal") { showTranscript = true }
+                            if LiveTurns.shared.isFollowing(sid) {
+                                Button("Stop following on Lock Screen", systemImage: "iphone.slash") {
+                                    Task { await LiveTurns.shared.unfollow(sid) }
+                                }
+                            } else if model.isWorking, LiveTurns.shared.available {
+                                Button("Follow on Lock Screen", systemImage: "iphone.badge.play") { model.followOnLockScreen() }
+                            }
+                            Divider()
+                            if let url = app.panelURL(projectId: model.projectId, sessionId: sid, isChat: model.isChat) {
+                                Link(destination: url) { Label("Open in the panel", systemImage: "safari") }
+                            }
+                            Button("Copy conversation ID", systemImage: "number") { UIPasteboard.general.string = sid }
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showTree) {
+                if let sid = model.sessionId { AgentTreeView(projectId: model.projectId, sessionId: sid) }
+            }
+            .sheet(isPresented: $showAutopilot) {
+                if let sid = model.sessionId { AutopilotSheet(projectId: model.projectId, sessionId: sid) }
+            }
+            .fullScreenCover(isPresented: $showTranscript) {
+                if let sid = model.sessionId { TranscriptView(projectId: model.projectId, sessionId: sid, title: model.conversation?.title ?? "Transcript") }
+            }
+            .environment(\.openTranscript, model.sessionId.map { OpenTranscriptAction(sessionId: $0) { showTranscript = true } })
+            .task { await model.load() }
+            .onAppear {
+                app.attach(model)
+                app.setVisible(projectId: model.projectId, sessionId: model.sessionId)
+            }
+            .onDisappear {
+                app.detach(model)
+                if app.visibleSessionId == model.sessionId { app.setVisible(projectId: nil, sessionId: nil) }
+            }
+    }
+}
+
+/// Bookkeeping that changes every frame while scrolling. A plain reference,
+/// not observed: writing it never redraws anything.
+@MainActor
+final class ScrollTracker {
+    var offset: CGFloat = 0
+    var contentHeight: CGFloat = 0
+    /// A finger is on the list, or it is coasting from one.
+    var byHand = false
+    var keyboardUp = false
+}
+
+/// The conversation's scroll view and the rules for where it sits:
+///   - it follows the end while `following`, and never moves while the list
+///     is under a finger or coasting (that was the snap back);
+///   - a drag up stops following at once; reaching the end starts it again;
+///   - reading back slides the composer away without resizing anything.
+struct ChatScroll: View {
+    let model: ConversationModel
+    @Binding var following: Bool
+    @Binding var awayFromEnd: Bool
+    @Binding var folded: Bool
+    let toEnd: Int
+
+    @State private var position = ScrollPosition(edge: .bottom)
+    @State private var tracker = ScrollTracker()
+    /// While earlier messages load: where the view was, so their height can
+    /// be added to the offset and the screen stays on what you were reading.
+    @State private var holdPlace: HoldPlace?
+
+    private struct HoldPlace: Equatable {
+        let offset: CGFloat
+        let height: CGFloat
+        let rows: Int
+    }
+
+    /// Distance from the end below which the list counts as at the end.
+    private static let endSlack: CGFloat = 32
+
+    private func toLatest(animated: Bool) {
         if animated {
             withAnimation(.easeOut(duration: 0.25)) { position.scrollTo(edge: .bottom) }
         } else {
@@ -45,45 +134,16 @@ struct ConversationView: View {
         }
     }
 
-    private func jumpToLatest() {
-        following = true
-        toLatest()
-    }
-
     var body: some View {
         let items = model.items
         ScrollView {
-            // Not lazy: a lazy stack guesses the height of rows it has not
-            // drawn, so the content height was wrong at the bottom (the last
-            // message under the composer, scrolling to it sprang back) and
-            // opening a step list shifted the rows around it.
-            VStack(alignment: .leading, spacing: 16) {
-                if model.sessionId != nil, !model.done, !items.isEmpty {
-                    Button {
-                        following = false
-                        holdPlace = HoldPlace(offset: offsetY, height: contentHeight, rows: model.rows.count)
-                        Task {
-                            let before = model.rows.count
-                            await model.loadOlder()
-                            if model.rows.count == before { holdPlace = nil }
-                        }
-                    } label: {
-                        if model.loadingOlder { ProgressView() } else { Text("Show earlier messages") }
-                    }
-                    .buttonStyle(.glass)
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity)
-                }
-                ForEach(items) { item in
-                    switch item {
-                    case .row(let r): MessageRow(row: r)
-                    case .steps(let rs): StepsRow(rows: rs)
-                    }
-                }
-                if model.isRunning || model.isBackground {
-                    WorkingLine(activity: model.activity, background: model.isBackground, model: model.activeModel)
-                }
-            }
+            ChatRows(
+                items: items,
+                earlier: model.sessionId != nil && !model.done && !items.isEmpty ? (model.loadingOlder ? .loading : .available) : .none,
+                working: model.isRunning || model.isBackground ? WorkingInfo(activity: model.activity, background: model.isBackground, model: model.activeModel) : nil,
+                loadEarlier: loadEarlier
+            )
+            .equatable()
             // A readable measure when iPhone Duo is open or on iPad.
             .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
@@ -100,13 +160,12 @@ struct ConversationView: View {
                 ContentUnavailableView("New conversation", systemImage: "sparkles", description: Text("Your first message starts a turn in \(model.project?.name ?? "this project")."))
             }
         }
-        // Floats above the composer instead of joining its bar: a taller bar
-        // would resize the scroll view and set off following.
+        // Floats above the composer instead of joining its bar.
         .overlay(alignment: .bottomTrailing) {
-            let show = !nearBottom && !composerFolded
+            let show = awayFromEnd && !folded
             ZStack {
                 if show {
-                    LatestButton(working: model.isWorking, action: jumpToLatest)
+                    LatestButton(working: model.isWorking) { following = true; toLatest(animated: true) }
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
                 }
             }
@@ -116,106 +175,125 @@ struct ConversationView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .scrollEdgeEffectStyle(.soft, for: .all)
-        // Only the first position is the bottom. Later size changes are left
-        // to `following`, so opening a step list grows downward instead of
+        // With the composer slid away there is nothing to soften the end for.
+        .scrollEdgeEffectHidden(folded, for: .bottom)
+        // Only the first position is the end. Later size changes are left to
+        // `following`, so opening a step list grows downward instead of
         // pushing the conversation up.
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .onScrollPhaseChange { _, phase in
-            userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+            tracker.byHand = phase == .tracking || phase == .interacting || phase == .decelerating
         }
-        .onScrollGeometryChange(for: Bool.self) { g in
-            g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 120
-        } action: { _, isNear in
-            nearBottom = isNear
-            guard isNear else { return }
-            following = true
-            if composerFolded { withAnimation(.snappy) { composerFolded = false } }
-        }
-        // Measured from under the top bar, as `ScrollPosition.scrollTo(y:)`
-        // counts it (the raw offset includes the bar's inset).
+        // Raw offset plus the top inset: the offset `ScrollPosition.scrollTo(y:)`
+        // takes. Every frame, so it only writes the tracker, and a binding
+        // only when the user turns the list upward.
         .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { old, new in
-            offsetY = new
-            // Scrolling up by hand, away from the latest message: stop
-            // following and give the screen to the history.
-            guard userScrolling, new < old, !nearBottom else { return }
-            following = false
-            if !composerFolded { withAnimation(.snappy) { composerFolded = true } }
+            tracker.offset = new
+            guard tracker.byHand, new < old - 1 else { return }
+            if following { following = false }
+            if !folded, awayFromEnd, !tracker.keyboardUp { withAnimation(.snappy) { folded = true } }
+        }
+        // How far the end is: crossing these lines is the only thing that
+        // reaches the parent, and that is rare.
+        .onScrollGeometryChange(for: Int.self) { g in
+            let gap = g.contentSize.height - (g.contentOffset.y + g.contentInsets.top + g.containerSize.height)
+            return gap < Self.endSlack ? 0 : gap < 160 ? 1 : 2
+        } action: { _, band in
+            let away = band == 2
+            if awayFromEnd != away { awayFromEnd = away }
+            if band == 0 {
+                if !following { following = true }
+                if folded { withAnimation(.snappy) { folded = false } }
+            }
         }
         .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, new in
-            contentHeight = new
+            tracker.contentHeight = new
             // Earlier messages arrived above: move down by their height.
             if let hold = holdPlace, model.rows.count != hold.rows {
                 holdPlace = nil
                 position.scrollTo(y: hold.offset + (new - hold.height))
             }
         }
+        // New rows, a turn starting or ending, the working line changing.
         .onChange(of: "\(model.rows.count)|\(model.isRunning || model.isBackground)|\(model.activity ?? "")") { _, _ in
-            guard following, holdPlace == nil else { return }
-            withAnimation(.easeOut(duration: 0.2)) { position.scrollTo(edge: .bottom) }
+            guard following, holdPlace == nil, !tracker.byHand else { return }
+            toLatest(animated: true)
+        }
+        // The keyboard, the question card folding, iPhone Duo resizing.
+        .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { _, _ in
+            guard following, !tracker.byHand else { return }
+            toLatest(animated: false)
         }
         .onChange(of: model.sendCount) { _, _ in
             // Sending is a return to the conversation's end.
-            jumpToLatest()
+            following = true
+            toLatest(animated: true)
         }
-        .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { _, _ in
-            // The keyboard, the composer unfolding, iPhone Duo resizing.
-            if following { toLatest(animated: false) }
+        .onChange(of: toEnd) { _, _ in
+            following = true
+            toLatest(animated: true)
         }
         .onChange(of: model.loading) { _, loading in
             if !loading { toLatest(animated: false) }
         }
-        .safeAreaBar(edge: .bottom) {
-            ComposerArea(model: model, folded: $composerFolded, jumpToLatest: jumpToLatest) { showAutopilot = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in tracker.keyboardUp = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in tracker.keyboardUp = false }
+    }
+
+    private func loadEarlier() {
+        following = false
+        holdPlace = HoldPlace(offset: tracker.offset, height: tracker.contentHeight, rows: model.rows.count)
+        Task {
+            let before = model.rows.count
+            await model.loadOlder()
+            if model.rows.count == before { holdPlace = nil }
         }
-        // A conversation gets the whole screen: no tab bar (on iPhone Duo, no
-        // tabs or Search in the rail), only its own toolbar.
-        .toolbar(.hidden, for: .tabBar)
-        .navigationTitle(model.conversation?.title ?? (model.sessionId == nil ? "New conversation" : "Conversation"))
-        .navigationSubtitle(model.project?.name ?? "")
-        .toolbarTitleDisplayMode(.inline)
-        .toolbar {
-            if let sid = model.sessionId {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Agents", systemImage: "point.3.connected.trianglepath.dotted") { showTree = true }
+    }
+}
+
+struct WorkingInfo: Equatable {
+    let activity: String?
+    let background: Bool
+    let model: String?
+}
+
+/// The messages. Equatable on what it draws, so a redraw of the scroll view
+/// (scrolling, a threshold) does not rebuild every message.
+struct ChatRows: View, Equatable {
+    enum Earlier: Equatable { case none, available, loading }
+
+    let items: [DisplayItem]
+    let earlier: Earlier
+    let working: WorkingInfo?
+    let loadEarlier: () -> Void
+
+    nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.items == b.items && a.earlier == b.earlier && a.working == b.working
+    }
+
+    var body: some View {
+        // Not lazy: a lazy stack guesses the height of rows it has not drawn,
+        // so the content height was wrong at the end (the last message under
+        // the composer, scrolling to it sprang back) and opening a step list
+        // shifted the rows around it.
+        VStack(alignment: .leading, spacing: 16) {
+            if earlier != .none {
+                Button(action: loadEarlier) {
+                    if earlier == .loading { ProgressView() } else { Text("Show earlier messages") }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu("More", systemImage: "ellipsis") {
-                        Button(app.autopilot[sid] == nil ? "Autopilot…" : "Autopilot", systemImage: "repeat") { showAutopilot = true }
-                        Button("Transcript", systemImage: "terminal") { showTranscript = true }
-                        if LiveTurns.shared.isFollowing(sid) {
-                            Button("Stop following on Lock Screen", systemImage: "iphone.slash") {
-                                Task { await LiveTurns.shared.unfollow(sid) }
-                            }
-                        } else if model.isWorking, LiveTurns.shared.available {
-                            Button("Follow on Lock Screen", systemImage: "iphone.badge.play") { model.followOnLockScreen() }
-                        }
-                        Divider()
-                        if let url = app.panelURL(projectId: model.projectId, sessionId: sid, isChat: model.isChat) {
-                            Link(destination: url) { Label("Open in the panel", systemImage: "safari") }
-                        }
-                        Button("Copy conversation ID", systemImage: "number") { UIPasteboard.general.string = sid }
-                    }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
+            }
+            ForEach(items) { item in
+                switch item {
+                case .row(let r): MessageRow(row: r).equatable()
+                case .steps(let rs): StepsRow(rows: rs)
                 }
             }
-        }
-        .sheet(isPresented: $showTree) {
-            if let sid = model.sessionId { AgentTreeView(projectId: model.projectId, sessionId: sid) }
-        }
-        .sheet(isPresented: $showAutopilot) {
-            if let sid = model.sessionId { AutopilotSheet(projectId: model.projectId, sessionId: sid) }
-        }
-        .fullScreenCover(isPresented: $showTranscript) {
-            if let sid = model.sessionId { TranscriptView(projectId: model.projectId, sessionId: sid, title: model.conversation?.title ?? "Transcript") }
-        }
-        .environment(\.openTranscript, model.sessionId.map { OpenTranscriptAction(sessionId: $0) { showTranscript = true } })
-        .task { await model.load() }
-        .onAppear {
-            app.attach(model)
-            app.setVisible(projectId: model.projectId, sessionId: model.sessionId)
-        }
-        .onDisappear {
-            app.detach(model)
-            if app.visibleSessionId == model.sessionId { app.setVisible(projectId: nil, sessionId: nil) }
+            if let working {
+                WorkingLine(activity: working.activity, background: working.background, model: working.model)
+            }
         }
     }
 }
@@ -235,9 +313,11 @@ extension EnvironmentValues {
     @Entry var openTranscript: OpenTranscriptAction? = nil
 }
 
-struct MessageRow: View {
+struct MessageRow: View, Equatable {
     @Environment(\.openTranscript) private var openTranscript
     let row: ChatRow
+
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.row == b.row }
 
     var body: some View {
         switch row.role {
@@ -309,16 +389,42 @@ struct CopyButton: View {
     }
 }
 
+/// A long message cut to `limit` lines, with a small Expand under it when
+/// the limit actually cut something (tapping the text works too).
 struct ExpandableText: View {
     let text: String
     let limit: Int
     @State private var expanded = false
+    @State private var fullHeight: CGFloat = 0
+    @State private var shownHeight: CGFloat = 0
+
+    private var cut: Bool { fullHeight > shownHeight + 1 }
 
     var body: some View {
-        Text(text)
-            .lineLimit(expanded ? nil : limit)
-            .onTapGesture { withAnimation(.snappy) { expanded.toggle() } }
+        VStack(alignment: .leading, spacing: 6) {
+            Text(text)
+                .lineLimit(expanded ? nil : limit)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { shownHeight = $0 }
+                .background(alignment: .top) {
+                    // The whole text, unseen, to learn whether the limit cut it.
+                    Text(text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
+                }
+                .onTapGesture { if cut || expanded { toggle() } }
+            if cut || expanded {
+                Button(action: toggle) {
+                    Label(expanded ? "Collapse" : "Expand", systemImage: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Palette.clay)
+            }
+        }
     }
+
+    private func toggle() { withAnimation(.snappy) { expanded.toggle() } }
 }
 
 /// A run of tool calls, folded to one line.

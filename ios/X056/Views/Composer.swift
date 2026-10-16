@@ -33,8 +33,21 @@ struct ComposerArea: View {
     /// keyboard up the two fill the screen and send hides behind the keys.
     @State private var typing = false
 
+    /// The composer's own height, to slide it out of view by.
+    @State private var height: CGFloat = 0
+
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .bottom) {
+            fullArea
+                // Folded: slid below the screen at its full size, so nothing
+                // moves under the list while it scrolls (shrinking it shifted
+                // every message), and still alive (the draft and files stay).
+                .offset(y: folded ? height + 40 : 0)
+                .opacity(folded ? 0 : 1)
+                .allowsHitTesting(!folded)
+                .accessibilityHidden(folded)
+                .environment(\.composerFolded, folded)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
             if folded {
                 HStack(spacing: 10) {
                     Spacer()
@@ -46,15 +59,6 @@ struct ComposerArea: View {
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            fullArea
-                // Still alive while folded (the draft and attached files stay),
-                // but taking no room: the history gets the screen.
-                .frame(maxHeight: folded ? 0 : nil, alignment: .top)
-                .clipped()
-                .opacity(folded ? 0 : 1)
-                .allowsHitTesting(!folded)
-                .accessibilityHidden(folded)
-                .environment(\.composerFolded, folded)
         }
         .frame(maxWidth: 800)
         .frame(maxWidth: .infinity)
@@ -89,6 +93,10 @@ struct ComposerArea: View {
                 }
                 if let q = model.question {
                     QuestionCard(question: q, model: model, folded: typing)
+                }
+                if !model.queued.isEmpty {
+                    QueueStrip(model: model) { showQueue = true }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 Composer(model: model, showQueue: $showQueue, editing: $typing)
             }
@@ -126,12 +134,6 @@ struct Composer: View {
                     }
                     .buttonStyle(.plain)
                     AccountChip(model: model)
-                    if !model.queued.isEmpty {
-                        Button { showQueue = true } label: {
-                            ChipLabel(icon: "tray.full", text: "\(model.queued.count) queued", active: true)
-                        }
-                        .buttonStyle(.plain)
-                    }
                 }
                 .padding(.horizontal, 2)
             }
@@ -453,6 +455,62 @@ struct AttachmentTray: View {
             .padding(.horizontal, 2)
         }
         .scrollClipDisabled()
+    }
+}
+
+/// The messages waiting for this conversation, over the message box, as the
+/// panel shows them: numbered, with a cancel each. Manage opens the sheet.
+struct QueueStrip: View {
+    let model: ConversationModel
+    let manage: () -> Void
+
+    var body: some View {
+        let items = model.queued
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "tray.full.fill").foregroundStyle(Palette.clay)
+                Text(items.count == 1 ? "1 queued" : "\(items.count) queued").fontWeight(.semibold)
+                Text("· sends after this turn")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Button("Manage", action: manage)
+                    .fontWeight(.medium)
+            }
+            .font(.footnote)
+            ForEach(Array(items.prefix(2).enumerated()), id: \.element.id) { i, item in
+                HStack(spacing: 8) {
+                    Text("\(i + 1)")
+                        .font(.caption2.weight(.bold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                        .background(.quaternary, in: .circle)
+                    Text(item.text)
+                        .font(.footnote)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(.rect)
+                        .onTapGesture(perform: manage)
+                    if item.paused == true {
+                        Image(systemName: "pause.fill").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Button("Cancel queued message", systemImage: "xmark") {
+                        Task { await model.cancelQueued(item.id) }
+                    }
+                    .labelStyle(.iconOnly)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                }
+            }
+            if items.count > 2 {
+                Button("\(items.count - 2) more", action: manage)
+                    .font(.caption)
+                    .padding(.leading, 26)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: .rect(cornerRadius: 18, style: .continuous))
     }
 }
 

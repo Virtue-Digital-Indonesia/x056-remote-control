@@ -4,12 +4,14 @@ import UIKit
 
 enum Route: Hashable {
     case project(String)
+    /// A Project (space), or `nil` for the work and chats in none.
+    case space(String?)
     case conversation(projectId: String, sessionId: String)
     case draft(projectId: String, id: UUID)
 }
 
 enum AppTab: Hashable {
-    case home, projects, accounts, search
+    case home, bot, projects, accounts, search
 }
 
 /// An unseen notable event in a conversation (Home's Unread), ranked like
@@ -72,6 +74,7 @@ final class AppModel {
     /// Each tab's navigation stack; notification taps open into Home.
     var homePath: [Route] = []
     var path: [Route] = []
+    var botPath: [Route] = []
 
     /// The fleet, for the Accounts tab and the composer's account chip.
     var accounts: [Account] = []
@@ -83,6 +86,8 @@ final class AppModel {
     /// Whether this gateway has Chats and Project spaces switched on.
     var chatsEnabled = false
     var spacesEnabled = false
+    /// The panel's Projects when spaces are on (archived ones left out).
+    var spaces: [ProjectSpace] = []
     /// New-work choices waiting for the draft screen, by draft route id.
     var draftSettings: [UUID: DraftSettings] = [:]
     /// The conversation on screen, so its own notifications don't banner.
@@ -125,7 +130,7 @@ final class AppModel {
         if ProcessInfo.processInfo.arguments.contains("-X056ResetState") {
             Keychain.delete("token")
             Keychain.delete("session")
-            for key in ["server", "lastSeq", "apnsToken"] { UserDefaults.standard.removeObject(forKey: key) }
+            for key in ["server", "lastSeq", "apnsToken", "botProjectId", "botSessionId"] { UserDefaults.standard.removeObject(forKey: key) }
         }
         #endif
         server = UserDefaults.standard.string(forKey: "server").flatMap(URL.init(string:))
@@ -570,10 +575,10 @@ final class AppModel {
     // MARK: new chat / work
 
     /// A new Chat; returns where its single conversation lives.
-    func newChat(provider: String, model: String, effort: String, account: String?) async throws -> (String, String) {
+    func newChat(provider: String, model: String, effort: String, account: String?, spaceId: String? = nil) async throws -> (String, String) {
         guard let client else { throw APIError(status: 0, message: "Not signed in.") }
         let body = NewChatBody(requestId: UUID().uuidString.lowercased(), provider: provider,
-                               model: model.isEmpty ? nil : model, effort: effort.isEmpty ? nil : effort, account: account)
+                               model: model.isEmpty ? nil : model, effort: effort.isEmpty ? nil : effort, account: account, spaceId: spaceId)
         let chat = try await client.post("/api/chats", body, as: Project.self)
         await refreshProjects()
         guard let sid = chat.lastSessionId ?? chat.conversations?.first?.sessionId else {
@@ -583,14 +588,92 @@ final class AppModel {
     }
 
     /// A new Work conversation through project spaces; nil when they are off
-    /// (then the first send creates it with `POST /api/sessions`).
-    func newWork(projectId: String, provider: String, model: String, effort: String, account: String?) async throws -> (String, String)? {
+    /// (then the first send creates it with `POST /api/sessions`). With a
+    /// `spaceId` it is made inside that Project, as the panel does; the bare
+    /// repository route leaves it unassigned unless the repository as a whole
+    /// belongs to one.
+    func newWork(projectId: String, provider: String, model: String, effort: String, account: String?, spaceId: String? = nil) async throws -> (String, String)? {
         guard spacesEnabled, let client else { return nil }
+        // An empty model or effort is sent as is ("provider default"), as the
+        // panel does: left out, the repository's own default fills in, and a
+        // Claude repository's model on a ChatGPT run is refused.
         let body = NewWorkBody(requestId: UUID().uuidString.lowercased(), provider: provider,
-                               model: model.isEmpty ? nil : model, effort: effort.isEmpty ? nil : effort, account: account)
-        let reply = try await client.post("/api/project-spaces/executions/\(projectId)/work", body, as: NewWorkReply.self)
+                               model: model, effort: effort, account: account,
+                               workProjectId: spaceId == nil ? nil : projectId)
+        let path = spaceId.map { "/api/project-spaces/\($0)/work" } ?? "/api/project-spaces/executions/\(projectId)/work"
+        let reply = try await client.post(path, body, as: NewWorkReply.self)
         await refreshProjects()
         return (reply.projectId, reply.sessionId)
+    }
+
+    // MARK: Bot
+
+    /// The Bot: a chat on this gateway named "Bot", so every device finds the
+    /// same one. The ids seen last are kept to find it before the list loads.
+    var bot: (projectId: String, sessionId: String)? {
+        let d = UserDefaults.standard
+        if let pid = d.string(forKey: "botProjectId"), let sid = d.string(forKey: "botSessionId"),
+           project(pid)?.conversations?.contains(where: { $0.sessionId == sid }) == true || !projectsLoaded {
+            return (pid, sid)
+        }
+        let named = projects.filter { $0.isChat && $0.name.caseInsensitiveCompare("Bot") == .orderedSame }
+            .sorted { lastActivity($0) > lastActivity($1) }
+        guard let p = named.first, let sid = p.lastSessionId ?? p.conversations?.first?.sessionId else { return nil }
+        return (p.id, sid)
+    }
+
+    static let botSetupPrefix = "[Bot setup]"
+
+    /// What makes a plain chat the Bot. It already has the x056 tools; this
+    /// says how to use them and what not to do without asking. The Bot
+    /// screen hides it; the panel shows it as the chat's first message.
+    static let botSetupPrompt = [
+        botSetupPrefix + " From now on you are Bot, my personal assistant on this x056 gateway. Be friendly and brief: lead with the answer, then a few short bullets at most.",
+        "To see what is going on, use the x056 tools: get_activity, list_projects, list_conversations, read_conversation, list_delegates, list_scheduled, memory_search.",
+        "Only read unless I ask you to act. Ask me first before you send a message to another conversation, stop one, schedule a task or change helpers.",
+        "When I say \"brief me\", tell me what is running, what needs me and what finished since we last spoke.",
+        "Reply to this with a one-line greeting.",
+    ].joined(separator: "\n")
+
+    /// Makes the Bot: a Claude chat, renamed "Bot" so other devices find it.
+    func wakeBot() async throws -> (projectId: String, sessionId: String) {
+        let (pid, sid) = try await newChat(provider: "claude", model: "", effort: "", account: nil)
+        _ = try? await client?.post("/api/projects/rename", ProjectRenameBody(id: pid, name: "Bot"))
+        try? await rename(pid, sid, to: "Bot")
+        rememberBot(pid, sid)
+        await refreshProjects()
+        return (pid, sid)
+    }
+
+    func rememberBot(_ projectId: String, _ sessionId: String) {
+        UserDefaults.standard.set(projectId, forKey: "botProjectId")
+        UserDefaults.standard.set(sessionId, forKey: "botSessionId")
+    }
+
+    // MARK: Projects (spaces)
+
+    func space(_ id: String) -> ProjectSpace? { spaces.first { $0.id == id } }
+
+    /// Conversations in a Project, or in none (`nil`), newest first.
+    func conversations(inSpace id: String?) -> [(projectId: String, conversation: Conversation)] {
+        projects.flatMap { p in (p.conversations ?? []).filter { $0.spaceId == id }.map { (p.id, $0) } }
+            .sorted { $0.conversation.recency > $1.conversation.recency }
+    }
+
+    /// The Project a repository's new work belongs to: the one the whole
+    /// repository defaults to, else the only one that lists it.
+    func defaultSpace(forRepo repo: String) -> String? {
+        if let whole = spaces.first(where: { $0.workProjects?.contains { $0.id == repo && $0.wholeProject == true } == true }) { return whole.id }
+        let listing = spaces.filter { $0.workProjects?.contains { $0.id == repo } == true }
+        return listing.count == 1 ? listing[0].id : nil
+    }
+
+    /// Repositories new work can run in, inside a Project or anywhere.
+    func repos(inSpace id: String?) -> [Project] {
+        let all = projects.filter { !$0.isChat && $0.archivedAt == nil }
+        guard let id, let space = space(id), let listed = space.workProjects else { return all }
+        let ids = Set(listed.filter { $0.archivedAt == nil }.map(\.id))
+        return all.filter { ids.contains($0.id) }
     }
 
     /// Chats take files by reference: upload first, then send `fileRefs`.
@@ -680,7 +763,7 @@ final class AppModel {
         async let decisions = try? client.get("/api/decisions/status", as: DecisionsStatus.self)
         async let settings = try? client.get("/api/settings", as: SettingsReply.self)
         async let chats = try? client.get("/api/chats", as: EnabledReply.self)
-        async let spaces = try? client.get("/api/project-spaces", as: EnabledReply.self)
+        async let spaces = try? client.get("/api/project-spaces", as: ProjectSpacesReply.self)
         async let acc: Void = loadAccounts()
         async let reads: Void = loadReadState()
         async let pilots: Void = loadAutopilot()
@@ -693,7 +776,12 @@ final class AppModel {
         decisionsStatus = await decisions
         if let m = await settings?.modelEffort { modelEffortDefaults = m }
         chatsEnabled = await chats?.enabled ?? false
-        spacesEnabled = await spaces?.enabled ?? false
+        if let reply = await spaces {
+            spacesEnabled = reply.enabled ?? false
+            self.spaces = (reply.projects ?? []).filter { $0.archivedAt == nil }
+        } else {
+            spacesEnabled = false
+        }
         if let a = await a { approvals = a.filter { $0.status == "pending" } }
         if let q = await q { questions = Dictionary(q.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new }) }
         if let queue = await queue { queues = queue }
@@ -713,6 +801,11 @@ final class AppModel {
             runningAccounts = r.projects.reduce(into: [:]) { acc, p in acc.merge(p.runningAccounts ?? [:]) { _, new in new } }
             projectsLoaded = true
             projectsError = nil
+            // Projects (spaces) change with the listing: one created, renamed
+            // or archived in the panel shows up here at once.
+            if spacesEnabled, let reply = try? await client.get("/api/project-spaces", as: ProjectSpacesReply.self) {
+                spaces = (reply.projects ?? []).filter { $0.archivedAt == nil }
+            }
         } catch let e as APIError where e.status == 401 {
             await credentialRejected()
         } catch {

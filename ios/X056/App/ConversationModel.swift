@@ -30,7 +30,7 @@ struct ChatRow: Identifiable, Equatable {
 }
 
 /// What the list draws: a row, or a run of consecutive tool calls folded together.
-enum DisplayItem: Identifiable {
+enum DisplayItem: Identifiable, Equatable {
     case row(ChatRow)
     case steps([ChatRow])
 
@@ -70,6 +70,10 @@ final class ConversationModel {
 
     @ObservationIgnored private var cursor: Int?
     @ObservationIgnored let app: AppModel
+
+    /// Start a Live Activity when this phone sends. Off for the Bot: its
+    /// answers take seconds, and the Lock Screen is for long work.
+    var liveActivity = true
 
     init(projectId: String, sessionId: String?, app: AppModel = .shared) {
         self.projectId = projectId
@@ -372,7 +376,7 @@ final class ConversationModel {
                 rows.removeAll { $0.id == rowId }
             } else if reply.status == "failed" || reply.status == "cancelled" {
                 markFailed(rowId, reply.error ?? "The gateway did not accept the message.")
-            } else if LiveTurns.enabled {
+            } else if LiveTurns.enabled, liveActivity {
                 followOnLockScreen()
             }
         } catch {

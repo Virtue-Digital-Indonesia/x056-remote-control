@@ -40,8 +40,12 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Speak to the Bot instead of typing.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Attach screenshots and photos to a message.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Turn what you say to the Bot into text, on this iPhone when it can.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

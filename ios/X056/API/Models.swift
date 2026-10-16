@@ -104,9 +104,13 @@ struct Conversation: Codable, Sendable, Identifiable, Hashable {
     /// Legacy single helper ('advisor' | 'jev' | 'decisions'), read through `effectiveHelpers`.
     var decisionMaker: String?
 
-    /// The panel's helpersOf: `helpers` wins; the legacy field maps onto it.
     /// The gateway's own answer for the picker that runs, as of the listing.
     var effectiveRouter: String?
+    /// The Project (space) it belongs to when project spaces are on; nil is
+    /// unassigned. From the gateway's per-conversation scope.
+    var spaceId: String?
+
+    /// The panel's helpersOf: `helpers` wins; the legacy field maps onto it.
 
     var effectiveHelpers: Helpers {
         if let helpers { return helpers }
@@ -458,6 +462,8 @@ struct ReadStateReply: Decodable, Sendable { let items: [String: ReadItem] }
 
 struct ReadAllBody: Encodable, Sendable {}
 
+struct ProjectRenameBody: Encodable, Sendable { let id: String; let name: String }
+
 struct RenameBody: Encodable, Sendable {
     let projectId: String
     let sessionId: String
@@ -605,6 +611,8 @@ struct NewChatBody: Encodable, Sendable {
     var model: String?
     var effort: String?
     var account: String?
+    /// The Project (space) it belongs to; nil = no Project.
+    var spaceId: String?
 }
 
 struct NewWorkBody: Encodable, Sendable {
@@ -614,6 +622,31 @@ struct NewWorkBody: Encodable, Sendable {
     var model: String?
     var effort: String?
     var account: String?
+    /// With `POST /api/project-spaces/<space>/work`: the repository to run in.
+    var workProjectId: String?
+}
+
+/// A Project as the panel means it when project spaces are on: a group of
+/// work (in one or more repositories) and chats. `GET /api/project-spaces`.
+struct ProjectSpace: Decodable, Sendable, Identifiable, Hashable {
+    struct Repo: Decodable, Sendable, Hashable {
+        let id: String
+        let name: String
+        var cwd: String?
+        var archivedAt: Double?
+        /// The whole repository defaults to this Project.
+        var wholeProject: Bool?
+    }
+    let id: String
+    let name: String
+    var archivedAt: Double?
+    var defaultWorkProjectId: String?
+    var workProjects: [Repo]?
+}
+
+struct ProjectSpacesReply: Decodable, Sendable {
+    let enabled: Bool?
+    var projects: [ProjectSpace]?
 }
 
 struct NewWorkReply: Decodable, Sendable { let projectId: String; let sessionId: String }

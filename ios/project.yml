@@ -56,6 +56,8 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSPhotoLibraryUsageDescription: Attach screenshots and photos to a message.
+        NSMicrophoneUsageDescription: Speak to the Bot instead of typing.
+        NSSpeechRecognitionUsageDescription: Turn what you say to the Bot into text, on this iPhone when it can.
         # A running turn on the Lock Screen (X056Widgets, Shared/TurnActivity.swift).
         NSSupportsLiveActivities: true
         # x056://conversation?projectId=…&sessionId=… (a Live Activity's tap).
