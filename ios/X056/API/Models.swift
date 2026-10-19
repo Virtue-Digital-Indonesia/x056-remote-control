@@ -194,6 +194,8 @@ struct QueueItem: Decodable, Sendable, Identifiable, Hashable {
     /// Epoch ms; not sent before this.
     let notBefore: Double?
     let model: String?
+    /// Set when someone other than a person queued it (`bot_event`, `delegate`, ...).
+    let sender: Sender?
 }
 
 struct QuestionPart: Decodable, Sendable, Hashable {

@@ -930,6 +930,16 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   anchors Today), so "Bot · Idle" keeps its room at 320-430 px. Browser tests:
   `bot-home-spacing.cjs`, `bot-system-history.cjs`, `sw-push-shows.cjs`;
   WebKit needs the env in `test/browser/webkit-preload.cjs`'s header.
+- **iOS mirrors it (2026-10-22).** `BotHistory.states` (ConversationModel.swift)
+  is `botRowVisibility` / `botRowKind` over `ChatRow`s, whose `senderKind`
+  carries the sender: the same turns, row kinds and order, on the Bot screen
+  and when the Bot chat is opened as a conversation. The brief turn's last
+  reply carries a "Morning brief" label. More > "Show N hidden system
+  messages" shows them in place, dimmed, under a "Showing system messages ·
+  Hide" pill. Home leaves the Bot out except under Needs attention (a
+  question, a failure, an urgent notice), the bell skips its routine unread,
+  `AppModel.queued` drops `bot_event` / `bot_brief` items, and a
+  `screenSuppressed` settle raises no unread.
 
 ## Delegates: an orchestrator's hidden workers (`server/delegates.ts`)
 

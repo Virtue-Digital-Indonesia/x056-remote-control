@@ -31,6 +31,7 @@ struct BotView: View {
             if let model, let sid = model.sessionId {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("More", systemImage: "ellipsis") {
+                        SystemHistoryToggle(model: model)
                         Button("Open as a conversation", systemImage: "bubble.left.and.text.bubble.right") {
                             app.botPath.append(.conversation(projectId: model.projectId, sessionId: sid))
                         }
@@ -355,11 +356,13 @@ private struct BotThread: View {
     let model: ConversationModel
 
     var body: some View {
+        // Shown on request, and dimmed, so the quiet view stays the obvious one.
+        let system = model.showSystemHistory ? BotHistory.systemRows(model.rows) : []
         VStack(alignment: .leading, spacing: 16) {
             ForEach(model.items) { item in
                 switch item {
-                case .row(let r): BotLine(row: r)
-                case .steps(let rs): BotLookups(rows: rs)
+                case .row(let r): BotLine(row: r).opacity(system.contains(r.id) ? 0.6 : 1)
+                case .steps(let rs): BotLookups(rows: rs).opacity(system.contains(rs[0].id) ? 0.6 : 1)
                 }
             }
             if model.isWorking {
@@ -386,7 +389,9 @@ private struct BotLine: View {
         switch row.role {
         case .user:
             // Its setup message is for the Bot, not for this screen.
-            if !row.text.hasPrefix(AppModel.botSetupPrefix) {
+            if let kind = row.senderKind, BotHistory.systemSenders.contains(kind) {
+                SystemNote(kind: kind, text: row.text)
+            } else if !row.text.hasPrefix(AppModel.botSetupPrefix) {
                 HStack {
                     Spacer(minLength: 56)
                     Text(row.text)
@@ -411,8 +416,112 @@ private struct BotLine: View {
             Label(row.text, systemImage: "exclamationmark.triangle.fill")
                 .font(.footnote)
                 .foregroundStyle(.red)
-        case .notice, .action, .card:
+        case .notice:
+            BotNotice(text: row.text)
+        case .action, .card:
             EmptyView()
+        }
+    }
+}
+
+/// A message the gateway or a helper sent the Bot, shown in system history.
+private struct SystemNote: View {
+    let kind: String
+    let text: String
+
+    var body: some View {
+        let (label, icon) = Self.label(kind)
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(text)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.quaternary.opacity(0.6), in: .rect(cornerRadius: 16, style: .continuous))
+        .contextMenu { CopyButton(text: text) }
+    }
+
+    static func label(_ kind: String) -> (String, String) {
+        switch kind {
+        case "bot_event": return ("Digest from the gateway", "tray.full")
+        case "bot_brief": return ("Morning brief request", "sun.max")
+        default: return ("Advisor", "lightbulb")
+        }
+    }
+}
+
+/// A notice in the Bot's chat. "Bot needs you" is a card that always shows;
+/// a routine "Bot status" (system history only) is a quiet one; anything
+/// else, such as a stopped turn, is one small line.
+private struct BotNotice: View {
+    let text: String
+
+    var body: some View {
+        if let rest = strip("Bot needs you: ") {
+            card(rest, label: "Needs you", color: BotColors.amber)
+        } else if let rest = strip("Bot status: ") {
+            card(rest, label: "Status", color: .secondary)
+        } else {
+            Label(text, systemImage: "info.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private static func lines(_ s: Substring) -> (String, String) {
+        let parts = s.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        return (String(parts.first ?? ""), parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines) : "")
+    }
+
+    private func card(_ rest: Substring, label: String, color: Color) -> some View {
+        let (title, body) = Self.lines(rest)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle().fill(color).frame(width: 8, height: 8)
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(color)
+            }
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            if !body.isEmpty {
+                Text(body)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular.tint(color.opacity(0.08)), in: .rect(cornerRadius: 18, style: .continuous))
+        .contextMenu { CopyButton(text: text) }
+    }
+
+    private func strip(_ prefix: String) -> Substring? {
+        text.hasPrefix(prefix) ? text.dropFirst(prefix.count) : nil
+    }
+}
+
+/// Shows or folds away the Bot's system rows (BotHistory), on the Bot
+/// screen and when the Bot's chat is opened as a conversation.
+struct SystemHistoryToggle: View {
+    let model: ConversationModel
+
+    var body: some View {
+        Button(model.showSystemHistory ? "Hide system history" : "Show system history", systemImage: "clock.arrow.circlepath") {
+            withAnimation(.snappy) { model.showSystemHistory.toggle() }
         }
     }
 }

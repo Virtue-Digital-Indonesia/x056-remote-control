@@ -298,8 +298,10 @@ final class AppModel {
         project(projectId)?.conversations?.first { $0.sessionId == sessionId }
     }
 
+    /// What waits to be sent to a conversation. The gateway's own digests
+    /// and briefs for the Bot are left out, as on the panel.
     func queued(_ projectId: String, _ sessionId: String) -> [QueueItem] {
-        (queues[projectId] ?? []).filter { $0.sessionId == nil || $0.sessionId == sessionId }
+        (queues[projectId] ?? []).filter { ($0.sessionId == nil || $0.sessionId == sessionId) && !BotHistory.quietQueue.contains($0.sender?.kind ?? "") }
     }
 
     func isWorking(_ sessionId: String) -> Bool { running.contains(sessionId) || background.contains(sessionId) }
@@ -323,8 +325,13 @@ final class AppModel {
     }
 
     /// Home's badge: unread conversations, open questions, approvals.
+    /// The bell: unread conversations, open questions and approvals. The
+    /// Bot's routine replies and status notices do not count, only what it
+    /// needs you for (a question, a failure, an urgent notice).
     var needsYouCount: Int {
-        Set(unread.keys).union(questions.values.map { Self.key($0.projectId, $0.sessionId) }).count + approvals.count
+        let bots = Set(projects.filter(\.isBot).map(\.id))
+        let counted = unread.filter { k, kind in !bots.contains(where: { k.hasPrefix($0 + "::") }) || kind == .question || kind == .failed }
+        return Set(counted.keys).union(questions.values.map { Self.key($0.projectId, $0.sessionId) }).count + approvals.count
     }
 
     // MARK: Home state
@@ -955,7 +962,8 @@ final class AppModel {
                     raiseUnread(pid, sid, .failed, at: e.ts)
                 } else if e.kind == "session_done" && status == "stopped" {
                     markRead(pid, sid)
-                } else if e.kind == "conversation_settled", d["notificationSuppressed"]?.bool != true, d["notice"]?["tier"]?.string != "none" {
+                } else if e.kind == "conversation_settled", d["notificationSuppressed"]?.bool != true, d["notice"]?["tier"]?.string != "none",
+                          d["notice"]?["screenSuppressed"]?.bool != true {
                     raiseUnread(pid, sid, .done, at: e.ts)
                 }
             }

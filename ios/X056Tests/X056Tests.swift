@@ -318,3 +318,43 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         #expect(!s.contains { $0 == ("**not bold**", .bold) }, "nothing is styled inside a fence")
     }
 }
+
+@Suite struct BotHistoryTests {
+    private func row(_ role: ChatRow.Role, _ text: String, from kind: String? = nil) -> ChatRow {
+        ChatRow(role: role, text: text, senderKind: kind)
+    }
+
+    /// The panel's rule (rc-chat.js syncBotSystemHistory), with the brief's
+    /// own reply kept: the gateway's and helpers' messages fold away.
+    @Test func foldsTheBotsSystemRowsAndKeepsWhatIsForYou() {
+        let rows = [
+            row(.user, "Gateway digest", from: "bot_event"),
+            row(.assistant, "Quiet digest reply"),
+            row(.action, "Used get_activity"),
+            row(.user, "Morning brief for 2026-10-20", from: "bot_brief"),
+            row(.action, "Used status_overview"),
+            row(.assistant, "Good morning: two things need you."),
+            row(.user, "Advisor follow-up", from: "advisor"),
+            row(.assistant, "Reply to the advisor stays."),
+            row(.user, "Save my preference."),
+            row(.assistant, "Not sent yet (relay checkpoint): confirm to send"),
+            row(.assistant, "Saved."),
+            row(.notice, "Bot status: Watching\nAll quiet"),
+            row(.notice, "Bot needs you: Decide\nShip it?"),
+            row(.notice, "Turn stopped."),
+            row(.error, "Something failed"),
+        ]
+        let hidden = BotHistory.systemRows(rows)
+        #expect(rows.filter { !hidden.contains($0.id) }.map(\.text) == [
+            "Used status_overview", "Good morning: two things need you.", "Reply to the advisor stays.",
+            "Save my preference.", "Saved.", "Bot needs you: Decide\nShip it?", "Turn stopped.", "Something failed",
+        ])
+    }
+
+    @Test func knowsACheckpointOnlyAtTheStart() {
+        #expect(BotHistory.isCheckpoint("Not sent yet (relay checkpoint): is this converging?"))
+        #expect(BotHistory.isCheckpoint("Relay checkpoint: confirm"))
+        #expect(BotHistory.isCheckpoint("not sent yet. Waiting"))
+        #expect(!BotHistory.isCheckpoint("It was not sent yet: the gateway held it."))
+    }
+}

@@ -19,6 +19,8 @@ struct ChatRow: Identifiable, Equatable {
     var detail: String?
     var attachments: [AttachmentRef] = []
     var sender: String?
+    /// Who sent a user row (`bot_event`, `bot_brief`, `advisor`, ...); nil for a person.
+    var senderKind: String?
     /// Sent from this phone, not yet seen in the stream.
     var pending = false
     var failed = false
@@ -27,6 +29,38 @@ struct ChatRow: Identifiable, Equatable {
     var inFlight = false
     var toolUseId: String?
     var card: ChatCard?
+}
+
+/// The Bot chat keeps quiet by default, as on the panel (rc-chat.js,
+/// syncBotSystemHistory): its digests and the replies to them, the morning
+/// brief's trigger, advisor follow-ups, relay checkpoints and routine "Bot
+/// status" notices stay in the history but out of view until "Show system
+/// history". The Bot's brief itself, errors and "Bot needs you" always show.
+enum BotHistory {
+    /// Senders whose messages are the gateway or a helper talking to the Bot.
+    static let systemSenders: Set<String> = ["bot_event", "bot_brief", "advisor"]
+    /// Queue items the person never needs to see waiting.
+    static let quietQueue: Set<String> = ["bot_event", "bot_brief"]
+
+    /// The rows that are system history.
+    static func systemRows(_ rows: [ChatRow]) -> Set<UUID> {
+        var out = Set<UUID>()
+        var digest = false
+        for r in rows {
+            if r.role == .user { digest = r.senderKind == "bot_event" }
+            if r.role == .error || r.text.hasPrefix("Bot needs you:") { continue }
+            let system = r.role == .user
+                ? systemSenders.contains(r.senderKind ?? "")
+                : digest || isCheckpoint(r.text) || (r.role == .notice && r.text.hasPrefix("Bot status:"))
+            if system { out.insert(r.id) }
+        }
+        return out
+    }
+
+    /// "Not sent yet (relay checkpoint): ...": the gateway holding a send.
+    static func isCheckpoint(_ text: String) -> Bool {
+        text.range(of: #"^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay checkpoint[:.])"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
 }
 
 /// What the list draws: a row, or a run of consecutive tool calls folded together.
@@ -88,6 +122,9 @@ final class ConversationModel {
     var isBackground: Bool { sessionId.map { app.background.contains($0) && !app.running.contains($0) } ?? false }
     var isWorking: Bool { isRunning || isBackground }
     var question: PendingQuestion? { sessionId.flatMap { app.questions[$0] } }
+    var isBot: Bool { project?.isBot ?? false }
+    /// The Bot's system rows, folded away until asked for (BotHistory).
+    var showSystemHistory = false
     var queued: [QueueItem] { sessionId.map { app.queued(projectId, $0) } ?? [] }
     var model: String { sessionId == nil ? draftModel : (conversation?.model ?? "") }
     var effort: String { sessionId == nil ? draftEffort : (conversation?.effort ?? "") }
@@ -106,7 +143,8 @@ final class ConversationModel {
     var items: [DisplayItem] {
         var out: [DisplayItem] = []
         var run: [ChatRow] = []
-        for r in rows {
+        let hidden = isBot && !showSystemHistory ? BotHistory.systemRows(rows) : []
+        for r in rows where !hidden.contains(r.id) {
             if r.role == .action { run.append(r); continue }
             if !run.isEmpty { out.append(.steps(run)); run = [] }
             out.append(.row(r))
@@ -180,7 +218,7 @@ final class ConversationModel {
         let text = h.text ?? ""
         let sender = h.sender.flatMap(senderLabel)
         switch h.role {
-        case "user": return ChatRow(role: .user, text: text, attachments: h.attachments ?? [], sender: sender)
+        case "user": return ChatRow(role: .user, text: text, attachments: h.attachments ?? [], sender: sender, senderKind: h.sender?.kind)
         case "assistant": return text.isEmpty ? nil : ChatRow(role: .assistant, text: text)
         case "action": return ChatRow(role: .action, text: text, detail: h.detail)
         case "error": return ChatRow(role: .error, text: text)
@@ -250,9 +288,15 @@ final class ConversationModel {
                 rows[i].pending = false
             } else if !repeatsTail(.user, text) {
                 let attachments = d["attachments"]?.decode([AttachmentRef].self) ?? []
-                let sender = d["sender"]?.decode(Sender.self).flatMap(Self.senderLabel)
-                rows.append(ChatRow(role: .user, text: text, attachments: attachments, sender: sender))
+                let from = d["sender"]?.decode(Sender.self)
+                rows.append(ChatRow(role: .user, text: text, attachments: attachments, sender: from.flatMap(Self.senderLabel), senderKind: from?.kind))
             }
+        case "bot_notice":
+            // The journal keeps it as this same text, so a reload matches it.
+            let n = d["notice"]
+            let needsYou = n?["tier"]?.string == "urgent" || n?["category"]?.string == "needs_you" || d["tier"]?.string == "urgent"
+            let text = (needsYou ? "Bot needs you: " : "Bot status: ") + (d["title"]?.string ?? "Bot") + "\n" + (d["body"]?.string ?? "")
+            if !repeatsTail(.notice, text) { rows.append(ChatRow(role: .notice, text: text)) }
         case "assistant_text":
             if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
                 rows.append(ChatRow(role: .assistant, text: text))
