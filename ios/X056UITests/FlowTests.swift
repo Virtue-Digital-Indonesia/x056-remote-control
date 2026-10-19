@@ -553,6 +553,8 @@ final class FlowTests: XCTestCase {
         for _ in 0..<20 where !botTab.isHittable { usleep(250_000) }
         botTab.tap()
         XCTAssertTrue(app.staticTexts["Meet your Bot"].waitForExistence(timeout: 10))
+        let projectsTab = app.buttons["Projects"].firstMatch
+        XCTAssertFalse(projectsTab.exists && projectsTab.isHittable, "the Bot covers the tabs and search")
         sleep(2)
         snapshot(app, "40-bot-welcome")
         app.buttons["Wake the Bot"].tap()
@@ -572,6 +574,83 @@ final class FlowTests: XCTestCase {
         let named = (api("GET", "/api/projects")?["projects"] as? [[String: Any]] ?? []).filter { ($0["name"] as? String) == "Bot" }
         XCTAssertEqual(named.count, 1, "one Bot: the gateway's own")
         XCTAssertEqual(named.first?["bot"] as? Bool, true)
+
+        // Return in the Bot's box is a newline that carries a list on; the
+        // arrow button sends.
+        let input = app.textViews["bot-input"]
+        input.tap()
+        input.typeText("- check builds\nread mail")
+        XCTAssertEqual(input.value as? String, "- check builds\n- read mail")
+        XCTAssertFalse(app.staticTexts["read mail"].exists, "Return did not send")
+        snapshot(app, "43-bot-list")
+
+        // Back is the way out, to the tab the Bot was opened from.
+        app.buttons["Back"].firstMatch.tap()
+        XCTAssertTrue(projectsTab.waitForExistence(timeout: 5))
+        for _ in 0..<20 where !projectsTab.isHittable { usleep(250_000) }
+        XCTAssertTrue(projectsTab.isHittable)
+        XCTAssertFalse(app.staticTexts["What's running?"].exists)
+
+        // Off again: on, the Bot wakes on every later test's urgent notice and
+        // its chat turns up unread on their Home screens.
+        _ = api("POST", "/api/bot", ["enabled": false])
+        if let bot = named.first, let pid = bot["id"], let sid = (bot["conversations"] as? [[String: Any]])?.first?["sessionId"] {
+            _ = api("POST", "/api/conversations/read", ["projectId": pid, "sessionId": sid])
+        }
+    }
+
+    /// The message box writes Markdown: Return carries a list on, Return on
+    /// an empty item ends it, numbers count up, and Format wraps a selection.
+    func testComposerWritesMarkdown() throws {
+        let app = signInToFixture()
+        let projectsTab = app.buttons["Projects"].firstMatch
+        XCTAssertTrue(projectsTab.waitForExistence(timeout: 10))
+        for _ in 0..<20 where !projectsTab.isHittable { usleep(250_000) }
+        projectsTab.tap()
+        let project = app.staticTexts["Website refresh"].firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+        project.tap()
+        let conversation = app.staticTexts["Review accessibility findings"].firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+        conversation.tap()
+        let composer = app.textViews["composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.tap()
+        composer.typeText("make it bold")
+        composer.press(forDuration: 1.2)
+        tapMenu(app, "Select All")
+        tapMenu(app, "Format")
+        tapMenu(app, "Bold")
+        XCTAssertEqual(composer.value as? String, "**make it bold**")
+        snapshot(app, "51-composer-bold")
+
+        // To the end of that line, then a list.
+        composer.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
+        composer.typeText("\nBuy:\n- milk\neggs\n\n1. one\ntwo\n")
+        XCTAssertEqual(composer.value as? String, "**make it bold**\nBuy:\n- milk\n- eggs\n1. one\n2. two\n3. ")
+        snapshot(app, "50-composer-lists")
+    }
+
+    /// Taps an edit-menu item, paging the menu until it shows.
+    private func tapMenu(_ app: XCUIApplication, _ label: String) {
+        let item = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
+        for _ in 0..<4 where !item.waitForExistence(timeout: 1.5) {
+            let next = app.buttons["Next Page"].firstMatch
+            guard next.exists, next.isHittable else { break }
+            next.tap()
+        }
+        XCTAssertTrue(item.exists, "\(label) in the edit menu")
+        item.tap()
+    }
+
+    /// Opens the Bot from its tab, waking it on a fixture that has none yet.
+    private func openBot(_ app: XCUIApplication) {
+        let botTab = app.buttons["Bot"].firstMatch
+        XCTAssertTrue(botTab.waitForExistence(timeout: 10))
+        for _ in 0..<20 where !botTab.isHittable { usleep(250_000) }
+        botTab.tap()
+        let wake = app.buttons["Wake the Bot"]
+        if wake.waitForExistence(timeout: 5) { wake.tap() }
     }
 
     private func conversationRef(_ title: String) throws -> [String: Any] {
@@ -585,6 +664,8 @@ final class FlowTests: XCTestCase {
     /// the phone, and the phone's reads reach the gateway. "The web" here is
     /// plain API calls to the fixture with its token.
     func testReadStateFollowsTheWeb() throws {
+        // What earlier tests left unread would keep an "Unread" on screen.
+        _ = api("POST", "/api/conversations/read-all", [:])
         let app = signInToFixture()
         XCTAssertTrue(app.staticTexts["Needs attention"].waitForExistence(timeout: 15))
         let projects = try XCTUnwrap(api("GET", "/api/projects")?["projects"] as? [[String: Any]])

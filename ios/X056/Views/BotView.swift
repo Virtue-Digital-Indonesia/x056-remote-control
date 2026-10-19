@@ -25,6 +25,9 @@ struct BotView: View {
         .background { BotBackdrop() }
         .fontDesign(.rounded)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Back", systemImage: "chevron.left") { app.botOpen = false }
+            }
             if let model, let sid = model.sessionId {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("More", systemImage: "ellipsis") {
@@ -187,10 +190,10 @@ private struct BotHome: View {
             .onChange(of: model.loading) { _, loading in
                 if !loading, model.rows.count > 1 { proxy.scrollTo(endID, anchor: .bottom) }
             }
+            // The new message scrolls into view from rows.count above: one
+            // scroll, not two racing the keyboard.
             .safeAreaBar(edge: .bottom) {
-                BotInput(model: model, dictation: dictation) {
-                    withAnimation(.easeOut(duration: 0.3)) { proxy.scrollTo(endID, anchor: .bottom) }
-                }
+                BotInput(model: model, dictation: dictation)
             }
         }
     }
@@ -466,9 +469,12 @@ private struct BotLookups: View {
 private struct BotInput: View {
     let model: ConversationModel
     let dictation: Dictation
-    let sent: () -> Void
     @State private var text = ""
-    @FocusState private var focused: Bool
+    /// From a send until its turn shows as working. The box is empty then,
+    /// but the suggestions must not come back: they slid in and popped out
+    /// again while the keyboard went down.
+    @State private var sending = false
+    @State private var sends = 0
 
     private static let suggestions: [(String, String)] = [
         ("Brief me", "sun.max"),
@@ -479,8 +485,9 @@ private struct BotInput: View {
 
     var body: some View {
         let empty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let suggest = empty && !sending && !dictation.isListening && !model.isWorking
         VStack(spacing: 10) {
-            if empty, !dictation.isListening, !model.isWorking {
+            if suggest {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(Self.suggestions, id: \.0) { s in
@@ -517,12 +524,9 @@ private struct BotInput: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
                     } else {
-                        TextField("Ask Bot…", text: $text, axis: .vertical)
-                            .lineLimit(1...5)
-                            .focused($focused)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 13)
-                            .submitLabel(.send)
+                        // The composer's own box: Markdown as you type, and
+                        // Return is a newline (the arrow button sends).
+                        ComposerTextView(text: $text, placeholder: "Ask Bot…", longTextLimit: 50_000, maxLines: 5, identifier: "bot-input") { _ in }
                     }
                 }
                 .frame(minHeight: 48)
@@ -564,19 +568,30 @@ private struct BotInput: View {
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
         .animation(.snappy, value: empty)
+        .animation(.snappy, value: suggest)
         .animation(.snappy, value: dictation.isListening)
         .onChange(of: dictation.transcript) { _, heard in
             if !dictation.isListening, !heard.isEmpty { text = heard }
+        }
+        .onChange(of: model.isWorking) { _, working in
+            if working { sending = false }
         }
     }
 
     private func send(_ message: String) {
         let t = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
+        sending = true
+        sends += 1
+        let this = sends
         text = ""
-        focused = false
-        Task { await model.send(t, files: []) }
-        sent()
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        Task {
+            await model.send(t, files: [])
+            // A send that failed, or a turn that never reported as working.
+            if model.sendError == nil { try? await Task.sleep(for: .seconds(10)) }
+            if sends == this { sending = false }
+        }
     }
 }
 

@@ -35,10 +35,6 @@ struct PendingFile: Identifiable, Hashable {
     }
 }
 
-/// The composer's text area: a UITextView, because SwiftUI's TextField
-/// cannot take a pasted image or file. A paste of images or files becomes
-/// attachments; a paste of text longer than `longTextLimit` becomes a .txt
-/// attachment; anything else pastes as text.
 extension EnvironmentValues {
     /// The composer is folded away. Its UIKit text view hides too: SwiftUI's
     /// hiding on the container does not reach it, so it stayed in the
@@ -46,11 +42,21 @@ extension EnvironmentValues {
     @Entry var composerFolded = false
 }
 
+/// The composer's text area: a UITextView, because SwiftUI's TextField
+/// cannot take a pasted image or file. A paste of images or files becomes
+/// attachments; a paste of text longer than `longTextLimit` becomes a .txt
+/// attachment; anything else pastes as text.
+///
+/// It holds Markdown source and shows it styled as you type (markers stay,
+/// faint). Return carries a list on, Return on an empty item ends it, and
+/// Format in the edit menu (or ⌘B, ⌘I, ⌘⇧C) wraps the selection. Return
+/// is a newline, never a send: the send button sends.
 struct ComposerTextView: UIViewRepresentable {
     @Binding var text: String
     var placeholder: String
     var longTextLimit: Int
     var maxLines = 8
+    var identifier = "composer"
     /// Set while the text view has the keyboard.
     var editing: Binding<Bool>? = nil
     var onPaste: ([PendingFile]) -> Void
@@ -65,12 +71,16 @@ struct ComposerTextView: UIViewRepresentable {
         view.textContainer.lineFragmentPadding = 4
         view.isScrollEnabled = false
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        view.accessibilityIdentifier = "composer"
+        view.returnKeyType = .default
+        view.accessibilityIdentifier = identifier
         return view
     }
 
     func updateUIView(_ view: PasteAwareTextView, context: Context) {
-        if view.text != text { view.text = text }
+        if view.text != text {
+            view.text = text
+            MarkdownStyler.style(view)
+        }
         view.placeholder = placeholder
         view.longTextLimit = longTextLimit
         view.onPaste = onPaste
@@ -81,7 +91,7 @@ struct ComposerTextView: UIViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, uiView view: PasteAwareTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? 280
         let fitted = view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        let line = view.font?.lineHeight ?? 20
+        let line = UIFont.preferredFont(forTextStyle: .body).lineHeight
         let cap = line * CGFloat(maxLines) + view.textContainerInset.top + view.textContainerInset.bottom
         view.isScrollEnabled = fitted.height > cap
         return CGSize(width: width, height: min(fitted.height, cap))
@@ -102,8 +112,113 @@ struct ComposerTextView: UIViewRepresentable {
 
         func textViewDidChange(_ view: UITextView) {
             text.wrappedValue = view.text
+            MarkdownStyler.style(view)
             view.invalidateIntrinsicContentSize()
             (view as? PasteAwareTextView)?.setNeedsDisplay()
+        }
+
+        /// Return inside a list starts the next item, or ends the list on an empty one.
+        func textView(_ view: UITextView, shouldChangeTextIn range: NSRange, replacementText string: String) -> Bool {
+            guard string == "\n", view.markedTextRange == nil, let view = view as? PasteAwareTextView,
+                  let edit = MarkdownEditing.returnKey(in: view.text, selection: range) else { return true }
+            view.apply(edit)
+            return false
+        }
+
+        func textView(_ view: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+            guard let view = view as? PasteAwareTextView, view.isEditable else { return nil }
+            let format = UIMenu(title: "Format", image: UIImage(systemName: "textformat"), children: PasteAwareTextView.formats.map { f in
+                UIAction(title: f.title, image: UIImage(systemName: f.icon)) { [weak view] _ in view?.toggleMarkdown(f.mark) }
+            })
+            return UIMenu(children: suggestedActions + [format])
+        }
+    }
+}
+
+/// Paints the box's Markdown: bold and italic in place, code in a mono face,
+/// headings bold, list markers in the accent, every other marker faint.
+/// Sizes stay the body size, so lines do not jump as you type.
+@MainActor enum MarkdownStyler {
+    private static let accent = UIColor(Palette.clay)
+    private static let keys: [NSAttributedString.Key] = [.font, .foregroundColor, .backgroundColor, .strikethroughStyle]
+
+    /// Works out the styled text aside, then touches only the runs whose
+    /// style changed: plain typing changes nothing, and an attribute edit
+    /// under the keyboard on every keystroke dropped fast typing.
+    static func style(_ view: UITextView) {
+        // Mid-composition (Japanese, Chinese, dictation): restyle once it is committed.
+        guard view.markedTextRange == nil else { return }
+        let storage = view.textStorage
+        let base = UIFont.preferredFont(forTextStyle: .body)
+        let plain: [NSAttributedString.Key: Any] = [.font: base, .foregroundColor: UIColor.label]
+        view.typingAttributes = plain
+        let target = NSMutableAttributedString(string: storage.string, attributes: plain)
+        for span in MarkdownEditing.spans(target.string) {
+            apply(span, to: target, base: base)
+        }
+        var changes: [(NSRange, [NSAttributedString.Key: Any])] = []
+        target.enumerateAttributes(in: NSRange(location: 0, length: target.length)) { attrs, range, _ in
+            if !matches(storage, attrs, in: range) { changes.append((range, attrs)) }
+        }
+        guard !changes.isEmpty else { return }
+        let selection = view.selectedRange
+        storage.beginEditing()
+        for (range, attrs) in changes {
+            for key in keys where attrs[key] == nil { storage.removeAttribute(key, range: range) }
+            storage.addAttributes(attrs, range: range)
+        }
+        storage.endEditing()
+        if view.selectedRange != selection { view.selectedRange = selection }
+    }
+
+    private static func matches(_ storage: NSTextStorage, _ want: [NSAttributedString.Key: Any], in range: NSRange) -> Bool {
+        var same = true
+        storage.enumerateAttributes(in: range) { have, _, stop in
+            for key in keys where !equal(have[key], want[key]) {
+                same = false
+                stop.pointee = true
+                return
+            }
+        }
+        return same
+    }
+
+    private static func equal(_ a: Any?, _ b: Any?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): return true
+        case let (a as NSObject, b as NSObject): return a.isEqual(b)
+        default: return false
+        }
+    }
+
+    private static func apply(_ span: MarkdownEditing.Span, to storage: NSMutableAttributedString, base: UIFont) {
+        let r = span.range
+        guard r.location + r.length <= storage.length else { return }
+        switch span.style {
+        case .marker: storage.addAttribute(.foregroundColor, value: UIColor.tertiaryLabel, range: r)
+        case .listMarker: storage.addAttribute(.foregroundColor, value: accent, range: r)
+        case .bold, .heading: add(.traitBold, to: storage, in: r, base: base)
+        case .italic: add(.traitItalic, to: storage, in: r, base: base)
+        case .strike:
+            storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: r)
+            storage.addAttribute(.foregroundColor, value: UIColor.secondaryLabel, range: r)
+        case .code:
+            storage.addAttribute(.font, value: UIFont.monospacedSystemFont(ofSize: base.pointSize * 0.94, weight: .regular), range: r)
+            storage.addAttribute(.backgroundColor, value: UIColor.tertiarySystemFill, range: r)
+        case .codeBlock:
+            storage.addAttribute(.font, value: UIFont.monospacedSystemFont(ofSize: base.pointSize * 0.94, weight: .regular), range: r)
+        case .quote: storage.addAttribute(.foregroundColor, value: UIColor.secondaryLabel, range: r)
+        case .link: storage.addAttribute(.foregroundColor, value: UIColor.link, range: r)
+        }
+    }
+
+    /// Adds a trait to whatever font each piece already has, so bold inside
+    /// italic is both.
+    private static func add(_ trait: UIFontDescriptor.SymbolicTraits, to storage: NSMutableAttributedString, in range: NSRange, base: UIFont) {
+        storage.enumerateAttribute(.font, in: range) { value, r, _ in
+            let font = value as? UIFont ?? base
+            guard let d = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(trait)) else { return }
+            storage.addAttribute(.font, value: UIFont(descriptor: d, size: font.pointSize), range: r)
         }
     }
 }
@@ -120,9 +235,45 @@ final class PasteAwareTextView: UITextView {
         guard text.isEmpty, !placeholder.isEmpty else { return }
         let origin = CGPoint(x: textContainerInset.left + textContainer.lineFragmentPadding, y: textContainerInset.top)
         (placeholder as NSString).draw(at: origin, withAttributes: [
-            .font: font ?? .preferredFont(forTextStyle: .body),
+            .font: UIFont.preferredFont(forTextStyle: .body),
             .foregroundColor: UIColor.placeholderText,
         ])
+    }
+
+    static let formats: [(title: String, icon: String, mark: String)] = [
+        ("Bold", "bold", "**"),
+        ("Italic", "italic", "*"),
+        ("Code", "chevron.left.forwardslash.chevron.right", "`"),
+        ("Strikethrough", "strikethrough", "~~"),
+    ]
+
+    /// A hardware keyboard's shortcuts, as on the panel: ⌘B, ⌘I, ⌘⇧C.
+    override var keyCommands: [UIKeyCommand]? {
+        let own = [
+            UIKeyCommand(title: "Bold", action: #selector(formatBold), input: "b", modifierFlags: .command),
+            UIKeyCommand(title: "Italic", action: #selector(formatItalic), input: "i", modifierFlags: .command),
+            UIKeyCommand(title: "Code", action: #selector(formatCode), input: "c", modifierFlags: [.command, .shift]),
+        ]
+        own.forEach { $0.wantsPriorityOverSystemBehavior = true }
+        return (super.keyCommands ?? []) + own
+    }
+
+    @objc private func formatBold() { toggleMarkdown("**") }
+    @objc private func formatItalic() { toggleMarkdown("*") }
+    @objc private func formatCode() { toggleMarkdown("`") }
+
+    func toggleMarkdown(_ mark: String) {
+        apply(MarkdownEditing.toggle(mark, in: text, selection: selectedRange))
+    }
+
+    /// One undoable replacement, then the binding and the styling catch up.
+    func apply(_ edit: MarkdownEditing.Edit) {
+        guard let start = position(from: beginningOfDocument, offset: edit.range.location),
+              let end = position(from: start, offset: edit.range.length),
+              let range = textRange(from: start, to: end) else { return }
+        replace(range, withText: edit.text)
+        selectedRange = edit.selection
+        delegate?.textViewDidChange?(self)
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {

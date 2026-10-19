@@ -52,12 +52,18 @@ struct RootView: View {
 /// Native tabs. On iPhone Duo the system draws them, with each screen's
 /// toolbar items, in the vertical bar beside the content; on other iPhones
 /// they are the tab bar, and on iPad a sidebar.
+///
+/// The Bot tab is a door, not a tab: it opens the Bot over everything, with
+/// no tabs and no search, and Back returns to the tab you came from.
 struct MainView: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
         @Bindable var app = app
-        TabView(selection: $app.tab) {
+        let selection = Binding(get: { app.tab }, set: { tab in
+            if tab == .bot { app.botOpen = true } else { app.tab = tab }
+        })
+        TabView(selection: selection) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
                 NavigationStack(path: $app.homePath) {
                     HomeView().routes()
@@ -65,9 +71,7 @@ struct MainView: View {
             }
             .badge(app.needsYouCount)
             Tab("Bot", systemImage: "sparkles", value: AppTab.bot) {
-                NavigationStack(path: $app.botPath) {
-                    BotView().routes()
-                }
+                Color.clear
             }
             Tab("Projects", systemImage: "folder", value: AppTab.projects) {
                 NavigationStack(path: $app.path) {
@@ -87,6 +91,12 @@ struct MainView: View {
         }
         .tabViewStyle(.sidebarAdaptable)
         .tabBarMinimizeBehavior(.onScrollDown)
+        .fullScreenCover(isPresented: $app.botOpen) {
+            NavigationStack(path: $app.botPath) {
+                BotView().routes()
+            }
+            .environment(app)
+        }
     }
 }
 

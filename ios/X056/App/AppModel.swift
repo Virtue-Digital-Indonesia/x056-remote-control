@@ -75,6 +75,8 @@ final class AppModel {
     var homePath: [Route] = []
     var path: [Route] = []
     var botPath: [Route] = []
+    /// The Bot, open over the tabs.
+    var botOpen = false
 
     /// The fleet, for the Accounts tab and the composer's account chip.
     var accounts: [Account] = []
@@ -130,7 +132,9 @@ final class AppModel {
         if ProcessInfo.processInfo.arguments.contains("-X056ResetState") {
             Keychain.delete("token")
             Keychain.delete("session")
-            for key in ["server", "lastSeq", "apnsToken", "botProjectId", "botSessionId"] { UserDefaults.standard.removeObject(forKey: key) }
+            for key in ["server", "lastSeq", "apnsToken", "botProjectId", "botSessionId", "drafts"] { UserDefaults.standard.removeObject(forKey: key) }
+            // Loaded by its initializer before this ran.
+            drafts = [:]
         }
         #endif
         server = UserDefaults.standard.string(forKey: "server").flatMap(URL.init(string:))
@@ -1055,6 +1059,7 @@ final class AppModel {
 
     func open(projectId: String, sessionId: String?) {
         guard !projectId.isEmpty else { return }
+        botOpen = false
         tab = .home
         homePath = [sessionId.map { .conversation(projectId: projectId, sessionId: $0) } ?? .project(projectId)]
     }

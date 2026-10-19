@@ -244,3 +244,77 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         #expect(app.unread["p::d"] == nil)
     }
 }
+
+@Suite struct MarkdownEditingTests {
+    private func press(_ text: String, at cursor: Int? = nil) -> String? {
+        let at = cursor ?? text.utf16.count
+        guard let e = MarkdownEditing.returnKey(in: text, selection: NSRange(location: at, length: 0)) else { return nil }
+        return (text as NSString).replacingCharacters(in: e.range, with: e.text)
+    }
+
+    @Test func continuesBulletsNumbersTasksAndQuotes() {
+        #expect(press("- milk") == "- milk\n- ")
+        #expect(press("  * nested") == "  * nested\n  * ")
+        #expect(press("9. nine") == "9. nine\n10. ")
+        #expect(press("1) one") == "1) one\n2) ")
+        #expect(press("- [x] done") == "- [x] done\n- [ ] ")
+        #expect(press("> quoted") == "> quoted\n> ")
+    }
+
+    @Test func anEmptyItemEndsTheList() {
+        #expect(press("- milk\n- ") == "- milk\n")
+        #expect(press("1. one\n2. ") == "1. one\n")
+        let e = MarkdownEditing.returnKey(in: "- a\n- ", selection: NSRange(location: 6, length: 0))
+        #expect(e?.selection == NSRange(location: 4, length: 0))
+    }
+
+    @Test func leavesOrdinaryLinesAlone() {
+        #expect(press("plain words") == nil)
+        #expect(press("-dash") == nil)
+        #expect(press("**bold**") == nil)
+        #expect(press("1.5 litres") == nil)
+        #expect(press("---") == nil)
+        #expect(press("- milk", at: 1) == nil, "the cursor inside the marker is a plain newline")
+    }
+
+    @Test func splitsAnItemAndPutsTheCursorAfterTheNewMarker() {
+        let e = MarkdownEditing.returnKey(in: "- milk eggs", selection: NSRange(location: 6, length: 0))
+        #expect(e.map { ("- milk eggs" as NSString).replacingCharacters(in: $0.range, with: $0.text) } == "- milk\n-  eggs")
+        #expect(e?.selection == NSRange(location: 9, length: 0))
+    }
+
+    @Test func renumbersTheItemsBelow() {
+        #expect(press("1. a\n2. b\n   - sub\n3. c\nafter", at: 4) == "1. a\n2. \n3. b\n   - sub\n4. c\nafter")
+    }
+
+    @Test func togglesFormats() {
+        func apply(_ mark: String, _ text: String, _ sel: NSRange) -> (String, NSRange) {
+            let e = MarkdownEditing.toggle(mark, in: text, selection: sel)
+            return ((text as NSString).replacingCharacters(in: e.range, with: e.text), e.selection)
+        }
+        #expect(apply("**", "make it bold", NSRange(location: 8, length: 4)) == ("make it **bold**", NSRange(location: 10, length: 4)))
+        #expect(apply("**", "make it **bold**", NSRange(location: 10, length: 4)) == ("make it bold", NSRange(location: 8, length: 4)))
+        #expect(apply("**", "**bold**", NSRange(location: 0, length: 8)) == ("bold", NSRange(location: 0, length: 4)))
+        #expect(apply("*", "**bold**", NSRange(location: 2, length: 4)).0 == "***bold***", "italic on bold adds, never strips the bold")
+        #expect(apply("*", "***both***", NSRange(location: 3, length: 4)).0 == "**both**")
+        #expect(apply("`", "word ", NSRange(location: 0, length: 5)).0 == "`word` ")
+        #expect(apply("**", "ab", NSRange(location: 1, length: 0)) == ("a****b", NSRange(location: 3, length: 0)))
+    }
+
+    @Test func stylesWhatItShouldAndNothingElse() {
+        func styles(_ text: String) -> [(String, MarkdownEditing.Style)] {
+            MarkdownEditing.spans(text).map { ((text as NSString).substring(with: $0.range), $0.style) }
+        }
+        let s = styles("# Plan\n- **bold** and *it* and `x*y*`\nsnake_case_name\n```\n**not bold**\n```")
+        #expect(s.contains { $0 == ("Plan", .heading) })
+        #expect(s.contains { $0 == ("# ", .marker) })
+        #expect(s.contains { $0 == ("- ", .listMarker) })
+        #expect(s.contains { $0 == ("**bold**", .bold) })
+        #expect(s.contains { $0 == ("*it*", .italic) })
+        #expect(s.contains { $0 == ("`x*y*`", .code) })
+        #expect(!s.contains { $0 == ("*y*", .italic) }, "nothing is styled inside code")
+        #expect(!s.contains { $0.0.contains("case") && $0.1 == .italic }, "snake_case is not italic")
+        #expect(s.contains { $0 == ("**not bold**", .codeBlock) })
+        #expect(!s.contains { $0 == ("**not bold**", .bold) }, "nothing is styled inside a fence")
+    }
+}

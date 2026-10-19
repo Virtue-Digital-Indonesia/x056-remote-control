@@ -894,7 +894,11 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   named "Bot"; its wake button calls `POST /api/bot {enabled: true}` and, when
   that answers, sends NO "[Bot setup]" message (that prompt says "read only,
   ask first", which contradicts the owner's "everything"). Older gateways keep
-  the plain renamed chat. The wiring is uncompiled until the next Xcode build.
+  the plain renamed chat (only on a 404 from `/api/bot`; any other error shows).
+  The tab is a door: it opens the Bot as a full-screen cover over the tabs and
+  search (`AppModel.botOpen`), and Back closes it. The Bot's box is the
+  composer's `ComposerTextView`, so both get the Markdown editing in
+  `MarkdownEditing.swift` (lists carry on at Return, Format in the edit menu).
 
 ## Delegates: an orchestrator's hidden workers (`server/delegates.ts`)
 

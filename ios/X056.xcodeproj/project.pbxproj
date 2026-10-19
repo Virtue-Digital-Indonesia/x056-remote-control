@@ -23,6 +23,7 @@
 		3AAC24EB82B2C5CADBEF573A /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 851EC45F0617C16572476590 /* AppModel.swift */; };
 		413CA5C36216A66282F379D5 /* TranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CC529EB7C57478A92C36CA3 /* TranscriptView.swift */; };
 		438BA5E39C88142B4CDF1F0C /* AccountsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7DE4380EFA31AED10D431A6 /* AccountsView.swift */; };
+		44CD40BDC94F960CCE798924 /* MarkdownEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5D4E54E36A9F7986076521 /* MarkdownEditing.swift */; };
 		47940CE2682A92CEC6CBA364 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BC65B1DC53EEFCAD45EB262 /* SearchView.swift */; };
 		4ACE559F67B2164FF2DFFF27 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 978C9E93EFE7C166739C3C87 /* APIClient.swift */; };
 		558D23B359B4CBF09DB5386C /* RunSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22C190AD767210D73BC8FD64 /* RunSheets.swift */; };
@@ -121,6 +122,7 @@
 		978C9E93EFE7C166739C3C87 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		99E9C0FD96C384DC94C5FFE9 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		AE345A8288730E1539EFA493 /* X056.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = X056.entitlements; sourceTree = "<group>"; };
+		AF5D4E54E36A9F7986076521 /* MarkdownEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownEditing.swift; sourceTree = "<group>"; };
 		AFACD2F4720BBFB97028B1DF /* TurnActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnActivity.swift; sourceTree = "<group>"; };
 		B63D2E9782C505E3BFBCA267 /* MarkdownText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownText.swift; sourceTree = "<group>"; };
 		B672ACACAE7E89D2A4A6AF8B /* LiveTurns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTurns.swift; sourceTree = "<group>"; };
@@ -244,6 +246,7 @@
 				92563EB5678C640600979E86 /* DesignKit.swift */,
 				99E9C0FD96C384DC94C5FFE9 /* HomeView.swift */,
 				24AE5815D1F873A7FA7EA836 /* LoginView.swift */,
+				AF5D4E54E36A9F7986076521 /* MarkdownEditing.swift */,
 				B63D2E9782C505E3BFBCA267 /* MarkdownText.swift */,
 				BC6817B50D45DB9497CD7851 /* NewConversationSheet.swift */,
 				87BCFC8DF45EE188DA0B559F /* ProjectsView.swift */,
@@ -441,6 +444,7 @@
 				8BE5F9B627094DEC5423E2AC /* Keychain.swift in Sources */,
 				1A2C8105724A17B1BB10C226 /* LiveTurns.swift in Sources */,
 				C63721F05A5831ABB95042AD /* LoginView.swift in Sources */,
+				44CD40BDC94F960CCE798924 /* MarkdownEditing.swift in Sources */,
 				D94F297012DBF8A79FA70F03 /* MarkdownText.swift in Sources */,
 				868FFC2572381D83D5C56DEC /* ModelCatalog.swift in Sources */,
 				37AD03F785996F553BC46853 /* Models.swift in Sources */,
