@@ -10,7 +10,10 @@ self.addEventListener('activate', function (event) { event.waitUntil(self.client
 self.addEventListener('push', function (event) {
   var data = {};
   try { data = event.data ? event.data.json() : {}; } catch (e) {}
-  if (data.screenSuppressed || data.kind === 'bot_notice' && data.tier !== 'urgent') return;
+  // Every push shows a notification. The subscription is userVisibleOnly: a push
+  // that shows nothing makes Chrome post a generic notice and lets Safari revoke
+  // push permission. Whether to push at all is decided on the server (push.ts),
+  // which never sends a suppressed or quiet notice; this only renders.
   var title = data.title || 'x056';
   event.waitUntil(self.registration.showNotification(title, {
     body: data.body || '',

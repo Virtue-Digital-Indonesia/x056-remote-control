@@ -273,3 +273,11 @@ it('does not push routine Bot status or briefs, and still pushes Bot needs-you i
   expect(sent).toHaveLength(1);
   expect(sent[0].payload).toMatchObject({title:'Please decide',tier:'urgent'});
 });
+
+it('a long turn the owner started in the Bot chat still reaches his device', () => {
+  const n = noticeFor('conversation_settled', settled({ origin: 'human', durationMs: 120_000 }), { ...ctx, bot: true })!;
+  expect(n.screenSuppressed).toBeUndefined();
+  expect(deviceWants(n, normalizeSettings({}), Date.parse('2026-10-01T03:00:00Z'))).toBe(true);
+  const auto = noticeFor('conversation_settled', settled({ origin: 'relay', durationMs: 120_000 }), { ...ctx, bot: true })!;
+  expect(deviceWants(auto, normalizeSettings({ automation: true }), Date.parse('2026-10-01T03:00:00Z'))).toBe(false);
+});

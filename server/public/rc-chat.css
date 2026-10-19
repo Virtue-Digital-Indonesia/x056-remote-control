@@ -167,7 +167,26 @@ body.rc-bot-setup #rcBotSetup{position:relative;isolation:isolate;display:flex;f
 /* The Bot's look: a sky / cyan / peach orb. Violet is --bgwork and the state colours stay theirs, so none of them appear here. */
 body.rc-bot-chat .stream-status{display:none!important}
 body.rc-bot-chat:not(.rc-bot-system-history) #chat>.bot-system-notice{display:none!important}
-.rcb-system-history{display:block;margin:8px 0 14px;padding:7px 11px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--muted);font:inherit;cursor:pointer}
+.rcb-system-history{display:block;width:100%;margin:8px 0 14px;padding:9px 12px;min-height:40px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font:inherit;font-size:13px;text-align:left;cursor:pointer}
+.rcb-system-history:hover:not(:disabled){background:var(--surface-2)}
+.rcb-system-history:disabled{color:var(--muted);cursor:default}
+.rcb-system-history:focus-visible{outline:2px solid var(--bot-1);outline-offset:2px}
+/* Shown system rows stay in their place, subdued so they read as system rows. */
+body.rc-bot-chat.rc-bot-system-history #chat>.bot-system-notice{opacity:.6}
+/* With the trigger and tool rows hidden, a reply that had tools after it gets its normal footer back. */
+body.rc-bot-chat:not(.rc-bot-system-history) #chat>.msg.assistant:has(+ .act.bot-system-notice){margin-bottom:26px}
+body.rc-bot-chat:not(.rc-bot-system-history) #chat>.msg.assistant:has(+ .act.bot-system-notice)>.mmeta{position:static;margin-top:4px}
+#rcBotSystemPill{display:none}
+body.rc-bot-chat.rc-bot-system-history #rcBotSystemPill{display:flex;align-items:center;justify-content:center;gap:6px;width:max-content;max-width:100%;box-sizing:border-box;margin:0 auto 8px;padding:3px 4px 3px 12px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);color:var(--muted);font-size:12.5px;line-height:1.3}
+#rcBotSystemPill button{min-height:30px;padding:4px 10px;border:0;border-radius:999px;background:none;color:var(--link,var(--accent));font:inherit;font-weight:600;cursor:pointer}
+#rcBotSystemPill button:hover{background:var(--bg)}
+#rcBotSystemPill button:focus-visible{outline:2px solid var(--bot-1);outline-offset:1px}
+/* The morning brief's reply: the sunrise pill of the brief's own sender line, in place of "Claude". */
+.msg.assistant.bot-brief-reply>.role>.bot-role-name{display:none}
+/* The label is wider than "Claude": its copy/time row stays a footer, never beside it on the role line. */
+body.rc-bot-chat #chat>.msg.assistant.bot-brief-reply>.mmeta{position:static;margin-top:4px}
+.bot-brief-tag{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:9px;background:linear-gradient(90deg,color-mix(in srgb,var(--bot-3) 32%,transparent),color-mix(in srgb,var(--bot-1) 7%,transparent) 85%);color:var(--text);font-size:11.5px;font-weight:600;letter-spacing:0;text-transform:none;line-height:1.3}
+.bot-brief-tag svg{width:13px;height:13px;flex:none;color:color-mix(in srgb,var(--bot-3) 60%,var(--text));animation:bot-orbit 40s linear infinite}
 :root{--bot-1:#4c8dff;--bot-2:#34c8e8;--bot-3:#ffb59a;--bot-ink:#16324f;--bot-orb:radial-gradient(circle at 31% 24%,#fffc 0,#fff0 30%),radial-gradient(circle at 70% 82%,#0f2d6b2e,#0f2d6b00 55%),conic-gradient(from 210deg,var(--bot-1),var(--bot-2),var(--bot-3),var(--bot-1));--bot-aurora-a:16%}
 html[data-theme=dark]{--bot-1:#6ea2ff;--bot-2:#52d4ee;--bot-3:#ffc3ab;--bot-aurora-a:13%}
 .bot-orb{position:relative;display:inline-block;flex:none;width:var(--s,28px);height:var(--s,28px);vertical-align:middle;border-radius:50%;animation:bot-breathe 5s ease-in-out infinite}
@@ -319,3 +338,10 @@ html[data-theme=dark] .rcb-settings .rc-bot-error{color:#ff8b8e}
 @media(max-width:480px){body.rc-bot-chat .focus-main>.topbar{padding-left:10px;padding-right:10px;gap:6px}.rcb-actions{gap:4px}#rcBotQuick{margin-bottom:6px}}
 body.rc-bot-chat #conversationSurface .composer-wrap{background:transparent}
 .rcb-hero .bot-aurora{-webkit-mask-image:linear-gradient(#000 55%,transparent);mask-image:linear-gradient(#000 55%,transparent)}
+/* Phones: the top bar's Bot button is the orb alone (it keeps its "Open Bot" name), so the breadcrumb is not cut to "Ho…". */
+@media(max-width:650px){#workspaceTopBot>span:not(.bot-orb){display:none}#workspaceTopBot{padding:4px 7px}}
+/* Phones: the chat bar's active Bot button already shows the orb, so the header drops its own, and the calendar gives way to the "needs you" chip (both open Today). This is the room "Bot · Idle" needs. */
+@media(max-width:480px){body.rc-bot-chat #rcBotHead .rcb-id>.bot-orb{display:none}body.rc-bot-chat #rcBotHead .rcb-id{flex-shrink:0}body.rc-bot-chat #rcBotNeeds:not([hidden])~#rcBotToday{display:none}}
+
+/* Bot notices are "title\nbody": keep the line break instead of running the two together. */
+body.rc-bot-chat #chat>.notice>span{white-space:pre-line}

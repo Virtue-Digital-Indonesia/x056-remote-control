@@ -9,6 +9,8 @@ const token = 'browser-fixture-token-0123456789';
 const output = '.deploy/bot-memory-fixes';
 assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
 const text = 'Saving the second preference now, then the answer.';
+// A first line that fills the column, after another reply (consecutive replies).
+const longText = 'Checking the gateway logs and the deployment queue before I change anything else in this repository today, then the answer.';
 (async () => {
   mkdirSync(output, { recursive: true });
   const browser = await playwright[engine].launch({ ...(engine === 'chromium' ? { args: ['--no-sandbox'] } : {}) });
@@ -42,7 +44,8 @@ const text = 'Saving the second preference now, then the answer.';
     await context.route('**/api/questions', r => r.fulfill({ json: question ? [{ projectId: bot.id, sessionId: bot.lastSessionId, question: 'Bot needs your answer', options: ['Continue'], at: new Date().toISOString() }] : [] }));
     await context.route(/\/api\/conversations\/history-page\?/, async r => {
       if (new URL(r.request().url()).searchParams.get('projectId') !== bot.id) return r.continue();
-      const ts = new Date().toISOString();
+      // Two days old, so every copy/time row carries a date too (its widest form).
+      const ts = new Date(Date.now() - 2 * 86400000).toISOString();
       await r.fulfill({ json: { done: true, cursor: null, rows: [
         { role: 'user', text: 'Gateway event digest fixture', sender: { kind: 'bot_event' }, ts },
         { role: 'assistant', text: 'Automated digest response', ts },
@@ -51,6 +54,8 @@ const text = 'Saving the second preference now, then the answer.';
         { role: 'user', text: 'Advisor system follow-up fixture', sender: { kind: 'advisor', messageId: 'advisor-fixture' }, ts },
         { role: 'assistant', text: 'Bot response to advisor follow-up stays visible.', ts },
         { role: 'user', text: 'Save my preference.', ts },
+        { role: 'assistant', text: 'Looking first.', ts },
+        { role: 'assistant', text: longText, ts },
         { role: 'action', text: 'Used ToolSearch', ts },
         { role: 'assistant', text, ts },
         ...['memory_propose', 'memory_search', 'memory_approve'].map(name => ({ role: 'action', text: 'Used mcp__x056__' + name, detail: '{}', ts })),
@@ -94,11 +99,32 @@ const text = 'Saving the second preference now, then the answer.';
       return { width: innerWidth, gap: row.top - content.bottom, rowStep: action.nextElementSibling.getBoundingClientRect().top - action.getBoundingClientRect().top, metaPosition: getComputedStyle(meta).position, overflow: document.documentElement.scrollWidth > innerWidth };
     }, text);
     const checkSpacing = async () => {
-      const m = await measure(); measurements.push(m);
+      const m = await measure();
       assert.ok(m.gap >= 8 && m.gap <= 20, JSON.stringify(m));
       assert.ok(m.rowStep <= 32, JSON.stringify(m));
       assert.equal(m.metaPosition, 'absolute'); assert.equal(m.overflow, false);
+      measurements.push(m);
       assert.equal(await page.locator('#chat>.msg.assistant').last().locator('.mmeta').evaluate(e => getComputedStyle(e).position), 'static', 'final answer keeps its footer');
+      // The copy/time row (and its copy tap target) never covers the first line of a reply
+      // followed by tool rows, with or without a date in the time.
+      const overlaps = await page.evaluate(() => {
+        const area = (a, b) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+        return [...document.querySelectorAll('#chat>.msg.assistant')].filter(m => m.offsetParent && m.nextElementSibling?.matches('.act') && m.nextElementSibling.offsetParent).map(m => {
+          const meta = m.querySelector('.mmeta').getBoundingClientRect(), button = m.querySelector('.mmeta button').getBoundingClientRect(), content = m.querySelector('.content').getBoundingClientRect();
+          const walker = document.createTreeWalker(m.querySelector('.content'), NodeFilter.SHOW_TEXT, { acceptNode: n => n.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP });
+          const range = document.createRange(); range.selectNodeContents(walker.nextNode());
+          const rects = [...range.getClientRects()], line = rects.filter(r => Math.abs(r.top - rects[0].top) < 2);
+          const label = [...m.querySelector('.role').children].map(e => e.getBoundingClientRect()).filter(r => r.width);
+          return { text: m._messageText.slice(0, 20), role: getComputedStyle(m.querySelector('.role')).display !== 'none', metaOnLine: line.reduce((a, r) => a + area(r, meta), 0), copyOnLine: line.reduce((a, r) => a + area(r, button), 0), copyBelowLineBox: +(button.bottom - content.top).toFixed(2), metaOnLabel: label.reduce((a, r) => a + area(r, meta), 0), lineWidth: Math.round(line.at(-1).right - line[0].left) };
+        });
+      });
+      assert.ok(overlaps.length >= 2, JSON.stringify(overlaps));
+      for (const o of overlaps) {
+        assert.ok(o.role, 'role line shown: ' + JSON.stringify(o));
+        assert.equal(o.metaOnLine + o.copyOnLine + o.metaOnLabel, 0, 'copy/time row covers text: ' + JSON.stringify(o));
+        assert.ok(o.copyBelowLineBox <= 0.5, 'copy target reaches into the first line box: ' + JSON.stringify(o));
+      }
+      m.overlaps = overlaps;
     };
     await checkSpacing();
     assert.ok(await page.locator('#chat .sender-bot_event').isHidden());
@@ -107,17 +133,21 @@ const text = 'Saving the second preference now, then the answer.';
     assert.equal(await page.locator('#queueBar').getByText('Queued gateway digest', {exact:true}).count(), 0);
     await page.locator('#queueBar').getByText('Queued human instruction', {exact:true}).waitFor();
     assert.ok(await page.getByText('Automated digest response', { exact: true }).isHidden());
-    assert.ok(await page.getByText('Automated morning brief', { exact: true }).isHidden());
+    // The morning brief's reply stays visible, labelled; its trigger is a system row.
+    const brief = page.locator('#chat>.msg.assistant').filter({ hasText: 'Automated morning brief' });
+    assert.ok(await brief.isVisible());
+    assert.equal(await brief.locator('.bot-brief-tag').innerText(), 'Morning brief');
+    assert.ok(await page.locator('#chat .sender-bot_brief').isHidden());
     assert.ok(await page.getByText('Advisor system follow-up fixture', { exact: true }).isHidden());
     assert.ok(await page.getByText('Bot response to advisor follow-up stays visible.', { exact: true }).isVisible());
     assert.ok(await page.getByText('Not sent yet (relay checkpoint): synthetic checkpoint', { exact: true }).isHidden());
     await page.locator('#rcBotToday').click();
-    await page.getByRole('button', { name: 'Show system history' }).click();
+    await page.getByRole('button', { name: /^Show \d+ hidden system messages?$/ }).click();
     assert.ok(await page.getByText('Automated digest response', { exact: true }).isVisible());
     assert.ok(await page.getByText('Advisor system follow-up fixture', { exact: true }).isVisible());
     assert.ok(await page.getByText('Not sent yet (relay checkpoint): synthetic checkpoint', { exact: true }).isVisible());
     await page.locator('#rcBotToday').click();
-    await page.getByRole('button', { name: 'Hide system history' }).click();
+    await page.getByRole('button', { name: 'Hide system messages' }).click();
     assert.ok(await page.getByText('Advisor system follow-up fixture', { exact: true }).isHidden());
     const commentary = page.locator('#chat>.msg.assistant').filter({ hasText: text });
     await commentary.hover();

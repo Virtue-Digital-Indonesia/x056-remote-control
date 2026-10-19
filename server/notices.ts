@@ -198,6 +198,23 @@ export function failureReason(data: Record<string, unknown>, tz?: string): strin
 
 const STOPPED = new Set(['stopped', 'cancelled', 'canceled']);
 
+const TURN_KINDS = new Set(['session_done', 'session_error', 'conversation_settled']);
+
+/**
+ * Automated Bot notices stay off the owner's screen (no push, hidden in the
+ * panel); the events themselves are kept. Suppressed: the Bot's own non-urgent
+ * notify_user, the morning brief anywhere, and in the Bot's project everything
+ * except a turn the owner himself started. "Himself" must be SAID
+ * (`origin: 'human'`): a Bot event with no origin counts as automated, so a
+ * kind that forgets to carry one cannot leak onto the screen. Urgent and
+ * needs-you notices are exempt at the call site.
+ */
+function screenSuppressed(kind: string, data: Record<string, unknown>, ctx: NoticeContext): boolean {
+  if (kind === 'bot_notice' || data.origin === 'brief') return true;
+  if (!ctx.bot) return false;
+  return !(TURN_KINDS.has(kind) && data.origin === 'human');
+}
+
 /**
  * The notice for one gateway event, or null when the event is not one people
  * are told about at all. `none` is returned (rather than null) for events that
@@ -218,7 +235,7 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
     ...(pid ? { projectId: pid } : {}),
     ...(sid ? { sessionId: sid } : {}),
     ...over,
-    ...((ctx.bot || kind === 'bot_notice' || data.origin === 'brief') && category !== 'needs_you' && tier !== 'urgent' ? { screenSuppressed: true } : {}),
+    ...(screenSuppressed(kind, data, ctx) && category !== 'needs_you' && tier !== 'urgent' ? { screenSuppressed: true } : {}),
   });
   const none = () => make('none', 'finished', '');
 

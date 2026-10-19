@@ -986,6 +986,10 @@
     .msg, .sysline, .act, .qcard, .orphan { max-width: 100%; }
     .msg .mmeta { opacity: .65; } /* no hover on touch — keep copy/time visible */
     .msg .mmeta button { min-height: 30px; padding: 3px 6px; margin: -3px 0; } /* comfortable tap target for copy */
+    /* The copy/time row sits on the role line of a reply followed by tools. Its 30px
+       copy target reaches 3px below that row, so the role line is made tall enough
+       that the target ends where the first line of text begins. */
+    .msg.assistant:has(+ .act) > .role { min-height: 22px; }
 
     /* Popovers become bottom sheets on phones. As desktop dropdowns they're
        fixed-width boxes pinned with hardcoded top/left/right offsets (several set

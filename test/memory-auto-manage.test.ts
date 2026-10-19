@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -157,4 +157,55 @@ it('allows reading owned pending memory for management without injecting it or e
   expect((await post('approve',{id:own.id,revision:1,...caller()})).data.status).toBe('confirmed');
   manager.memory().setSettings({autoManage:false});
   expect((await read(note().id)).status).toBe(400);
+});
+
+it('never lets a caller approve, edit or delete a foreign global or shared note it can see',async()=>{
+  const store=()=>manager.memory();
+  const visible=(id:string)=>store().visible(store().get(id)!,{projectId:pid,sessionId:sid,provider:'claude',requestId:reqId});
+  let reqId:string|undefined;
+  const spy=vi.spyOn(manager,'memoryRequestId').mockImplementation(()=>reqId);
+  const assertDenied=async(id:string)=>{
+    const before=store().get(id)!;
+    expect((await post('approve',{id,revision:before.revision,...caller()})).status).toBe(400);
+    expect((await post('propose',{id,revision:before.revision,entry:{content:'Hijacked'},...caller()})).status).toBe(400);
+    expect((await post('delete',{id,revision:before.revision,reason:'Not mine',...caller()})).status).toBe(400);
+    const after=store().get(id)!;
+    expect(after).toMatchObject({status:before.status,revision:before.revision,content:before.content});
+  };
+  try{
+    const audiences=[{scope:'global' as const},{scope:'shared' as const,sharedProjectIds:[pid]}];
+    // Visible by audience alone: global to everyone, shared naming the caller's project.
+    for(const a of audiences){
+      const foreign=store().create({title:'Foreign '+a.scope,content:'Foreign proposed '+a.scope,projectId:otherPid,status:'proposed',...a});
+      expect(visible(foreign.id)).toBe(true);
+      await assertDenied(foreign.id);
+    }
+    // Visible through a read grant and through a turn reference. Both require a
+    // reviewed note, so they are made on the confirmed note, then it is put back
+    // to proposed by the operator.
+    for(const a of audiences){
+      const granted=store().create({title:'Granted '+a.scope,content:'Granted foreign '+a.scope,projectId:otherPid,status:'confirmed',...(a.scope==='shared'?{scope:'shared',sharedProjectIds:[otherPid]}:a)});
+      store().access.setGrant({operationId:randomUUID(),subject:{kind:'entry',id:granted.id},expectedVersion:'1',recipient:{kind:'space',id:spaceId},expectedRevision:0,active:true});
+      expect(visible(granted.id)).toBe(true);
+      await assertDenied(granted.id);
+      store().update(granted.id,1,{status:'proposed'});
+      await assertDenied(granted.id);
+
+      const referenced=store().create({title:'Referenced '+a.scope,content:'Referenced foreign '+a.scope,projectId:otherPid,status:'confirmed',...(a.scope==='shared'?{scope:'shared',sharedProjectIds:[otherPid]}:a)});
+      reqId=randomUUID();
+      store().access.setReferences({operationId:randomUUID(),projectId:pid,sessionId:sid,requestId:reqId,expectedRevision:0,selections:[{kind:'entry',id:referenced.id,version:'1',allowReadForTurn:true}]});
+      expect(visible(referenced.id)).toBe(true);
+      await assertDenied(referenced.id);
+      store().update(referenced.id,1,{status:'proposed'});
+      await assertDenied(referenced.id);
+      reqId=undefined;
+    }
+    // An operator-made global note (no owning project) is no agent's to approve.
+    const operator=store().create({title:'Operator global',content:'Operator-made global note',scope:'global',status:'proposed'});
+    expect(operator.projectId).toBeUndefined();
+    await assertDenied(operator.id);
+    // The caller's own new global proposal is confirmed in full automatic mode.
+    const own=await post('propose',{entry:{title:'Own global',content:'Caller-owned global note '+randomUUID(),scope:'global',projectId:pid},...caller()});
+    expect(own.status).toBe(200);expect(own.data).toMatchObject({status:'confirmed',scope:'global',projectId:pid});
+  }finally{spy.mockRestore();}
 });

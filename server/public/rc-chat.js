@@ -56,8 +56,8 @@ window.createRCChat = function (engine, room) {
     $('chat').before(hero);
     hero.querySelectorAll('.rc-bot-chip').forEach(wireChip);
     new MutationObserver(syncBotWork).observe($('busy'), { childList: true });
-    new MutationObserver(() => { syncBotHero(); syncBotSystemHistory(); }).observe($('chat'), { childList: true });
-    document.addEventListener('x056-history', () => { syncBotHero(); syncBotSystemHistory(); });
+    new MutationObserver(records => { syncBotSystemHistory(records); syncBotHero(); }).observe($('chat'), { childList: true });
+    document.addEventListener('x056-history', () => { syncBotSystemHistory(); syncBotHero(); });
     document.addEventListener('visibilitychange', () => { document.documentElement.classList.toggle('bot-hidden', document.hidden); if (botVisible() && Date.now() - overviewAt > 10000) loadOverview(); });
     if (matchMedia('(hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference)').matches) document.addEventListener('pointermove', leanEyes, { passive: true });
     const botHead = document.createElement('div'); botHead.id = 'rcBotHead'; botHead.hidden = true;
@@ -68,6 +68,11 @@ window.createRCChat = function (engine, room) {
     quick.innerHTML = chipsHTML();
     ($('composerBox') || document.querySelector('.composer-wrap').lastElementChild).before(quick);
     quick.querySelectorAll('.rc-bot-chip').forEach(wireChip);
+    // While hidden system rows are shown, say so above the composer, with the way back.
+    const pill = document.createElement('div'); pill.id = 'rcBotSystemPill'; pill.setAttribute('role', 'group'); pill.setAttribute('aria-label', 'System messages');
+    pill.innerHTML = '<span>Showing system messages</span><span aria-hidden="true">·</span><button type="button" id="rcBotSystemHide">Hide</button>';
+    quick.before(pill);
+    $('rcBotSystemHide').onclick = () => { setSystemHistory(false); $('rcBotToday')?.focus({ preventScroll: true }); };
     for (const type of ['input', 'focusin', 'focusout']) $('prompt')?.addEventListener(type, syncBotQuick);
     document.addEventListener('click', () => setTimeout(syncBotQuick));
     new MutationObserver(syncBotQuick).observe($('attachRow') || document.body, { childList: true });
@@ -192,9 +197,11 @@ window.createRCChat = function (engine, room) {
   function renderBotHead(chat) {
     const head = $('rcBotHead'); if (!head) return;
     const on = !!chat?.bot && room.isOpen() !== false && !document.body.classList.contains('rc-chat-home-view');
+    const entering = on && !document.body.classList.contains('rc-bot-chat');
     head.hidden = !on; document.body.classList.toggle('rc-bot-chat', on);
     if (!on) document.body.classList.remove('rc-bot-system-history');
-    syncBotSystemHistory(); syncBotHero(); if (!on) { stopNeeds(); closeToday(); syncBotQuick(); return; }
+    if (entering) syncBotSystemHistory();
+    syncBotHero(); if (!on) { stopNeeds(); closeToday(); syncBotQuick(); return; }
     syncBotWork(); syncBotQuick();
     if (!bot && !botRequest) loadBot().then(() => renderBotHead(current()), () => {});
     const at = $('rcBotBriefAt'), next = nextBrief();
@@ -203,17 +210,123 @@ window.createRCChat = function (engine, room) {
     if (!wasBot) { wasBot = true; loadOverview(); }
     startNeeds();
   }
-  // Default conversation view stays quiet. The original rows stay mounted and
-  // can be revealed in their chronological place from Today > System history.
-  function syncBotSystemHistory() {
-    if (!document.body.classList.contains('rc-bot-chat')) return;
-    let automated = false;
-    for (const row of $('chat').children) {
-      if (row.matches('.msg.user')) automated = row.matches('.sender-bot_event,.sender-bot_brief');
-      const advisorNotice = row.matches('.msg.user.sender-advisor');
-      const checkpoint = !row.matches('.msg.user') && /^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay checkpoint[:.])/i.test(row._messageText || row.textContent.trim());
-      row.classList.toggle('bot-system-notice', !row.matches('.qcard,.orphan,.banner.err') && !/^Bot needs you:/.test(row.textContent) && (automated || advisorNotice || checkpoint || row.matches('.sysline,.banner:not(.err)') || row.matches('.notice') && /^Bot status:/.test(row.textContent)));
+  // ---- Bot chat history: which rows are system rows, hidden until "Show hidden system messages".
+  // THE RULE. The iOS app mirrors botRowVisibility and botRowKind; change both together.
+  // The chat is read in turns. A turn starts at every user message (.msg.user) and its kind
+  // is that message's sender kind: 'bot_event' (the gateway's digest), 'bot_brief' (the
+  // morning brief), 'advisor', or '' for a human. Any other sender kind (conversation, mcp,
+  // delegate, automation, ...) counts as ''. Rows before the first user message are in a '' turn.
+  // Every row has one kind (botRowKind):
+  //   'keep'    a question card, an orphaned-turn card, an error banner, a "Bot needs you:" notice
+  //   'system'  a relay checkpoint ("Not sent yet ..." / "Relay checkpoint ..."), a system line,
+  //             a non-error banner, a "Bot status:" notice
+  //   'trigger' the user message that starts the turn
+  //   'reply'   an assistant message
+  //   'tool'    a tool row
+  //   'other'   anything else (advisor card, other notices, model mark, summary)
+  // Decided in this order, first match wins:
+  //   1. 'keep' is always shown.
+  //   2. 'system' is always hidden, in every turn, a human's included.
+  //   3. A digest turn ('bot_event') hides everything else.
+  //   4. A morning-brief turn ('bot_brief') shows only its LAST reply (the brief itself),
+  //      labelled "Morning brief". Earlier replies are commentary before its tools ("Checking
+  //      what ran overnight...") and are hidden with the trigger, the tools and the rest.
+  //   5. An advisor turn ('advisor') hides only its trigger.
+  //   6. Everything else is shown, so a human's turn keeps its message, replies and tools.
+  // lastReply: for a 'reply', whether it is the last reply of its turn (only rule 4 asks).
+  function botRowVisibility(rowKind, turnKind, lastReply) {
+    if (rowKind === 'keep') return 'show';
+    if (rowKind === 'system') return 'hide';
+    if (turnKind === 'bot_event') return 'hide';
+    if (turnKind === 'bot_brief') return rowKind === 'reply' && lastReply !== false ? 'show' : 'hide';
+    if (turnKind === 'advisor') return rowKind === 'trigger' ? 'hide' : 'show';
+    return 'show';
+  }
+  const CHECKPOINT = /^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay checkpoint[:.])/i;
+  function botRowKind(row) {
+    if (row.matches('.qcard,.orphan,.banner.err')) return 'keep';
+    if (row.matches('.notice')) { const text = row.textContent.trim(); if (/^Bot needs you:/.test(text)) return 'keep'; if (/^Bot status:/.test(text)) return 'system'; }
+    if (row.matches('.msg.user')) return 'trigger';
+    if (CHECKPOINT.test(row._messageText ?? row.textContent.trim())) return 'system';
+    if (row.matches('.sysline,.banner')) return 'system';
+    if (row.matches('.msg.assistant')) return 'reply';
+    if (row.matches('.act')) return 'tool';
+    return 'other';
+  }
+  const turnKindOf = row => { const k = (/(?:^|\s)sender-(\w+)/.exec(row.className) || [])[1] || ''; return ['bot_event', 'bot_brief', 'advisor'].includes(k) ? k : ''; };
+  // A row's kind is fixed once it is rendered (messages are never edited in place), so it is
+  // classified once. The last turn is re-walked on every pass anyway, which heals a row that did change.
+  const rowKinds = new WeakMap(), rowShown = new WeakMap();
+  let hiddenRows = 0;
+  function walkBotRows(from, turnKind, full) {
+    let hidden = 0, briefReply = null;
+    // The label goes on the brief turn's LAST reply (the brief itself; earlier ones are
+    // commentary before its tools), so it is placed when the turn ends and moves forward
+    // as replies arrive.
+    const endTurn = () => { if (briefReply) setRowState(briefReply, 'brief'); briefReply = null; };
+    for (let row = from; row; row = row.nextElementSibling) {
+      let kind = rowKinds.get(row);
+      if (!kind || !row.nextElementSibling) { kind = botRowKind(row); rowKinds.set(row, kind); }
+      if (kind === 'trigger') { endTurn(); turnKind = turnKindOf(row); }
+      const hide = botRowVisibility(kind, turnKind) === 'hide';
+      if (hide) hidden++;
+      // A newer reply in a brief turn demotes the previous one to commentary (rule 4).
+      if (!hide && kind === 'reply' && turnKind === 'bot_brief') { if (briefReply) { setRowState(briefReply, botRowVisibility('reply', turnKind, false)); hidden++; } briefReply = row; continue; }
+      setRowState(row, hide ? 'hide' : 'show');
     }
+    endTurn();
+    if (full) hiddenRows = hidden;
+  }
+  function setRowState(row, state) {
+    let was = rowShown.get(row);
+    if (was === state) return;
+    if (was === undefined) was = row.classList.contains('bot-system-notice') ? 'hide' : row.classList.contains('bot-brief-reply') ? 'brief' : 'show';
+    rowShown.set(row, state);
+    if ((state === 'hide') !== (was === 'hide')) { row.classList.toggle('bot-system-notice', state === 'hide'); hiddenRows += state === 'hide' ? 1 : -1; }
+    if ((state === 'brief') !== (was === 'brief')) briefLabel(row, state === 'brief');
+  }
+  // The "Morning brief" label replaces the role line ("Claude") of the brief's first reply.
+  function briefLabel(row, on) {
+    row.classList.toggle('bot-brief-reply', on);
+    const role = row.querySelector(':scope>.role'); if (!role) return;
+    if (!role.querySelector(':scope>.bot-role-name')) { const name = document.createElement('span'); name.className = 'bot-role-name'; name.append(...role.childNodes); role.append(name); }
+    role.querySelector(':scope>.bot-brief-tag')?.remove();
+    if (on) role.insertAdjacentHTML('afterbegin', `<span class="bot-brief-tag">${SVG.sun}Morning brief</span>`);
+  }
+  // Called with mutation records for rows the panel added, or with none for a full pass
+  // (history loaded, Bot chat opened). Appended rows re-walk only from the start of the
+  // last turn before them; removals and rows inserted above others re-walk everything.
+  function syncBotSystemHistory(records) {
+    if (!document.body.classList.contains('rc-bot-chat')) return;
+    const chat = $('chat'); let start = null;
+    if (records) {
+      for (const record of records) {
+        if (record.target !== chat) continue;
+        if (record.removedNodes.length || record.nextSibling) { start = undefined; break; }
+        const added = [...record.addedNodes].find(n => n.nodeType === 1);
+        if (added && added.parentNode === chat && (!start || start.compareDocumentPosition(added) & Node.DOCUMENT_POSITION_PRECEDING)) start = added;
+      }
+      if (start === null) return;
+    }
+    if (!start) walkBotRows(chat.firstElementChild, '', true);
+    else {
+      let turn = start.previousElementSibling;
+      while (turn && !turn.matches('.msg.user')) turn = turn.previousElementSibling;
+      walkBotRows(turn || chat.firstElementChild, '');
+    }
+    syncSystemControls();
+  }
+  // Show / hide the hidden rows (in place, subdued). The state never outlives the Bot chat:
+  // leave() and renderBotHead() clear it.
+  function setSystemHistory(on) { document.body.classList.toggle('rc-bot-system-history', on); syncSystemControls(); syncBotHero(); }
+  function systemHistoryLabel() {
+    if (document.body.classList.contains('rc-bot-system-history')) return 'Hide system messages';
+    return hiddenRows ? 'Show ' + hiddenRows + ' hidden system message' + (hiddenRows === 1 ? '' : 's') : 'No hidden system messages';
+  }
+  function syncSystemControls() {
+    const b = $('rcBotSystemHistory'); if (!b) return;
+    b.textContent = systemHistoryLabel(); b.disabled = !hiddenRows && !document.body.classList.contains('rc-bot-system-history');
+    b.setAttribute('aria-pressed', String(document.body.classList.contains('rc-bot-system-history')));
   }
   // When the next morning brief runs: today's time, or tomorrow's once today's brief has gone out (lastBriefDate is a date in the Bot's zone).
   function nextBrief() {
@@ -263,7 +376,7 @@ window.createRCChat = function (engine, room) {
     const failed = (o?.scheduled || []).filter(j => j.lastResult && !/^(queued|delivered|ok)$/i.test(j.lastResult));
     const list = (rows, cap = 5) => rows.slice(0, cap).join('') + (rows.length > cap ? `<li class="rcb-more">+${rows.length - cap} more</li>` : '');
     let html = `<header><strong>Today</strong><span>${esc(nextBrief())}</span></header>`;
-    html += '<button type="button" class="rcb-system-history" id="rcBotSystemHistory">' + (document.body.classList.contains('rc-bot-system-history') ? 'Hide system history' : 'Show system history') + '</button>';
+    html += `<button type="button" class="rcb-system-history" id="rcBotSystemHistory">${esc(systemHistoryLabel())}</button>`;
     if (!o) html += '<p class="rcb-empty">Checking…</p>';
     else if (!needs.length) html += `<div class="rcb-calm">${orb(40, 'idle').replace('class="bot-orb"', 'class="bot-orb happy"')}<div><strong>Nothing needs you</strong><span>I will tell you when something does.</span></div></div>`;
     else html += `<section><h3>Needs you <b>${needs.length}</b></h3><ul>${list(needs.map(n => `<li class="rcb-need"><span class="rcb-kind">${n.kind === 'approval' ? 'Approval' : 'Question'}</span><strong>${esc(clip(n.title || n.projectName, 60))}</strong><p>${esc(clip(n.text, 150))}</p></li>`))}</ul></section>`;
@@ -272,11 +385,13 @@ window.createRCChat = function (engine, room) {
     if (o && failed.length) html += `<section><h3>Failed schedules <b>${failed.length}</b></h3><ul>${list(failed.map(j => `<li class="rcb-fail"><strong>${esc(clip(j.label || j.schedule, 50))}</strong><span>${esc(clip(j.lastResult, 80))}${j.lastRunAt ? ' · ' + esc(since(j.lastRunAt)) + ' ago' : ''}</span></li>`))}</ul></section>`;
     if (o && !running.length && !delegates.length && !failed.length) html += '<p class="rcb-empty">Nothing running right now.</p>';
     pop.innerHTML = html;
-    $('rcBotSystemHistory').onclick = () => { document.body.classList.toggle('rc-bot-system-history'); closeToday(true); };
+    $('rcBotSystemHistory').onclick = () => { setSystemHistory(!document.body.classList.contains('rc-bot-system-history')); closeToday(true); };
+    syncSystemControls();
   }
   function toggleToday() { todayPop?.isConnected ? closeToday(true) : openToday(); }
   function openToday() {
-    const anchor = $('rcBotToday'); if (!anchor || anchor.offsetParent === null) return;
+    // On a phone the calendar button gives way to the "needs you" chip, which then anchors Today.
+    const anchor = [$('rcBotToday'), $('rcBotNeeds')].find(e => e && e.offsetParent !== null); if (!anchor) return;
     const pop = document.createElement('div'); pop.id = 'rcBotTodayPop'; pop.className = 'rcb-pop'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', 'Today'); pop.tabIndex = -1;
     document.body.append(pop); todayPop = pop; renderToday(pop);
     const r = anchor.getBoundingClientRect(), w = Math.min(360, innerWidth - 20);
@@ -290,7 +405,7 @@ window.createRCChat = function (engine, room) {
   }
   function closeToday(refocus = false) {
     const pop = todayPop; if (!pop) return; todayPop = null; pop._off?.(); pop.remove();
-    $('rcBotToday')?.setAttribute('aria-expanded', 'false'); if (refocus) $('rcBotToday')?.focus();
+    $('rcBotToday')?.setAttribute('aria-expanded', 'false'); $('rcBotNeeds')?.setAttribute('aria-expanded', 'false'); if (refocus) [$('rcBotToday'), $('rcBotNeeds')].find(e => e && e.offsetParent !== null)?.focus();
   }
   // Bot settings: the setup card's look again (orb, aurora), the brief time, and the on/off switch.
   function openSettings() {
@@ -320,7 +435,10 @@ window.createRCChat = function (engine, room) {
   // The hero shows for the open Bot chat once its history has loaded and the thread has no nodes; the first message removes it.
   function syncBotHero() {
     const s = engine.state(), chatEl = $('chat');
-    const empty = document.body.classList.contains('rc-bot-chat') && !!s.sessionId && !!s.views?.[s.projectId + '::' + s.sessionId]?.loaded && !!chatEl && chatEl.childElementCount === 0;
+    // Empty = nothing on screen: no rows, or only system rows while they are hidden (a Bot whose
+    // first turns were all digests would otherwise show a blank page).
+    const rows = chatEl ? chatEl.childElementCount - (document.body.classList.contains('rc-bot-system-history') ? 0 : hiddenRows) : 1;
+    const empty = document.body.classList.contains('rc-bot-chat') && !!s.sessionId && !!s.views?.[s.projectId + '::' + s.sessionId]?.loaded && rows <= 0;
     syncBotQuick();
     if (empty === document.body.classList.contains('rc-bot-empty')) return;
     if (empty) {
@@ -561,5 +679,5 @@ window.createRCChat = function (engine, room) {
   document.addEventListener('x056:reconnected',()=>{if(enabled)loadFiles();});
   document.addEventListener('x056:mode',event=>{if(event.detail.mode==='closed'){document.body.classList.remove('rc-chat-active','rc-chat-home-view');if(!routing&&inChat())window.history.pushState({},'', '/');}else setTimeout(sync,0);});
   document.addEventListener('x056:event',event=>{const {kind,data}=event.detail;if(kind==='chat_files'&&data.projectId===active)loadFiles();if(kind==='projects')engine.reloadProjects().then(sync);else if(kind==='conversation')setTimeout(sync,100);});
-  return { navigate, leave, newChat, botAvatar: orb, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat()||inBot())await applyRoute();else sync();}else if(inBot())notify('Chat is turned off on this gateway, so the Bot is unavailable.');}catch(error){if(inChat()||inBot())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
+  return { navigate, leave, newChat, botAvatar: orb, botRowVisibility, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat()||inBot())await applyRoute();else sync();}else if(inBot())notify('Chat is turned off on this gateway, so the Bot is unavailable.');}catch(error){if(inChat()||inBot())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
 };

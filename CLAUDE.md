@@ -899,6 +899,37 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   search (`AppModel.botOpen`), and Back closes it. The Bot's box is the
   composer's `ComposerTextView`, so both get the Markdown editing in
   `MarkdownEditing.swift` (lists carry on at Return, Format in the edit menu).
+- **What the owner sees (2026-10-19, owner: "Bot's system notices must not
+  appear on his screen"; 2dc9bfc, ce1e30f, polished after review).** Server:
+  `noticeFor` marks a notice `screenSuppressed` (kept in events and history, no
+  push, no panel pop-up) when it is not urgent / needs_you AND it is a
+  `bot_notice`, has origin `brief`, or belongs to the Bot's project without
+  being a turn the owner started (`origin === 'human'` must be explicit there,
+  so an automated turn that forgot its origin stays quiet). So a long turn
+  the owner starts in the Bot chat still pushes; digests, briefs, recaps,
+  advisor follow-ups and a non-urgent `notify_user` do not. The persona says
+  so: `notify_user` pushes only with `urgent: true`, and the brief is read in
+  the chat. `sw.js` shows EVERY push it receives (no early return): pushes are
+  `userVisibleOnly`, and a push that shows nothing costs Chrome a generic
+  notice and lets Safari revoke the permission; `push.ts` is the one place
+  that decides. **Panel rows** (`botRowVisibility` / `botRowKind` in
+  `rc-chat.js`, mirrored by iOS; the comment there is the spec): a turn starts
+  at each user row and takes its sender kind; `keep` rows (question card,
+  orphan card, error banner, "Bot needs you:" notice) always show; `system`
+  rows (relay checkpoint, sysline, non-error banner, "Bot status:" notice)
+  always hide; a `bot_event` turn hides everything; a `bot_brief` turn shows
+  ONLY its last reply, labelled "Morning brief"; an `advisor` turn hides only
+  its trigger; anything else shows. Today > "Show N hidden system messages"
+  reveals them in place (dimmed) with a "Showing system messages · Hide" pill;
+  it resets on leaving the Bot chat. Classification is cached per row and
+  appended rows re-walk only the last turn (2,000 rows: 6.8 -> 0.5 ms per
+  append in Chromium, 12 -> <1 ms in WebKit). The Home lists leave the Bot out
+  except when it needs the owner; the top bar has an orb Bot button (orb only
+  on phones, active while the Bot is open). On a phone the Bot header drops
+  its own orb and the calendar gives way to the "needs you" chip (which then
+  anchors Today), so "Bot · Idle" keeps its room at 320-430 px. Browser tests:
+  `bot-home-spacing.cjs`, `bot-system-history.cjs`, `sw-push-shows.cjs`;
+  WebKit needs the env in `test/browser/webkit-preload.cjs`'s header.
 
 ## Delegates: an orchestrator's hidden workers (`server/delegates.ts`)
 

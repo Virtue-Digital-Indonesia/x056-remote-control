@@ -7,7 +7,7 @@ const turn = (o: Record<string, unknown> = {}) => ({ projectId: 'p', sessionId: 
 
 it('retains routine Bot notices as events while suppressing screens, and never suppresses needs-you notices', () => {
   const bot = { ...chat, bot: true };
-  for (const origin of ['human', 'relay', 'brief']) {
+  for (const origin of ['relay', 'brief']) {
     const notice = noticeFor('conversation_settled', turn({ origin }), bot)!;
     expect(notice.screenSuppressed).toBe(true);
     expect(notice.body).toBeTruthy();
@@ -20,6 +20,53 @@ it('retains routine Bot notices as events while suppressing screens, and never s
     ['session_error', { reason: 'Failed', origin: 'relay' }],
   ] as const) expect(noticeFor(kind, data, bot)?.screenSuppressed).toBeUndefined();
   expect(noticeFor('conversation_settled', turn(), work)?.screenSuppressed).toBeUndefined();
+});
+
+describe('Bot project: only automated notices leave the screen', () => {
+  const bot: NoticeContext = { ...chat, bot: true };
+  it('a long turn the owner started in the Bot chat keeps its ordinary notice', () => {
+    const n = noticeFor('conversation_settled', turn({ origin: 'human', durationMs: 120_000 }), bot)!;
+    expect(n.tier).toBe('normal');
+    expect(n.category).toBe('finished');
+    expect(n.screenSuppressed).toBeUndefined();
+    const short = noticeFor('conversation_settled', turn({ origin: 'human', durationMs: 5_000 }), bot)!;
+    expect(short.tier).toBe('quiet');
+    expect(short.screenSuppressed).toBeUndefined();
+  });
+  it.each([
+    ['bot_brief', 'brief'], ['bot_event', 'relay'], ['recap', 'recap'], ['advisor', 'advisor'],
+    ['automation', 'cron'], ['autopilot', 'autopilot'], ['delegate', 'delegate'],
+  ] as const)('a %s turn in the Bot chat is suppressed', (kind, origin) => {
+    expect(originOf({ kind })).toBe(origin);
+    const n = noticeFor('conversation_settled', turn({ origin }), bot)!;
+    if (n.tier !== 'none') expect(n.screenSuppressed).toBe(true);
+  });
+  it('a Bot turn event with no origin counts as automated', () => {
+    expect(noticeFor('conversation_settled', turn({ origin: undefined }), bot)?.screenSuppressed).toBe(true);
+  });
+  it('non-turn automated status in the Bot project is suppressed', () => {
+    expect(noticeFor('supervisor', { projectId: 'p', sessionId: 's', type: 'failover', from: 'a' }, bot)?.screenSuppressed).toBe(true);
+    expect(noticeFor('delegate_report', { projectId: 'p', sessionId: 's', role: 'scout', text: 'DONE', gate: 'done' }, bot)?.screenSuppressed).toBe(true);
+  });
+  it('urgent failures and needs-you items are never suppressed', () => {
+    for (const origin of ['human', 'relay', 'brief', 'recap']) {
+      const n = noticeFor('session_error', { projectId: 'p', sessionId: 's', reason: 'boom', origin }, bot)!;
+      expect(n.tier).toBe('urgent');
+      expect(n.screenSuppressed).toBeUndefined();
+    }
+    expect(noticeFor('conversation_settled', turn({ status: 'parked', reason: undefined, origin: 'relay' }), bot)?.screenSuppressed).toBeUndefined();
+    expect(noticeFor('delegate_report', { role: 'scout', text: 'NEEDS HUMAN', gate: 'needs_human' }, bot)?.screenSuppressed).toBeUndefined();
+  });
+  it('bot_notice: suppressed unless urgent', () => {
+    expect(noticeFor('bot_notice', { title: 'Status', body: 'Routine' }, bot)?.screenSuppressed).toBe(true);
+    const urgent = noticeFor('bot_notice', { title: 'Decide', body: 'Now', tier: 'urgent' }, bot)!;
+    expect(urgent.tier).toBe('urgent');
+    expect(urgent.screenSuppressed).toBeUndefined();
+  });
+  it('outside the Bot project nothing changes', () => {
+    expect(noticeFor('supervisor', { projectId: 'p', sessionId: 's', type: 'failover' }, work)?.screenSuppressed).toBeUndefined();
+    expect(noticeFor('conversation_settled', turn({ origin: 'relay' }), work)?.screenSuppressed).toBeUndefined();
+  });
 });
 
 describe('noticeFor: tiers by event × origin × duration', () => {

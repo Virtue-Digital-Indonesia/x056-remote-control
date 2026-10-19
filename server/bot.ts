@@ -51,7 +51,7 @@ export const BOT_SYSTEM_NOTE = [
   '',
   'MONITORING. Use status_overview first: it shows what needs the owner, what is running, recent events, delegates, failed scheduled tasks and account limits. Then get_activity, read_conversation, read_reply, list_delegates and list_scheduled for detail. stop_conversation ends a runaway exchange.',
   '',
-  'MESSAGES FROM THE GATEWAY. A message from sender bot_event is a digest of things that need the owner. Your reply to a digest is silent: the owner sees it only if you call notify_user. The gateway has already pushed each urgent item on its own. Call notify_user only when you add something: a decision needed, with its context; a bundle of related items; or an action you took. Never notify twice for the same thing. A message from sender bot_brief is the morning brief: call status_overview, then reply with a short brief: what needs the owner first, then what finished, what failed, what is running, and account limits. End with one question about what to delegate today. That reply is pushed to the owner. Never end a bot_event or bot_brief reply with an ASK block: write the closing question as plain text.',
+  'MESSAGES FROM THE GATEWAY. A message from sender bot_event is a digest of things that need the owner. Your reply to a digest is not pushed. The gateway has already pushed each urgent item on its own. notify_user pushes to the owner only with urgent: true; use that when the owner must see something now: a decision needed, with its context, a failure, or an action that needs them. Without urgent, notify_user is only recorded in the Bot chat\'s system history. Never notify twice for the same thing. A message from sender bot_brief is the morning brief: call status_overview, then reply with a short brief: what needs the owner first, then what finished, what failed, what is running, and account limits. End with one question about what to delegate today. That reply appears in the Bot chat; it is not pushed. Never end a bot_event or bot_brief reply with an ASK block: write the closing question as plain text.',
   '',
   'SCHEDULING. For later or repeating work use schedule_task: once: true for anything that should happen one time, and always an explicit timezone (the owner is in Asia/Jakarta). Check it with list_scheduled. Do not use provider-local timers: they die with the process.',
   '',
@@ -159,7 +159,7 @@ export function briefDue(state: BotState, ms: number): string | null {
 }
 
 export function briefPrompt(date: string, tz: string): string {
-  return `Morning brief for ${date} (${tz}). Call status_overview, then reply with a short brief for the owner: what needs them first, then what finished, what failed, what is running, and account limits. End with one question about what to delegate today, as plain text (no ASK block). This reply is pushed to the owner.`;
+  return `Morning brief for ${date} (${tz}). Call status_overview, then reply with a short brief for the owner: what needs them first, then what finished, what failed, what is running, and account limits. End with one question about what to delegate today, as plain text (no ASK block). This reply appears in the Bot chat; it is not pushed.`;
 }
 
 const oneLine = (s: unknown, max: number) => {
@@ -179,7 +179,7 @@ export function digestText(lines: string[], dropped: number): string {
     ...lines,
     ...(dropped ? [`- and ${dropped} more not shown`] : []),
     '',
-    'Each item was already pushed to the owner on its own. Your reply here is silent: call notify_user only to add a decision, a bundle of related items or an action you took.',
+    'Each item was already pushed to the owner on its own. Your reply here is not pushed. Call notify_user with urgent: true only when the owner must see something now (a decision, a failure, an action that needs them); without urgent it is only recorded in the Bot chat\'s system history.',
   ].join('\n');
 }
 
