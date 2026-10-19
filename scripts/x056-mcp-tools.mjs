@@ -476,7 +476,7 @@ const MEMORY_TOOLS = [
   ],
   [
     'memory_propose',
-    'Save durable facts, decisions or procedures automatically as memory proposals, with source references. No approval is needed to save. Keep conversation and Work knowledge local; use scope space and spaceId for knowledge intended for the owning Project bank. memory_context returns the current scope. Search existing memory first. Identical notes are reused; same-title corrections must use memory_update. The memory automation setting controls review: limited mode confirms new local conversation facts/decisions; full automatic mode also confirms eligible owned memories and corrections. Sharing grants only allow reading, never editing.',
+    'Save durable facts, decisions or procedures automatically as memory proposals, with source references. No approval is needed to save. Keep conversation and Work knowledge local; use scope space and spaceId for knowledge intended for the owning Project bank. memory_context returns the current scope. Search existing memory first. Identical notes are reused; same-title corrections must use memory_update. The memory automation setting controls review: limited mode confirms new local conversation facts/decisions; full automatic mode also confirms eligible owned memories and corrections, including global and shared audiences. Sharing grants only allow reading, never editing.',
     {
       title: { type: 'string' },
       content: { type: 'string' },
@@ -505,7 +505,7 @@ const MEMORY_TOOLS = [
   ],
   [
     'memory_approve',
-    'Confirm an existing proposed memory owned by this conversation or its Project using the current revision. Requires full automatic memory management. Read the note and its sources first; shared read access does not permit approval.',
+    'Confirm an existing proposed memory owned by this conversation or its Project using the current revision. Includes owned global and shared proposals in full automatic memory management. Read the note and its sources first; shared read access does not permit approval.',
     { id: { type: 'string' }, revision: { type: 'integer', minimum: 1 } },
     ['id', 'revision'],
   ],

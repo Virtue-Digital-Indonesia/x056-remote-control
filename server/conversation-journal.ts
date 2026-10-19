@@ -42,6 +42,10 @@ export class ConversationJournal {
       const keep = ['delegateId', 'role', 'turn', 'status', 'gate', 'gateConfidence', 'gateBy', 'durationMs', 'provider', 'model'];
       row = { role: 'advisor', messageId: 'delegate:' + String(data.delegateId) + '@' + String(data.at), text: String(data.text || '').slice(0, 20000), ts: String(data.at),
         advisor: { delegate: Object.fromEntries(keep.filter((k) => data[k] !== undefined && data[k] !== null).map((k) => [k, data[k]])) } };
+    } else if (kind === 'bot_notice') {
+      const notice = (data.notice || {}) as { id?: string; tier?: string; category?: string };
+      const needsYou = notice.tier === 'urgent' || notice.category === 'needs_you' || data.tier === 'urgent';
+      row = { role: 'notice', messageId: 'bot-notice:' + String(notice.id || data.at || ts), text: `${needsYou ? 'Bot needs you' : 'Bot status'}: ${String(data.title || 'Bot')}\n${String(data.body || '')}`, ts };
     } else if (kind === 'session_done' && data.status === 'stopped') {
       row = { role: 'notice', messageId: data.requestId ? 'stopped:' + data.requestId : undefined, text: String(data.reason || 'Turn stopped.'), ts };
     } else return;

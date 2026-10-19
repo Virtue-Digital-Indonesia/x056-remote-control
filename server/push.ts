@@ -58,6 +58,7 @@ export function inQuietHours(s: DeviceSettings, at: number): boolean {
 
 /** Does this device's own setup want this notice (ignoring presence)? */
 export function deviceWants(n: Notice, s: DeviceSettings, at: number): boolean {
+  if (n.screenSuppressed) return false;
   if (n.tier === 'none') return false;
   if (inQuietHours(s, at)) return false;
   if (n.tier === 'urgent' || n.category === 'needs_you') return true;
@@ -233,7 +234,7 @@ export class PushService {
     // a notice can come from are worth a lookup.
     if (!NOTICE_KINDS.has(kind)) return;
     let notice = (data.notice as Notice | undefined) ?? this.opts.noticeOf?.(kind, data) ?? null;
-    if (!notice || notice.tier === 'none') return;
+    if (!notice || notice.tier === 'none' || notice.screenSuppressed) return;
     let targets = this.targets(notice), phones = this.apnsTargets(notice);
     if (!targets.length && !phones.length) return;
     if (notice.id && !this.claim(notice.id)) return;

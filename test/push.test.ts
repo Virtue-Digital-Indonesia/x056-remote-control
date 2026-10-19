@@ -261,3 +261,15 @@ describe('a chat is named by its conversation, not "New chat"', () => {
     expect(Date.now() - t0).toBeLessThan(2500);
   });
 });
+
+// Presentation suppression never consumes the event or its history; it stops device delivery.
+it('does not push routine Bot status or briefs, and still pushes Bot needs-you items', async () => {
+  sent.length = 0;
+  const { p } = svc(); p.add(sub('https://push/bot-status'));
+  await p.notify('bot_notice', { projectId:'bot',sessionId:'bs',title:'Still watching',body:'Routine',at:'bot-normal' });
+  await p.notify('conversation_settled', settled({ origin:'brief',notificationId:'bot-brief' }));
+  expect(sent).toHaveLength(0);
+  await p.notify('bot_notice', { projectId:'bot',sessionId:'bs',title:'Please decide',body:'Approval needed',tier:'urgent',at:'bot-urgent' });
+  expect(sent).toHaveLength(1);
+  expect(sent[0].payload).toMatchObject({title:'Please decide',tier:'urgent'});
+});

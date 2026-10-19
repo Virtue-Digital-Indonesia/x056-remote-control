@@ -5,6 +5,23 @@ const work: NoticeContext = { conversationTitle: 'Fix deed numbers', projectName
 const chat: NoticeContext = { conversationTitle: 'Quarterly revenue review', projectName: 'Quarterly revenue review', projectKind: 'chat', provider: 'claude', link: '/chat/c' };
 const turn = (o: Record<string, unknown> = {}) => ({ projectId: 'p', sessionId: 's', status: 'completed', completionPending: false, origin: 'human', durationMs: 252_000, resultText: 'Deed numbers keep their leading zeros now; the limit check is in Review.', requestId: 'r1', ...o });
 
+it('retains routine Bot notices as events while suppressing screens, and never suppresses needs-you notices', () => {
+  const bot = { ...chat, bot: true };
+  for (const origin of ['human', 'relay', 'brief']) {
+    const notice = noticeFor('conversation_settled', turn({ origin }), bot)!;
+    expect(notice.screenSuppressed).toBe(true);
+    expect(notice.body).toBeTruthy();
+  }
+  expect(noticeFor('bot_notice', { title: 'Routine Bot status', body: 'Still watching' }, bot)?.screenSuppressed).toBe(true);
+  for (const [kind, data] of [
+    ['bot_notice', { tier: 'urgent', body: 'Please decide' }],
+    ['question', { question: 'Ship?' }],
+    ['mcp_approval', { status: 'pending' }],
+    ['session_error', { reason: 'Failed', origin: 'relay' }],
+  ] as const) expect(noticeFor(kind, data, bot)?.screenSuppressed).toBeUndefined();
+  expect(noticeFor('conversation_settled', turn(), work)?.screenSuppressed).toBeUndefined();
+});
+
 describe('noticeFor: tiers by event × origin × duration', () => {
   const settledTier = (origin: TurnOrigin, durationMs: number) => noticeFor('conversation_settled', turn({ origin, durationMs }), work)?.tier;
   it.each([

@@ -165,6 +165,9 @@ body.rc-bot-setup #rcBotSetup{position:relative;isolation:isolate;display:flex;f
 @media(max-width:480px){body.rc-bot-setup #rcBotSetup{padding:20px}.rc-bot-card h1{font-size:24px}}
 
 /* The Bot's look: a sky / cyan / peach orb. Violet is --bgwork and the state colours stay theirs, so none of them appear here. */
+body.rc-bot-chat .stream-status{display:none!important}
+body.rc-bot-chat:not(.rc-bot-system-history) #chat>.bot-system-notice{display:none!important}
+.rcb-system-history{display:block;margin:8px 0 14px;padding:7px 11px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--muted);font:inherit;cursor:pointer}
 :root{--bot-1:#4c8dff;--bot-2:#34c8e8;--bot-3:#ffb59a;--bot-ink:#16324f;--bot-orb:radial-gradient(circle at 31% 24%,#fffc 0,#fff0 30%),radial-gradient(circle at 70% 82%,#0f2d6b2e,#0f2d6b00 55%),conic-gradient(from 210deg,var(--bot-1),var(--bot-2),var(--bot-3),var(--bot-1));--bot-aurora-a:16%}
 html[data-theme=dark]{--bot-1:#6ea2ff;--bot-2:#52d4ee;--bot-3:#ffc3ab;--bot-aurora-a:13%}
 .bot-orb{position:relative;display:inline-block;flex:none;width:var(--s,28px);height:var(--s,28px);vertical-align:middle;border-radius:50%;animation:bot-breathe 5s ease-in-out infinite}

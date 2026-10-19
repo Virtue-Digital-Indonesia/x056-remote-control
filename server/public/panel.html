@@ -174,6 +174,10 @@
   .msg.user .content.md-user hr { border: 0; border-top: 1px solid var(--border-strong); margin: 10px 0; }
   .msg.user .content.md-user pre { white-space: pre; }
   .msg.assistant .content { word-break: break-word; }
+  /* Commentary followed by tools is one continuous turn. Put its copy/time
+     controls beside the role instead of reserving an invisible footer row. */
+  .msg.assistant:has(+ .act) { position: relative; margin-bottom: 10px; }
+  .msg.assistant:has(+ .act) > .mmeta { position: absolute; top: 0; right: 0; margin: 0; }
   .content img.att { max-width: 280px; border-radius: 10px; border: 1px solid var(--border); margin-top: 8px; display: block; }
   .content .filechip { display: inline-flex; align-items: center; gap: 7px; margin-top: 8px; padding: 7px 11px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); text-decoration: none; font-size: 12.5px; max-width: 280px; }
   .content .filechip:hover { border-color: var(--accent); color: var(--accent); }
@@ -3844,8 +3848,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (what) { var w = document.createElement('div'); w.className = 'what'; w.textContent = what; d.appendChild(w); }
     return d;
   }
-  function nodeNotice(text) {
-    var d = document.createElement('div'); d.className = 'notice';
+  function nodeNotice(text, messageId) {
+    var d = document.createElement('div'); d.className = 'notice'; if (messageId) d.dataset.messageSourceId = messageId;
     var s2 = document.createElement('span'); s2.textContent = text; d.appendChild(s2); return d;
   }
   function nodeSummary(text, ts) {
@@ -4198,6 +4202,12 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var sid = data.sessionId;
     var mineConvo = mine && (!sid || sid === lastSessionId);
     if (data.notice && data.notice.tier && data.notice.tier !== 'none') onNotice(kind, data, pid, sid);
+    if (kind === 'bot_notice' && pid && sid) {
+      var bn = data.notice || {}, bid = 'bot-notice:' + (bn.id || data.at || data.ts);
+      var bhost = mineConvo ? chatEl : viewOf(pid, sid).frag;
+      if (!Array.prototype.some.call(bhost.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === bid; }))
+        appendNode(pid, sid, nodeNotice((bn.tier === 'urgent' || bn.category === 'needs_you' || data.tier === 'urgent' ? 'Bot needs you: ' : 'Bot status: ') + (data.title || 'Bot') + '\n' + (data.body || ''), bid));
+    }
     if (kind === 'cron_failed' || kind === 'restart_interrupted' || kind === 'bot_notice') return;
     if (kind === 'background_state') {
       var bg = bgSessionIds[pid] = bgSessionIds[pid] || {};
@@ -4770,7 +4780,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // Legacy items (from a backend before per-conversation queues) carry no
     // sessionId; show those regardless so they're never hidden.
     var all = queueState[currentProjectId] || [];
-    var items = all.filter(function (it) { return !it.sessionId || it.sessionId === lastSessionId; });
+    var items = all.filter(function (it) { return (!it.sessionId || it.sessionId === lastSessionId) && !(it.sender && ['bot_event','bot_brief'].includes(it.sender.kind)); });
     if (!items.length) return;
     var hdr = document.createElement('div'); hdr.className = 'qhdr'; hdr.textContent = 'Queued · ' + items.length + ' (sends when this conversation is free)'; bar.appendChild(hdr);
     items.forEach(function (it, i) {
@@ -4912,7 +4922,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   }
   function notify(n, data) {
     data = data || {};
-    if (data.notificationSuppressed || !n || !n.title) return;
+    if (data.notificationSuppressed || !n || !n.title || n.screenSuppressed) return;
     var key = n.id || n.tag || '';
     if (key && localNotificationIds.has(key)) return;
     if (key) { localNotificationIds.add(key); if (localNotificationIds.size > 500) localNotificationIds.delete(localNotificationIds.values().next().value); }
@@ -6110,7 +6120,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
               : m.role === 'advisor'
                 ? function () { appendNode(pid, sid, nodeAdvisor(m.advisor, false, m.text)); }        // an advisor consultation
               : m.role === 'notice'
-                ? function () { appendNode(pid, sid, nodeNotice(m.text)); }           // compacted / cleared divider
+                ? function () { appendNode(pid, sid, nodeNotice(m.text, m.messageId)); }           // compacted / cleared divider
                 : m.role === 'summary'
                   ? function () { appendNode(pid, sid, nodeSummary(m.text, m.ts)); }  // post-compaction recap
                   : function () { var n = m.role === 'error' ? nodeSys('error: ' + m.text, 'banner err') : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, m.attachments, m.ts, providerFor(pid,sid), m.sender, m.steered); if(m.messageId)n.dataset.messageSourceId=m.messageId; appendNode(pid,sid,n); } });
@@ -6224,7 +6234,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
                 : m.role === 'advisor'
                   ? nodeAdvisor(m.advisor, false, m.text)
                 : m.role === 'notice'
-                  ? nodeNotice(m.text)
+                  ? nodeNotice(m.text, m.messageId)
                   : m.role === 'summary'
                     ? nodeSummary(m.text, m.ts)
                     : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, m.attachments, m.ts, providerFor(pid, sid), m.sender, m.steered));
@@ -6635,7 +6645,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       var n = m.role === 'action' ? nodeAct(m.text, m.sub, m.agentId, m.detail)
         : m.role === 'command' ? nodeCmd(m.text, m.args, m.ts)
         : m.role === 'advisor' ? nodeAdvisor(m.advisor, false, m.text)
-        : m.role === 'notice' ? nodeNotice(m.text)
+        : m.role === 'notice' ? nodeNotice(m.text, m.messageId)
         : m.role === 'summary' ? nodeSummary(m.text, m.ts)
         : m.role === 'model' ? nodeModelMark(m.text, m.ts)
         : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, null, m.ts, provider || 'claude', m.sender, m.steered);

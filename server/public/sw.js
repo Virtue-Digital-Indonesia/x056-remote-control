@@ -10,6 +10,7 @@ self.addEventListener('activate', function (event) { event.waitUntil(self.client
 self.addEventListener('push', function (event) {
   var data = {};
   try { data = event.data ? event.data.json() : {}; } catch (e) {}
+  if (data.screenSuppressed || data.kind === 'bot_notice' && data.tier !== 'urgent') return;
   var title = data.title || 'x056';
   event.waitUntil(self.registration.showNotification(title, {
     body: data.body || '',
