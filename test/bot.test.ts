@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -20,7 +20,7 @@ type Result = { status: 'completed' | 'failed'; reason?: string; resultText?: st
 /** A manager with Chat on, a Work project `p1` with conversation `x`, and
  *  turns stubbed: `outcome(sid)` decides each turn's result. */
 function fixture(outcome: (o: RunSessionOptions) => Result = () => ({ status: 'completed', resultText: 'ok' })) {
-  const dir = mkdtempSync(join(tmpdir(), 'x056-bot-'));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), 'x056-bot-'));
   const stateDir = join(dir, 'state'), work = join(dir, 'work');
   mkdirSync(stateDir, { recursive: true }); mkdirSync(work, { recursive: true });
   AccountRegistry.init(join(stateDir, 'accounts.json'), [{ name: 'a', configDir: join(dir, 'cfg') }]);
