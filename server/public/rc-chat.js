@@ -56,8 +56,8 @@ window.createRCChat = function (engine, room) {
     $('chat').before(hero);
     hero.querySelectorAll('.rc-bot-chip').forEach(wireChip);
     new MutationObserver(syncBotWork).observe($('busy'), { childList: true });
-    new MutationObserver(syncBotHero).observe($('chat'), { childList: true });
-    document.addEventListener('x056-history', syncBotHero);
+    new MutationObserver(() => { syncBotHero(); syncBotSystemHistory(); }).observe($('chat'), { childList: true });
+    document.addEventListener('x056-history', () => { syncBotHero(); syncBotSystemHistory(); });
     document.addEventListener('visibilitychange', () => { document.documentElement.classList.toggle('bot-hidden', document.hidden); if (botVisible() && Date.now() - overviewAt > 10000) loadOverview(); });
     if (matchMedia('(hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference)').matches) document.addEventListener('pointermove', leanEyes, { passive: true });
     const botHead = document.createElement('div'); botHead.id = 'rcBotHead'; botHead.hidden = true;
@@ -133,7 +133,7 @@ window.createRCChat = function (engine, room) {
   function open(chat) { return navigate(chatPath(chat.id)); }
   function leave(updateURL = true, keepRoom = false) {
     if (updateURL && inChat()) window.history.pushState({}, '', '/');
-    document.body.classList.remove('rc-chat-active','rc-chat-home-view','rc-chat-unavailable','rc-chat-nav-open','rc-chat-panel-open','rc-bot-setup','rc-bot-chat');
+    document.body.classList.remove('rc-chat-active','rc-chat-home-view','rc-chat-unavailable','rc-chat-nav-open','rc-chat-panel-open','rc-bot-setup','rc-bot-chat','rc-bot-system-history');
     if ($('rcBotHead')) $('rcBotHead').hidden = true;
     stopNeeds(); closeToday(); if ($('rcBotQuick')) $('rcBotQuick').hidden = true;
     $('crChatTab')?.removeAttribute('aria-current'); cleanupPreview(); if (!keepRoom) room.showBoard();
@@ -193,7 +193,8 @@ window.createRCChat = function (engine, room) {
     const head = $('rcBotHead'); if (!head) return;
     const on = !!chat?.bot && room.isOpen() !== false && !document.body.classList.contains('rc-chat-home-view');
     head.hidden = !on; document.body.classList.toggle('rc-bot-chat', on);
-    syncBotHero(); if (!on) { stopNeeds(); closeToday(); syncBotQuick(); return; }
+    if (!on) document.body.classList.remove('rc-bot-system-history');
+    syncBotSystemHistory(); syncBotHero(); if (!on) { stopNeeds(); closeToday(); syncBotQuick(); return; }
     syncBotWork(); syncBotQuick();
     if (!bot && !botRequest) loadBot().then(() => renderBotHead(current()), () => {});
     const at = $('rcBotBriefAt'), next = nextBrief();
@@ -201,6 +202,17 @@ window.createRCChat = function (engine, room) {
     at.title = bot?.briefAt ? 'Morning brief at ' + bot.briefAt + ', ' + (bot.tz || 'Asia/Jakarta') + ' time' : '';
     if (!wasBot) { wasBot = true; loadOverview(); }
     startNeeds();
+  }
+  // Default conversation view stays quiet. The original rows stay mounted and
+  // can be revealed in their chronological place from Today > System history.
+  function syncBotSystemHistory() {
+    if (!document.body.classList.contains('rc-bot-chat')) return;
+    let automated = false;
+    for (const row of $('chat').children) {
+      if (row.matches('.msg.user')) automated = row.matches('.sender-bot_event,.sender-bot_brief');
+      const checkpoint = !row.matches('.msg.user') && /^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay checkpoint[:.])/i.test(row._messageText || row.textContent.trim());
+      row.classList.toggle('bot-system-notice', !row.matches('.qcard,.orphan,.banner.err') && !/^Bot needs you:/.test(row.textContent) && (automated || checkpoint || row.matches('.sysline,.banner:not(.err)') || row.matches('.notice') && /^Bot status:/.test(row.textContent)));
+    }
   }
   // When the next morning brief runs: today's time, or tomorrow's once today's brief has gone out (lastBriefDate is a date in the Bot's zone).
   function nextBrief() {
@@ -250,6 +262,7 @@ window.createRCChat = function (engine, room) {
     const failed = (o?.scheduled || []).filter(j => j.lastResult && !/^(queued|delivered|ok)$/i.test(j.lastResult));
     const list = (rows, cap = 5) => rows.slice(0, cap).join('') + (rows.length > cap ? `<li class="rcb-more">+${rows.length - cap} more</li>` : '');
     let html = `<header><strong>Today</strong><span>${esc(nextBrief())}</span></header>`;
+    html += '<button type="button" class="rcb-system-history" id="rcBotSystemHistory">' + (document.body.classList.contains('rc-bot-system-history') ? 'Hide system history' : 'Show system history') + '</button>';
     if (!o) html += '<p class="rcb-empty">Checking…</p>';
     else if (!needs.length) html += `<div class="rcb-calm">${orb(40, 'idle').replace('class="bot-orb"', 'class="bot-orb happy"')}<div><strong>Nothing needs you</strong><span>I will tell you when something does.</span></div></div>`;
     else html += `<section><h3>Needs you <b>${needs.length}</b></h3><ul>${list(needs.map(n => `<li class="rcb-need"><span class="rcb-kind">${n.kind === 'approval' ? 'Approval' : 'Question'}</span><strong>${esc(clip(n.title || n.projectName, 60))}</strong><p>${esc(clip(n.text, 150))}</p></li>`))}</ul></section>`;
@@ -258,6 +271,7 @@ window.createRCChat = function (engine, room) {
     if (o && failed.length) html += `<section><h3>Failed schedules <b>${failed.length}</b></h3><ul>${list(failed.map(j => `<li class="rcb-fail"><strong>${esc(clip(j.label || j.schedule, 50))}</strong><span>${esc(clip(j.lastResult, 80))}${j.lastRunAt ? ' · ' + esc(since(j.lastRunAt)) + ' ago' : ''}</span></li>`))}</ul></section>`;
     if (o && !running.length && !delegates.length && !failed.length) html += '<p class="rcb-empty">Nothing running right now.</p>';
     pop.innerHTML = html;
+    $('rcBotSystemHistory').onclick = () => { document.body.classList.toggle('rc-bot-system-history'); closeToday(true); };
   }
   function toggleToday() { todayPop?.isConnected ? closeToday(true) : openToday(); }
   function openToday() {
@@ -546,5 +560,5 @@ window.createRCChat = function (engine, room) {
   document.addEventListener('x056:reconnected',()=>{if(enabled)loadFiles();});
   document.addEventListener('x056:mode',event=>{if(event.detail.mode==='closed'){document.body.classList.remove('rc-chat-active','rc-chat-home-view');if(!routing&&inChat())window.history.pushState({},'', '/');}else setTimeout(sync,0);});
   document.addEventListener('x056:event',event=>{const {kind,data}=event.detail;if(kind==='chat_files'&&data.projectId===active)loadFiles();if(kind==='projects')engine.reloadProjects().then(sync);else if(kind==='conversation')setTimeout(sync,100);});
-  return { navigate, leave, newChat, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat()||inBot())await applyRoute();else sync();}else if(inBot())notify('Chat is turned off on this gateway, so the Bot is unavailable.');}catch(error){if(inChat()||inBot())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
+  return { navigate, leave, newChat, botAvatar: orb, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat()||inBot())await applyRoute();else sync();}else if(inBot())notify('Chat is turned off on this gateway, so the Bot is unavailable.');}catch(error){if(inChat()||inBot())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
 };

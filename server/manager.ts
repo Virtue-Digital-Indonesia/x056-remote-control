@@ -2609,6 +2609,7 @@ export class SessionManager {
       const p = pid ? this.projects().get(pid) : undefined;
       const c = sid ? p?.conversations?.find((x) => x.sessionId === sid) : undefined;
       return noticeFor(kind, data, {
+        bot: !!pid && !!this.botService?.isBotProject(pid),
         conversationTitle: p?.kind === 'chat' ? (c?.title || p.name) : c?.title,
         projectName: p?.name,
         projectKind: p?.kind,

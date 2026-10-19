@@ -277,7 +277,7 @@ body[data-conversation-label-template=static][data-conversation-label-order=conv
 .memory-share-dialog [role=alert]:empty{display:none}
 
 /* Action rows use the message column; full tool input opens in the top layer. */
-.thread .act{width:100%;max-width:100%;box-sizing:border-box;min-width:0;cursor:pointer;border-radius:6px;padding:6px 0}
+.thread .act{width:100%;max-width:100%;box-sizing:border-box;min-width:0;min-height:28px;cursor:pointer;border-radius:6px;padding:3px 0;margin:2px 0}
 .thread .act .el{flex:1;min-width:0;max-width:none}
 .thread .act>.ic{flex:none}
 .thread .act:hover{background:var(--surface-2);color:var(--text)}

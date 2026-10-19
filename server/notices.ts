@@ -41,9 +41,12 @@ export interface Notice {
   id?: string;
   projectId?: string;
   sessionId?: string;
+  /** Retained in events/history, but omitted from presentation and device pushes. */
+  screenSuppressed?: boolean;
 }
 
 export interface NoticeContext {
+  bot?: boolean;
   /** The conversation's own title (for a chat: the chat's title). */
   conversationTitle?: string;
   projectName?: string;
@@ -215,6 +218,7 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
     ...(pid ? { projectId: pid } : {}),
     ...(sid ? { sessionId: sid } : {}),
     ...over,
+    ...((ctx.bot || kind === 'bot_notice' || data.origin === 'brief') && category !== 'needs_you' && tier !== 'urgent' ? { screenSuppressed: true } : {}),
   });
   const none = () => make('none', 'finished', '');
 

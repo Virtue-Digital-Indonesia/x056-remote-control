@@ -67,7 +67,7 @@ it('soft deletes one current revision with caller and reason, retains history, a
   expect(restored.data).toMatchObject({status:'proposed',revision:3,content:entry.content});
 });
 
-it('denies foreign ownership even with a read grant and rejects audience changes or unowned global management',async()=>{
+it('denies foreign ownership even with a read grant and rejects ownership and audience changes on corrections',async()=>{
   const foreign=note({projectId:otherPid,status:'confirmed'});
   manager.memory().access.setGrant({operationId:randomUUID(),subject:{kind:'entry',id:foreign.id},expectedVersion:'1',recipient:{kind:'space',id:spaceId},expectedRevision:0,active:true});
   expect(manager.memory().context(pid,sid,'claude','').items.map(e=>e.id)).toContain(foreign.id);
@@ -81,14 +81,31 @@ it('denies foreign ownership even with a read grant and rejects audience changes
   const own=note({status:'confirmed'});
   for(const patch of [{scope:'global'},{providers:['claude','codex']},{sharedProjectIds:[otherPid]},{sessionId:otherSid}])
     expect((await post('propose',{id:own.id,revision:1,entry:{content:'Changed',...patch},...caller()})).status).toBe(400);
-  for(const scope of ['global','shared']){
-    const saved=await post('propose',{entry:{title:scope+' expansion',content:'Requires audience review',scope,projectId:pid,...(scope==='shared'?{sharedProjectIds:[otherPid]}:{})},...caller()});
-    expect(saved.data.status).toBe('proposed');
-    expect((await post('approve',{id:saved.data.id,revision:1,...caller()})).status).toBe(400);
-  }
   const shared=note({scope:'shared',sharedProjectIds:[otherPid],status:'confirmed'});
   const changed=await post('propose',{id:shared.id,revision:1,entry:{content:'Owned shared correction'},...caller()});
   expect(changed.status).toBe(200);expect(changed.data.status).toBe('confirmed');
+});
+
+it('auto-confirms owned global and shared audiences and approves their backlog, including for Bot',async()=>{
+  const bot=manager.bot().update({enabled:true});
+  for(const [projectId,sessionId] of [[pid,sid],[bot.projectId!,bot.sessionId!]]){
+    const caller={callerProjectId:projectId,callerSessionId:sessionId};
+    for(const audience of [{scope:'global'}, {scope:'shared',sharedProjectIds:[otherPid]}, {scope:'project',sharedProjectIds:[otherPid]}]){
+      const entry={title:'Expanded '+audience.scope,content:'Owned expanded knowledge '+projectId+' '+audience.scope,projectId,...audience};
+      const saved=await post('propose',{entry,...caller});
+      expect(saved.status).toBe(200);expect(saved.data.status).toBe('confirmed');
+      const pending=manager.memory().create({...entry,content:'Pending '+entry.content,status:'proposed'} as Partial<MemoryEntry>);
+      const approved=await post('approve',{id:pending.id,revision:pending.revision,...caller});
+      expect(approved.status).toBe(200);expect(approved.data).toMatchObject({status:'confirmed',revision:2});
+      expect((await post('approve',{id:pending.id,revision:2,callerProjectId:otherPid,callerSessionId:otherSid})).status).toBe(400);
+    }
+  }
+  manager.memory().setSettings({autoManage:false,autoApproveConversationNotes:true});
+  for(const scope of ['global','shared']){
+    const saved=await post('propose',{entry:{title:'Manual '+scope,content:'Manual audience '+scope,scope,projectId:pid,...(scope==='shared'?{sharedProjectIds:[otherPid]}:{})},...caller()});
+    expect(saved.status).toBe(200);expect(saved.data.status).toBe('proposed');
+    expect((await post('approve',{id:saved.data.id,revision:1,...caller()})).status).toBe(400);
+  }
 });
 
 it('requires automatic mode and a verified caller, and obeys provider and owner exclusions',async()=>{

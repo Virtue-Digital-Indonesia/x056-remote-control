@@ -148,7 +148,9 @@ export class MemoryController {
         if(body.id&&!full){const current=this.store().get(body.id);if(!current)throw new Error('Memory not found');const problem=this.store().contextProblem(current,q);if(problem)throw new Error(problem);}
         for(const ref of body.entry.sources||[]){if(!ref.id)continue;const pinned=this.store().access.references(body.callerProjectId,body.callerSessionId,q.requestId)?.selections.find(r=>r.kind==='source'&&r.id===ref.id);const version=ref.versionId||pinned?.version;const source=version?this.store().sourceVersion(ref.id,version):this.store().source(ref.id);if(!source)throw new Error('Source unavailable');const reason=this.store().sourceContextProblem(source,q);if(reason)throw new Error(reason);const grant=this.store().access.eligible({kind:'source',id:ref.id},body.callerProjectId,body.callerSessionId);ref.grantId=grant?.id;ref.grantRevision=grant?.revision;ref.hash=source.hash;ref.versionId=source.versionId;ref.spaceId=source.spaceId;}
       }
-      const automatic = full && (current?.status === 'confirmed' || !['shared','global'].includes(current?.scope || body.entry.scope || 'project') && !(current?.sharedProjectIds || body.entry.sharedProjectIds)?.length);
+      // Full mode authorizes the owner's chosen audience, including global and shared notes.
+      // agentWriteProblem above still requires ownership; a read grant never grants writes.
+      const automatic = full;
       const entry: Partial<MemoryEntry> = { ...body.entry, status: automatic ? 'confirmed' : 'proposed' };
       if (automatic && current) {
         this.validateAutomaticEntry({...current,...entry},q);
@@ -205,7 +207,6 @@ export class MemoryController {
   ) {
     return this.call(() => {
       const {entry,q} = this.managedEntry(body);
-      if (entry.scope === 'global' || entry.scope === 'shared' || entry.sharedProjectIds.length) throw new Error('Review expanded memory sharing in the Memory page');
       this.validateAutomaticEntry(entry,q);
       return this.store().update(entry.id,body.revision,{status:'confirmed'},this.agentActor(q,'approve'));
     });

@@ -1,4 +1,10 @@
 /* Shared Project shell. Keep the authenticated transcript and composer mounted. */
+.workspace-bot-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;flex:none;min-width:42px;min-height:40px;padding:4px 10px;border:1px solid transparent;border-radius:12px;color:var(--muted);text-decoration:none;font-size:12px;font-weight:550;box-sizing:border-box}
+.workspace-bot-button:hover{background:var(--surface-2);color:var(--text)}
+.workspace-bot-button[aria-current=page]{color:var(--text);border-color:color-mix(in srgb,var(--bot-1) 45%,var(--border));background:color-mix(in srgb,var(--bot-2) 12%,var(--bg))}
+.workspace-bot-button:focus-visible{outline:2px solid var(--bot-1);outline-offset:2px}
+#workspaceChatBot{display:none}
+@media(max-width:650px){body.rc-workspace-ready[data-chat-mode=page] #workspaceChatBot{display:inline-flex;padding:4px 7px;min-height:36px}#workspaceChatBot>span:not(.bot-orb){display:none}.workspace-bot-button{padding:4px 7px}}
 body.rc-workspace-ready{--workspace-nav:236px;--workspace-top:56px}
 body[data-stage-hidden=true] #conversationStage{display:none!important}
 body[data-stage-hidden=true] #otherRuns:not([hidden]){display:flex!important}

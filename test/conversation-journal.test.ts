@@ -38,6 +38,17 @@ it('refuses upload traversal, symlinks, and non-image files', () => {
   for(const name of ['../secret.png','link.png','secret.txt'])expect(()=>uploadImage(dir,id,name)).toThrow();
 });
 
+it('keeps routine and urgent Bot notices in history after reload, without duplicating replays', () => {
+  const dir = temp(), journal = new ConversationJournal(dir), ts = new Date().toISOString();
+  const data = { projectId:'p', sessionId:'s', title:'Watching', body:'A retained status', notice:{id:'bot:status',screenSuppressed:true} };
+  journal.record('bot_notice', data, ts); journal.record('bot_notice', data, ts);
+  journal.record('bot_notice', {...data,title:'Decision',tier:'urgent',notice:{id:'bot:urgent',screenSuppressed:false}},ts);
+  expect(new ConversationJournal(dir).merge('p','s',[],true)).toMatchObject([
+    { role:'notice', text:'Bot status: Watching\nA retained status' },
+    { role:'notice', text:'Bot needs you: Decision\nA retained status' },
+  ]);
+});
+
 it('keeps stopped turns as neutral notices after reload', () => {
   const dir = temp(), journal = new ConversationJournal(dir);
   const data = { projectId:'p', sessionId:'s', requestId:'turn', status:'stopped', reason:'Stopped by user.' };
