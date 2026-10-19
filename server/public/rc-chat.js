@@ -210,8 +210,9 @@ window.createRCChat = function (engine, room) {
     let automated = false;
     for (const row of $('chat').children) {
       if (row.matches('.msg.user')) automated = row.matches('.sender-bot_event,.sender-bot_brief');
+      const advisorNotice = row.matches('.msg.user.sender-advisor');
       const checkpoint = !row.matches('.msg.user') && /^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay checkpoint[:.])/i.test(row._messageText || row.textContent.trim());
-      row.classList.toggle('bot-system-notice', !row.matches('.qcard,.orphan,.banner.err') && !/^Bot needs you:/.test(row.textContent) && (automated || checkpoint || row.matches('.sysline,.banner:not(.err)') || row.matches('.notice') && /^Bot status:/.test(row.textContent)));
+      row.classList.toggle('bot-system-notice', !row.matches('.qcard,.orphan,.banner.err') && !/^Bot needs you:/.test(row.textContent) && (automated || advisorNotice || checkpoint || row.matches('.sysline,.banner:not(.err)') || row.matches('.notice') && /^Bot status:/.test(row.textContent)));
     }
   }
   // When the next morning brief runs: today's time, or tomorrow's once today's brief has gone out (lastBriefDate is a date in the Bot's zone).

@@ -48,6 +48,8 @@ const text = 'Saving the second preference now, then the answer.';
         { role: 'assistant', text: 'Automated digest response', ts },
         { role: 'user', text: 'Morning brief fixture', sender: { kind: 'bot_brief' }, ts },
         { role: 'assistant', text: 'Automated morning brief', ts },
+        { role: 'user', text: 'Advisor system follow-up fixture', sender: { kind: 'advisor', messageId: 'advisor-fixture' }, ts },
+        { role: 'assistant', text: 'Bot response to advisor follow-up stays visible.', ts },
         { role: 'user', text: 'Save my preference.', ts },
         { role: 'action', text: 'Used ToolSearch', ts },
         { role: 'assistant', text, ts },
@@ -106,13 +108,17 @@ const text = 'Saving the second preference now, then the answer.';
     await page.locator('#queueBar').getByText('Queued human instruction', {exact:true}).waitFor();
     assert.ok(await page.getByText('Automated digest response', { exact: true }).isHidden());
     assert.ok(await page.getByText('Automated morning brief', { exact: true }).isHidden());
+    assert.ok(await page.getByText('Advisor system follow-up fixture', { exact: true }).isHidden());
+    assert.ok(await page.getByText('Bot response to advisor follow-up stays visible.', { exact: true }).isVisible());
     assert.ok(await page.getByText('Not sent yet (relay checkpoint): synthetic checkpoint', { exact: true }).isHidden());
     await page.locator('#rcBotToday').click();
     await page.getByRole('button', { name: 'Show system history' }).click();
     assert.ok(await page.getByText('Automated digest response', { exact: true }).isVisible());
+    assert.ok(await page.getByText('Advisor system follow-up fixture', { exact: true }).isVisible());
     assert.ok(await page.getByText('Not sent yet (relay checkpoint): synthetic checkpoint', { exact: true }).isVisible());
     await page.locator('#rcBotToday').click();
     await page.getByRole('button', { name: 'Hide system history' }).click();
+    assert.ok(await page.getByText('Advisor system follow-up fixture', { exact: true }).isHidden());
     const commentary = page.locator('#chat>.msg.assistant').filter({ hasText: text });
     await commentary.hover();
     await page.waitForFunction(text => { const m = [...document.querySelectorAll('#chat>.msg.assistant')].find(e => e._messageText === text); return getComputedStyle(m.querySelector('.mmeta')).opacity === '1'; }, text);
