@@ -19,6 +19,8 @@ struct ChatRow: Identifiable, Equatable {
     var detail: String?
     var attachments: [AttachmentRef] = []
     var sender: String?
+    /// Who sent a user row (`bot_event`, `bot_brief`, `advisor`, ...); nil for a person.
+    var senderKind: String?
     /// Sent from this phone, not yet seen in the stream.
     var pending = false
     var failed = false
@@ -27,11 +29,89 @@ struct ChatRow: Identifiable, Equatable {
     var inFlight = false
     var toolUseId: String?
     var card: ChatCard?
-    /// The Bot's chat: "hide" rows are agent and system traffic.
-    var botView: String?
-    /// The Bot spoke to the owner on purpose; `needsYou` says it wants an answer.
-    var ownerMessage = false
-    var needsYou = false
+}
+
+/// The Bot chat keeps quiet by default. This is the panel's rule, row for
+/// row (rc-chat.js botRowVisibility / botRowKind, whose comment is the spec):
+/// a turn starts at each user row and takes its sender kind; "keep" rows (an
+/// error, "Bot needs you:") always show; "system" rows (a relay checkpoint,
+/// "Bot status:") always hide; a digest turn (`bot_event`) hides everything;
+/// a morning-brief turn (`bot_brief`) shows only its last reply, as the
+/// brief; an advisor turn hides only its trigger; anything else shows.
+enum BotHistory {
+    /// The turn kinds that are the gateway or a helper talking to the Bot.
+    static let turnKinds: Set<String> = ["bot_event", "bot_brief", "advisor"]
+    /// Queue items the person never needs to see waiting.
+    static let quietQueue: Set<String> = ["bot_event", "bot_brief"]
+
+    enum RowKind { case keep, system, trigger, reply, tool, other }
+    /// A row that is not plainly shown: hidden until "Show system messages",
+    /// or the morning brief.
+    enum State { case show, hide, brief }
+
+    static func kind(_ r: ChatRow) -> RowKind {
+        if r.role == .error { return .keep }
+        if r.role == .notice {
+            if r.text.hasPrefix("Bot needs you:") { return .keep }
+            if r.text.hasPrefix("Bot status:") { return .system }
+        }
+        if r.role == .user { return .trigger }
+        if isCheckpoint(r.text) { return .system }
+        switch r.role {
+        case .assistant: return .reply
+        case .action: return .tool
+        default: return .other
+        }
+    }
+
+    /// `lastReply` matters only in a brief turn: earlier replies are the
+    /// Bot's commentary before its tools.
+    static func visibility(_ kind: RowKind, turn: String, lastReply: Bool = true) -> State {
+        switch kind {
+        case .keep: return .show
+        case .system: return .hide
+        default: break
+        }
+        switch turn {
+        case "bot_event": return .hide
+        case "bot_brief": return kind == .reply && lastReply ? .brief : .hide
+        case "advisor": return kind == .trigger ? .hide : .show
+        default: return .show
+        }
+    }
+
+    /// Every row that is not plainly shown, by id.
+    static func states(_ rows: [ChatRow]) -> [UUID: State] {
+        var out: [UUID: State] = [:]
+        var turn = ""
+        var brief: UUID?
+        for r in rows {
+            let k = kind(r)
+            if k == .trigger {
+                if let b = brief { out[b] = .brief }
+                brief = nil
+                turn = turnKinds.contains(r.senderKind ?? "") ? r.senderKind ?? "" : ""
+            }
+            if turn == "bot_brief", k == .reply {
+                // A newer reply makes the one before it commentary.
+                if let b = brief { out[b] = visibility(.reply, turn: turn, lastReply: false) }
+                brief = r.id
+                continue
+            }
+            let v = visibility(k, turn: turn)
+            if v != .show { out[r.id] = v }
+        }
+        if let b = brief { out[b] = .brief }
+        return out
+    }
+
+    /// "Not sent yet (relay checkpoint): ...": the gateway holding a send.
+    /// Only the start counts, so a long reply is not scanned.
+    static func isCheckpoint(_ text: String) -> Bool {
+        let head = text.prefix(48)
+        guard let first = head.first, "NnRr".contains(first) else { return false }
+        return head.range(of: #"^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay checkpoint[:.])"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
 }
 
 /// What the list draws: a row, or a run of consecutive tool calls folded together.
@@ -93,6 +173,11 @@ final class ConversationModel {
     var isBackground: Bool { sessionId.map { app.background.contains($0) && !app.running.contains($0) } ?? false }
     var isWorking: Bool { isRunning || isBackground }
     var question: PendingQuestion? { sessionId.flatMap { app.questions[$0] } }
+    var isBot: Bool { project?.isBot ?? false }
+    /// The Bot's system rows, folded away until asked for (BotHistory).
+    var showSystemHistory = false
+    /// How each of the Bot's rows shows (BotHistory); empty elsewhere.
+    var botStates: [UUID: BotHistory.State] { isBot ? BotHistory.states(rows) : [:] }
     var queued: [QueueItem] { sessionId.map { app.queued(projectId, $0) } ?? [] }
     var model: String { sessionId == nil ? draftModel : (conversation?.model ?? "") }
     var effort: String { sessionId == nil ? draftEffort : (conversation?.effort ?? "") }
@@ -108,13 +193,11 @@ final class ConversationModel {
         return nil
     }
 
-    var items: [DisplayItem] { items(showHidden: true) }
-
-    /// `showHidden: false` leaves out the Bot's `botView == "hide"` rows.
-    func items(showHidden: Bool) -> [DisplayItem] {
+    var items: [DisplayItem] {
         var out: [DisplayItem] = []
         var run: [ChatRow] = []
-        for r in rows where showHidden || r.botView != "hide" {
+        let states = isBot && !showSystemHistory ? BotHistory.states(rows) : [:]
+        for r in rows where states[r.id] != .hide {
             if r.role == .action { run.append(r); continue }
             if !run.isEmpty { out.append(.steps(run)); run = [] }
             out.append(.row(r))
@@ -185,18 +268,10 @@ final class ConversationModel {
     }
 
     static func row(_ h: HistoryEntry) -> ChatRow? {
-        guard var r = baseRow(h) else { return nil }
-        r.botView = h.botView
-        r.ownerMessage = h.ownerMessage == true
-        r.needsYou = h.needsYou == true
-        return r
-    }
-
-    private static func baseRow(_ h: HistoryEntry) -> ChatRow? {
         let text = h.text ?? ""
         let sender = h.sender.flatMap(senderLabel)
         switch h.role {
-        case "user": return ChatRow(role: .user, text: text, attachments: h.attachments ?? [], sender: sender)
+        case "user": return ChatRow(role: .user, text: text, attachments: h.attachments ?? [], sender: sender, senderKind: h.sender?.kind)
         case "assistant": return text.isEmpty ? nil : ChatRow(role: .assistant, text: text)
         case "action": return ChatRow(role: .action, text: text, detail: h.detail)
         case "error": return ChatRow(role: .error, text: text)
@@ -266,20 +341,18 @@ final class ConversationModel {
                 rows[i].pending = false
             } else if !repeatsTail(.user, text) {
                 let attachments = d["attachments"]?.decode([AttachmentRef].self) ?? []
-                let sender = d["sender"]?.decode(Sender.self).flatMap(Self.senderLabel)
-                rows.append(ChatRow(role: .user, text: text, attachments: attachments, sender: sender))
+                let from = d["sender"]?.decode(Sender.self)
+                rows.append(ChatRow(role: .user, text: text, attachments: attachments, sender: from.flatMap(Self.senderLabel), senderKind: from?.kind))
             }
+        case "bot_notice":
+            // The journal keeps it as this same text, so a reload matches it.
+            let n = d["notice"]
+            let needsYou = n?["tier"]?.string == "urgent" || n?["category"]?.string == "needs_you" || d["tier"]?.string == "urgent"
+            let text = (needsYou ? "Bot needs you: " : "Bot status: ") + (d["title"]?.string ?? "Bot") + "\n" + (d["body"]?.string ?? "")
+            if !repeatsTail(.notice, text) { rows.append(ChatRow(role: .notice, text: text)) }
         case "assistant_text":
             if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
                 rows.append(ChatRow(role: .assistant, text: text))
-            }
-        case "bot_message":
-            // The Bot wrote to the owner (an FYI; a needs-you one also
-            // arrives as a question).
-            if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
-                var row = ChatRow(role: .assistant, text: text)
-                row.ownerMessage = true
-                rows.append(row)
             }
         case "active_model":
             activeModel = d["model"]?.string ?? activeModel

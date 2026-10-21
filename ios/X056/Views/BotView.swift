@@ -11,22 +11,19 @@ struct BotView: View {
     @State private var dictation = Dictation()
     @State private var waking = false
     @State private var error: String?
-    /// Show the agent and system messages the Bot's history marks "hide".
-    @State private var showHidden = false
 
     var body: some View {
         Group {
             if let model {
-                BotHome(model: model, dictation: dictation, showHidden: showHidden)
+                BotHome(model: model, dictation: dictation)
             } else {
-                BotWelcome(name: app.botName, waking: waking, error: error) { Task { await wake() } }
+                BotWelcome(waking: waking, error: error) { Task { await wake() } }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // A background, so its wide glows never widen the screen's layout.
         .background { BotBackdrop() }
         .fontDesign(.rounded)
-        .navigationTitle(app.botName)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button("Back", systemImage: "chevron.left") { app.botOpen = false }
@@ -34,7 +31,7 @@ struct BotView: View {
             if let model, let sid = model.sessionId {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("More", systemImage: "ellipsis") {
-                        Toggle("Show hidden messages", systemImage: "eye", isOn: $showHidden)
+                        SystemHistoryToggle(model: model)
                         Button("Open as a conversation", systemImage: "bubble.left.and.text.bubble.right") {
                             app.botPath.append(.conversation(projectId: model.projectId, sessionId: sid))
                         }
@@ -96,7 +93,6 @@ struct BotView: View {
 
 /// Before there is a Bot: the orb asleep, and one button that wakes it.
 private struct BotWelcome: View {
-    let name: String
     let waking: Bool
     let error: String?
     let wake: () -> Void
@@ -105,10 +101,10 @@ private struct BotWelcome: View {
     var body: some View {
         VStack(spacing: 22) {
             Spacer(minLength: 20)
-            BotOrb(mood: waking ? .thinking : appeared ? .idle : .asleep, size: 150, name: name)
+            BotOrb(mood: waking ? .thinking : appeared ? .idle : .asleep, size: 150)
                 .scaleEffect(appeared ? 1 : 0.85)
             VStack(spacing: 10) {
-                Text("Meet your \(name)")
+                Text("Meet your Bot")
                     .font(.largeTitle.weight(.bold))
                 Text("A personal assistant that keeps an eye on your conversations and tells you, in plain words, what is running, what finished and what needs you.")
                     .font(.body)
@@ -120,7 +116,7 @@ private struct BotWelcome: View {
             Button(action: wake) {
                 HStack(spacing: 8) {
                     if waking { ProgressView().tint(.white) } else { Image(systemName: "sparkles") }
-                    Text(waking ? "Waking up…" : "Wake \(name)")
+                    Text(waking ? "Waking up…" : "Wake the Bot")
                 }
                 .font(.headline)
                 .foregroundStyle(.white)
@@ -159,7 +155,6 @@ private struct BotHome: View {
     @Environment(AppModel.self) private var app
     let model: ConversationModel
     let dictation: Dictation
-    let showHidden: Bool
 
     private let endID = "bot-end"
 
@@ -172,7 +167,7 @@ private struct BotHome: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     BotGreeting(nodes: nodes)
-                    Constellation(nodes: nodes, mood: mood, level: dictation.level, orbSize: 118, botName: app.botName) { node in
+                    Constellation(nodes: nodes, mood: mood, level: dictation.level, orbSize: 118) { node in
                         app.botPath.append(.conversation(projectId: node.projectId, sessionId: node.sessionId))
                     }
                     .frame(height: 290)
@@ -182,7 +177,7 @@ private struct BotHome: View {
                             app.botPath.append(.conversation(projectId: m.projectId, sessionId: m.sessionId))
                         }
                     }
-                    BotThread(model: model, showHidden: showHidden)
+                    BotThread(model: model)
                     Color.clear.frame(height: 1).id(endID)
                 }
                 .padding(.vertical, 8)
@@ -358,21 +353,34 @@ private struct MomentCard: View {
 /// The conversation with the Bot, in its own style: its replies beside a
 /// small orb, yours in a bright bubble, its look-ups folded into one line.
 private struct BotThread: View {
-    @Environment(AppModel.self) private var app
     let model: ConversationModel
-    let showHidden: Bool
 
     var body: some View {
+        // Hidden rows show only on request, and dimmed, so the quiet view
+        // stays the obvious one.
+        let states = model.botStates
         VStack(alignment: .leading, spacing: 16) {
-            ForEach(model.items(showHidden: showHidden)) { item in
+            if model.showSystemHistory {
+                Button { withAnimation(.snappy) { model.showSystemHistory = false } } label: {
+                    Label("Showing system messages · Hide", systemImage: "eye.slash")
+                        .font(.footnote.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .glassEffect(.regular.interactive(), in: .capsule)
+                .frame(maxWidth: .infinity)
+            }
+            ForEach(model.items) { item in
                 switch item {
-                case .row(let r): BotLine(row: r).opacity(r.botView == "hide" ? 0.55 : 1)
-                case .steps(let rs): BotLookups(rows: rs).opacity(rs.allSatisfy { $0.botView == "hide" } ? 0.55 : 1)
+                case .row(let r): BotLine(row: r, brief: states[r.id] == .brief).opacity(states[r.id] == .hide ? 0.6 : 1)
+                case .steps(let rs): BotLookups(rows: rs).opacity(states[rs[0].id] == .hide ? 0.6 : 1)
                 }
             }
             if model.isWorking {
                 HStack(spacing: 10) {
-                    BotOrb(mood: .thinking, size: 22, name: app.botName)
+                    BotOrb(mood: .thinking, size: 22)
                         .frame(width: 30, height: 30)
                     Text(model.activity.map { "\($0)…" } ?? "Thinking…")
                         .font(.subheadline)
@@ -388,14 +396,17 @@ private struct BotThread: View {
 }
 
 private struct BotLine: View {
-    @Environment(AppModel.self) private var app
     let row: ChatRow
+    /// The last reply of a morning-brief turn: the brief itself.
+    var brief = false
 
     var body: some View {
         switch row.role {
         case .user:
             // Its setup message is for the Bot, not for this screen.
-            if !row.text.hasPrefix(AppModel.botSetupPrefix) {
+            if let kind = row.senderKind, BotHistory.turnKinds.contains(kind) {
+                SystemNote(kind: kind, text: row.text)
+            } else if !row.text.hasPrefix(AppModel.botSetupPrefix) {
                 HStack {
                     Spacer(minLength: 56)
                     Text(row.text)
@@ -410,16 +421,13 @@ private struct BotLine: View {
             }
         case .assistant:
             HStack(alignment: .top, spacing: 10) {
-                BotOrb(mood: .idle, size: 22, name: app.botName)
+                BotOrb(mood: .idle, size: 22)
                     .frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 6) {
-                    if row.ownerMessage {
-                        Text(row.needsYou ? "Needs you" : "For you")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(row.needsYou ? BotColors.peach : BotColors.sky)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background((row.needsYou ? BotColors.peach : BotColors.sky).opacity(0.18), in: .capsule)
+                    if brief {
+                        Label("Morning brief", systemImage: "sun.max.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
                     }
                     MarkdownText(text: row.text)
                 }
@@ -430,9 +438,118 @@ private struct BotLine: View {
             Label(row.text, systemImage: "exclamationmark.triangle.fill")
                 .font(.footnote)
                 .foregroundStyle(.red)
-        case .notice, .action, .card:
+        case .notice:
+            BotNotice(text: row.text)
+        case .action, .card:
             EmptyView()
         }
+    }
+}
+
+/// A message the gateway or a helper sent the Bot, shown in system history.
+private struct SystemNote: View {
+    let kind: String
+    let text: String
+
+    var body: some View {
+        let (label, icon) = Self.label(kind)
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(text)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.quaternary.opacity(0.6), in: .rect(cornerRadius: 16, style: .continuous))
+        .contextMenu { CopyButton(text: text) }
+    }
+
+    static func label(_ kind: String) -> (String, String) {
+        switch kind {
+        case "bot_event": return ("Digest from the gateway", "tray.full")
+        case "bot_brief": return ("Morning brief request", "sun.max")
+        default: return ("Advisor", "lightbulb")
+        }
+    }
+}
+
+/// A notice in the Bot's chat. "Bot needs you" is a card that always shows;
+/// a routine "Bot status" (system history only) is a quiet one; anything
+/// else, such as a stopped turn, is one small line.
+private struct BotNotice: View {
+    let text: String
+
+    var body: some View {
+        if let rest = strip("Bot needs you: ") {
+            card(rest, label: "Needs you", color: BotColors.amber)
+        } else if let rest = strip("Bot status: ") {
+            card(rest, label: "Status", color: .secondary)
+        } else {
+            Label(text, systemImage: "info.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private static func lines(_ s: Substring) -> (String, String) {
+        let parts = s.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        return (String(parts.first ?? ""), parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines) : "")
+    }
+
+    private func card(_ rest: Substring, label: String, color: Color) -> some View {
+        let (title, body) = Self.lines(rest)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle().fill(color).frame(width: 8, height: 8)
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(color)
+            }
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            if !body.isEmpty {
+                Text(body)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular.tint(color.opacity(0.08)), in: .rect(cornerRadius: 18, style: .continuous))
+        .contextMenu { CopyButton(text: text) }
+    }
+
+    private func strip(_ prefix: String) -> Substring? {
+        text.hasPrefix(prefix) ? text.dropFirst(prefix.count) : nil
+    }
+}
+
+/// Shows or folds away the Bot's system rows (BotHistory), on the Bot
+/// screen and when the Bot's chat is opened as a conversation.
+struct SystemHistoryToggle: View {
+    let model: ConversationModel
+
+    var body: some View {
+        // The panel's wording (Today > "Show N hidden system messages").
+        let hidden = model.botStates.values.filter { $0 == .hide }.count
+        Button(model.showSystemHistory ? "Hide system messages"
+               : hidden == 1 ? "Show 1 hidden system message" : "Show \(hidden) hidden system messages",
+               systemImage: model.showSystemHistory ? "eye.slash" : "eye") {
+            withAnimation(.snappy) { model.showSystemHistory.toggle() }
+        }
+        .disabled(!model.showSystemHistory && hidden == 0)
     }
 }
 
@@ -503,7 +620,7 @@ private struct BotInput: View {
     ]
 
     var body: some View {
-        let empty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let empty = !text.contains(where: { !$0.isWhitespace })
         let suggest = empty && !sending && !dictation.isListening && !model.isWorking
         VStack(spacing: 10) {
             if suggest {

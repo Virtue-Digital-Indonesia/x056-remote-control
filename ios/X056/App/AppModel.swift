@@ -105,7 +105,13 @@ final class AppModel {
     /// The gateway's shared read state (`/api/conversations/read-state`), so a
     /// read on the web clears the phone and back. nil: an older gateway.
     var serverRead: [String: ReadItem]?
-    private(set) var drafts: [String: String] = Stored.load("drafts") ?? [:]
+    /// Draft texts, kept out of observation: the composer writes one on every
+    /// keystroke, and an observed dictionary re-rendered Home (alive in its
+    /// tab) each time. Home watches `draftKeys`, which changes only when a
+    /// draft appears or is cleared.
+    @ObservationIgnored private var drafts: [String: String] = Stored.load("drafts") ?? [:]
+    private(set) var draftKeys: Set<String> = Set((Stored.load("drafts") as [String: String]? ?? [:]).keys)
+    @ObservationIgnored private var draftSave: Task<Void, Never>?
     private(set) var recentDismissed: Set<String> = Stored.load("recentDismissed") ?? []
     /// Workspace metadata (archived, tags), shared with the panel.
     var conversationMeta: [String: ConversationMeta] = [:]
@@ -135,6 +141,7 @@ final class AppModel {
             for key in ["server", "lastSeq", "apnsToken", "botProjectId", "botSessionId", "drafts"] { UserDefaults.standard.removeObject(forKey: key) }
             // Loaded by its initializer before this ran.
             drafts = [:]
+            draftKeys = []
         }
         #endif
         server = UserDefaults.standard.string(forKey: "server").flatMap(URL.init(string:))
@@ -248,6 +255,7 @@ final class AppModel {
     }
 
     func enterBackground() {
+        saveDrafts()
         disconnect()
         stopPresence()
     }
@@ -298,8 +306,10 @@ final class AppModel {
         project(projectId)?.conversations?.first { $0.sessionId == sessionId }
     }
 
+    /// What waits to be sent to a conversation. The gateway's own digests
+    /// and briefs for the Bot are left out, as on the panel.
     func queued(_ projectId: String, _ sessionId: String) -> [QueueItem] {
-        (queues[projectId] ?? []).filter { $0.sessionId == nil || $0.sessionId == sessionId }
+        (queues[projectId] ?? []).filter { ($0.sessionId == nil || $0.sessionId == sessionId) && !BotHistory.quietQueue.contains($0.sender?.kind ?? "") }
     }
 
     func isWorking(_ sessionId: String) -> Bool { running.contains(sessionId) || background.contains(sessionId) }
@@ -323,23 +333,13 @@ final class AppModel {
     }
 
     /// Home's badge: unread conversations, open questions, approvals.
-    /// The Bot is left out: its own tab carries its badge.
+    /// The bell: unread conversations, open questions and approvals. The
+    /// Bot's routine replies and status notices do not count, only what it
+    /// needs you for (a question, a failure, an urgent notice).
     var needsYouCount: Int {
-        let botId = projects.first(where: { $0.isBot && $0.archivedAt == nil })?.id
-        let asked = questions.values.filter { $0.projectId != botId }.map { Self.key($0.projectId, $0.sessionId) }
-        let unreadKeys = unread.keys.filter { botId == nil || !$0.hasPrefix(botId! + "::") }
-        return Set(unreadKeys).union(asked).count + approvals.count
-    }
-
-    /// The Bot's name; "Bot" until the gateway says otherwise.
-    var botName: String {
-        let n = projects.first(where: { $0.isBot && $0.archivedAt == nil })?.botName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (n?.isEmpty == false ? n : nil) ?? "Bot"
-    }
-
-    /// What the Bot wants from the owner (nil on older gateways).
-    var botAttention: BotAttention? {
-        projects.first(where: { $0.isBot && $0.archivedAt == nil })?.botAttention
+        let bots = Set(projects.filter(\.isBot).map(\.id))
+        let counted = unread.filter { k, kind in !bots.contains(where: { k.hasPrefix($0 + "::") }) || kind == .question || kind == .failed }
+        return Set(counted.keys).union(questions.values.map { Self.key($0.projectId, $0.sessionId) }).count + approvals.count
     }
 
     // MARK: Home state
@@ -432,11 +432,31 @@ final class AppModel {
         drafts[Self.key(projectId, sessionId ?? "")] ?? ""
     }
 
+    func hasDraft(_ projectId: String, _ sessionId: String?) -> Bool {
+        draftKeys.contains(Self.key(projectId, sessionId ?? ""))
+    }
+
+    /// Cheap enough for every keystroke: the text is held in memory and
+    /// written to disk once typing pauses (or the app goes to the background).
     func setDraft(_ projectId: String, _ sessionId: String?, _ text: String) {
         let k = Self.key(projectId, sessionId ?? "")
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+        let value = text.contains(where: { !$0.isWhitespace }) ? text : nil
         guard drafts[k] != value else { return }
         drafts[k] = value
+        if (value != nil) != draftKeys.contains(k) {
+            if value != nil { draftKeys.insert(k) } else { draftKeys.remove(k) }
+        }
+        draftSave?.cancel()
+        draftSave = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            self?.saveDrafts()
+        }
+    }
+
+    func saveDrafts() {
+        draftSave?.cancel()
+        draftSave = nil
         Stored.save("drafts", drafts)
     }
 
@@ -946,9 +966,7 @@ final class AppModel {
         case "session_started":
             if let sid {
                 running.insert(sid)
-                // Only a human turn answers an open question; agent, cron and
-                // other turns leave it (`question_answered` closes it later).
-                if d["sender"]?.decode(Sender.self)?.kind == nil { questions[sid] = nil }
+                questions[sid] = nil
                 if let pid {
                     touch(pid, sid)
                     updateConversation(pid, sid) { $0.lastOutcome = nil }
@@ -972,7 +990,8 @@ final class AppModel {
                     raiseUnread(pid, sid, .failed, at: e.ts)
                 } else if e.kind == "session_done" && status == "stopped" {
                     markRead(pid, sid)
-                } else if e.kind == "conversation_settled", d["notificationSuppressed"]?.bool != true, d["notice"]?["tier"]?.string != "none" {
+                } else if e.kind == "conversation_settled", d["notificationSuppressed"]?.bool != true, d["notice"]?["tier"]?.string != "none",
+                          d["notice"]?["screenSuppressed"]?.bool != true {
                     raiseUnread(pid, sid, .done, at: e.ts)
                 }
             }
@@ -989,7 +1008,7 @@ final class AppModel {
                 questions[q.sessionId] = q
                 raiseUnread(q.projectId, q.sessionId, .question, at: e.ts)
             }
-        case "question_dismissed", "question_answered":
+        case "question_dismissed":
             if let sid { questions[sid] = nil }
             if let pid, let sid { markRead(pid, sid) }
         case "queue":
@@ -1005,15 +1024,6 @@ final class AppModel {
             scheduleProjectsRefresh()
         case "accounts":
             accountsTick += 1
-        case "bot_attention":
-            if let pid, let a = d["attention"]?.decode(BotAttention.self),
-               let i = projects.firstIndex(where: { $0.id == pid }) {
-                projects[i].botAttention = a
-            } else {
-                scheduleProjectsRefresh()
-            }
-        case "bot_message":
-            scheduleProjectsRefresh()
         case "read_state":
             if let pid, let sid, let item = d.decode(ReadItem.self) { applyReadState(pid, sid, item) }
         case "autopilot":

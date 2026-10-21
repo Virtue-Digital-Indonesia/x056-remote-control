@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 @testable import X056
 
 private func feed(_ parser: inout SSEParser, _ text: String) -> [ServerEvent] {
@@ -316,5 +317,91 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         #expect(!s.contains { $0.0.contains("case") && $0.1 == .italic }, "snake_case is not italic")
         #expect(s.contains { $0 == ("**not bold**", .codeBlock) })
         #expect(!s.contains { $0 == ("**not bold**", .bold) }, "nothing is styled inside a fence")
+    }
+}
+
+@Suite struct BotHistoryTests {
+    private func row(_ role: ChatRow.Role, _ text: String, from kind: String? = nil) -> ChatRow {
+        ChatRow(role: role, text: text, senderKind: kind)
+    }
+
+    /// The panel's rule (rc-chat.js botRowVisibility), turn by turn.
+    @Test func showsWhatThePanelShows() {
+        let rows = [
+            row(.user, "Gateway digest", from: "bot_event"),
+            row(.assistant, "Quiet digest reply"),
+            row(.action, "Used get_activity"),
+            row(.user, "Morning brief for 2026-10-22", from: "bot_brief"),
+            row(.assistant, "Checking what ran overnight."),
+            row(.action, "Used status_overview"),
+            row(.assistant, "Good morning: two things need you."),
+            row(.user, "Advisor follow-up", from: "advisor"),
+            row(.assistant, "Reply to the advisor stays."),
+            row(.user, "Save my preference."),
+            row(.action, "Used memory_propose"),
+            row(.assistant, "Not sent yet (relay checkpoint): confirm to send"),
+            row(.assistant, "Saved."),
+            row(.notice, "Bot status: Watching\nAll quiet"),
+            row(.notice, "Bot needs you: Decide\nShip it?"),
+            row(.notice, "Turn stopped."),
+            row(.error, "Something failed"),
+        ]
+        let states = BotHistory.states(rows)
+        #expect(rows.filter { states[$0.id] != .hide }.map(\.text) == [
+            "Good morning: two things need you.", "Reply to the advisor stays.", "Save my preference.",
+            "Used memory_propose", "Saved.", "Bot needs you: Decide\nShip it?", "Turn stopped.", "Something failed",
+        ])
+        #expect(rows.filter { states[$0.id] == .brief }.map(\.text) == ["Good morning: two things need you."])
+    }
+
+    @Test func aBriefStillWritingShowsItsNewestReply() {
+        let trigger = row(.user, "Morning brief", from: "bot_brief"), first = row(.assistant, "Checking.")
+        #expect(BotHistory.states([trigger, first])[first.id] == .brief)
+        let second = row(.assistant, "Here is today.")
+        let states = BotHistory.states([trigger, first, second])
+        #expect(states[first.id] == .hide && states[second.id] == .brief)
+    }
+
+    @Test func knowsACheckpointOnlyAtTheStart() {
+        #expect(BotHistory.isCheckpoint("Not sent yet (relay checkpoint): is this converging?"))
+        #expect(BotHistory.isCheckpoint("Relay checkpoint: confirm"))
+        #expect(BotHistory.isCheckpoint("not sent yet. Waiting"))
+        #expect(!BotHistory.isCheckpoint("It was not sent yet: the gateway held it."))
+    }
+}
+
+@MainActor @Suite struct ComposerStylingTests {
+    private func font(_ view: UITextView, at i: Int) -> UIFont? {
+        view.textStorage.attribute(.font, at: i, effectiveRange: nil) as? UIFont
+    }
+
+    private func type(_ s: String, at i: Int, into view: UITextView) {
+        view.textStorage.replaceCharacters(in: NSRange(location: i, length: 0), with: s)
+        MarkdownStyler.style(view, edited: NSRange(location: i, length: (s as NSString).length))
+    }
+
+    /// A long text restyles only the lines an edit touched, and knows when
+    /// those lines sit inside a code fence further up.
+    @Test func restylesOnlyTheEditedLinesOfALongText() {
+        let view = PasteAwareTextView()
+        let head = String(repeating: "A plain line of text in a long message.\n", count: 500)
+        view.text = head + "```\ncode\n```\nafter"
+        MarkdownStyler.style(view)
+        let ns = { view.textStorage.string as NSString }
+
+        let inCode = ns().range(of: "code").location + 4
+        type(" **x**", at: inCode, into: view)
+        let x = ns().range(of: "**x**").location + 2
+        #expect(font(view, at: x)?.fontDescriptor.symbolicTraits.contains(.traitMonoSpace) == true, "inside a fence stays code")
+        #expect(font(view, at: x)?.fontDescriptor.symbolicTraits.contains(.traitBold) == false)
+
+        type(" **y**", at: ns().length, into: view)
+        #expect(font(view, at: ns().length - 3)?.fontDescriptor.symbolicTraits.contains(.traitBold) == true, "after the fence, bold")
+
+        let clock = ContinuousClock()
+        let full = clock.measure { for _ in 0..<20 { MarkdownStyler.style(view) } }
+        let part = clock.measure { for _ in 0..<20 { type("z", at: ns().length, into: view) } }
+        print("STYLE-TIMING full=\(full / 20) partial=\(part / 20) length=\(ns().length)")
+        #expect(part < full, "an edit costs less than the whole text")
     }
 }

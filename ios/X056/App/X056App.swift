@@ -58,15 +58,6 @@ struct RootView: View {
 struct MainView: View {
     @Environment(AppModel.self) private var app
 
-    /// Questions waiting on the owner as a count; else, if only something to
-    /// read, a one-character dot; else none.
-    private var botBadge: Text? {
-        let a = app.botAttention
-        if let n = a?.needsMe, n > 0 { return Text("\(n)") }
-        if a?.fyi == true { return Text("•") }
-        return nil
-    }
-
     var body: some View {
         @Bindable var app = app
         let selection = Binding(get: { app.tab }, set: { tab in
@@ -79,10 +70,9 @@ struct MainView: View {
                 }
             }
             .badge(app.needsYouCount)
-            Tab(app.botName, systemImage: "sparkles", value: AppTab.bot) {
+            Tab("Bot", systemImage: "sparkles", value: AppTab.bot) {
                 Color.clear
             }
-            .badge(botBadge)
             Tab("Projects", systemImage: "folder", value: AppTab.projects) {
                 NavigationStack(path: $app.path) {
                     ProjectsView().routes()

@@ -932,6 +932,16 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   anchors Today), so "Bot · Idle" keeps its room at 320-430 px. Browser tests:
   `bot-home-spacing.cjs`, `bot-system-history.cjs`, `sw-push-shows.cjs`;
   WebKit needs the env in `test/browser/webkit-preload.cjs`'s header.
+- **iOS mirrors it (2026-10-22).** `BotHistory.states` (ConversationModel.swift)
+  is `botRowVisibility` / `botRowKind` over `ChatRow`s, whose `senderKind`
+  carries the sender: the same turns, row kinds and order, on the Bot screen
+  and when the Bot chat is opened as a conversation. The brief turn's last
+  reply carries a "Morning brief" label. More > "Show N hidden system
+  messages" shows them in place, dimmed, under a "Showing system messages ·
+  Hide" pill. Home leaves the Bot out except under Needs attention (a
+  question, a failure, an urgent notice), the bell skips its routine unread,
+  `AppModel.queued` drops `bot_event` / `bot_brief` items, and a
+  `screenSuppressed` settle raises no unread.
 
 - **Owner view (2026-10-21, Efran via Bot; contract `docs/bot-owner-view-contract.md`).**
   **Clean chat**: a turn started by an agent (sender kinds `conversation`,
@@ -959,7 +969,7 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   sky dot, Needs me = an amber pill with the count (amber like the header chip
   and Home's "Needs input", never the near-black accent that reads as the
   bell), on the sidebar entry, both top-bar Bot buttons and the /chat row.
-  iOS: the Bot tab badge, Bot no longer in `needsYouCount`. **Rename**:
+  iOS: see below. **Rename**:
   `POST /api/bot {name}` (1-40 chars, no control chars or `<>`) renames the
   Chat and its conversation (notice titles follow); the Bot's replies, its
   question card, header, sidebar and buttons show the name; the process
@@ -971,7 +981,15 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   clear a card only on `question_answered`/`question_dismissed` or a human
   `session_started`. Tests: `test/bot-owner-view.test.ts`; browser
   `bot-indicator`, `bot-view-table`, `question-survives-agent`,
-  `bot-system-history`. The iOS part is uncompiled until the next Xcode build.
+  `bot-system-history`. **iOS is not in this release**: the Mac session's
+  iOS commits (0413a12, 9c868d6: the app ports the panel's row rule itself)
+  landed on main meanwhile and conflicted, and this container cannot compile
+  Swift, so the merge kept main's iOS tree. The owner-view iOS changes (Bot tab
+  badge from `botAttention`, filter on the server's `botView` instead of a
+  client port of the rule, owner bubbles, the name, questions kept across agent
+  turns, Bot out of `needsYouCount`) are in `docs/ios-owner-view.patch` for the
+  Mac session to apply and build. The server fields are optional, so the
+  current app keeps working.
   **Push de-dupe**: `message_owner` / `POST /api/bot/message` take an
   optional `source {projectId, sessionId}`; when the Bot's digest saw an
   urgent notice for that conversation within 24 h (`rememberPushed` /

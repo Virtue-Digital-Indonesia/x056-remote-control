@@ -575,6 +575,30 @@ final class FlowTests: XCTestCase {
         XCTAssertEqual(named.count, 1, "one Bot: the gateway's own")
         XCTAssertEqual(named.first?["bot"] as? Bool, true)
 
+        // The morning brief's trigger is system history: shown on request,
+        // folded away again. (The fixture answers every turn with the same
+        // text, which the stream drops as a replay, so the brief's own reply
+        // cannot be told apart here; BotHistoryTests covers that it shows.)
+        _ = api("POST", "/api/bot/brief", [:])
+        let trigger = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Morning brief for")).firstMatch
+        // The panel's wording: "Show N hidden system messages", then a
+        // "Showing system messages · Hide" pill over the thread.
+        let show = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@", "Show ", "hidden system message")).firstMatch
+        let deadline = Date().addingTimeInterval(30)
+        repeat {
+            app.buttons["More"].firstMatch.tap()
+            if show.waitForExistence(timeout: 2), show.isEnabled { break }
+            app.tap()
+            sleep(1)
+        } while Date() < deadline
+        show.tap()
+        XCTAssertTrue(trigger.waitForExistence(timeout: 30), "system messages show the brief's trigger")
+        XCTAssertTrue(app.staticTexts["Morning brief request"].exists)
+        sleep(1)
+        snapshot(app, "44-bot-system-history")
+        app.buttons["Showing system messages · Hide"].firstMatch.tap()
+        XCTAssertTrue(trigger.waitForNonExistence(timeout: 5), "and folds it away by default")
+
         // Return in the Bot's box is a newline that carries a list on; the
         // arrow button sends.
         let input = app.textViews["bot-input"]

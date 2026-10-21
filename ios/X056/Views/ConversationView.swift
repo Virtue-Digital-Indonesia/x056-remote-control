@@ -48,6 +48,7 @@ struct ConversationView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu("More", systemImage: "ellipsis") {
+                            if model.isBot { SystemHistoryToggle(model: model) }
                             Button(app.autopilot[sid] == nil ? "Autopilot…" : "Autopilot", systemImage: "repeat") { showAutopilot = true }
                             Button("Transcript", systemImage: "terminal") { showTranscript = true }
                             if LiveTurns.shared.isFollowing(sid) {

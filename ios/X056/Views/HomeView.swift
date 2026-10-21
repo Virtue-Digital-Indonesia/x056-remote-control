@@ -18,14 +18,17 @@ struct HomeView: View {
 
     var body: some View {
         let items = HomeItem.all(in: app).filter(matches)
-        let unread = items.filter(\.unread)
-        let attention = items.filter { !$0.unread && $0.status.needsAttention }
-        let progress = items.filter { !$0.unread && $0.status.inProgress }
-        let drafts = items.filter { $0.draft && !$0.unread && $0.status.settled }
-        let recentAll = items.filter { !$0.draft && !$0.unread && $0.status.settled && (!$0.dismissed || !query.isEmpty || showDismissed) }
+        // The Bot has its own screen: Home shows it only when it needs you,
+        // as the panel's Home does (control-room.js renderBoard).
+        let regular = items.filter { !$0.project.isBot }
+        let unread = regular.filter(\.unread)
+        let attention = items.filter { $0.project.isBot ? $0.status.needsAttention || $0.urgent : !$0.unread && $0.status.needsAttention }
+        let progress = regular.filter { !$0.unread && $0.status.inProgress }
+        let drafts = regular.filter { $0.draft && !$0.unread && $0.status.settled }
+        let recentAll = regular.filter { !$0.draft && !$0.unread && $0.status.settled && (!$0.dismissed || !query.isEmpty || showDismissed) }
         let cutoff = Date().timeIntervalSince1970 * 1000 - recentDays * 86_400_000
         let recent = query.isEmpty ? Array(recentAll.filter { $0.recentActivity >= cutoff }.prefix(recentMax)) : recentAll
-        let dismissedCount = items.filter { $0.dismissed && !$0.draft && !$0.unread && $0.status.settled }.count
+        let dismissedCount = regular.filter { $0.dismissed && !$0.draft && !$0.unread && $0.status.settled }.count
         List {
             if !app.approvals.isEmpty && query.isEmpty {
                 Section {
@@ -180,6 +183,8 @@ struct HomeItem: Identifiable {
     let conversation: Conversation
     let status: ConvStatus
     let unread: Bool
+    /// Unread for a question, a failure or an urgent notice.
+    let urgent: Bool
     let draft: Bool
     let dismissed: Bool
     let meta: ConversationMeta?
@@ -201,7 +206,8 @@ struct HomeItem: Identifiable {
                     project: p, conversation: c,
                     status: ConvStatus.of(p.id, c, in: app),
                     unread: app.unread[k] != nil,
-                    draft: !app.draft(p.id, c.sessionId).isEmpty,
+                    urgent: app.unread[k] == .question || app.unread[k] == .failed,
+                    draft: app.hasDraft(p.id, c.sessionId),
                     dismissed: app.recentDismissed.contains(k),
                     meta: meta))
             }

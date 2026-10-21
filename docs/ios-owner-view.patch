@@ -1,0 +1,409 @@
+diff --git a/ios/X056/API/Models.swift b/ios/X056/API/Models.swift
+index 2cb6ea8..197a40f 100644
+--- a/ios/X056/API/Models.swift
++++ b/ios/X056/API/Models.swift
+@@ -84,12 +84,22 @@ struct Project: Decodable, Sendable, Identifiable, Hashable {
+     var backgroundSessionIds: [String]?
+     /// The owner's Bot chat; absent on every other row and on older servers.
+     var bot: Bool?
++    /// The Bot's name (owners can rename it); only on the Bot's row.
++    var botName: String?
++    /// What the Bot wants from the owner; only on the Bot's row.
++    var botAttention: BotAttention?
+ 
+     var isChat: Bool { kind == "chat" }
+     var isBot: Bool { bot == true }
+     var providerName: String { provider ?? "claude" }
+ }
+ 
++/// `needsMe` questions waiting, and whether there is something to read (`fyi`).
++struct BotAttention: Decodable, Sendable, Hashable {
++    let needsMe: Int?
++    let fyi: Bool?
++}
++
+ struct Conversation: Codable, Sendable, Identifiable, Hashable {
+     var id: String { sessionId }
+     let sessionId: String
+@@ -148,6 +158,11 @@ struct HistoryEntry: Decodable, Sendable {
+     let sub: Bool?
+     let args: String?
+     let advisor: JSONValue?
++    /// The Bot's chat only: "show" or "hide" (absent on older servers).
++    let botView: String?
++    /// A message the Bot sent to the owner on purpose (`message_owner`).
++    let ownerMessage: Bool?
++    let needsYou: Bool?
+ }
+ 
+ struct AttachmentRef: Codable, Sendable, Hashable {
+diff --git a/ios/X056/App/AppModel.swift b/ios/X056/App/AppModel.swift
+index c4be118..8b71584 100644
+--- a/ios/X056/App/AppModel.swift
++++ b/ios/X056/App/AppModel.swift
+@@ -323,8 +323,23 @@ final class AppModel {
+     }
+ 
+     /// Home's badge: unread conversations, open questions, approvals.
++    /// The Bot is left out: its own tab carries its badge.
+     var needsYouCount: Int {
+-        Set(unread.keys).union(questions.values.map { Self.key($0.projectId, $0.sessionId) }).count + approvals.count
++        let botId = projects.first(where: { $0.isBot && $0.archivedAt == nil })?.id
++        let asked = questions.values.filter { $0.projectId != botId }.map { Self.key($0.projectId, $0.sessionId) }
++        let unreadKeys = unread.keys.filter { botId == nil || !$0.hasPrefix(botId! + "::") }
++        return Set(unreadKeys).union(asked).count + approvals.count
++    }
++
++    /// The Bot's name; "Bot" until the gateway says otherwise.
++    var botName: String {
++        let n = projects.first(where: { $0.isBot && $0.archivedAt == nil })?.botName?.trimmingCharacters(in: .whitespacesAndNewlines)
++        return (n?.isEmpty == false ? n : nil) ?? "Bot"
++    }
++
++    /// What the Bot wants from the owner (nil on older gateways).
++    var botAttention: BotAttention? {
++        projects.first(where: { $0.isBot && $0.archivedAt == nil })?.botAttention
+     }
+ 
+     // MARK: Home state
+@@ -931,7 +946,9 @@ final class AppModel {
+         case "session_started":
+             if let sid {
+                 running.insert(sid)
+-                questions[sid] = nil
++                // Only a human turn answers an open question; agent, cron and
++                // other turns leave it (`question_answered` closes it later).
++                if d["sender"]?.decode(Sender.self)?.kind == nil { questions[sid] = nil }
+                 if let pid {
+                     touch(pid, sid)
+                     updateConversation(pid, sid) { $0.lastOutcome = nil }
+@@ -972,7 +989,7 @@ final class AppModel {
+                 questions[q.sessionId] = q
+                 raiseUnread(q.projectId, q.sessionId, .question, at: e.ts)
+             }
+-        case "question_dismissed":
++        case "question_dismissed", "question_answered":
+             if let sid { questions[sid] = nil }
+             if let pid, let sid { markRead(pid, sid) }
+         case "queue":
+@@ -988,6 +1005,15 @@ final class AppModel {
+             scheduleProjectsRefresh()
+         case "accounts":
+             accountsTick += 1
++        case "bot_attention":
++            if let pid, let a = d["attention"]?.decode(BotAttention.self),
++               let i = projects.firstIndex(where: { $0.id == pid }) {
++                projects[i].botAttention = a
++            } else {
++                scheduleProjectsRefresh()
++            }
++        case "bot_message":
++            scheduleProjectsRefresh()
+         case "read_state":
+             if let pid, let sid, let item = d.decode(ReadItem.self) { applyReadState(pid, sid, item) }
+         case "autopilot":
+diff --git a/ios/X056/App/ConversationModel.swift b/ios/X056/App/ConversationModel.swift
+index 4637cee..16ace22 100644
+--- a/ios/X056/App/ConversationModel.swift
++++ b/ios/X056/App/ConversationModel.swift
+@@ -27,6 +27,11 @@ struct ChatRow: Identifiable, Equatable {
+     var inFlight = false
+     var toolUseId: String?
+     var card: ChatCard?
++    /// The Bot's chat: "hide" rows are agent and system traffic.
++    var botView: String?
++    /// The Bot spoke to the owner on purpose; `needsYou` says it wants an answer.
++    var ownerMessage = false
++    var needsYou = false
+ }
+ 
+ /// What the list draws: a row, or a run of consecutive tool calls folded together.
+@@ -103,10 +108,13 @@ final class ConversationModel {
+         return nil
+     }
+ 
+-    var items: [DisplayItem] {
++    var items: [DisplayItem] { items(showHidden: true) }
++
++    /// `showHidden: false` leaves out the Bot's `botView == "hide"` rows.
++    func items(showHidden: Bool) -> [DisplayItem] {
+         var out: [DisplayItem] = []
+         var run: [ChatRow] = []
+-        for r in rows {
++        for r in rows where showHidden || r.botView != "hide" {
+             if r.role == .action { run.append(r); continue }
+             if !run.isEmpty { out.append(.steps(run)); run = [] }
+             out.append(.row(r))
+@@ -177,6 +185,14 @@ final class ConversationModel {
+     }
+ 
+     static func row(_ h: HistoryEntry) -> ChatRow? {
++        guard var r = baseRow(h) else { return nil }
++        r.botView = h.botView
++        r.ownerMessage = h.ownerMessage == true
++        r.needsYou = h.needsYou == true
++        return r
++    }
++
++    private static func baseRow(_ h: HistoryEntry) -> ChatRow? {
+         let text = h.text ?? ""
+         let sender = h.sender.flatMap(senderLabel)
+         switch h.role {
+@@ -257,6 +273,14 @@ final class ConversationModel {
+             if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
+                 rows.append(ChatRow(role: .assistant, text: text))
+             }
++        case "bot_message":
++            // The Bot wrote to the owner (an FYI; a needs-you one also
++            // arrives as a question).
++            if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
++                var row = ChatRow(role: .assistant, text: text)
++                row.ownerMessage = true
++                rows.append(row)
++            }
+         case "active_model":
+             activeModel = d["model"]?.string ?? activeModel
+         case "activity":
+diff --git a/ios/X056/App/X056App.swift b/ios/X056/App/X056App.swift
+index f8f7c98..631594d 100644
+--- a/ios/X056/App/X056App.swift
++++ b/ios/X056/App/X056App.swift
+@@ -58,6 +58,15 @@ struct RootView: View {
+ struct MainView: View {
+     @Environment(AppModel.self) private var app
+ 
++    /// Questions waiting on the owner as a count; else, if only something to
++    /// read, a one-character dot; else none.
++    private var botBadge: Text? {
++        let a = app.botAttention
++        if let n = a?.needsMe, n > 0 { return Text("\(n)") }
++        if a?.fyi == true { return Text("•") }
++        return nil
++    }
++
+     var body: some View {
+         @Bindable var app = app
+         let selection = Binding(get: { app.tab }, set: { tab in
+@@ -70,9 +79,10 @@ struct MainView: View {
+                 }
+             }
+             .badge(app.needsYouCount)
+-            Tab("Bot", systemImage: "sparkles", value: AppTab.bot) {
++            Tab(app.botName, systemImage: "sparkles", value: AppTab.bot) {
+                 Color.clear
+             }
++            .badge(botBadge)
+             Tab("Projects", systemImage: "folder", value: AppTab.projects) {
+                 NavigationStack(path: $app.path) {
+                     ProjectsView().routes()
+diff --git a/ios/X056/Views/BotOrb.swift b/ios/X056/Views/BotOrb.swift
+index ebe6317..96702ab 100644
+--- a/ios/X056/Views/BotOrb.swift
++++ b/ios/X056/Views/BotOrb.swift
+@@ -35,13 +35,13 @@ enum BotMood: Equatable {
+ 
+     var tint: Color { palette[0] }
+ 
+-    var label: String {
++    func label(named name: String) -> String {
+         switch self {
+-        case .asleep: return "Bot, not set up"
+-        case .idle: return "Bot, ready"
+-        case .thinking: return "Bot, thinking"
+-        case .listening: return "Bot, listening"
+-        case .attention: return "Bot, something needs you"
++        case .asleep: return "\(name), not set up"
++        case .idle: return "\(name), ready"
++        case .thinking: return "\(name), thinking"
++        case .listening: return "\(name), listening"
++        case .attention: return "\(name), something needs you"
+         }
+     }
+ }
+@@ -63,6 +63,7 @@ struct BotOrb: View {
+     /// Microphone level, 0-1, while listening.
+     var level: Double = 0
+     var size: CGFloat = 140
++    var name = "Bot"
+     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+ 
+     var body: some View {
+@@ -97,7 +98,7 @@ struct BotOrb: View {
+             .frame(width: size * 1.55, height: size * 1.55)
+         }
+         .accessibilityElement()
+-        .accessibilityLabel(mood.label)
++        .accessibilityLabel(mood.label(named: name))
+         .animation(.smooth(duration: 0.6), value: mood)
+     }
+ 
+@@ -186,6 +187,7 @@ struct Constellation: View {
+     var mood: BotMood
+     var level: Double = 0
+     var orbSize: CGFloat = 132
++    var botName = "Bot"
+     var open: (BotNode) -> Void
+     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+ 
+@@ -215,7 +217,7 @@ struct Constellation: View {
+                             .zIndex(depth > 0 ? 2 : 0)
+                             .onTapGesture { if !ambient { open(node) } }
+                     }
+-                    BotOrb(mood: mood, level: level, size: orbSize)
++                    BotOrb(mood: mood, level: level, size: orbSize, name: botName)
+                         .position(c)
+                         .zIndex(1)
+                 }
+diff --git a/ios/X056/Views/BotView.swift b/ios/X056/Views/BotView.swift
+index bb606f7..a302f14 100644
+--- a/ios/X056/Views/BotView.swift
++++ b/ios/X056/Views/BotView.swift
+@@ -11,19 +11,22 @@ struct BotView: View {
+     @State private var dictation = Dictation()
+     @State private var waking = false
+     @State private var error: String?
++    /// Show the agent and system messages the Bot's history marks "hide".
++    @State private var showHidden = false
+ 
+     var body: some View {
+         Group {
+             if let model {
+-                BotHome(model: model, dictation: dictation)
++                BotHome(model: model, dictation: dictation, showHidden: showHidden)
+             } else {
+-                BotWelcome(waking: waking, error: error) { Task { await wake() } }
++                BotWelcome(name: app.botName, waking: waking, error: error) { Task { await wake() } }
+             }
+         }
+         .frame(maxWidth: .infinity, maxHeight: .infinity)
+         // A background, so its wide glows never widen the screen's layout.
+         .background { BotBackdrop() }
+         .fontDesign(.rounded)
++        .navigationTitle(app.botName)
+         .toolbar {
+             ToolbarItem(placement: .topBarLeading) {
+                 Button("Back", systemImage: "chevron.left") { app.botOpen = false }
+@@ -31,6 +34,7 @@ struct BotView: View {
+             if let model, let sid = model.sessionId {
+                 ToolbarItem(placement: .topBarTrailing) {
+                     Menu("More", systemImage: "ellipsis") {
++                        Toggle("Show hidden messages", systemImage: "eye", isOn: $showHidden)
+                         Button("Open as a conversation", systemImage: "bubble.left.and.text.bubble.right") {
+                             app.botPath.append(.conversation(projectId: model.projectId, sessionId: sid))
+                         }
+@@ -92,6 +96,7 @@ struct BotView: View {
+ 
+ /// Before there is a Bot: the orb asleep, and one button that wakes it.
+ private struct BotWelcome: View {
++    let name: String
+     let waking: Bool
+     let error: String?
+     let wake: () -> Void
+@@ -100,10 +105,10 @@ private struct BotWelcome: View {
+     var body: some View {
+         VStack(spacing: 22) {
+             Spacer(minLength: 20)
+-            BotOrb(mood: waking ? .thinking : appeared ? .idle : .asleep, size: 150)
++            BotOrb(mood: waking ? .thinking : appeared ? .idle : .asleep, size: 150, name: name)
+                 .scaleEffect(appeared ? 1 : 0.85)
+             VStack(spacing: 10) {
+-                Text("Meet your Bot")
++                Text("Meet your \(name)")
+                     .font(.largeTitle.weight(.bold))
+                 Text("A personal assistant that keeps an eye on your conversations and tells you, in plain words, what is running, what finished and what needs you.")
+                     .font(.body)
+@@ -115,7 +120,7 @@ private struct BotWelcome: View {
+             Button(action: wake) {
+                 HStack(spacing: 8) {
+                     if waking { ProgressView().tint(.white) } else { Image(systemName: "sparkles") }
+-                    Text(waking ? "Waking up…" : "Wake the Bot")
++                    Text(waking ? "Waking up…" : "Wake \(name)")
+                 }
+                 .font(.headline)
+                 .foregroundStyle(.white)
+@@ -154,6 +159,7 @@ private struct BotHome: View {
+     @Environment(AppModel.self) private var app
+     let model: ConversationModel
+     let dictation: Dictation
++    let showHidden: Bool
+ 
+     private let endID = "bot-end"
+ 
+@@ -166,7 +172,7 @@ private struct BotHome: View {
+             ScrollView {
+                 VStack(alignment: .leading, spacing: 22) {
+                     BotGreeting(nodes: nodes)
+-                    Constellation(nodes: nodes, mood: mood, level: dictation.level, orbSize: 118) { node in
++                    Constellation(nodes: nodes, mood: mood, level: dictation.level, orbSize: 118, botName: app.botName) { node in
+                         app.botPath.append(.conversation(projectId: node.projectId, sessionId: node.sessionId))
+                     }
+                     .frame(height: 290)
+@@ -176,7 +182,7 @@ private struct BotHome: View {
+                             app.botPath.append(.conversation(projectId: m.projectId, sessionId: m.sessionId))
+                         }
+                     }
+-                    BotThread(model: model)
++                    BotThread(model: model, showHidden: showHidden)
+                     Color.clear.frame(height: 1).id(endID)
+                 }
+                 .padding(.vertical, 8)
+@@ -352,19 +358,21 @@ private struct MomentCard: View {
+ /// The conversation with the Bot, in its own style: its replies beside a
+ /// small orb, yours in a bright bubble, its look-ups folded into one line.
+ private struct BotThread: View {
++    @Environment(AppModel.self) private var app
+     let model: ConversationModel
++    let showHidden: Bool
+ 
+     var body: some View {
+         VStack(alignment: .leading, spacing: 16) {
+-            ForEach(model.items) { item in
++            ForEach(model.items(showHidden: showHidden)) { item in
+                 switch item {
+-                case .row(let r): BotLine(row: r)
+-                case .steps(let rs): BotLookups(rows: rs)
++                case .row(let r): BotLine(row: r).opacity(r.botView == "hide" ? 0.55 : 1)
++                case .steps(let rs): BotLookups(rows: rs).opacity(rs.allSatisfy { $0.botView == "hide" } ? 0.55 : 1)
+                 }
+             }
+             if model.isWorking {
+                 HStack(spacing: 10) {
+-                    BotOrb(mood: .thinking, size: 22)
++                    BotOrb(mood: .thinking, size: 22, name: app.botName)
+                         .frame(width: 30, height: 30)
+                     Text(model.activity.map { "\($0)…" } ?? "Thinking…")
+                         .font(.subheadline)
+@@ -380,6 +388,7 @@ private struct BotThread: View {
+ }
+ 
+ private struct BotLine: View {
++    @Environment(AppModel.self) private var app
+     let row: ChatRow
+ 
+     var body: some View {
+@@ -401,11 +410,21 @@ private struct BotLine: View {
+             }
+         case .assistant:
+             HStack(alignment: .top, spacing: 10) {
+-                BotOrb(mood: .idle, size: 22)
++                BotOrb(mood: .idle, size: 22, name: app.botName)
+                     .frame(width: 30, height: 30)
+-                MarkdownText(text: row.text)
+-                    .frame(maxWidth: .infinity, alignment: .leading)
+-                    .contextMenu { CopyButton(text: row.text) }
++                VStack(alignment: .leading, spacing: 6) {
++                    if row.ownerMessage {
++                        Text(row.needsYou ? "Needs you" : "For you")
++                            .font(.caption2.weight(.semibold))
++                            .foregroundStyle(row.needsYou ? BotColors.peach : BotColors.sky)
++                            .padding(.horizontal, 8)
++                            .padding(.vertical, 3)
++                            .background((row.needsYou ? BotColors.peach : BotColors.sky).opacity(0.18), in: .capsule)
++                    }
++                    MarkdownText(text: row.text)
++                }
++                .frame(maxWidth: .infinity, alignment: .leading)
++                .contextMenu { CopyButton(text: row.text) }
+             }
+         case .error:
+             Label(row.text, systemImage: "exclamationmark.triangle.fill")
