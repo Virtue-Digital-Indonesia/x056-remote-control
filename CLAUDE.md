@@ -972,6 +972,16 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   `session_started`. Tests: `test/bot-owner-view.test.ts`; browser
   `bot-indicator`, `bot-view-table`, `question-survives-agent`,
   `bot-system-history`. The iOS part is uncompiled until the next Xcode build.
+  **Push de-dupe**: `message_owner` / `POST /api/bot/message` take an
+  optional `source {projectId, sessionId}`; when the Bot's digest saw an
+  urgent notice for that conversation within 24 h (`rememberPushed` /
+  `wasPushed`, 500 entries), the needs_you question is still created and
+  counted but its `question` notice is `pushDeduped` -> `screenSuppressed`
+  (no second push). Digest lines end `[projectId=... sessionId=...]` so the
+  Bot can pass it. A rename never restarts the Bot mid-turn: it only renames
+  the chat; the new persona applies at the next turn that finds the process
+  idle (`activeProcess` holds a busy or background-working process whatever
+  its key).
 
 ## Delegates: an orchestrator's hidden workers (`server/delegates.ts`)
 

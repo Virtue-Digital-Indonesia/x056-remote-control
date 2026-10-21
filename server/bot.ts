@@ -56,7 +56,7 @@ export function botSystemNote(name: string = BOT_CHAT_NAME): string {
     '',
     'MONITORING. Use status_overview first: it shows what needs the owner, what is running, recent events, delegates, failed scheduled tasks and account limits. Then get_activity, read_conversation, read_reply, list_delegates and list_scheduled for detail. stop_conversation ends a runaway exchange.',
     '',
-    'MESSAGES FROM THE GATEWAY. A message from sender bot_event is a digest of things that need the owner. Your reply to a digest is not pushed and is hidden from the owner. The gateway has already pushed each urgent item on its own. Use message_owner with needs_you: true when the owner must act now: a decision needed, with its context, a failure, or an action that needs them; use plain message_owner for a result they should read. Never message twice for the same thing. A message from sender bot_brief is the morning brief: call status_overview, then reply with a short brief: what needs the owner first, then what finished, what failed, what is running, and account limits. End with one question about what to delegate today. That reply appears in the Bot chat; it is not pushed. Never end a bot_event or bot_brief reply with an ASK block: write the closing question as plain text.',
+    'MESSAGES FROM THE GATEWAY. A message from sender bot_event is a digest of things that need the owner. Your reply to a digest is not pushed and is hidden from the owner. The gateway has already pushed each urgent item on its own. Use message_owner with needs_you: true when the owner must act now: a decision needed, with its context, a failure, or an action that needs them; use plain message_owner for a result they should read. Never message twice for the same thing. When a needs_you message is about an item from a digest, pass its projectId and sessionId as source so the owner is not pushed twice for it. A message from sender bot_brief is the morning brief: call status_overview, then reply with a short brief: what needs the owner first, then what finished, what failed, what is running, and account limits. End with one question about what to delegate today. That reply appears in the Bot chat; it is not pushed. Never end a bot_event or bot_brief reply with an ASK block: write the closing question as plain text.',
     '',
     'SCHEDULING. For later or repeating work use schedule_task: once: true for anything that should happen one time, and always an explicit timezone (the owner is in Asia/Jakarta). Check it with list_scheduled. Do not use provider-local timers: they die with the process.',
     '',
@@ -167,6 +167,9 @@ export interface BotOptions {
 
 const DIGEST_MAX_LINES = 50;
 const SEEN_MAX = 500;
+/** How many urgent sources the Bot remembers pushing, and for how long. */
+const PUSHED_MAX = 500;
+const PUSHED_WINDOW_MS = 24 * 3600_000;
 const HOUR_MS = 3600_000;
 const EVENTS_TRIM_AT = 4000;
 const EVENTS_KEEP = 2000;
@@ -214,8 +217,8 @@ const oneLine = (s: unknown, max: number) => {
 
 /** One compact digest line for an urgent notice. */
 export function digestLine(n: Notice): string {
-  const where = [n.projectId && `project ${n.projectId}`, n.sessionId && `conversation ${n.sessionId}`].filter(Boolean).join(', ');
-  return `- ${n.kind} · ${oneLine(n.title, 80)}: ${oneLine(n.body, 240)}${where ? ` (${where})` : ''}`;
+  const where = [n.projectId && `projectId=${n.projectId}`, n.sessionId && `sessionId=${n.sessionId}`].filter(Boolean).join(' ');
+  return `- ${n.kind} · ${oneLine(n.title, 80)}: ${oneLine(n.body, 240)}${where ? ` [${where}]` : ''}`;
 }
 
 export function digestText(lines: string[], dropped: number): string {
@@ -224,7 +227,7 @@ export function digestText(lines: string[], dropped: number): string {
     ...lines,
     ...(dropped ? [`- and ${dropped} more not shown`] : []),
     '',
-    'Each item was already pushed to the owner on its own. Your reply here is not pushed. Call message_owner with needs_you: true only when the owner must act now (a decision, a failure, an action that needs them); a plain message_owner is an FYI they read later, and anything else you write here stays hidden from them.',
+    'Each item was already pushed to the owner on its own. Your reply here is not pushed. Call message_owner with needs_you: true only when the owner must act now (a decision, a failure, an action that needs them), passing the projectId and sessionId of the item as source; a plain message_owner is an FYI they read later, and anything else you write here stays hidden from them.',
   ].join('\n');
 }
 
@@ -241,6 +244,8 @@ export class BotService {
   private firstAt = 0;
   private readonly seen = new Set<string>();
   private readonly seenOrder: string[] = [];
+  /** `projectId|sessionId` -> when the gateway last pushed an urgent notice about it. */
+  private readonly pushed = new Map<string, number>();
   /** Times of the flushes that woke the Bot (a new queue item). */
   private wakes: number[] = [];
   private digestTimer?: ReturnType<typeof setTimeout>;
@@ -390,6 +395,7 @@ export class BotService {
     if (this.aboutBot(kind, data, notice)) return;
     this.logEvent(notice);
     if (notice.tier !== 'urgent') return;
+    this.rememberPushed(kind, data, notice);
     const id = notice.id || `${kind}:${notice.tag}:${String(data.at ?? '')}`;
     if (this.seen.has(id)) return;
     this.seen.add(id); this.seenOrder.push(id);
@@ -401,6 +407,25 @@ export class BotService {
       this.digestTimer = setTimeout(() => { this.digestTimer = undefined; try { this.flush(); } catch (e) { this.host.warn?.('Bot digest flush failed: ' + (e as Error).message); } }, this.debounceMs);
       this.digestTimer.unref?.();
     }
+  }
+
+  private rememberPushed(kind: string, data: Record<string, unknown>, n: Notice): void {
+    if (n.screenSuppressed) return; // never actually pushed
+    const at = this.now();
+    const note = (pid: unknown, sid: unknown) => {
+      if (typeof pid !== 'string' || typeof sid !== 'string' || !pid || !sid) return;
+      const key = `${pid}|${sid}`;
+      this.pushed.delete(key); this.pushed.set(key, at); // re-insert: Map order = recency
+    };
+    note(n.projectId ?? data.projectId, n.sessionId ?? data.sessionId);
+    if (kind === 'mcp_approval') { const s = data.sender as MessageSender | undefined; note(s?.projectId, s?.sessionId); }
+    while (this.pushed.size > PUSHED_MAX) this.pushed.delete(this.pushed.keys().next().value as string);
+  }
+
+  /** Did the gateway push an urgent notice about this conversation within the last 24 h? */
+  wasPushed(projectId: string, sessionId: string): boolean {
+    const at = this.pushed.get(`${projectId}|${sessionId}`);
+    return at !== undefined && this.now() - at <= PUSHED_WINDOW_MS;
   }
 
   /** The Bot's own conversation, its delegates, or a send the Bot asked for. */

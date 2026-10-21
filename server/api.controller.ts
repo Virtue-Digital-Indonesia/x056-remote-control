@@ -1268,13 +1268,13 @@ export class ApiController {
    *  conversation of the Bot may call it. */
   @Post('bot/message')
   @HttpCode(200)
-  botMessage(@Body() body: { from?: string; text?: string; needsYou?: boolean; options?: string[] }) {
+  botMessage(@Body() body: { from?: string; text?: string; needsYou?: boolean; options?: string[]; source?: { projectId?: string; sessionId?: string } }) {
     if (!this.manager.bot().isBotSession(body?.from)) throw new ForbiddenException('only the Bot can message the owner');
     if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 8000) throw new BadRequestException('text required (1-8000 characters)');
     if (body.needsYou !== undefined && typeof body.needsYou !== 'boolean') throw new BadRequestException('needsYou must be true or false');
     if (body.options !== undefined && (!Array.isArray(body.options) || body.options.some((o) => typeof o !== 'string' || o.length > 200))) throw new BadRequestException('options must be a list of short strings');
-    const out = this.manager.botMessage(body.from as string, { text: body.text, needsYou: body.needsYou === true, options: body.options });
-    return { ok: true, id: out.id, needsYou: out.needsYou };
+    const out = this.manager.botMessage(body.from as string, { text: body.text, needsYou: body.needsYou === true, options: body.options, source: body.source });
+    return { ok: true, id: out.id, needsYou: out.needsYou, pushDeduped: out.pushDeduped };
   }
 
   /** What the Bot reads first: cheap reads only (no transcript scans, no

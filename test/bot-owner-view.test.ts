@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +9,9 @@ import { AccountRegistry } from '../src/accounts.js';
 import { SessionManager } from '../server/manager.js';
 import { ApiController } from '../server/api.controller.js';
 import { ReadState } from '../server/read-state.js';
-import { BOT_SYSTEM_NOTE, botAttention, botSystemNote, checkBotName } from '../server/bot.js';
+import { BOT_SYSTEM_NOTE, botAttention, botSystemNote, checkBotName, digestText } from '../server/bot.js';
+import { DEFAULT_DEVICE_SETTINGS, deviceWants } from '../server/push.js';
+import { PersistentTurns } from '../src/persistent.js';
 import { botHistory, botInitialTurn, botRowKind, botRowView, ownerMessageRows, type BotTurnKind } from '../server/bot-view.js';
 import { noticeFor } from '../server/notices.js';
 import { findMessageReply } from '../server/message-reply.js';
@@ -21,7 +24,7 @@ type Result = { status: 'completed' | 'failed'; reason?: string; resultText?: st
 
 /** The same shape as test/bot.test.ts: Chat on, a Work project `p1` with conversations x and y, turns stubbed
  *  by `script` (each turn takes the next result, else `ok`). A ReadState is wired as in app.module. */
-function fixture(script: Result[] = []) {
+function fixture(script: Result[] = [], gate?: () => Promise<void>) {
   const dir = mkdtempSync(join(realpathSync(tmpdir()), 'x056-botowner-'));
   const stateDir = join(dir, 'state'), work = join(dir, 'work');
   mkdirSync(stateDir, { recursive: true }); mkdirSync(work, { recursive: true });
@@ -32,6 +35,7 @@ function fixture(script: Result[] = []) {
   const calls: RunSessionOptions[] = [];
   const runSessionFn = (async (o: RunSessionOptions) => {
     calls.push(o);
+    if (gate) await gate();
     const r = script.shift() ?? { status: 'completed', resultText: 'ok' };
     return { ...r, sessionId: o.sessionId, finalAccount: 'a', failovers: 0 };
   }) as unknown as typeof import('../src/failover.js').runSession;
@@ -216,6 +220,95 @@ describe('message_owner', () => {
     api.botNotify({ from: s.sessionId!, title: 'Done', body: 'Shipped.', link: '/chat/abc' });
     expect(f.manager.listPendingQuestions()).toHaveLength(1); // the FYI opened nothing
     expect(kinds(f, 'bot_message')[1].data).toMatchObject({ needsYou: false, text: 'Done\n\nShipped.\n\n/chat/abc' });
+  });
+});
+
+describe('message_owner source: no second push for an item the gateway already pushed', () => {
+  const pushedQuestion = { projectId: 'p1', sessionId: 'x', question: 'Run the migration?', at: '2026-10-21T00:00:00Z' };
+  /** The gateway pushed an urgent notice for p1/x and the Bot's digest saw it. */
+  const seeItem = (f: Fixture, pid = 'p1', sid = 'x') => {
+    const n = noticeFor('question', { ...pushedQuestion, projectId: pid, sessionId: sid }, {})!;
+    f.manager.bot().observe('question', { ...pushedQuestion, projectId: pid, sessionId: sid }, n);
+  };
+  const deviceWantsIt = (n: unknown) => deviceWants(n as never, DEFAULT_DEVICE_SETTINGS, Date.now());
+
+  it('a needs_you with the source the digest saw: the card and needs-me exist, the notice is not pushed', () => {
+    const f = fixture(), s = f.manager.bot().update({ enabled: true }), api = controller(f);
+    seeItem(f);
+    const r = api.botMessage({ from: s.sessionId!, text: 'x needs a migration go-ahead', needsYou: true, source: { projectId: 'p1', sessionId: 'x' } });
+    expect(r).toMatchObject({ ok: true, needsYou: true, pushDeduped: true });
+    expect(f.manager.listPendingQuestions().map((q) => q.question)).toEqual(['x needs a migration go-ahead']);
+    expect(f.manager.botAttention()).toMatchObject({ needsMe: 1 });
+    const q = kinds(f, 'question')[0];
+    expect(q.data).toMatchObject({ pushDeduped: true, question: 'x needs a migration go-ahead' });
+    const notice = q.data.notice as { tier: string; category: string; screenSuppressed?: boolean };
+    expect(notice).toMatchObject({ tier: 'urgent', category: 'needs_you', screenSuppressed: true });
+    expect(deviceWantsIt(notice)).toBe(false);
+    expect(f.readState.view(s.projectId!, s.sessionId!)).toBeDefined();
+  });
+
+  it('without a source it pushes as before', () => {
+    const f = fixture(), s = f.manager.bot().update({ enabled: true }), api = controller(f);
+    seeItem(f);
+    expect(api.botMessage({ from: s.sessionId!, text: 'Ship it?', needsYou: true })).toMatchObject({ pushDeduped: false });
+    const q = kinds(f, 'question')[0];
+    expect(q.data).not.toHaveProperty('pushDeduped');
+    expect((q.data.notice as { screenSuppressed?: boolean }).screenSuppressed).toBeUndefined();
+    expect(deviceWantsIt(q.data.notice)).toBe(true);
+  });
+
+  it('an unrelated, unknown or malformed source pushes (and never fails the call)', () => {
+    const f = fixture(), s = f.manager.bot().update({ enabled: true }), api = controller(f);
+    seeItem(f);
+    for (const [i, source] of ([{ projectId: 'p1', sessionId: 'y' }, { projectId: 'nope', sessionId: 'x' }, { projectId: 7, sessionId: 'x' }, 'x', null] as unknown[]).entries()) {
+      expect(api.botMessage({ from: s.sessionId!, text: 'ask ' + i, needsYou: true, source: source as never })).toMatchObject({ ok: true, pushDeduped: false });
+    }
+    for (const q of kinds(f, 'question')) expect(deviceWantsIt(q.data.notice)).toBe(true);
+    expect(f.manager.listPendingQuestions()[0].questions).toHaveLength(5);
+  });
+
+  it('a source pushed more than 24 h ago pushes again; a fresh one inside the window does not', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-21T00:00:00Z'));
+      const f = fixture(), s = f.manager.bot().update({ enabled: true }), api = controller(f);
+      seeItem(f);
+      vi.setSystemTime(new Date('2026-10-21T23:00:00Z'));
+      expect(api.botMessage({ from: s.sessionId!, text: 'inside', needsYou: true, source: { projectId: 'p1', sessionId: 'x' } }).pushDeduped).toBe(true);
+      vi.setSystemTime(new Date('2026-10-22T01:00:00Z'));
+      expect(api.botMessage({ from: s.sessionId!, text: 'outside', needsYou: true, source: { projectId: 'p1', sessionId: 'x' } }).pushDeduped).toBe(false);
+      expect(deviceWantsIt(kinds(f, 'question')[1].data.notice)).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('an item that was never pushed (a silent suppressed notice) does not count; FYI never pushes either way', () => {
+    const f = fixture(), s = f.manager.bot().update({ enabled: true }), api = controller(f);
+    const n = noticeFor('question', pushedQuestion, {})!;
+    f.manager.bot().observe('question', pushedQuestion, { ...n, screenSuppressed: true });
+    expect(api.botMessage({ from: s.sessionId!, text: 'ask', needsYou: true, source: { projectId: 'p1', sessionId: 'x' } }).pushDeduped).toBe(false);
+    seeItem(f);
+    expect(api.botMessage({ from: s.sessionId!, text: 'just so you know', source: { projectId: 'p1', sessionId: 'x' } })).toMatchObject({ needsYou: false, pushDeduped: false });
+    expect(kinds(f, 'bot_message').at(-1)!.data).not.toHaveProperty('notice');
+  });
+
+  it('the digest lines name each item\'s projectId and sessionId, and the persona tells the Bot to pass source', () => {
+    const f = fixture(); f.manager.bot().update({ enabled: true });
+    seeItem(f);
+    expect(f.manager.bot().pendingDigest().lines[0]).toContain('[projectId=p1 sessionId=x]');
+    expect(botSystemNote()).toContain('pass its projectId and sessionId as source so the owner is not pushed twice');
+    expect(digestText(['- a'], 0)).toContain('source');
+  });
+
+  it('the tool schema carries source and the bridge sends it', async () => {
+    vi.stubEnv('X056_SELF_PROJECT_ID', 'p'); vi.stubEnv('X056_SELF_SESSION_ID', 's'); vi.stubEnv('X056_BOT', '1');
+    vi.resetModules();
+    const m = await import('../scripts/x056-mcp-tools.mjs');
+    const tool = m.listTools().find((t: { name: string }) => t.name === 'message_owner') as unknown as { inputSchema: { properties: Record<string, unknown> }; description: string };
+    expect(tool.inputSchema.properties.source).toMatchObject({ type: 'object', required: ['projectId', 'sessionId'] });
+    expect(tool.description).toContain('source');
+    let body: Record<string, unknown> | undefined;
+    await m.callToolResult(async (_p: string, o?: RequestInit) => { body = JSON.parse(String(o?.body)); return { ok: true, id: 'i', needsYou: true, pushDeduped: true }; }, 'message_owner', { text: 'q', needs_you: true, source: { projectId: 'p1', sessionId: 'x' } });
+    expect(body).toEqual({ from: 's', text: 'q', needsYou: true, source: { projectId: 'p1', sessionId: 'x' } });
   });
 });
 
@@ -438,6 +531,80 @@ describe('renaming the Bot', () => {
     f.manager.continueSession(s.projectId!, s.sessionId!, 'hello');
     await until(() => f.calls.length === 1);
     expect(f.calls[0].appendSystemPrompt).toBe(botSystemNote('Jarvis'));
+  });
+
+  it('a rename while a Bot turn runs leaves the turn and the pools alone; the NEXT turn carries the new persona', async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    let first = true;
+    const f = fixture([], async () => { if (first) { first = false; await held; } });
+    const api = controller(f);
+    const pools = (f.manager as unknown as { pools(): { retireIdleSession(s: string): boolean; shutdown(): void; stop?: unknown }[] }).pools();
+    const touched = pools.flatMap((p) => [vi.spyOn(p, 'retireIdleSession'), vi.spyOn(p, 'shutdown')]);
+    const s = api.botUpdate({ enabled: true });
+    f.manager.continueSession(s.projectId!, s.sessionId!, 'hello');
+    await until(() => f.calls.length === 1);
+    expect(f.calls[0].appendSystemPrompt).toBe(botSystemNote('Bot'));
+    api.botUpdate({ name: 'Jarvis' }); // mid-turn
+    expect(turnsDone(f, s.sessionId!)).toBe(0);
+    release();
+    await until(() => turnsDone(f, s.sessionId!) === 1);
+    expect(kinds(f, 'session_error').filter((e) => e.data.sessionId === s.sessionId)).toEqual([]);
+    expect(touched.every((t) => t.mock.calls.length === 0)).toBe(true); // nothing was retired or shut down
+    expect(f.calls).toHaveLength(1);
+    f.manager.continueSession(s.projectId!, s.sessionId!, 'again');
+    await until(() => f.calls.length === 2);
+    expect(f.calls[1].appendSystemPrompt).toBe(botSystemNote('Jarvis'));
+  });
+
+  describe('the pool: the persona is process identity, but only once nothing is running', () => {
+    const fakeCli = () => {
+      const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stdin: { write: (s: string) => void; destroyed: boolean; writableEnded: boolean }; kill: () => void };
+      child.stdout = new EventEmitter();
+      child.stdin = { write: () => {}, destroyed: false, writableEnded: false };
+      const st = { killed: false };
+      child.kill = () => { st.killed = true; child.emit('close', null, 'SIGKILL'); };
+      return {
+        child, st,
+        result: () => child.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', result: 'ok' }) + '\n')),
+        emit: (e: unknown) => child.stdout.emit('data', Buffer.from(JSON.stringify(e) + '\n')),
+      };
+    };
+    const mk = () => {
+      const spawned: ReturnType<typeof fakeCli>[] = [];
+      const p = new PersistentTurns({ spawnFn: () => { const c = fakeCli(); spawned.push(c); return c.child as never; } });
+      return { p, spawned };
+    };
+    const turn = (note: string, over: Record<string, unknown> = {}) => ({ configDir: '/cfg/a', cwd: '/work', sessionId: 'bot', mode: 'new', prompt: 'hi', appendSystemPrompt: note, onEvent: () => {}, ...over }) as never;
+
+    it('a running turn is never killed by a new persona being asked for; after it ends, the next turn respawns on the new note', async () => {
+      const { p, spawned } = mk();
+      const h1 = p.startTurn(turn(botSystemNote('Bot')));
+      // a rename does not call the pool; even if a turn with the new note were asked for mid-turn it is refused, not run on a new process
+      const mid = p.startTurn(turn(botSystemNote('Jarvis'), { mode: 'resume' }));
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0].st.killed).toBe(false);
+      void mid;
+      spawned[0].result();
+      expect(await h1.done).toMatchObject({ code: 0 });
+      expect(spawned[0].st.killed).toBe(false); // the turn completed on its own process
+      p.startTurn(turn(botSystemNote('Jarvis'), { mode: 'resume' }));
+      expect(spawned).toHaveLength(2);          // new identity: a new process
+      expect(spawned[0].st.killed).toBe(false); // the old one is inside its output grace: kept, stale, never reused (retired once quiet)
+      p.shutdown();
+    });
+
+    it('with background work still running after the turn, the next turn stays on the held process (old note, no kill)', async () => {
+      const { p, spawned } = mk();
+      const h1 = p.startTurn(turn(botSystemNote('Bot')));
+      spawned[0].emit({ type: 'system', subtype: 'task_started', task_id: 'bg1', task_type: 'local_agent', description: 'explorer' });
+      spawned[0].result();
+      await h1.done;
+      p.startTurn(turn(botSystemNote('Jarvis'), { mode: 'resume' }));
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0].st.killed).toBe(false);
+      p.shutdown();
+    });
   });
 
   it('the persona teaches the agent-reply and message_owner rules', () => {

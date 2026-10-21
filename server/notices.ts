@@ -245,7 +245,9 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
       // `latest` = the question that just joined an open batch: push that one.
       const asked = typeof data.latest === 'string' && data.latest.trim() ? data.latest : data.question;
       const q = typeof asked === 'string' && asked.trim() ? cutWords(asked, QUESTION_MAX) : 'The assistant asked you something.';
-      return make('urgent', 'needs_you', withPrefix(ctx, q), `question:${sid}:${data.at || turnId}`);
+      // pushDeduped: the Bot's ask about an item the gateway already pushed. It
+      // stays a pending question (needs-me, card) but is not pushed again.
+      return make('urgent', 'needs_you', withPrefix(ctx, q), `question:${sid}:${data.at || turnId}`, data.pushDeduped === true ? { screenSuppressed: true } : {});
     }
 
     case 'mcp_approval': {

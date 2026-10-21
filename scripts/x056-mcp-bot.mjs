@@ -14,11 +14,13 @@ export const BOT_TOOLS = [
       'Say something to the owner, in the Bot chat. Only the Bot has this tool. Without needs_you it is an FYI: the owner sees it as an unread message from you, with no push. '
       + 'With needs_you: true it asks for a decision: it becomes a question card for the owner and is pushed as urgent (several asks wait together; ask each thing once). '
       + 'Use it to reach the owner from a turn they did not start: an agent\'s message, a digest, a scheduled task, a delegate report. '
-      + 'A reply to an agent that messaged you goes back to that agent and is hidden from the owner, so use this tool when the owner must know. Do not use it to acknowledge a message the owner wrote to you: they read your normal reply.',
+      + 'A reply to an agent that messaged you goes back to that agent and is hidden from the owner, so use this tool when the owner must know. Do not use it to acknowledge a message the owner wrote to you: they read your normal reply. '
+      + 'source {projectId, sessionId}: when a needs_you message is about an item from a digest (the ids are in its line), pass them. The gateway already pushed that item, so the question still opens and counts as needs-me but is not pushed a second time.',
     inputSchema: object({
       text: { type: 'string', minLength: 1, maxLength: 8000, description: 'what you want the owner to read, in plain words; for needs_you give the context and the question' },
       needs_you: { type: 'boolean', description: 'true = a decision only the owner can make (pushed, shows as needs-me); false or absent = FYI' },
       options: { type: 'array', items: { type: 'string', maxLength: 200 }, maxItems: 8, description: 'quick replies for a needs_you question' },
+      source: object({ projectId: { type: 'string', maxLength: 200 }, sessionId: { type: 'string', maxLength: 200 } }, ['projectId', 'sessionId']),
     }, ['text']),
     outputSchema: object({ ok: bool, id: str, needs_you: bool }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -55,9 +57,9 @@ export const BOT_TOOL_NAMES = new Set(BOT_TOOLS.map((t) => t.name));
 export async function callBotTool(api, name, args, self) {
   if (!self.sessionId) throw new Error(name + ' is only available to the Bot');
   if (name === 'message_owner') {
-    const r = await api('/api/bot/message', { method: 'POST', body: JSON.stringify({ from: self.sessionId, text: args.text, ...(args.needs_you ? { needsYou: true } : {}), ...(Array.isArray(args.options) && args.options.length ? { options: args.options } : {}) }) });
+    const r = await api('/api/bot/message', { method: 'POST', body: JSON.stringify({ from: self.sessionId, text: args.text, ...(args.needs_you ? { needsYou: true } : {}), ...(Array.isArray(args.options) && args.options.length ? { options: args.options } : {}), ...(args.source && typeof args.source === 'object' ? { source: { projectId: args.source.projectId, sessionId: args.source.sessionId } } : {}) }) });
     const out = { ok: !!r?.ok, id: String(r?.id ?? ''), needs_you: !!r?.needsYou };
-    return { content: [{ type: 'text', text: out.needs_you ? 'Asked the owner (needs you): a question card is open and pushed.' : 'Posted to the Bot chat as an FYI (unread for the owner, not pushed).' }], structuredContent: out };
+    return { content: [{ type: 'text', text: out.needs_you ? (r?.pushDeduped ? 'Asked the owner (needs you): a question card is open; not pushed again, the gateway already pushed that item.' : 'Asked the owner (needs you): a question card is open and pushed.') : 'Posted to the Bot chat as an FYI (unread for the owner, not pushed).' }], structuredContent: out };
   }
   if (name === 'notify_user') {
     const r = await api('/api/bot/notify', { method: 'POST', body: JSON.stringify({ from: self.sessionId, title: args.title, body: args.body, tier: args.urgent ? 'urgent' : 'normal', ...(args.link ? { link: args.link } : {}) }) });

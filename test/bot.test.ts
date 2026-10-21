@@ -278,7 +278,7 @@ describe('the digest', () => {
   });
 
   it('digestLine names the item and where it is', () => {
-    expect(digestLine(urgent('a'))).toBe('- session_done · X: Turn failed: a (project p1, conversation x)');
+    expect(digestLine(urgent('a'))).toBe('- session_done · X: Turn failed: a [projectId=p1 sessionId=x]');
   });
 });
 
