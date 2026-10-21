@@ -31,35 +31,86 @@ struct ChatRow: Identifiable, Equatable {
     var card: ChatCard?
 }
 
-/// The Bot chat keeps quiet by default, as on the panel (rc-chat.js,
-/// syncBotSystemHistory): its digests and the replies to them, the morning
-/// brief's trigger, advisor follow-ups, relay checkpoints and routine "Bot
-/// status" notices stay in the history but out of view until "Show system
-/// history". The Bot's brief itself, errors and "Bot needs you" always show.
+/// The Bot chat keeps quiet by default. This is the panel's rule, row for
+/// row (rc-chat.js botRowVisibility / botRowKind, whose comment is the spec):
+/// a turn starts at each user row and takes its sender kind; "keep" rows (an
+/// error, "Bot needs you:") always show; "system" rows (a relay checkpoint,
+/// "Bot status:") always hide; a digest turn (`bot_event`) hides everything;
+/// a morning-brief turn (`bot_brief`) shows only its last reply, as the
+/// brief; an advisor turn hides only its trigger; anything else shows.
 enum BotHistory {
-    /// Senders whose messages are the gateway or a helper talking to the Bot.
-    static let systemSenders: Set<String> = ["bot_event", "bot_brief", "advisor"]
+    /// The turn kinds that are the gateway or a helper talking to the Bot.
+    static let turnKinds: Set<String> = ["bot_event", "bot_brief", "advisor"]
     /// Queue items the person never needs to see waiting.
     static let quietQueue: Set<String> = ["bot_event", "bot_brief"]
 
-    /// The rows that are system history.
-    static func systemRows(_ rows: [ChatRow]) -> Set<UUID> {
-        var out = Set<UUID>()
-        var digest = false
-        for r in rows {
-            if r.role == .user { digest = r.senderKind == "bot_event" }
-            if r.role == .error || r.text.hasPrefix("Bot needs you:") { continue }
-            let system = r.role == .user
-                ? systemSenders.contains(r.senderKind ?? "")
-                : digest || isCheckpoint(r.text) || (r.role == .notice && r.text.hasPrefix("Bot status:"))
-            if system { out.insert(r.id) }
+    enum RowKind { case keep, system, trigger, reply, tool, other }
+    /// A row that is not plainly shown: hidden until "Show system messages",
+    /// or the morning brief.
+    enum State { case show, hide, brief }
+
+    static func kind(_ r: ChatRow) -> RowKind {
+        if r.role == .error { return .keep }
+        if r.role == .notice {
+            if r.text.hasPrefix("Bot needs you:") { return .keep }
+            if r.text.hasPrefix("Bot status:") { return .system }
         }
+        if r.role == .user { return .trigger }
+        if isCheckpoint(r.text) { return .system }
+        switch r.role {
+        case .assistant: return .reply
+        case .action: return .tool
+        default: return .other
+        }
+    }
+
+    /// `lastReply` matters only in a brief turn: earlier replies are the
+    /// Bot's commentary before its tools.
+    static func visibility(_ kind: RowKind, turn: String, lastReply: Bool = true) -> State {
+        switch kind {
+        case .keep: return .show
+        case .system: return .hide
+        default: break
+        }
+        switch turn {
+        case "bot_event": return .hide
+        case "bot_brief": return kind == .reply && lastReply ? .brief : .hide
+        case "advisor": return kind == .trigger ? .hide : .show
+        default: return .show
+        }
+    }
+
+    /// Every row that is not plainly shown, by id.
+    static func states(_ rows: [ChatRow]) -> [UUID: State] {
+        var out: [UUID: State] = [:]
+        var turn = ""
+        var brief: UUID?
+        for r in rows {
+            let k = kind(r)
+            if k == .trigger {
+                if let b = brief { out[b] = .brief }
+                brief = nil
+                turn = turnKinds.contains(r.senderKind ?? "") ? r.senderKind ?? "" : ""
+            }
+            if turn == "bot_brief", k == .reply {
+                // A newer reply makes the one before it commentary.
+                if let b = brief { out[b] = visibility(.reply, turn: turn, lastReply: false) }
+                brief = r.id
+                continue
+            }
+            let v = visibility(k, turn: turn)
+            if v != .show { out[r.id] = v }
+        }
+        if let b = brief { out[b] = .brief }
         return out
     }
 
     /// "Not sent yet (relay checkpoint): ...": the gateway holding a send.
+    /// Only the start counts, so a long reply is not scanned.
     static func isCheckpoint(_ text: String) -> Bool {
-        text.range(of: #"^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay checkpoint[:.])"#, options: [.regularExpression, .caseInsensitive]) != nil
+        let head = text.prefix(48)
+        guard let first = head.first, "NnRr".contains(first) else { return false }
+        return head.range(of: #"^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay checkpoint[:.])"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 }
 
@@ -125,6 +176,8 @@ final class ConversationModel {
     var isBot: Bool { project?.isBot ?? false }
     /// The Bot's system rows, folded away until asked for (BotHistory).
     var showSystemHistory = false
+    /// How each of the Bot's rows shows (BotHistory); empty elsewhere.
+    var botStates: [UUID: BotHistory.State] { isBot ? BotHistory.states(rows) : [:] }
     var queued: [QueueItem] { sessionId.map { app.queued(projectId, $0) } ?? [] }
     var model: String { sessionId == nil ? draftModel : (conversation?.model ?? "") }
     var effort: String { sessionId == nil ? draftEffort : (conversation?.effort ?? "") }
@@ -143,8 +196,8 @@ final class ConversationModel {
     var items: [DisplayItem] {
         var out: [DisplayItem] = []
         var run: [ChatRow] = []
-        let hidden = isBot && !showSystemHistory ? BotHistory.systemRows(rows) : []
-        for r in rows where !hidden.contains(r.id) {
+        let states = isBot && !showSystemHistory ? BotHistory.states(rows) : [:]
+        for r in rows where states[r.id] != .hide {
             if r.role == .action { run.append(r); continue }
             if !run.isEmpty { out.append(.steps(run)); run = [] }
             out.append(.row(r))

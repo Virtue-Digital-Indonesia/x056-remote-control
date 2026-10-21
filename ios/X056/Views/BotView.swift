@@ -356,13 +356,26 @@ private struct BotThread: View {
     let model: ConversationModel
 
     var body: some View {
-        // Shown on request, and dimmed, so the quiet view stays the obvious one.
-        let system = model.showSystemHistory ? BotHistory.systemRows(model.rows) : []
+        // Hidden rows show only on request, and dimmed, so the quiet view
+        // stays the obvious one.
+        let states = model.botStates
         VStack(alignment: .leading, spacing: 16) {
+            if model.showSystemHistory {
+                Button { withAnimation(.snappy) { model.showSystemHistory = false } } label: {
+                    Label("Showing system messages · Hide", systemImage: "eye.slash")
+                        .font(.footnote.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .glassEffect(.regular.interactive(), in: .capsule)
+                .frame(maxWidth: .infinity)
+            }
             ForEach(model.items) { item in
                 switch item {
-                case .row(let r): BotLine(row: r).opacity(system.contains(r.id) ? 0.6 : 1)
-                case .steps(let rs): BotLookups(rows: rs).opacity(system.contains(rs[0].id) ? 0.6 : 1)
+                case .row(let r): BotLine(row: r, brief: states[r.id] == .brief).opacity(states[r.id] == .hide ? 0.6 : 1)
+                case .steps(let rs): BotLookups(rows: rs).opacity(states[rs[0].id] == .hide ? 0.6 : 1)
                 }
             }
             if model.isWorking {
@@ -384,12 +397,14 @@ private struct BotThread: View {
 
 private struct BotLine: View {
     let row: ChatRow
+    /// The last reply of a morning-brief turn: the brief itself.
+    var brief = false
 
     var body: some View {
         switch row.role {
         case .user:
             // Its setup message is for the Bot, not for this screen.
-            if let kind = row.senderKind, BotHistory.systemSenders.contains(kind) {
+            if let kind = row.senderKind, BotHistory.turnKinds.contains(kind) {
                 SystemNote(kind: kind, text: row.text)
             } else if !row.text.hasPrefix(AppModel.botSetupPrefix) {
                 HStack {
@@ -408,9 +423,16 @@ private struct BotLine: View {
             HStack(alignment: .top, spacing: 10) {
                 BotOrb(mood: .idle, size: 22)
                     .frame(width: 30, height: 30)
-                MarkdownText(text: row.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contextMenu { CopyButton(text: row.text) }
+                VStack(alignment: .leading, spacing: 6) {
+                    if brief {
+                        Label("Morning brief", systemImage: "sun.max.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    MarkdownText(text: row.text)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contextMenu { CopyButton(text: row.text) }
             }
         case .error:
             Label(row.text, systemImage: "exclamationmark.triangle.fill")
@@ -520,9 +542,14 @@ struct SystemHistoryToggle: View {
     let model: ConversationModel
 
     var body: some View {
-        Button(model.showSystemHistory ? "Hide system history" : "Show system history", systemImage: "clock.arrow.circlepath") {
+        // The panel's wording (Today > "Show N hidden system messages").
+        let hidden = model.botStates.values.filter { $0 == .hide }.count
+        Button(model.showSystemHistory ? "Hide system messages"
+               : hidden == 1 ? "Show 1 hidden system message" : "Show \(hidden) hidden system messages",
+               systemImage: model.showSystemHistory ? "eye.slash" : "eye") {
             withAnimation(.snappy) { model.showSystemHistory.toggle() }
         }
+        .disabled(!model.showSystemHistory && hidden == 0)
     }
 }
 
@@ -593,7 +620,7 @@ private struct BotInput: View {
     ]
 
     var body: some View {
-        let empty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let empty = !text.contains(where: { !$0.isWhitespace })
         let suggest = empty && !sending && !dictation.isListening && !model.isWorking
         VStack(spacing: 10) {
             if suggest {

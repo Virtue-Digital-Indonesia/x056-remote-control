@@ -207,7 +207,7 @@ struct HomeItem: Identifiable {
                     status: ConvStatus.of(p.id, c, in: app),
                     unread: app.unread[k] != nil,
                     urgent: app.unread[k] == .question || app.unread[k] == .failed,
-                    draft: !app.draft(p.id, c.sessionId).isEmpty,
+                    draft: app.hasDraft(p.id, c.sessionId),
                     dismissed: app.recentDismissed.contains(k),
                     meta: meta))
             }

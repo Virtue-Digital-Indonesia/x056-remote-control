@@ -123,7 +123,8 @@ struct Composer: View {
     private static let longTextLines = 30
 
     var body: some View {
-        let empty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty
+        // Stops at the first letter: trimming copied the whole text per keystroke.
+        let empty = !text.contains(where: { !$0.isWhitespace }) && files.isEmpty
         VStack(alignment: .leading, spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -178,8 +179,11 @@ struct Composer: View {
                 picks = []
             }
         }
-        .onChange(of: text) { _, t in
-            if t.split(separator: "\n", omittingEmptySubsequences: false).count >= Self.longTextLines && t.count > 200 && !loadedDraft {
+        .onChange(of: text) { old, t in
+            // Only a jump in size can be such a paste; counting lines on every
+            // keystroke walked the whole text.
+            if t.utf8.count - old.utf8.count > 200, !loadedDraft,
+               t.split(separator: "\n", omittingEmptySubsequences: false).count >= Self.longTextLines {
                 // A long paste that slipped past the text view (dictation, Scribble).
                 files.append(.text(t))
                 text = ""

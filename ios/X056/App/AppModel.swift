@@ -105,7 +105,13 @@ final class AppModel {
     /// The gateway's shared read state (`/api/conversations/read-state`), so a
     /// read on the web clears the phone and back. nil: an older gateway.
     var serverRead: [String: ReadItem]?
-    private(set) var drafts: [String: String] = Stored.load("drafts") ?? [:]
+    /// Draft texts, kept out of observation: the composer writes one on every
+    /// keystroke, and an observed dictionary re-rendered Home (alive in its
+    /// tab) each time. Home watches `draftKeys`, which changes only when a
+    /// draft appears or is cleared.
+    @ObservationIgnored private var drafts: [String: String] = Stored.load("drafts") ?? [:]
+    private(set) var draftKeys: Set<String> = Set((Stored.load("drafts") as [String: String]? ?? [:]).keys)
+    @ObservationIgnored private var draftSave: Task<Void, Never>?
     private(set) var recentDismissed: Set<String> = Stored.load("recentDismissed") ?? []
     /// Workspace metadata (archived, tags), shared with the panel.
     var conversationMeta: [String: ConversationMeta] = [:]
@@ -135,6 +141,7 @@ final class AppModel {
             for key in ["server", "lastSeq", "apnsToken", "botProjectId", "botSessionId", "drafts"] { UserDefaults.standard.removeObject(forKey: key) }
             // Loaded by its initializer before this ran.
             drafts = [:]
+            draftKeys = []
         }
         #endif
         server = UserDefaults.standard.string(forKey: "server").flatMap(URL.init(string:))
@@ -248,6 +255,7 @@ final class AppModel {
     }
 
     func enterBackground() {
+        saveDrafts()
         disconnect()
         stopPresence()
     }
@@ -424,11 +432,31 @@ final class AppModel {
         drafts[Self.key(projectId, sessionId ?? "")] ?? ""
     }
 
+    func hasDraft(_ projectId: String, _ sessionId: String?) -> Bool {
+        draftKeys.contains(Self.key(projectId, sessionId ?? ""))
+    }
+
+    /// Cheap enough for every keystroke: the text is held in memory and
+    /// written to disk once typing pauses (or the app goes to the background).
     func setDraft(_ projectId: String, _ sessionId: String?, _ text: String) {
         let k = Self.key(projectId, sessionId ?? "")
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+        let value = text.contains(where: { !$0.isWhitespace }) ? text : nil
         guard drafts[k] != value else { return }
         drafts[k] = value
+        if (value != nil) != draftKeys.contains(k) {
+            if value != nil { draftKeys.insert(k) } else { draftKeys.remove(k) }
+        }
+        draftSave?.cancel()
+        draftSave = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            self?.saveDrafts()
+        }
+    }
+
+    func saveDrafts() {
+        draftSave?.cancel()
+        draftSave = nil
         Stored.save("drafts", drafts)
     }
 

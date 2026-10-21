@@ -205,10 +205,11 @@ enum MarkdownEditing {
 
     /// What to style, in the order to apply it: a line's own style first,
     /// then what is inside it, markers last so they stay faint.
-    static func spans(_ text: String) -> [Span] {
+    /// `inFence`: the text starts inside a code fence (a slice of a longer one).
+    static func spans(_ text: String, inFence startInFence: Bool = false) -> [Span] {
         let ns = text as NSString
         var out: [Span] = []
-        var inFence = false
+        var inFence = startInFence
         ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines, .substringNotRequired]) { _, line, _, _ in
             let s = ns.substring(with: line)
             let trimmed = s.trimmingCharacters(in: .whitespaces)

@@ -77,8 +77,12 @@ struct ComposerTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PasteAwareTextView, context: Context) {
-        if view.text != text {
+        // The binding usually holds the very string the view last reported,
+        // so this is an identity check, not a read and compare of the text.
+        if text != context.coordinator.reported {
             view.text = text
+            context.coordinator.reported = text
+            context.coordinator.measure = true
             MarkdownStyler.style(view)
         }
         view.placeholder = placeholder
@@ -90,9 +94,17 @@ struct ComposerTextView: UIViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView view: PasteAwareTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? 280
-        let fitted = view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         let line = UIFont.preferredFont(forTextStyle: .body).lineHeight
         let cap = line * CGFloat(maxLines) + view.textContainerInset.top + view.textContainerInset.bottom
+        // Past the cap the box stays at the cap while the text grows: laying
+        // out the whole text again on every keystroke is what made a long
+        // message lag. A shorter text (or a new width) measures again.
+        let coordinator = context.coordinator
+        if view.isScrollEnabled, !coordinator.measure, view.contentSize.height > cap, abs(view.bounds.width - width) < 0.5 {
+            return CGSize(width: width, height: cap)
+        }
+        coordinator.measure = false
+        let fitted = view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         view.isScrollEnabled = fitted.height > cap
         return CGSize(width: width, height: min(fitted.height, cap))
     }
@@ -102,6 +114,14 @@ struct ComposerTextView: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         let text: Binding<String>
         let editing: Binding<Bool>?
+        /// The text last handed to the binding.
+        var reported = ""
+        /// Measure the full text on the next size pass (it may have shrunk).
+        var measure = true
+        /// What the coming change touches, for styling only those lines.
+        private var edited: NSRange?
+        private var wholeText = false
+
         init(text: Binding<String>, editing: Binding<Bool>?) {
             self.text = text
             self.editing = editing
@@ -111,18 +131,31 @@ struct ComposerTextView: UIViewRepresentable {
         func textViewDidEndEditing(_ view: UITextView) { editing?.wrappedValue = false }
 
         func textViewDidChange(_ view: UITextView) {
-            text.wrappedValue = view.text
-            MarkdownStyler.style(view)
+            let now = view.text ?? ""
+            if now.utf8.count < reported.utf8.count { measure = true }
+            reported = now
+            text.wrappedValue = now
+            MarkdownStyler.style(view, edited: wholeText ? nil : edited)
+            edited = nil
+            wholeText = false
             view.invalidateIntrinsicContentSize()
-            (view as? PasteAwareTextView)?.setNeedsDisplay()
+            (view as? PasteAwareTextView)?.textChanged()
         }
 
-        /// Return inside a list starts the next item, or ends the list on an empty one.
         func textView(_ view: UITextView, shouldChangeTextIn range: NSRange, replacementText string: String) -> Bool {
-            guard string == "\n", view.markedTextRange == nil, let view = view as? PasteAwareTextView,
-                  let edit = MarkdownEditing.returnKey(in: view.text, selection: range) else { return true }
-            view.apply(edit)
-            return false
+            // Return inside a list starts the next item, or ends the list on an empty one.
+            if string == "\n", view.markedTextRange == nil, let view = view as? PasteAwareTextView,
+               let edit = MarkdownEditing.returnKey(in: view.text, selection: range) {
+                view.apply(edit)
+                return false
+            }
+            // A code fence changes how every line below it reads, so an edit
+            // to a fence line restyles the whole text; others, their lines.
+            let ns = view.textStorage.mutableString
+            let before = ns.substring(with: ns.paragraphRange(for: range))
+            wholeText = MarkdownStyler.hasFence(before) || MarkdownStyler.hasFence(string)
+            edited = NSRange(location: range.location, length: (string as NSString).length)
+            return true
         }
 
         func textView(_ view: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
@@ -142,33 +175,61 @@ struct ComposerTextView: UIViewRepresentable {
     private static let accent = UIColor(Palette.clay)
     private static let keys: [NSAttributedString.Key] = [.font, .foregroundColor, .backgroundColor, .strikethroughStyle]
 
+    /// Texts shorter than this restyle whole on each change; it is cheap.
+    private static let wholeTextLimit = 1500
+
     /// Works out the styled text aside, then touches only the runs whose
     /// style changed: plain typing changes nothing, and an attribute edit
-    /// under the keyboard on every keystroke dropped fast typing.
-    static func style(_ view: UITextView) {
+    /// under the keyboard on every keystroke dropped fast typing. In a long
+    /// text only the lines `edited` touched are worked out again.
+    static func style(_ view: UITextView, edited: NSRange? = nil) {
         // Mid-composition (Japanese, Chinese, dictation): restyle once it is committed.
         guard view.markedTextRange == nil else { return }
         let storage = view.textStorage
+        let ns = storage.mutableString
         let base = UIFont.preferredFont(forTextStyle: .body)
         let plain: [NSAttributedString.Key: Any] = [.font: base, .foregroundColor: UIColor.label]
         view.typingAttributes = plain
-        let target = NSMutableAttributedString(string: storage.string, attributes: plain)
-        for span in MarkdownEditing.spans(target.string) {
+        var range = NSRange(location: 0, length: ns.length)
+        var inFence = false
+        if let edited, ns.length > wholeTextLimit {
+            let at = min(edited.location, ns.length)
+            range = ns.paragraphRange(for: NSRange(location: at, length: min(edited.length, ns.length - at)))
+            inFence = hasFence(ns) && fenceOpen(before: range.location, in: ns)
+        }
+        let target = NSMutableAttributedString(string: ns.substring(with: range), attributes: plain)
+        for span in MarkdownEditing.spans(target.string, inFence: inFence) {
             apply(span, to: target, base: base)
         }
         var changes: [(NSRange, [NSAttributedString.Key: Any])] = []
-        target.enumerateAttributes(in: NSRange(location: 0, length: target.length)) { attrs, range, _ in
-            if !matches(storage, attrs, in: range) { changes.append((range, attrs)) }
+        target.enumerateAttributes(in: NSRange(location: 0, length: target.length)) { attrs, r, _ in
+            let at = NSRange(location: r.location + range.location, length: r.length)
+            if !matches(storage, attrs, in: at) { changes.append((at, attrs)) }
         }
         guard !changes.isEmpty else { return }
         let selection = view.selectedRange
         storage.beginEditing()
-        for (range, attrs) in changes {
-            for key in keys where attrs[key] == nil { storage.removeAttribute(key, range: range) }
-            storage.addAttributes(attrs, range: range)
+        for (r, attrs) in changes {
+            for key in keys where attrs[key] == nil { storage.removeAttribute(key, range: r) }
+            storage.addAttributes(attrs, range: r)
         }
         storage.endEditing()
         if view.selectedRange != selection { view.selectedRange = selection }
+    }
+
+    static func hasFence(_ text: String) -> Bool { text.contains("```") || text.contains("~~~") }
+    private static func hasFence(_ ns: NSString) -> Bool {
+        ns.range(of: "```").location != NSNotFound || ns.range(of: "~~~").location != NSNotFound
+    }
+
+    /// Whether a code fence is open where `location` starts.
+    private static func fenceOpen(before location: Int, in ns: NSString) -> Bool {
+        var open = false
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: location), options: [.byLines, .substringNotRequired]) { _, line, _, _ in
+            let head = ns.substring(with: NSRange(location: line.location, length: min(line.length, 64))).drop { $0 == " " || $0 == "\t" }
+            if head.hasPrefix("```") || head.hasPrefix("~~~") { open.toggle() }
+        }
+        return open
     }
 
     private static func matches(_ storage: NSTextStorage, _ want: [NSAttributedString.Key: Any], in range: NSRange) -> Bool {
@@ -226,18 +287,38 @@ struct ComposerTextView: UIViewRepresentable {
 final class PasteAwareTextView: UITextView {
     var onPaste: (([PendingFile]) -> Void)?
     var longTextLimit = 4000
-    var placeholder = "" { didSet { if placeholder != oldValue { setNeedsDisplay() } } }
+    var placeholder = "" { didSet { if placeholder != oldValue { placeholderLabel.text = placeholder } } }
 
-    override var text: String! { didSet { setNeedsDisplay() } }
+    /// A label, not a draw(_:) override: drawing made the whole view repaint
+    /// on every keystroke.
+    private let placeholderLabel: UILabel = {
+        let l = UILabel()
+        l.font = .preferredFont(forTextStyle: .body)
+        l.adjustsFontForContentSizeCategory = true
+        l.textColor = .placeholderText
+        l.isAccessibilityElement = false
+        return l
+    }()
 
-    override func draw(_ rect: CGRect) {
-        super.draw(rect)
-        guard text.isEmpty, !placeholder.isEmpty else { return }
-        let origin = CGPoint(x: textContainerInset.left + textContainer.lineFragmentPadding, y: textContainerInset.top)
-        (placeholder as NSString).draw(at: origin, withAttributes: [
-            .font: UIFont.preferredFont(forTextStyle: .body),
-            .foregroundColor: UIColor.placeholderText,
-        ])
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        addSubview(placeholderLabel)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        addSubview(placeholderLabel)
+    }
+
+    override var text: String! { didSet { textChanged() } }
+
+    func textChanged() { placeholderLabel.isHidden = textStorage.length > 0 }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let x = textContainerInset.left + textContainer.lineFragmentPadding
+        placeholderLabel.frame = CGRect(x: x, y: textContainerInset.top, width: max(0, bounds.width - x - textContainerInset.right),
+                                        height: placeholderLabel.font.lineHeight)
     }
 
     static let formats: [(title: String, icon: String, mark: String)] = [
