@@ -2170,7 +2170,7 @@ export class SessionManager {
    * The words live durably in the Bot's transcript (the tool call); the event
    * is the live half of the same message.
    */
-  botMessage(from: string, input: { text: string; needsYou?: boolean; options?: string[]; source?: { projectId?: unknown; sessionId?: unknown } }): { id: string; needsYou: boolean; pushDeduped: boolean } {
+  botMessage(from: string, input: { text: string; needsYou?: boolean; options?: string[]; source?: { projectId?: unknown; sessionId?: unknown }; silent?: boolean }): { id: string; needsYou: boolean; pushDeduped: boolean } {
     const bot = this.bot();
     if (!bot.isBotSession(from)) throw new Error('only the Bot can message the owner');
     const text = String(input.text ?? '').trim();
@@ -2186,7 +2186,9 @@ export class SessionManager {
     // An invalid source is ignored, not an error.
     const src = input.source;
     const pushDeduped = needsYou && typeof src?.projectId === 'string' && typeof src?.sessionId === 'string'
-      && this.conversationExists(src.projectId, src.sessionId) && bot.wasPushed(src.projectId, src.sessionId);
+      && this.conversationExists(src.projectId, src.sessionId) && bot.wasPushed(src.projectId, src.sessionId)
+      // `silent` (HTTP route only, never offered to the model): an operator's test ask, e.g. a deploy check at night.
+      || needsYou && input.silent === true;
     if (needsYou) this.addPendingQuestion(pid, from, { question: text, options }, 'merge', undefined, pushDeduped ? { pushDeduped: true } : {});
     return { id, needsYou, pushDeduped };
   }

@@ -247,6 +247,17 @@ describe('message_owner source: no second push for an item the gateway already p
     expect(f.readState.view(s.projectId!, s.sessionId!)).toBeDefined();
   });
 
+  it('silent (HTTP route only, for an operator test ask) opens and counts the question without pushing; the MCP tool cannot send it', async () => {
+    const f = fixture(), s = f.manager.bot().update({ enabled: true }), api = controller(f);
+    const r = api.botMessage({ from: s.sessionId!, text: 'Deploy check: ignore', needsYou: true, silent: true });
+    expect(r).toMatchObject({ ok: true, needsYou: true, pushDeduped: true });
+    expect(f.manager.botAttention()).toMatchObject({ needsMe: 1 });
+    const notice = kinds(f, 'question')[0].data.notice as { screenSuppressed?: boolean };
+    expect(deviceWantsIt(notice)).toBe(false);
+    const tool = (await import(String('../scripts/x056-mcp-bot.mjs')) as { BOT_TOOLS: { name: string; inputSchema: { properties: Record<string, unknown> } }[] }).BOT_TOOLS.find((t) => t.name === 'message_owner')!;
+    expect(Object.keys(tool.inputSchema.properties)).not.toContain('silent');
+  });
+
   it('without a source it pushes as before', () => {
     const f = fixture(), s = f.manager.bot().update({ enabled: true }), api = controller(f);
     seeItem(f);
