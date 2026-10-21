@@ -39,12 +39,13 @@ const ROWS = [
     const make = async options => {
       const context = await browser.newContext({ serviceWorkers: 'block', ...options });
       await context.addInitScript(t => localStorage.setItem('x056_token', t), token);
-      const server = { name: 'Bot', attention: { needsMe: 1, fyi: true } };
+      // The owner already answered the question in text ("Wait until tomorrow, please."), so nothing is pending.
+      const server = { name: 'Bot', attention: { needsMe: 0, fyi: false } };
       await context.route(/\/api\/sessions\/current\/stream/, route => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: ': fixture heartbeat\n\n' }));
       await context.route('**/api/bot', async route => { if (route.request().method() === 'POST') { const b = route.request().postDataJSON(); if (b.name) server.name = b.name; } await route.fulfill({ json: { enabled: true, projectId: bot.id, sessionId: bot.lastSessionId, url: '/chat/' + bot.id, briefAt: '07:30', tz: 'Asia/Jakarta', name: server.name, attention: server.attention } }); });
       await context.route(/\/api\/projects(\?|$)/, async route => { const response = await route.fetch(), data = await response.json(); for (const p of data.projects) if (p.id === bot.id) { p.bot = true; p.botName = server.name; p.botAttention = server.attention; } await route.fulfill({ response, json: data }); });
-      await context.route('**/api/questions', route => route.fulfill({ json: [{ projectId: bot.id, sessionId: bot.lastSessionId, question: 'Deploy the release candidate now, or wait until tomorrow morning?', options: ['Deploy now', 'Wait until tomorrow'], at: new Date().toISOString() }] }));
-      await context.route('**/api/bot/overview*', route => route.fulfill({ json: { needsYou: [{ kind: 'question', title: 'Release', text: 'Deploy now or wait?' }], running: [], delegates: [], scheduled: [] } }));
+      await context.route('**/api/questions', route => route.fulfill({ json: [] }));
+      await context.route('**/api/bot/overview*', route => route.fulfill({ json: { needsYou: [], running: [], delegates: [], scheduled: [] } }));
       await context.route(/\/api\/conversations\/history-page\?/, route => new URL(route.request().url()).searchParams.get('projectId') !== bot.id ? route.continue() : route.fulfill({ json: { done: true, cursor: null, rows: ROWS.map((row, i) => ({ ...row, ts: new Date(t0 + i * 600000).toISOString() })) } }));
       return { context, server };
     };
@@ -55,11 +56,9 @@ const ROWS = [
       const page = await context.newPage();
       await open(page, '/chat/' + bot.id);
       // Phones show one screen: scroll back so the owner bubbles are in view.
-      if (label === 'phone') await page.evaluate(() => { const s = document.querySelector('.scroll'); s.scrollTop = s.scrollHeight - s.clientHeight - 560; });
       await page.screenshot({ path: `${shots}/clean-chat-${label}${suffix}.png` });
       await page.locator('#rcBotToday:visible, #rcBotNeeds:visible').first().click(); await page.locator('#rcBotSystemHistory').click();
       await page.waitForTimeout(400);
-      if (label === 'phone') await page.evaluate(() => { const s = document.querySelector('.scroll'); s.scrollTop = s.scrollHeight - s.clientHeight - 1500; });
       await page.waitForTimeout(200);
       await page.screenshot({ path: `${shots}/hidden-shown-${label}${suffix}.png` });
       await context.close();

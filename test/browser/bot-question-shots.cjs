@@ -53,6 +53,9 @@ assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
       await emit('session_done', { status: 'completed', origin: 'relay' });
       await page.waitForTimeout(800);
       assert.equal(await page.locator('#chat .qcard.pending').count(), 1, 'the question card survived the agent turn');
+      // On the Bot's own page the header pill is the one count: no badge, no floating pinned-conversations button.
+      assert.equal(await page.evaluate(() => [...document.querySelectorAll('.bot-ind')].filter(e => e.offsetParent !== null).length), 0, 'no repeated Bot badge on the Bot page');
+      assert.equal(await page.evaluate(() => { const s = document.getElementById('conversationStage'); return !!s && s.offsetParent !== null; }), false, 'no floating button on the Bot page');
       await page.screenshot({ path: `${shots}/question-survives-${label}${suffix}.png` });
       await page.locator('#rcBotToday:visible, #rcBotNeeds:visible').first().click();
       await page.locator('#rcBotSystemHistory').click();
