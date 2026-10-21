@@ -55,7 +55,16 @@ export function parseQuestion(text: string): ParsedQuestion | null {
 
 /** Remove the raw ASK block from assistant text before display. */
 export function stripAsk(text: string): string {
-  return text.replace(/<<<ASK[\s\S]*?>>>/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  return stripResolved(text.replace(/<<<ASK[\s\S]*?>>>/g, '')).replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** The marker an automated turn ends its reply with to close the open question. */
+export const RESOLVED_MARKER = '<<<RESOLVED>>>';
+export function hasResolved(text: string): boolean {
+  return typeof text === 'string' && text.includes(RESOLVED_MARKER);
+}
+export function stripResolved(text: string): string {
+  return text.split(RESOLVED_MARKER).join('');
 }
 
 /** Remove the appended ASK convention from a stored user prompt for display. */

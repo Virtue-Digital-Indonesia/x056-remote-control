@@ -55,6 +55,7 @@ import { MCP_OAUTH } from './mcp-oauth.controller.js';
 import type { McpOAuth } from './mcp-oauth.js';
 import { McpServerManager, REDACTED_RE, redactSpec, restoreRedacted, type McpServerSpec } from './mcp-servers.js';
 import type { HistoryEntry } from './history.js';
+import { botHistory, botInitialTurn } from './bot-view.js';
 import { withAskInstructions } from '../src/question.js';
 import type { PushService, DeviceSettings } from './push.js';
 import { Presence, type PresenceReport } from './presence.js';
@@ -797,7 +798,9 @@ export class ApiController {
     const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 100;
     try {
       const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
-      return this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [], true)).slice(-n);
+      const rows = this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [], true));
+      // The Bot's chat comes back with the owner's view: owner messages and a verdict per row.
+      return (this.manager.bot().isBotProject(projectId) ? botHistory(rows) : rows).slice(-n);
     } catch {
       if (strict === 'true') throw new BadRequestException('Conversation history unavailable');
       return [];
@@ -949,13 +952,18 @@ export class ApiController {
     const cur = Number.isFinite(Number(before)) && Number(before) >= 0 ? Number(before) : undefined;
     try {
       const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
+      const bot = this.manager.bot().isBotProject(projectId);
       if (adapter.readHistoryPage) {
         const page = adapter.readHistoryPage(configDirs, providerSessionId, n, cur);
-        return { ...page, rows: this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, page.rows, cur === undefined)) };
+        const rows = this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, page.rows, cur === undefined));
+        if (!bot) return { ...page, rows };
+        // A page that starts mid-turn: the turn's kind is on a trigger in an older page.
+        const readOlder = (before: number) => { const older = adapter.readHistoryPage!(configDirs, providerSessionId, 60, before); return { rows: new ConversationJournal(this.stateDir).merge(projectId, sessionId, older.rows, false), cursor: older.cursor, done: older.done }; };
+        return { ...page, rows: botHistory(rows, botInitialTurn(rows, page.cursor, page.done, readOlder)) };
       }
       // Provider without pagination: serve the newest page and report no more.
-      const rows = adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [];
-      return { rows: this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, rows, true)), cursor: 0, done: true };
+      const rows = this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [], true));
+      return { rows: bot ? botHistory(rows) : rows, cursor: 0, done: true };
     } catch {
       return { rows: [], cursor: 0, done: true };
     }
@@ -1222,15 +1230,15 @@ export class ApiController {
 
   @Get('bot')
   botStatus() {
-    return this.manager.bot().status();
+    return this.manager.botStatus();
   }
 
   /** {enabled?, briefAt?: 'HH:MM' before 12:00, tz?: IANA}. enabled: true
    *  creates the Chat (or reuses it); false stops the brief and the digest. */
   @Post('bot')
   @HttpCode(200)
-  botUpdate(@Body() body: { enabled?: boolean; briefAt?: string; tz?: string }) {
-    try { return this.manager.bot().update(body ?? {}); }
+  botUpdate(@Body() body: { enabled?: boolean; briefAt?: string; tz?: string; name?: string }) {
+    try { this.manager.bot().update(body ?? {}); return this.manager.botStatus(); }
     catch (err) { throw new BadRequestException((err as Error).message); }
   }
 
@@ -1254,6 +1262,19 @@ export class ApiController {
     const link = typeof body.link === 'string' && body.link.startsWith('/') && !body.link.startsWith('//') && body.link.length <= 500 ? body.link : undefined;
     const out = this.manager.botNotify(body.from as string, { title: body.title.trim(), body: body.body, tier: body.tier as 'urgent' | 'normal' | undefined, link });
     return { ok: true, id: out.id, tier: body.tier === 'urgent' ? 'urgent' : 'normal', ...(link ? { link } : {}) };
+  }
+
+  /** The Bot's message_owner: FYI, or (needsYou) a question card. Only a
+   *  conversation of the Bot may call it. */
+  @Post('bot/message')
+  @HttpCode(200)
+  botMessage(@Body() body: { from?: string; text?: string; needsYou?: boolean; options?: string[] }) {
+    if (!this.manager.bot().isBotSession(body?.from)) throw new ForbiddenException('only the Bot can message the owner');
+    if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 8000) throw new BadRequestException('text required (1-8000 characters)');
+    if (body.needsYou !== undefined && typeof body.needsYou !== 'boolean') throw new BadRequestException('needsYou must be true or false');
+    if (body.options !== undefined && (!Array.isArray(body.options) || body.options.some((o) => typeof o !== 'string' || o.length > 200))) throw new BadRequestException('options must be a list of short strings');
+    const out = this.manager.botMessage(body.from as string, { text: body.text, needsYou: body.needsYou === true, options: body.options });
+    return { ok: true, id: out.id, needsYou: out.needsYou };
   }
 
   /** What the Bot reads first: cheap reads only (no transcript scans, no

@@ -43,10 +43,11 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     if(navSignature!==markup){navSignature=markup;const focused=document.activeElement?.closest('#crProjectLinks a')?.getAttribute('href'),toggle=document.activeElement?.closest('[data-project-toggle]')?.dataset.projectToggle;$('crProjectLinks').innerHTML=markup;$('crProjectLinks').querySelectorAll('[data-project-toggle]').forEach(button=>button.onclick=()=>{expandedProjects.has(button.dataset.projectToggle)?expandedProjects.delete(button.dataset.projectToggle):expandedProjects.add(button.dataset.projectToggle);navSignature='';renderNav();requestAnimationFrame(()=>document.querySelector('[data-project-toggle="'+CSS.escape(button.dataset.projectToggle)+'"]')?.focus());});if(focused)[...$('crProjectLinks').querySelectorAll('a')].find(a=>a.getAttribute('href')===focused)?.focus({preventScroll:true});else if(toggle)$('crProjectLinks').querySelector('[data-project-toggle="'+CSS.escape(toggle)+'"]')?.focus({preventScroll:true});}
     if(contextChanged){const selected=$('crProjectLinks').querySelector('[aria-current=page]');if(selected){const container=$('crProjectLinks'),a=selected.getBoundingClientRect(),b=container.getBoundingClientRect();if(a.bottom>b.bottom)container.scrollTop+=a.bottom-b.bottom+8;else if(a.top<b.top)container.scrollTop-=b.top-a.top+8;}}
     const pathname=location.pathname;
+    paintBot();
     const botOpen=pathname==='/bot'||engine.state().projects.some(p=>p.bot&&pathname==='/chat/'+encodeURIComponent(p.id));
     document.querySelectorAll('[data-global-destination]').forEach(a=>{const href=a.getAttribute('href'),selected=href==='/bot'&&botOpen||href===pathname||(pathname==='/'&&href==='/home')||(['/activity','/accounts'].includes(href)&&pathname.startsWith(href+'/'));if(selected)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
     const p=projects.find(p=>p.id===current.id);
-    const name=p?.name||labels[pathname]||(pathname==='/projects'?'All Projects':pathname.startsWith('/chat')?'Chat':pathname.startsWith('/work')?'Work':'Workspace');
+    const name=p?.name||(pathname==='/bot'?chat.botStatus().name:labels[pathname])||(pathname==='/projects'?'All Projects':pathname.startsWith('/chat')?'Chat':pathname.startsWith('/work')?'Work':'Workspace');
     const crumbs=link('/home','Workspace')+SEP+(p?link('/projects/'+encodeURIComponent(p.id)+'/overview',esc(name))+SEP+`<span>${esc(current.tab[0].toUpperCase()+current.tab.slice(1))}</span>`:`<span>${esc(name)}</span>`);
     if($('crBreadcrumb').dataset.crumbs!==crumbs){$('crBreadcrumb').innerHTML=crumbs;$('crBreadcrumb').dataset.crumbs=crumbs;window.rcMotion?.crumbs($('crBreadcrumb'));}
     $('controlRoom').inert=false;
@@ -97,11 +98,11 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     $('workspaceSearch').onclick=()=>$('searchChatsBtn').click();
     const destinations=[['crHomeTab','/home','Home','home'],['crSpacesTab','/projects','All Projects','folder'],['workspaceBot','/bot','Bot','bot'],['workspaceActivity','/activity','Activity','activity'],['crAccountsTab','/accounts','Accounts & tools','user'],['crMemoryTab','/memory','Workspace memory','snippet'],['sidebarSettings','/settings','Settings','gear']];
     const bottom=document.createElement('nav');bottom.className='cr-primary-nav workspace-global-nav';bottom.setAttribute('aria-label','Workspace tools');nav.append(bottom);
-    for(const [id,url,label,ic] of destinations){let a=document.createElement('a');a.id=id;a.href=url;a.dataset.workspaceLink='';a.dataset.globalDestination='';a.innerHTML=icon(ic)+'<span>'+label+'</span>';const old=$(id);if(old)old.replaceWith(a);(url==='/home'||url==='/projects'||url==='/bot'?primary:bottom).append(a);}
+    for(const [id,url,label,ic] of destinations){let a=document.createElement('a');a.id=id;a.href=url;a.dataset.workspaceLink='';a.dataset.globalDestination='';a.innerHTML=icon(ic)+'<span'+(id==='workspaceBot'?' class="ws-bot-name"':'')+'>'+label+'</span>';const old=$(id);if(old)old.replaceWith(a);(url==='/home'||url==='/projects'||url==='/bot'?primary:bottom).append(a);}
     // The same animated orb as the Bot header, with a compact copy in the
     // conversation bar when phones hide the workspace's top bar.
     for(const [id,before] of [['workspaceTopBot','crNotifications'],['workspaceChatBot','moreBtn']]){
-      const a=document.createElement('a');a.id=id;a.href='/bot';a.className='workspace-bot-button';a.dataset.workspaceLink='';a.dataset.globalDestination='';a.setAttribute('aria-label','Open Bot');a.title='Open Bot';a.innerHTML=chat.botAvatar(26)+'<span>Bot</span>';$(before).before(a);
+      const a=document.createElement('a');a.id=id;a.href='/bot';a.className='workspace-bot-button';a.dataset.workspaceLink='';a.dataset.globalDestination='';a.setAttribute('aria-label','Open Bot');a.title='Open Bot';a.innerHTML=chat.botAvatar(26)+'<span class="ws-bot-name">Bot</span>';$(before).before(a);
     }
     // Preserve the all-Work route and repository management without listing every
     // repository a second time in the Project sidebar.
@@ -223,6 +224,21 @@ window.createProjectWorkspace = function(engine, room, chat, spaces) {
     if(!mounted)return;const url={board:'/home',accounts:'/accounts',automations:'/activity/automations',artifacts:'/activity/outputs',planner:'/activity/queue',memory:'/memory'}[next];
     if(url){spaces.leave();if(location.pathname!==url)history.pushState({},'',url);activeRoute=url;renderNav();}
   }
+  // The Bot's name and indicator on the three places workspace.js owns (the rest are rc-chat's). The data is the server's:
+  // chat.botStatus() is {name, needsMe, fyi, label}; Needs me wins over FYI.
+  function paintBot(){
+    const st=chat.botStatus();
+    for(const id of ['workspaceBot','workspaceTopBot','workspaceChatBot']){
+      const a=$(id);if(!a)continue;
+      const text=a.querySelector('.ws-bot-name');if(text&&text.textContent!==st.name)text.textContent=st.name;
+      const label=st.label||(id==='workspaceBot'?st.name:'Open '+st.name);
+      if(a.getAttribute('aria-label')!==label){a.setAttribute('aria-label',label);a.title=label;}
+      const sig=st.needsMe+'|'+st.fyi+'|'+st.name;
+      if(a.dataset.botSig!==sig){a.dataset.botSig=sig;a.querySelector(':scope>.bot-ind')?.remove();a.insertAdjacentHTML('beforeend',chat.botBadge('ws-bot-ind'));}
+      a.dataset.botAttention=st.needsMe>0?'needs':st.fyi?'fyi':'';
+    }
+  }
+  document.addEventListener('x056:bot',()=>{if(mounted){paintBot();clearTimeout(renderTimer);renderTimer=setTimeout(renderNav,40);}});
   function sync(){if(!mounted)return;clearTimeout(renderTimer);renderTimer=setTimeout(renderNav,40);}
   document.addEventListener('x056:state',sync);document.addEventListener('x056:mode',sync);
   window.addEventListener('resize',sync);

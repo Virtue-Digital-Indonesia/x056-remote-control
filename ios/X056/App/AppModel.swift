@@ -323,8 +323,23 @@ final class AppModel {
     }
 
     /// Home's badge: unread conversations, open questions, approvals.
+    /// The Bot is left out: its own tab carries its badge.
     var needsYouCount: Int {
-        Set(unread.keys).union(questions.values.map { Self.key($0.projectId, $0.sessionId) }).count + approvals.count
+        let botId = projects.first(where: { $0.isBot && $0.archivedAt == nil })?.id
+        let asked = questions.values.filter { $0.projectId != botId }.map { Self.key($0.projectId, $0.sessionId) }
+        let unreadKeys = unread.keys.filter { botId == nil || !$0.hasPrefix(botId! + "::") }
+        return Set(unreadKeys).union(asked).count + approvals.count
+    }
+
+    /// The Bot's name; "Bot" until the gateway says otherwise.
+    var botName: String {
+        let n = projects.first(where: { $0.isBot && $0.archivedAt == nil })?.botName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (n?.isEmpty == false ? n : nil) ?? "Bot"
+    }
+
+    /// What the Bot wants from the owner (nil on older gateways).
+    var botAttention: BotAttention? {
+        projects.first(where: { $0.isBot && $0.archivedAt == nil })?.botAttention
     }
 
     // MARK: Home state
@@ -931,7 +946,9 @@ final class AppModel {
         case "session_started":
             if let sid {
                 running.insert(sid)
-                questions[sid] = nil
+                // Only a human turn answers an open question; agent, cron and
+                // other turns leave it (`question_answered` closes it later).
+                if d["sender"]?.decode(Sender.self)?.kind == nil { questions[sid] = nil }
                 if let pid {
                     touch(pid, sid)
                     updateConversation(pid, sid) { $0.lastOutcome = nil }
@@ -972,7 +989,7 @@ final class AppModel {
                 questions[q.sessionId] = q
                 raiseUnread(q.projectId, q.sessionId, .question, at: e.ts)
             }
-        case "question_dismissed":
+        case "question_dismissed", "question_answered":
             if let sid { questions[sid] = nil }
             if let pid, let sid { markRead(pid, sid) }
         case "queue":
@@ -988,6 +1005,15 @@ final class AppModel {
             scheduleProjectsRefresh()
         case "accounts":
             accountsTick += 1
+        case "bot_attention":
+            if let pid, let a = d["attention"]?.decode(BotAttention.self),
+               let i = projects.firstIndex(where: { $0.id == pid }) {
+                projects[i].botAttention = a
+            } else {
+                scheduleProjectsRefresh()
+            }
+        case "bot_message":
+            scheduleProjectsRefresh()
         case "read_state":
             if let pid, let sid, let item = d.decode(ReadItem.self) { applyReadState(pid, sid, item) }
         case "autopilot":

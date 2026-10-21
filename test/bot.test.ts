@@ -56,7 +56,7 @@ describe('enabling the Bot', () => {
   it('creates one Chat, idempotently, and marks it on the project and chat rows', () => {
     const f = fixture();
     const bot = f.manager.bot();
-    expect(bot.status()).toEqual({ enabled: false, projectId: null, sessionId: null, briefAt: '07:30', tz: 'Asia/Jakarta', lastBriefDate: null, url: null });
+    expect(bot.status()).toEqual({ enabled: false, name: 'Bot', projectId: null, sessionId: null, briefAt: '07:30', tz: 'Asia/Jakarta', lastBriefDate: null, url: null });
     const a = bot.update({ enabled: true });
     expect(a.enabled).toBe(true);
     expect(a.projectId).toBeTruthy();
@@ -155,7 +155,8 @@ describe('the approval exemption', () => {
 });
 
 describe('notify_user and the overview routes', () => {
-  it('refuses a caller that is not the Bot and emits bot_notice for the Bot', () => {
+  it('refuses a caller that is not the Bot; for the Bot notify_user is message_owner (urgent = needs you, else an FYI)', () => {
+    // Pinned the old bot_notice event (a push in its own words); notify_user is now an alias of message_owner (docs/bot-owner-view-contract.md).
     const f = fixture(), s = f.manager.bot().update({ enabled: true }), api = controller(f);
     expect(() => api.botNotify({ from: 'x', title: 'Hi', body: 'b' })).toThrow(ForbiddenException);
     expect(() => api.botNotify({ title: 'Hi', body: 'b' })).toThrow(ForbiddenException);
@@ -163,13 +164,13 @@ describe('notify_user and the overview routes', () => {
     const r = api.botNotify({ from: s.sessionId!, title: 'Deploy needs you', body: 'Approve the migration?', tier: 'urgent', link: 'https://evil.example/' });
     expect(r).toMatchObject({ ok: true, tier: 'urgent' });
     expect(r).not.toHaveProperty('link'); // not a panel path: dropped
-    const e = f.events.find((x) => x.kind === 'bot_notice')!;
-    expect(e.data).toMatchObject({ projectId: s.projectId, sessionId: s.sessionId, title: 'Deploy needs you', tier: 'urgent' });
-    expect(e.data.notice).toMatchObject({ tier: 'urgent', category: 'needs_you', title: 'Deploy needs you', body: 'Approve the migration?', link: '/chat/' + s.projectId });
+    const q = f.events.find((x) => x.kind === 'question')!;
+    expect(q.data).toMatchObject({ projectId: s.projectId, sessionId: s.sessionId, question: 'Deploy needs you\n\nApprove the migration?' });
+    expect(q.data.notice).toMatchObject({ tier: 'urgent', category: 'needs_you', link: '/chat/' + s.projectId });
     api.botNotify({ from: s.sessionId!, title: 'Done', body: 'Shipped.', link: '/chat/abc' });
-    const n = f.events.filter((x) => x.kind === 'bot_notice')[1].data.notice as Notice;
-    expect(n).toMatchObject({ tier: 'normal', category: 'finished', link: '/chat/abc' });
-    expect(n.tag).toMatch(/^x056-bot-/);
+    const m = f.events.filter((x) => x.kind === 'bot_message')[1];
+    expect(m.data).toMatchObject({ needsYou: false, text: 'Done\n\nShipped.\n\n/chat/abc' });
+    expect(m.data).not.toHaveProperty('notice'); // an FYI is never pushed
   });
 
   it('answers the overview with cheap reads', async () => {

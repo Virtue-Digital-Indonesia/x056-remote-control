@@ -10,6 +10,9 @@ import { startTurn } from '../turn.js';
 import { DEFAULT_CONTINUE_PROMPT } from '../provider.js';
 import type { AccountIdentity, ActivityEvent, HistoryEntry, ProviderAdapter } from '../provider.js';
 import type { RawEvent } from '../types.js';
+/** The Bot's owner-facing tools: their calls are kept with an id in history rows. */
+const OWNER_TOOL = /(?:^|__)(?:message_owner|notify_user)$/;
+
 
 const SUBAGENT_TOOLS = new Set(['Task', 'Agent']);
 
@@ -395,6 +398,7 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
           out.push({
             role: 'action', text: labelFor(b.name, b.input ?? {}), detail: JSON.stringify(b.input ?? {}, null, 2),
             ...(artifacts.length ? { artifacts } : {}), sub: SUBAGENT_TOOLS.has(b.name), ts,
+            ...(OWNER_TOOL.test(b.name) ? { toolName: b.name, ...(typeof (b as { id?: unknown }).id === 'string' ? { toolUseId: (b as { id: string }).id } : {}) } : {}),
           });
           offsets.push(at);
         }

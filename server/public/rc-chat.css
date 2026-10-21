@@ -339,9 +339,34 @@ html[data-theme=dark] .rcb-settings .rc-bot-error{color:#ff8b8e}
 body.rc-bot-chat #conversationSurface .composer-wrap{background:transparent}
 .rcb-hero .bot-aurora{-webkit-mask-image:linear-gradient(#000 55%,transparent);mask-image:linear-gradient(#000 55%,transparent)}
 /* Phones: the top bar's Bot button is the orb alone (it keeps its "Open Bot" name), so the breadcrumb is not cut to "Ho…". */
-@media(max-width:650px){#workspaceTopBot>span:not(.bot-orb){display:none}#workspaceTopBot{padding:4px 7px}}
+@media(max-width:650px){#workspaceTopBot>.ws-bot-name{display:none}#workspaceTopBot{padding:4px 7px}}
 /* Phones: the chat bar's active Bot button already shows the orb, so the header drops its own, and the calendar gives way to the "needs you" chip (both open Today). This is the room "Bot · Idle" needs. */
 @media(max-width:480px){body.rc-bot-chat #rcBotHead .rcb-id>.bot-orb{display:none}body.rc-bot-chat #rcBotHead .rcb-id{flex-shrink:0}body.rc-bot-chat #rcBotNeeds:not([hidden])~#rcBotToday{display:none}}
 
 /* Bot notices are "title\nbody": keep the line break instead of running the two together. */
 body.rc-bot-chat #chat>.notice>span{white-space:pre-line}
+
+/* ---- Bot owner view (2026-10-21) ---- */
+/* The indicator. FYI = a small dot in the Bot's sky blue; Needs me = a stronger pill with the count, in --accent (the same fill as primary
+   buttons: 5.6:1 with white in light, 8:1 with the dark on-accent in dark). Never --bgwork (violet means background work). Each place
+   sets --ring to the surface it sits on so the badge reads as cut out of it. */
+.bot-ind{display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;pointer-events:none}
+:root{--bot-fyi:color-mix(in srgb,var(--bot-1) 78%,#0b1f4a)}html[data-theme=dark]{--bot-fyi:var(--bot-1)}
+.bot-ind[data-kind=fyi]{width:10px;height:10px;border-radius:50%;background:var(--bot-fyi);box-shadow:0 0 0 2px var(--ring,var(--bg))}
+.bot-ind[data-kind=needs]{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--amber);color:#fff;font-size:11px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;box-shadow:0 0 0 2px var(--ring,var(--bg))}
+.rc-chat-item{position:relative}
+.rc-chat-item>.bot-ind{position:absolute;right:12px;top:50%;transform:translateY(-50%);--ring:var(--sidebar,var(--bg))}
+.rc-chat-item.selected>.bot-ind{--ring:var(--surface-2)}
+.rc-chat-item:has(>.bot-ind) strong{padding-right:26px}
+.rc-bot-namefield input{width:100%;max-width:18em}
+.rc-bot-namefield+.rc-bot-tz{margin-top:2px}
+/* Owner messages: the Bot's message to the owner, a normal Bot bubble with a small tag on the role line. */
+.owner-tag{display:inline-flex;align-items:center;margin-left:8px;padding:1px 8px;border-radius:999px;border:1px solid color-mix(in srgb,var(--bot-1) 40%,var(--border));background:color-mix(in srgb,var(--bot-1) 10%,var(--bg));color:var(--text);font-size:10.5px;font-weight:650;letter-spacing:.2px;text-transform:none;line-height:1.5;vertical-align:middle}
+.owner-needs .owner-tag{border-color:transparent;background:var(--amber);color:#fff}
+/* Dark mode's amber is light (#fbbf24): dark text on it. Needs-you is amber everywhere, the same as the header chip and Home's "Needs input", so it never reads as the bell's count. */
+html[data-theme=dark] .bot-ind[data-kind=needs],html[data-theme=dark] .owner-needs .owner-tag{color:#1f1300}
+/* Hidden rows shown in place: an agent exchange reads as one block (a rule on the left), its replies say who they answer. */
+body.rc-bot-chat.rc-bot-system-history #chat>.bot-agent-row{position:relative}
+body.rc-bot-chat.rc-bot-system-history #chat>.bot-agent-row::after{content:"";position:absolute;left:-18px;top:0;bottom:0;width:3px;border-radius:2px;background:color-mix(in srgb,var(--bot-1) 45%,transparent);pointer-events:none}
+body.rc-bot-chat.rc-bot-system-history #chat>.msg.assistant.bot-agent-row>.role[data-exchange]::after{content:" · reply to " attr(data-exchange);font-weight:500;letter-spacing:0;text-transform:none;color:var(--muted)}
+@media(max-width:650px){body.rc-bot-chat.rc-bot-system-history #chat>.bot-agent-row::after{left:-8px}}

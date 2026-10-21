@@ -72,6 +72,25 @@ export interface HistoryEntry {
   /** ISO timestamp from the transcript, when present — lets the panel
    *  interleave this with live activity/subagent events by time. */
   ts?: string;
+  /** For 'action': the tool's name and call id, kept only for the Bot's owner
+   *  tools (message_owner, notify_user) so the gateway can turn the call into
+   *  the owner's message. */
+  toolName?: string;
+  toolUseId?: string;
+  /** The Bot wrote this to the OWNER (message_owner). Set by the Bot's
+   *  history routes only, on a `role: 'assistant'` row. */
+  ownerMessage?: boolean;
+  /** For an owner message or a Bot notice: it asked for a decision. */
+  needsYou?: boolean;
+  /** For an owner message: the quick replies it offered. */
+  options?: string[];
+  /** The Bot chat's visibility verdict (server/bot-view.ts), Bot history only. */
+  botView?: 'show' | 'hide';
+  /** What started the turn this row belongs to, when not the owner:
+   *  'agent' | 'bot_event' | 'bot_brief' | 'advisor'. Bot history only. */
+  botTurn?: string;
+  /** 'brief' on the morning brief's own reply. Bot history only. */
+  botLabel?: 'brief';
 }
 
 /** A model the provider offers for this account, for the composer's picker. */

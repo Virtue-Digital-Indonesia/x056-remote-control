@@ -45,7 +45,7 @@ export class ConversationJournal {
     } else if (kind === 'bot_notice') {
       const notice = (data.notice || {}) as { id?: string; tier?: string; category?: string };
       const needsYou = notice.tier === 'urgent' || notice.category === 'needs_you' || data.tier === 'urgent';
-      row = { role: 'notice', messageId: 'bot-notice:' + String(notice.id || data.at || ts), text: `${needsYou ? 'Bot needs you' : 'Bot status'}: ${String(data.title || 'Bot')}\n${String(data.body || '')}`, ts };
+      row = { role: 'notice', messageId: 'bot-notice:' + String(notice.id || data.at || ts), text: `${needsYou ? 'Bot needs you' : 'Bot status'}: ${String(data.title || 'Bot')}\n${String(data.body || '')}`, ts, needsYou };
     } else if (kind === 'session_done' && data.status === 'stopped') {
       row = { role: 'notice', messageId: data.requestId ? 'stopped:' + data.requestId : undefined, text: String(data.reason || 'Turn stopped.'), ts };
     } else return;

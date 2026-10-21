@@ -111,7 +111,8 @@ export function buildModule(cfg: GatewayConfig): unknown {
   });
   manager.subscribe((e) => { push.notify(e.kind, e.data).catch(() => {}); });
   // Read and unread live here, not in each client, so web and phone agree.
-  const readState = new ReadState(cfg.stateDir, (kind, data) => manager.broadcast(kind, data), (pid, sid) => presence.viewing(pid, sid));
+  const readState = new ReadState(cfg.stateDir, (kind, data) => manager.broadcast(kind, data), (pid, sid) => presence.viewing(pid, sid), Date.now, (pid) => manager.bot().isBotProject(pid));
+  manager.attachReadState(readState);
   manager.subscribe((e) => { if (e.kind !== 'read_state') readState.observe(e.kind, e.data); });
   // A running turn on the iPhone's Lock Screen, kept current over ActivityKit.
   const liveActivities = new LiveActivities(cfg.stateDir, (token, env, payload, priority) => apns.sendActivity(token, env, payload, priority));

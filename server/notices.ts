@@ -116,6 +116,7 @@ export function replyExcerpt(text: string, max = EXCERPT_MAX, leadWithQuestion =
   let s = stripTeamLine(String(text || ''));
   s = s
     .replace(/<<<ASK[\s\S]*?(>>>|$)/g, ' ')
+    .replace(/<<<RESOLVED>>>/g, ' ')
     .replace(/<(system-reminder|memory|x056[-\w]*)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
     .replace(/\[x056 message sender v1\][^\n]*/g, ' ')
     .replace(/\[(Shared memory|Memory context|Referenced conversations|Attached saved files)[\s\S]*?\n\]/g, ' ')
@@ -241,7 +242,9 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
 
   switch (kind) {
     case 'question': {
-      const q = typeof data.question === 'string' && data.question.trim() ? cutWords(data.question, QUESTION_MAX) : 'The assistant asked you something.';
+      // `latest` = the question that just joined an open batch: push that one.
+      const asked = typeof data.latest === 'string' && data.latest.trim() ? data.latest : data.question;
+      const q = typeof asked === 'string' && asked.trim() ? cutWords(asked, QUESTION_MAX) : 'The assistant asked you something.';
       return make('urgent', 'needs_you', withPrefix(ctx, q), `question:${sid}:${data.at || turnId}`);
     }
 
@@ -358,7 +361,7 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
       const urgent = data.tier === 'urgent';
       const link = typeof data.link === 'string' && data.link.startsWith('/') && !data.link.startsWith('//') ? data.link : ctx.link || '/';
       return make(urgent ? 'urgent' : 'normal', urgent ? 'needs_you' : 'finished', String(data.body || ''), `bot:${at}`,
-        { title: cutWords(String(data.title || 'Bot'), TITLE_MAX), link, tag: `x056-bot-${at}` });
+        { title: cutWords(String(data.title || ctx.conversationTitle || 'Bot'), TITLE_MAX), link, tag: `x056-bot-${at}` });
     }
 
     case 'turn_orphaned':

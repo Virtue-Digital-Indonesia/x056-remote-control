@@ -27,6 +27,11 @@ struct ChatRow: Identifiable, Equatable {
     var inFlight = false
     var toolUseId: String?
     var card: ChatCard?
+    /// The Bot's chat: "hide" rows are agent and system traffic.
+    var botView: String?
+    /// The Bot spoke to the owner on purpose; `needsYou` says it wants an answer.
+    var ownerMessage = false
+    var needsYou = false
 }
 
 /// What the list draws: a row, or a run of consecutive tool calls folded together.
@@ -103,10 +108,13 @@ final class ConversationModel {
         return nil
     }
 
-    var items: [DisplayItem] {
+    var items: [DisplayItem] { items(showHidden: true) }
+
+    /// `showHidden: false` leaves out the Bot's `botView == "hide"` rows.
+    func items(showHidden: Bool) -> [DisplayItem] {
         var out: [DisplayItem] = []
         var run: [ChatRow] = []
-        for r in rows {
+        for r in rows where showHidden || r.botView != "hide" {
             if r.role == .action { run.append(r); continue }
             if !run.isEmpty { out.append(.steps(run)); run = [] }
             out.append(.row(r))
@@ -177,6 +185,14 @@ final class ConversationModel {
     }
 
     static func row(_ h: HistoryEntry) -> ChatRow? {
+        guard var r = baseRow(h) else { return nil }
+        r.botView = h.botView
+        r.ownerMessage = h.ownerMessage == true
+        r.needsYou = h.needsYou == true
+        return r
+    }
+
+    private static func baseRow(_ h: HistoryEntry) -> ChatRow? {
         let text = h.text ?? ""
         let sender = h.sender.flatMap(senderLabel)
         switch h.role {
@@ -256,6 +272,14 @@ final class ConversationModel {
         case "assistant_text":
             if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
                 rows.append(ChatRow(role: .assistant, text: text))
+            }
+        case "bot_message":
+            // The Bot wrote to the owner (an FYI; a needs-you one also
+            // arrives as a question).
+            if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
+                var row = ChatRow(role: .assistant, text: text)
+                row.ownerMessage = true
+                rows.append(row)
             }
         case "active_model":
             activeModel = d["model"]?.string ?? activeModel

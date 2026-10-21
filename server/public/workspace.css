@@ -4,7 +4,7 @@
 .workspace-bot-button[aria-current=page]{color:var(--text);border-color:color-mix(in srgb,var(--bot-1) 45%,var(--border));background:color-mix(in srgb,var(--bot-2) 12%,var(--bg))}
 .workspace-bot-button:focus-visible{outline:2px solid var(--bot-1);outline-offset:2px}
 #workspaceChatBot{display:none}
-@media(max-width:650px){body.rc-workspace-ready[data-chat-mode=page] #workspaceChatBot{display:inline-flex;padding:4px 7px;min-height:36px}#workspaceChatBot>span:not(.bot-orb){display:none}.workspace-bot-button{padding:4px 7px}}
+@media(max-width:650px){body.rc-workspace-ready[data-chat-mode=page] #workspaceChatBot{display:inline-flex;padding:4px 7px;min-height:36px}#workspaceChatBot>.ws-bot-name{display:none}.workspace-bot-button{padding:4px 7px}}
 body.rc-workspace-ready{--workspace-nav:236px;--workspace-top:56px}
 body[data-stage-hidden=true] #conversationStage{display:none!important}
 body[data-stage-hidden=true] #otherRuns:not([hidden]){display:flex!important}
@@ -204,3 +204,12 @@ body.rc-workspace-ready :is(a,button):focus-visible{outline:2px solid var(--acce
 
 #workspaceBot svg{transform-origin:50% 60%}
 @media(prefers-reduced-motion:no-preference){#workspaceBot:hover svg,#workspaceBot:focus-visible svg{animation:ws-bot-wiggle .6s ease-in-out}@keyframes ws-bot-wiggle{25%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}75%{transform:rotate(-3deg)}}}
+
+/* Bot indicator (see .bot-ind in rc-chat.css): beside the sidebar label, and a corner badge on the orb in both top bars. */
+#workspaceBot{position:relative}
+#workspaceBot>.bot-ind{margin-left:auto;--ring:var(--sidebar)}
+.workspace-bot-button{position:relative}
+.workspace-bot-button>.bot-ind{position:absolute;top:0;left:25px}
+.workspace-bot-button>.bot-ind[data-kind=fyi]{top:3px;left:28px}
+@media(max-width:650px){.workspace-bot-button>.bot-ind{left:25px}.workspace-bot-button>.bot-ind[data-kind=fyi]{left:27px}}
+body.workspace-sidebar-collapsed #workspaceBot>.bot-ind{position:absolute;top:4px;right:6px;margin:0}

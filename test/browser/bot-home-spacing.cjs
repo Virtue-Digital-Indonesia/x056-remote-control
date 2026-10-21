@@ -61,8 +61,8 @@ const longText = 'Checking the gateway logs and the deployment queue before I ch
         ...['memory_propose', 'memory_search', 'memory_approve'].map(name => ({ role: 'action', text: 'Used mcp__x056__' + name, detail: '{}', ts })),
         { role: 'assistant', text: 'Not sent yet (relay checkpoint): synthetic checkpoint', ts },
         { role: 'assistant', text: 'Your preference is saved.', ts },
-        { role: 'notice', text: 'Bot status: Quiet routine fixture', ts },
-        { role: 'notice', text: 'Bot needs you: Urgent fixture', ts },
+        { role: 'notice', text: 'Bot status: Quiet routine fixture', messageId: 'bot-notice:quiet-1', ts },
+        { role: 'notice', text: 'Bot needs you: Urgent fixture', messageId: 'bot-notice:urgent-1', needsYou: true, ts },
       ] } });
     });
     const page = await context.newPage(), errors = [], measurements = [];
@@ -142,12 +142,12 @@ const longText = 'Checking the gateway logs and the deployment queue before I ch
     assert.ok(await page.getByText('Bot response to advisor follow-up stays visible.', { exact: true }).isVisible());
     assert.ok(await page.getByText('Not sent yet (relay checkpoint): synthetic checkpoint', { exact: true }).isHidden());
     await page.locator('#rcBotToday').click();
-    await page.getByRole('button', { name: /^Show \d+ hidden system messages?$/ }).click();
+    await page.getByRole('button', { name: /^Show \d+ hidden messages?$/ }).click();
     assert.ok(await page.getByText('Automated digest response', { exact: true }).isVisible());
     assert.ok(await page.getByText('Advisor system follow-up fixture', { exact: true }).isVisible());
     assert.ok(await page.getByText('Not sent yet (relay checkpoint): synthetic checkpoint', { exact: true }).isVisible());
     await page.locator('#rcBotToday').click();
-    await page.getByRole('button', { name: 'Hide system messages' }).click();
+    await page.getByRole('button', { name: 'Hide agent and system messages' }).click();
     assert.ok(await page.getByText('Advisor system follow-up fixture', { exact: true }).isHidden());
     const commentary = page.locator('#chat>.msg.assistant').filter({ hasText: text });
     await commentary.hover();

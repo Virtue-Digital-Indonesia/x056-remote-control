@@ -12,7 +12,7 @@ import { CodexAdvisor, TurnWatcher, type AdvisorConsult, type AdvisorTrigger } f
 import { CodexTurnMeter, TurnResults } from './turn-results.js';
 import { messageImages } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
-import { withMessageSender, withTeamLine, type MessageSender } from '../src/message-sender.js';
+import { openQuestionLine, withMessageSender, withTeamLine, type MessageSender } from '../src/message-sender.js';
 import { autopilotStopInstruction, composeAutopilotPrompt, DEFAULT_AUTOPILOT_PROMPT, normalizeAutopilotInstruction, stripAutopilotInstruction } from '../src/autopilot.js';
 import { CompletionGate } from './completion-gate.js';
 import { noticeFor, originOf, NOTICE_KINDS, type Notice } from './notices.js';
@@ -52,9 +52,10 @@ import { CodexTransport } from '../src/persistent-codex.js';
 import type { TurnHandle, TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
-import { parseQuestion, stripAsk, stripAskInstructions, withAskInstructions } from '../src/question.js';
+import { hasResolved, parseQuestion, stripAsk, stripAskInstructions, withAskInstructions } from '../src/question.js';
 import { closeAllGatewayDbs, closeGatewayDb, gatewayDb } from './gateway-db.js';
-import { BOT_CHAT_NAME, BOT_DENIED_TOOLS, BOT_REQUEST_ID, BOT_SYSTEM_NOTE, BotService, type BotOptions } from './bot.js';
+import { BOT_CHAT_NAME, BOT_DENIED_TOOLS, BOT_REQUEST_ID, botAttention, botSystemNote, BotService, type BotAttention, type BotOptions, type BotStatus } from './bot.js';
+import type { ReadView } from './read-state.js';
 
 export interface GatewayEvent {
   seq: number;
@@ -256,6 +257,8 @@ export interface GatewaySettings {
 }
 
 const BUFFER_MAX = 1000;
+/** Events after which the Bot's attention (needs me / FYI) may have changed. */
+const BOT_ATTENTION_KINDS = new Set(['read_state', 'question', 'question_answered', 'question_dismissed', 'bot_message']);
 
 // Injected into every spawned session (any project) via --append-system-prompt,
 // so sessions don't rely on background execution that this gateway kills at
@@ -1022,15 +1025,13 @@ export class SessionManager {
     const reply = st.reply && (st.lastTaskDone === undefined || st.reply.seq > st.lastTaskDone) ? st.reply : undefined;
     if (reply) {
       const ap = this.loadAutopilot()[sid];
-      const q = (!ap || ap.paused) && !this.pendingQuestions.has(sid) && !this.sessionBusy(sid) ? parseQuestion(reply.text) : null;
-      if (q) {
-        // Same as a question at a turn's end: the card replaces the done notice.
-        const pending = { projectId: pid, sessionId: sid, ...q, at: new Date().toISOString() };
-        this.pendingQuestions.set(sid, pending);
-        this.savePendingQuestions();
-        this.emit('question', { ...(data.requestId ? { requestId: data.requestId } : {}), ...pending });
-        return;
-      }
+      const botQuiet = data.origin !== 'human' && this.bot().isBotProject(pid); // an agent's / digest's / brief's woken reply is never the owner's card
+      if (hasResolved(reply.text)) this.resolvePendingQuestion(pid, sid, 'resolved');
+      const q = (!ap || ap.paused) && !botQuiet && !this.sessionBusy(sid) ? parseQuestion(reply.text) : null;
+      // A woken reply's ask joins the question already open (identical text once).
+      const prior = this.pendingQuestions.get(sid);
+      const added = q ? this.addPendingQuestion(pid, sid, q, 'merge', typeof data.requestId === 'string' ? data.requestId : undefined) : null;
+      if (added && added !== prior) return;
       this.emit('conversation_settled', { ...data, resultText: reply.text, woken: true });
       return;
     }
@@ -1782,7 +1783,7 @@ export class SessionManager {
         const conversations = (p.conversations || []).map(c => ({ ...c, provider: reg.conversationProvider(p.id, c.sessionId), effectiveRouter: effectiveRouter(helpersOf(c), jev) ?? null, ...(spaceView ? spaceView.resolve(p.id, c.sessionId) : {}) }));
         return { ...p, conversations, spaceId: p.kind === 'chat' ? conversations[0]?.spaceId : undefined, workSpaceId: p.kind !== 'chat' ? spaceView?.defaultForWork(p.id) : undefined,
           running: running.length > 0, runningSessionIds: running, runningAccounts, backgroundSessionIds: background,
-          ...(p.kind === 'chat' && this.bot().isBotProject(p.id) ? { bot: true as const } : {}) };
+          ...(p.kind === 'chat' && this.bot().isBotProject(p.id) ? { bot: true as const, botName: this.bot().displayName(), botAttention: this.botAttention() } : {}) };
       }),
     };
   }
@@ -2148,6 +2149,7 @@ export class SessionManager {
       // FIXED input: createChat fingerprints it, so re-enabling finds the same Chat.
       createChat: () => this.createChat({ requestId: BOT_REQUEST_ID, name: BOT_CHAT_NAME, provider: 'claude' }),
       unarchiveChat: (pid) => { this.projects().archiveChat(pid, false); this.emit('projects', { id: pid, kind: 'chat' }); },
+      rename: (pid, name) => { this.updateChat(pid, { name }); },
       queue: (pid) => this.loadQueues()[pid] ?? [],
       enqueue: (pid, item) => this.enqueue(pid, item),
       appendToQueued: (pid, id, text) => {
@@ -2159,16 +2161,75 @@ export class SessionManager {
     }, this.opts.bot);
   }
 
-  /** The Bot's notify_user: one push in its own words. `from` must be a
-   *  conversation of the Bot (the route checks it too). */
-  botNotify(from: string, input: { title: string; body: string; tier?: 'urgent' | 'normal'; link?: string }): { id: string } {
+  /**
+   * The Bot's message_owner: a message to the owner in the Bot chat. `from`
+   * must be a conversation of the Bot (the route checks it too).
+   *  - FYI (default): `bot_message`; the Bot chat turns unread. No push.
+   *  - needs_you: also a question card (merged into the batch already open),
+   *    emitted as `question` like any other, so it pushes as urgent.
+   * The words live durably in the Bot's transcript (the tool call); the event
+   * is the live half of the same message.
+   */
+  botMessage(from: string, input: { text: string; needsYou?: boolean; options?: string[] }): { id: string; needsYou: boolean } {
     const bot = this.bot();
-    if (!bot.isBotSession(from)) throw new Error('only the Bot can notify the owner');
+    if (!bot.isBotSession(from)) throw new Error('only the Bot can message the owner');
+    const text = String(input.text ?? '').trim();
+    if (!text) throw new Error('text required');
     const at = new Date().toISOString();
     const pid = bot.snapshot().projectId!;
-    this.emit('bot_notice', { projectId: pid, sessionId: from, title: input.title, body: input.body, tier: input.tier === 'urgent' ? 'urgent' : 'normal',
-      ...(input.link ? { link: input.link } : {}), at });
-    return { id: 'bot:' + at };
+    const needsYou = input.needsYou === true;
+    const options = needsYou ? (input.options ?? []).map((o) => String(o).trim()).filter(Boolean).slice(0, 8) : [];
+    const id = 'bot-owner:' + at;
+    this.emit('bot_message', { projectId: pid, sessionId: from, id, text, needsYou, ...(options.length ? { options } : {}), at });
+    if (needsYou) this.addPendingQuestion(pid, from, { question: text, options }, 'merge');
+    return { id, needsYou };
+  }
+
+  /** notify_user, the older name of message_owner: urgent = needs_you. */
+  botNotify(from: string, input: { title: string; body: string; tier?: 'urgent' | 'normal'; link?: string }): { id: string } {
+    const text = input.body.trim() ? `${input.title}\n\n${input.body}` : input.title;
+    const r = this.botMessage(from, { text: input.link ? `${text}\n\n${input.link}` : text, needsYou: input.tier === 'urgent' });
+    return { id: r.id };
+  }
+
+  /** GET /api/bot: the record, the owner's name for it, and what needs them. */
+  botStatus(): BotStatus & { attention: BotAttention | null } {
+    return { ...this.bot().status(), attention: this.botAttention() };
+  }
+
+  /** Where read and unread live (app.module hands it over): the Bot's FYI is its unread state. */
+  attachReadState(rs: { view(projectId: string, sessionId: string): ReadView }): void {
+    this.readStateView = (pid, sid) => rs.view(pid, sid);
+  }
+  private readStateView?: (projectId: string, sessionId: string) => ReadView;
+  private lastBotAttention = '';
+
+  /** What the Bot needs the owner for, or null while it has no Chat. */
+  botAttention(): BotAttention | null {
+    const bot = this.bot();
+    const target = bot.botTarget();
+    const pid = bot.snapshot().projectId;
+    if (!pid || !target) return null;
+    const view = this.readStateView?.(pid, target.sessionId);
+    return botAttention({
+      questions: this.listPendingQuestions().filter((q) => q.projectId === pid),
+      unread: view?.unread === true,
+      unreadAt: Math.max(view?.noticeAt ?? 0, view?.unreadAt ?? 0) || undefined,
+    });
+  }
+
+  /** Emit `bot_attention` when, and only when, the answer changed. */
+  private refreshBotAttention(): void {
+    try {
+      const a = this.botAttention();
+      if (!a) return;
+      // `since` moves with every new message; only a change of what shows (needs me / FYI) is news.
+      const key = `${a.needsMe}:${a.fyi}`;
+      if (key === this.lastBotAttention) return;
+      this.lastBotAttention = key;
+      const t = this.bot().botTarget()!;
+      this.emit('bot_attention', { projectId: t.projectId, sessionId: t.sessionId, name: this.bot().displayName(), ...a, attention: a });
+    } catch (error) { console.warn('[bot] could not compute attention', error); }
   }
 
   /** The cheap half of the Bot's overview: no transcript scans, no network. */
@@ -3211,7 +3272,10 @@ export class SessionManager {
           data = { ...data, completionPending: true };
           // Questions have their own notification. Autopilot owns its terminal
           // notification; neither should also produce a delayed finished ping.
-          if (!data.notificationSuppressed && !this.pendingQuestions.has(sid) && (!ap || ap.paused)) this.completions.queue(sid, data);
+          // A question still open from BEFORE this turn (an agent's turn leaves it open) must not swallow this turn's own ending: only one raised during the turn replaces the settle.
+          const raised = this.pendingQuestions.get(sid);
+          const askedThisTurn = !!raised && !(Date.parse(raised.at) < Date.parse(String(data.turnStartedAt ?? '')));
+          if (!data.notificationSuppressed && !askedThisTurn && (!ap || ap.paused)) this.completions.queue(sid, data);
         } else this.completions.cancel(sid);
       }
     }
@@ -3242,6 +3306,9 @@ export class SessionManager {
         // subscriber errors must not affect the session
       }
     }
+    // The Bot's two-kind indicator follows what changed it. After the
+    // subscribers, so read-state has already taken this very event in.
+    if (BOT_ATTENTION_KINDS.has(kind) && this.botService && this.botService.isBotProject(typeof data.projectId === 'string' ? data.projectId : undefined)) this.refreshBotAttention();
   }
 
   private resolveCwd(cwd: string, projectId?: string): string {
@@ -3498,7 +3565,8 @@ export class SessionManager {
     const hop = this.nextRelayHop(opts.from);
     this.relayCheckpoint(hop, opts.confirmRelay);
     if (sessionId) this.clearSelfQueueStreak(sessionId);
-    const prompt = opts.interactive !== false && !message.trimStart().startsWith('/') ? withAskInstructions(message) : message;
+    // The Bot is never taught the ASK block for an agent's message: its reply goes back to the sender, and nobody is there to answer.
+    const prompt = opts.interactive !== false && !message.trimStart().startsWith('/') && !this.bot().isBotProject(projectId) ? withAskInstructions(message) : message;
     const run = { ...this.conversationRunPrefs(projectId, sessionId, opts), sender: { ...(opts.sender || this.messageSender(opts.from)), messageId: opts.sender?.messageId || randomUUID() } };
     // Record the chain against the TARGET before the turn can start, so a send
     // it makes in that turn is counted as the next hop rather than a new chain.
@@ -3625,6 +3693,28 @@ export class SessionManager {
     this.emit('cron_failed', { projectId: job.projectId, ...(job.sessionId ? { sessionId: job.sessionId } : {}), jobId: job.id, name, reason, at: new Date().toISOString() });
   }
 
+  /**
+   * Record a question the model ended its turn with. A question already open
+   * is never dropped: the new one joins its batch (`questions`, identical text
+   * once), unless the caller says the old one was just resolved. Persisted,
+   * and emitted as `question` with the whole batch.
+   */
+  private addPendingQuestion(pid: string, sessionId: string, q: { question: string; options: string[]; questions?: { question: string; options: string[] }[] }, mode: 'merge' | 'replace' = 'merge', requestId?: string, extra: Record<string, unknown> = {}): PendingQuestion | null {
+    const prior = mode === 'merge' ? this.pendingQuestions.get(sessionId) : undefined;
+    const list = (x: { question: string; options: string[]; questions?: { question: string; options: string[] }[] }) => x.questions ?? [{ question: x.question, options: x.options }];
+    const merged = prior ? [...list(prior)] : [];
+    let added = 0;
+    for (const item of list(q)) if (!merged.some((m) => m.question === item.question)) { merged.push(item); added++; }
+    if (prior && !added) return prior;
+    const pending: PendingQuestion = { projectId: pid, sessionId, question: merged[0].question, options: merged[0].options, ...(merged.length > 1 ? { questions: merged } : {}), at: new Date().toISOString() };
+    // Persist alongside the event so the card can be rehydrated after a
+    // refresh/reconnect/swap — the turn is over and waiting on a human.
+    this.pendingQuestions.set(sessionId, pending);
+    this.savePendingQuestions();
+    this.emit('question', { ...(requestId ? { requestId } : {}), ...pending, ...(prior ? { latest: list(q)[0].question } : {}), ...extra });
+    return pending;
+  }
+
   /** Dismissing is a UI decision, never a reply or a new turn. The timestamp
    * protects a newer question from a click on an older card in another tab. */
   dismissPendingQuestion(projectId: string, sessionId: string, at: string): boolean {
@@ -3639,7 +3729,7 @@ export class SessionManager {
 
   /** The user answered the pending question by a route that starts no new
    *  turn of its own (a steer, a queued reply): close the card everywhere. */
-  resolvePendingQuestion(projectId: string, sessionId: string, by: 'steer' | 'queue'): boolean {
+  resolvePendingQuestion(projectId: string, sessionId: string, by: 'steer' | 'queue' | 'turn' | 'resolved'): boolean {
     const question = this.pendingQuestions.get(sessionId);
     if (!question) return false;
     this.pendingQuestions.delete(sessionId);
@@ -3719,9 +3809,13 @@ export class SessionManager {
     }
     if (this.projects().get(pid)?.kind === 'chat') this.files().fence(pid);
     this.titleWorker?.preempt();
-    // Any new turn for this conversation supersedes its unanswered question
-    // (answering one IS a new turn), so the card never outlives its moment.
-    if (this.pendingQuestions.delete(sessionId)) this.savePendingQuestions();
+    // Only a HUMAN turn answers an open question (answering one IS a new
+    // turn). An agent, delegate, cron, digest, brief, recap or advisor turn
+    // leaves it open: it may close it itself with <<<RESOLVED>>> at its end,
+    // and is told so by one line in its message.
+    const startOrigin = originOf(runOpts?.sender);
+    const openQuestion = this.pendingQuestions.get(sessionId);
+    if (startOrigin === 'human') this.resolvePendingQuestion(pid, sessionId, 'turn');
     // ...and whatever the previous turn's background work did is now history.
     this.afterTurns.delete(sessionId);
     const reg = this.projects();
@@ -3858,7 +3952,8 @@ export class SessionManager {
       // fork hint. Advisor (Claude): when to consult it.
       const forks = !!team && !!this.forkBackend(helpers);
       const advisorLine = runAdvisor ? advisorTurnLine(adapter.id) : undefined;
-      const withLines = (p: string, teamLine?: string) => withTeamLine(withTeamLine(p, teamLine), advisorLine);
+      const openLine = openQuestion && startOrigin !== 'human' ? openQuestionLine((openQuestion.questions ?? [openQuestion]).map((x) => x.question)) : undefined;
+      const withLines = (p: string, teamLine?: string) => withTeamLine(withTeamLine(withTeamLine(p, teamLine), advisorLine), openLine);
       // The advisor that actually runs: chosen from the model the turn runs
       // on AFTER the pick. Chosen from the saved one, a Fable pick on a
       // conversation saved as Opus ran `--advisor opus` on a Fable main,
@@ -3921,7 +4016,7 @@ export class SessionManager {
         advisor: runAdvisor,
         subagents: team?.subagents,
         codexConfig: team?.codexConfig,
-        appendSystemPrompt: isBot ? BOT_SYSTEM_NOTE : team ? CONTAINER_SYSTEM_NOTE + '\n\n' + team.instructions : CONTAINER_SYSTEM_NOTE,
+        appendSystemPrompt: isBot ? botSystemNote(this.bot().displayName()) : team ? CONTAINER_SYSTEM_NOTE + '\n\n' + team.instructions : CONTAINER_SYSTEM_NOTE,
         ...(isBot ? { disallowedTools: BOT_DENIED_TOOLS } : {}),
         mcp: this.mcpWiringFor(pid, sessionId),
         // Each provider has a pool; the transport inside it speaks that CLI.
@@ -4038,9 +4133,14 @@ export class SessionManager {
           // an answerable card (only when not on autopilot/queue, which drive it).
           const currentAutopilot = this.loadAutopilot()[sessionId];
           const onAutopilot = !!currentAutopilot && !currentAutopilot.paused;
-          // The Bot's brief and digest replies are never question cards: an ASK
-          // there would cancel the brief's push and make a digest reply loud.
-          const botReply = sender?.kind === 'bot_brief' || sender?.kind === 'bot_event';
+          // An ASK in a Bot turn the owner did not start (an agent's message, a
+          // digest, the brief, a recap) is never a question card: it would cancel
+          // the brief's push, make a digest reply loud, or put an agent's
+          // question in front of the owner. Such a turn may still RESOLVE one.
+          const botReply = sender?.kind === 'bot_brief' || sender?.kind === 'bot_event' || (origin !== 'human' && this.bot().isBotProject(pid));
+          // <<<RESOLVED>>> closes the open question first; a new ASK in the
+          // same reply then replaces it instead of joining it.
+          const resolved = res.status === 'completed' && hasResolved(res.resultText ?? '') && this.resolvePendingQuestion(pid, sessionId, 'resolved');
           const q = res.status !== 'completed' || run.suppressCompletion || onAutopilot || drained || botReply ? null : parseQuestion(res.resultText ?? '');
           // Autopilot swallows its steps' questions (the final step's too:
           // this runs before evaluateAutopilot disarms); its recap re-asks them.
@@ -4050,14 +4150,7 @@ export class SessionManager {
           // From here a Claude conversation's out-of-turn work is watched, so
           // its settle can quote the reply that work woke.
           if (res.status === 'completed' && adapter.id === 'claude') this.afterTurns.set(sessionId, { sawWork: this.providerActivity(sessionId).active, seq: 0 });
-          if (q) {
-            // Persist alongside the event so the card can be rehydrated after a
-            // refresh/reconnect/swap — the turn is over and waiting on a human.
-            const pending = { projectId: pid, sessionId, ...q, at: new Date().toISOString() };
-            this.pendingQuestions.set(sessionId, pending);
-            this.savePendingQuestions();
-            emit('question', pending);
-          }
+          if (q) this.addPendingQuestion(pid, sessionId, q, resolved ? 'replace' : 'merge', run.requestId);
           emit('session_done', { sessionId, ...res, ...turnMeta() });
           if (res.status === 'completed') {
             try { this.titles().observe(pid, sessionId, sourcePrompt, res.resultText || ''); }

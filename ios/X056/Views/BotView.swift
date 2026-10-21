@@ -11,19 +11,22 @@ struct BotView: View {
     @State private var dictation = Dictation()
     @State private var waking = false
     @State private var error: String?
+    /// Show the agent and system messages the Bot's history marks "hide".
+    @State private var showHidden = false
 
     var body: some View {
         Group {
             if let model {
-                BotHome(model: model, dictation: dictation)
+                BotHome(model: model, dictation: dictation, showHidden: showHidden)
             } else {
-                BotWelcome(waking: waking, error: error) { Task { await wake() } }
+                BotWelcome(name: app.botName, waking: waking, error: error) { Task { await wake() } }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // A background, so its wide glows never widen the screen's layout.
         .background { BotBackdrop() }
         .fontDesign(.rounded)
+        .navigationTitle(app.botName)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button("Back", systemImage: "chevron.left") { app.botOpen = false }
@@ -31,6 +34,7 @@ struct BotView: View {
             if let model, let sid = model.sessionId {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("More", systemImage: "ellipsis") {
+                        Toggle("Show hidden messages", systemImage: "eye", isOn: $showHidden)
                         Button("Open as a conversation", systemImage: "bubble.left.and.text.bubble.right") {
                             app.botPath.append(.conversation(projectId: model.projectId, sessionId: sid))
                         }
@@ -92,6 +96,7 @@ struct BotView: View {
 
 /// Before there is a Bot: the orb asleep, and one button that wakes it.
 private struct BotWelcome: View {
+    let name: String
     let waking: Bool
     let error: String?
     let wake: () -> Void
@@ -100,10 +105,10 @@ private struct BotWelcome: View {
     var body: some View {
         VStack(spacing: 22) {
             Spacer(minLength: 20)
-            BotOrb(mood: waking ? .thinking : appeared ? .idle : .asleep, size: 150)
+            BotOrb(mood: waking ? .thinking : appeared ? .idle : .asleep, size: 150, name: name)
                 .scaleEffect(appeared ? 1 : 0.85)
             VStack(spacing: 10) {
-                Text("Meet your Bot")
+                Text("Meet your \(name)")
                     .font(.largeTitle.weight(.bold))
                 Text("A personal assistant that keeps an eye on your conversations and tells you, in plain words, what is running, what finished and what needs you.")
                     .font(.body)
@@ -115,7 +120,7 @@ private struct BotWelcome: View {
             Button(action: wake) {
                 HStack(spacing: 8) {
                     if waking { ProgressView().tint(.white) } else { Image(systemName: "sparkles") }
-                    Text(waking ? "Waking up…" : "Wake the Bot")
+                    Text(waking ? "Waking up…" : "Wake \(name)")
                 }
                 .font(.headline)
                 .foregroundStyle(.white)
@@ -154,6 +159,7 @@ private struct BotHome: View {
     @Environment(AppModel.self) private var app
     let model: ConversationModel
     let dictation: Dictation
+    let showHidden: Bool
 
     private let endID = "bot-end"
 
@@ -166,7 +172,7 @@ private struct BotHome: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     BotGreeting(nodes: nodes)
-                    Constellation(nodes: nodes, mood: mood, level: dictation.level, orbSize: 118) { node in
+                    Constellation(nodes: nodes, mood: mood, level: dictation.level, orbSize: 118, botName: app.botName) { node in
                         app.botPath.append(.conversation(projectId: node.projectId, sessionId: node.sessionId))
                     }
                     .frame(height: 290)
@@ -176,7 +182,7 @@ private struct BotHome: View {
                             app.botPath.append(.conversation(projectId: m.projectId, sessionId: m.sessionId))
                         }
                     }
-                    BotThread(model: model)
+                    BotThread(model: model, showHidden: showHidden)
                     Color.clear.frame(height: 1).id(endID)
                 }
                 .padding(.vertical, 8)
@@ -352,19 +358,21 @@ private struct MomentCard: View {
 /// The conversation with the Bot, in its own style: its replies beside a
 /// small orb, yours in a bright bubble, its look-ups folded into one line.
 private struct BotThread: View {
+    @Environment(AppModel.self) private var app
     let model: ConversationModel
+    let showHidden: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            ForEach(model.items) { item in
+            ForEach(model.items(showHidden: showHidden)) { item in
                 switch item {
-                case .row(let r): BotLine(row: r)
-                case .steps(let rs): BotLookups(rows: rs)
+                case .row(let r): BotLine(row: r).opacity(r.botView == "hide" ? 0.55 : 1)
+                case .steps(let rs): BotLookups(rows: rs).opacity(rs.allSatisfy { $0.botView == "hide" } ? 0.55 : 1)
                 }
             }
             if model.isWorking {
                 HStack(spacing: 10) {
-                    BotOrb(mood: .thinking, size: 22)
+                    BotOrb(mood: .thinking, size: 22, name: app.botName)
                         .frame(width: 30, height: 30)
                     Text(model.activity.map { "\($0)…" } ?? "Thinking…")
                         .font(.subheadline)
@@ -380,6 +388,7 @@ private struct BotThread: View {
 }
 
 private struct BotLine: View {
+    @Environment(AppModel.self) private var app
     let row: ChatRow
 
     var body: some View {
@@ -401,11 +410,21 @@ private struct BotLine: View {
             }
         case .assistant:
             HStack(alignment: .top, spacing: 10) {
-                BotOrb(mood: .idle, size: 22)
+                BotOrb(mood: .idle, size: 22, name: app.botName)
                     .frame(width: 30, height: 30)
-                MarkdownText(text: row.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contextMenu { CopyButton(text: row.text) }
+                VStack(alignment: .leading, spacing: 6) {
+                    if row.ownerMessage {
+                        Text(row.needsYou ? "Needs you" : "For you")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(row.needsYou ? BotColors.peach : BotColors.sky)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background((row.needsYou ? BotColors.peach : BotColors.sky).opacity(0.18), in: .capsule)
+                    }
+                    MarkdownText(text: row.text)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contextMenu { CopyButton(text: row.text) }
             }
         case .error:
             Label(row.text, systemImage: "exclamationmark.triangle.fill")

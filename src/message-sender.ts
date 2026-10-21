@@ -49,13 +49,21 @@ export const TEAM_LINE_PREFIX = '[Agent team this turn: ';
 /** The advisor's per-turn line (Claude, advisor on), same mechanism. */
 export const ADVISOR_LINE_PREFIX = '[Advisor on: ';
 // Either line, or both stacked, at the end (before the sender marker).
-const TEAM_LINE = /(?:\n\n\[(?:Agent team this turn|Advisor on): [^\n]*\])+\s*$/;
+const TEAM_LINE = /(?:\n\n\[(?:Agent team this turn|Advisor on|Open question to the owner, still unanswered): [^\n]*\])+\s*$/;
 export function withTeamLine(text: string, line: string | undefined): string {
   if (!line || text.trimStart().startsWith('/')) return text;
   const r = readMessageSender(text);
   return r.sender ? r.text + '\n\n' + line + text.slice(r.text.length) : text + '\n\n' + line;
 }
-/** Removes the team line and the advisor line (whichever are there). */
+/** The open-question line: an automated turn arrives while a question to the
+ *  owner is still unanswered, and may close it with the RESOLVED marker. Same
+ *  mechanism as the team line (the message, never the system prompt). */
+export const OPEN_QUESTION_LINE_PREFIX = '[Open question to the owner, still unanswered: ';
+export function openQuestionLine(questions: string[]): string {
+  const one = (q: string) => '"' + q.replace(/\s+/g, ' ').trim().slice(0, 300).replace(/"/g, "'") + '"';
+  return `${OPEN_QUESTION_LINE_PREFIX}${questions.slice(0, 6).map(one).join(', ')}. If this message answers it or makes it moot, end your reply with <<<RESOLVED>>> on its own line. Otherwise leave it open.]`;
+}
+/** Removes the team line, the advisor line and the open-question line (whichever are there). */
 export function stripTeamLine(text: string): string {
   return text.replace(TEAM_LINE, '');
 }

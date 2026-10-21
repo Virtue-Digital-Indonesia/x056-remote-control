@@ -913,7 +913,9 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   `userVisibleOnly`, and a push that shows nothing costs Chrome a generic
   notice and lets Safari revoke the permission; `push.ts` is the one place
   that decides. **Panel rows** (`botRowVisibility` / `botRowKind` in
-  `rc-chat.js`, mirrored by iOS; the comment there is the spec): a turn starts
+  `rc-chat.js`; `server/bot-view.ts` is the same rule for history rows, which
+  carry `botView` so iOS filters on it; `test/fixtures/bot-view-table.json`
+  proves both agree): a turn starts
   at each user row and takes its sender kind; `keep` rows (question card,
   orphan card, error banner, "Bot needs you:" notice) always show; `system`
   rows (relay checkpoint, sysline, non-error banner, "Bot status:" notice)
@@ -930,6 +932,46 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   anchors Today), so "Bot · Idle" keeps its room at 320-430 px. Browser tests:
   `bot-home-spacing.cjs`, `bot-system-history.cjs`, `sw-push-shows.cjs`;
   WebKit needs the env in `test/browser/webkit-preload.cjs`'s header.
+
+- **Owner view (2026-10-21, Efran via Bot; contract `docs/bot-owner-view-contract.md`).**
+  **Clean chat**: a turn started by an agent (sender kinds `conversation`,
+  `mcp`, `delegate`, `automation`, incl. the Bot's own `message_self` and its
+  scheduled tasks) is turn kind `agent` and hidden whole, the Bot's reply
+  included; the sending agent still reads that reply (`findMessageReply`
+  reads the transcript, untouched). A STEERED user row never starts a turn
+  (an agent's steer hides only itself, the owner's stays). The Bot reaches the
+  owner with the Bot-only tool `message_owner {text, needs_you?, options?}`
+  (`POST /api/bot/message`; `notify_user` is an alias): FYI = a visible bubble
+  tagged "For you", unread marker, no push; needs_you = also a question card
+  (urgent push), merged into an open batch. Durable: the history route turns the
+  tool call in the transcript into `{role:'assistant', ownerMessage:true,
+  needsYou}` (route only, not the adapter). An ASK in a non-human Bot turn never
+  becomes a card, and agent sends to the Bot go non-interactive. The persona is
+  `botSystemNote(name)` (answer agents directly; reach the owner only via
+  `message_owner`). Today > "Show N hidden messages" reveals agent and system
+  rows, dimmed, agent replies labelled "reply to <sender>". **Indicator**:
+  `attention {needsMe, fyi}` (needsMe = the Bot session's pending questions;
+  fyi = unread for a VISIBLE reason: read-state counts only human, brief and
+  recap turns and `bot_message` for the Bot project, and answering a question
+  no longer wipes an FYI) on `GET /api/bot`, the Bot's projects row
+  (`botAttention`, `botName`) and a live `bot_attention` event (flat, plus a
+  nested `attention` copy), fired only when it changes. Panel: FYI = a small
+  sky dot, Needs me = an amber pill with the count (amber like the header chip
+  and Home's "Needs input", never the near-black accent that reads as the
+  bell), on the sidebar entry, both top-bar Bot buttons and the /chat row.
+  iOS: the Bot tab badge, Bot no longer in `needsYouCount`. **Rename**:
+  `POST /api/bot {name}` (1-40 chars, no control chars or `<>`) renames the
+  Chat and its conversation (notice titles follow); the Bot's replies, its
+  question card, header, sidebar and buttons show the name; the process
+  restarts once per rename. **Open questions survive agents (all
+  conversations)**: only a human-origin turn closes a pending question
+  (`question_answered {by:'turn'}`); a non-human turn gets a stripped "[Open
+  question to the owner ...]" line and closes it only with `<<<RESOLVED>>>`
+  (stripped from display); a new ASK merges into the batch. The panel and iOS
+  clear a card only on `question_answered`/`question_dismissed` or a human
+  `session_started`. Tests: `test/bot-owner-view.test.ts`; browser
+  `bot-indicator`, `bot-view-table`, `question-survives-agent`,
+  `bot-system-history`. The iOS part is uncompiled until the next Xcode build.
 
 ## Delegates: an orchestrator's hidden workers (`server/delegates.ts`)
 

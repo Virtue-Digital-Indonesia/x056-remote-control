@@ -1,0 +1,603 @@
+{
+ "comment": "Bot chat visibility table. Rows are history rows (role, text, sender.kind, steered, ownerMessage, needsYou, messageId); expected is the verdict per row after the rule in server/bot-view.ts. The panel DOM rule (rc-chat.js botRowVisibility/botRowKind) must give the same verdicts: role user = .msg.user, assistant = .msg.assistant, action = .act, error = .banner.err, notice = .notice, ownerMessage = an owner bubble (keep). A steered user row never starts a turn.",
+ "cases": [
+  {
+   "name": "an owner turn shows everything",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "action",
+     "text": "Bash ls"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "a recap or autopilot turn is the owner's: shown",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:recap",
+     "sender": {
+      "kind": "recap"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:autopilot",
+     "sender": {
+      "kind": "autopilot"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "show",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "a digest hides everything",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:bot_event",
+     "sender": {
+      "kind": "bot_event"
+     }
+    },
+    {
+     "role": "action",
+     "text": "Bash ls"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "hide"
+   ]
+  },
+  {
+   "name": "an agent message hides its trigger, tools and replies",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation"
+     }
+    },
+    {
+     "role": "action",
+     "text": "Bash ls"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "hide"
+   ]
+  },
+  {
+   "name": "mcp, delegate and automation senders are agents too",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:mcp",
+     "sender": {
+      "kind": "mcp"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:delegate",
+     "sender": {
+      "kind": "delegate"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:automation",
+     "sender": {
+      "kind": "automation"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "hide",
+    "hide",
+    "hide",
+    "hide"
+   ]
+  },
+  {
+   "name": "the next owner turn is shown again",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "an advisor turn hides only its trigger",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:advisor",
+     "sender": {
+      "kind": "advisor"
+     }
+    },
+    {
+     "role": "action",
+     "text": "Bash ls"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "the brief shows only its LAST reply",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:bot_brief",
+     "sender": {
+      "kind": "bot_brief"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "Checking"
+    },
+    {
+     "role": "action",
+     "text": "Bash ls"
+    },
+    {
+     "role": "assistant",
+     "text": "Brief"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "hide",
+    "show"
+   ]
+  },
+  {
+   "name": "a relay checkpoint is hidden in an owner turn",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "assistant",
+     "text": "Not sent yet (relay checkpoint): is this converging?"
+    }
+   ],
+   "expected": [
+    "show",
+    "hide"
+   ]
+  },
+  {
+   "name": "an error banner is kept even in an agent turn",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation"
+     }
+    },
+    {
+     "role": "error",
+     "text": "boom"
+    }
+   ],
+   "expected": [
+    "hide",
+    "show"
+   ]
+  },
+  {
+   "name": "an owner message is kept inside an agent turn",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "assistant",
+     "text": "for you",
+     "ownerMessage": true,
+     "needsYou": false,
+     "messageId": "bot-owner:t1"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "show",
+    "hide"
+   ]
+  },
+  {
+   "name": "an owner message is kept inside a digest and the brief",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:bot_event",
+     "sender": {
+      "kind": "bot_event"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "for you",
+     "ownerMessage": true,
+     "needsYou": true,
+     "messageId": "bot-owner:t1"
+    },
+    {
+     "role": "user",
+     "text": "u:bot_brief",
+     "sender": {
+      "kind": "bot_brief"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "a"
+    },
+    {
+     "role": "assistant",
+     "text": "for you",
+     "ownerMessage": true,
+     "needsYou": false,
+     "messageId": "bot-owner:t1"
+    },
+    {
+     "role": "assistant",
+     "text": "b"
+    }
+   ],
+   "expected": [
+    "hide",
+    "show",
+    "hide",
+    "hide",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "an owner message does not count as the brief's last reply",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:bot_brief",
+     "sender": {
+      "kind": "bot_brief"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "the brief"
+    },
+    {
+     "role": "assistant",
+     "text": "for you",
+     "ownerMessage": true,
+     "needsYou": false,
+     "messageId": "bot-owner:t1"
+    }
+   ],
+   "expected": [
+    "hide",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "an urgent Bot notice is kept, a plain one is system",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "notice",
+     "text": "Bot needs you: A",
+     "messageId": "bot-notice:1",
+     "needsYou": true
+    },
+    {
+     "role": "notice",
+     "text": "Bot status: B",
+     "messageId": "bot-notice:2",
+     "needsYou": false
+    }
+   ],
+   "expected": [
+    "show",
+    "show",
+    "hide"
+   ]
+  },
+  {
+   "name": "a notice is classified by its messageId, not its words (the Bot can be renamed)",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "notice",
+     "text": "Bot needs you: C",
+     "messageId": "bot-notice:3",
+     "needsYou": false
+    },
+    {
+     "role": "notice",
+     "text": "Jarvis needs you: D",
+     "messageId": "bot-notice:4",
+     "needsYou": true
+    }
+   ],
+   "expected": [
+    "show",
+    "hide",
+    "show"
+   ]
+  },
+  {
+   "name": "other notices follow their turn",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation"
+     }
+    },
+    {
+     "role": "notice",
+     "text": "Turn stopped.",
+     "messageId": "stopped:1",
+     "needsYou": false
+    },
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "notice",
+     "text": "Turn stopped.",
+     "messageId": "stopped:2",
+     "needsYou": false
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "an agent steer inside an owner turn hides itself only; the turn goes on",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "assistant",
+     "text": "a"
+    },
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation"
+     },
+     "steered": true
+    },
+    {
+     "role": "assistant",
+     "text": "b"
+    }
+   ],
+   "expected": [
+    "show",
+    "show",
+    "hide",
+    "show"
+   ]
+  },
+  {
+   "name": "an owner steer inside an agent turn is kept",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "a"
+    },
+    {
+     "role": "user",
+     "text": "u:owner",
+     "steered": true
+    },
+    {
+     "role": "assistant",
+     "text": "b"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "show",
+    "hide"
+   ]
+  },
+  {
+   "name": "an owner steer inside a digest turn is kept",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:bot_event",
+     "sender": {
+      "kind": "bot_event"
+     }
+    },
+    {
+     "role": "user",
+     "text": "u:owner",
+     "steered": true
+    }
+   ],
+   "expected": [
+    "hide",
+    "show"
+   ]
+  },
+  {
+   "name": "an advisor steer is hidden and does not start an advisor turn",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "user",
+     "text": "u:advisor",
+     "sender": {
+      "kind": "advisor"
+     },
+     "steered": true
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "hide",
+    "show"
+   ]
+  },
+  {
+   "name": "rows before the first user row are an owner turn",
+   "rows": [
+    {
+     "role": "assistant",
+     "text": "earlier"
+    },
+    {
+     "role": "user",
+     "text": "u:bot_event",
+     "sender": {
+      "kind": "bot_event"
+     }
+    }
+   ],
+   "expected": [
+    "show",
+    "hide"
+   ]
+  }
+ ]
+}

@@ -12,6 +12,34 @@ window.createRCChat = function (engine, room) {
   // The orb: the Bot's one avatar, pure CSS (rc-chat.css). state: idle | working; `happy` is a class added for ~1.5 s.
   const orb = (px, state = 'idle', label = '') => `<span class="bot-orb" data-state="${state}" style="--s:${px}px;--d:${(Math.random() * 4).toFixed(1)}s"${label ? ` role="img" aria-label="${label}" title="${label}"` : ' aria-hidden="true"'}><i class="bo-body"></i><i class="bo-eyes"><b></b><b></b></i></span>`;
   let bot = null, botRequest = null, briefTimer, leanFrame = 0, leanEvent, doneTimer, briefing = false, overview = null, overviewAt = 0, needsTimer = 0, wasBot = false, todayPop = null;
+  // The Bot's display name and attention. Both come from the server (the Bot's /api/projects row `botName` /
+  // `botAttention`, GET /api/bot `name` / `attention`, the live `bot_attention` event) and are never guessed here.
+  // Every Bot label reads botName (escaped wherever it reaches innerHTML); everything that shows the
+  // indicator listens for `x056:bot` or asks botStatus().
+  let botName = 'Bot', botAtt = { needsMe: 0, fyi: false };
+  const normAtt = a => ({ needsMe: Math.max(0, Math.floor(+a?.needsMe || 0)), fyi: !!a?.fyi });
+  const botRow = () => engine.state().projects.find(p => p.bot);
+  function botLabel() {
+    const n = botAtt.needsMe;
+    return n > 0 ? `${botName}: ${n} ${n === 1 ? 'needs' : 'need'} you` : botAtt.fyi ? `${botName}: new message` : '';
+  }
+  const botStatus = () => ({ name: botName, needsMe: botAtt.needsMe, fyi: botAtt.fyi, label: botLabel() });
+  // Take what the server says. Rows are patched too, so a later x056:state does not bring back an older value.
+  function applyBot({ name, attention, row } = {}) {
+    const r = row || botRow(), before = botName + '|' + botAtt.needsMe + '|' + botAtt.fyi;
+    if (typeof name === 'string' && name.trim()) { botName = name.trim(); if (r) r.botName = botName; }
+    if (attention && typeof attention === 'object') { botAtt = normAtt(attention); if (r) r.botAttention = { ...botAtt }; }
+    if (before === botName + '|' + botAtt.needsMe + '|' + botAtt.fyi) return;
+    paintBotNames();
+    document.dispatchEvent(new CustomEvent('x056:bot', { detail: botStatus() }));
+  }
+  // The indicator: FYI is a small dot, Needs me a pill with the count (Needs me wins when both are set).
+  // One markup for the sidebar, both top bars and the /chat row; rc-chat.css / workspace.css place it.
+  const botBadgeHTML = cls => {
+    const n = botAtt.needsMe, label = botLabel(); if (!label) return '';
+    return `<span class="bot-ind ${cls}" data-kind="${n > 0 ? 'needs' : 'fyi'}" role="img" aria-label="${esc(label)}">${n > 0 ? (n > 99 ? '99+' : n) : ''}</span>`;
+  };
+  const syncBotFromRow = () => { const r = botRow(); if (r && (r.botName || r.botAttention)) applyBot({ name: r.botName, attention: r.botAttention ?? (r.botName ? {} : undefined), row: r }); };
   // Small inline glyphs for the Bot's header (the sun is the panel's own #i-sun path).
   const SVG = {
     sun: '<svg class="rb-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>',
@@ -69,8 +97,8 @@ window.createRCChat = function (engine, room) {
     ($('composerBox') || document.querySelector('.composer-wrap').lastElementChild).before(quick);
     quick.querySelectorAll('.rc-bot-chip').forEach(wireChip);
     // While hidden system rows are shown, say so above the composer, with the way back.
-    const pill = document.createElement('div'); pill.id = 'rcBotSystemPill'; pill.setAttribute('role', 'group'); pill.setAttribute('aria-label', 'System messages');
-    pill.innerHTML = '<span>Showing system messages</span><span aria-hidden="true">·</span><button type="button" id="rcBotSystemHide">Hide</button>';
+    const pill = document.createElement('div'); pill.id = 'rcBotSystemPill'; pill.setAttribute('role', 'group'); pill.setAttribute('aria-label', 'Hidden messages');
+    pill.innerHTML = '<span>Showing hidden messages</span><span aria-hidden="true">·</span><button type="button" id="rcBotSystemHide">Hide</button>';
     quick.before(pill);
     $('rcBotSystemHide').onclick = () => { setSystemHistory(false); $('rcBotToday')?.focus({ preventScroll: true }); };
     for (const type of ['input', 'focusin', 'focusout']) $('prompt')?.addEventListener(type, syncBotQuick);
@@ -153,7 +181,7 @@ window.createRCChat = function (engine, room) {
     const chats = state.projects.filter(p => p.kind === 'chat' && (!filter?.value || (filter.value==='standalone'?!p.spaceId:p.spaceId===filter.value)) && !!p.archivedAt === showArchived && (p.name + ' ' + p.conversations?.[0]?.title).toLowerCase().includes(query));
     chats.sort((a,b) => (!!b.bot - !!a.bot) || (b.conversations?.[0]?.lastMessageAt || b.conversations?.[0]?.createdAt || 0) - (a.conversations?.[0]?.lastMessageAt || a.conversations?.[0]?.createdAt || 0));
     $('rcChatArchives').textContent = showArchived ? 'Active chats' : 'Archived chats';
-    $('rcChatList').innerHTML = chats.map(p => `<a class="rc-chat-item ${p.id === active ? 'selected' : ''}" href="${chatPath(p.id)}" data-chat-link data-chat="${esc(p.id)}" ${(p.conversations?.[0]?.sessionId || p.lastSessionId) ? `data-conv-project="${esc(p.id)}" data-conv-session="${esc(p.conversations?.[0]?.sessionId || p.lastSessionId)}"` : ''} ${p.id === active ? 'aria-current="page"' : ''}><strong>${p.bot ? orb(16, p.running ? 'working' : 'idle') + '<span class="rc-bot-badge">Bot</span>' : ''}${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small></a>`).join('') || '<p class="rc-chat-empty">No chats found.</p>';
+    $('rcChatList').innerHTML = chats.map(p => `<a class="rc-chat-item ${p.id === active ? 'selected' : ''}" href="${chatPath(p.id)}" data-chat-link data-chat="${esc(p.id)}" ${(p.conversations?.[0]?.sessionId || p.lastSessionId) ? `data-conv-project="${esc(p.id)}" data-conv-session="${esc(p.conversations?.[0]?.sessionId || p.lastSessionId)}"` : ''} ${p.id === active ? 'aria-current="page"' : ''}><strong>${p.bot ? orb(16, p.running ? 'working' : 'idle') + '<span class="rc-bot-badge">' + esc(botName) + '</span>' : ''}${esc(p.conversations?.[0]?.title || p.name)}</strong><small>${esc(p.provider === 'codex' ? 'Codex' : 'Claude')}${p.running ? ' · Working' : ''}</small>${p.bot ? botBadgeHTML('rc-bot-ind') : ''}</a>`).join('') || '<p class="rc-chat-empty">No chats found.</p>';
   }
   function sync() {
     if (!mounted) return;
@@ -167,7 +195,22 @@ window.createRCChat = function (engine, room) {
     if (active !== chat.id) { active = chat.id; selectedFile = ''; selectedVersion = ''; files = []; loadFiles(); }
     renderChats(); renderUploads(); renderBotHead(chat);
   }
-  function loadBot() { return botRequest = request('/api/bot').then(data => (bot = data)); }
+  function loadBot() { return botRequest = request('/api/bot').then(data => { bot = data; takeBot(data); return data; }); }
+  // A /api/bot reply (GET or POST): name and attention, plus the row's copy.
+  function takeBot(data) { if (data && typeof data === 'object') applyBot({ name: data.name, attention: 'attention' in data ? data.attention ?? {} : undefined }); }
+  // Relabel what rc-chat itself owns (workspace.js listens for x056:bot and relabels the sidebar and top bars).
+  function paintBotNames() {
+    const n = botName, set = (id, v) => { const e = $(id); if (e && e.textContent !== v) e.textContent = v; };
+    document.querySelectorAll('#rcBotHead .rc-bot-badge').forEach(e => { if (e.textContent !== n) e.textContent = n; });
+    if (document.body.classList.contains('rc-bot-chat')) document.querySelectorAll('#chat>.msg.assistant>.role .role-name').forEach(e => { if (e.textContent !== n) e.textContent = n; });
+    const settings = $('rcBotSettings'); if (settings) { settings.setAttribute('aria-label', n + ' settings'); settings.title = n + ' settings'; }
+    const title = $('rcBotSetupTitle'); if (title) title.textContent = n === 'Bot' ? 'Set up your Bot' : 'Set up ' + n;
+    const enable = $('rcBotSetupForm')?.querySelector('button[type=submit]'); if (enable && !enable.disabled) enable.textContent = 'Enable ' + n;
+    $('rcBotHero')?.setAttribute('aria-label', n + ' welcome');
+    if ($('rcBotHead')) syncBotWork();
+    if (mounted && $('rcChatList')) renderChats();
+    set('rcBotNameTitle', n);
+  }
   function showBotSetup(data, error) {
     active = ''; cleanupPreview();
     document.body.classList.add('rc-chat-active', 'rc-chat-home-view', 'rc-bot-setup');
@@ -177,7 +220,7 @@ window.createRCChat = function (engine, room) {
     const form = $('rcBotSetupForm');
     if (data?.briefAt) form.elements.briefAt.value = data.briefAt;
     form.querySelector('.rc-bot-tz').textContent = (data?.tz || 'Asia/Jakarta') + ' time';
-    form.querySelector('[role=alert]').textContent = error ? 'Could not load the Bot: ' + error : '';
+    form.querySelector('[role=alert]').textContent = error ? 'Could not load the ' + botName + ': ' + error : '';
   }
   async function enableBot(event) {
     event.preventDefault();
@@ -187,12 +230,12 @@ window.createRCChat = function (engine, room) {
     button.disabled = true; button.textContent = 'Enabling…'; form.querySelector('.bot-orb').dataset.state = 'working';
     try {
       const data = await request('/api/bot', { enabled: true, briefAt });
-      bot = data; botRequest = Promise.resolve(data);
-      if (!data.enabled || !data.url) throw new Error('The Bot did not start. Try again.');
+      bot = data; botRequest = Promise.resolve(data); takeBot(data);
+      if (!data.enabled || !data.url) throw new Error('The ' + botName + ' did not start. Try again.');
       await engine.reloadProjects();
       await navigate(data.url, true);
     } catch (error) { alert.textContent = error.message || 'Could not enable the Bot.'; }
-    finally { button.disabled = false; button.textContent = 'Enable Bot'; form.querySelector('.bot-orb').dataset.state = 'idle'; }
+    finally { button.disabled = false; button.textContent = 'Enable ' + botName; form.querySelector('.bot-orb').dataset.state = 'idle'; }
   }
   function renderBotHead(chat) {
     const head = $('rcBotHead'); if (!head) return;
@@ -210,56 +253,76 @@ window.createRCChat = function (engine, room) {
     if (!wasBot) { wasBot = true; loadOverview(); }
     startNeeds();
   }
-  // ---- Bot chat history: which rows are system rows, hidden until "Show hidden system messages".
-  // THE RULE. The iOS app mirrors botRowVisibility and botRowKind; change both together.
-  // The chat is read in turns. A turn starts at every user message (.msg.user) and its kind
-  // is that message's sender kind: 'bot_event' (the gateway's digest), 'bot_brief' (the
-  // morning brief), 'advisor', or '' for a human. Any other sender kind (conversation, mcp,
-  // delegate, automation, ...) counts as ''. Rows before the first user message are in a '' turn.
+  // ---- Bot chat history: which rows are hidden until "Show N hidden messages".
+  // THE RULE. server/bot-view.ts is the shared spec: it annotates the same rows with `botView`
+  // ('show' | 'hide'), which iOS filters on. This file applies it to the DOM, so live rows get it
+  // too; test/browser/bot-system-history.cjs and test/bot-view.test.ts pin the same table. Change both together.
+  // The chat is read in turns. A turn starts at every NON-steered user message (.msg.user) and its
+  // kind is that message's sender kind:
+  //   'bot_event'  the gateway's digest
+  //   'bot_brief'  the morning brief
+  //   'advisor'    an advisor follow-up
+  //   'agent'      another conversation, an MCP caller, a delegate, a scheduled task (sender kinds
+  //                conversation, mcp, delegate, automation: the Bot's own message_self and cron too)
+  //   ''           the owner, a recap, autopilot, anything else
+  // Rows before the first user message are in a '' turn. A STEERED user row (.msg.user.steered) never
+  // starts a turn: from anything but the owner (an agent, the advisor, the digest, the brief) it is 'steer' (hidden,
+  // itself only); from the owner (no sender, recap, autopilot) it is 'keep'.
   // Every row has one kind (botRowKind):
-  //   'keep'    a question card, an orphaned-turn card, an error banner, a "Bot needs you:" notice
+  //   'keep'    a question card, an orphaned-turn card, an error banner, an owner message (the Bot's
+  //             message_owner bubble), a Bot notice that needs the owner (bot-notice: id + urgent), the
+  //             owner's own steer
   //   'system'  a relay checkpoint ("Not sent yet ..." / "Relay checkpoint ..."), a system line,
-  //             a non-error banner, a "Bot status:" notice
+  //             a non-error banner, a non-urgent Bot notice (by its bot-notice: id, never by its text:
+  //             the Bot can be renamed)
+  //   'steer'   an agent's steer into a running turn
   //   'trigger' the user message that starts the turn
   //   'reply'   an assistant message
   //   'tool'    a tool row
   //   'other'   anything else (advisor card, other notices, model mark, summary)
   // Decided in this order, first match wins:
   //   1. 'keep' is always shown.
-  //   2. 'system' is always hidden, in every turn, a human's included.
-  //   3. A digest turn ('bot_event') hides everything else.
+  //   2. 'system' and 'steer' are always hidden, in every turn, an owner's included.
+  //   3. A digest ('bot_event') or agent ('agent') turn hides everything else: the agent's message,
+  //      the Bot's reply to it, its tools. Whatever the Bot wants the owner to see is a 'keep' row.
   //   4. A morning-brief turn ('bot_brief') shows only its LAST reply (the brief itself),
   //      labelled "Morning brief". Earlier replies are commentary before its tools ("Checking
   //      what ran overnight...") and are hidden with the trigger, the tools and the rest.
   //   5. An advisor turn ('advisor') hides only its trigger.
-  //   6. Everything else is shown, so a human's turn keeps its message, replies and tools.
+  //   6. Everything else is shown, so an owner's turn keeps its message, replies and tools.
   // lastReply: for a 'reply', whether it is the last reply of its turn (only rule 4 asks).
   function botRowVisibility(rowKind, turnKind, lastReply) {
     if (rowKind === 'keep') return 'show';
-    if (rowKind === 'system') return 'hide';
-    if (turnKind === 'bot_event') return 'hide';
+    if (rowKind === 'system' || rowKind === 'steer') return 'hide';
+    if (turnKind === 'bot_event' || turnKind === 'agent') return 'hide';
     if (turnKind === 'bot_brief') return rowKind === 'reply' && lastReply !== false ? 'show' : 'hide';
     if (turnKind === 'advisor') return rowKind === 'trigger' ? 'hide' : 'show';
     return 'show';
   }
   const CHECKPOINT = /^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay checkpoint[:.])/i;
+  const AGENT_SENDERS = ['conversation', 'mcp', 'delegate', 'automation'];
+  // A steer from any of these is not the owner's (the server's NOT_OWNER_STEER); recap and autopilot steers are.
+  const NOT_OWNER_STEER = [...AGENT_SENDERS, 'advisor', 'bot_event', 'bot_brief'];
+  const senderKindOf = row => (/(?:^|\s)sender-(\w+)/.exec(row.className) || [])[1] || '';
   function botRowKind(row) {
-    if (row.matches('.qcard,.orphan,.banner.err')) return 'keep';
-    if (row.matches('.notice')) { const text = row.textContent.trim(); if (/^Bot needs you:/.test(text)) return 'keep'; if (/^Bot status:/.test(text)) return 'system'; }
-    if (row.matches('.msg.user')) return 'trigger';
+    if (row.matches('.qcard,.orphan,.banner.err,.msg.assistant.owner-message')) return 'keep';
+    if (row.matches('.notice')) { const id = row.dataset.messageSourceId || ''; if (id.startsWith('bot-notice:')) return row.dataset.botUrgent ? 'keep' : 'system'; }
+    if (row.matches('.msg.user')) return !row.classList.contains('steered') ? 'trigger' : NOT_OWNER_STEER.includes(senderKindOf(row)) ? 'steer' : 'keep';
     if (CHECKPOINT.test(row._messageText ?? row.textContent.trim())) return 'system';
     if (row.matches('.sysline,.banner')) return 'system';
     if (row.matches('.msg.assistant')) return 'reply';
     if (row.matches('.act')) return 'tool';
     return 'other';
   }
-  const turnKindOf = row => { const k = (/(?:^|\s)sender-(\w+)/.exec(row.className) || [])[1] || ''; return ['bot_event', 'bot_brief', 'advisor'].includes(k) ? k : ''; };
+  const turnKindOf = row => { const k = senderKindOf(row); return k === 'bot_event' || k === 'bot_brief' || k === 'advisor' ? k : AGENT_SENDERS.includes(k) ? 'agent' : ''; };
+  // Who a hidden exchange is with, for the label on its rows while they are shown.
+  const exchangeOf = (row, turnKind) => turnKind === 'agent' || turnKind === 'bot_event' ? (row.querySelector('.message-sender strong')?.textContent.trim() || (turnKind === 'agent' ? 'an agent' : 'the digest')) : '';
   // A row's kind is fixed once it is rendered (messages are never edited in place), so it is
   // classified once. The last turn is re-walked on every pass anyway, which heals a row that did change.
-  const rowKinds = new WeakMap(), rowShown = new WeakMap();
+  const rowKinds = new WeakMap(), rowShown = new WeakMap(), rowExchange = new WeakMap();
   let hiddenRows = 0;
   function walkBotRows(from, turnKind, full) {
-    let hidden = 0, briefReply = null;
+    let hidden = 0, briefReply = null, exchange = '';
     // The label goes on the brief turn's LAST reply (the brief itself; earlier ones are
     // commentary before its tools), so it is placed when the turn ends and moves forward
     // as replies arrive.
@@ -267,23 +330,37 @@ window.createRCChat = function (engine, room) {
     for (let row = from; row; row = row.nextElementSibling) {
       let kind = rowKinds.get(row);
       if (!kind || !row.nextElementSibling) { kind = botRowKind(row); rowKinds.set(row, kind); }
-      if (kind === 'trigger') { endTurn(); turnKind = turnKindOf(row); }
+      if (kind === 'trigger') { endTurn(); turnKind = turnKindOf(row); exchange = exchangeOf(row, turnKind); }
       const hide = botRowVisibility(kind, turnKind) === 'hide';
       if (hide) hidden++;
+      if (kind === 'reply' || kind === 'keep') nameBotRow(row);
       // A newer reply in a brief turn demotes the previous one to commentary (rule 4).
       if (!hide && kind === 'reply' && turnKind === 'bot_brief') { if (briefReply) { setRowState(briefReply, botRowVisibility('reply', turnKind, false)); hidden++; } briefReply = row; continue; }
-      setRowState(row, hide ? 'hide' : 'show');
+      setRowState(row, hide ? 'hide' : 'show', kind === 'steer' ? senderName(row) : exchange);
     }
     endTurn();
     if (full) hiddenRows = hidden;
   }
-  function setRowState(row, state) {
+  const senderName = row => row.querySelector('.message-sender strong')?.textContent.trim() || '';
+  // In the Bot chat its replies are signed with its display name, not the provider ("claude").
+  function nameBotRow(row) { const e = row.querySelector(':scope>.role .role-name'); if (e && e.textContent !== botName) e.textContent = botName; }
+  function setRowState(row, state, exchange = '') {
     let was = rowShown.get(row);
-    if (was === state) return;
     if (was === undefined) was = row.classList.contains('bot-system-notice') ? 'hide' : row.classList.contains('bot-brief-reply') ? 'brief' : 'show';
-    rowShown.set(row, state);
-    if ((state === 'hide') !== (was === 'hide')) { row.classList.toggle('bot-system-notice', state === 'hide'); hiddenRows += state === 'hide' ? 1 : -1; }
-    if ((state === 'brief') !== (was === 'brief')) briefLabel(row, state === 'brief');
+    if (rowShown.get(row) !== state) {
+      rowShown.set(row, state);
+      if ((state === 'hide') !== (was === 'hide')) { row.classList.toggle('bot-system-notice', state === 'hide'); hiddenRows += state === 'hide' ? 1 : -1; }
+      if ((state === 'brief') !== (was === 'brief')) briefLabel(row, state === 'brief');
+    }
+    const ex = state === 'hide' ? exchange : '';
+    if ((rowExchange.get(row) ?? '') !== ex) { rowExchange.set(row, ex); exchangeLabel(row, ex); }
+  }
+  // While hidden rows are shown, an agent exchange reads as one: its rows share a rule on the left, and its
+  // replies say who they answer (CSS prints the role line's data-exchange).
+  function exchangeLabel(row, ex) {
+    row.classList.toggle('bot-agent-row', !!ex);
+    const role = row.matches('.msg.assistant') ? row.querySelector(':scope>.role') : null;
+    if (role) { if (ex) role.dataset.exchange = ex; else delete role.dataset.exchange; }
   }
   // The "Morning brief" label replaces the role line ("Claude") of the brief's first reply.
   function briefLabel(row, on) {
@@ -311,7 +388,7 @@ window.createRCChat = function (engine, room) {
     if (!start) walkBotRows(chat.firstElementChild, '', true);
     else {
       let turn = start.previousElementSibling;
-      while (turn && !turn.matches('.msg.user')) turn = turn.previousElementSibling;
+      while (turn && !turn.matches('.msg.user:not(.steered)')) turn = turn.previousElementSibling;
       walkBotRows(turn || chat.firstElementChild, '');
     }
     syncSystemControls();
@@ -320,8 +397,8 @@ window.createRCChat = function (engine, room) {
   // leave() and renderBotHead() clear it.
   function setSystemHistory(on) { document.body.classList.toggle('rc-bot-system-history', on); syncSystemControls(); syncBotHero(); }
   function systemHistoryLabel() {
-    if (document.body.classList.contains('rc-bot-system-history')) return 'Hide system messages';
-    return hiddenRows ? 'Show ' + hiddenRows + ' hidden system message' + (hiddenRows === 1 ? '' : 's') : 'No hidden system messages';
+    if (document.body.classList.contains('rc-bot-system-history')) return 'Hide agent and system messages';
+    return hiddenRows ? 'Show ' + hiddenRows + ' hidden message' + (hiddenRows === 1 ? '' : 's') : 'No hidden messages';
   }
   function syncSystemControls() {
     const b = $('rcBotSystemHistory'); if (!b) return;
@@ -340,9 +417,8 @@ window.createRCChat = function (engine, room) {
     const state = busy && busy.childElementCount ? 'working' : 'idle';
     $('rcBotStatus').textContent = state === 'working' ? 'Working…' : 'Idle'; $('rcBotHead').querySelector('.rcb-id').dataset.state = state;
     syncBotQuick();
-    if (o.dataset.state === state) return;
-    o.dataset.state = state; const label = state === 'working' ? 'Bot is working' : 'Bot is idle';
-    o.setAttribute('aria-label', label); o.title = label;
+    o.dataset.state = state; const label = botName + (state === 'working' ? ' is working' : ' is idle');
+    if (o.getAttribute('aria-label') !== label) { o.setAttribute('aria-label', label); o.title = label; }
   }
   // The quick-action row above the composer: only for a Bot chat that has messages, with nothing typed and no turn running.
   function syncBotQuick() {
@@ -411,25 +487,26 @@ window.createRCChat = function (engine, room) {
   function openSettings() {
     closeToday();
     const on = bot?.enabled !== false;
-    const d = dialog('Bot settings', `<form class="rcb-settings" novalidate><div class="rcb-hero"><span class="bot-aurora" aria-hidden="true"></span>${orb(72)}<p>Your Bot briefs you every morning and messages you when something needs you.</p></div><label class="rc-bot-time">Morning brief<input type="time" name="briefAt" value="${esc(bot?.briefAt || '07:30')}" required></label><small class="rc-bot-tz">${esc(bot?.tz || 'Asia/Jakarta')} time</small><p class="rc-bot-error" role="alert"></p><button class="cr-primary" type="submit">Save</button><div class="rcb-off"><div><strong>Bot is ${on ? 'on' : 'off'}</strong><span>${on ? 'Turning it off stops morning briefs and notices. The chat stays.' : 'Turn it on to get morning briefs again.'}</span></div><button type="button" class="cr-secondary" data-toggle>${on ? 'Turn Bot off' : 'Turn Bot on'}</button></div></form>`, 'rc-bot-settings');
+    const d = dialog(botName + ' settings', `<form class="rcb-settings" novalidate><div class="rcb-hero"><span class="bot-aurora" aria-hidden="true"></span>${orb(72)}<p>${esc(botName)} briefs you every morning and messages you when something needs you.</p></div><label class="rc-bot-time rc-bot-namefield">Name<input type="text" name="name" value="${esc(botName)}" maxlength="40" autocomplete="off" spellcheck="false" aria-describedby="rcBotNameHint"></label><small id="rcBotNameHint" class="rc-bot-tz">What the panel and the app call it. 1 to 40 characters.</small><label class="rc-bot-time">Morning brief<input type="time" name="briefAt" value="${esc(bot?.briefAt || '07:30')}" required></label><small class="rc-bot-tz">${esc(bot?.tz || 'Asia/Jakarta')} time</small><p class="rc-bot-error" role="alert"></p><button class="cr-primary" type="submit">Save</button><div class="rcb-off"><div><strong>${esc(botName)} is ${on ? 'on' : 'off'}</strong><span>${on ? 'Turning it off stops morning briefs and notices. The chat stays.' : 'Turn it on to get morning briefs again.'}</span></div><button type="button" class="cr-secondary" data-toggle>${on ? 'Turn ' + esc(botName) + ' off' : 'Turn ' + esc(botName) + ' on'}</button></div></form>`, 'rc-bot-settings');
     const form = d.querySelector('form'), alert = form.querySelector('[role=alert]'), save = form.querySelector('button[type=submit]'), toggle = form.querySelector('[data-toggle]');
     let armed = 0;
     form.onsubmit = async event => {
       event.preventDefault(); alert.textContent = ''; const briefAt = form.elements.briefAt.value;
       if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(briefAt)) { alert.textContent = 'Choose a brief time, such as 07:30.'; form.elements.briefAt.focus(); return; }
       save.disabled = true; save.textContent = 'Saving…'; form.querySelector('.bot-orb').dataset.state = 'working';
-      try { bot = await request('/api/bot', { briefAt }); botRequest = Promise.resolve(bot); renderBotHead(current()); save.textContent = 'Saved'; happy(); setTimeout(() => d.isConnected && d.close(), 700); }
+      const name = form.elements.name.value.trim(), body = { briefAt }; if (name !== botName) body.name = name;
+      try { bot = await request('/api/bot', body); botRequest = Promise.resolve(bot); takeBot(bot); renderBotHead(current()); save.textContent = 'Saved'; happy(); setTimeout(() => d.isConnected && d.close(), 700); }
       catch (error) { alert.textContent = error.message || 'Could not save.'; save.textContent = 'Save'; save.disabled = false; }
       finally { form.querySelector('.bot-orb') && (form.querySelector('.bot-orb').dataset.state = 'idle'); }
     };
     toggle.onclick = async () => {
-      if (on && !armed) { armed = setTimeout(() => { armed = 0; toggle.textContent = 'Turn Bot off'; }, 4000); toggle.textContent = 'Tap again to turn off'; return; }
+      if (on && !armed) { armed = setTimeout(() => { armed = 0; toggle.textContent = 'Turn ' + botName + ' off'; }, 4000); toggle.textContent = 'Tap again to turn off'; return; }
       clearTimeout(armed); toggle.disabled = true; alert.textContent = '';
       try {
-        const data = await request('/api/bot', { enabled: !on }); bot = data; botRequest = Promise.resolve(data); overview = null;
+        const data = await request('/api/bot', { enabled: !on }); bot = data; botRequest = Promise.resolve(data); takeBot(data); overview = null;
         d.close(); await engine.reloadProjects();
         await navigate(on || !data.url ? '/bot' : data.url, true);
-      } catch (error) { alert.textContent = error.message || 'Could not change the Bot.'; toggle.disabled = false; toggle.textContent = on ? 'Turn Bot off' : 'Turn Bot on'; armed = 0; }
+      } catch (error) { alert.textContent = error.message || 'Could not change ' + botName + '.'; toggle.disabled = false; toggle.textContent = on ? 'Turn ' + botName + ' off' : 'Turn ' + botName + ' on'; armed = 0; }
     };
   }
   // The hero shows for the open Bot chat once its history has loaded and the thread has no nodes; the first message removes it.
@@ -669,6 +746,7 @@ window.createRCChat = function (engine, room) {
       row.querySelector('[data-message]').onclick=()=>{const d=dialog('Message project conversation','<form class="workspace-form"><textarea name="message" placeholder="Message" required></textarea><p>Chat will send this through the existing message approval and reply tools.</p><button class="cr-primary">Ask Chat to send</button></form>');d.querySelector('form').onsubmit=e=>{e.preventDefault();engine.insertPrompt(`Use send_message to send this message to projectId=${ref.projectId}, sessionId=${ref.sessionId}, then read the correlated reply:\n\n${e.target.elements.message.value}`);d.close();};};
       row.querySelector('[data-remove]').onclick=async()=>{try{await request(base(active)+'/references',{references:refs.filter(r=>r!==ref)});await engine.reloadProjects();renderReferences();}catch(e){notify(e);}};});
   }
+  document.addEventListener('x056:state', syncBotFromRow);
   document.addEventListener('x056:state',sync);
   document.addEventListener('click', event => {
     const link = event.target.closest('a[data-chat-link]');
@@ -678,6 +756,6 @@ window.createRCChat = function (engine, room) {
   window.addEventListener('popstate', () => { if (enabled) applyRoute(); });
   document.addEventListener('x056:reconnected',()=>{if(enabled)loadFiles();});
   document.addEventListener('x056:mode',event=>{if(event.detail.mode==='closed'){document.body.classList.remove('rc-chat-active','rc-chat-home-view');if(!routing&&inChat())window.history.pushState({},'', '/');}else setTimeout(sync,0);});
-  document.addEventListener('x056:event',event=>{const {kind,data}=event.detail;if(kind==='chat_files'&&data.projectId===active)loadFiles();if(kind==='projects')engine.reloadProjects().then(sync);else if(kind==='conversation')setTimeout(sync,100);});
-  return { navigate, leave, newChat, botAvatar: orb, botRowVisibility, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat()||inBot())await applyRoute();else sync();}else if(inBot())notify('Chat is turned off on this gateway, so the Bot is unavailable.');}catch(error){if(inChat()||inBot())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
+  document.addEventListener('x056:event',event=>{const {kind,data}=event.detail;if(kind==='bot_attention')applyBot({name:data.name,attention:data.needsMe!==undefined||data.fyi!==undefined?data:data.attention});if(kind==='chat_files'&&data.projectId===active)loadFiles();if(kind==='projects')engine.reloadProjects().then(sync);else if(kind==='conversation')setTimeout(sync,100);});
+  return { navigate, leave, newChat, botAvatar: orb, botStatus, botName: () => botName, botBadge: botBadgeHTML, botRowVisibility, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat()||inBot())await applyRoute();else sync();}else if(inBot())notify('Chat is turned off on this gateway, so the Bot is unavailable.');}catch(error){if(inChat()||inBot())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
 };

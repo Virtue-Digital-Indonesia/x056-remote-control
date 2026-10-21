@@ -35,13 +35,13 @@ enum BotMood: Equatable {
 
     var tint: Color { palette[0] }
 
-    var label: String {
+    func label(named name: String) -> String {
         switch self {
-        case .asleep: return "Bot, not set up"
-        case .idle: return "Bot, ready"
-        case .thinking: return "Bot, thinking"
-        case .listening: return "Bot, listening"
-        case .attention: return "Bot, something needs you"
+        case .asleep: return "\(name), not set up"
+        case .idle: return "\(name), ready"
+        case .thinking: return "\(name), thinking"
+        case .listening: return "\(name), listening"
+        case .attention: return "\(name), something needs you"
         }
     }
 }
@@ -63,6 +63,7 @@ struct BotOrb: View {
     /// Microphone level, 0-1, while listening.
     var level: Double = 0
     var size: CGFloat = 140
+    var name = "Bot"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -97,7 +98,7 @@ struct BotOrb: View {
             .frame(width: size * 1.55, height: size * 1.55)
         }
         .accessibilityElement()
-        .accessibilityLabel(mood.label)
+        .accessibilityLabel(mood.label(named: name))
         .animation(.smooth(duration: 0.6), value: mood)
     }
 
@@ -186,6 +187,7 @@ struct Constellation: View {
     var mood: BotMood
     var level: Double = 0
     var orbSize: CGFloat = 132
+    var botName = "Bot"
     var open: (BotNode) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -215,7 +217,7 @@ struct Constellation: View {
                             .zIndex(depth > 0 ? 2 : 0)
                             .onTapGesture { if !ambient { open(node) } }
                     }
-                    BotOrb(mood: mood, level: level, size: orbSize)
+                    BotOrb(mood: mood, level: level, size: orbSize, name: botName)
                         .position(c)
                         .zIndex(1)
                 }

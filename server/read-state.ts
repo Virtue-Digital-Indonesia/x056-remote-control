@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { VISIBLE_ORIGINS } from './bot-view.js';
 
 /**
  * Read and unread, shared by every client. The panel used to keep this in
@@ -49,6 +50,8 @@ export class ReadState {
     /** Some client has this conversation on screen right now. */
     private readonly viewing: (projectId: string, sessionId: string) => boolean = () => false,
     private readonly now: () => number = Date.now,
+    /** The Bot's Chat: its unread is the owner's FYI, so only what the owner is meant to see counts. */
+    private readonly isBot: (projectId: string) => boolean = () => false,
   ) {
     this.items = this.load();
   }
@@ -79,6 +82,7 @@ export class ReadState {
     const sid = typeof data.sessionId === 'string' ? data.sessionId : '';
     if (!pid || !sid) return;
     const tier = (data.notice as { tier?: string } | undefined)?.tier;
+    if (this.isBot(pid)) return this.observeBot(kind, data, pid, sid, tier);
     switch (kind) {
       case 'question':
         return this.notice(pid, sid, 'question');
@@ -101,6 +105,33 @@ export class ReadState {
       case 'question_dismissed':
       case 'question_answered':
         this.read(pid, sid);
+        return;
+    }
+  }
+
+  /**
+   * The Bot's Chat keeps two things apart: a pending question is NEEDS-ME (the
+   * question store says so) and an unread message is an FYI. So a question
+   * never marks the chat unread, answering or dismissing one never wipes an
+   * unrelated FYI, and only a turn the owner is meant to see (human, the
+   * morning brief, a recap) or a message_owner counts: agent, digest and
+   * delegate traffic never marks the Bot unread, a failed one included.
+   */
+  private observeBot(kind: string, data: Record<string, unknown>, pid: string, sid: string, tier: string | undefined): void {
+    const visible = typeof data.origin === 'string' && VISIBLE_ORIGINS.has(data.origin);
+    switch (kind) {
+      case 'conversation_settled':
+        if (visible && data.notificationSuppressed !== true && tier !== 'none') this.notice(pid, sid, 'done');
+        return;
+      case 'session_done':
+        if (!visible) return;
+        if (data.status === 'failed' || data.status === 'parked') this.notice(pid, sid, 'failed');
+        return;
+      case 'session_error':
+        if (visible) this.notice(pid, sid, 'failed');
+        return;
+      case 'bot_message':
+        if (data.needsYou !== true) this.notice(pid, sid, 'done');
         return;
     }
   }
