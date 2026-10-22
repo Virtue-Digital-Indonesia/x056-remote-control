@@ -140,7 +140,7 @@ index 9267791..a387e3f 100644
              if let pid, let sid, let item = d.decode(ReadItem.self) { applyReadState(pid, sid, item) }
          case "autopilot":
 diff --git a/ios/X056/App/ConversationModel.swift b/ios/X056/App/ConversationModel.swift
-index 23c04a4..16609aa 100644
+index 23c04a4..97ba2b3 100644
 --- a/ios/X056/App/ConversationModel.swift
 +++ b/ios/X056/App/ConversationModel.swift
 @@ -29,6 +29,21 @@ struct ChatRow: Identifiable, Equatable {
@@ -219,25 +219,28 @@ index 23c04a4..16609aa 100644
              if r.role == .action { run.append(r); continue }
              if !run.isEmpty { out.append(.steps(run)); run = [] }
              out.append(.row(r))
-@@ -214,7 +261,7 @@ final class ConversationModel {
+@@ -214,7 +261,8 @@ final class ConversationModel {
          defer { loading = false }
          do {
              let page = try await client.get("/api/conversations/history-page", query: ["projectId": projectId, "sessionId": sessionId, "limit": "80"], as: HistoryPage.self)
 -            rows = page.rows.compactMap(Self.row)
 +            rows = Self.rows(page.rows)
++            restoreLiveTurn()
              cursor = page.cursor
              done = page.done ?? true
              loadError = nil
-@@ -231,7 +278,7 @@ final class ConversationModel {
+@@ -231,8 +279,9 @@ final class ConversationModel {
          // Fresh ids for every row made the list drop each measured height
          // and guess again: the last message ended under the composer, and
          // scrolling to it sprang back.
 -        let next = Self.keepingIDs(page.rows.compactMap(Self.row), from: rows.filter { !$0.pending && !$0.failed }) + unsent
 +        let next = Self.keepingIDs(Self.rows(page.rows), from: rows.filter { !$0.pending && !$0.failed }) + unsent
          if next != rows { rows = next }
++        restoreLiveTurn()
          cursor = page.cursor
          done = page.done ?? true
-@@ -243,7 +290,7 @@ final class ConversationModel {
+     }
+@@ -243,7 +292,7 @@ final class ConversationModel {
          defer { loadingOlder = false }
          do {
              let page = try await client.get("/api/conversations/history-page", query: ["projectId": projectId, "sessionId": sessionId, "limit": "60", "before": String(cursor)], as: HistoryPage.self)
@@ -246,7 +249,7 @@ index 23c04a4..16609aa 100644
              self.cursor = page.cursor
              done = page.done ?? true
          } catch {
-@@ -267,7 +314,36 @@ final class ConversationModel {
+@@ -267,7 +316,36 @@ final class ConversationModel {
          }
      }
  
@@ -283,7 +286,7 @@ index 23c04a4..16609aa 100644
          let text = h.text ?? ""
          let sender = h.sender.flatMap(senderLabel)
          switch h.role {
-@@ -295,6 +371,30 @@ final class ConversationModel {
+@@ -295,6 +373,39 @@ final class ConversationModel {
          }
      }
  
@@ -305,6 +308,15 @@ index 23c04a4..16609aa 100644
 +        return r
 +    }
 +
++    /// Opened mid-turn: when the running turn was started by an agent (the last
++    /// real user row is a hidden trigger), the rest of it stays hidden too.
++    private func restoreLiveTurn() {
++        guard isRunning, liveTurn == nil,
++              let t = rows.last(where: { $0.role == .user && !($0.ownerHidden && $0.turnId == nil) }),
++              t.ownerHidden, let id = t.turnId else { return }
++        liveTurn = (id, t.sender?.replacingOccurrences(of: "From ", with: ""))
++    }
++
 +    /// The turn `id` is for the owner after all: show its rows.
 +    private func showTurn(_ id: String) {
 +        for i in rows.indices where rows[i].turnId == id && rows[i].ownerHidden { rows[i].ownerHidden = false }
@@ -314,10 +326,11 @@ index 23c04a4..16609aa 100644
      /// A journal row with an `advisor` payload: a Jev pick, a delegate
      /// report, a ChatGPT advisor consult or a Claude advisor call.
      static func card(_ a: JSONValue?, fallback: String) -> ChatRow? {
-@@ -337,12 +437,23 @@ final class ConversationModel {
+@@ -337,12 +448,23 @@ final class ConversationModel {
              activeModel = d["model"]?.string
              let text = d["displayPrompt"]?.string ?? d["prompt"]?.string ?? ""
              let reqId = d["requestId"]?.string
+-            if let i = rows.firstIndex(where: { $0.pending && ($0.requestId == reqId || $0.text == text) }) ?? rows.firstIndex(where: \.pending) {
 +            let from = d["sender"]?.decode(Sender.self)
 +            // An agent's message (not this conversation talking to itself) starts
 +            // a turn the owner does not see unless it is marked for them.
@@ -328,7 +341,7 @@ index 23c04a4..16609aa 100644
 +            } else {
 +                liveTurn = nil
 +            }
-             if let i = rows.firstIndex(where: { $0.pending && ($0.requestId == reqId || $0.text == text) }) ?? rows.firstIndex(where: \.pending) {
++            if let i = rows.firstIndex(where: { $0.pending && ($0.requestId == reqId || $0.text == text) }) ?? (hidden ? nil : rows.firstIndex(where: \.pending)) {
                  rows[i].pending = false
              } else if !repeatsTail(.user, text) {
                  let attachments = d["attachments"]?.decode([AttachmentRef].self) ?? []
@@ -340,7 +353,7 @@ index 23c04a4..16609aa 100644
              }
          case "bot_notice":
              // The journal keeps it as this same text, so a reload matches it.
-@@ -352,8 +463,20 @@ final class ConversationModel {
+@@ -352,8 +474,20 @@ final class ConversationModel {
              if !repeatsTail(.notice, text) { rows.append(ChatRow(role: .notice, text: text)) }
          case "assistant_text":
              if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
@@ -362,7 +375,7 @@ index 23c04a4..16609aa 100644
          case "active_model":
              activeModel = d["model"]?.string ?? activeModel
          case "activity":
-@@ -363,7 +486,7 @@ final class ConversationModel {
+@@ -363,17 +497,17 @@ final class ConversationModel {
                  rows[i].inFlight = a.status == "start"
                  if a.status == "error" { rows[i].failed = true }
              } else {
@@ -371,7 +384,20 @@ index 23c04a4..16609aa 100644
              }
              activity = a.status == "start" ? label : nil
          case "jev_decision":
-@@ -381,6 +504,7 @@ final class ConversationModel {
+             if let dec = d.decode(JevDecision.self) {
+-                rows.append(ChatRow(role: .card, text: dec.noteLine, card: .decision(dec)))
++                rows.append(inTurn(ChatRow(role: .card, text: dec.noteLine, card: .decision(dec))))
+             }
+         case "advisor_call":
+-            if d["phase"]?.string == "done", let row = Self.card(d, fallback: "") { rows.append(row) }
++            if d["phase"]?.string == "done", let row = Self.card(d, fallback: "") { rows.append(inTurn(row)) }
+         case "advisor_consult":
+-            if let row = Self.card(d, fallback: "") { rows.append(row) }
++            if let row = Self.card(d, fallback: "") { rows.append(inTurn(row)) }
+         case "delegate_report":
+             if let role = d["role"]?.string {
+                 rows.append(ChatRow(role: .card, text: d["text"]?.string ?? "", card: .delegate(role: role, gate: d["gate"]?.string, text: d["text"]?.string ?? "")))
+@@ -381,6 +515,7 @@ final class ConversationModel {
          case "session_done", "conversation_settled":
              activity = nil
              for i in rows.indices where rows[i].inFlight { rows[i].inFlight = false }
