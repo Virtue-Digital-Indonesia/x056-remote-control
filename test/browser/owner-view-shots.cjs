@@ -59,12 +59,26 @@ fs.mkdirSync(shots, { recursive: true });
       const settleChip = () => page.waitForFunction(() => { const e = document.getElementById('streamStatus'); return !e || e.hidden || e.classList.contains('fade-out') || getComputedStyle(e).opacity === '0'; }, null, { timeout: 8000 }).then(() => page.waitForTimeout(600));
       const file = (name) => `${shots}/${label}-${name}.png`;
       await settleChip(); await page.screenshot({ path: file('default') }); out.push(file('default'));
+      const composerState = () => page.evaluate(() => ({ open: !!document.querySelector('.composer-wrap')?.hasAttribute('data-qp-open'), focus: document.activeElement?.id || document.activeElement?.tagName }));
+      const before = await composerState();
       await page.locator('#chat .ov-btn').first().click();
       await page.waitForTimeout(400);
+      const after = await composerState();
+      console.log(label, 'composer before Show', JSON.stringify(before), 'after Show', JSON.stringify(after));
+      // Show moves focus to the pill's Hide (the control that undoes it), so the composer folds to its resting pill:
+      // the quiet composer's own rule (open while focus is inside it). It is not the owner view changing its shape.
+      assert.equal(after.focus, 'rcOwnerHide', label + ': focus goes to Hide');
       // Shown at the bottom of the thread, where a reader is after reading: mid-scroll the panel's existing floating
       // jump and stage buttons sit over a bubble on a phone, which is not what this change adds.
       await page.evaluate(() => { const sc = document.querySelector('.scroll'); sc.scrollTop = sc.scrollHeight; }); await page.waitForTimeout(400);
       await settleChip(); await page.screenshot({ path: file('shown') }); out.push(file('shown'));
+      if (label === 'desktop-1440') {
+        await page.locator('#prompt').focus(); await page.waitForTimeout(400);
+        const refocused = await composerState();
+        assert.ok(before.open ? refocused.open : true, label + ': with the prompt focused again the composer is open, as in the default view');
+        await page.screenshot({ path: file('shown-focused') }); out.push(file('shown-focused'));
+        await page.locator('#rcOwnerHide').focus(); await page.waitForTimeout(300);
+      }
       const box = async sel => page.evaluate(s => { const e = document.querySelector(s); if (!e) return null; const r = e.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right) }; }, sel);
       const lastRow = await page.evaluate(() => { const rows = [...document.querySelectorAll('#chat>*')].filter(e => getComputedStyle(e).display !== 'none'); const r = rows[rows.length - 1].getBoundingClientRect(); return { bottom: Math.round(r.bottom) }; });
       const pill = await box('#rcOwnerPill'), tools = await box('#rcChatControls'), input = await box('#composerBox');
@@ -79,6 +93,32 @@ fs.mkdirSync(shots, { recursive: true });
         const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
         assert.ok(overflow <= 0, 'no horizontal overflow at 390: ' + overflow);
       }
+      await context.close();
+    }
+    {
+      // The shown agent turn with its question card: the turn is shown because its reply asked (an ASK block, which
+      // the server strips from the text and turns into the pending card) and the reply's marker is stripped by the panel.
+      const qrows = rows.slice(0, 8).map(r => r.sender?.messageId === 'deploy-1' ? r : r);
+      qrows[7] = { ...qrows[7], text: qrows[7].text + '\n\n<<<FOR_OWNER>>>' };
+      const question = { projectId: chat.id, sessionId: chat.lastSessionId, question: 'Promote v2026.10.22 to production?', options: ['Promote now', 'Wait until tomorrow'], at: t(1700) };
+      const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1440, height: 900 } });
+      await context.addInitScript(tok => localStorage.setItem('x056_token', tok), token);
+      await context.route(/\/api\/sessions\/current\/stream/, route => route.fulfill({ headers: { 'Content-Type': 'text/event-stream' }, body: ': fixture heartbeat\n\n' }));
+      await context.route('**/api/questions', route => route.fulfill({ json: [question] }));
+      await context.route(/\/api\/conversations\/history-page\?/, route => new URL(route.request().url()).searchParams.get('projectId') === chat.id ? route.fulfill({ json: { done: true, cursor: null, rows: qrows } }) : route.continue());
+      const page = await context.newPage();
+      await page.goto(base + '/chat/' + chat.id);
+      await page.waitForFunction(() => window.rcWorkspace?.ready());
+      await page.locator('#chat .qcard.pending').waitFor();
+      await page.waitForTimeout(700);
+      await page.waitForFunction(() => { const e = document.getElementById('streamStatus'); return !e || e.hidden || e.classList.contains('fade-out') || getComputedStyle(e).opacity === '0'; }, null, { timeout: 8000 }).then(() => page.waitForTimeout(600));
+      await page.evaluate(() => { const sc = document.querySelector('.scroll'); sc.scrollTop = sc.scrollHeight; }); await page.waitForTimeout(300);
+      assert.ok(await page.locator('#chat .qcard.pending').isVisible(), 'the question card shows');
+      assert.ok(await page.getByText('It needs your go-ahead', { exact: false }).isVisible(), 'the asking agent turn shows');
+      const leaked = await page.evaluate(() => document.getElementById('chat').innerText.includes('<<<'));
+      assert.equal(leaked, false, 'no <<<FOR_OWNER>>> / ASK text on screen');
+      const f = `${shots}/desktop-1440-question.png`;
+      await page.screenshot({ path: f }); out.push(f);
       await context.close();
     }
     console.log('SHOTS', out.join('\n'));
