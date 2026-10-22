@@ -43,7 +43,7 @@ import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { TEMPLATES, TemplateStore } from './templates.js';
 import { TRANSCRIPT_STATS, TranscriptStatsReader, estimateCost } from './transcript-stats.js';
 import { claudeSubagentStatus } from './agent-tree.js';
-import type { ProviderId } from '../src/provider.js';
+import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import { getAdapter } from '../src/adapters/registry.js';
 import { cachedBrief, listSubagents, parentTranscript, readSubagentPage, subagentFiles } from '../src/adapters/subagents.js';
 import { listWorkflowAgents, listWorkflowRuns, liveWorkflowRuns, readWorkflowAgentPage } from '../src/adapters/workflows.js';
@@ -158,6 +158,10 @@ function relayReceipt(r: RelayReceipt): RelayReceipt {
   return { hopsUntilCheck: r.hopsUntilCheck, hopsLeft: r.hopsLeft, ...(r.confirmedCheckpoint ? { confirmedCheckpoint: true as const } : {}) };
 }
 
+/** `conversations/history?messages=1` reads back at most this far for its messages. */
+const HISTORY_MESSAGES_MAX_PAGES = 20;
+const HISTORY_MESSAGES_MAX_ROWS = 5000;
+const isMessageRow = (r: HistoryEntry): boolean => r.role === 'user' || r.role === 'assistant';
 const QUOTA_TTL_MS = 90_000;
 
 /** How quiet a subagent's transcript may go and still count as running. */
@@ -792,17 +796,26 @@ export class ApiController {
     @Query('sessionId') sessionId?: string,
     @Query('limit') limit?: string,
     @Query('strict') strict?: string,
+    @Query('messages') messages?: string,
   ): HistoryEntry[] {
     if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
     if (strict === 'true' && !this.manager.listConversations(projectId).some(c => c.sessionId === sessionId))
       throw new BadRequestException('unknown conversation for that project');
-    const n = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 100;
+    // `messages=1` (the MCP read tools): `limit` counts user/assistant messages,
+    // not rows, so tool calls and journal rows at the end cannot crowd them out.
+    const onlyMessages = messages === '1' || messages === 'true';
+    const asked = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 100;
+    const n = onlyMessages ? Math.min(asked, 500) : asked;
     try {
       const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
-      const rows = this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [], true));
+      const transcript = onlyMessages ? this.messageTranscript(adapter, configDirs, providerSessionId, n)
+        : adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [];
+      const rows = this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, transcript, true));
       // The Bot's chat comes back with the owner's view: owner messages and a verdict per row.
       // Any other conversation: agent-started turns are hidden unless marked for the owner.
-      return (this.manager.bot().isBotProject(projectId) ? botHistory(rows) : ownerRowView(rows, { sessionId, shown: new OwnerViewStore(this.stateDir).shown(sessionId) })).slice(-n);
+      // Rows are only tagged, never dropped, so an agent reader still sees every message.
+      const view = this.manager.bot().isBotProject(projectId) ? botHistory(rows) : ownerRowView(rows, { sessionId, shown: new OwnerViewStore(this.stateDir).shown(sessionId) });
+      return (onlyMessages ? view.filter(isMessageRow) : view).slice(-n);
     } catch {
       if (strict === 'true') throw new BadRequestException('Conversation history unavailable');
       return [];
@@ -931,6 +944,28 @@ export class ApiController {
       res.setHeader('Cache-Control', 'private, max-age=3600');
       res.sendFile(image.path);
     } catch { throw new BadRequestException('Image is unavailable'); }
+  }
+  /**
+   * Raw transcript rows reaching back far enough to hold `n` user/assistant
+   * messages: newest page first, then older pages by cursor until there are
+   * enough, the history is exhausted, or the scan cap is hit. The journal is
+   * merged ONCE by the caller over the whole span, so no page boundary can
+   * drop or duplicate one of its rows. The raw count is a lower bound: the
+   * merge and the Bot's owner-message rows only add messages.
+   */
+  private messageTranscript(adapter: ProviderAdapter, configDirs: string[], providerSessionId: string, n: number): HistoryEntry[] {
+    if (!adapter.readHistoryPage) return adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, Math.min(n * 10 + 50, HISTORY_MESSAGES_MAX_ROWS)) : [];
+    const pageSize = Math.min(500, Math.max(50, n * 4));
+    let page = adapter.readHistoryPage(configDirs, providerSessionId, pageSize);
+    let rows = page.rows;
+    for (let pages = 1; !page.done && pages < HISTORY_MESSAGES_MAX_PAGES && rows.length < HISTORY_MESSAGES_MAX_ROWS
+      && rows.filter(isMessageRow).length < n; pages++) {
+      const before = page.cursor;
+      page = adapter.readHistoryPage(configDirs, providerSessionId, pageSize, before);
+      if (!page.rows.length || page.cursor >= before) break;
+      rows = [...page.rows, ...rows];
+    }
+    return rows;
   }
   private historyImages(rows: HistoryEntry[]): HistoryEntry[] {
     return rows.map(row => row.role !== 'user' ? row : { ...row, attachments: messageImages(row.text, owner => {

@@ -54,10 +54,30 @@ beforeAll(async () => {
     JSON.stringify({ type: 'user', message: { role: 'user', content: 'what is the plan?' }, timestamp: '2026-07-15T01:00:00.000Z' }),
     JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'THE_SEEDED_PLAN: ship it' }] }, timestamp: '2026-07-15T01:00:05.000Z' }),
   ].join('\n') + '\n');
+  // A busy conversation: three exchanges, then 150 tool calls (each with its
+  // tool_result) and nothing else. More tool rows than one history page, so
+  // read_conversation has to read further back to find its messages.
+  const busy = [] as string[];
+  const at = (s: number) => new Date(Date.parse('2026-07-16T00:00:00.000Z') + s * 1000).toISOString();
+  for (let i = 1; i <= 3; i++) {
+    busy.push(JSON.stringify({ type: 'user', message: { role: 'user', content: `BUSY_ASK_${i}` }, timestamp: at(i * 10) }));
+    busy.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `BUSY_REPLY_${i}` }] }, timestamp: at(i * 10 + 1) }));
+  }
+  for (let i = 0; i < 150; i++) {
+    busy.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: `tu${i}`, name: 'Bash', input: { command: `echo ${i}` } }] }, timestamp: at(100 + i * 2) }));
+    busy.push(JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `tu${i}`, content: `${i}` }] }, timestamp: at(101 + i * 2) }));
+  }
+  // Its own project, so searches for the seeded one still find exactly one hit.
+  const busyProj = join(dir, 'busywork'); mkdirSync(busyProj, { recursive: true });
+  const busyDir = join(dir, 'cfg-a', 'projects', busyProj.replace(/[/.]/g, '-'));
+  mkdirSync(busyDir, { recursive: true });
+  writeFileSync(join(busyDir, 'busy-conv-1.jsonl'), busy.join('\n') + '\n');
   writeFileSync(join(stateDir, 'projects.json'), JSON.stringify({
     current: 'p1',
     projects: [{ id: 'p1', name: 'SeededProj', cwd: proj, provider: 'claude', lastSessionId: sid,
-      conversations: [{ sessionId: sid, title: 'Seeded', createdAt: 1 }] }],
+      conversations: [{ sessionId: sid, title: 'Seeded', createdAt: 1 }] },
+    { id: 'p2', name: 'BusyProj', cwd: busyProj, provider: 'claude', lastSessionId: 'busy-conv-1',
+      conversations: [{ sessionId: 'busy-conv-1', title: 'Busy', createdAt: 2 }] }],
   }));
 
   // fake-claude needs a scenario to replay for the send_message tool's turn.
@@ -151,6 +171,19 @@ describe('x056 MCP bridge (real script against a live gateway)', () => {
     expect(text).toContain('THE_SEEDED_PLAN: ship it');
     expect(text).toMatch(/\[user.*\]/);
     expect(text).toMatch(/\[assistant.*\]/);
+  });
+
+  it('read_conversation limit counts messages, not tool-call rows, and reads back past them', async () => {
+    const read = async (limit: number) => (await rpc('tools/call', { name: 'read_conversation', arguments: { projectId: 'p2', sessionId: 'busy-conv-1', limit } })).result as { structuredContent: { messages: { role: string; text: string }[] } };
+    expect((await read(2)).structuredContent.messages.map((m) => m.text)).toEqual(['BUSY_ASK_3', 'BUSY_REPLY_3']);
+    // Fewer messages than the limit: all of them, oldest first, and no tool results posing as user messages.
+    expect((await read(30)).structuredContent.messages.map((m) => m.text)).toEqual(['BUSY_ASK_1', 'BUSY_REPLY_1', 'BUSY_ASK_2', 'BUSY_REPLY_2', 'BUSY_ASK_3', 'BUSY_REPLY_3']);
+    const route = async (q: string) => await (await fetch(`${base}/api/conversations/history?projectId=p2&sessionId=busy-conv-1&strict=true&${q}`, { headers: auth })).json() as { role: string; text: string }[];
+    expect((await route('limit=2&messages=1')).map((r) => r.text)).toEqual(['BUSY_ASK_3', 'BUSY_REPLY_3']);
+    // Without the flag the route is unchanged: the newest rows, whatever they are.
+    const plain = await route('limit=2');
+    expect(plain).toHaveLength(2);
+    expect(plain.every((r) => r.role === 'action')).toBe(true);
   });
 
   it('exposes workspace tools and image content through the real stdio bridge', async () => {

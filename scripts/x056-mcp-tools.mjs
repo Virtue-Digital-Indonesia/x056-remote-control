@@ -824,7 +824,7 @@ export async function callToolResult(api, name, args) {
   }
   if (name === 'read_conversation') {
     const limit = args.limit && args.limit > 0 ? Math.floor(args.limit) : 30;
-    const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}&limit=${limit}&strict=true`);
+    const rows = await api(`/api/conversations/history?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}&limit=${limit}&strict=true&messages=1`);
     // Its helpers and delegates, so a reader can see and then steer them.
     const state = await api(`/api/conversations/helpers?projectId=${encodeURIComponent(args.projectId)}&sessionId=${encodeURIComponent(args.sessionId)}`).catch(() => null);
     const team = (state?.delegates || []).filter((d) => !d.dismissedAt).map((d) => ({ id: d.id, role: d.role, provider: d.provider, status: d.working ? 'working' : d.status }));
