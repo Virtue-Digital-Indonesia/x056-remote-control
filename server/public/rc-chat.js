@@ -110,6 +110,7 @@ window.createRCChat = function (engine, room) {
     const tools = document.createElement('div'); tools.id = 'rcChatControls';
     tools.innerHTML = `<button class="cr-secondary" id="rcChatMenu">Chats</button><span id="rcChatProvider"></span><button class="cr-secondary" id="rcChatTools">Tools</button><button class="cr-secondary" id="rcChatReference">@ Reference</button><button class="cr-secondary" id="rcChatFiles">Files</button><button class="cr-icon" id="rcChatMore" aria-label="Chat actions">•••</button>`;
     document.querySelector('.composer-wrap').prepend(tools);
+    const ownerPill = $('rcOwnerPill'); if (ownerPill) document.querySelector('.composer-wrap').prepend(ownerPill);
     $('rcChatNew').onclick = $('rcChatWelcomeNew').onclick = newChat;
     $('rcChatWelcomeMenu').onclick = () => window.rcWorkspace?.ready() ? $('crProjects').click() : document.body.classList.toggle('rc-chat-nav-open');
     $('rcChatAccounts').onclick = () => { leave(); room.showAccounts(); };
@@ -746,6 +747,157 @@ window.createRCChat = function (engine, room) {
       row.querySelector('[data-message]').onclick=()=>{const d=dialog('Message project conversation','<form class="workspace-form"><textarea name="message" placeholder="Message" required></textarea><p>Chat will send this through the existing message approval and reply tools.</p><button class="cr-primary">Ask Chat to send</button></form>');d.querySelector('form').onsubmit=e=>{e.preventDefault();engine.insertPrompt(`Use send_message to send this message to projectId=${ref.projectId}, sessionId=${ref.sessionId}, then read the correlated reply:\n\n${e.target.elements.message.value}`);d.close();};};
       row.querySelector('[data-remove]').onclick=async()=>{try{await request(base(active)+'/references',{references:refs.filter(r=>r!==ref)});await engine.reloadProjects();renderReferences();}catch(e){notify(e);}};});
   }
+  // ---- Owner view in every conversation but the Bot's (docs/owner-view-all-contract.md).
+  // THE RULE (test/fixtures/owner-view-table.json; server/owner-view.ts is the server's copy). The chat is read in turns:
+  // a turn starts at each NON-steered user row. It is an AGENT turn when that row's sender kind is conversation | mcp |
+  // delegate | automation, unless the sender is this very conversation (data-sender-session = its own id: a message_self
+  // continuation). Anything else (no sender, autopilot, recap, advisor, unknown) is the owner's.
+  //   hidden by default: an agent turn's trigger, tools, notices and replies, unless the trigger carries
+  //                      data-for-owner (history `forOwner`, or session_done {forOwner} / owner_view live);
+  //   always shown ('keep'): error banners, the question card, an orphan card, an owner steer;
+  //   an agent's steer (.msg.user.steered, agent sender) hides itself only inside an owner turn, and follows the
+  //                      turn inside an agent turn;
+  //   rows before the first user row (a page that starts mid-turn) use the server's data-owner-view.
+  // Each run of consecutive hidden rows gets ONE real <button class="ov-btn"> before it. The button, the walker, the
+  // #chat observer, loadHistory's dedupe and loadOlder all treat it as furniture, never as a row.
+  const ov = { show: false, key: '', own: '' };
+  const ovIsBtn = n => n.nodeType === 1 && n.classList.contains('ov-btn');
+  const ovFurniture = n => n.nodeType !== 1 || ovIsBtn(n) || n.classList.contains('older-bar');
+  function ovKind(row) {
+    if (row.matches('.qcard,.orphan,.banner.err')) return 'keep';
+    if (row.matches('.msg.user')) return !row.classList.contains('steered') ? 'trigger' : AGENT_SENDERS.includes(senderKindOf(row)) ? 'steer' : 'keep';
+    return 'row';
+  }
+  function ovTurn(row) {
+    const kind = senderKindOf(row), self = row.dataset.senderSession && row.dataset.senderSession === ov.own;
+    return { lead: false, agent: AGENT_SENDERS.includes(kind) && !self, forOwner: row.dataset.forOwner === '1', ex: senderName(row) || 'an agent' };
+  }
+  const OV_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+  function ovLabel(rows) {
+    let n = 0; const names = new Set();
+    for (const r of rows) {
+      if (!r.matches('.msg')) continue;
+      n++;
+      if (r.matches('.msg.user')) { const name = senderName(r); if (name) names.add(name); }
+    }
+    const from = names.size === 1 ? [...names][0] : '';
+    return { text: n ? `${n} hidden message${n === 1 ? '' : 's'}` : 'Hidden activity', from };
+  }
+  function ovPlace(run, stale) {
+    if (!run.length) return;
+    let btn = run[0].previousElementSibling; btn = btn && ovIsBtn(btn) ? btn : null;
+    if (btn) stale.delete(btn);
+    else { btn = document.createElement('button'); btn.type = 'button'; btn.className = 'ov-btn'; btn.setAttribute('aria-expanded', 'false'); run[0].before(btn); }
+    const { text, from } = ovLabel(run), key = text + '|' + from;
+    if (btn._ovKey !== key) {
+      btn._ovKey = key;
+      btn.innerHTML = `${OV_ICON}<span class="ov-txt"></span>`;
+      btn.lastChild.textContent = text + (from ? ' from ' + from : '');
+      btn.setAttribute('aria-label', 'Show ' + text + (from ? ' from ' + from : ''));
+    }
+  }
+  // Walk from `from` (the start of the run that holds the turn to re-walk) to the end. `rows` before `turn` are earlier
+  // hidden rows of the same run: their state stands, they only join the run.
+  function ovWalk(from, turn) {
+    const stale = new Set(); let run = [], st = { lead: !turn, agent: false, forOwner: false, ex: '' }, earlier = !!turn;
+    const close = () => { ovPlace(run, stale); run = []; };
+    for (let row = from; row; row = row.nextElementSibling) {
+      if (ovIsBtn(row)) { stale.add(row); continue; }
+      if (row.classList.contains('older-bar')) continue;
+      if (earlier) { if (row !== turn) { run.push(row); continue; } earlier = false; }
+      const kind = ovKind(row);
+      if (kind === 'trigger') st = ovTurn(row);
+      let hide;
+      if (kind === 'keep') hide = false;
+      else if (st.lead) hide = row.dataset.ownerView === 'hide';
+      else if (kind === 'steer') hide = !st.agent || !st.forOwner;
+      else hide = st.agent && !st.forOwner;
+      row.classList.toggle('ov-hidden', hide);
+      const ex = !hide ? '' : st.lead ? 'an agent' : kind === 'steer' && !st.agent ? senderName(row) || 'an agent' : st.ex;
+      row.classList.toggle('ov-agent-row', !!ex);
+      const role = row.matches('.msg.assistant') ? row.querySelector(':scope>.role') : null;
+      if (role) { if (ex) role.dataset.exchange = ex; else delete role.dataset.exchange; }
+      if (hide) run.push(row); else close();
+    }
+    close();
+    for (const b of stale) b.remove();
+  }
+  function ovSync(records) {
+    const body = document.body, chat = $('chat'); if (!chat) return;
+    if (body.classList.contains('rc-bot-chat')) {
+      // The Bot has its own mode; a walk that ran before the Bot class was set leaves nothing behind.
+      ov.key = ''; if (ov.show) ovSetShow(false);
+      const stray = chat.querySelectorAll(':scope>.ov-btn,:scope>.ov-hidden,:scope>.ov-agent-row');
+      stray.forEach(e => e.matches('.ov-btn') ? e.remove() : e.classList.remove('ov-hidden', 'ov-agent-row'));
+      chat.querySelectorAll(':scope>.msg.assistant>.role[data-exchange]').forEach(r => { if (!r.parentElement.classList.contains('bot-agent-row')) delete r.dataset.exchange; });
+      if (stray.length) ovObserver.takeRecords();
+      return;
+    }
+    const st = engine.state(), key = st.projectId + '::' + st.sessionId;
+    if (key !== ov.key) { ov.key = key; if (ov.show) ovSetShow(false); }
+    ov.own = st.sessionId || '';
+    let start = null;
+    if (records) {
+      for (const record of records) {
+        if (record.target !== chat) continue;
+        const nodes = [...record.addedNodes, ...record.removedNodes];
+        if (nodes.every(ovFurniture)) continue;
+        if (record.removedNodes.length || record.nextSibling) { start = undefined; break; }
+        const added = [...record.addedNodes].find(n => !ovFurniture(n));
+        if (added && added.parentNode === chat && (!start || start.compareDocumentPosition(added) & Node.DOCUMENT_POSITION_PRECEDING)) start = added;
+      }
+      if (start === null) return;
+    }
+    const sc = chat.closest('.scroll'), atEnd = !!sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight < 4;
+    let turn = null, from;
+    if (!start) from = chat.firstElementChild;
+    else {
+      turn = start.previousElementSibling;
+      while (turn && !turn.matches('.msg.user:not(.steered)')) turn = turn.previousElementSibling;
+      from = turn;
+      // The run the turn continues starts earlier: step back over the hidden rows (and the button) just before it.
+      if (turn) for (let p = turn.previousElementSibling; p && (ovIsBtn(p) || p.classList.contains('ov-hidden')); p = p.previousElementSibling) from = p;
+      if (!turn) from = chat.firstElementChild;
+    }
+    ovWalk(from, turn);
+    if (atEnd && sc) sc.scrollTop = sc.scrollHeight; // a button or revealed row must not leave a live thread off its bottom
+    ovObserver.takeRecords();
+  }
+  function ovSetShow(on) {
+    ov.show = !!on; document.body.classList.toggle('rc-ov-show', ov.show);
+    const pill = $('rcOwnerPill'); if (pill) pill.hidden = !ov.show;
+    document.querySelectorAll('#chat>.ov-btn').forEach(b => b.setAttribute('aria-expanded', String(ov.show)));
+  }
+  const ovObserver = new MutationObserver(records => ovSync(records));
+  (function ovInit() {
+    const chat = $('chat'); if (!chat) return;
+    ovObserver.observe(chat, { childList: true });
+    const pill = document.createElement('div'); pill.id = 'rcOwnerPill'; pill.hidden = true; pill.setAttribute('role', 'group'); pill.setAttribute('aria-label', 'Hidden messages');
+    pill.innerHTML = '<span>Showing hidden messages</span><span aria-hidden="true">·</span><button type="button" id="rcOwnerHide">Hide</button>';
+    // First child of the composer wrap: above the Chat toolbar row (mount() puts the pill back in front of it), never inside the composer.
+    const wrap = document.querySelector('.composer-wrap');
+    if (wrap) wrap.prepend(pill); else document.body.append(pill);
+    chat.addEventListener('click', event => {
+      const btn = event.target.closest('.ov-btn'); if (!btn || !chat.contains(btn)) return;
+      // Keep what the reader was looking at where it is: the first revealed row takes the button's place.
+      const sc = chat.closest('.scroll'), top = btn.getBoundingClientRect().top, anchor = btn.nextElementSibling;
+      ovSetShow(true);
+      if (sc && anchor) sc.scrollTop += anchor.getBoundingClientRect().top - top;
+      $('rcOwnerHide').focus({ preventScroll: true });
+    });
+    $('rcOwnerHide').onclick = () => {
+      ovSetShow(false);
+      const sc = chat.closest('.scroll'), top = sc ? sc.getBoundingClientRect().top : 0;
+      const btns = [...chat.querySelectorAll(':scope>.ov-btn')];
+      const target = btns.find(b => b.getBoundingClientRect().bottom > top) || btns[btns.length - 1] || $('prompt');
+      target?.focus({ preventScroll: true });
+    };
+    document.addEventListener('x056-history', () => ovSync());
+    // Entering or leaving the Bot chat flips the mode without touching #chat: clean up or walk then.
+    let wasBot = document.body.classList.contains('rc-bot-chat');
+    new MutationObserver(() => { const now = document.body.classList.contains('rc-bot-chat'); if (now !== wasBot) { wasBot = now; ovSync(); } }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  })();
+  document.addEventListener('x056:state', () => { const st = engine.state(), key = st.projectId + '::' + st.sessionId; if (key !== ov.key && !document.body.classList.contains('rc-bot-chat')) { ov.key = key; if (ov.show) ovSetShow(false); } });
   document.addEventListener('x056:state', syncBotFromRow);
   document.addEventListener('x056:state',sync);
   document.addEventListener('click', event => {
@@ -757,5 +909,5 @@ window.createRCChat = function (engine, room) {
   document.addEventListener('x056:reconnected',()=>{if(enabled)loadFiles();});
   document.addEventListener('x056:mode',event=>{if(event.detail.mode==='closed'){document.body.classList.remove('rc-chat-active','rc-chat-home-view');if(!routing&&inChat())window.history.pushState({},'', '/');}else setTimeout(sync,0);});
   document.addEventListener('x056:event',event=>{const {kind,data}=event.detail;if(kind==='bot_attention')applyBot({name:data.name,attention:data.needsMe!==undefined||data.fyi!==undefined?data:data.attention});if(kind==='chat_files'&&data.projectId===active)loadFiles();if(kind==='projects')engine.reloadProjects().then(sync);else if(kind==='conversation')setTimeout(sync,100);});
-  return { navigate, leave, newChat, botAvatar: orb, botStatus, botName: () => botName, botBadge: botBadgeHTML, botRowVisibility, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat()||inBot())await applyRoute();else sync();}else if(inBot())notify('Chat is turned off on this gateway, so the Bot is unavailable.');}catch(error){if(inChat()||inBot())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
+  return { ownerRefresh: () => ovSync(), navigate, leave, newChat, botAvatar: orb, botStatus, botName: () => botName, botBadge: botBadgeHTML, botRowVisibility, tools: toolsDialog, closePanel, refresh: renderChats, init:async()=>{try{const data=await request('/api/chats');enabled=data.enabled;if(enabled){mount();if(inChat()||inBot())await applyRoute();else sync();}else if(inBot())notify('Chat is turned off on this gateway, so the Bot is unavailable.');}catch(error){if(inChat()||inBot())notify(error);}}, upload, uploading:id=>[...jobs.values()].some(j=>j.chatId===id&&j.state==='uploading') };
 };

@@ -3726,16 +3726,39 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       var src=URL.createObjectURL(blob); im.onload=im.onerror=function(){URL.revokeObjectURL(src);}; im.src=src;
     }).catch(function(){ im.alt='Image unavailable · '+im.alt; im.classList.add('unavailable'); });
   }
+  // Owner view: what the server says about a history row. A trigger row of a turn marked for the owner has
+  // forOwner; ownerView ('show' | 'hide') is only read for rows before the first user row (rc-chat.js).
+  function ownerTag(node, m) {
+    if (!node || !node.dataset || !m) return;
+    if (m.forOwner) node.dataset.forOwner = '1';
+    if (m.ownerView === 'show' || m.ownerView === 'hide') node.dataset.ownerView = m.ownerView;
+  }
+  // A turn was marked for the owner after its trigger row was drawn (session_done {forOwner}, owner_view):
+  // find the trigger by the sender's message id in that conversation's thread (on screen or stashed) and show it whole.
+  function markForOwner(pid, sid, messageId) {
+    if (!pid || !sid || !messageId) return;
+    var onScreen = pid === currentProjectId && sid === lastSessionId;
+    var host = onScreen ? chatEl : (views[viewKey(pid, sid)] && views[viewKey(pid, sid)].frag);
+    if (!host) return;
+    var hit = false;
+    Array.prototype.forEach.call(host.querySelectorAll('.msg.user[data-sender-message-id],.msg.user[data-message-source-id]'), function (el) {
+      if ((el.dataset.senderMessageId === messageId || el.dataset.messageSourceId === messageId) && el.dataset.forOwner !== '1') { el.dataset.forOwner = '1'; hit = true; }
+    });
+    if (hit && onScreen && window.rcChat && window.rcChat.ownerRefresh) window.rcChat.ownerRefresh();
+  }
   function nodeMsg(role, text, atts, ts, provider, sender, steered) {
     // A reply that closes an open question ends in <<<RESOLVED>>>: the gateway acts on it, nobody should read it.
     if (role === 'assistant' && typeof text === 'string' && text.indexOf('<<<RESOLVED>>>') >= 0) text = text.replace(/[ \t]*<<<RESOLVED>>>[ \t]*/g, '').replace(/\s+$/, '');
+    // <<<FOR_OWNER>>> marks a reply (or turn) as meant for the owner; the gateway reads it, nobody should see it.
+    if (role === 'assistant' && typeof text === 'string' && text.indexOf('<<<FOR_OWNER>>>') >= 0) text = text.replace(/[ \t]*<<<FOR_OWNER>>>[ \t]*/g, '').replace(/^\s*\n/, '').replace(/\s+$/, '');
     var wrap = document.createElement('div'); wrap.className = 'msg ' + role + (steered ? ' steered' : ''); wrap._messageText = text; if(ts)wrap.dataset.messageTs=ts;
     var lab = document.createElement('div'); lab.className = 'role';
     lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
     if (role !== 'user') { var roleName = document.createElement('span'); roleName.className = 'role-name'; roleName.textContent = lab.textContent; lab.textContent = ''; lab.appendChild(roleName); } // the Bot chat names it (rc-chat.js nameBotRow)
     if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor','delegate','recap','bot_event','bot_brief'].indexOf(sender.kind) >= 0) {
       wrap.classList.add('from-sender', 'sender-' + sender.kind);
-      if (sender.messageId) wrap.dataset.messageSourceId = sender.messageId;
+      if (sender.messageId) { wrap.dataset.messageSourceId = sender.messageId; wrap.dataset.senderMessageId = sender.messageId; }
+      if (sender.sessionId) wrap.dataset.senderSession = sender.sessionId; // owner view: a message from the conversation itself is a continuation
       lab.classList.add('message-sender'); lab.textContent = '';
       lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : sender.kind === 'delegate' ? 'fanout' : sender.kind === 'recap' ? 'results' : sender.kind === 'bot_event' ? 'bell' : sender.kind === 'bot_brief' ? 'sun' : 'plug', 'sm'));
       var identity = document.createElement('span'), name = document.createElement('strong'), project = document.createElement('small');
@@ -4229,6 +4252,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   // a different, idle one, and only the viewed conversation's busy bar/thread
   // may reflect it.
   function handleEvent(kind, data) {
+    if (kind === 'owner_view') { markForOwner(data.projectId, data.sessionId, data.messageId); return; }
     if (kind === 'read_state') { if (data.projectId && data.sessionId) { applyServerRead(viewKey(data.projectId, data.sessionId), data); applyNotifs(); } return; }
     if(kind==='message_delivery'){var receipt=deliveryRecords&&deliveryRecords.get(data.requestId);if(receipt){receipt.status=data.status;receipt.sessionId=data.sessionId||receipt.sessionId;saveDelivery(receipt).catch(function(){});}return;}
     if (['question','question_dismissed','question_answered','session_started'].indexOf(kind) >= 0) questionsVersion++;
@@ -4339,6 +4363,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       if (mineConvo) { active = true; renderBusy(); renderAccountChip(); }
     }
     else if (kind === 'session_done') {
+      if (data.forOwner && data.triggerMessageId) markForOwner(pid, sid, data.triggerMessageId); // an agent turn marked for the owner shows whole
       // Show WHY a turn failed. The reason was previously dropped, so a failure
       // caused by something transient and self-explanatory (e.g. "the API was
       // overloaded") read as an unexplained "failed" the user had to guess at.
@@ -6141,6 +6166,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       return s;
     });
   }
+  // className without the owner-view classes (ov-hidden, ov-agent-row): they are added after a row is drawn, so a live row and its history twin differ by them.
+  function ownerPlain(cls) { return String(cls || '').replace(/(?:^|\s)ov-[\w-]+/g, '').trim(); }
   function loadHistory(reportErrors) {
     var pid = currentProjectId, sid = lastSessionId;
     if (!pid || !sid) return Promise.resolve();
@@ -6169,7 +6196,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       var transcriptActions = 0;
       if (hasMsgs) rows.forEach(function (m, i) {
         if (m.role === 'action') transcriptActions++;
-        items.push({ ts: m.ts, idx: i, render: m.role === 'model'
+        items.push({ ts: m.ts, idx: i, row: m, render: m.role === 'model'
           ? function () { appendNode(pid, sid, nodeModelMark(m.text, m.ts)); }        // model-switch marker from the transcript
           : m.role === 'action'
             ? function () { appendNode(pid, sid, nodeAct(m.text, m.sub, m.agentId, m.detail)); }           // tool call replayed from the transcript
@@ -6194,13 +6221,14 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
         if (!isNaN(tx) && !isNaN(ty)) return tx - ty;
         return x.idx - y.idx; // no timestamp on one side: fall back to messages-then-activity order
       });
-      items.forEach(function (it) { it.render(); });
+      items.forEach(function (it) { it.render(); if (it.row) ownerTag(historyBatch.lastElementChild, it.row); });
       var rendered = historyBatch;
       } finally { historyBatch = null; }
       liveNodes.forEach(function(n) {
+        if (n.classList && n.classList.contains('ov-btn')) return; // owner view's inline button: rc-chat.js rebuilds them
         var id = n.dataset && n.dataset.messageSourceId;
         var duplicate = id && Array.from(rendered.querySelectorAll('[data-message-source-id]')).some(function(r) { return r.dataset.messageSourceId === id; });
-        if (!duplicate && !id && n.classList && n.classList.contains('msg')) duplicate = Array.from(rendered.querySelectorAll('.msg')).some(function(r) { return r._messageText === n._messageText && r.className === n.className && Math.abs(Date.parse(r.dataset.messageTs || '')-Date.parse(n.dataset.messageTs || ''))<120000; });
+        if (!duplicate && !id && n.classList && n.classList.contains('msg')) duplicate = Array.from(rendered.querySelectorAll('.msg')).some(function(r) { return r._messageText === n._messageText && ownerPlain(r.className) === ownerPlain(n.className) && Math.abs(Date.parse(r.dataset.messageTs || '')-Date.parse(n.dataset.messageTs || ''))<120000; });
         if (!duplicate && n.classList && n.classList.contains('owner-message')) duplicate = Array.from(rendered.querySelectorAll('.owner-message')).some(function(r) { return ownerSame(r, n); });
         if (!duplicate) rendered.appendChild(n);
       });
@@ -6298,6 +6326,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
                     ? nodeSummary(m.text, m.ts)
                     : m.ownerMessage ? nodeOwner(m.text, m.ts, m.messageId, m.needsYou, providerFor(pid, sid), 'history')
                     : nodeMsg(m.role === 'user' ? 'user' : 'assistant', m.text, m.attachments, m.ts, providerFor(pid, sid), m.sender, m.steered));
+          ownerTag(frag.lastElementChild, m);
         });
         chatEl.insertBefore(frag, chatEl.firstChild);
         scroller.scrollTop = scroller.scrollHeight - fromBottom;
@@ -6377,7 +6406,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); loadReadState(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'question_answered', 'identity_held', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'steered', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state', 'bot_notice', 'bot_message', 'bot_attention'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'question_answered', 'identity_held', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'steered', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state', 'bot_notice', 'bot_message', 'bot_attention', 'owner_view'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }

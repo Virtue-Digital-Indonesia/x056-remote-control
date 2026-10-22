@@ -375,3 +375,24 @@ body.rc-bot-chat .bot-ind{display:none!important}
 html body.rc-bot-chat:not(.x-never) #conversationStage{display:none!important}
 /* The last message always scrolls clear of the floating controls (jump arrow) on phones. */
 @media(max-width:850px){body.rc-bot-chat #chat{padding-bottom:62px}}
+
+/* Owner view in every conversation but the Bot's: an agent turn the owner is not part of is hidden behind one real button
+   per run (rc-chat.js ovWalk). Show reveals every hidden row in place, subdued, and the pill above the composer says so. */
+body:not(.rc-bot-chat):not(.rc-ov-show) #chat>.ov-hidden{display:none!important}
+body.rc-bot-chat #chat>.ov-btn,body.rc-ov-show #chat>.ov-btn{display:none!important}
+#chat>.ov-btn{display:flex;align-items:center;gap:8px;width:max-content;max-width:100%;box-sizing:border-box;margin:4px auto 20px;padding:7px 14px 7px 11px;min-height:34px;border:1px solid var(--border-strong,var(--border));border-radius:999px;background:var(--surface-2);color:var(--muted);font:inherit;font-size:12.5px;line-height:1.35;text-align:left;cursor:pointer}
+#chat>.ov-btn svg{flex:none}
+#chat>.ov-btn .ov-txt{min-width:0;overflow-wrap:anywhere}
+#chat>.ov-btn:hover{background:var(--surface-3);color:var(--text)}
+#chat>.ov-btn:focus-visible{outline:2px solid var(--link,var(--accent));outline-offset:2px}
+@media(pointer:coarse){#chat>.ov-btn{min-height:40px}}
+body:not(.rc-bot-chat).rc-ov-show #chat>.ov-hidden{opacity:.6}
+body:not(.rc-bot-chat).rc-ov-show #chat>.ov-agent-row{position:relative}
+body:not(.rc-bot-chat).rc-ov-show #chat>.ov-agent-row::after{content:"";position:absolute;left:-18px;top:0;bottom:0;width:3px;border-radius:2px;background:color-mix(in srgb,var(--faint) 60%,transparent);pointer-events:none}
+body:not(.rc-bot-chat).rc-ov-show #chat>.msg.assistant.ov-agent-row>.role[data-exchange]::after{content:" · reply to " attr(data-exchange);font-weight:500;letter-spacing:0;text-transform:none;color:var(--muted)}
+@media(max-width:650px){body:not(.rc-bot-chat).rc-ov-show #chat>.ov-agent-row::after{left:-8px}}
+#rcOwnerPill{display:none}
+body:not(.rc-bot-chat).rc-ov-show #rcOwnerPill{display:flex;align-items:center;justify-content:center;gap:6px;width:max-content;max-width:100%;box-sizing:border-box;margin:0 auto 8px;padding:3px 4px 3px 12px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);color:var(--muted);font-size:12.5px;line-height:1.3}
+#rcOwnerPill button{min-height:30px;padding:4px 10px;border:0;border-radius:999px;background:none;color:var(--link,var(--accent));font:inherit;font-weight:600;cursor:pointer}
+#rcOwnerPill button:hover{background:var(--bg)}
+#rcOwnerPill button:focus-visible{outline:2px solid var(--link,var(--accent));outline-offset:1px}

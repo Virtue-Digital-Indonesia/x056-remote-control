@@ -1001,6 +1001,56 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   idle (`activeProcess` holds a busy or background-working process whatever
   its key).
 
+## Owner view in every conversation (`server/owner-view.ts`, 2026-10-22)
+
+Efran via Bot: "if for me or needs me then show, else hide by default".
+Contract: `docs/owner-view-all-contract.md`; shared table
+`test/fixtures/owner-view-table.json` (server test + panel browser test).
+
+- **Agent turn** = a non-steered user row whose sender kind is
+  `conversation | mcp | delegate | automation`, except a self-send
+  (`sender.sessionId` = the conversation's own: `message_self`). Hidden
+  by default in every NON-Bot conversation: trigger, tools, notices,
+  replies. Owner turns, autopilot, recaps and advisor follow-ups are
+  untouched; error banners, owner steers and question cards always show;
+  an agent steer in an owner turn hides only itself. The Bot chat keeps
+  its own rule (`bot-view.ts`).
+- **Shown whole when marked**: any assistant text of the turn (raw, in
+  `tapToEvents`, before `stripAsk`; an ASK-only message counts), its
+  `resultText` (`parseQuestion`, so a trailing-`?` card counts too), or a
+  WOKEN reply after it (`ownerWoken` in `onSettled`, which also emits
+  `owner_view`) carries `<<<FOR_OWNER>>>` or an ASK. One fact per turn:
+  `OwnerViewStore` (`state/owner-view/<sid>.json`, keyed by the trigger's
+  `sender.messageId`, newest 500), so live and reload agree. The marker is
+  stripped wherever `<<<RESOLVED>>>` is (`stripResolved`, `replyExcerpt`,
+  panel `nodeMsg`). Turns from before 2026-10-22 have no record: their
+  agent turns, answered ASKs included, stay behind Show.
+- **Fields**: `session_done` / `conversation_settled` of an agent turn
+  carry `triggerMessageId` + `forOwner: true` or `ownerHidden: true`
+  (completed only; a failed turn shows its error and pushes as before).
+  History rows of non-Bot projects carry `ownerView`, `ownerTurn`,
+  `ownerSender` and `forOwner` on a marked trigger; `history-page` looks
+  back up to 3 pages for the trigger of a page that starts mid-turn
+  (`ownerInitialTurn`); plain `conversations/history` does not.
+- **Quiet**: `ownerHidden` -> notice tier `none` (no push, bell or dot)
+  and no unread in read-state. A shown agent turn is as before (quiet,
+  bell + dot; its question card urgent).
+- **Agents are told** in `BASE_SYSTEM_NOTE` (5a) and by
+  `OWNER_HIDDEN_LINE` on each agent turn (`withLines`, stripped by
+  `stripTeamLine`). Approval-mode sends keep their agent sender, so they
+  hide too.
+- **Panel** (`rc-chat.js` owner mode, only without `body.rc-bot-chat`):
+  one real `.ov-btn` "N hidden messages [from <sender>]" before each hidden
+  run; it reveals every hidden row dimmed (`rc-ov-show`, "reply to
+  <sender>") with the `#rcOwnerPill` "Showing hidden messages · Hide";
+  resets on a conversation change. Live: `session_done {forOwner}` and
+  `owner_view` set `data-for-owner` on the trigger row. `loadHistory`
+  dedupe ignores the `ov-` classes and skips the buttons. Browser tests:
+  `owner-view-table`, `owner-hidden-live`; review shots `owner-view-shots`.
+- **iOS**: `docs/ios-owner-view.patch` is ONE patch rebased on main's
+  `ios/` (Bot owner view + this rule), uncompiled; the Mac session
+  applies and builds it.
+
 ## Delegates: an orchestrator's hidden workers (`server/delegates.ts`)
 
 Built 2026-09-30 to replace how the AHU "AI Progress Scoring" chat ran a team:
