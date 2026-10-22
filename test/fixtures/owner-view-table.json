@@ -1,0 +1,485 @@
+{
+ "comment": "Owner view for NORMAL (non-Bot) conversations. Rows are history rows (role user|assistant|action|error|notice, text, sender {kind, messageId, sessionId, conversationTitle, projectName}, steered, forOwner on a trigger row = the turn was marked for the owner). expected = ownerView per row. sender.sessionId \"$SELF\" must be replaced by the conversation's own sessionId (a message_self). initialTurn (server only) = the turn the page starts in; the panel instead reads ownerView on rows before the first user row. Server: server/owner-view.ts ownerRowView. Panel: rc-chat.js owner mode. The Bot chat keeps its own table (bot-view-table.json), unchanged.",
+ "cases": [
+  {
+   "name": "an owner turn shows everything",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "action",
+     "text": "Bash ls"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "an agent message hides its trigger, tools and replies",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation",
+      "messageId": "m1",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     }
+    },
+    {
+     "role": "action",
+     "text": "Bash ls"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "hide"
+   ]
+  },
+  {
+   "name": "mcp, delegate and automation senders are agents too",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:mcp",
+     "sender": {
+      "kind": "mcp",
+      "messageId": "m2",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:delegate",
+     "sender": {
+      "kind": "delegate",
+      "messageId": "m3",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:automation",
+     "sender": {
+      "kind": "automation",
+      "messageId": "m4",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "hide",
+    "hide",
+    "hide",
+    "hide"
+   ]
+  },
+  {
+   "name": "an agent turn marked for the owner shows whole",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation",
+      "messageId": "m5",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     },
+     "forOwner": true
+    },
+    {
+     "role": "action",
+     "text": "Bash ls"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "the next owner turn is shown again",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation",
+      "messageId": "m6",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "autopilot, recap and advisor turns are the owner's: shown, trigger included",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:autopilot",
+     "sender": {
+      "kind": "autopilot"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:recap",
+     "sender": {
+      "kind": "recap"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:advisor",
+     "sender": {
+      "kind": "advisor"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "show",
+    "show",
+    "show",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "the conversation's own message_self is a continuation: shown",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:self",
+     "sender": {
+      "kind": "conversation",
+      "messageId": "m7",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura",
+      "sessionId": "$SELF"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "an error banner is kept even in a hidden agent turn",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation",
+      "messageId": "m8",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     }
+    },
+    {
+     "role": "error",
+     "text": "Turn failed: boom"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "show",
+    "hide"
+   ]
+  },
+  {
+   "name": "a notice inside a hidden agent turn follows the turn",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation",
+      "messageId": "m9",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     }
+    },
+    {
+     "role": "notice",
+     "text": "Switched account"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "hide"
+   ]
+  },
+  {
+   "name": "an agent steer inside an owner turn hides itself only; the turn goes on",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:steer",
+     "sender": {
+      "kind": "conversation",
+      "messageId": "m10",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     },
+     "steered": true
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "show",
+    "hide",
+    "show"
+   ]
+  },
+  {
+   "name": "an owner steer inside a hidden agent turn is kept",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation",
+      "messageId": "m11",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     }
+    },
+    {
+     "role": "user",
+     "text": "u:owner-steer",
+     "steered": true
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "show",
+    "hide"
+   ]
+  },
+  {
+   "name": "an agent steer inside a shown agent turn follows the turn",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation",
+      "messageId": "m12",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     },
+     "forOwner": true
+    },
+    {
+     "role": "user",
+     "text": "u:steer",
+     "sender": {
+      "kind": "mcp",
+      "messageId": "m13",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     },
+     "steered": true
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "rows before the first user row follow the turn they belong to (server: initialTurn; panel: the row's ownerView)",
+   "initialTurn": {
+    "kind": "agent",
+    "forOwner": false
+   },
+   "rows": [
+    {
+     "role": "assistant",
+     "text": "r",
+     "ownerView": "hide"
+    },
+    {
+     "role": "action",
+     "text": "Bash ls",
+     "ownerView": "hide"
+    },
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "hide",
+    "hide",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "rows before the first user row of a page whose turn was marked are shown",
+   "initialTurn": {
+    "kind": "agent",
+    "forOwner": true
+   },
+   "rows": [
+    {
+     "role": "assistant",
+     "text": "r",
+     "ownerView": "show"
+    },
+    {
+     "role": "user",
+     "text": "u:owner"
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "show",
+    "show"
+   ]
+  },
+  {
+   "name": "no initial turn: leading rows are an owner turn",
+   "rows": [
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation",
+      "messageId": "m14",
+      "conversationTitle": "Valid Deployment",
+      "projectName": "obscura"
+     }
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    }
+   ],
+   "expected": [
+    "show",
+    "hide",
+    "hide"
+   ]
+  }
+ ]
+}

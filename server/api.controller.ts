@@ -56,6 +56,7 @@ import type { McpOAuth } from './mcp-oauth.js';
 import { McpServerManager, REDACTED_RE, redactSpec, restoreRedacted, type McpServerSpec } from './mcp-servers.js';
 import type { HistoryEntry } from './history.js';
 import { botHistory, botInitialTurn } from './bot-view.js';
+import { OwnerViewStore, ownerInitialTurn, ownerRowView } from './owner-view.js';
 import { withAskInstructions } from '../src/question.js';
 import type { PushService, DeviceSettings } from './push.js';
 import { Presence, type PresenceReport } from './presence.js';
@@ -800,7 +801,8 @@ export class ApiController {
       const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
       const rows = this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [], true));
       // The Bot's chat comes back with the owner's view: owner messages and a verdict per row.
-      return (this.manager.bot().isBotProject(projectId) ? botHistory(rows) : rows).slice(-n);
+      // Any other conversation: agent-started turns are hidden unless marked for the owner.
+      return (this.manager.bot().isBotProject(projectId) ? botHistory(rows) : ownerRowView(rows, { sessionId, shown: new OwnerViewStore(this.stateDir).shown(sessionId) })).slice(-n);
     } catch {
       if (strict === 'true') throw new BadRequestException('Conversation history unavailable');
       return [];
@@ -956,14 +958,18 @@ export class ApiController {
       if (adapter.readHistoryPage) {
         const page = adapter.readHistoryPage(configDirs, providerSessionId, n, cur);
         const rows = this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, page.rows, cur === undefined));
-        if (!bot) return { ...page, rows };
         // A page that starts mid-turn: the turn's kind is on a trigger in an older page.
         const readOlder = (before: number) => { const older = adapter.readHistoryPage!(configDirs, providerSessionId, 60, before); return { rows: new ConversationJournal(this.stateDir).merge(projectId, sessionId, older.rows, false), cursor: older.cursor, done: older.done }; };
+        if (!bot) {
+          const shown = new OwnerViewStore(this.stateDir).shown(sessionId);
+          const initialTurn = ownerInitialTurn(rows, page.cursor, page.done, sessionId, readOlder);
+          return { ...page, rows: ownerRowView(rows, { sessionId, shown, initialTurn }) };
+        }
         return { ...page, rows: botHistory(rows, botInitialTurn(rows, page.cursor, page.done, readOlder)) };
       }
       // Provider without pagination: serve the newest page and report no more.
       const rows = this.historyImages(new ConversationJournal(this.stateDir).merge(projectId, sessionId, adapter.readHistory ? adapter.readHistory(configDirs, providerSessionId, n) : [], true));
-      return { rows: bot ? botHistory(rows) : rows, cursor: 0, done: true };
+      return { rows: bot ? botHistory(rows) : ownerRowView(rows, { sessionId, shown: new OwnerViewStore(this.stateDir).shown(sessionId) }), cursor: 0, done: true };
     } catch {
       return { rows: [], cursor: 0, done: true };
     }

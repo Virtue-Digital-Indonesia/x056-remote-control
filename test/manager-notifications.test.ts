@@ -78,7 +78,7 @@ it('holds queued follow-ups when the operator stops the current turn', async () 
 });
 
 // ---- notices (server/notices.ts) as the manager attaches them ----
-it('a settled turn carries its origin, duration and notice; a relayed turn is quiet', async () => {
+it('a settled turn carries its origin, duration and notice; a relayed turn is silent (hidden from the owner)', async () => {
   const {manager,pid,turns,events}=fixture();
   vi.useFakeTimers({ toFake: ['setTimeout','clearTimeout','Date'] });
   const sid=manager.start('go',undefined,undefined,pid);
@@ -96,7 +96,7 @@ it('a settled turn carries its origin, duration and notice; a relayed turn is qu
   await vi.advanceTimersByTimeAsync(60_000);
   turns[1].resolve({status:'completed',failovers:0,resultText:'ok'});
   await vi.advanceTimersByTimeAsync(4000);
-  expect(events.filter(e=>e.kind==='conversation_settled').at(-1)!.data.notice).toMatchObject({tier:'quiet',category:'automation'});
+  expect(events.filter(e=>e.kind==='conversation_settled').at(-1)!.data.notice).toMatchObject({tier:'none'}); // owner view: an unmarked agent turn is hidden, so it is silent
 });
 it('a failed cron turn is urgent; a cron delivery failure is its own urgent notice', async () => {
   const {manager,pid,turns,events}=fixture();

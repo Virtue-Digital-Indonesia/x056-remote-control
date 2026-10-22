@@ -91,6 +91,14 @@ export interface HistoryEntry {
   botTurn?: string;
   /** 'brief' on the morning brief's own reply. Bot history only. */
   botLabel?: 'brief';
+  /** Owner view of a normal conversation (server/owner-view.ts). */
+  ownerView?: 'show' | 'hide';
+  /** 'agent' on every row of a turn another conversation / MCP / delegate / schedule started. */
+  ownerTurn?: 'agent';
+  /** Label of that sender (conversation title, project, or kind). */
+  ownerSender?: string;
+  /** On a trigger row: the turn was marked for the owner. */
+  forOwner?: boolean;
 }
 
 /** A model the provider offers for this account, for the composer's picker. */

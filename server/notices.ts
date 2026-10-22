@@ -117,6 +117,7 @@ export function replyExcerpt(text: string, max = EXCERPT_MAX, leadWithQuestion =
   s = s
     .replace(/<<<ASK[\s\S]*?(>>>|$)/g, ' ')
     .replace(/<<<RESOLVED>>>/g, ' ')
+    .replace(/<<<FOR_OWNER>>>/g, ' ')
     .replace(/<(system-reminder|memory|x056[-\w]*)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
     .replace(/\[x056 message sender v1\][^\n]*/g, ' ')
     .replace(/\[(Shared memory|Memory context|Referenced conversations|Attached saved files)[\s\S]*?\n\]/g, ' ')
@@ -275,6 +276,8 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         // (a question, autopilot).
         if (kind !== 'conversation_settled' || data.completionPending) return null;
         if (origin === 'autopilot') return none();
+        // An agent-started turn nobody marked for the owner: no push, no bell, no dot.
+        if (data.ownerHidden === true) return none();
         const dur = Number(data.durationMs);
         const head = Number.isFinite(dur) && dur > 0 ? formatDuration(dur) : '';
         const excerpt = replyExcerpt(String(data.resultText || ''));

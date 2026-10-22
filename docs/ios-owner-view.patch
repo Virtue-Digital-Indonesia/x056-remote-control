@@ -1,5 +1,28 @@
+x056 iOS patch: owner view (Bot owner view + hidden agent turns in every conversation)
+Rebased by hand on main's ios/ tree (545836f). NOT COMPILED: Swift cannot be built
+in the gateway container, so a Mac session must apply it, build and run X056Tests.
+
+  git apply docs/ios-owner-view.patch
+
+Bot (contract docs/bot-owner-view-contract.md):
+  - Project.botName / botAttention {needsMe, fyi}; Bot tab shows the name and a badge.
+  - BotOrb/Constellation/BotView take the Bot's name.
+  - question clearing on session_started only for a human turn (sender nil);
+    question_answered handled like question_dismissed; bot_attention, bot_message events.
+  - Bot screen filters on the server's botView (+ botLabel "brief"); BotHistory stays
+    the fallback for live rows. "For you" / "Needs you" capsules on owner messages.
+Every conversation (docs/owner-view-all-contract.md):
+  - HistoryEntry: steered, ownerView, ownerTurn, ownerSender, forOwner; Sender: messageId, sessionId.
+  - History rows with ownerView "hide" are folded away; live: session_started from
+    conversation|mcp|delegate|automation (not this conversation) starts a hidden turn;
+    session_done forOwner + triggerMessageId or owner_view un-hides it; errors always show.
+  - SystemHistoryToggle is now in More for every conversation with hidden rows
+    ("Show N hidden messages"); shown rows are dimmed, agent replies say "reply to <sender>".
+  - needsYouCount and settle unread were left as on main (tier none / screenSuppressed
+    already skipped).
+
 diff --git a/ios/X056/API/Models.swift b/ios/X056/API/Models.swift
-index 2cb6ea8..197a40f 100644
+index aa4a779..937c7c2 100644
 --- a/ios/X056/API/Models.swift
 +++ b/ios/X056/API/Models.swift
 @@ -84,12 +84,22 @@ struct Project: Decodable, Sendable, Identifiable, Hashable {
@@ -25,35 +48,47 @@ index 2cb6ea8..197a40f 100644
  struct Conversation: Codable, Sendable, Identifiable, Hashable {
      var id: String { sessionId }
      let sessionId: String
-@@ -148,6 +158,11 @@ struct HistoryEntry: Decodable, Sendable {
+@@ -148,6 +158,23 @@ struct HistoryEntry: Decodable, Sendable {
      let sub: Bool?
      let args: String?
      let advisor: JSONValue?
++    /// A steered user row: text put into a running turn, never a turn of its own.
++    let steered: Bool?
 +    /// The Bot's chat only: "show" or "hide" (absent on older servers).
 +    let botView: String?
++    /// The Bot's chat: "brief" on the last reply of a morning-brief turn.
++    let botLabel: String?
 +    /// A message the Bot sent to the owner on purpose (`message_owner`).
 +    let ownerMessage: Bool?
 +    let needsYou: Bool?
++    /// Every other conversation: "show" or "hide" (absent on older servers).
++    let ownerView: String?
++    /// "agent" on the rows of a turn another conversation or a schedule started.
++    let ownerTurn: String?
++    /// Who started that turn, as a label.
++    let ownerSender: String?
++    /// On a trigger row: the turn was marked for the owner.
++    let forOwner: Bool?
  }
  
  struct AttachmentRef: Codable, Sendable, Hashable {
+@@ -160,6 +187,8 @@ struct AttachmentRef: Codable, Sendable, Hashable {
+ 
+ struct Sender: Codable, Sendable, Hashable {
+     let kind: String?
++    let messageId: String?
++    let sessionId: String?
+     let projectName: String?
+     let conversationTitle: String?
+ }
 diff --git a/ios/X056/App/AppModel.swift b/ios/X056/App/AppModel.swift
-index c4be118..8b71584 100644
+index 9267791..a387e3f 100644
 --- a/ios/X056/App/AppModel.swift
 +++ b/ios/X056/App/AppModel.swift
-@@ -323,8 +323,23 @@ final class AppModel {
+@@ -342,6 +342,17 @@ final class AppModel {
+         return Set(counted.keys).union(questions.values.map { Self.key($0.projectId, $0.sessionId) }).count + approvals.count
      }
  
-     /// Home's badge: unread conversations, open questions, approvals.
-+    /// The Bot is left out: its own tab carries its badge.
-     var needsYouCount: Int {
--        Set(unread.keys).union(questions.values.map { Self.key($0.projectId, $0.sessionId) }).count + approvals.count
-+        let botId = projects.first(where: { $0.isBot && $0.archivedAt == nil })?.id
-+        let asked = questions.values.filter { $0.projectId != botId }.map { Self.key($0.projectId, $0.sessionId) }
-+        let unreadKeys = unread.keys.filter { botId == nil || !$0.hasPrefix(botId! + "::") }
-+        return Set(unreadKeys).union(asked).count + approvals.count
-+    }
-+
 +    /// The Bot's name; "Bot" until the gateway says otherwise.
 +    var botName: String {
 +        let n = projects.first(where: { $0.isBot && $0.archivedAt == nil })?.botName?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -63,10 +98,12 @@ index c4be118..8b71584 100644
 +    /// What the Bot wants from the owner (nil on older gateways).
 +    var botAttention: BotAttention? {
 +        projects.first(where: { $0.isBot && $0.archivedAt == nil })?.botAttention
-     }
- 
++    }
++
      // MARK: Home state
-@@ -931,7 +946,9 @@ final class AppModel {
+ 
+     nonisolated static func key(_ projectId: String, _ sessionId: String) -> String { projectId + "::" + sessionId }
+@@ -966,7 +977,9 @@ final class AppModel {
          case "session_started":
              if let sid {
                  running.insert(sid)
@@ -77,7 +114,7 @@ index c4be118..8b71584 100644
                  if let pid {
                      touch(pid, sid)
                      updateConversation(pid, sid) { $0.lastOutcome = nil }
-@@ -972,7 +989,7 @@ final class AppModel {
+@@ -1008,7 +1021,7 @@ final class AppModel {
                  questions[q.sessionId] = q
                  raiseUnread(q.projectId, q.sessionId, .question, at: e.ts)
              }
@@ -86,7 +123,7 @@ index c4be118..8b71584 100644
              if let sid { questions[sid] = nil }
              if let pid, let sid { markRead(pid, sid) }
          case "queue":
-@@ -988,6 +1005,15 @@ final class AppModel {
+@@ -1024,6 +1037,15 @@ final class AppModel {
              scheduleProjectsRefresh()
          case "accounts":
              accountsTick += 1
@@ -103,45 +140,142 @@ index c4be118..8b71584 100644
              if let pid, let sid, let item = d.decode(ReadItem.self) { applyReadState(pid, sid, item) }
          case "autopilot":
 diff --git a/ios/X056/App/ConversationModel.swift b/ios/X056/App/ConversationModel.swift
-index 4637cee..16ace22 100644
+index 23c04a4..16609aa 100644
 --- a/ios/X056/App/ConversationModel.swift
 +++ b/ios/X056/App/ConversationModel.swift
-@@ -27,6 +27,11 @@ struct ChatRow: Identifiable, Equatable {
+@@ -29,6 +29,21 @@ struct ChatRow: Identifiable, Equatable {
      var inFlight = false
      var toolUseId: String?
      var card: ChatCard?
-+    /// The Bot's chat: "hide" rows are agent and system traffic.
++    /// The Bot's chat: the server's "show" / "hide" for this row, and "brief"
++    /// on the last reply of a morning-brief turn.
 +    var botView: String?
++    var botLabel: String?
 +    /// The Bot spoke to the owner on purpose; `needsYou` says it wants an answer.
 +    var ownerMessage = false
 +    var needsYou = false
++    /// A turn another conversation, a delegate or a schedule started, which the
++    /// owner did not ask for: folded away until "Show hidden messages", unless
++    /// the turn was marked for the owner.
++    var ownerHidden = false
++    /// The messageId of the message that started this row's turn (an agent's).
++    var turnId: String?
++    /// On an agent turn's reply: who it replies to.
++    var replyTo: String?
  }
  
- /// What the list draws: a row, or a run of consecutive tool calls folded together.
-@@ -103,10 +108,13 @@ final class ConversationModel {
-         return nil
-     }
- 
--    var items: [DisplayItem] {
-+    var items: [DisplayItem] { items(showHidden: true) }
-+
-+    /// `showHidden: false` leaves out the Bot's `botView == "hide"` rows.
-+    func items(showHidden: Bool) -> [DisplayItem] {
+ /// The Bot chat keeps quiet by default. This is the panel's rule, row for
+@@ -176,8 +191,40 @@ final class ConversationModel {
+     var isBot: Bool { project?.isBot ?? false }
+     /// The Bot's system rows, folded away until asked for (BotHistory).
+     var showSystemHistory = false
+-    /// How each of the Bot's rows shows (BotHistory); empty elsewhere.
+-    var botStates: [UUID: BotHistory.State] { isBot ? BotHistory.states(rows) : [:] }
++    /// How each of the Bot's rows shows; empty elsewhere. The gateway's own
++    /// `botView` decides where a row has one (history); the port in
++    /// BotHistory covers the rows that arrived live. An agent turn the live
++    /// rule hid stays hidden.
++    var botStates: [UUID: BotHistory.State] {
++        guard isBot else { return [:] }
++        let local = BotHistory.states(rows)
++        var out: [UUID: BotHistory.State] = [:]
++        for r in rows {
++            if r.ownerHidden {
++                out[r.id] = .hide
++            } else if let v = r.botView {
++                if v == "hide" { out[r.id] = .hide } else if r.botLabel == "brief" { out[r.id] = .brief }
++            } else if let s = local[r.id] {
++                out[r.id] = s
++            }
++        }
++        return out
++    }
++    /// The rows folded away until "Show hidden messages": the Bot's
++    /// `botStates`, in any other conversation the agent turns the owner did
++    /// not ask for.
++    var hiddenIDs: Set<UUID> {
++        if isBot { return Set(botStates.filter { $0.value == .hide }.keys) }
++        return Set(rows.filter(\.ownerHidden).map(\.id))
++    }
++    /// How many messages that is (tool calls are not counted).
++    var hiddenCount: Int {
++        let ids = hiddenIDs
++        return ids.isEmpty ? 0 : rows.filter { ids.contains($0.id) && $0.role != .action }.count
++    }
++    /// The turn the live stream is in: its trigger's messageId, whether the
++    /// owner sees it, and who started it. Nil outside an agent turn.
++    @ObservationIgnored private var liveTurn: (id: String?, sender: String?)?
+     var queued: [QueueItem] { sessionId.map { app.queued(projectId, $0) } ?? [] }
+     var model: String { sessionId == nil ? draftModel : (conversation?.model ?? "") }
+     var effort: String { sessionId == nil ? draftEffort : (conversation?.effort ?? "") }
+@@ -196,8 +243,8 @@ final class ConversationModel {
+     var items: [DisplayItem] {
          var out: [DisplayItem] = []
          var run: [ChatRow] = []
--        for r in rows {
-+        for r in rows where showHidden || r.botView != "hide" {
+-        let states = isBot && !showSystemHistory ? BotHistory.states(rows) : [:]
+-        for r in rows where states[r.id] != .hide {
++        let hidden = showSystemHistory ? [] : hiddenIDs
++        for r in rows where !hidden.contains(r.id) {
              if r.role == .action { run.append(r); continue }
              if !run.isEmpty { out.append(.steps(run)); run = [] }
              out.append(.row(r))
-@@ -177,6 +185,14 @@ final class ConversationModel {
+@@ -214,7 +261,7 @@ final class ConversationModel {
+         defer { loading = false }
+         do {
+             let page = try await client.get("/api/conversations/history-page", query: ["projectId": projectId, "sessionId": sessionId, "limit": "80"], as: HistoryPage.self)
+-            rows = page.rows.compactMap(Self.row)
++            rows = Self.rows(page.rows)
+             cursor = page.cursor
+             done = page.done ?? true
+             loadError = nil
+@@ -231,7 +278,7 @@ final class ConversationModel {
+         // Fresh ids for every row made the list drop each measured height
+         // and guess again: the last message ended under the composer, and
+         // scrolling to it sprang back.
+-        let next = Self.keepingIDs(page.rows.compactMap(Self.row), from: rows.filter { !$0.pending && !$0.failed }) + unsent
++        let next = Self.keepingIDs(Self.rows(page.rows), from: rows.filter { !$0.pending && !$0.failed }) + unsent
+         if next != rows { rows = next }
+         cursor = page.cursor
+         done = page.done ?? true
+@@ -243,7 +290,7 @@ final class ConversationModel {
+         defer { loadingOlder = false }
+         do {
+             let page = try await client.get("/api/conversations/history-page", query: ["projectId": projectId, "sessionId": sessionId, "limit": "60", "before": String(cursor)], as: HistoryPage.self)
+-            rows = page.rows.compactMap(Self.row) + rows
++            rows = Self.rows(page.rows) + rows
+             self.cursor = page.cursor
+             done = page.done ?? true
+         } catch {
+@@ -267,7 +314,36 @@ final class ConversationModel {
+         }
      }
  
++    /// A page of history as rows. The gateway marks each row's `ownerView`;
++    /// the trigger's messageId is carried down the turn, so a later
++    /// `owner_view` / `session_done` can show the whole turn.
++    static func rows(_ entries: [HistoryEntry]) -> [ChatRow] {
++        var out: [ChatRow] = []
++        var turn: String?
++        for h in entries {
++            guard var r = row(h) else { continue }
++            if h.role == "user", h.steered != true {
++                turn = h.ownerTurn == "agent" ? h.sender?.messageId : nil
++            }
++            if r.ownerHidden || r.replyTo != nil { r.turnId = turn }
++            out.append(r)
++        }
++        return out
++    }
++
      static func row(_ h: HistoryEntry) -> ChatRow? {
 +        guard var r = baseRow(h) else { return nil }
 +        r.botView = h.botView
++        r.botLabel = h.botLabel
 +        r.ownerMessage = h.ownerMessage == true
 +        r.needsYou = h.needsYou == true
++        // An error banner is always shown, whatever the turn.
++        r.ownerHidden = h.ownerView == "hide" && r.role != .error
++        if h.ownerTurn == "agent", r.role == .assistant { r.replyTo = h.ownerSender }
 +        return r
 +    }
 +
@@ -149,21 +283,102 @@ index 4637cee..16ace22 100644
          let text = h.text ?? ""
          let sender = h.sender.flatMap(senderLabel)
          switch h.role {
-@@ -257,6 +273,14 @@ final class ConversationModel {
-             if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
-                 rows.append(ChatRow(role: .assistant, text: text))
+@@ -295,6 +371,30 @@ final class ConversationModel {
+         }
+     }
+ 
++    /// Who started an agent's turn, for "reply to ...".
++    static func ownerSenderName(_ s: Sender) -> String {
++        s.conversationTitle ?? s.projectName ?? senderLabel(s)?.replacingOccurrences(of: "From ", with: "") ?? "another conversation"
++    }
++
++    /// The senders whose turns the owner did not ask for.
++    static let agentKinds: Set<String> = ["conversation", "mcp", "delegate", "automation"]
++
++    /// A row the live stream adds to the turn it is in: hidden when that turn is.
++    private func inTurn(_ row: ChatRow) -> ChatRow {
++        guard let t = liveTurn else { return row }
++        var r = row
++        r.ownerHidden = true
++        r.turnId = t.id
++        if r.role == .assistant { r.replyTo = t.sender }
++        return r
++    }
++
++    /// The turn `id` is for the owner after all: show its rows.
++    private func showTurn(_ id: String) {
++        for i in rows.indices where rows[i].turnId == id && rows[i].ownerHidden { rows[i].ownerHidden = false }
++        if liveTurn?.id == id { liveTurn = nil }
++    }
++
+     /// A journal row with an `advisor` payload: a Jev pick, a delegate
+     /// report, a ChatGPT advisor consult or a Claude advisor call.
+     static func card(_ a: JSONValue?, fallback: String) -> ChatRow? {
+@@ -337,12 +437,23 @@ final class ConversationModel {
+             activeModel = d["model"]?.string
+             let text = d["displayPrompt"]?.string ?? d["prompt"]?.string ?? ""
+             let reqId = d["requestId"]?.string
++            let from = d["sender"]?.decode(Sender.self)
++            // An agent's message (not this conversation talking to itself) starts
++            // a turn the owner does not see unless it is marked for them.
++            var hidden = false
++            if let from, let kind = from.kind, Self.agentKinds.contains(kind), from.sessionId != sessionId {
++                liveTurn = (from.messageId, Self.ownerSenderName(from))
++                hidden = true
++            } else {
++                liveTurn = nil
++            }
+             if let i = rows.firstIndex(where: { $0.pending && ($0.requestId == reqId || $0.text == text) }) ?? rows.firstIndex(where: \.pending) {
+                 rows[i].pending = false
+             } else if !repeatsTail(.user, text) {
+                 let attachments = d["attachments"]?.decode([AttachmentRef].self) ?? []
+-                let from = d["sender"]?.decode(Sender.self)
+-                rows.append(ChatRow(role: .user, text: text, attachments: attachments, sender: from.flatMap(Self.senderLabel), senderKind: from?.kind))
++                var row = ChatRow(role: .user, text: text, attachments: attachments, sender: from.flatMap(Self.senderLabel), senderKind: from?.kind)
++                if hidden { row = inTurn(row) }
++                rows.append(row)
              }
+         case "bot_notice":
+             // The journal keeps it as this same text, so a reload matches it.
+@@ -352,8 +463,20 @@ final class ConversationModel {
+             if !repeatsTail(.notice, text) { rows.append(ChatRow(role: .notice, text: text)) }
+         case "assistant_text":
+             if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
+-                rows.append(ChatRow(role: .assistant, text: text))
++                rows.append(inTurn(ChatRow(role: .assistant, text: text)))
++            }
 +        case "bot_message":
-+            // The Bot wrote to the owner (an FYI; a needs-you one also
-+            // arrives as a question).
++            // The Bot wrote to the owner (an FYI; a needs-you one also arrives
++            // as a question).
 +            if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
 +                var row = ChatRow(role: .assistant, text: text)
 +                row.ownerMessage = true
++                row.needsYou = d["needsYou"]?.bool == true
 +                rows.append(row)
-+            }
+             }
++        case "owner_view":
++            // A woken reply marked an already finished turn for the owner.
++            if d["shown"]?.bool != false, let id = d["messageId"]?.string { showTurn(id) }
          case "active_model":
              activeModel = d["model"]?.string ?? activeModel
          case "activity":
+@@ -363,7 +486,7 @@ final class ConversationModel {
+                 rows[i].inFlight = a.status == "start"
+                 if a.status == "error" { rows[i].failed = true }
+             } else {
+-                rows.append(ChatRow(role: .action, text: label, detail: a.detail, failed: a.status == "error", inFlight: a.status == "start", toolUseId: a.toolUseId))
++                rows.append(inTurn(ChatRow(role: .action, text: label, detail: a.detail, failed: a.status == "error", inFlight: a.status == "start", toolUseId: a.toolUseId)))
+             }
+             activity = a.status == "start" ? label : nil
+         case "jev_decision":
+@@ -381,6 +504,7 @@ final class ConversationModel {
+         case "session_done", "conversation_settled":
+             activity = nil
+             for i in rows.indices where rows[i].inFlight { rows[i].inFlight = false }
++            if d["forOwner"]?.bool == true, let id = d["triggerMessageId"]?.string { showTurn(id) }
+             let status = d["status"]?.string ?? ""
+             if status == "failed" || status == "parked", let reason = d["reason"]?.string, !repeatsTail(.error, reason) {
+                 rows.append(ChatRow(role: .error, text: reason))
 diff --git a/ios/X056/App/X056App.swift b/ios/X056/App/X056App.swift
 index f8f7c98..631594d 100644
 --- a/ios/X056/App/X056App.swift
@@ -255,21 +470,12 @@ index ebe6317..96702ab 100644
                          .zIndex(1)
                  }
 diff --git a/ios/X056/Views/BotView.swift b/ios/X056/Views/BotView.swift
-index bb606f7..a302f14 100644
+index 802bb30..c063dc3 100644
 --- a/ios/X056/Views/BotView.swift
 +++ b/ios/X056/Views/BotView.swift
-@@ -11,19 +11,22 @@ struct BotView: View {
-     @State private var dictation = Dictation()
-     @State private var waking = false
-     @State private var error: String?
-+    /// Show the agent and system messages the Bot's history marks "hide".
-+    @State private var showHidden = false
- 
-     var body: some View {
-         Group {
+@@ -17,13 +17,14 @@ struct BotView: View {
              if let model {
--                BotHome(model: model, dictation: dictation)
-+                BotHome(model: model, dictation: dictation, showHidden: showHidden)
+                 BotHome(model: model, dictation: dictation)
              } else {
 -                BotWelcome(waking: waking, error: error) { Task { await wake() } }
 +                BotWelcome(name: app.botName, waking: waking, error: error) { Task { await wake() } }
@@ -283,15 +489,7 @@ index bb606f7..a302f14 100644
          .toolbar {
              ToolbarItem(placement: .topBarLeading) {
                  Button("Back", systemImage: "chevron.left") { app.botOpen = false }
-@@ -31,6 +34,7 @@ struct BotView: View {
-             if let model, let sid = model.sessionId {
-                 ToolbarItem(placement: .topBarTrailing) {
-                     Menu("More", systemImage: "ellipsis") {
-+                        Toggle("Show hidden messages", systemImage: "eye", isOn: $showHidden)
-                         Button("Open as a conversation", systemImage: "bubble.left.and.text.bubble.right") {
-                             app.botPath.append(.conversation(projectId: model.projectId, sessionId: sid))
-                         }
-@@ -92,6 +96,7 @@ struct BotView: View {
+@@ -93,6 +94,7 @@ struct BotView: View {
  
  /// Before there is a Bot: the orb asleep, and one button that wakes it.
  private struct BotWelcome: View {
@@ -299,7 +497,7 @@ index bb606f7..a302f14 100644
      let waking: Bool
      let error: String?
      let wake: () -> Void
-@@ -100,10 +105,10 @@ private struct BotWelcome: View {
+@@ -101,10 +103,10 @@ private struct BotWelcome: View {
      var body: some View {
          VStack(spacing: 22) {
              Spacer(minLength: 20)
@@ -312,7 +510,7 @@ index bb606f7..a302f14 100644
                      .font(.largeTitle.weight(.bold))
                  Text("A personal assistant that keeps an eye on your conversations and tells you, in plain words, what is running, what finished and what needs you.")
                      .font(.body)
-@@ -115,7 +120,7 @@ private struct BotWelcome: View {
+@@ -116,7 +118,7 @@ private struct BotWelcome: View {
              Button(action: wake) {
                  HStack(spacing: 8) {
                      if waking { ProgressView().tint(.white) } else { Image(systemName: "sparkles") }
@@ -321,15 +519,7 @@ index bb606f7..a302f14 100644
                  }
                  .font(.headline)
                  .foregroundStyle(.white)
-@@ -154,6 +159,7 @@ private struct BotHome: View {
-     @Environment(AppModel.self) private var app
-     let model: ConversationModel
-     let dictation: Dictation
-+    let showHidden: Bool
- 
-     private let endID = "bot-end"
- 
-@@ -166,7 +172,7 @@ private struct BotHome: View {
+@@ -167,7 +169,7 @@ private struct BotHome: View {
              ScrollView {
                  VStack(alignment: .leading, spacing: 22) {
                      BotGreeting(nodes: nodes)
@@ -338,33 +528,15 @@ index bb606f7..a302f14 100644
                          app.botPath.append(.conversation(projectId: node.projectId, sessionId: node.sessionId))
                      }
                      .frame(height: 290)
-@@ -176,7 +182,7 @@ private struct BotHome: View {
-                             app.botPath.append(.conversation(projectId: m.projectId, sessionId: m.sessionId))
-                         }
-                     }
--                    BotThread(model: model)
-+                    BotThread(model: model, showHidden: showHidden)
-                     Color.clear.frame(height: 1).id(endID)
-                 }
-                 .padding(.vertical, 8)
-@@ -352,19 +358,21 @@ private struct MomentCard: View {
+@@ -353,6 +355,7 @@ private struct MomentCard: View {
  /// The conversation with the Bot, in its own style: its replies beside a
  /// small orb, yours in a bright bubble, its look-ups folded into one line.
  private struct BotThread: View {
 +    @Environment(AppModel.self) private var app
      let model: ConversationModel
-+    let showHidden: Bool
  
      var body: some View {
-         VStack(alignment: .leading, spacing: 16) {
--            ForEach(model.items) { item in
-+            ForEach(model.items(showHidden: showHidden)) { item in
-                 switch item {
--                case .row(let r): BotLine(row: r)
--                case .steps(let rs): BotLookups(rows: rs)
-+                case .row(let r): BotLine(row: r).opacity(r.botView == "hide" ? 0.55 : 1)
-+                case .steps(let rs): BotLookups(rows: rs).opacity(rs.allSatisfy { $0.botView == "hide" } ? 0.55 : 1)
-                 }
+@@ -380,7 +383,7 @@ private struct BotThread: View {
              }
              if model.isWorking {
                  HStack(spacing: 10) {
@@ -373,25 +545,22 @@ index bb606f7..a302f14 100644
                          .frame(width: 30, height: 30)
                      Text(model.activity.map { "\($0)…" } ?? "Thinking…")
                          .font(.subheadline)
-@@ -380,6 +388,7 @@ private struct BotThread: View {
+@@ -396,6 +399,7 @@ private struct BotThread: View {
  }
  
  private struct BotLine: View {
 +    @Environment(AppModel.self) private var app
      let row: ChatRow
- 
-     var body: some View {
-@@ -401,11 +410,21 @@ private struct BotLine: View {
+     /// The last reply of a morning-brief turn: the brief itself.
+     var brief = false
+@@ -421,9 +425,17 @@ private struct BotLine: View {
              }
          case .assistant:
              HStack(alignment: .top, spacing: 10) {
 -                BotOrb(mood: .idle, size: 22)
 +                BotOrb(mood: .idle, size: 22, name: app.botName)
                      .frame(width: 30, height: 30)
--                MarkdownText(text: row.text)
--                    .frame(maxWidth: .infinity, alignment: .leading)
--                    .contextMenu { CopyButton(text: row.text) }
-+                VStack(alignment: .leading, spacing: 6) {
+                 VStack(alignment: .leading, spacing: 6) {
 +                    if row.ownerMessage {
 +                        Text(row.needsYou ? "Needs you" : "For you")
 +                            .font(.caption2.weight(.semibold))
@@ -400,10 +569,72 @@ index bb606f7..a302f14 100644
 +                            .padding(.vertical, 3)
 +                            .background((row.needsYou ? BotColors.peach : BotColors.sky).opacity(0.18), in: .capsule)
 +                    }
-+                    MarkdownText(text: row.text)
-+                }
-+                .frame(maxWidth: .infinity, alignment: .leading)
-+                .contextMenu { CopyButton(text: row.text) }
+                     if brief {
+                         Label("Morning brief", systemImage: "sun.max.fill")
+                             .font(.caption.weight(.semibold))
+@@ -536,16 +548,18 @@ private struct BotNotice: View {
+     }
+ }
+ 
+-/// Shows or folds away the Bot's system rows (BotHistory), on the Bot
+-/// screen and when the Bot's chat is opened as a conversation.
++/// Shows or folds away the rows the owner did not ask for: the Bot's system
++/// rows (BotHistory) and, in every other conversation, the turns agents and
++/// schedules started. On the Bot screen and in More.
+ struct SystemHistoryToggle: View {
+     let model: ConversationModel
+ 
+     var body: some View {
+         // The panel's wording (Today > "Show N hidden system messages").
+-        let hidden = model.botStates.values.filter { $0 == .hide }.count
+-        Button(model.showSystemHistory ? "Hide system messages"
+-               : hidden == 1 ? "Show 1 hidden system message" : "Show \(hidden) hidden system messages",
++        let hidden = model.hiddenCount
++        let noun = model.isBot ? "system message" : "message"
++        Button(model.showSystemHistory ? "Hide \(noun)s"
++               : hidden == 1 ? "Show 1 hidden \(noun)" : "Show \(hidden) hidden \(noun)s",
+                systemImage: model.showSystemHistory ? "eye.slash" : "eye") {
+             withAnimation(.snappy) { model.showSystemHistory.toggle() }
+         }
+diff --git a/ios/X056/Views/ConversationView.swift b/ios/X056/Views/ConversationView.swift
+index 4ede1fd..7fc1227 100644
+--- a/ios/X056/Views/ConversationView.swift
++++ b/ios/X056/Views/ConversationView.swift
+@@ -48,7 +48,7 @@ struct ConversationView: View {
+                     }
+                     ToolbarItem(placement: .topBarTrailing) {
+                         Menu("More", systemImage: "ellipsis") {
+-                            if model.isBot { SystemHistoryToggle(model: model) }
++                            if model.isBot || model.showSystemHistory || model.hiddenCount > 0 { SystemHistoryToggle(model: model) }
+                             Button(app.autopilot[sid] == nil ? "Autopilot…" : "Autopilot", systemImage: "repeat") { showAutopilot = true }
+                             Button("Transcript", systemImage: "terminal") { showTranscript = true }
+                             if LiveTurns.shared.isFollowing(sid) {
+@@ -288,8 +288,8 @@ struct ChatRows: View, Equatable {
              }
+             ForEach(items) { item in
+                 switch item {
+-                case .row(let r): MessageRow(row: r).equatable()
+-                case .steps(let rs): StepsRow(rows: rs)
++                case .row(let r): MessageRow(row: r).equatable().opacity(r.ownerHidden ? 0.55 : 1)
++                case .steps(let rs): StepsRow(rows: rs).opacity(rs.allSatisfy(\.ownerHidden) ? 0.55 : 1)
+                 }
+             }
+             if let working {
+@@ -350,8 +350,15 @@ struct MessageRow: View, Equatable {
+                 }
+             }
+         case .assistant:
+-            MarkdownText(text: row.text)
+-                .contextMenu { CopyButton(text: row.text) }
++            VStack(alignment: .leading, spacing: 4) {
++                if row.ownerHidden, let to = row.replyTo {
++                    Label("reply to \(to)", systemImage: "arrow.turn.up.left")
++                        .font(.caption)
++                        .foregroundStyle(.secondary)
++                }
++                MarkdownText(text: row.text)
++            }
++            .contextMenu { CopyButton(text: row.text) }
          case .error:
-             Label(row.text, systemImage: "exclamationmark.triangle.fill")
+             VStack(alignment: .leading, spacing: 10) {
+                 Label(row.text, systemImage: "exclamationmark.triangle.fill")

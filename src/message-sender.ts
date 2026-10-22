@@ -49,7 +49,7 @@ export const TEAM_LINE_PREFIX = '[Agent team this turn: ';
 /** The advisor's per-turn line (Claude, advisor on), same mechanism. */
 export const ADVISOR_LINE_PREFIX = '[Advisor on: ';
 // Either line, or both stacked, at the end (before the sender marker).
-const TEAM_LINE = /(?:\n\n\[(?:Agent team this turn|Advisor on|Open question to the owner, still unanswered): [^\n]*\])+\s*$/;
+const TEAM_LINE = /(?:\n\n\[(?:Agent team this turn|Advisor on|Open question to the owner, still unanswered|Hidden from the owner): [^\n]*\])+\s*$/;
 export function withTeamLine(text: string, line: string | undefined): string {
   if (!line || text.trimStart().startsWith('/')) return text;
   const r = readMessageSender(text);
@@ -67,3 +67,7 @@ export function openQuestionLine(questions: string[]): string {
 export function stripTeamLine(text: string): string {
   return text.replace(TEAM_LINE, '');
 }
+
+/** The per-turn line on a turn another conversation / MCP / delegate / schedule started. */
+export const OWNER_HIDDEN_LINE_PREFIX = '[Hidden from the owner: ';
+export const OWNER_HIDDEN_LINE = OWNER_HIDDEN_LINE_PREFIX + 'the owner does not see this turn or your reply unless you mark it. If your reply is for the owner or needs them (for example it reports finished work they asked for), put <<<FOR_OWNER>>> on its own line, or end with an ASK block for a decision.]';

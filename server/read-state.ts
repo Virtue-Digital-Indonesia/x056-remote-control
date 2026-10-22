@@ -87,7 +87,7 @@ export class ReadState {
       case 'question':
         return this.notice(pid, sid, 'question');
       case 'conversation_settled':
-        if (data.notificationSuppressed !== true && tier !== 'none') this.notice(pid, sid, 'done');
+        if (data.notificationSuppressed !== true && data.ownerHidden !== true && tier !== 'none') this.notice(pid, sid, 'done');
         return;
       case 'session_done':
         if (data.status === 'failed' || data.status === 'parked') this.notice(pid, sid, 'failed');

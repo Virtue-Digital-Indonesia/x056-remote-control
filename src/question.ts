@@ -63,8 +63,13 @@ export const RESOLVED_MARKER = '<<<RESOLVED>>>';
 export function hasResolved(text: string): boolean {
   return typeof text === 'string' && text.includes(RESOLVED_MARKER);
 }
+/** The marker a reply carries (on its own line) to say an agent-started turn is for the owner. */
+export const FOR_OWNER = '<<<FOR_OWNER>>>';
+export function hasForOwner(text: string): boolean {
+  return typeof text === 'string' && text.includes(FOR_OWNER);
+}
 export function stripResolved(text: string): string {
-  return text.split(RESOLVED_MARKER).join('');
+  return text.split(RESOLVED_MARKER).join('').split(FOR_OWNER).join('');
 }
 
 /** Remove the appended ASK convention from a stored user prompt for display. */
