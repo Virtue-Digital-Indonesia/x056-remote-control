@@ -45,7 +45,7 @@ const NOT_OWNER_STEER = new Set([...AGENT_KINDS, 'advisor', 'bot_event', 'bot_br
 export const CHECKPOINT = /^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay checkpoint[:.])/i;
 
 /** Turn origins whose result the owner is meant to see (read-state gating). */
-export const VISIBLE_ORIGINS: ReadonlySet<string> = new Set(['human', 'brief', 'recap']);
+export const VISIBLE_ORIGINS: ReadonlySet<string> = new Set(['human', 'brief', 'recap', 'limit_resume']);
 
 export function turnKindOf(row: Pick<HistoryEntry, 'sender'>): BotTurnKind {
   const k = row.sender?.kind;

@@ -76,7 +76,19 @@ describe('AccountRegistry', () => {
     reg.markLimited('a', 5000);
     reg.markLimited('b', 3000);
     expect(reg.pickActive(1000)).toBeNull();
-    expect(reg.earliestReset()).toBe(3000);
+    expect(reg.earliestReset(undefined, 1000)).toBe(3000);
+  });
+
+  it('earliestReset ignores a reset that has already passed, and is undefined when none is ahead', () => {
+    const reg = AccountRegistry.init(freshFile(), specs);
+    reg.markLimited('a', 5000);
+    reg.markLimited('b', 3000);
+    expect(reg.earliestReset(undefined, 3000)).toBe(5000);
+    expect(reg.earliestReset(undefined, 4000)).toBe(5000);
+    expect(reg.earliestReset(undefined, 5000)).toBeUndefined();
+    expect(reg.earliestReset('claude', 9000)).toBeUndefined();
+    // The default clock is the real one, so small epochs are long past.
+    expect(reg.earliestReset()).toBeUndefined();
   });
 
   it('load without file throws a setup hint', () => {
@@ -109,13 +121,13 @@ describe('AccountRegistry', () => {
     expect(reg.pickActive(0)?.name).toBe('a');
   });
 
-  it('earliestReset falls back to now (not Infinity) when every account is unauthenticated', () => {
+  it('earliestReset is undefined (not Infinity) when every account is unauthenticated', () => {
     const file = freshFile();
     const reg = AccountRegistry.init(file, specs);
     reg.markUnauthenticated('a');
     reg.markUnauthenticated('b');
     expect(reg.pickActive(1000)).toBeNull();
-    expect(Number.isFinite(reg.earliestReset())).toBe(true);
+    expect(reg.earliestReset()).toBeUndefined();
   });
 
   it("get('nope') throws unknown account error", () => {

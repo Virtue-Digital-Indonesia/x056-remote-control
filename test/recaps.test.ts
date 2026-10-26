@@ -169,6 +169,25 @@ describe('the reply background work woke after the turn ended', () => {
       }
       expect(f.manager.queues()[pid] ?? []).toHaveLength(0);
     });
+    it('a usage-limit continue carries the owner\'s work on, so its background work still gets its ending', async () => {
+      const f = fixture(); const pid = f.manager.createProject('R', f.root).id;
+      const sid = f.manager.start('go', undefined, undefined, pid);
+      f.turns[0].resolve({ status: 'completed', failovers: 0, resultText: 'ok' }); await new Promise((r) => setTimeout(r, 20));
+      expect(settle(f, pid, sid, { origin: 'limit_resume' }).recap).toBe(true);
+    });
+    it('a settle owed to an out-of-turn usage limit quotes nothing and asks for no recap', async () => {
+      const f = fixture(); const pid = f.manager.createProject('R', f.root).id;
+      const sid = f.manager.start('go', undefined, undefined, pid);
+      f.turns[0].resolve({ status: 'completed', failovers: 0, resultText: 'ok' }); await new Promise((r) => setTimeout(r, 20));
+      (f.m as unknown as { limitSettles: Set<string> }).limitSettles.add(sid);
+      f.m.afterTurns.set(sid, { sawWork: true, seq: 3, lastTaskDone: 1, reply: { text: "You've hit your session limit · resets 8:30am (UTC)", seq: 3, at: '' } });
+      f.m.onSettled({ projectId: pid, sessionId: sid, status: 'completed', origin: 'human' });
+      const last = of(f.events, 'conversation_settled').at(-1)!.data;
+      expect(last).toMatchObject({ notificationSuppressed: true, limit: true });
+      expect(last.resultText).toBeUndefined();
+      expect((last.notice as { tier: string }).tier).toBe('none');
+      expect(f.manager.queues()[pid] ?? []).toHaveLength(0);
+    });
     it('not with a queue item waiting, a question pending, a turn running, autopilot armed or a stopped turn', async () => {
       const f = fixture(); const pid = f.manager.createProject('R', f.root).id;
       const sid = f.manager.start('go', undefined, undefined, pid);

@@ -202,6 +202,14 @@ describe('helpers', () => {
     expect(originOf({ kind: 'advisor' })).toBe('advisor');
     expect(originOf({ kind: 'autopilot' })).toBe('autopilot');
     expect(originOf({ kind: 'recap' })).toBe('recap');
+    expect(originOf({ kind: 'limit_resume' })).toBe('limit_resume');
+  });
+  it('a usage limit the gateway continues by itself is never urgent', () => {
+    // contract R4/R5: the owner does not have to act
+    const parkedResume = noticeFor('session_done', { projectId: 'p', sessionId: 's', status: 'parked', autoResume: { at: 1_793_003_460, until: 1_793_003_400 } }, work)!;
+    expect(parkedResume).toMatchObject({ tier: 'normal', category: 'finished' });
+    expect(parkedResume.body).toBe('ocr · ChatGPT\nPaused by a usage limit until 15:30; continues automatically');
+    expect(noticeFor('limit_continue', { projectId: 'p', sessionId: 's', account: 'l', kind: 'session', waiting: false }, work)).toMatchObject({ tier: 'quiet', category: 'automation' });
   });
   it('durations and cuts', () => {
     expect(formatDuration(42_000)).toBe('42s');

@@ -2,8 +2,10 @@
 export interface MessageSender {
   messageId?: string;
   /** `bot_event`: a digest of things that need the owner, handed to the Bot.
-   *  `bot_brief`: the Bot's morning brief prompt. */
-  kind: 'conversation' | 'automation' | 'autopilot' | 'mcp' | 'advisor' | 'delegate' | 'recap' | 'bot_event' | 'bot_brief';
+   *  `bot_brief`: the Bot's morning brief prompt.
+   *  `limit_resume`: the gateway continuing the owner's work after a usage
+   *  limit. Not an agent: it stays visible in the owner view and the Bot view. */
+  kind: 'conversation' | 'automation' | 'autopilot' | 'mcp' | 'advisor' | 'delegate' | 'recap' | 'bot_event' | 'bot_brief' | 'limit_resume';
   /** For kind `recap`: which ending the gateway asked for. */
   recap?: 'background' | 'autopilot';
   projectId?: string;
@@ -12,7 +14,7 @@ export interface MessageSender {
   conversationTitle?: string;
 }
 const MARKER = '\n\n[x056 message sender v1] ';
-const SENDER_KINDS: readonly string[] = ['conversation', 'automation', 'autopilot', 'mcp', 'advisor', 'delegate', 'recap', 'bot_event', 'bot_brief'];
+const SENDER_KINDS: readonly string[] = ['conversation', 'automation', 'autopilot', 'mcp', 'advisor', 'delegate', 'recap', 'bot_event', 'bot_brief', 'limit_resume'];
 export function withMessageSender(text: string, sender?: MessageSender): string {
   // Commands must reach the provider byte-for-byte, without appended arguments.
   return sender && !text.trimStart().startsWith('/') ? text + MARKER + JSON.stringify(sender) : text;

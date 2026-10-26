@@ -2071,6 +2071,12 @@ export class ApiController {
   messageStatus(@Query('requestId') id:string){return this.deliveries.get(id)||{status:'not_received'};}
   @Post('queue/reorder')
   reorderQueue(@Body() body:{projectId:string;ids:string[]}){try{if(!Array.isArray(body.ids))throw new Error('Queue order required');this.manager.reorderQueue(body.projectId,body.ids);return {ok:true};}catch(e){throw new BadRequestException((e as Error).message);}}
+  /** Conversations and delegates waiting to continue after a usage limit (read-only). */
+  @Get('limit-resume')
+  limitResume(): unknown {
+    return { records: this.manager.limitResumeList() };
+  }
+
   @Get('queue')
   queue(): unknown {
     const projects = this.manager.listProjects().projects;

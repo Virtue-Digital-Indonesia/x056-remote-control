@@ -82,8 +82,17 @@ interface Live {
    *  which a stray out-of-turn `result` also bumps -- so lastUsed cannot pick
    *  which of two live processes the operator is actually talking to. */
   lastTurnStart: number;
-  /** Where events go when no turn is in flight (UI only, never the classifier). */
-  idleSink?: (e: RawEvent) => void;
+  /** Where events go when no turn is in flight (UI only, never the classifier).
+   *  The source names the account the process was SPAWNED on: `opts` is the
+   *  latest turn's, which a held turn may have routed elsewhere. */
+  idleSink?: (e: RawEvent, src?: IdleSource) => void;
+  /** The account (config dir) this process was spawned on. */
+  configDir: string;
+  /** An out-of-turn usage limit hit this process's account (markLimitHit): it
+   *  takes no new turn, and a prompt held for its reply moves to a fresh one. */
+  limitHit?: boolean;
+  /** The held turn moved to this handle (moveHeld); kill and interrupt follow it. */
+  moved?: TurnHandle;
   /** Transport-private: partial line buffer plus whatever it tracks per process. */
   st: TransportState;
   /** A first prompt held back until the transport's handshake finishes. */
@@ -113,6 +122,9 @@ interface Live {
   sink?: (e: RawEvent) => void;
   finish?: (exit: TurnExit) => void;
 }
+
+/** Where an out-of-turn event came from (see Live.idleSink). */
+export interface IdleSource { configDir: string }
 
 /** Turns that failed to even start still have to satisfy the TurnHandle shape. */
 function deadHandle(spawnError: string): TurnHandle {
@@ -302,6 +314,15 @@ export class PersistentTurns {
     // fail loudly rather than corrupt a session.
     if (entry?.busy) return deadHandle(`persistent session already running a turn: ${o.sessionId}`);
 
+    // A process whose account hit a usage limit out of turn takes no new turn:
+    // the held rule below would run it there whatever account this turn was
+    // routed to, its 429 would bench THAT account, and the conversation would
+    // never leave the limited one (the held-process trap, contract item 6).
+    for (const e of [...this.live.values()]) {
+      if (e.sessionId === (o.conversationId ?? o.sessionId) && e.limitHit && !e.busy) this.destroy(e);
+    }
+    if (entry?.exited) entry = undefined;
+
     // One conversation, one process while it works. Model and effort are
     // Claude argv, so a turn on a different one keys elsewhere; spawning it
     // while the first process still ran background agents gave the
@@ -382,6 +403,7 @@ export class PersistentTurns {
       if (!held || entry.exited) { clearInterval(timer); return; }
       if (this.replying(entry)) return;
       clearInterval(timer);
+      if (entry.limitHit) { this.moveHeld(entry); return; }
       entry.deferred = undefined;
       if (held.cancelled) { this.settleTurn(entry, { code: 0, signal: null }); return; }
       if (!this.writeLine(entry, held.line)) { this.destroy(entry); return; }
@@ -403,7 +425,7 @@ export class PersistentTurns {
   private activeProcess(conversationId: string): Live | undefined {
     let best: Live | undefined;
     for (const e of this.live.values()) {
-      if (e.sessionId !== conversationId || e.exited) continue;
+      if (e.sessionId !== conversationId || e.exited || e.limitHit) continue;
       if (!(e.busy || this.replying(e) || e.activity.snapshot().active)) continue;
       // A process a newer sibling has moved past is parked work, not the
       // conversation: its context lacks that sibling's turns (see isStale).
@@ -456,7 +478,7 @@ export class PersistentTurns {
 
     // Looked up by the gateway's conversation id (steer, interrupt, "working"),
     // which for Codex is not what the CLI was handed after the first turn.
-    const entry: Live = { key, child, sessionId: o.conversationId ?? o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), activity: new ProviderActivity(() => this.now()), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false };
+    const entry: Live = { key, child, configDir: o.configDir, sessionId: o.conversationId ?? o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), activity: new ProviderActivity(() => this.now()), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false };
     child.stdout?.on('data', (d: Buffer) => this.onData(entry, d));
     child.on('error', (err) => this.settle(entry, { code: null, signal: null, spawnError: err.message }));
     child.on('close', (code, signal) => this.settle(entry, { code, signal }));
@@ -488,6 +510,8 @@ export class PersistentTurns {
     const lines = (entry.st.buf + chunk).split('\n');
     entry.st.buf = lines.pop() ?? '';
     for (const line of lines) {
+      // A sink may end the process (an out-of-turn limit): the rest is not ours.
+      if (entry.exited) return;
       if (!line.trim().startsWith('{')) continue;
       const { events, turnEnded, readyNow } = this.transport.ingest(entry.st, line);
       entry.activity.observe(this.transport.id, line, entry.st.ext.threadId);
@@ -524,7 +548,9 @@ export class PersistentTurns {
         if (turnEnded) entry.endedEarly = true;
         continue;
       }
-      for (const e of events) { try { sink?.(e); } catch { /* a sink must never break the stream */ } }
+      const src: IdleSource = { configDir: entry.configDir };
+      for (const e of events) { try { if (entry.sink) entry.sink(e); else entry.idleSink?.(e, src); } catch { /* a sink must never break the stream */ } }
+      if (entry.exited) return;
       // The turn is over here, but the PROCESS is not — that is the point.
       if (turnEnded) {
         entry.lastUsed = this.now();
@@ -536,6 +562,8 @@ export class PersistentTurns {
         // prompt now and hand the turn its sink. Stopped meanwhile: the turn
         // ends here and the prompt is never sent.
         const held = entry.deferred;
+        // The reply it waited for hit a usage limit: never into this process.
+        if (held && entry.limitHit) { this.moveHeld(entry); return; }
         if (held) {
           entry.deferred = undefined;
           if (!held.cancelled) {
@@ -636,14 +664,63 @@ export class PersistentTurns {
       // kill() must really end the process: the failover loop calls it on a
       // usage limit and then resumes this session on ANOTHER account, which
       // cannot happen while the old process still holds the session.
-      kill: () => this.destroy(entry),
+      kill: () => { if (entry.moved) entry.moved.kill(); else this.destroy(entry); },
       interrupt: () => {
+        if (entry.moved) { entry.moved.interrupt(); return; }
         // Stop before the held prompt went out: it never will.
         if (entry.deferred) entry.deferred.cancelled = true;
         this.writeLine(entry, this.transport.interruptMessage(entry.st));
       },
       done,
     };
+  }
+
+  /**
+   * An out-of-turn usage limit hit `configDir` while it ran this conversation.
+   * Its processes on that account take no new turn (startTurn, activeProcess)
+   * and a prompt held for their reply goes to a fresh process. A process busy
+   * with a turn it already started is left to that turn's own classifier.
+   */
+  markLimitHit(conversationId: string, configDir: string): number {
+    let n = 0;
+    for (const e of this.live.values()) {
+      if (e.sessionId !== conversationId || e.exited || e.configDir !== configDir || (e.busy && !e.deferred)) continue;
+      e.limitHit = true; n++;
+    }
+    return n;
+  }
+
+  /** Ends the conversation's limit-hit processes (markLimitHit), so the next
+   *  turn routes to an eligible account and spawns there with --resume. Their
+   *  remaining background tasks are on the limited account and would 429 at
+   *  their next call anyway. */
+  destroyLimitHit(conversationId: string): number {
+    let n = 0;
+    for (const e of [...this.live.values()]) {
+      if (e.sessionId !== conversationId || e.exited || !e.limitHit) continue;
+      n++;
+      if (!this.moveHeld(e)) this.destroy(e);
+    }
+    return n;
+  }
+
+  /**
+   * A turn whose prompt was held for a reply (runOn, `deferred`) on a process
+   * that then hit a usage limit. The prompt never reached that process, so the
+   * turn runs on a fresh one, spawned on the account it was routed to: written
+   * into the limited process it would 429 and bench the routed account.
+   */
+  private moveHeld(entry: Live): boolean {
+    const held = entry.deferred, o = entry.opts, finish = entry.finish;
+    if (!held || !o || !finish) return false;
+    entry.deferred = undefined; entry.finish = undefined; entry.sink = undefined; entry.busy = false;
+    this.destroy(entry);
+    if (held.cancelled) { finish({ code: 0, signal: null }); return true; }
+    // The conversation exists (its process did), so this resumes it.
+    const next = this.startTurn({ ...o, onEvent: held.sink, mode: 'resume' });
+    entry.moved = next;
+    void next.done.then(finish);
+    return true;
   }
 
   private destroy(entry: Live): void {

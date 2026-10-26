@@ -34,7 +34,7 @@ describe('classifyEvent', () => {
 
   it('flags rejected rate_limit_event as limited with resetsAt', () => {
     const e = { ...rateLimitAllowed, rate_limit_info: { ...rateLimitAllowed.rate_limit_info, status: 'rejected' } };
-    expect(classifyEvent(e)).toEqual({ kind: 'limited', resetsAt: 1783170000, source: 'rate_limit_event' });
+    expect(classifyEvent(e)).toEqual({ kind: 'limited', resetsAt: 1783170000, limitKind: 'session', source: 'rate_limit_event' });
   });
 
   it('flags allowed_warning as warning', () => {
@@ -62,8 +62,19 @@ describe('classifyEvent', () => {
     expect(classifyEvent(e)).toEqual({ kind: 'limited', source: 'result' });
   });
 
-  it('flags the synthetic transcript limit entry as limited', () => {
-    expect(classifyEvent(syntheticLimitEntry)).toEqual({ kind: 'limited', source: 'synthetic_message' });
+  it('flags the synthetic transcript limit entry as limited, with the reset its text names', () => {
+    const e = { ...syntheticLimitEntry, timestamp: '2026-10-26T05:31:30.999Z' };
+    // 8:20pm in Jakarta (UTC+7) is 13:20Z, the first one after the message.
+    expect(classifyEvent(e)).toEqual({ kind: 'limited', resetsAt: Date.parse('2026-10-26T13:20:00Z') / 1000, limitKind: 'session', source: 'synthetic_message' });
+  });
+
+  it('maps a rejected rate_limit_event\'s rateLimitType to the limit kind', () => {
+    const kind = (rateLimitType?: string) => classifyEvent({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1, rateLimitType } }).limitKind;
+    expect(kind('five_hour')).toBe('session');
+    expect(kind('seven_day')).toBe('weekly');
+    expect(kind('seven_day_opus')).toBe('model');
+    expect(kind('something_new')).toBe('unknown');
+    expect(kind(undefined)).toBeUndefined();
   });
 
   it('flags the "Not logged in" synthetic entry as auth_required (real CLI capture)', () => {

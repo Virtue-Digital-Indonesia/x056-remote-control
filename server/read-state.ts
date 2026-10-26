@@ -90,7 +90,9 @@ export class ReadState {
         if (data.notificationSuppressed !== true && data.ownerHidden !== true && tier !== 'none') this.notice(pid, sid, 'done');
         return;
       case 'session_done':
-        if (data.status === 'failed' || data.status === 'parked') this.notice(pid, sid, 'failed');
+        // A park the gateway continues by itself (autoResume) needs nobody: unread, not failed.
+        if (data.status === 'failed' || (data.status === 'parked' && !data.autoResume)) this.notice(pid, sid, 'failed');
+        else if (data.status === 'parked') this.notice(pid, sid, 'done');
         else if (data.status === 'stopped') this.read(pid, sid);
         return;
       case 'session_error':
@@ -125,7 +127,8 @@ export class ReadState {
         return;
       case 'session_done':
         if (!visible) return;
-        if (data.status === 'failed' || data.status === 'parked') this.notice(pid, sid, 'failed');
+        if (data.status === 'failed' || (data.status === 'parked' && !data.autoResume)) this.notice(pid, sid, 'failed');
+        else if (data.status === 'parked') this.notice(pid, sid, 'done');
         return;
       case 'session_error':
         if (visible) this.notice(pid, sid, 'failed');

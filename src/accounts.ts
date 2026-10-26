@@ -415,18 +415,18 @@ export class AccountRegistry {
     this.save();
   }
 
-  /** The soonest reset time among limited accounts — scoped to one provider when
-   *  given (a parked session only cares about its own provider's resets), or all
-   *  accounts otherwise. Falls back to `now` (not Infinity) when nothing carries
-   *  a real reset time (e.g. all unauthenticated). */
-  earliestReset(provider?: ProviderId): number {
+  /** The soonest FUTURE reset time among limited accounts — scoped to one
+   *  provider when given (a parked session only cares about its own provider's
+   *  resets), or all accounts otherwise. A reset at or before `now` has already
+   *  happened and is ignored; undefined when no reset is ahead (e.g. all
+   *  unauthenticated), and the caller estimates its own. */
+  earliestReset(provider?: ProviderId, now = Math.floor(Date.now() / 1000)): number | undefined {
     const pool = provider ? this.ofProvider(provider) : this.data.accounts;
     const untils = pool
-      .map((a) => { const q = this.quotaState(a, Math.floor(Date.now() / 1000)); return q?.kind === 'limited' && (a.state.kind !== 'limited' || q.until > a.state.until) ? q : a.state; })
-      .filter((s): s is { kind: 'limited'; until: number } => s.kind === 'limited')
+      .map((a) => { const q = this.quotaState(a, now); return q?.kind === 'limited' && (a.state.kind !== 'limited' || q.until > a.state.until) ? q : a.state; })
+      .filter((s): s is { kind: 'limited'; until: number } => s.kind === 'limited' && s.until > now)
       .map((s) => s.until);
-    if (untils.length === 0) return Math.floor(Date.now() / 1000);
-    return Math.min(...untils);
+    return untils.length ? Math.min(...untils) : undefined;
   }
 
   private save(): void {

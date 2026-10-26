@@ -48,7 +48,8 @@ import { getAdapter } from '../src/adapters/registry.js';
 import { ProjectRegistry, ProjectConflict, validateModeDefaults, requireWorkspace, requireWork, type ModeDefaults, type RunnableProject, type Project, type Conversation, type ConversationHelpers, type HelperPatch, type Router, helpersOf, effectiveRouter } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
-import { PersistentTurns } from '../src/persistent.js';
+import { PersistentTurns, type IdleSource } from '../src/persistent.js';
+import { LimitResumeScheduler, failedTaskOf, mergeVerdicts, untilOf, NO_RESET_FALLBACK_S, MAX_ATTEMPTS, MAX_AUTO_CONTINUES, type LimitResumeRecord, type LimitWatch } from './limit-resume.js';
 import { CodexTransport } from '../src/persistent-codex.js';
 import type { TurnHandle, TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
@@ -165,6 +166,12 @@ export interface TurnRunOptions {
   speed?: string;
   account?: string;
   useReserve?: boolean;
+  /** Internal: sent by the usage-limit scheduler (a resend of a parked
+   *  message), so it does not count as the human's next message. */
+  limitResume?: boolean;
+  /** Internal: a resend of a conversation's first turn, which parked before
+   *  any process ran it, so there is no session to resume yet. */
+  freshSession?: boolean;
 }
 
 /** A follow-up message queued to send when the current turn completes. */
@@ -182,6 +189,8 @@ export interface QueueItem {
   afterSessionId?: string;
   paused?: boolean;
   requestId?: string;
+  /** Sent by the usage-limit scheduler: draining it is not the owner's next message. */
+  limitResume?: boolean;
   id: string;
   text: string;
   model?: string;
@@ -320,7 +329,15 @@ interface ActiveRun {
   ownerAgent?: { messageId: string };
   /** Why this agent turn was marked for the owner, once a reply says so. */
   ownerReason?: OwnerReason;
+  /** A turn started on some process (turn_started), so a park is a continue, not a resend. */
+  turnStarted?: boolean;
+  /** The last in-turn limit, for the continue text of a park. */
+  limit?: { account?: string; kind?: string; at: number };
 }
+
+/** Who an out-of-turn limit belongs to: a conversation, or a delegate (whose
+ *  process is keyed by its own session). */
+interface LimitTarget { pid: string; sid: string; provider: 'claude' | 'codex'; delegate?: { parentPid: string; parentSid: string; id: string } }
 
 /** Steps an autopilot run has taken, when it knows the budget it began with. */
 function autopilotSteps(ap: { remaining: number; count?: number }): { steps?: number } {
@@ -511,6 +528,8 @@ export class SessionManager {
     for (const timer of this.queueTimers.values()) clearTimeout(timer);
     for (const timer of this.autopilotTimers.values()) clearTimeout(timer);
     this.queueTimers.clear(); this.autopilotTimers.clear();
+    this.resumeScheduler?.stop();
+    for (const w of this.limitWatches.values()) if (w.timer) clearTimeout(w.timer);
     for (const run of this.runs.values()) run.control?.abort();
     for (const pool of this.pools()) pool.shutdown();
     this.sharedMemory?.documents.close();
@@ -645,6 +664,9 @@ export class SessionManager {
     this.reconcileRuntimeMode();this.reconcileWorkArchives();
     if(this.projectSpacesEnabled())this.recoveryIssues=projectSpacesRecoveryReport(this.opts.stateDir).issues.map(i=>i.store+': '+i.reason);
     this.resumeAutopilots();
+    // Parked and out-of-turn-limited conversations continue; a record whose
+    // time passed during a deploy fires now.
+    this.limitResume().start();
     if (opts.manageProcessSignals) {
       const onTerm = () => {
         this.titleWorker?.close();
@@ -850,12 +872,12 @@ export class SessionManager {
     if (t) { clearTimeout(t); this.autopilotTimers.delete(sessionId); }
     if (pid || t) this.emit('autopilot', { projectId: pid, sessionId, active: false, remaining: 0, reason: 'stopped' });
   }
-  private pauseAutopilot(sessionId: string, reason: string): void {
+  private pauseAutopilot(sessionId: string, reason: string, autoResume = false): void {
     const map = this.loadAutopilot(), ap = map[sessionId];
     if (!ap || ap.paused) return;
     ap.paused = true; ap.pauseReason = reason; this.saveAutopilot(map);
     const timer = this.autopilotTimers.get(sessionId); if (timer) { clearTimeout(timer); this.autopilotTimers.delete(sessionId); }
-    this.emit('autopilot', { projectId: ap.projectId, sessionId, active: false, remaining: ap.remaining, reason, ...autopilotSteps(ap) });
+    this.emit('autopilot', { projectId: ap.projectId, sessionId, active: false, remaining: ap.remaining, reason, ...autopilotSteps(ap), ...(autoResume ? { autoResume: true } : {}) });
   }
   resumeProjectAutopilot(projectId: string, sessionId: string, expectedMembershipRevision: number): void {
     const p = this.assertExecutionAllowed(projectId, sessionId), map = this.loadAutopilot(), ap = map[sessionId];
@@ -887,14 +909,15 @@ export class SessionManager {
    *  Called for EVERY turn, before anything else is scheduled -- a queued
    *  message (an advisor follow-up included) that drains after this turn must
    *  not hide its stop phrase or its failure. Returns whether autopilot may go on. */
-  private evaluateAutopilot(pid: string, sessionId: string, res: SessionResult): boolean {
+  private evaluateAutopilot(pid: string, sessionId: string, res: SessionResult, autoResume = false): boolean {
     const map = this.loadAutopilot();
     const ap = map[sessionId];
     if (!ap || ap.paused) return false;
     // Only continue on a clean completion; park/error pauses (state kept so the
-    // user or a later trigger can resume) but stops the auto-loop.
+    // user or a later trigger can resume) but stops the auto-loop. A park the
+    // limit scheduler will un-pause is quiet: the parked notice says when.
     if (res.status !== 'completed') {
-      this.pauseAutopilot(sessionId, res.status);
+      this.pauseAutopilot(sessionId, res.status, autoResume);
       return false;
     }
     if (typeof res.resultText === 'string' && res.resultText.includes(ap.stopPhrase)) {
@@ -1051,6 +1074,9 @@ export class SessionManager {
     const pid = typeof data.projectId === 'string' ? data.projectId : '';
     const st = sid ? this.afterTurns.get(sid) : undefined;
     if (st) this.afterTurns.delete(sid);
+    // The work after the turn ended in a usage limit: limit_continue says so,
+    // never a "finished" quoting the limit text, and no recap (R4).
+    if (sid && this.limitSettles.delete(sid)) { this.emit('conversation_settled', { ...data, notificationSuppressed: true, limit: true }); return; }
     if (!st?.sawWork || data.notificationSuppressed) { this.emit('conversation_settled', data); return; }
     const reply = st.reply && (st.lastTaskDone === undefined || st.reply.seq > st.lastTaskDone) ? st.reply : undefined;
     if (reply) {
@@ -1079,13 +1105,252 @@ export class SessionManager {
   }
 
   private backgroundRecapAllowed(pid: string, sid: string, data: Record<string, unknown>): boolean {
-    if (!pid || !sid || data.origin !== 'human') return false; // a recap turn is origin 'recap'
+    // A recap turn is origin 'recap'; a limit continue carries the owner's work on.
+    if (!pid || !sid || (data.origin !== 'human' && data.origin !== 'limit_resume')) return false;
     if (!this.conversationExists(pid, sid)) return false;
     try { if (this.adapterFor(pid, sid).id !== 'claude') return false; } catch { return false; }
     if (this.sessionBusy(sid) || this.pendingQuestions.has(sid)) return false;
     const ap = this.loadAutopilot()[sid];
     if (ap && !ap.paused) return false;
     return !(this.loadQueues()[pid] ?? []).some((x) => (x.sessionId ?? pid) === sid);
+  }
+
+  // ---- usage limits: out of turn (R4), parks (R5), the resume scheduler (R6), delegates (R7) ----
+  /** What each process's idle stream showed since its conversation's last
+   *  turn (keyed by the process's conversation id: a delegate's own session). */
+  private readonly limitWatches = new Map<string, LimitWatch>();
+  /** Conversations whose settle is owed to an out-of-turn limit, not "finished". */
+  private readonly limitSettles = new Set<string>();
+  private resumeScheduler?: LimitResumeScheduler;
+
+  limitResume(): LimitResumeScheduler {
+    return this.resumeScheduler ??= new LimitResumeScheduler(this.opts.stateDir, {
+      now: () => Math.floor(Date.now() / 1000),
+      eligible: (rec) => this.limitEligible(rec.provider, rec.delegate ? undefined : rec.projectId, rec.delegate ? undefined : rec.sessionId),
+      nextReset: (rec) => this.nextLimitReset(rec.provider),
+      skipReason: (rec) => this.limitResumeSkip(rec),
+      blocked: (rec) => this.limitResumeBlocked(rec),
+      ended: (rec, reason) => this.limitResumeEnded(rec, reason),
+      deliver: (rec, text) => this.deliverLimitResume(rec, text),
+      log: (row) => { try { new EventLog(join(this.opts.stateDir, 'events.jsonl')).append(row); } catch { /* logging only */ } },
+      emit: (kind, data) => this.emit(kind, data),
+    });
+  }
+  /** The records waiting, for GET /api/limit-resume. */
+  limitResumeList(): LimitResumeRecord[] { return this.limitResume().list(); }
+
+  /** An account could take this conversation's turn now: its own routing
+   *  context, so one locked to the limited account waits for the reset. A
+   *  candidate held back only by load counts (runSession waits those out). */
+  private limitEligible(provider: 'claude' | 'codex', pid?: string, sid?: string): boolean {
+    try {
+      const ctx = pid && sid ? new RoutingState(this.opts.stateDir).context(pid, sid) : {};
+      const route = this.registry().explain(Math.floor(Date.now() / 1000), provider, this.accountLoads(sid), ctx);
+      return route.candidates.some((c) => c.eligible || (c.reasons.length > 0 && c.reasons.every((r) => /Concurrent-task|reserved/.test(r))));
+    } catch { return false; }
+  }
+
+  /** R3: the earliest FUTURE reset, else a 30 min estimate. */
+  private nextLimitReset(provider: 'claude' | 'codex'): { until: number; estimated: boolean } {
+    const now = Math.floor(Date.now() / 1000);
+    let reset: number | undefined;
+    try { reset = (this.registry().earliestReset as (p: string, n: number) => number | undefined)(provider, now); } catch { /* estimate */ }
+    return reset != null && reset > now ? { until: reset, estimated: false } : { until: now + NO_RESET_FALLBACK_S, estimated: true };
+  }
+
+  private limitResumeSkip(rec: LimitResumeRecord): string | undefined {
+    const sid = rec.delegate ? rec.delegate.parentSessionId : rec.sessionId;
+    if (!this.conversationExists(rec.projectId, sid)) return 'gone';
+    if (this.projects().get(rec.projectId)?.archivedAt) return 'archived';
+    if (rec.delegate) {
+      const d = this.delegateStore().get(rec.projectId, sid, rec.delegate.delegateId);
+      if (!d) return 'gone';
+      return d.status === 'stopped' || d.dismissedAt ? 'stopped' : undefined;
+    }
+    if (this.pendingQuestions.has(rec.sessionId)) return 'question';
+    if (rec.kind === 'autopilot' && !this.loadAutopilot()[rec.sessionId]?.paused) return 'autopilot_changed';
+    return undefined;
+  }
+
+  /** The execution guard refuses for a while (recovery pending at boot, project
+   *  membership being reconciled): that is "not now", never a reason to drop it. */
+  private limitResumeBlocked(rec: LimitResumeRecord): string | undefined {
+    try { this.assertExecutionAllowed(rec.projectId, rec.delegate ? rec.delegate.parentSessionId : rec.sessionId); return undefined; }
+    catch (e) { return (e as Error).message || 'blocked'; }
+  }
+
+  /** A delegate whose auto-continue ended unsent reports BLOCKED, so its
+   *  orchestrator hears of it instead of a slot held by `waiting_for_reset`. */
+  private limitResumeEnded(rec: LimitResumeRecord, reason: 'gave_up' | 'braked'): void {
+    if (!rec.delegate || this.destroyed) return;
+    const { parentSessionId: parentSid, delegateId: id } = rec.delegate;
+    const d = this.delegateStore().get(rec.projectId, parentSid, id);
+    if (!d || d.status !== 'waiting_for_reset' || [...this.delegateRuns.values()].some((r) => r.id === id && r.parentSid === parentSid)) return;
+    const text = reason === 'gave_up' ? `Usage limit: auto-continue gave up after ${MAX_ATTEMPTS} tries; no account could take this delegate's turn.`
+      : `Usage limit: auto-continue stopped after ${MAX_AUTO_CONTINUES} tries in a row; this delegate needs a follow-up to go on.`;
+    void this.settleDelegate(rec.projectId, parentSid, id, { started: Date.now() }, 'failed', text, d.providerSessionId, d.account);
+  }
+
+  /** The ordinary send path: a busy conversation queues it. */
+  private deliverLimitResume(rec: LimitResumeRecord, text: string): void {
+    const { projectId: pid, sessionId: sid } = rec;
+    if (rec.delegate) { this.resumeDelegateAfterLimit(rec, text); return; }
+    if (rec.kind === 'autopilot') {
+      const map = this.loadAutopilot(), ap = map[sid];
+      if (!ap) throw new Error('autopilot ended meanwhile');
+      ap.paused = false; delete ap.pauseReason; this.saveAutopilot(map);
+      this.emitActiveAutopilot(sid, ap);
+      if (!this.sessionBusy(sid)) this.scheduleAutopilot(sid);
+      return;
+    }
+    // The owner's message parked while autopilot ran: autopilot goes on after it.
+    if (rec.resumeAutopilot) {
+      const map = this.loadAutopilot(), ap = map[sid];
+      if (ap?.paused) { ap.paused = false; delete ap.pauseReason; this.saveAutopilot(map); this.emitActiveAutopilot(sid, ap); }
+    }
+    const resend = rec.kind === 'resend';
+    const sender: MessageSender | undefined = resend ? rec.sender : { kind: 'limit_resume' };
+    const extra = resend ? { model: rec.model, effort: rec.effort, speed: rec.speed, ...(rec.attachments?.length ? { fileRefs: rec.attachments } : {}), ...(rec.requestId ? { requestId: rec.requestId } : {}) } : {};
+    if (this.sessionBusy(sid)) { this.enqueue(pid, { sessionId: sid, text, ...(sender ? { sender } : {}), ...extra, limitResume: true }); return; }
+    // A first turn that never ran has no session yet, unless a turn since made one.
+    const fresh = resend && !!rec.fresh && !this.projects().providerSessionId(pid, sid);
+    this.continueSession(pid, sid, text, { ...(sender ? { sender } : {}), ...extra, limitResume: true, ...(fresh ? { freshSession: true } : {}) });
+  }
+
+  /**
+   * R4: an idle event of a conversation's (or a delegate's) process, through
+   * the adapter's own classifier. The first `limited` verdict marks the
+   * account the PROCESS runs on (the source, never the latest turn's options:
+   * a held turn may have been routed elsewhere); the process is ended at the
+   * woken reply's result or 5 s later, and only then does the continue route.
+   */
+  private observeIdleLimit(t: LimitTarget, adapter: ProviderAdapter, e: RawEvent, src?: IdleSource): void {
+    if ((e as { parent_tool_use_id?: unknown }).parent_tool_use_id) return;
+    let w = this.limitWatches.get(t.sid);
+    if (!w) { w = { failedTasks: [] }; this.limitWatches.set(t.sid, w); }
+    if (w.done) return;
+    const task = failedTaskOf(e);
+    if (task) { if (!w.failedTasks.some((x) => x.id === task.id)) w.failedTasks.push(task); return; }
+    const v = adapter.classify(e);
+    if (v.kind === 'limited') {
+      if (!w.verdict) {
+        w.verdict = v; w.at = Math.floor(Date.now() / 1000); w.configDir = src?.configDir;
+        w.account = src?.configDir ? this.registry().list().find((a) => a.configDir === src.configDir)?.name : undefined;
+        this.markOutOfTurnLimit(t, w, true);
+        if (src?.configDir) (t.provider === 'codex' ? this.persistentCodex : this.persistent)?.markLimitHit(t.sid, src.configDir);
+        // A settle that comes now is the limit's, not a "finished" quoting it.
+        // Not while a gateway turn waits on this reply: that turn's ending is its own.
+        if (!t.delegate && !this.runs.has(t.sid)) this.limitSettles.add(t.sid);
+        const watch = w;
+        w.timer = setTimeout(() => this.finishOutOfTurnLimit(t, watch), 5000);
+        w.timer.unref?.();
+      } else {
+        // The CLI writes the limit twice (the synthetic reply, then its result):
+        // one limit, the later reset (R2).
+        const merged = mergeVerdicts(w.verdict, v), before = w.verdict;
+        w.verdict = merged;
+        if (merged.resetsAt !== before.resetsAt || merged.resetsInSeconds !== before.resetsInSeconds) this.markOutOfTurnLimit(t, w, false);
+      }
+    }
+    // Never inside the sink: the pool is still reading this line.
+    if (w.verdict && adapter.isResult(e)) { const watch = w; setImmediate(() => this.finishOutOfTurnLimit(t, watch)); }
+  }
+
+  private markOutOfTurnLimit(t: LimitTarget, w: LimitWatch, first: boolean): void {
+    const v = w.verdict!, { until, estimated } = untilOf(v, w.at!);
+    if (w.account) {
+      try {
+        const reg = this.registry(), cur = reg.get(w.account).state;
+        // Never shorten a limit the account already carries (a weekly one).
+        if (!(cur.kind === 'limited' && cur.until > until)) reg.markLimited(w.account, until, estimated);
+      } catch { /* an account removed meanwhile */ }
+      this.emitAccounts();
+    }
+    if (!first) return;
+    const row = { type: 'limit_detected', sessionId: t.delegate ? t.delegate.parentSid : t.sid, account: w.account ?? null, until, estimated, kind: v.limitKind ?? 'unknown', source: v.source, outOfTurn: true,
+      ...(t.delegate ? { delegateId: t.delegate.id, delegateSessionId: t.sid } : {}) };
+    try { new EventLog(join(this.opts.stateDir, 'events.jsonl')).append(row); } catch { /* logging only */ }
+    if (!t.delegate) {
+      this.emit('supervisor', { ...row, projectId: t.pid });
+      if (this.projectSpacesEnabled()) try { this.files().fenceExecution(t.pid, t.sid); } catch { /* fencing is best effort here */ }
+    }
+  }
+
+  /** The woken reply ended (or 5 s passed): end the limited process, then hand
+   *  the continue to the scheduler, at once when an account can take it. */
+  private finishOutOfTurnLimit(t: LimitTarget, w: LimitWatch): void {
+    if (w.done || this.destroyed) return;
+    w.done = true;
+    if (w.timer) clearTimeout(w.timer);
+    if (this.limitWatches.get(t.sid) !== w) return; // a new turn took over
+    (t.provider === 'codex' ? this.persistentCodex : this.persistent)?.destroyLimitHit(t.sid);
+    const v = w.verdict!, { until, estimated } = untilOf(v, w.at!);
+    const base = { provider: t.provider, until, estimated, ...(w.account ? { account: w.account } : {}), limitKind: v.limitKind ?? 'unknown' as const, limitAt: w.at, failedTasks: w.failedTasks };
+    if (t.delegate) {
+      const { parentPid, parentSid, id } = t.delegate;
+      const now = this.limitEligible(t.provider);
+      this.limitResume().schedule({ ...base, kind: 'delegate', projectId: parentPid, sessionId: parentSid, delegate: { parentSessionId: parentSid, delegateId: id, mode: 'continue' }, now });
+      try { this.delegateStore().update(parentPid, parentSid, id, { status: 'waiting_for_reset' }); } catch { /* gone meanwhile */ }
+      this.emitDelegates(parentPid, parentSid);
+      return;
+    }
+    const now = this.limitEligible(t.provider, t.pid, t.sid);
+    const rec = this.limitResume().schedule({ ...base, kind: 'continue', projectId: t.pid, sessionId: t.sid, now });
+    this.emit('limit_continue', { projectId: t.pid, sessionId: t.sid, account: w.account ?? null, until, estimated, kind: base.limitKind, failedTasks: w.failedTasks, continueAt: rec.fireAt, waiting: !now });
+  }
+
+  /** A new turn of this conversation: what its process's idle stream showed is history. */
+  private supersedeLimitWatch(sid: string): void {
+    const w = this.limitWatches.get(sid);
+    // Mid-wake (agents died, the woken reply not in yet): this turn waits for
+    // that reply, and the dead agents still belong to its limit.
+    if (w && !w.verdict && this.pools().some((p) => p.activeSessions().some((s) => s.sessionId === sid))) { this.limitSettles.delete(sid); return; }
+    this.limitWatches.delete(sid);
+    this.limitSettles.delete(sid);
+    if (w?.verdict && !w.done) {
+      w.done = true;
+      if (w.timer) clearTimeout(w.timer);
+      this.persistent?.destroyLimitHit(sid); this.persistentCodex?.destroyLimitHit(sid);
+    }
+  }
+
+  /** R5: a parked turn continues by itself. A turn that never started on any
+   *  process is resent as it was; one that did is continued; an autopilot that
+   *  paused for the park is un-paused instead. */
+  private scheduleParkResume(pid: string, sid: string, provider: 'claude' | 'codex', run: ActiveRun, autopilot: boolean, orig: { prompt: string; opts?: TurnRunOptions; resume: boolean }): { at: number; until: number; estimated: boolean; kind: string } {
+    const { until, estimated } = this.nextLimitReset(provider);
+    const o = orig.opts;
+    // Only an autopilot STEP is replaced by un-pausing; anyone else's message is sent again.
+    const step = autopilot && o?.sender?.kind === 'autopilot';
+    const kind = step ? 'autopilot' : run.turnStarted ? 'continue' : 'resend';
+    const rec = this.limitResume().schedule({ projectId: pid, sessionId: sid, provider, kind, until, estimated, now: this.limitEligible(provider, pid, sid),
+      ...(autopilot && !step ? { resumeAutopilot: true } : {}), ...(kind === 'resend' && !orig.resume ? { fresh: true } : {}),
+      ...(run.limit ? { ...(run.limit.account ? { account: run.limit.account } : {}), limitKind: (run.limit.kind ?? 'unknown') as LimitResumeRecord['limitKind'], limitAt: run.limit.at } : {}),
+      ...(kind === 'resend' ? { prompt: orig.prompt, ...(o?.sender ? { sender: o.sender } : {}), model: o?.model, effort: o?.effort, speed: o?.speed, ...(o?.fileRefs?.length ? { attachments: o.fileRefs } : {}), ...(o?.requestId ? { requestId: o.requestId } : {}) } : {}) });
+    return { at: rec.fireAt, until, estimated, kind };
+  }
+
+  /** R7: a parked delegate turn waits for the reset instead of reporting blocked. */
+  private parkDelegate(parentPid: string, parentSid: string, d: Delegate, started: boolean, prompt: string, providerSessionId?: string, limit?: ActiveRun['limit']): void {
+    this.delegateRuns.delete(d.sessionId);
+    const { until, estimated } = this.nextLimitReset(d.provider);
+    this.limitResume().schedule({ kind: 'delegate', projectId: parentPid, sessionId: parentSid, provider: d.provider, until, estimated, now: this.limitEligible(d.provider),
+      ...(limit ? { ...(limit.account ? { account: limit.account } : {}), limitKind: (limit.kind ?? 'unknown') as LimitResumeRecord['limitKind'], limitAt: limit.at } : {}),
+      delegate: { parentSessionId: parentSid, delegateId: d.id, mode: started ? 'continue' : 'resend' }, ...(started ? {} : { prompt }) });
+    // A turn that started made the session: the continue resumes it, first turn or not.
+    this.delegateStore().update(parentPid, parentSid, d.id, { status: 'waiting_for_reset', ...(started ? { sessionStarted: true } : {}), ...(providerSessionId ? { providerSessionId } : {}) });
+    this.emitDelegates(parentPid, parentSid);
+  }
+
+  private resumeDelegateAfterLimit(rec: LimitResumeRecord, text: string): void {
+    const { parentSessionId: parentSid, delegateId: id } = rec.delegate!, parentPid = rec.projectId;
+    const store = this.delegateStore(), d = store.get(parentPid, parentSid, id);
+    if (!d) throw new Error('unknown delegate ' + id);
+    if ([...this.delegateRuns.values()].some((r) => r.id === id && r.parentSid === parentSid)) {
+      store.update(parentPid, parentSid, id, { pending: [...d.pending, text] });
+      return;
+    }
+    this.runDelegateTurn(parentPid, parentSid, d, text);
   }
 
   /** After a turn whose queue had nothing: wait for that turn's pending advisor
@@ -1210,7 +1475,7 @@ export class SessionManager {
   clearSelfQueueStreak(sessionId: string): void { this.selfQueueStreak.delete(sessionId); }
 
 
-  enqueue(pid: string, item: { text: string; attachmentPrompt?: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; speed?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string }): QueueItem {
+  enqueue(pid: string, item: { text: string; attachmentPrompt?: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; speed?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string; limitResume?: boolean }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
     const text = (item.text ?? '').trim() || (item.fileRefs?.length || item.attachmentPrompt ? 'Use the attached files.' : '');
@@ -1226,7 +1491,7 @@ export class SessionManager {
     if (item.afterSessionId && !this.listProjects().projects.some(p=>p.conversations?.some(c=>c.sessionId===item.afterSessionId))) throw new Error('Dependency conversation not found');
     if (item.afterSessionId && item.afterSessionId === sessionId) throw new Error('A queue item cannot wait for its own conversation');
     const map = this.loadQueues();
-    const q: QueueItem = { id: randomUUID(), text, attachmentPrompt: item.attachmentPrompt, fileRefs: item.fileRefs, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId };
+    const q: QueueItem = { id: randomUUID(), text, attachmentPrompt: item.attachmentPrompt, fileRefs: item.fileRefs, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId, ...(item.limitResume ? { limitResume: true } : {}) };
     (map[pid] ??= []).push(q);
     this.saveQueues(map);
     this.emitQueue(pid, map);
@@ -1275,6 +1540,9 @@ export class SessionManager {
     const headIdx = q.findIndex((x) => (x.sessionId ?? pid) === sessionId);
     if (headIdx < 0) return false;
     const head = q[headIdx];
+    // Waiting for a usage limit to reset: draining now would only park again.
+    // The resumed turn drains it, as any turn does (R5).
+    if (this.limitResume().waiting(sessionId)) return false;
     // An unavailable head keeps its place; later messages cannot overtake it.
     if (!this.queueReady(head) || this.queueTimers.has(sessionId) || this.queueChecks.has(sessionId) || this.destroyed) return true;
     const t = setTimeout(async () => {
@@ -1308,7 +1576,7 @@ export class SessionManager {
       try {this.saveQueues(current);} catch {return;} // Never send before the recovery marker is durable.
       if(item.requestId)this.emit('message_delivery',{requestId:item.requestId,sessionId,projectId:pid,status:'uncertain'});
       try {
-        this.continueSession(pid, sessionId, item.text + (item.attachmentPrompt || ''), { fileRefs: item.fileRefs, requestId: item.requestId, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve });
+        this.continueSession(pid, sessionId, item.text + (item.attachmentPrompt || ''), { fileRefs: item.fileRefs, requestId: item.requestId, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve, ...(item.limitResume ? { limitResume: true } : {}) });
       } catch(e) {
         if (e instanceof BusyError) {
           item.dispatching=false;
@@ -1928,6 +2196,7 @@ export class SessionManager {
     if (this.sessionBusy(sessionId)) throw new BusyError();
     this.assertRemovalAllowed(projectId, sessionId);
     this.stopAutopilot(sessionId); // don't leave its autopilot armed against a removed conversation
+    this.limitResume().clearConversation(sessionId, 'deleted');
     this.afterTurns.delete(sessionId);
     this.humanTurns.delete(sessionId);
     const reg = this.projects();
@@ -2374,6 +2643,16 @@ export class SessionManager {
     if (!d) throw new Error('unknown delegate ' + id);
     if (!fromHuman) this.bumpDelegateRounds(parentSid);
     const prompt = fromHuman ? '[From the user, directly]\n' + text : text;
+    // Waiting for a usage limit to reset. A turn it never started is still
+    // owed first: this one waits behind it. Otherwise the follow-up is the
+    // next step and resumes the session itself.
+    const waiting = d.status === 'waiting_for_reset' ? this.limitResume().forDelegate(parentSid, id) : undefined;
+    if (waiting?.delegate?.mode === 'resend') {
+      store.update(parentPid, parentSid, id, { pending: [...d.pending, prompt] });
+      this.emitDelegates(parentPid, parentSid);
+      return { id, status: 'queued' };
+    }
+    if (waiting) this.limitResume().clearDelegate(parentSid, id, 'followup');
     if ([...this.delegateRuns.values()].some((r) => r.id === id && r.parentSid === parentSid)) {
       store.update(parentPid, parentSid, id, { pending: [...d.pending, prompt], dismissedAt: undefined, dismissedBy: undefined });
       this.emitDelegates(parentPid, parentSid);
@@ -2403,6 +2682,7 @@ export class SessionManager {
       if (run) { run.stopRequested = true; run.control?.abort(); n++; }
       else if (d.status !== 'stopped') n++;
       store.update(parentPid, parentSid, d.id, { status: 'stopped', pending: [] });
+      this.limitResume().clearDelegate(parentSid, d.id, 'stopped');
     }
     if (id && !n && !store.get(parentPid, parentSid, id)) throw new Error('unknown delegate ' + id);
     this.emitDelegates(parentPid, parentSid);
@@ -2477,6 +2757,16 @@ export class SessionManager {
     store.update(parentPid, parentSid, d.id, { status: 'working' });
     this.emitDelegates(parentPid, parentSid);
     const log = new EventLog(join(this.opts.stateDir, 'delegate-events.jsonl'));
+    // A park before any turn_started resends this prompt; after one, continues (R7).
+    let started = false, limit: { account?: string; kind?: string; at: number } | undefined;
+    const append = log.append.bind(log);
+    log.append = (row) => {
+      if (row.type === 'turn_started') started = true;
+      if (row.type === 'limit_detected') limit = { account: typeof row.account === 'string' ? row.account : undefined, kind: typeof row.limitKind === 'string' ? row.limitKind : undefined, at: Math.floor(Date.now() / 1000) };
+      append(row);
+    };
+    // Its process's idle stream starts over with this turn.
+    this.limitWatches.delete(d.sessionId);
     const runFn = this.opts.runSessionFn ?? runSession;
     let providerSessionId = d.providerSessionId;
     // A delegate works with its orchestrator's helpers (audit 2026-10-07: 230
@@ -2522,7 +2812,7 @@ export class SessionManager {
         sessionId: d.sessionId,
         cwd: d.cwd,
         prompt: withTeamLine(prompt, advisorLine),
-        resume: d.turns > 0,
+        resume: d.turns > 0 || !!d.sessionStarted,
         providerSessionId,
         adapter,
         claudePath: this.opts.claudePath,
@@ -2532,7 +2822,9 @@ export class SessionManager {
         advisor: advisorOn ? advisorFor(d.provider, model) : undefined,
         appendSystemPrompt: CONTAINER_SYSTEM_NOTE + '\n\n' + delegateInstructions(d.role),
         mcp: this.mcpWiringForDelegate(parentPid, parentSid, d),
-        startTurnFn: this.turnStarter(adapter, log, d.sessionId, (o) => ({ ...o, onProviderActivity: () => this.emitDelegates(parentPid, parentSid), onIdleEvent: () => {} })),
+        startTurnFn: this.turnStarter(adapter, log, d.sessionId, (o) => ({ ...o, onProviderActivity: () => this.emitDelegates(parentPid, parentSid),
+          // Only the usage-limit watch: a delegate has no panel to show its idle work in.
+          onIdleEvent: (e: RawEvent, src?: IdleSource) => { try { this.observeIdleLimit({ pid: d.projectId, sid: d.sessionId, provider: d.provider, delegate: { parentPid, parentSid, id: d.id } }, adapter, e, src); } catch { /* never break the stream */ } } })),
         control: (c) => { run.control = c; },
         tap: (e: RawEvent) => {
           watcher?.observe(e);
@@ -2542,7 +2834,14 @@ export class SessionManager {
       });
     };
     start()
-      .then((res) => this.settleDelegate(parentPid, parentSid, d.id, run, run.stopRequested ? 'stopped' : res.status === 'completed' ? 'completed' : 'failed', (res.resultText || res.reason || '').trim(), res.providerSessionId ?? providerSessionId, res.finalAccount))
+      .then((res) => {
+        // Parked: not a failure to gate as blocked, and nothing to wake the orchestrator with.
+        if (res.status === 'parked' && !run.stopRequested && !this.destroyed) {
+          try { this.parkDelegate(parentPid, parentSid, d, started, prompt, res.providerSessionId ?? providerSessionId, limit); return; }
+          catch (e) { console.warn('[limit-resume] could not park the delegate:', (e as Error).message); }
+        }
+        return this.settleDelegate(parentPid, parentSid, d.id, run, run.stopRequested ? 'stopped' : res.status === 'completed' ? 'completed' : 'failed', (res.resultText || res.reason || '').trim(), res.providerSessionId ?? providerSessionId, res.finalAccount);
+      })
       .catch((err: unknown) => this.settleDelegate(parentPid, parentSid, d.id, run, run.stopRequested ? 'stopped' : 'failed', (err as Error).message, providerSessionId));
   }
 
@@ -3413,7 +3712,7 @@ export class SessionManager {
     if (!proj.conversations?.some(c => c.sessionId === sessionId)) throw new Error('Unknown conversation for this project');
     const dir = proj.cwd;
     const prepared = proj.kind === 'chat' || !!proj.conversations?.find(c => c.sessionId === sessionId)?.prepared;
-    const resume = !prepared || !!this.projects().providerSessionId(pid, sessionId);
+    const resume = !opts?.freshSession && (!prepared || !!this.projects().providerSessionId(pid, sessionId));
     this.launch(pid, sessionId, prompt, dir, resume, opts);
     return sessionId;
   }
@@ -3829,6 +4128,8 @@ export class SessionManager {
 
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
     this.assertExecutionAllowed(pid, sessionId);
+    // As the caller sent it, before references, files and memory are added: a park resends this.
+    const resendPrompt = prompt;
     if (runOpts?.helpers) this.patchHelpers(pid, sessionId, runOpts.helpers);
     if (this.chatToolsChanged.has(pid)) {
       const retired = this.pools().map(pool => pool.retireIdleSession(sessionId));
@@ -3855,8 +4156,13 @@ export class SessionManager {
     const startOrigin = originOf(runOpts?.sender);
     const openQuestion = this.pendingQuestions.get(sessionId);
     if (startOrigin === 'human') this.resolvePendingQuestion(pid, sessionId, 'turn');
+    // The owner's own message is the next step: a waiting auto-continue is
+    // dropped and the loop brake starts over (R6). A resend of a parked
+    // message is the scheduler's, not the owner's.
+    if (startOrigin === 'human' && !runOpts?.limitResume) this.limitResume().humanMessage(sessionId);
     // ...and whatever the previous turn's background work did is now history.
     this.afterTurns.delete(sessionId);
+    this.supersedeLimitWatch(sessionId);
     const reg = this.projects();
     const adapter = this.adapterFor(pid, sessionId);
     const prefs = this.conversationRunPrefs(pid, sessionId, runOpts);
@@ -3932,8 +4238,9 @@ export class SessionManager {
           if (fileAccount && this.projectSpacesEnabled()) this.files().fenceExecution(pid, sessionId);
           if (fileAccount && fileAccount !== d.account && reg.get(pid)?.kind === 'chat') this.files().fence(pid);
           fileAccount = d.account;
-          run.account = d.account; run.waiting=false; this.emitAccounts();
+          run.account = d.account; run.waiting=false; run.turnStarted = true; this.emitAccounts();
         }
+        if (k === 'supervisor' && d?.type === 'limit_detected') run.limit = { account: typeof d.account === 'string' ? d.account : undefined, kind: typeof d.limitKind === 'string' ? d.limitKind : undefined, at: Math.floor(Date.now() / 1000) };
         if(k==='supervisor'&&typeof d.type==='string'&&['routing_decision','routing_wait','turn_started','turn_completed','turn_failed','failover','limit_detected','auth_required','api_overloaded_retry','forced_switch','waiting_for_reset'].includes(d.type)){
           if(d.type==='routing_wait'){run.account=undefined;run.waiting=true;this.emitAccounts();}
           try{routingState.record({projectId:pid,sessionId,kind:d.type,provider:adapter.id,account:typeof d.account==='string'?d.account:typeof d.selected==='string'?d.selected:undefined,model:run.actualModel||model,detail:d});}catch{}
@@ -4069,7 +4376,8 @@ export class SessionManager {
             // reach its view. Without this it was written only to the CLI's own
             // transcript: the panel showed nothing and the conversation looked
             // dead while it was still working.
-            onIdleEvent: (e: RawEvent) => {
+            onIdleEvent: (e: RawEvent, src?: IdleSource) => {
+              try { this.observeIdleLimit({ pid, sid: sessionId, provider: adapter.id as 'claude' | 'codex' }, adapter, e, src); } catch { /* never break the stream */ }
               try { this.observeIdle(adapter, sessionId, e); } catch { /* never break the stream */ }
               try { this.tapToEvents(e, emit, adapter, pid, sessionId); } catch { /* never break the stream */ }
             },
@@ -4169,7 +4477,15 @@ export class SessionManager {
           // because autopilot deliberately pauses there and nothing else would
           // ever pick the item up: it would sit in the queue forever.
           // An explicit cancellation holds queued follow-ups for the operator.
-          const drained = res.status !== 'stopped' && this.maybeDrainQueue(pid, sessionId);
+          // R5: a parked turn continues by itself; the queue waits for that
+          // turn (draining now would only park again), and so does autopilot.
+          const apBefore = this.loadAutopilot()[sessionId];
+          let autoResume: ReturnType<SessionManager['scheduleParkResume']> | undefined;
+          if (res.status === 'parked') {
+            try { autoResume = this.scheduleParkResume(pid, sessionId, adapter.id as 'claude' | 'codex', run, !!apBefore && !apBefore.paused, { prompt: resendPrompt, opts: runOpts, resume }); }
+            catch (e) { console.warn('[limit-resume] could not schedule the parked turn:', (e as Error).message); }
+          }
+          const drained = res.status !== 'stopped' && res.status !== 'parked' && this.maybeDrainQueue(pid, sessionId);
           // If the model ended its turn asking the user something, surface it as
           // an answerable card (only when not on autopilot/queue, which drive it).
           const currentAutopilot = this.loadAutopilot()[sessionId];
@@ -4192,7 +4508,7 @@ export class SessionManager {
           // its settle can quote the reply that work woke.
           if (res.status === 'completed' && adapter.id === 'claude') this.afterTurns.set(sessionId, { sawWork: this.providerActivity(sessionId).active, seq: 0 });
           if (q) this.addPendingQuestion(pid, sessionId, q, resolved ? 'replace' : 'merge', run.requestId);
-          emit('session_done', { sessionId, ...res, ...turnMeta(), ...this.ownerFields(pid, sessionId, run, res) });
+          emit('session_done', { sessionId, ...res, ...turnMeta(), ...this.ownerFields(pid, sessionId, run, res), ...(autoResume ? { autoResume } : {}) });
           if (res.status === 'completed') {
             try { this.titles().observe(pid, sessionId, sourcePrompt, res.resultText || ''); }
             catch (error) { console.warn('[titles] Could not queue title:', (error as Error).message); }
@@ -4201,7 +4517,7 @@ export class SessionManager {
           // every time, drained or not -- after session_done, so its
           // notification still sees the autopilot that owned the turn, and
           // before the drained item starts (that waits 400 ms).
-          const goOn = this.evaluateAutopilot(pid, sessionId, res);
+          const goOn = this.evaluateAutopilot(pid, sessionId, res, !!autoResume);
           // Only when the queue had nothing — autopilot must never jump ahead of
           // a real message, and it resumes by itself once the queue empties.
           if (!drained && goOn) void this.continueAutopilotAfter(pid, sessionId, run).catch(() => {});
@@ -4727,6 +5043,12 @@ export class SessionManager {
       : (() => { const pid = projectId ?? this.projects().currentId(); return pid ? [...this.runs.values()].find((r) => r.projectId === pid) : undefined; })();
     const targetSession = run?.sessionId || sessionId;
     if (targetSession) this.stopAutopilot(targetSession);
+    // An operator stop is the next step: no auto-continue after it (R6), its
+    // delegates' included (a parked one is not in delegateRuns).
+    if (targetSession) {
+      this.limitResume().clear(targetSession, 'stopped');
+      for (const r of this.limitResume().list()) if (r.delegate?.parentSessionId === targetSession) { try { this.stopDelegates(r.projectId, targetSession, r.delegate.delegateId); } catch { /* gone */ } }
+    }
     if (!run?.control) {
       // No turn, but the process may still be working: a background task woke
       // the model after `result`. Interrupt rather than kill, so the session

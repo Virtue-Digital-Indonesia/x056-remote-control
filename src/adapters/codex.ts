@@ -18,6 +18,7 @@ import { spawnJsonlTurn } from '../turn.js';
 import type { TurnHandle, TurnOptions } from '../turn.js';
 import type { AccountIdentity, ActivityEvent, HistoryEntry, ProviderAdapter, ProviderModel } from '../provider.js';
 import type { RawEvent, Verdict } from '../types.js';
+import { limitKindOfText, parseLimitReset } from '../detector.js';
 
 /*
  * OpenAI `codex` CLI adapter (ChatGPT-plan / GPT models).
@@ -130,7 +131,11 @@ export function classifyCodexEvent(e: RawEvent): Verdict {
     const code = firstStr(err.code, err.type, typeof e.error === 'string' ? e.error : '');
     const msg = firstStr(err.message, e.message);
     if (code === 'usage_limit_exceeded' || LIMIT_RE.test(code) || LIMIT_RE.test(msg)) {
-      return { kind: 'limited', resetsAt: resetsAtAbs(e), resetsInSeconds: resetsInSeconds(e), source: 'codex_turn_failed' };
+      const resetsAt = resetsAtAbs(e), inSecs = resetsInSeconds(e);
+      // The structured reset wins; the error text is read only without one.
+      const parsed = resetsAt == null && inSecs == null ? parseLimitReset(msg, Math.floor(Date.now() / 1000)) : null;
+      const kind = limitKindOfText(msg);
+      return { kind: 'limited', resetsAt: resetsAt ?? parsed?.until, resetsInSeconds: inSecs, ...(kind !== 'unknown' ? { limitKind: kind } : {}), source: 'codex_turn_failed' };
     }
     if (AUTH_RE.test(code) || AUTH_RE.test(msg)) {
       return { kind: 'auth_required', source: 'codex_turn_failed' };

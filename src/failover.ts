@@ -89,6 +89,18 @@ export interface RunControl {
 const LIMIT_NO_RESET_FALLBACK = 30 * 60;
 const FORCED_COOLDOWN = 30 * 60;
 
+/** Two limited verdicts of one turn as one: the later of each reset (the R2
+ *  guess, see where `until` is computed), and the more specific kind. */
+function mergeLimits(a: Verdict, b: Verdict): Verdict {
+  const later = (x?: number, y?: number) => (x == null ? y : y == null ? x : Math.max(x, y));
+  const limitKind = a.limitKind && a.limitKind !== 'unknown' ? a.limitKind : b.limitKind ?? a.limitKind;
+  const out: Verdict = { ...a, ...(limitKind ? { limitKind } : {}) };
+  const resetsAt = later(a.resetsAt, b.resetsAt), resetsInSeconds = later(a.resetsInSeconds, b.resetsInSeconds);
+  if (resetsAt != null) out.resetsAt = resetsAt;
+  if (resetsInSeconds != null) out.resetsInSeconds = resetsInSeconds;
+  return out;
+}
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 export async function runSession(opts: RunSessionOptions): Promise<SessionResult> {
@@ -184,8 +196,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           });
           continue;
         }
-        const until = registry.earliestReset(adapter.id);
-        log.append({ type: 'parked', sessionId, until });
+        // No future reset among the limited accounts (all unauthenticated, or
+        // every reset already passed but still unusable): estimate one.
+        const reset = registry.earliestReset(adapter.id, now());
+        const until = reset ?? now() + LIMIT_NO_RESET_FALLBACK;
+        log.append({ type: 'parked', sessionId, until, ...(reset == null ? { estimated: true } : {}) });
         return { status: 'parked', parkedUntil: until, failovers: failoverTimes.length };
       }
       // Announce which account this turn runs on so the UI can show it live.
@@ -244,11 +259,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         if (v.kind === 'cancelled') state.cancelled = true;
         if (v.kind === 'limited' && !state.limited && !state.authRequired && !state.forced) {
           state.limited = v;
-          log.append({ type: 'limit_detected', sessionId, account: account.name, source: v.source, resetsAt: v.resetsAt ?? null });
+          log.append({ type: 'limit_detected', sessionId, account: account.name, source: v.source, resetsAt: v.resetsAt ?? null, ...(v.limitKind ? { limitKind: v.limitKind } : {}) });
           state.killRequested = true;
           handle?.kill();
           return;
         }
+        // A second limited verdict of the same limit (the rate_limit_event, then
+        // the synthetic message the CLI writes as it exits): merged, see R2 below.
+        if (v.kind === 'limited' && state.limited) state.limited = mergeLimits(state.limited, v);
         // The CLI's own "Not logged in" synthetic response — this account's stored
         // OAuth session is dead. No point letting the turn continue; end it and
         // fail over like a limit, but there's no reset time — it stays parked until
@@ -405,10 +423,15 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // countdown (Codex's resets_in_seconds) with our OWN clock, else fall
         // back to a 30m guess. Only that last case is a guess, so only it is
         // flagged `estimated` — the UI must not show a guess as a hard countdown.
+        // When the turn carried several resets (mergeLimits), the LATER one wins.
+        // A guess: one live case suggested a weekly limit's structured resetsAt
+        // may be the 5-hour window, so the earlier time would unbench an account
+        // that is still out for days. A text reset is read, not guessed, so it
+        // is not `estimated` either.
         const rel = state.limited.resetsInSeconds;
-        const until = state.limited.resetsAt ?? (rel != null ? now() + rel : now() + LIMIT_NO_RESET_FALLBACK);
-        const hasRealReset = state.limited.resetsAt != null || rel != null;
-        registry.markLimited(account.name, until, !hasRealReset);
+        const resets = [state.limited.resetsAt, rel != null ? now() + rel : undefined].filter((x): x is number => x != null);
+        const until = resets.length ? Math.max(...resets) : now() + LIMIT_NO_RESET_FALLBACK;
+        registry.markLimited(account.name, until, !resets.length);
       } else if (state.authRequired) {
         // No cooldown to wait out — this account is parked until a human
         // re-authenticates it via the UI.

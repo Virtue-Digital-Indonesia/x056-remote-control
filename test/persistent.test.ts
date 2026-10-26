@@ -793,3 +793,110 @@ describe('a woken reply that has not started yet', () => {
     p.shutdown();
   });
 });
+
+// An out-of-turn usage limit (docs/limit-resume-contract.md R4, item 6): the
+// account a process was spawned on is the one that hit it, and no later turn
+// may land on that process -- the held rule would run it there, its 429 would
+// bench the account the turn was ROUTED to, and the conversation would never
+// leave the limited one.
+describe('an out-of-turn usage limit on a held process', () => {
+  const started = { type: 'system', subtype: 'task_started', task_id: 'bg1', task_type: 'local_agent', description: 'Multibox end-to-end integration test' };
+  const limitReply = [
+    { type: 'assistant', parent_tool_use_id: null, error: 'rate_limit', message: { model: '<synthetic>', content: [{ type: 'text', text: "You've hit your session limit · resets 8:30am (UTC)" }] } },
+    { type: 'result', subtype: 'success', is_error: true, api_error_status: 429, result: "You've hit your session limit · resets 8:30am (UTC)" },
+  ];
+  const texts = (cli: ReturnType<typeof fakeCli>) => cli.msgs().filter((m) => m.type === 'user').map((m) => m.message.content[0].text);
+  function mk(now: () => number = Date.now) {
+    const spawned: { cli: ReturnType<typeof fakeCli>; configDir?: string }[] = [];
+    const p = new PersistentTurns({ now, deferPollMs: 5, spawnFn: (_b, _a, _c, env) => { const cli = fakeCli(); spawned.push({ cli, configDir: env.CLAUDE_CONFIG_DIR }); return cli.child as never; } });
+    return { p, spawned };
+  }
+  const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
+
+  it('the idle sink names the account the process was SPAWNED on, even after a held turn routed elsewhere ran on it', async () => {
+    const { p, spawned } = mk();
+    const seen: { type: unknown; configDir?: string }[] = [];
+    const onIdleEvent = (e: Record<string, unknown>, src?: { configDir: string }) => { seen.push({ type: e.type, configDir: src?.configDir }); };
+    const h1 = p.startTurn(turn({ configDir: '/cfg/l', onIdleEvent }));
+    spawned[0].cli.emit(started);
+    spawned[0].cli.result('launched'); await h1.done;
+    const h2 = p.startTurn(turn({ configDir: '/cfg/m', mode: 'resume', prompt: 'next', onIdleEvent }));
+    expect(spawned).toHaveLength(1);                     // held: the agent still runs
+    spawned[0].cli.result('ok'); await h2.done;
+    spawned[0].cli.emit(limitReply[0]);
+    expect(seen.at(-1)).toEqual({ type: 'assistant', configDir: '/cfg/l' });
+    p.shutdown();
+  });
+
+  it('a turn routed to a healthy account never lands on the limit-hit process: it is ended and the turn spawns where it was routed', async () => {
+    const { p, spawned } = mk();
+    const h1 = p.startTurn(turn({ configDir: '/cfg/l' }));
+    spawned[0].cli.emit(started);
+    spawned[0].cli.result('launched'); await h1.done;
+    expect(p.heldIdentity('s1')).toBeDefined();          // still working: a new turn would be held on it
+    expect(p.markLimitHit('s1', '/cfg/m')).toBe(0);      // another account's limit is not this process's
+    expect(p.markLimitHit('s1', '/cfg/l')).toBe(1);
+    expect(p.heldIdentity('s1')).toBeUndefined();        // nothing pins the next turn to it any more
+    const h2 = p.startTurn(turn({ configDir: '/cfg/m', mode: 'resume', prompt: 'Continue where you left off.' }));
+    expect(spawned[0].cli.killed).toBe(true);
+    expect(spawned).toHaveLength(2);
+    expect(spawned[1].configDir).toBe('/cfg/m');
+    expect(texts(spawned[1].cli)).toEqual(['Continue where you left off.']);
+    expect(texts(spawned[0].cli)).toEqual(['hello']);
+    spawned[1].cli.result('continued'); expect(await h2.done).toMatchObject({ code: 0 });
+    p.shutdown();
+  });
+
+  it('a prompt held for the woken reply that hits the limit moves to a fresh process on the turn\'s own account', async () => {
+    const { p, spawned } = mk();
+    const h1 = p.startTurn(turn({ configDir: '/cfg/l' }));
+    spawned[0].cli.emit(started);
+    spawned[0].cli.result('launched'); await h1.done;
+    spawned[0].cli.emit({ type: 'system', subtype: 'task_notification', task_id: 'bg1', status: 'failed', summary: 'Agent "x" failed: Agent terminated early due to an API error: You\'ve hit your session limit' });
+    const events: unknown[] = [];
+    const h2 = p.startTurn(turn({ configDir: '/cfg/m', mode: 'resume', prompt: 'answer', onEvent: (e) => events.push(e) }));
+    await tick();
+    expect(texts(spawned[0].cli)).toEqual(['hello']);   // held for the woken reply
+    p.markLimitHit('s1', '/cfg/l');
+    for (const e of limitReply) spawned[0].cli.emit(e);
+    // Never written into the limited process; ended, and the turn runs fresh on m.
+    expect(texts(spawned[0].cli)).toEqual(['hello']);
+    expect(spawned[0].cli.killed).toBe(true);
+    expect(spawned).toHaveLength(2);
+    expect(spawned[1].configDir).toBe('/cfg/m');
+    expect(texts(spawned[1].cli)).toEqual(['answer']);
+    expect(events).toEqual([]);                          // the limit reply was not this turn's
+    spawned[1].cli.result('answered');
+    expect(await h2.done).toMatchObject({ code: 0 });
+    p.shutdown();
+  });
+
+  it('a held turn that moved is stopped on the process it moved to', async () => {
+    const { p, spawned } = mk();
+    const h1 = p.startTurn(turn({ configDir: '/cfg/l' }));
+    spawned[0].cli.emit(started);
+    spawned[0].cli.result('launched'); await h1.done;
+    spawned[0].cli.emit({ type: 'system', subtype: 'task_notification', task_id: 'bg1', status: 'failed', summary: 'rate_limit' });
+    const h2 = p.startTurn(turn({ configDir: '/cfg/m', mode: 'resume', prompt: 'answer' }));
+    p.markLimitHit('s1', '/cfg/l');
+    expect(p.destroyLimitHit('s1')).toBe(1);             // the manager's 5 s fallback: same move
+    expect(spawned).toHaveLength(2);
+    h2.kill();
+    expect(spawned[1].cli.killed).toBe(true);
+    expect(await h2.done).toMatchObject({ signal: 'SIGKILL' });
+    p.shutdown();
+  });
+
+  it('destroyLimitHit ends only the limit-hit processes, never a fresh one', async () => {
+    const { p, spawned } = mk();
+    const h1 = p.startTurn(turn({ configDir: '/cfg/l' }));
+    spawned[0].cli.emit(started);
+    spawned[0].cli.result('launched'); await h1.done;
+    p.markLimitHit('s1', '/cfg/l');
+    const h2 = p.startTurn(turn({ configDir: '/cfg/m', mode: 'resume', prompt: 'go' }));
+    expect(p.destroyLimitHit('s1')).toBe(0);             // already ended by the new turn
+    expect(spawned[1].cli.killed).toBe(false);
+    spawned[1].cli.result('ok'); await h2.done;
+    p.shutdown();
+  });
+});

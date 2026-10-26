@@ -31,7 +31,9 @@ export const MAX_DELEGATES = 8;
 export const ROUND_LIMIT = 40;
 export const REPORT_CLIP = 6000;
 
-export type DelegateStatus = 'working' | 'idle' | 'failed' | 'stopped' | 'interrupted';
+/** `waiting_for_reset`: its turn parked on a usage limit (or a limit hit its
+ *  process after a turn); the limit scheduler resumes it, nobody is woken. */
+export type DelegateStatus = 'working' | 'idle' | 'failed' | 'stopped' | 'interrupted' | 'waiting_for_reset';
 export type Gate = 'done' | 'needs_orchestrator' | 'needs_human' | 'blocked';
 
 export interface Delegate {
@@ -52,6 +54,9 @@ export interface Delegate {
   createdAt: string;
   updatedAt: string;
   turns: number;
+  /** A turn of it started before a usage limit parked it: its session exists, so
+   *  the auto-continue resumes it even before its first report. */
+  sessionStarted?: boolean;
   /** Follow-ups that arrived while it was working, sent in order after. */
   pending: string[];
   account?: string;

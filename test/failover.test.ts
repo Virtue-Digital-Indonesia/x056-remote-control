@@ -564,3 +564,68 @@ describe('deliberate cancellation outcomes', () => {
     expect(result.status).toBe('stopped');
   });
 });
+
+describe('runSession: reset times read from the limit text (R1, R2, R3)', () => {
+  const at = (iso: string) => Date.parse(iso) / 1000;
+  const synthetic = (text: string, timestamp: string): RawEvent => ({
+    type: 'assistant', error: 'rate_limit', isApiErrorMessage: true, apiErrorStatus: 429, timestamp,
+    message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text }] },
+  });
+  /** Delivers every event even after kill(): the CLI's last lines (the synthetic
+   *  message after a rate_limit_event) are often already in the pipe. */
+  function burstTurns(script: RawEvent[][]): (opts: TurnOptions) => TurnHandle {
+    let call = 0;
+    return (opts) => {
+      const events = script[call++];
+      const done = (async () => { for (const e of events) opts.onEvent(e); return { code: 0, signal: null }; })();
+      return { kill: () => {}, interrupt: () => {}, done };
+    };
+  }
+
+  it('benches a weekly limit until the date its text names, not for the 30m fallback', async () => {
+    const { registry, log } = fixtures();
+    const ts = '2026-10-26T05:31:30.999Z';
+    await runSession({
+      ...base, registry, log, now: () => Math.floor(at(ts)),
+      startTurnFn: scriptTurns([[synthetic("You've hit your weekly limit · resets Oct 30, 9am (Asia/Jakarta)", ts)], [SUCCESS]], []),
+    });
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: at('2026-10-30T02:00:00Z') });
+    expect(log.read().find((r) => r.type === 'limit_detected')).toMatchObject({ limitKind: 'weekly', resetsAt: at('2026-10-30T02:00:00Z') });
+  });
+
+  it('benches a session limit the same way, until the time its text names', async () => {
+    const { registry, log } = fixtures();
+    const ts = '2026-10-26T05:31:30.999Z';
+    await runSession({
+      ...base, registry, log, now: () => Math.floor(at(ts)),
+      startTurnFn: scriptTurns([[synthetic("You've hit your session limit · resets 8:30am (UTC)", ts)], [SUCCESS]], []),
+    });
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: at('2026-10-26T08:30:00Z') });
+  });
+
+  it('keeps the LATER reset when one turn carries a structured one and a text one', async () => {
+    const ts = '2026-10-26T05:31:30.999Z';
+    const event: RawEvent = { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: at('2026-10-26T08:30:00Z'), rateLimitType: 'five_hour' } };
+    const weekly = synthetic("You've hit your weekly limit · resets Oct 30, 9am (Asia/Jakarta)", ts);
+    for (const order of [[event, weekly], [weekly, event]]) {
+      const { registry, log } = fixtures();
+      await runSession({ ...base, registry, log, now: () => Math.floor(at(ts)), startTurnFn: burstTurns([order, [SUCCESS]]) });
+      expect(registry.get('a').state).toEqual({ kind: 'limited', until: at('2026-10-30T02:00:00Z') });
+    }
+    // An earlier text reset never pulls a structured one in.
+    const { registry, log } = fixtures();
+    const late: RawEvent = { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: at('2026-10-27T00:00:00Z') } };
+    await runSession({ ...base, registry, log, now: () => Math.floor(at(ts)), startTurnFn: burstTurns([[late, synthetic("You've hit your session limit · resets 8:30am (UTC)", ts)], [SUCCESS]]) });
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: at('2026-10-27T00:00:00Z') });
+  });
+
+  it('parks with an estimated now + 30m when no limited account has a reset still ahead', async () => {
+    const { registry, log } = fixtures();
+    const res = await runSession({
+      ...base, registry, log, now: () => 100,
+      startTurnFn: scriptTurns([[NOT_LOGGED_IN, NOT_LOGGED_IN_RESULT], [NOT_LOGGED_IN, NOT_LOGGED_IN_RESULT]], []),
+    });
+    expect(res).toMatchObject({ status: 'parked', parkedUntil: 100 + 30 * 60 });
+    expect(log.read().find((r) => r.type === 'parked')).toMatchObject({ until: 100 + 30 * 60, estimated: true });
+  });
+});

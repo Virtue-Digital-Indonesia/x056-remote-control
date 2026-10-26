@@ -14,7 +14,13 @@
  *           follows), a parked turn, a restart interrupted work, the Bot's
  *           morning brief, a Bot notify_user that is not urgent.
  *   quiet   bell + dot only: short turns, relays, cron, delegate wakes,
- *           advisor follow-ups, delegate progress, a failover that worked.
+ *           advisor follow-ups, delegate progress, a failover that worked,
+ *           an out-of-turn usage limit that continues at once on another
+ *           account.
+ *
+ * A usage limit the gateway continues by itself (a parked turn with a resume
+ * scheduled, an out-of-turn limit that has to wait for the reset) is
+ * `normal`, never urgent: the owner does not have to act.
  *   none    nothing at all: stopped turns, autopilot steps, per-conversation
  *           orphans (collapsed into one restart notice).
  */
@@ -24,7 +30,7 @@ import { serverLabel } from './mcp-oauth.js';
 export type NoticeTier = 'urgent' | 'normal' | 'quiet' | 'none';
 /** What a device's settings switch on or off. `needs_you` cannot be turned off. */
 export type NoticeCategory = 'needs_you' | 'finished' | 'automation';
-export type TurnOrigin = 'human' | 'relay' | 'cron' | 'autopilot' | 'advisor' | 'delegate' | 'recap' | 'brief';
+export type TurnOrigin = 'human' | 'relay' | 'cron' | 'autopilot' | 'advisor' | 'delegate' | 'recap' | 'brief' | 'limit_resume';
 
 export interface Notice {
   tier: NoticeTier;
@@ -85,6 +91,8 @@ export function originOf(sender?: { kind?: string } | null): TurnOrigin {
     case 'bot_brief': return 'brief';
     // A digest handed to the Bot: its reply is silent unless it notifies.
     case 'bot_event': return 'relay';
+    // The gateway carrying the owner's work on after a usage limit.
+    case 'limit_resume': return 'limit_resume';
     default: return 'relay';
   }
 }
@@ -178,6 +186,12 @@ export function formatReset(until: number | undefined, tz = DEFAULT_NOTICE_TZ, n
   if (ms - now > 20 * 3600_000) opts.weekday = 'short';
   try { return new Intl.DateTimeFormat('en-GB', opts).format(new Date(ms)).replace(',', ''); }
   catch { return new Date(ms).toISOString().slice(11, 16); }
+}
+
+/** "Paused by a usage limit until HH:MM; continues automatically". */
+export function pausedUntil(at: number, tz?: string): string {
+  const when = formatReset(at, tz);
+  return when ? `Paused by a usage limit until ${when}; continues automatically` : 'Paused by a usage limit; continues automatically';
 }
 
 /** Why a turn failed, in plain words. */
@@ -284,7 +298,8 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         const body = withPrefix(ctx, [head, excerpt || 'Finished.'].filter(Boolean).join(' · '));
         // A recap is the real end of background work or an autopilot run:
         // the one buzz for that ending.
-        if (origin === 'recap') return make('normal', 'finished', body, id);
+        // A continue after a usage limit ends the owner's work the same way.
+        if (origin === 'recap' || origin === 'limit_resume') return make('normal', 'finished', body, id);
         // The Bot's morning brief pushes even when short: the reply IS the
         // brief, in its own order (its closing question stays last).
         if (origin === 'brief') return make('normal', 'finished', withPrefix(ctx, replyExcerpt(String(data.resultText || ''), BRIEF_MAX, false) || 'Your morning brief is ready.'), id);
@@ -292,6 +307,9 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         return make(Number.isFinite(dur) && dur >= LONG_TURN_MS ? 'normal' : 'quiet', 'finished', body, id);
       }
       if (status === 'parked') {
+        // The gateway continues it by itself (contract R5): worth a buzz, not a need.
+        const resume = data.autoResume as { at?: number; until?: number } | undefined;
+        if (resume && Number.isFinite(Number(resume.until ?? resume.at))) return make('normal', 'finished', withPrefix(ctx, pausedUntil(Number(resume.until ?? resume.at), ctx.timeZone)), id);
         // Parked with no reason = no account could take the turn: every one is
         // at its limit or signed out. That needs a person.
         if (!data.reason) {
@@ -332,8 +350,9 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         : reason === 'failed' ? 'Autopilot paused: a turn failed'
         : reason === 'parked' ? 'Autopilot paused: no account could take the next step'
         : `Autopilot paused: ${cutWords(reason, 80)}`;
-      // A recap turn follows and its own ending is the one push.
-      return make(data.recap ? 'quiet' : 'normal', 'finished', withPrefix(ctx, body), `autopilot:${sid}:${reason}:${data.notificationId || ctx.at || ''}`);
+      // A recap turn follows and its own ending is the one push; a park the
+      // limit scheduler resumes has its own (the parked notice).
+      return make(data.recap || data.autoResume ? 'quiet' : 'normal', 'finished', withPrefix(ctx, body), `autopilot:${sid}:${reason}:${data.notificationId || ctx.at || ''}`);
     }
 
     case 'delegate_report': {
@@ -369,6 +388,21 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         { title: cutWords(String(data.title || ctx.conversationTitle || 'Bot'), TITLE_MAX), link, tag: `x056-bot-${at}` });
     }
 
+    case 'limit_continue': {
+      const id = `limit:${sid}:${data.until ?? ctx.at ?? ''}`;
+      if (data.waiting === true) return make('normal', 'finished', withPrefix(ctx, pausedUntil(Number(data.until ?? data.continueAt), ctx.timeZone)), id);
+      const acct = typeof data.account === 'string' ? ` ${data.account}` : '';
+      const window = data.kind === 'session' || data.kind === 'weekly' ? `its ${data.kind} limit` : 'a usage limit';
+      return make('quiet', 'automation', withPrefix(ctx, `Account${acct} hit ${window}; continuing on another account`), id);
+    }
+
+    case 'limit_resume': {
+      const id = `limit-resume:${sid}:${data.state}:${ctx.at ?? ''}`;
+      if (data.state === 'gave_up') return make('normal', 'finished', withPrefix(ctx, `Auto-continue gave up after ${Number(data.attempts) || 6} tries; no account could take it`), id);
+      if (data.state === 'braked') return make('normal', 'finished', withPrefix(ctx, `Auto-continue stopped after ${Number(data.count) || 3} tries in a row; send a message to go on`), id);
+      return null;
+    }
+
     case 'turn_orphaned':
       return none();
 
@@ -383,4 +417,4 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
 }
 
 /** Which kinds noticeFor can answer, so the emitter skips the rest cheaply. */
-export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted', 'bot_notice']);
+export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted', 'bot_notice', 'limit_continue', 'limit_resume']);
