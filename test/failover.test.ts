@@ -619,6 +619,16 @@ describe('runSession: reset times read from the limit text (R1, R2, R3)', () => 
     expect(registry.get('a').state).toEqual({ kind: 'limited', until: at('2026-10-27T00:00:00Z') });
   });
 
+  it('caps a reset at now + 8 days (a misread year must not bench an account for good)', async () => {
+    const { registry, log } = fixtures();
+    const ts = '2026-10-26T05:31:30.999Z';
+    await runSession({
+      ...base, registry, log, now: () => Math.floor(at(ts)),
+      startTurnFn: scriptTurns([[synthetic("You've hit your weekly limit · resets Oct 30, 2027, 9am (UTC)", ts)], [SUCCESS]], []),
+    });
+    expect(registry.get('a').state).toEqual({ kind: 'limited', until: Math.floor(at(ts)) + 8 * 86400 });
+  });
+
   it('parks with an estimated now + 30m when no limited account has a reset still ahead', async () => {
     const { registry, log } = fixtures();
     const res = await runSession({

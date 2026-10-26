@@ -153,3 +153,29 @@ Cases:
 8. The queue is not drained into a second park.
 9. Delegates: an idle limit gives a follow-up; a parked delegate gets a `delegate` record, not `blocked`.
 10. Loop brake: the 4th continue without a human message is not sent.
+
+## Review fixes (2026-10-27)
+
+An adversarial review found these. Each one has a test that fails without the fix.
+
+1. **A waiting record holds the conversation for non-human sends.** While a record waits, `deliverMcpMessage` queues every cron, relay, agent and approved send instead of launching it. The drain already waits for the record. A `resend` is never replaced: a second park keeps it, and the newer message goes into the queue behind it (`limitResumeKept`, `limitResume: true`). A newer autopilot record sets `resumeAutopilot` on the kept resend. A resend that fires while the conversation is busy goes to the FRONT of its queue (`enqueue {front}`). A human message still clears the record.
+2. **Only "no eligible account" re-parks count toward the 6 attempts.** Guard refusals (recovery, membership being reconciled) and failed sends retry every 5 min (`retryingSince`) for up to 24 h (`RETRY_FOR_S`), then give up with the real reason. An ineligible re-park clears `retryingSince`.
+3. **`limitEligible` uses the router's context**: the routing lock and next account, the model (a model's own weekly window, `weeklyScoped`), the original `account`/`useReserve` (`routeAccount`), and the capability blocks of the conversation's last routed turn (`lastCapabilityBlocks`; computing them runs the CLI, so a tick never does). A park never schedules `now: true`.
+4. **A gateway turn running during the wake gets no continue.** If agents died, one line is steered into that turn ("These background agents were stopped by a usage limit: … Re-run them if still needed."). If no agent died or the steer fails, `limit_continue {skipped: 'turn running'}` is emitted, with no notice.
+5. **Out of turn, only the main thread's own limit acts (Claude)**: the synthetic `error: 'rate_limit'` reply, or a top-level `result` with `api_error_status: 429`. A top-level `rate_limit_event` or a failed task notification alone does nothing; the notification only names dead agents. Codex keeps its classifier. A `model` limit never benches the account (there is no per-model mark in `src/accounts.ts`; `limit_detected {benched: false}`), but the work still continues. `limitKindOfText` checks model names first, so "Opus limit for this session" and "Opus weekly limit" are `model`.
+6. **Notices.** `gave_up` and `braked` are urgent `needs_you`. A park with no account actually limited (`autoResume.estimated`) is urgent `needs_you` again; read-state counts it as failed. The record stores the original turn's `origin`. The continue's sender carries it as `resumeOf`, and `session_done` carries it as `resumeOrigin`. The continue's ending notifies as that turn would have: a cron, relay or delegate continue is quiet and never pushes. A recap is allowed only when the original origin was human. An automated conversation's waiting `limit_continue` is quiet.
+7. **No silent drops.** A `resend` that is skipped (pending question, archived, autopilot changed), gives up or is braked raises an urgent `needs_you` `limit_resume` notice. It quotes the first 120 characters of the prompt and gives the reason. `ended()` runs on every skip: a delegate that is skipped is set to `interrupted` (with no orchestrator wake), and one that gives up or is braked reports BLOCKED with the real reason.
+8. **A corrupt `limit-resume.json`** is renamed `limit-resume.json.corrupt-<ts>`, logged (`limit_resume_corrupt`), and the scheduler starts empty.
+
+Low:
+
+- On every tick, a record waiting for a reset fires early once an account can take it. A record in the 5-minute guard retry does not.
+- A resend keeps the original `account` and `useReserve`.
+- Every computed `until` is capped at now + 8 days (`capReset`), in failover and in the out-of-turn path.
+- `(GMT+7)`, `(UTC+7)` and `(UTC-03:30)` offsets are parsed by hand, never through `Etc/GMT±N`, whose sign is inverted.
+- A weekday ("resets Mon 9am") resolves to its next occurrence at or after the message time.
+
+Known gaps:
+
+- The steer in fix 4 is best effort. When the running turn is itself on the limited account and fails over, the steered line reaches the new account only through the transcript.
+- `lastCapabilityBlocks` is in memory, so after a restart the first tick judges without capability blocks. A wrong early fire then parks again and uses one of the loop brake's 3 auto-continues.

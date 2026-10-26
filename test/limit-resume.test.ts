@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionManager, type GatewayEvent, type SessionManagerOptions } from '../server/manager.js';
-import { continueText, failedTaskOf, LimitResumeScheduler, MAX_ATTEMPTS, RETRY_S, type LimitResumeRecord, type ResumeHost } from '../server/limit-resume.js';
+import { continueText, failedTaskOf, LimitResumeScheduler, MAX_ATTEMPTS, RETRY_FOR_S, RETRY_S, untilOf, type LimitResumeRecord, type ResumeHost } from '../server/limit-resume.js';
 import { noticeFor, originOf } from '../server/notices.js';
 import { isAgentSender, ownerRowView } from '../server/owner-view.js';
 import { botRowView, turnKindOf, VISIBLE_ORIGINS } from '../server/bot-view.js';
@@ -46,6 +46,7 @@ const continueRec = (over: Partial<LimitResumeRecord> = {}) => ({ projectId: 'p'
 describe('the resume scheduler', () => {
   it('fires at until + 60 s, through the host, and logs it', () => {
     const dir = tmp(), { h, delivered, logged } = host();
+    h.eligibleNow = false;                                  // no account until the reset
     const s = new LimitResumeScheduler(dir, h);
     const rec = s.schedule(continueRec());
     expect(rec.fireAt).toBe(1_800_000_000 + 660);
@@ -53,6 +54,7 @@ describe('the resume scheduler', () => {
     expect(delivered).toHaveLength(0);
     h.set(1_800_000_000 + 659); s.tick();
     expect(delivered).toHaveLength(0);
+    h.eligibleNow = true;
     h.set(1_800_000_000 + 660); s.tick();
     expect(delivered).toHaveLength(1);
     expect(delivered[0].text).toMatch(/^\[Usage limit: account l hit its session limit at \d\d:\d\d WIB \(resets \d\d:\d\d WIB\)\. This continues after the reset\.\]\nContinue where you left off\.$/);
@@ -79,6 +81,23 @@ describe('the resume scheduler', () => {
     s.schedule(continueRec({ kind: 'resend', prompt: 'again' }));
     expect(s.list()).toHaveLength(1);
     expect(s.list()[0]).toMatchObject({ kind: 'resend', prompt: 'again' });
+  });
+
+  it('review fix 1: a resend is never replaced; the newer record goes to the host (the queue behind it)', () => {
+    const dir = tmp(), { h, logged } = host();
+    const kept: [string, string][] = [];
+    h.kept = (prev, newer) => { kept.push([prev.prompt!, newer.prompt ?? newer.kind]); };
+    const s = new LimitResumeScheduler(dir, h);
+    const first = s.schedule(continueRec({ kind: 'resend', prompt: 'the owner\'s message' }));
+    expect(s.schedule(continueRec({ kind: 'resend', prompt: 'a cron job' }))).toMatchObject({ id: first.id });
+    s.schedule(continueRec({ kind: 'autopilot' }));
+    expect(s.list()).toEqual([expect.objectContaining({ id: first.id, prompt: 'the owner\'s message', resumeAutopilot: true })]);
+    expect(kept).toEqual([['the owner\'s message', 'a cron job'], ['the owner\'s message', 'autopilot']]);
+    expect(logged.filter((r) => r.type === 'limit_resume_kept')).toHaveLength(2);
+    // A delegate's resend is kept the same way.
+    const d = continueRec({ kind: 'delegate', delegate: { parentSessionId: 's', delegateId: 'd-1', mode: 'resend' }, prompt: 'brief' });
+    s.schedule(d); s.schedule({ ...d, delegate: { parentSessionId: 's', delegateId: 'd-1', mode: 'continue' }, prompt: undefined });
+    expect(s.forDelegate('s', 'd-1')).toMatchObject({ prompt: 'brief', delegate: { mode: 'resend' } });
   });
 
   it('re-parks while no account is eligible, and gives up after 6 tries with one notice', () => {
@@ -125,7 +144,7 @@ describe('the resume scheduler', () => {
     const s = new LimitResumeScheduler(dir, h);
     s.schedule(continueRec({ now: true } as never)); s.tick();
     expect(delivered).toHaveLength(0);
-    expect(s.list()[0]).toMatchObject({ attempts: 1, fireAt: 1_800_000_000 + RETRY_S });
+    expect(s.list()[0]).toMatchObject({ attempts: 0, retryingSince: 1_800_000_000, fireAt: 1_800_000_000 + RETRY_S });
     expect(logged.at(-1)).toMatchObject({ type: 'limit_resume_skipped', reason: 'blocked', reparked: true, error: 'Project membership is being reconciled' });
     blocked = undefined; h.set(1_800_000_000 + RETRY_S); s.tick();
     expect(delivered).toHaveLength(1);
@@ -137,7 +156,7 @@ describe('the resume scheduler', () => {
     h.deliver = (rec, text) => { if (fail) throw new Error('Project context recovery is pending'); delivered.push({ rec, text }); };
     const s = new LimitResumeScheduler(dir, h);
     s.schedule(continueRec({ now: true } as never)); s.tick();
-    expect(s.list()[0]).toMatchObject({ attempts: 1, fireAt: 1_800_000_000 + RETRY_S });
+    expect(s.list()[0]).toMatchObject({ attempts: 0, fireAt: 1_800_000_000 + RETRY_S });
     expect(logged.at(-1)).toMatchObject({ reason: 'delivery_failed', reparked: true });
     fail = false; h.set(1_800_000_000 + RETRY_S); s.tick();
     expect(delivered).toHaveLength(1);
@@ -146,10 +165,98 @@ describe('the resume scheduler', () => {
     expect(delivered).toHaveLength(3);
   });
 
+  it('review fix 2: guard refusals and failed sends spend no attempt; they retry every 5 min for 24 h, then give up with the REAL reason', () => {
+    const dir = tmp(), { h, delivered, emitted, logged } = host();
+    h.blocked = () => 'Project membership is being reconciled';
+    const s = new LimitResumeScheduler(dir, h);
+    s.schedule(continueRec({ kind: 'resend', prompt: 'deploy the fix', now: true } as never));
+    // 25 minutes of reconciling at boot: 6 refusals, which used to be all 6 attempts.
+    for (let i = 0; i < 6; i++) { h.set(s.list()[0].fireAt); s.tick(); }
+    expect(s.list()).toEqual([expect.objectContaining({ attempts: 0, retryingSince: 1_800_000_000 })]);
+    expect(emitted).toHaveLength(0);
+    // Still refused a day later: it gives up, saying why, quoting the message.
+    h.set(1_800_000_000 + RETRY_FOR_S); s.tick();
+    expect(s.list()).toEqual([]);
+    expect(delivered).toHaveLength(0);
+    expect(emitted).toEqual([{ kind: 'limit_resume', data: expect.objectContaining({ state: 'gave_up', reason: 'Project membership is being reconciled', prompt: 'deploy the fix' }) }]);
+    expect(logged.find((r) => r.type === 'limit_resume_gave_up')).toMatchObject({ reason: 'Project membership is being reconciled' });
+  });
+
+  it('review fix 2: a refusal after an ineligible re-park starts its own 24 h; only ineligible re-parks count toward 6', () => {
+    const dir = tmp(), { h, emitted } = host();
+    let blocked: string | undefined = 'Project context recovery is pending';
+    h.blocked = () => blocked; h.eligibleNow = false;
+    const s = new LimitResumeScheduler(dir, h);
+    s.schedule(continueRec({ now: true } as never)); s.tick();
+    blocked = undefined; h.set(s.list()[0].fireAt); s.tick();          // past the guard, no account
+    expect(s.list()[0]).toMatchObject({ attempts: 1 });
+    expect(s.list()[0].retryingSince).toBeUndefined();
+    blocked = 'Project context recovery is pending';
+    h.set(1_800_000_000 + RETRY_FOR_S + 10); s.tick();
+    expect(s.list()[0]).toMatchObject({ attempts: 1, retryingSince: 1_800_000_000 + RETRY_FOR_S + 10 });
+    expect(emitted).toHaveLength(0);
+  });
+
+  it('low: a record waiting for a reset fires early on a tick once an account can take it (not one in the guard retry)', () => {
+    const dir = tmp(), { h, delivered } = host();
+    h.eligibleNow = false;
+    const s = new LimitResumeScheduler(dir, h);
+    s.schedule(continueRec({ until: 1_800_000_000 + 86_400 }));
+    s.tick();
+    expect(delivered).toHaveLength(0);
+    h.set(1_800_000_000 + 30); h.eligibleNow = true; s.tick();      // another account freed up
+    expect(delivered).toHaveLength(1);
+    // A record in the 5 min guard retry keeps its spacing.
+    let blocked: string | undefined = 'Project membership is being reconciled';
+    h.blocked = () => blocked;
+    s.schedule(continueRec({ now: true } as never)); s.tick();
+    blocked = undefined; h.set(1_800_000_000 + 60); s.tick();
+    expect(delivered).toHaveLength(1);
+    h.set(s.list()[0].fireAt); s.tick();
+    expect(delivered).toHaveLength(2);
+  });
+
+  it('review fix 7: a skipped resend is never dropped silently (prompt quoted, 120 chars); a delegate is told on EVERY skip', () => {
+    const dir = tmp(), { h, emitted } = host();
+    let skip: string | undefined = 'question';
+    h.skipReason = () => skip;
+    const ended: string[] = [];
+    h.ended = (rec, reason, detail) => { ended.push(`${rec.delegate?.delegateId ?? rec.sessionId}:${reason}:${detail}`); };
+    const s = new LimitResumeScheduler(dir, h);
+    const long = 'x'.repeat(200);
+    s.schedule(continueRec({ kind: 'resend', prompt: long, now: true } as never)); s.tick();
+    expect(emitted).toEqual([{ kind: 'limit_resume', data: expect.objectContaining({ state: 'skipped', reason: 'question', prompt: 'x'.repeat(120) + '…' }) }]);
+    skip = 'archived';
+    s.schedule(continueRec({ kind: 'delegate', delegate: { parentSessionId: 's', delegateId: 'd-1', mode: 'continue' }, now: true } as never)); s.tick();
+    // A continue has no message of its own to lose: no notice, but the delegate is told.
+    expect(emitted).toHaveLength(1);
+    expect(ended).toEqual(['s:skipped:question', 'd-1:skipped:archived']);
+  });
+
+  it('review fix 8: a corrupt file is set aside as .corrupt-<ts> and logged, then the scheduler starts empty', () => {
+    const dir = tmp(), { h, logged } = host();
+    writeFileSync(join(dir, 'limit-resume.json'), '{"records": [ {"id": "lr-1", truncated');
+    const s = new LimitResumeScheduler(dir, h);
+    expect(s.list()).toEqual([]);
+    const aside = readdirSync(dir).filter((n) => n.startsWith('limit-resume.json.corrupt-'));
+    expect(aside).toHaveLength(1);
+    expect(readFileSync(join(dir, aside[0]), 'utf8')).toContain('truncated');
+    expect(logged.find((r) => r.type === 'limit_resume_corrupt')).toMatchObject({ setAside: join(dir, aside[0]) });
+    expect(existsSync(join(dir, 'limit-resume.json'))).toBe(false);
+    s.schedule(continueRec());
+    expect(s.list()).toHaveLength(1);
+  });
+
+  it('low: an out-of-turn reset is capped at now + 8 days', () => {
+    expect(untilOf({ kind: 'limited', resetsAt: 1_800_000_000 + 40 * 86_400, source: 'x' }, 1_800_000_000)).toEqual({ until: 1_800_000_000 + 8 * 86_400, estimated: false });
+    expect(untilOf({ kind: 'limited', resetsInSeconds: 30 * 86_400, source: 'x' }, 1_800_000_000).until).toBe(1_800_000_000 + 8 * 86_400);
+  });
+
   it('a record that ends unsent (gave up, loop brake) tells the host, so a delegate never waits forever', () => {
     const dir = tmp(), { h } = host();
     const ended: string[] = [];
     h.ended = (rec, reason) => { ended.push(`${rec.delegate?.delegateId}:${reason}`); };
+    h.eligible = () => h.eligibleNow;
     const s = new LimitResumeScheduler(dir, h);
     const dRec = (id: string) => continueRec({ kind: 'delegate', delegate: { parentSessionId: 's', delegateId: id, mode: 'continue' } });
     h.eligibleNow = false;
@@ -436,8 +543,10 @@ describe('a parked turn (R5)', () => {
     afterReset(f);
     const m = f.manager as unknown as { recoveryIssues: string[] };
     m.recoveryIssues = ['projects.json: unreadable'];
-    f.manager.limitResume().tick();
-    expect(f.manager.limitResumeList()).toEqual([expect.objectContaining({ attempts: 1 })]);
+    // Review fix 2: a long recovery is retried, never counted as "no account".
+    for (let i = 0; i < MAX_ATTEMPTS + 1; i++) { f.manager.limitResume().tick(); vi.setSystemTime((f.manager.limitResumeList()[0].fireAt + 1) * 1000); }
+    expect(f.manager.limitResumeList()).toEqual([expect.objectContaining({ attempts: 0, retryingSince: expect.any(Number) })]);
+    expect(of(f, 'limit_resume')).toHaveLength(0);
     expect(f.calls).toHaveLength(1);
     m.recoveryIssues = [];
     const rev = (f.manager as unknown as { projects(): { get(id: string): { revision?: number } } }).projects().get(pid).revision ?? 0;
@@ -446,6 +555,173 @@ describe('a parked turn (R5)', () => {
     f.manager.limitResume().tick();
     expect(f.manager.limitResumeList()).toEqual([]);
     expect(readFileSync(join(f.stateDir, 'events.jsonl'), 'utf8')).toMatch(/"type":"limit_resume_skipped","reason":"archived"/);
+  });
+});
+
+/** Two Claude accounts, a and b, in a fresh state root. */
+function fixture2(extra: Partial<SessionManagerOptions> = {}) {
+  const root = tmp(), stateDir = join(root, 'state');
+  for (const n of ['a', 'b']) mkdirSync(join(root, 'cfg-' + n), { recursive: true });
+  AccountRegistry.init(join(stateDir, 'accounts.json'), ['a', 'b'].map((name) => ({ name, configDir: join(root, 'cfg-' + name) })));
+  return fixture(root, extra);
+}
+
+describe('review fixes (2026-10-27)', () => {
+  it('1: a cron message into a conversation whose owner message is parked is queued behind it, never launched or put in its place', async () => {
+    const f = fixture();
+    f.reg().markLimited('a', now() + 3600);
+    const pid = f.manager.createProject('Deploys', f.root).id;
+    const sid = f.manager.start('deploy the fix', undefined, undefined, pid);
+    await until(() => f.calls.length === 1);
+    f.open[0](parked);
+    await until(() => f.manager.limitResumeList().length === 1);
+    const out = f.manager.deliverMcpMessage(pid, sid, 'nightly: run the backups', { sender: { kind: 'automation' } });
+    expect(out.queued).toBe(true);
+    await new Promise((r) => setTimeout(r, 600));          // a drain waits 400 ms
+    expect(f.calls).toHaveLength(1);
+    expect(f.manager.limitResumeList()).toEqual([expect.objectContaining({ kind: 'resend', prompt: 'deploy the fix' })]);
+    afterReset(f);
+    f.manager.limitResume().tick();
+    vi.useRealTimers();
+    await until(() => f.calls.length === 2);
+    expect(f.calls[1].prompt).toContain('deploy the fix');
+    f.open[1]({ status: 'completed', failovers: 0, resultText: 'Deployed.' });
+    await until(() => f.calls.length === 3);
+    expect(f.calls[2].prompt).toContain('nightly: run the backups');
+  });
+
+  it('1: a second park while a resend waits keeps the resend; the newer message queues behind it', async () => {
+    const f = fixture();
+    f.reg().markLimited('a', now() + 3600);
+    const pid = f.manager.createProject('Deploys', f.root).id;
+    const sid = f.manager.start('deploy the fix', undefined, undefined, pid);
+    await until(() => f.calls.length === 1);
+    f.open[0](parked);
+    await until(() => f.manager.limitResumeList().length === 1);
+    // Something that bypasses the queue gate starts a turn anyway, and parks too.
+    f.manager.continueSession(pid, sid, 'status?', { sender: { kind: 'conversation', projectId: pid, sessionId: 'other', conversationTitle: 'Ops' } });
+    await until(() => f.calls.length === 2);
+    f.open[1](parked);
+    await until(() => queue(f, pid).length === 1);
+    expect(f.manager.limitResumeList()).toEqual([expect.objectContaining({ kind: 'resend', prompt: 'deploy the fix' })]);
+    expect(queue(f, pid)[0]).toMatchObject({ limitResume: true, sender: expect.objectContaining({ kind: 'conversation' }) });
+    expect(queue(f, pid)[0].text).toContain('status?');
+    afterReset(f);
+    f.manager.limitResume().tick();
+    vi.useRealTimers();
+    await until(() => f.calls.length === 3);
+    expect(f.calls[2].prompt).toContain('deploy the fix');
+    f.open[2]({ status: 'completed', failovers: 0, resultText: 'Deployed.' });
+    await until(() => f.calls.length === 4);
+    expect(f.calls[3].prompt).toContain('status?');
+  });
+
+  it('3: a park waits when the only other account is out of the MODEL\'s own weekly window (no immediate re-fire)', async () => {
+    const f = fixture2();
+    f.reg().markLimited('a', now() + 3600);
+    writeFileSync(join(f.stateDir, 'quota-cache.json'), JSON.stringify({ b: { at: Date.now(), quota: { weeklyScoped: [{ label: 'Opus', utilization: 100, resetsAt: new Date(Date.now() + 3 * 86_400_000).toISOString() }] } } }));
+    const pid = f.manager.createProject('Deploys', f.root).id;
+    f.manager.start('deploy the fix', undefined, { model: 'opus' }, pid);
+    await until(() => f.calls.length === 1);
+    f.open[0](parked);
+    await until(() => f.manager.limitResumeList().length === 1);
+    const [rec] = f.manager.limitResumeList();
+    expect(rec.immediate).toBeUndefined();
+    expect(rec.fireAt).toBe(rec.until + 60);
+    f.manager.limitResume().tick();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(f.calls).toHaveLength(1);
+    expect(f.manager.limitResumeList()).toHaveLength(1);
+  });
+
+  it('3: a park is never `now`; a tick fires it early once another account can take it', async () => {
+    const f = fixture2();
+    f.reg().markLimited('a', now() + 3600);
+    const pid = f.manager.createProject('Deploys', f.root).id;
+    f.manager.start('deploy the fix', undefined, { model: 'sonnet' }, pid);
+    await until(() => f.calls.length === 1);
+    await new Promise((r) => setTimeout(r, 20));             // past the boot tick
+    f.open[0](parked);
+    await until(() => f.manager.limitResumeList().length === 1);
+    expect(f.manager.limitResumeList()[0].immediate).toBeUndefined();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(f.calls).toHaveLength(1);
+    f.manager.limitResume().tick();                          // b can take it
+    await until(() => f.calls.length === 2);
+    expect(f.calls[1].prompt).toContain('deploy the fix');
+  });
+
+  it('6: a continue of a cron turn ends as quietly as that turn, with no push', async () => {
+    const f = fixture();
+    f.setScript((o) => { if (f.calls.length === 1) { o.log.append({ type: 'turn_started', sessionId: o.sessionId, account: 'a' }); o.log.append({ type: 'limit_detected', sessionId: o.sessionId, account: 'a', limitKind: 'session' }); f.reg().markLimited('a', now() + 3600); } });
+    const pid = f.manager.createProject('Nightly', f.root).id;
+    const sid = f.manager.start('first', undefined, undefined, pid);
+    await until(() => f.calls.length === 1);
+    f.setScript(undefined);
+    f.open[0]({ status: 'completed', failovers: 0, resultText: 'ok' });
+    await until(() => of(f, 'session_done').length === 1);
+    f.setScript((o) => { if (f.calls.length === 2) { o.log.append({ type: 'turn_started', sessionId: o.sessionId, account: 'a' }); o.log.append({ type: 'limit_detected', sessionId: o.sessionId, account: 'a', limitKind: 'session' }); f.reg().markLimited('a', now() + 3600); } });
+    f.manager.deliverMcpMessage(pid, sid, 'nightly: run the backups', { sender: { kind: 'automation' } });
+    await until(() => f.calls.length === 2);
+    f.open[1](parked);
+    await until(() => f.manager.limitResumeList().length === 1);
+    expect(f.manager.limitResumeList()[0]).toMatchObject({ kind: 'continue', origin: 'cron' });
+    afterReset(f);
+    f.manager.limitResume().tick();
+    vi.useRealTimers();
+    await until(() => f.calls.length === 3);
+    expect(f.calls[2].prompt).toContain('"resumeOf":"cron"');
+    f.open[2]({ status: 'completed', failovers: 0, resultText: 'Backups done.' });
+    await until(() => of(f, 'conversation_settled').some((e) => e.data.origin === 'limit_resume'));
+    const done = of(f, 'session_done').at(-1)!.data;
+    expect(done).toMatchObject({ origin: 'limit_resume', resumeOrigin: 'cron' });
+    const settled = of(f, 'conversation_settled').find((e) => e.data.origin === 'limit_resume')!.data;
+    expect((settled.notice as { tier: string }).tier).toBe('quiet');
+  });
+
+  it('6: a park with NO account limited (all signed out) stays urgent; one on a real limit is normal', async () => {
+    const f = fixture();
+    f.reg().markUnauthenticated('a');
+    const pid = f.manager.createProject('Deploys', f.root).id;
+    f.manager.start('deploy the fix', undefined, undefined, pid);
+    await until(() => f.calls.length === 1);
+    f.open[0]({ ...parked, parkedUntil: now() + 1800 });
+    await until(() => of(f, 'session_done').length === 1);
+    const done = of(f, 'session_done')[0].data;
+    expect(done.autoResume).toMatchObject({ estimated: true });
+    expect(done.notice).toMatchObject({ tier: 'urgent', category: 'needs_you' });
+  });
+
+  it('7: a parked owner message skipped for a pending question raises an urgent notice quoting it', async () => {
+    const f = fixture();
+    f.reg().markLimited('a', now() + 3600);
+    const pid = f.manager.createProject('Deploys', f.root).id;
+    const sid = f.manager.start('deploy the fix to production now', undefined, undefined, pid);
+    await until(() => f.calls.length === 1);
+    f.open[0](parked);
+    await until(() => f.manager.limitResumeList().length === 1);
+    (f.manager as unknown as { pendingQuestions: Map<string, unknown> }).pendingQuestions.set(sid, { question: 'Which region?' });
+    afterReset(f);
+    f.manager.limitResume().tick();
+    expect(f.manager.limitResumeList()).toEqual([]);
+    const ev = of(f, 'limit_resume').at(-1)!.data;
+    expect(ev).toMatchObject({ state: 'skipped', reason: 'question', prompt: 'deploy the fix to production now' });
+    expect(ev.notice).toMatchObject({ tier: 'urgent', category: 'needs_you', body: expect.stringContaining('was not sent (a question is waiting for you). Not sent: “deploy the fix to production now”') });
+  });
+
+  it('low: a resend keeps the account and reserve choice the message asked for', async () => {
+    const f = fixture2();
+    f.reg().markLimited('a', now() + 3600); f.reg().markLimited('b', now() + 3600);
+    const pid = f.manager.createProject('Deploys', f.root).id;
+    f.manager.start('deploy the fix', undefined, { account: 'b', useReserve: true }, pid);
+    await until(() => f.calls.length === 1);
+    f.open[0](parked);
+    await until(() => f.manager.limitResumeList().length === 1);
+    expect(f.manager.limitResumeList()[0]).toMatchObject({ kind: 'resend', routeAccount: 'b', useReserve: true });
+    afterReset(f);
+    f.manager.limitResume().tick();
+    await until(() => f.calls.length === 2);
+    expect(f.calls[1].routing).toMatchObject({ preferredAccount: 'b', useReserve: true });
   });
 });
 
@@ -517,7 +793,7 @@ describe('a parked delegate (R7)', () => {
     vi.useRealTimers();
     expect(f.manager.limitResumeList()).toEqual([]);
     await until(() => of(f, 'delegate_report').length === 1);
-    expect(of(f, 'delegate_report')[0].data).toMatchObject({ delegateId: d.id, status: 'failed', gate: 'blocked', text: expect.stringContaining('gave up after 6 tries') });
+    expect(of(f, 'delegate_report')[0].data).toMatchObject({ delegateId: d.id, status: 'failed', gate: 'blocked', text: expect.stringContaining('auto-continue gave up: no account could take it after 6 tries') });
     expect(f.manager.listDelegates(p.id, sid, d.id)[0].status).toBe('failed');
     expect(of(f, 'limit_resume').at(-1)!.data).toMatchObject({ state: 'gave_up', delegateId: d.id });
     await until(() => f.calls.length === 3);                // the orchestrator is woken with the report
@@ -538,6 +814,26 @@ describe('a parked delegate (R7)', () => {
     f.manager.stopTurn(p.id, sid);
     expect(f.manager.limitResumeList()).toEqual([]);
     expect(f.manager.listDelegates(p.id, sid, d.id)[0].status).toBe('stopped');
+  });
+
+  it('review fix 7: an archived orchestrator skips the record and the delegate leaves waiting_for_reset', async () => {
+    const f = fixture();
+    const p = f.manager.createProject('P', f.root);
+    const sid = f.manager.start('orchestrate', undefined, {}, p.id);
+    await until(() => f.calls.length === 1);
+    f.open[0]({ status: 'completed', failovers: 0, resultText: 'planned' });
+    await until(() => of(f, 'session_done').length === 1);
+    f.reg().markLimited('a', now() + 3600);
+    const d = f.manager.startDelegate(p.id, sid, { role: 'tester', brief: 'Run it.' });
+    await until(() => f.calls.length === 2);
+    f.open[1](parked);
+    await until(() => f.manager.listDelegates(p.id, sid, d.id)[0].status === 'waiting_for_reset');
+    const rev = (f.manager as unknown as { projects(): { get(id: string): { revision?: number } } }).projects().get(p.id).revision ?? 0;
+    f.manager.archiveWorkProject(p.id, { expectedRevision: rev, operationId: 'archive-op-limit-2', archived: true });
+    afterReset(f);
+    f.manager.limitResume().tick();
+    expect(f.manager.limitResumeList()).toEqual([]);
+    expect(f.manager.listDelegates(p.id, sid, d.id)[0].status).toBe('interrupted');
   });
 
   it('stopping it clears its record', async () => {
@@ -579,13 +875,13 @@ describe('sender kind limit_resume', () => {
     expect(botRowView(rows).map((r) => r.botView)).toEqual(['show', 'show']);
   });
 
-  it('notices: continuing now is quiet; waiting, giving up and the loop brake are normal, never urgent', () => {
+  it('notices: continuing now is quiet; waiting is normal; giving up and the loop brake need the owner (urgent)', () => {
     const ctx = { conversationTitle: 'Signature audit', projectKind: 'chat', timeZone: 'Asia/Jakarta' };
     const at = Date.parse('2026-10-26T08:31:00Z') / 1000;
     expect(noticeFor('limit_continue', { sessionId: 's', account: 'l', kind: 'session', waiting: false }, ctx)).toMatchObject({ tier: 'quiet', body: 'Account l hit its session limit; continuing on another account' });
     expect(noticeFor('limit_continue', { sessionId: 's', account: 'l', kind: 'weekly', waiting: true, until: at, continueAt: at + 60 }, ctx)).toMatchObject({ tier: 'normal', category: 'finished', body: 'Paused by a usage limit until 15:31; continues automatically' });
-    expect(noticeFor('limit_resume', { sessionId: 's', state: 'gave_up', attempts: 6 }, ctx)).toMatchObject({ tier: 'normal', body: expect.stringContaining('Auto-continue gave up after 6 tries') });
-    expect(noticeFor('limit_resume', { sessionId: 's', state: 'braked', count: 3 }, ctx)).toMatchObject({ tier: 'normal' });
+    expect(noticeFor('limit_resume', { sessionId: 's', state: 'gave_up', attempts: 6, reason: 'no account could take it after 6 tries' }, ctx)).toMatchObject({ tier: 'urgent', category: 'needs_you', body: expect.stringContaining('Auto-continue gave up: no account could take it after 6 tries') });
+    expect(noticeFor('limit_resume', { sessionId: 's', state: 'braked', count: 3 }, ctx)).toMatchObject({ tier: 'urgent', category: 'needs_you' });
     expect(noticeFor('limit_resume', { sessionId: 's', state: 'fired' }, ctx)).toBeNull();
     expect(noticeFor('session_done', { sessionId: 's', status: 'parked', autoResume: { at: at + 60, until: at } }, ctx)).toMatchObject({ tier: 'normal', body: 'Paused by a usage limit until 15:31; continues automatically' });
     // Without a scheduled resume a park still needs a person.

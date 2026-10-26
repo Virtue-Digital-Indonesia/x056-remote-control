@@ -156,11 +156,34 @@ describe('the held-process trap (contract item 6)', () => {
     await until(() => f.spawned.length === 3);
     expect(f.spawned[2].configDir).toBe(f.cfg('m'));
     expect(f.accountState('m').kind).not.toBe('limited');
+    // Review fix 4: the owner's turn is the next step. No continue is
+    // scheduled to run after it; the dead agent is named in ONE line steered
+    // into that running turn.
+    await until(() => of(f, 'steered').length === 1);
+    expect(of(f, 'steered')[0].data.text).toBe('These background agents were stopped by a usage limit: "Multibox end-to-end integration test" (aeb663d0b2fd979ef). Re-run them if still needed.');
+    expect(f.manager.limitResumeList()).toEqual([]);
+    expect(of(f, 'limit_continue')).toHaveLength(0);
     f.spawned[2].cli.emit(ok('The agent hit the usage limit; nothing else changed.'));
-    // The continue waited behind that turn (a busy conversation queues it), then ran on m.
-    await until(() => f.spawned[2].cli.prompts().length === 2);
-    expect(f.spawned[2].cli.prompts()[1]).toContain('"Multibox end-to-end integration test" (aeb663d0b2fd979ef)');
+    await until(() => of(f, 'session_done').length === 2);
+    await new Promise((r) => setTimeout(r, 600));
+    const later = f.spawned.slice(1).flatMap((x) => x.cli.prompts());
+    expect(later.some((p) => p.includes('Continue where you left off'))).toBe(false);
+    expect(f.spawned).toHaveLength(3);
     expect(f.accountState('m').kind).not.toBe('limited');
+  });
+
+  it('with no agent killed, nothing is steered or scheduled: limit_continue says it was skipped', async () => {
+    const f = fixture();
+    const { pid, sid } = await turnWithAgent(f);
+    f.spawned[0].cli.emit({ type: 'system', subtype: 'task_notification', task_id: 'aeb663d0b2fd979ef', status: 'completed', summary: 'Agent "Multibox end-to-end integration test" completed' });
+    f.manager.continueSession(pid, sid, 'and now?');
+    await until(() => of(f, 'session_started').length === 2);
+    for (const e of fixtures.T1b.events) f.spawned[0].cli.emit(e);
+    await until(() => of(f, 'limit_continue').length === 1);
+    expect(of(f, 'limit_continue')[0].data).toMatchObject({ sessionId: sid, skipped: 'turn running' });
+    expect(of(f, 'limit_continue')[0].data.notice).toBeUndefined();
+    expect(of(f, 'steered')).toHaveLength(0);
+    expect(f.manager.limitResumeList()).toEqual([]);
   });
 });
 
@@ -189,6 +212,72 @@ describe('weekly and session limits out of turn', () => {
     expect(f.spawned[0].cli.st.killed).toBe(true);
     expect(f.spawned).toHaveLength(1);                     // nothing ran: it waits for the reset
     expect(f.log().find((r) => r.type === 'limit_detected')).toMatchObject({ kind, outOfTurn: true });
+  });
+});
+
+describe('review fix 5: out of turn, only the MAIN thread\'s own limit acts', () => {
+  it('a top-level rate_limit_event alone never marks, kills or continues', async () => {
+    const f = fixture();
+    await turnWithAgent(f);
+    f.spawned[0].cli.emit({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: Math.floor(Date.now() / 1000) + 3600, rateLimitType: 'five_hour' } });
+    f.spawned[0].cli.emit({ type: 'assistant', parent_tool_use_id: null, message: { model: 'claude-opus-5-5', role: 'assistant', content: [{ type: 'text', text: 'Still working on it.' }] } });
+    f.spawned[0].cli.emit(ok('Still working on it.'));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(f.accountState('l').kind).not.toBe('limited');
+    expect(f.spawned[0].cli.st.killed).toBe(false);
+    expect(of(f, 'limit_continue')).toHaveLength(0);
+    expect(f.manager.limitResumeList()).toEqual([]);
+  });
+
+  it('a failed task notification alone (the woken reply is fine) only names; nothing is marked or continued', async () => {
+    const f = fixture();
+    await turnWithAgent(f);
+    f.spawned[0].cli.emit(fixtures.T2.events[0]);
+    f.spawned[0].cli.emit({ type: 'assistant', parent_tool_use_id: null, message: { model: 'claude-opus-5-5', role: 'assistant', content: [{ type: 'text', text: 'The agent died of its own limit; I will finish the test myself.' }] } });
+    f.spawned[0].cli.emit(ok('The agent died of its own limit; I will finish the test myself.'));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(f.accountState('l').kind).not.toBe('limited');
+    expect(f.spawned[0].cli.st.killed).toBe(false);
+    expect(of(f, 'limit_continue')).toHaveLength(0);
+    expect(f.log().some((r) => r.type === 'limit_detected')).toBe(false);
+  });
+
+  it('a model\'s own window (an Opus limit) never benches the whole account; the work still continues', async () => {
+    const f = fixture();
+    const { sid } = await turnWithAgent(f);
+    const text = "You've hit your Opus limit · resets 3:10pm (UTC)";
+    f.spawned[0].cli.emit({ type: 'assistant', parent_tool_use_id: null, error: 'rate_limit', message: { model: '<synthetic>', content: [{ type: 'text', text }] } });
+    f.spawned[0].cli.emit({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, result: text });
+    await until(() => of(f, 'limit_continue').length === 1);
+    expect(f.accountState('l').kind).not.toBe('limited');
+    expect(f.accountState('m').kind).not.toBe('limited');
+    expect(of(f, 'limit_continue')[0].data).toMatchObject({ sessionId: sid, kind: 'model' });
+    expect(f.log().find((r) => r.type === 'limit_detected')).toMatchObject({ kind: 'model', benched: false, outOfTurn: true });
+    expect(f.spawned[0].cli.st.killed).toBe(true);
+    await until(() => f.spawned.length === 2);
+    expect(f.spawned[1].cli.prompts()[0]).toMatch(/^\[Usage limit: account l hit its model limit/);
+  });
+});
+
+describe('review fix 6: an automated turn\'s background limit stays as quiet as that turn', () => {
+  it('a cron turn\'s out-of-turn limit waits quietly, and its continue carries the cron origin', async () => {
+    const f = fixture(['l']);
+    const pid = f.manager.createProject('Nightly', f.root).id;
+    const sid = f.manager.start('first', undefined, undefined, pid);
+    await until(() => f.spawned.length === 1);
+    f.spawned[0].cli.emit(ok('ok'));
+    await until(() => of(f, 'session_done').length === 1);
+    f.manager.deliverMcpMessage(pid, sid, 'nightly: run the backups', { sender: { kind: 'automation' } });
+    await until(() => f.spawned[0].cli.prompts().length === 2);
+    f.spawned[0].cli.emit(agent('a1', 'Backup run'));
+    f.spawned[0].cli.emit(ok('Started the backup agent.'));
+    await until(() => of(f, 'session_done').length === 2);
+    for (const e of fixtures.T1b.events) f.spawned[0].cli.emit(e);
+    await until(() => of(f, 'limit_continue').length === 1);
+    const ev = of(f, 'limit_continue')[0].data;
+    expect(ev).toMatchObject({ sessionId: sid, waiting: true, origin: 'cron' });
+    expect(ev.notice).toMatchObject({ tier: 'quiet' });
+    expect(f.manager.limitResumeList()[0]).toMatchObject({ kind: 'continue', origin: 'cron' });
   });
 });
 

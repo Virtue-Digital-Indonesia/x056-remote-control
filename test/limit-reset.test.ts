@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { classifyCodexEvent } from '../src/adapters/codex.js';
-import { classifyEvent, parseLimitReset } from '../src/detector.js';
+import { capReset, classifyEvent, limitKindOfText, MAX_RESET_AHEAD_S, parseLimitReset } from '../src/detector.js';
 
 const at = (iso: string) => Date.parse(iso) / 1000;
 const MSG = Math.floor(at('2026-10-26T05:31:30.999Z'));
@@ -83,6 +83,14 @@ describe('parseLimitReset: resolution', () => {
   });
 });
 
+describe('capReset', () => {
+  it('caps a reset at now + 8 days', () => {
+    expect(MAX_RESET_AHEAD_S).toBe(8 * 86400);
+    expect(capReset(MSG + 30 * 86400, MSG)).toBe(MSG + 8 * 86400);
+    expect(capReset(MSG + 3600, MSG)).toBe(MSG + 3600);
+  });
+});
+
 describe('parseLimitReset: kinds', () => {
   const kind = (text: string) => parseLimitReset(text, MSG)?.kind;
   it('session', () => expect(kind("You've hit your session limit · resets 8:30am (UTC)")).toBe('session'));
@@ -90,6 +98,29 @@ describe('parseLimitReset: kinds', () => {
   it('weekly', () => expect(kind("You've hit your weekly limit · resets Oct 30, 9am (Asia/Jakarta)")).toBe('weekly'));
   it('model', () => expect(kind("You've hit your Opus limit · resets 3pm")).toBe('model'));
   it('unknown', () => expect(kind("You've hit your limit · resets 3pm")).toBe('unknown'));
+  // Review fix 5: a model's own window is never read as the whole account's.
+  it('a model name wins over "session" and "weekly"', () => {
+    expect(kind("You've hit your Opus limit for this session · resets 3pm")).toBe('model');
+    expect(kind("You've hit your Opus weekly limit · resets Oct 30, 9am (UTC)")).toBe('model');
+    expect(limitKindOfText('Sonnet limit for this session')).toBe('model');
+  });
+});
+
+describe('parseLimitReset: review fixes (2026-10-27)', () => {
+  it('fixed offsets: (GMT+7), (UTC+7), (UTC-03:30)', () => {
+    expect(until('resets 3pm (GMT+7)')).toBe(at('2026-10-26T08:00:00Z'));
+    expect(until('resets 3pm (UTC+7)')).toBe(at('2026-10-26T08:00:00Z'));
+    // 05:31Z is 02:01 on the 26th at UTC-03:30; 9:30 there is 13:00Z.
+    expect(until('resets 9:30am (UTC-03:30)')).toBe(at('2026-10-26T13:00:00Z'));
+    expect(until('resets Oct 30, 9am (UTC+07:00)')).toBe(at('2026-10-30T02:00:00Z'));
+  });
+  it('a weekday: its next occurrence from the message time (2026-10-26 is a Monday)', () => {
+    expect(until('resets Mon 9am (UTC)')).toBe(at('2026-10-26T09:00:00Z'));
+    expect(until('resets Wed 9am')).toBe(at('2026-10-28T09:00:00Z'));
+    expect(until('resets Mon 5am (UTC)')).toBe(at('2026-11-02T05:00:00Z'));
+    expect(until('resets Monday at 9:30am (Asia/Jakarta)')).toBe(at('2026-11-02T02:30:00Z'));
+    expect(parseLimitReset("You've hit your weekly limit · resets Thu 4pm (UTC)", MSG)).toEqual({ until: at('2026-10-29T16:00:00Z'), kind: 'weekly' });
+  });
 });
 
 describe('classifyEvent: the real synthetic limit entries', () => {

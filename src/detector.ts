@@ -22,12 +22,22 @@ function assistantErrorText(e: RawEvent): string {
     .join(' ');
 }
 
-/** Which window a limit text names (contract R1). */
+/** Which window a limit text names (contract R1). A model name comes first:
+ *  "Opus limit for this session" and "Opus weekly limit" are that model's own
+ *  window, and reading them as the whole account's would bench all of it. */
 export function limitKindOfText(text: string): LimitKind {
+  if (/(opus|sonnet|fable|haiku)[^·]*limit/i.test(text)) return 'model';
   if (/weekly/i.test(text)) return 'weekly';
   if (/session|5-hour|five-hour/i.test(text)) return 'session';
-  if (/(opus|sonnet|fable|haiku)[^·]*limit/i.test(text)) return 'model';
   return 'unknown';
+}
+
+/** No limit window is longer than a week: a reset further out than this is a
+ *  misread (a wrong year, a bad structured value), and would bench an account
+ *  for good. Every computed `until` is capped at now + 8 days. */
+export const MAX_RESET_AHEAD_S = 8 * 86400;
+export function capReset(until: number, now: number): number {
+  return Math.min(until, now + MAX_RESET_AHEAD_S);
 }
 
 /** The API's `rateLimitType` (five_hour, seven_day, seven_day_opus, ...). */
@@ -40,6 +50,11 @@ export function limitKindOfType(type: unknown): LimitKind | undefined {
 }
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+interface Wall { y: number; mo: number; d: number; h: number; mi: number; s: number }
+/** A zone the parser can read wall times in: an IANA zone through Intl, or a
+ *  fixed offset ("UTC+7", "GMT+7", "UTC-03:30"). */
+interface Zone { wall(sec: number): Wall; epoch(y: number, mo: number, d: number, h: number, mi: number): number }
 const fmtCache = new Map<string, Intl.DateTimeFormat>();
 function zoneFormat(zone: string): Intl.DateTimeFormat | undefined {
   let f = fmtCache.get(zone);
@@ -52,7 +67,7 @@ function zoneFormat(zone: string): Intl.DateTimeFormat | undefined {
   return f;
 }
 /** Wall-clock fields of an instant in a zone. */
-function wallParts(sec: number, f: Intl.DateTimeFormat): { y: number; mo: number; d: number; h: number; mi: number; s: number } {
+function wallParts(sec: number, f: Intl.DateTimeFormat): Wall {
   const p: Record<string, number> = {};
   for (const x of f.formatToParts(new Date(sec * 1000))) if (x.type !== 'literal') p[x.type] = Number(x.value);
   return { y: p.year, mo: p.month, d: p.day, h: p.hour % 24, mi: p.minute, s: p.second };
@@ -65,6 +80,25 @@ function zonedEpoch(y: number, mo: number, d: number, h: number, mi: number, f: 
   let t = guess - offsetAt(guess);
   t = guess - offsetAt(t);
   return Math.floor(t);
+}
+/** "UTC+7", "GMT+7", "UTC-03:30", "UTC+0530": a fixed offset, done by hand.
+ *  Never mapped to Etc/GMT+7, whose sign is the other way round. */
+function fixedOffsetZone(name: string): Zone | undefined {
+  const m = /^(?:UTC|GMT)\s*([+-])(\d{1,2})(?::?(\d{2}))?$/i.exec(name);
+  if (!m) return undefined;
+  const h = Number(m[2]), mi = m[3] ? Number(m[3]) : 0;
+  if (h > 14 || mi > 59) return undefined;
+  const off = (m[1] === '-' ? -1 : 1) * (h * 3600 + mi * 60);
+  return {
+    wall: (sec) => { const d = new Date((sec + off) * 1000); return { y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds() }; },
+    epoch: (y, mo, d, h2, mi2) => Math.floor(Date.UTC(y, mo - 1, d, h2, mi2) / 1000) - off,
+  };
+}
+function zoneOf(name: string): Zone {
+  const fixed = fixedOffsetZone(name);
+  if (fixed) return fixed;
+  const f = zoneFormat(name) ?? zoneFormat('UTC')!;
+  return { wall: (sec) => wallParts(sec, f), epoch: (y, mo, d, h, mi) => zonedEpoch(y, mo, d, h, mi, f) };
 }
 
 const TIME = String.raw`(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m?\.?\b`;
@@ -97,9 +131,9 @@ export function parseLimitReset(text: string, at: number): { until: number; kind
   if (!head) return null;
   let rest = text.slice(head.index + head[0].length).split(/\s·\s|\n/)[0].trim();
   let zone = 'UTC';
-  const z = /\(\s*([A-Za-z][A-Za-z0-9_+\-]*(?:\/[A-Za-z0-9_+\-]+)*)\s*\)/.exec(rest);
+  const z = /\(\s*([A-Za-z][A-Za-z0-9_+\-:]*(?:\/[A-Za-z0-9_+\-]+)*)\s*\)/.exec(rest);
   if (z) { zone = z[1]; rest = rest.slice(0, z.index).trim(); }
-  const f = zoneFormat(zone) ?? zoneFormat('UTC')!;
+  const f = zoneOf(zone);
   const until = (v: number) => ({ until: v, kind });
 
   const rel = /^in\s+(.+)/i.exec(rest);
@@ -126,12 +160,30 @@ export function parseLimitReset(text: string, at: number): { until: number; kind
     const t = dated[4].trim();
     const clock = t ? clockOf(new RegExp('^' + TIME, 'i').exec(t), 1) ?? clockOf(new RegExp('^' + TIME24).exec(t), 1) : { h: 0, mi: 0 };
     if (!clock || day < 1 || day > 31) return null;
-    if (dated[3]) return until(zonedEpoch(Number(dated[3]), mo, day, clock.h, clock.mi, f));
+    if (dated[3]) return until(f.epoch(Number(dated[3]), mo, day, clock.h, clock.mi));
     // No year: the first occurrence at or after a day before the message.
     const floor = at - 86400;
-    const y = wallParts(floor, f).y;
-    const v = zonedEpoch(y, mo, day, clock.h, clock.mi, f);
-    return until(v >= floor ? v : zonedEpoch(y + 1, mo, day, clock.h, clock.mi, f));
+    const y = f.wall(floor).y;
+    const v = f.epoch(y, mo, day, clock.h, clock.mi);
+    return until(v >= floor ? v : f.epoch(y + 1, mo, day, clock.h, clock.mi));
+  }
+
+  // A weekday ("resets Mon 9am", "resets Monday at 9:30am"): its next
+  // occurrence at or after a minute before the message, in the zone's calendar.
+  const wd = /^(sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:rs?|rsday)?|fri(?:day)?|sat(?:urday)?)\b\.?,?\s*(?:at\s+)?(.*)$/i.exec(rest);
+  if (wd && (!wd[2] || /^\d/.test(wd[2]))) {
+    const want = WEEKDAYS.indexOf(wd[1].slice(0, 3).toLowerCase());
+    const t = wd[2].trim();
+    const clock = t ? clockOf(new RegExp('^' + TIME, 'i').exec(t), 1) ?? clockOf(new RegExp('^' + TIME24).exec(t), 1) : { h: 0, mi: 0 };
+    if (!clock) return null;
+    const floor = at - 60;
+    const w = f.wall(floor);
+    for (let k = 0; k <= 7; k++) {
+      if (new Date(Date.UTC(w.y, w.mo - 1, w.d + k)).getUTCDay() !== want) continue;
+      const v = f.epoch(w.y, w.mo, w.d + k, clock.h, clock.mi);
+      if (v >= floor) return until(v);
+    }
+    return null;
   }
 
   const clock = clockOf(new RegExp('^' + TIME, 'i').exec(rest), 1) ?? clockOf(new RegExp('^' + TIME24).exec(rest), 1);
@@ -139,9 +191,9 @@ export function parseLimitReset(text: string, at: number): { until: number; kind
   // No date: the first occurrence of that wall time at or after a minute
   // before the message, read in the zone's own calendar.
   const floor = at - 60;
-  const w = wallParts(floor, f);
-  const v = zonedEpoch(w.y, w.mo, w.d, clock.h, clock.mi, f);
-  return until(v >= floor ? v : zonedEpoch(w.y, w.mo, w.d + 1, clock.h, clock.mi, f));
+  const w = f.wall(floor);
+  const v = f.epoch(w.y, w.mo, w.d, clock.h, clock.mi);
+  return until(v >= floor ? v : f.epoch(w.y, w.mo, w.d + 1, clock.h, clock.mi));
 }
 
 interface ErrorQuota { resetsAt?: unknown; rateLimitType?: unknown }

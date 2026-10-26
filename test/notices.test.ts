@@ -211,6 +211,26 @@ describe('helpers', () => {
     expect(parkedResume.body).toBe('ocr · ChatGPT\nPaused by a usage limit until 15:30; continues automatically');
     expect(noticeFor('limit_continue', { projectId: 'p', sessionId: 's', account: 'l', kind: 'session', waiting: false }, work)).toMatchObject({ tier: 'quiet', category: 'automation' });
   });
+  it('review fix 6: a park with NO account limited still needs the owner; a continue ends as the turn it continued', () => {
+    // An estimated reset = no limited account (all signed out or paused).
+    expect(noticeFor('session_done', { projectId: 'p', sessionId: 's', status: 'parked', parkedUntil: 1_793_003_400, autoResume: { at: 1_793_003_460, until: 1_793_003_400, estimated: true } }, work)).toMatchObject({ tier: 'urgent', category: 'needs_you' });
+    const settled = (extra: Record<string, unknown>) => noticeFor('conversation_settled', { projectId: 'p', sessionId: 's', status: 'completed', origin: 'limit_resume', resultText: 'Done.', durationMs: 90_000, ...extra }, work)!;
+    expect(settled({})).toMatchObject({ tier: 'normal' });
+    expect(settled({ resumeOrigin: 'human' })).toMatchObject({ tier: 'normal' });
+    for (const resumeOrigin of ['cron', 'relay', 'delegate']) expect(settled({ resumeOrigin })).toMatchObject({ tier: 'quiet', category: 'automation' });
+    // An automated conversation's background limit waits quietly, too.
+    expect(noticeFor('limit_continue', { projectId: 'p', sessionId: 's', account: 'l', kind: 'session', waiting: true, until: 1_793_003_400, origin: 'cron' }, work)).toMatchObject({ tier: 'quiet' });
+    expect(noticeFor('limit_continue', { projectId: 'p', sessionId: 's', skipped: 'turn running' }, work)).toBeNull();
+  });
+  it('review fixes 6-7: gave up, braked and a parked message not sent are urgent needs_you, with the real reason and the prompt', () => {
+    const gave = noticeFor('limit_resume', { projectId: 'p', sessionId: 's', state: 'gave_up', attempts: 0, reason: 'Project membership is being reconciled', prompt: 'deploy the fix' }, work)!;
+    expect(gave).toMatchObject({ tier: 'urgent', category: 'needs_you' });
+    expect(gave.body).toBe('ocr · ChatGPT\nAuto-continue gave up: Project membership is being reconciled. Not sent: “deploy the fix”');
+    expect(noticeFor('limit_resume', { projectId: 'p', sessionId: 's', state: 'braked', count: 3 }, work)).toMatchObject({ tier: 'urgent', category: 'needs_you' });
+    const skipped = noticeFor('limit_resume', { projectId: 'p', sessionId: 's', state: 'skipped', reason: 'question', prompt: 'deploy the fix' }, work)!;
+    expect(skipped).toMatchObject({ tier: 'urgent', category: 'needs_you' });
+    expect(skipped.body).toBe('ocr · ChatGPT\nA message parked by a usage limit was not sent (a question is waiting for you). Not sent: “deploy the fix”');
+  });
   it('durations and cuts', () => {
     expect(formatDuration(42_000)).toBe('42s');
     expect(formatDuration(252_000)).toBe('4m 12s');

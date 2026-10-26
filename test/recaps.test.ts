@@ -175,6 +175,15 @@ describe('the reply background work woke after the turn ended', () => {
       f.turns[0].resolve({ status: 'completed', failovers: 0, resultText: 'ok' }); await new Promise((r) => setTimeout(r, 20));
       expect(settle(f, pid, sid, { origin: 'limit_resume' }).recap).toBe(true);
     });
+    it('a usage-limit continue of a cron, relay or delegate turn gets no recap (review fix 6)', async () => {
+      for (const resumeOrigin of ['cron', 'relay', 'delegate']) {
+        const f = fixture(); const pid = f.manager.createProject('R', f.root).id;
+        const sid = f.manager.start('go', undefined, undefined, pid);
+        f.turns[0].resolve({ status: 'completed', failovers: 0, resultText: 'ok' }); await new Promise((r) => setTimeout(r, 20));
+        expect(settle(f, pid, sid, { origin: 'limit_resume', resumeOrigin }).recap).toBeUndefined();
+        expect(f.manager.queues()[pid] ?? []).toHaveLength(0);
+      }
+    });
     it('a settle owed to an out-of-turn usage limit quotes nothing and asks for no recap', async () => {
       const f = fixture(); const pid = f.manager.createProject('R', f.root).id;
       const sid = f.manager.start('go', undefined, undefined, pid);

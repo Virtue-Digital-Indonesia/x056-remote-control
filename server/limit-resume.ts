@@ -1,8 +1,10 @@
+import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
+import { capReset } from '../src/detector.js';
 import type { LimitKind, RawEvent, Verdict } from '../src/types.js';
 import type { MessageSender } from '../src/message-sender.js';
 import type { FileReference } from './file-store.js';
-import { readState, writeState } from './workspace-store.js';
+import { writeState } from './workspace-store.js';
 
 /**
  * Usage-limit auto-continue (docs/limit-resume-contract.md, R4-R7).
@@ -19,8 +21,9 @@ import { readState, writeState } from './workspace-store.js';
  *   - PARKED (R5): an in-turn limit with every account out.
  *
  * Either way a record lands here (`<stateDir>/limit-resume.json`, one per
- * conversation or delegate, a newer one replacing it), and the scheduler sends
- * it through the ordinary send path when an account can take it.
+ * conversation or delegate, a newer one replacing it -- except a `resend`,
+ * which holds a message that never ran and is never replaced), and the
+ * scheduler sends it through the ordinary send path when an account can take it.
  */
 
 export type ResumeKind = 'continue' | 'resend' | 'autopilot' | 'delegate';
@@ -44,6 +47,16 @@ export interface LimitResumeRecord {
   immediate?: boolean;
   /** What hit the limit, for the continue text. */
   account?: string;
+  /** The ORIGINAL turn's origin (human, cron, relay, ...): the continue's
+   *  ending notifies, and recaps, as that turn would have. */
+  origin?: string;
+  /** The account the original message asked for, and its reserve choice:
+   *  a resend keeps them, and eligibility is judged with them. */
+  routeAccount?: string;
+  useReserve?: boolean;
+  /** Epoch seconds of the first guard refusal or failed send in the current
+   *  run of them: retried every RETRY_S, given up RETRY_FOR_S after this. */
+  retryingSince?: number;
   limitKind?: LimitKind;
   limitAt?: number;
   failedTasks?: FailedTask[];
@@ -77,27 +90,40 @@ export interface ResumeHost {
   /** Why it cannot be sent JUST NOW (state recovery, membership being
    *  reconciled): it is retried later, never dropped. */
   blocked?(rec: LimitResumeRecord): string | undefined;
-  /** The record ended without being sent (gave up, loop brake): a delegate
-   *  must not stay `waiting_for_reset` forever. */
-  ended?(rec: LimitResumeRecord, reason: 'gave_up' | 'braked'): void;
+  /** The record ended without being sent (skipped, gave up, loop brake): a
+   *  delegate must not stay `waiting_for_reset` forever. `detail` is the why. */
+  ended?(rec: LimitResumeRecord, reason: EndReason, detail: string): void;
+  /** A `resend` was kept over a newer record for the same conversation: the
+   *  newer message goes into the queue behind it, never lost. */
+  kept?(kept: LimitResumeRecord, newer: LimitResumeRecord): void;
   /** Send it through the ordinary path (a busy conversation queues it). Throws when it cannot. */
   deliver(rec: LimitResumeRecord, text: string): void;
   log(row: Record<string, unknown>): void;
   emit(kind: string, data: Record<string, unknown>): void;
 }
 
-/** Re-parks before giving up, and continues allowed without a human message in between. */
+export type EndReason = 'skipped' | 'gave_up' | 'braked';
+
+/** "No eligible account" re-parks before giving up (guard refusals and failed
+ *  sends do not count: they retry for RETRY_FOR_S), and continues allowed
+ *  without a human message in between. */
 export const MAX_ATTEMPTS = 6;
 export const MAX_AUTO_CONTINUES = 3;
 export const TICK_MS = 30_000;
 /** A record that waits for a reset fires this long after it. */
 export const FIRE_AFTER_RESET_S = 60;
 export const NO_RESET_FALLBACK_S = 30 * 60;
-/** A record that could not be sent just now (blocked, delivery failed) is retried this much later. */
+/** A record that could not be sent just now (blocked, delivery failed) is retried this much later, */
 export const RETRY_S = 5 * 60;
+/** ...for this long from the first refusal, then given up with the real reason. */
+export const RETRY_FOR_S = 24 * 3600;
+/** How much of a resend's prompt a "not sent" notice quotes. */
+export const PROMPT_QUOTE = 120;
 const ZONE = 'Asia/Jakarta';
 
 const keyOf = (r: Pick<LimitResumeRecord, 'sessionId' | 'delegate'>) => r.delegate ? `delegate:${r.delegate.parentSessionId}:${r.delegate.delegateId}` : r.sessionId;
+/** A message that never ran, kept as it was: it is never replaced by a newer record. */
+export const isResend = (r: Pick<LimitResumeRecord, 'kind' | 'delegate'>) => r.kind === 'resend' || r.delegate?.mode === 'resend';
 
 interface FileShape { records: LimitResumeRecord[]; streaks: Record<string, number> }
 
@@ -112,8 +138,20 @@ export class LimitResumeScheduler {
   }
 
   private load(): FileShape {
-    const raw = readState<Partial<FileShape>>(this.file, {});
+    if (!existsSync(this.file)) return { records: [], streaks: {} };
+    let raw: Partial<FileShape> | null;
+    try { raw = JSON.parse(readFileSync(this.file, 'utf8')) as Partial<FileShape> | null; }
+    catch (e) { this.setAside((e as Error).message); return { records: [], streaks: {} }; }
+    if (!raw || typeof raw !== 'object' || (raw.records !== undefined && !Array.isArray(raw.records))) { this.setAside('not a limit-resume file'); return { records: [], streaks: {} }; }
     return { records: Array.isArray(raw.records) ? raw.records : [], streaks: raw.streaks && typeof raw.streaks === 'object' ? raw.streaks : {} };
+  }
+  /** A file that does not parse is kept beside it, logged, and the scheduler
+   *  starts empty: never wiped silently (its records are someone's messages). */
+  private setAside(error: string): void {
+    const to = `${this.file}.corrupt-${Date.now()}`;
+    try { renameSync(this.file, to); } catch { /* gone meanwhile */ }
+    console.warn(`[limit-resume] ${this.file} is unreadable (${error}); set aside as ${to}`);
+    this.host.log({ type: 'limit_resume_corrupt', file: this.file, setAside: to, error });
   }
   private save(s: FileShape): void { writeState(this.file, s); }
 
@@ -130,6 +168,15 @@ export class LimitResumeScheduler {
     const rec: LimitResumeRecord = { ...rest, id: 'lr-' + Math.random().toString(36).slice(2, 10), createdAt: new Date(t * 1000).toISOString(), attempts: 0,
       fireAt: atOnce ? t : Math.max(t, rest.until + FIRE_AFTER_RESET_S), ...(atOnce ? { immediate: true } : {}) };
     const s = this.load();
+    // A resend holds a message that never ran: a newer park never replaces it.
+    // The newer one goes into the queue behind it (the host's `kept`).
+    const prev = s.records.find((r) => keyOf(r) === keyOf(rec));
+    if (prev && isResend(prev)) {
+      if (!prev.delegate && (rec.kind === 'autopilot' || rec.resumeAutopilot)) { prev.resumeAutopilot = true; this.save(s); }
+      this.host.log({ type: 'limit_resume_kept', kept: prev.id, newer: summary(rec) });
+      this.host.kept?.(prev, rec);
+      return prev;
+    }
     s.records = [...s.records.filter((r) => keyOf(r) !== keyOf(rec)), rec];
     this.save(s);
     this.host.log({ type: 'limit_resume_scheduled', ...summary(rec) });
@@ -182,10 +229,18 @@ export class LimitResumeScheduler {
     this.kicked.unref?.();
   }
 
-  /** Fires every record that is due. Public for tests and the boot pass. */
+  /** Fires every record that is due, and early any record waiting for a reset
+   *  that an account can take now (one freed up, or its reset passed). Not one
+   *  in the guard retry: that keeps its 5 min spacing. Public for tests and
+   *  the boot pass. */
   tick(): void {
     const t = this.host.now();
-    for (const due of this.load().records.filter((r) => r.fireAt <= t)) this.fire(due.id);
+    for (const r of this.load().records) {
+      if (r.fireAt <= t) { this.fire(r.id); continue; }
+      let early = false;
+      if (r.retryingSince == null) { try { early = this.host.eligible(r); } catch { early = false; } }
+      if (early) this.fire(r.id);
+    }
   }
 
   private fire(id: string): void {
@@ -195,18 +250,26 @@ export class LimitResumeScheduler {
     const key = keyOf(rec), t = this.host.now();
     const drop = () => { s.records = s.records.filter((r) => r.id !== id); };
     const skip = this.host.skipReason(rec);
-    if (skip) { drop(); this.save(s); this.host.log({ type: 'limit_resume_skipped', reason: skip, ...summary(rec) }); return; }
+    if (skip) {
+      drop(); this.save(s);
+      this.host.log({ type: 'limit_resume_skipped', reason: skip, ...summary(rec) });
+      // A message that never ran is never dropped silently (a deleted
+      // conversation has nobody to tell).
+      if (skip !== 'gone' && quoted(rec)) this.host.emit('limit_resume', { state: 'skipped', ...target(rec), reason: skip, prompt: quoted(rec) });
+      this.host.ended?.(rec, 'skipped', skip);
+      return;
+    }
     // Not now (state recovery at boot, membership being reconciled): later, never dropped.
     const blocked = this.host.blocked?.(rec);
-    if (blocked) { this.repark(s, rec, t + RETRY_S, false, blocked); return; }
+    if (blocked) { this.retry(s, rec, t, blocked, 'blocked'); return; }
     if (!this.host.eligible(rec)) { const next = this.host.nextReset(rec); this.repark(s, rec, Math.max(t + 1, next.until + FIRE_AFTER_RESET_S), next); return; }
     // Loop brake: the 4th auto-continue without a human message is not sent.
     const used = s.streaks[key] ?? 0;
     if (used >= MAX_AUTO_CONTINUES) {
       drop(); this.save(s);
       this.host.log({ type: 'limit_resume_skipped', reason: 'loop_brake', ...summary(rec) });
-      this.host.emit('limit_resume', { state: 'braked', ...target(rec), count: used });
-      this.host.ended?.(rec, 'braked');
+      this.host.emit('limit_resume', { state: 'braked', ...target(rec), count: used, ...(quoted(rec) ? { prompt: quoted(rec) } : {}) });
+      this.host.ended?.(rec, 'braked', `auto-continue stopped after ${used} tries in a row`);
       return;
     }
     // Off the file BEFORE it is sent: the send may start a turn that parks and schedules anew.
@@ -215,11 +278,11 @@ export class LimitResumeScheduler {
     const text = rec.kind === 'resend' || rec.delegate?.mode === 'resend' ? rec.prompt ?? '' : continueText(rec, t < rec.until);
     try { this.host.deliver(rec, text); }
     catch (e) {
-      // Not sent: it stays (one more attempt) and the loop brake does not count it.
+      // Not sent: it stays (retried in 5 min, up to a day) and the loop brake does not count it.
       const cur = this.load();
       if (cur.records.some((r) => keyOf(r) === key)) return; // a newer one replaced it meanwhile
       cur.records.push(rec);
-      this.repark(cur, rec, t + RETRY_S, false, (e as Error).message, 'delivery_failed');
+      this.retry(cur, rec, t, (e as Error).message || 'delivery failed', 'delivery_failed');
       return;
     }
     const after = this.load();
@@ -229,28 +292,50 @@ export class LimitResumeScheduler {
     this.host.emit('limit_resume', { state: 'fired', ...target(rec) });
   }
 
-  /** One more attempt later, or, after MAX_ATTEMPTS, give up with one notice. */
-  private repark(s: FileShape, rec: LimitResumeRecord, fireAt: number, reset: { until: number; estimated: boolean } | false, error?: string, reason = 'blocked'): void {
+  /** No account could take it: one more attempt after the next reset, or,
+   *  after MAX_ATTEMPTS of these (and only these), give up with one notice. */
+  private repark(s: FileShape, rec: LimitResumeRecord, fireAt: number, reset: { until: number; estimated: boolean }): void {
     rec.attempts++;
-    if (rec.attempts >= MAX_ATTEMPTS) {
-      s.records = s.records.filter((r) => r.id !== rec.id); this.save(s);
-      this.host.log({ type: 'limit_resume_gave_up', ...summary(rec), ...(error ? { error } : {}) });
-      this.host.emit('limit_resume', { state: 'gave_up', ...target(rec), attempts: rec.attempts });
-      this.host.ended?.(rec, 'gave_up');
-      return;
-    }
-    if (reset) { rec.until = reset.until; rec.estimated = reset.estimated; }
+    // Past the guard: a later refusal starts its own 24 h.
+    delete rec.retryingSince;
+    if (rec.attempts >= MAX_ATTEMPTS) { this.giveUp(s, rec, `no account could take it after ${rec.attempts} tries`); return; }
+    rec.until = reset.until; rec.estimated = reset.estimated;
     rec.fireAt = fireAt;
     this.save(s);
-    this.host.log(error ? { type: 'limit_resume_skipped', reason, error, reparked: true, ...summary(rec) } : { type: 'limit_resume_scheduled', reparked: true, ...summary(rec) });
+    this.host.log({ type: 'limit_resume_scheduled', reparked: true, ...summary(rec) });
   }
+
+  /** Not now (a guard refusal, a failed send): again in RETRY_S, without
+   *  spending an attempt, for up to RETRY_FOR_S; then give up saying why. */
+  private retry(s: FileShape, rec: LimitResumeRecord, t: number, error: string, reason: string): void {
+    rec.retryingSince ??= t;
+    if (t - rec.retryingSince >= RETRY_FOR_S) { this.giveUp(s, rec, error); return; }
+    rec.fireAt = t + RETRY_S;
+    this.save(s);
+    this.host.log({ type: 'limit_resume_skipped', reason, error, reparked: true, ...summary(rec) });
+  }
+
+  private giveUp(s: FileShape, rec: LimitResumeRecord, reason: string): void {
+    s.records = s.records.filter((r) => r.id !== rec.id); this.save(s);
+    this.host.log({ type: 'limit_resume_gave_up', ...summary(rec), reason });
+    this.host.emit('limit_resume', { state: 'gave_up', ...target(rec), attempts: rec.attempts, reason, ...(quoted(rec) ? { prompt: quoted(rec) } : {}) });
+    this.host.ended?.(rec, 'gave_up', reason);
+  }
+}
+
+/** The start of a conversation's resend prompt, for a "not sent" notice. A
+ *  delegate's resend is its orchestrator's business (it reports BLOCKED). */
+function quoted(r: LimitResumeRecord): string | undefined {
+  if (r.delegate || r.kind !== 'resend' || !r.prompt) return undefined;
+  const p = r.prompt.trim();
+  return p.length > PROMPT_QUOTE ? p.slice(0, PROMPT_QUOTE).trimEnd() + '…' : p;
 }
 
 function target(r: LimitResumeRecord): Record<string, unknown> {
   return { projectId: r.projectId, sessionId: r.sessionId, kind: r.kind, ...(r.delegate ? { delegateId: r.delegate.delegateId } : {}) };
 }
 function summary(r: LimitResumeRecord): Record<string, unknown> {
-  return { id: r.id, ...target(r), until: r.until, estimated: r.estimated, fireAt: r.fireAt, attempts: r.attempts, ...(r.account ? { account: r.account } : {}) };
+  return { id: r.id, ...target(r), until: r.until, estimated: r.estimated, fireAt: r.fireAt, attempts: r.attempts, ...(r.account ? { account: r.account } : {}), ...(r.retryingSince != null ? { retryingSince: r.retryingSince } : {}) };
 }
 
 // ---- the continue message ----
@@ -312,14 +397,23 @@ export interface LimitWatch {
   configDir?: string;
   account?: string;
   at?: number;
+  /** The origin of the turn whose background work hit the limit. */
+  origin?: string;
   /** The 5 s fallback for a woken reply that never writes its result. */
   timer?: ReturnType<typeof setTimeout>;
   done?: boolean;
 }
 
-/** The reset a verdict names, in epoch seconds, or the 30 min estimate. */
+/** The reset a verdict names, in epoch seconds (capped at now + 8 days), or the 30 min estimate. */
 export function untilOf(v: Verdict, now: number): { until: number; estimated: boolean } {
-  if (v.resetsAt != null) return { until: v.resetsAt, estimated: false };
-  if (v.resetsInSeconds != null) return { until: now + v.resetsInSeconds, estimated: false };
+  if (v.resetsAt != null) return { until: capReset(v.resetsAt, now), estimated: false };
+  if (v.resetsInSeconds != null) return { until: capReset(now + v.resetsInSeconds, now), estimated: false };
   return { until: now + NO_RESET_FALLBACK_S, estimated: true };
+}
+
+/** Fix 4: background agents a limit killed while a gateway turn was already
+ *  running again -- one line steered into that turn, instead of a continue
+ *  that would run after it and restart abandoned work. */
+export function stoppedAgentsLine(tasks: FailedTask[]): string {
+  return `These background agents were stopped by a usage limit: ${tasks.map((t) => `"${t.description.replace(/"/g, "'")}" (${t.id})`).join(', ')}. Re-run them if still needed.`;
 }

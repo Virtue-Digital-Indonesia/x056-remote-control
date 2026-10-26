@@ -27,13 +27,15 @@ describe('ReadState rules (the ones both clients used)', () => {
     rs.observe('session_done', { projectId: 'p', sessionId: 'k', status: 'parked' });
     // A park the gateway continues by itself needs nobody: unread, never failed.
     rs.observe('session_done', { projectId: 'p', sessionId: 'r', status: 'parked', autoResume: { at: 2, until: 1, kind: 'resend' } });
+    // ...unless no account is actually limited (an estimated reset): that needs the owner.
+    rs.observe('session_done', { projectId: 'p', sessionId: 'x', status: 'parked', autoResume: { at: 2, until: 1, kind: 'resend', estimated: true } });
     rs.observe('session_error', { projectId: 'p', sessionId: 'e' });
     rs.observe('cron_failed', { projectId: 'p', sessionId: 'c' });
     rs.observe('delegate_report', { projectId: 'p', sessionId: 'u', notice: { tier: 'urgent' } });
     rs.observe('delegate_report', { projectId: 'p', sessionId: 'v', notice: { tier: 'quiet' } });
     rs.observe('assistant_text', { projectId: 'p', sessionId: 'a', text: 'hi' });
     const unread = Object.fromEntries(Object.entries(rs.list()).filter(([, v]) => v.unread).map(([k, v]) => [k, v.kind]));
-    expect(unread).toEqual({ 'p::q': 'question', 'p::d': 'done', 'p::f': 'failed', 'p::k': 'failed', 'p::r': 'done', 'p::e': 'failed', 'p::c': 'failed', 'p::u': 'question' });
+    expect(unread).toEqual({ 'p::q': 'question', 'p::d': 'done', 'p::f': 'failed', 'p::k': 'failed', 'p::r': 'done', 'p::x': 'failed', 'p::e': 'failed', 'p::c': 'failed', 'p::u': 'question' });
     tick();
     rs.observe('session_done', { projectId: 'p', sessionId: 'f', status: 'stopped' });
     rs.observe('question_dismissed', { projectId: 'p', sessionId: 'q' });

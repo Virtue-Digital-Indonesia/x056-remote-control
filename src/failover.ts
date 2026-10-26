@@ -1,6 +1,7 @@
 import type { AccountAnalytics } from './account-analytics.js';
 import type { AccountRegistry, AccountRouteContext } from './accounts.js';
 import { claudeAdapter } from './adapters/claude.js';
+import { capReset } from './detector.js';
 import type { EventLog } from './eventlog.js';
 import { DEFAULT_CONTINUE_PROMPT } from './provider.js';
 import type { ProviderAdapter } from './provider.js';
@@ -430,7 +431,9 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // is not `estimated` either.
         const rel = state.limited.resetsInSeconds;
         const resets = [state.limited.resetsAt, rel != null ? now() + rel : undefined].filter((x): x is number => x != null);
-        const until = resets.length ? Math.max(...resets) : now() + LIMIT_NO_RESET_FALLBACK;
+        // Capped at now + 8 days: no window is longer than a week, and a misread
+        // reset (a wrong year) would otherwise bench the account for good.
+        const until = resets.length ? capReset(Math.max(...resets), now()) : now() + LIMIT_NO_RESET_FALLBACK;
         registry.markLimited(account.name, until, !resets.length);
       } else if (state.authRequired) {
         // No cooldown to wait out — this account is parked until a human

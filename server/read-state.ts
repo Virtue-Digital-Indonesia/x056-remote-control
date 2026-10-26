@@ -90,8 +90,8 @@ export class ReadState {
         if (data.notificationSuppressed !== true && data.ownerHidden !== true && tier !== 'none') this.notice(pid, sid, 'done');
         return;
       case 'session_done':
-        // A park the gateway continues by itself (autoResume) needs nobody: unread, not failed.
-        if (data.status === 'failed' || (data.status === 'parked' && !data.autoResume)) this.notice(pid, sid, 'failed');
+        // A park the gateway continues by itself on a real limit needs nobody: unread, not failed.
+        if (data.status === 'failed' || (data.status === 'parked' && !waitsOnLimit(data))) this.notice(pid, sid, 'failed');
         else if (data.status === 'parked') this.notice(pid, sid, 'done');
         else if (data.status === 'stopped') this.read(pid, sid);
         return;
@@ -127,7 +127,7 @@ export class ReadState {
         return;
       case 'session_done':
         if (!visible) return;
-        if (data.status === 'failed' || (data.status === 'parked' && !data.autoResume)) this.notice(pid, sid, 'failed');
+        if (data.status === 'failed' || (data.status === 'parked' && !waitsOnLimit(data))) this.notice(pid, sid, 'failed');
         else if (data.status === 'parked') this.notice(pid, sid, 'done');
         return;
       case 'session_error':
@@ -198,4 +198,11 @@ export class ReadState {
     writeFileSync(tmp, JSON.stringify(this.items));
     renameSync(tmp, this.file);
   }
+}
+
+/** A park the limit scheduler resumes, waiting on a REAL limit. An estimated
+ *  reset means no account is limited (signed out, paused): that needs the owner. */
+function waitsOnLimit(data: Record<string, unknown>): boolean {
+  const r = data.autoResume as { estimated?: boolean } | undefined;
+  return !!r && r.estimated !== true;
 }

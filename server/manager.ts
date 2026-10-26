@@ -49,7 +49,7 @@ import { ProjectRegistry, ProjectConflict, validateModeDefaults, requireWorkspac
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
 import { PersistentTurns, type IdleSource } from '../src/persistent.js';
-import { LimitResumeScheduler, failedTaskOf, mergeVerdicts, untilOf, NO_RESET_FALLBACK_S, MAX_ATTEMPTS, MAX_AUTO_CONTINUES, type LimitResumeRecord, type LimitWatch } from './limit-resume.js';
+import { LimitResumeScheduler, continueText, failedTaskOf, isResend, mergeVerdicts, stoppedAgentsLine, untilOf, NO_RESET_FALLBACK_S, type EndReason, type LimitResumeRecord, type LimitWatch } from './limit-resume.js';
 import { CodexTransport } from '../src/persistent-codex.js';
 import type { TurnHandle, TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
@@ -1105,8 +1105,10 @@ export class SessionManager {
   }
 
   private backgroundRecapAllowed(pid: string, sid: string, data: Record<string, unknown>): boolean {
-    // A recap turn is origin 'recap'; a limit continue carries the owner's work on.
-    if (!pid || !sid || (data.origin !== 'human' && data.origin !== 'limit_resume')) return false;
+    // A recap turn is origin 'recap'. A limit continue recaps only when the
+    // turn it continued was the owner's (its resumeOrigin; absent = human).
+    const human = data.origin === 'human' || (data.origin === 'limit_resume' && (data.resumeOrigin ?? 'human') === 'human');
+    if (!pid || !sid || !human) return false;
     if (!this.conversationExists(pid, sid)) return false;
     try { if (this.adapterFor(pid, sid).id !== 'claude') return false; } catch { return false; }
     if (this.sessionBusy(sid) || this.pendingQuestions.has(sid)) return false;
@@ -1121,16 +1123,20 @@ export class SessionManager {
   private readonly limitWatches = new Map<string, LimitWatch>();
   /** Conversations whose settle is owed to an out-of-turn limit, not "finished". */
   private readonly limitSettles = new Set<string>();
+  /** The origin of each conversation's latest turn (a continue's: the turn it
+   *  continued), so an out-of-turn limit's continue notifies as that turn would. */
+  private readonly turnOrigins = new Map<string, string>();
   private resumeScheduler?: LimitResumeScheduler;
 
   limitResume(): LimitResumeScheduler {
     return this.resumeScheduler ??= new LimitResumeScheduler(this.opts.stateDir, {
       now: () => Math.floor(Date.now() / 1000),
-      eligible: (rec) => this.limitEligible(rec.provider, rec.delegate ? undefined : rec.projectId, rec.delegate ? undefined : rec.sessionId),
+      eligible: (rec) => this.limitEligibleFor(rec),
       nextReset: (rec) => this.nextLimitReset(rec.provider),
       skipReason: (rec) => this.limitResumeSkip(rec),
       blocked: (rec) => this.limitResumeBlocked(rec),
-      ended: (rec, reason) => this.limitResumeEnded(rec, reason),
+      ended: (rec, reason, detail) => this.limitResumeEnded(rec, reason, detail),
+      kept: (prev, newer) => this.limitResumeKept(prev, newer),
       deliver: (rec, text) => this.deliverLimitResume(rec, text),
       log: (row) => { try { new EventLog(join(this.opts.stateDir, 'events.jsonl')).append(row); } catch { /* logging only */ } },
       emit: (kind, data) => this.emit(kind, data),
@@ -1139,15 +1145,41 @@ export class SessionManager {
   /** The records waiting, for GET /api/limit-resume. */
   limitResumeList(): LimitResumeRecord[] { return this.limitResume().list(); }
 
-  /** An account could take this conversation's turn now: its own routing
-   *  context, so one locked to the limited account waits for the reset. A
+  /** The capability blocks each conversation's last turn was routed with
+   *  (runSession's accountEligibility). Computing them is async and runs the
+   *  CLI against every account, which a 30 s tick must never do, so the
+   *  scheduler judges a record with the router's last answer. */
+  private readonly lastCapabilityBlocks = new Map<string, Record<string, string[]>>();
+
+  /** An account could take this conversation's turn now, judged with the
+   *  context the router uses (launch's `route`): the conversation's lock and
+   *  next-account choice, the model it runs on (a model's own weekly window,
+   *  `weeklyScoped`), the account and reserve choice the message asked for,
+   *  and the last capability blocks. So one locked to the limited account, or
+   *  on a model whose window is out everywhere, waits for the reset. A
    *  candidate held back only by load counts (runSession waits those out). */
-  private limitEligible(provider: 'claude' | 'codex', pid?: string, sid?: string): boolean {
+  private limitEligible(provider: 'claude' | 'codex', pid?: string, sid?: string, opts: { model?: string; account?: string; useReserve?: boolean } = {}): boolean {
     try {
-      const ctx = pid && sid ? new RoutingState(this.opts.stateDir).context(pid, sid) : {};
+      const ctx: AccountRouteContext = pid && sid ? { ...new RoutingState(this.opts.stateDir).context(pid, sid) } : {};
+      let model = opts.model;
+      if (!model && pid && sid) { try { model = this.conversationRunPrefs(pid, sid).model || undefined; } catch { /* gone: no model */ } }
+      if (model) ctx.model = model;
+      if (opts.account) ctx.preferredAccount = opts.account;
+      if (opts.useReserve !== undefined) ctx.useReserve = opts.useReserve;
+      const blocks = sid ? this.lastCapabilityBlocks.get(sid) : undefined;
+      if (blocks && Object.keys(blocks).length) ctx.capabilityBlocks = blocks;
       const route = this.registry().explain(Math.floor(Date.now() / 1000), provider, this.accountLoads(sid), ctx);
       return route.candidates.some((c) => c.eligible || (c.reasons.length > 0 && c.reasons.every((r) => /Concurrent-task|reserved/.test(r))));
     } catch { return false; }
+  }
+  /** A record's eligibility: its conversation's context, or its delegate's model. */
+  private limitEligibleFor(rec: LimitResumeRecord): boolean {
+    if (rec.delegate) {
+      let model: string | undefined;
+      try { model = this.delegateStore().get(rec.projectId, rec.delegate.parentSessionId, rec.delegate.delegateId)?.model || undefined; } catch { /* gone */ }
+      return this.limitEligible(rec.provider, undefined, undefined, { model });
+    }
+    return this.limitEligible(rec.provider, rec.projectId, rec.sessionId, { model: rec.kind === 'resend' ? rec.model || undefined : undefined, account: rec.routeAccount, useReserve: rec.useReserve });
   }
 
   /** R3: the earliest FUTURE reset, else a 30 min estimate. */
@@ -1179,16 +1211,48 @@ export class SessionManager {
     catch (e) { return (e as Error).message || 'blocked'; }
   }
 
-  /** A delegate whose auto-continue ended unsent reports BLOCKED, so its
-   *  orchestrator hears of it instead of a slot held by `waiting_for_reset`. */
-  private limitResumeEnded(rec: LimitResumeRecord, reason: 'gave_up' | 'braked'): void {
+  /** A delegate whose auto-continue ended unsent never stays
+   *  `waiting_for_reset`: given up or braked, it reports BLOCKED (with the real
+   *  reason) so its orchestrator hears of it; skipped (archived, gone), it is
+   *  marked interrupted without waking anyone -- a follow-up revives it. */
+  private limitResumeEnded(rec: LimitResumeRecord, reason: EndReason, detail: string): void {
     if (!rec.delegate || this.destroyed) return;
     const { parentSessionId: parentSid, delegateId: id } = rec.delegate;
-    const d = this.delegateStore().get(rec.projectId, parentSid, id);
+    let d: Delegate | undefined;
+    try { d = this.delegateStore().get(rec.projectId, parentSid, id); } catch { return; }
     if (!d || d.status !== 'waiting_for_reset' || [...this.delegateRuns.values()].some((r) => r.id === id && r.parentSid === parentSid)) return;
-    const text = reason === 'gave_up' ? `Usage limit: auto-continue gave up after ${MAX_ATTEMPTS} tries; no account could take this delegate's turn.`
-      : `Usage limit: auto-continue stopped after ${MAX_AUTO_CONTINUES} tries in a row; this delegate needs a follow-up to go on.`;
+    if (reason === 'skipped') {
+      try { this.delegateStore().update(rec.projectId, parentSid, id, { status: 'interrupted' }); this.emitDelegates(rec.projectId, parentSid); } catch { /* gone meanwhile */ }
+      return;
+    }
+    const text = reason === 'gave_up' ? `Usage limit: auto-continue gave up: ${detail}. This delegate's turn was not run.`
+      : `Usage limit: ${detail}; this delegate needs a follow-up to go on.`;
     void this.settleDelegate(rec.projectId, parentSid, id, { started: Date.now() }, 'failed', text, d.providerSessionId, d.account);
+  }
+
+  /** A newer park met a waiting resend (never replaced): the newer message
+   *  goes into the queue BEHIND it, scheduler-owned (limitResume, so draining
+   *  it is not the owner's next message). A newer continue only matters when
+   *  it names agents the limit killed; the resend's turn resumes the session. */
+  private limitResumeKept(prev: LimitResumeRecord, newer: LimitResumeRecord): void {
+    const text = isResend(newer) ? newer.prompt ?? '' : newer.failedTasks?.length ? continueText(newer, true) : '';
+    if (!text.trim()) return;
+    if (prev.delegate) {
+      const { parentSessionId: parentSid, delegateId: id } = prev.delegate;
+      const d = this.delegateStore().get(prev.projectId, parentSid, id);
+      if (d) this.delegateStore().update(prev.projectId, parentSid, id, { pending: [...d.pending, text] });
+      return;
+    }
+    const resend = isResend(newer);
+    this.enqueue(prev.projectId, { sessionId: prev.sessionId, text, limitResume: true,
+      ...(resend ? { ...(newer.sender ? { sender: newer.sender } : {}), model: newer.model, effort: newer.effort, speed: newer.speed, ...(newer.attachments?.length ? { fileRefs: newer.attachments } : {}), ...(newer.requestId ? { requestId: newer.requestId } : {}), ...(newer.routeAccount ? { account: newer.routeAccount } : {}), ...(newer.useReserve !== undefined ? { useReserve: newer.useReserve } : {}) }
+        : { sender: this.limitSender(newer) }) });
+  }
+
+  /** The continue's sender: visible (not an agent), and carrying the original
+   *  turn's origin so its ending notifies as that turn would have. */
+  private limitSender(rec: Pick<LimitResumeRecord, 'origin'>): MessageSender {
+    return { kind: 'limit_resume', ...(rec.origin && rec.origin !== 'human' ? { resumeOf: rec.origin } : {}) };
   }
 
   /** The ordinary send path: a busy conversation queues it. */
@@ -1209,9 +1273,12 @@ export class SessionManager {
       if (ap?.paused) { ap.paused = false; delete ap.pauseReason; this.saveAutopilot(map); this.emitActiveAutopilot(sid, ap); }
     }
     const resend = rec.kind === 'resend';
-    const sender: MessageSender | undefined = resend ? rec.sender : { kind: 'limit_resume' };
-    const extra = resend ? { model: rec.model, effort: rec.effort, speed: rec.speed, ...(rec.attachments?.length ? { fileRefs: rec.attachments } : {}), ...(rec.requestId ? { requestId: rec.requestId } : {}) } : {};
-    if (this.sessionBusy(sid)) { this.enqueue(pid, { sessionId: sid, text, ...(sender ? { sender } : {}), ...extra, limitResume: true }); return; }
+    const sender: MessageSender | undefined = resend ? rec.sender : this.limitSender(rec);
+    const extra = resend ? { model: rec.model, effort: rec.effort, speed: rec.speed, ...(rec.attachments?.length ? { fileRefs: rec.attachments } : {}), ...(rec.requestId ? { requestId: rec.requestId } : {}),
+      ...(rec.routeAccount ? { account: rec.routeAccount } : {}), ...(rec.useReserve !== undefined ? { useReserve: rec.useReserve } : {}) } : {};
+    // Busy: it goes AHEAD of that conversation's queue (the cron or relay items
+    // that waited behind the record), never behind them.
+    if (this.sessionBusy(sid)) { this.enqueue(pid, { sessionId: sid, text, ...(sender ? { sender } : {}), ...extra, limitResume: true, front: true }); return; }
     // A first turn that never ran has no session yet, unless a turn since made one.
     const fresh = resend && !!rec.fresh && !this.projects().providerSessionId(pid, sid);
     this.continueSession(pid, sid, text, { ...(sender ? { sender } : {}), ...extra, limitResume: true, ...(fresh ? { freshSession: true } : {}) });
@@ -1229,12 +1296,23 @@ export class SessionManager {
     let w = this.limitWatches.get(t.sid);
     if (!w) { w = { failedTasks: [] }; this.limitWatches.set(t.sid, w); }
     if (w.done) return;
+    // A failed task notification only NAMES a dead agent; on its own it never
+    // marks, kills or continues anything (its 429 may be a subagent's own
+    // model window).
     const task = failedTaskOf(e);
     if (task) { if (!w.failedTasks.some((x) => x.id === task.id)) w.failedTasks.push(task); return; }
-    const v = adapter.classify(e);
-    if (v.kind === 'limited') {
+    // Claude: only the MAIN thread's own limit acts -- the synthetic reply
+    // (`error: 'rate_limit'`) or a 429 result. A top-level rate_limit_event can
+    // be a warning-turned-rejection the CLI retries past, so alone it is not
+    // a limit out of turn. Codex keeps its own classifier.
+    const mainLimit = t.provider !== 'claude'
+      || (e.type === 'assistant' && (e as { error?: unknown }).error === 'rate_limit')
+      || (e.type === 'result' && (e as { api_error_status?: unknown }).api_error_status === 429);
+    const v = mainLimit ? adapter.classify(e) : undefined;
+    if (v?.kind === 'limited') {
       if (!w.verdict) {
         w.verdict = v; w.at = Math.floor(Date.now() / 1000); w.configDir = src?.configDir;
+        w.origin = this.turnOrigins.get(t.sid) ?? 'human';
         w.account = src?.configDir ? this.registry().list().find((a) => a.configDir === src.configDir)?.name : undefined;
         this.markOutOfTurnLimit(t, w, true);
         if (src?.configDir) (t.provider === 'codex' ? this.persistentCodex : this.persistent)?.markLimitHit(t.sid, src.configDir);
@@ -1258,7 +1336,11 @@ export class SessionManager {
 
   private markOutOfTurnLimit(t: LimitTarget, w: LimitWatch, first: boolean): void {
     const v = w.verdict!, { until, estimated } = untilOf(v, w.at!);
-    if (w.account) {
+    // A model's own window (an Opus weekly limit) is not the account's: there
+    // is no per-model mark, so nothing is benched; the continue routes by
+    // model (the router reads the quota cache's weeklyScoped windows).
+    const modelOnly = v.limitKind === 'model';
+    if (w.account && !modelOnly) {
       try {
         const reg = this.registry(), cur = reg.get(w.account).state;
         // Never shorten a limit the account already carries (a weekly one).
@@ -1267,7 +1349,7 @@ export class SessionManager {
       this.emitAccounts();
     }
     if (!first) return;
-    const row = { type: 'limit_detected', sessionId: t.delegate ? t.delegate.parentSid : t.sid, account: w.account ?? null, until, estimated, kind: v.limitKind ?? 'unknown', source: v.source, outOfTurn: true,
+    const row = { type: 'limit_detected', sessionId: t.delegate ? t.delegate.parentSid : t.sid, account: w.account ?? null, until, estimated, kind: v.limitKind ?? 'unknown', source: v.source, outOfTurn: true, ...(modelOnly ? { benched: false } : {}),
       ...(t.delegate ? { delegateId: t.delegate.id, delegateSessionId: t.sid } : {}) };
     try { new EventLog(join(this.opts.stateDir, 'events.jsonl')).append(row); } catch { /* logging only */ }
     if (!t.delegate) {
@@ -1294,9 +1376,21 @@ export class SessionManager {
       this.emitDelegates(parentPid, parentSid);
       return;
     }
+    const origin = w.origin ?? 'human';
+    // A gateway turn started during the wake (the owner, or anything else,
+    // sent a message): it is the conversation's next step. A continue would
+    // run after it and restart work it moved on from. Only the dead agents
+    // are worth saying, steered into that turn, best effort.
+    if (this.runs.has(t.sid)) {
+      const skipped = () => this.emit('limit_continue', { projectId: t.pid, sessionId: t.sid, account: w.account ?? null, until, estimated, kind: base.limitKind, failedTasks: w.failedTasks, origin, skipped: 'turn running' });
+      if (!w.failedTasks.length) { skipped(); return; }
+      void this.steerFromAi(t.pid, t.sid, stoppedAgentsLine(w.failedTasks), { kind: 'limit_resume' })
+        .then((r) => { if (!r) skipped(); }, () => skipped());
+      return;
+    }
     const now = this.limitEligible(t.provider, t.pid, t.sid);
-    const rec = this.limitResume().schedule({ ...base, kind: 'continue', projectId: t.pid, sessionId: t.sid, now });
-    this.emit('limit_continue', { projectId: t.pid, sessionId: t.sid, account: w.account ?? null, until, estimated, kind: base.limitKind, failedTasks: w.failedTasks, continueAt: rec.fireAt, waiting: !now });
+    const rec = this.limitResume().schedule({ ...base, kind: 'continue', projectId: t.pid, sessionId: t.sid, origin, now });
+    this.emit('limit_continue', { projectId: t.pid, sessionId: t.sid, account: w.account ?? null, until, estimated, kind: base.limitKind, failedTasks: w.failedTasks, continueAt: rec.fireAt, waiting: !now, origin });
   }
 
   /** A new turn of this conversation: what its process's idle stream showed is history. */
@@ -1317,13 +1411,16 @@ export class SessionManager {
   /** R5: a parked turn continues by itself. A turn that never started on any
    *  process is resent as it was; one that did is continued; an autopilot that
    *  paused for the park is un-paused instead. */
-  private scheduleParkResume(pid: string, sid: string, provider: 'claude' | 'codex', run: ActiveRun, autopilot: boolean, orig: { prompt: string; opts?: TurnRunOptions; resume: boolean }): { at: number; until: number; estimated: boolean; kind: string } {
+  private scheduleParkResume(pid: string, sid: string, provider: 'claude' | 'codex', run: ActiveRun, autopilot: boolean, orig: { prompt: string; opts?: TurnRunOptions; resume: boolean; origin: string }): { at: number; until: number; estimated: boolean; kind: string } {
     const { until, estimated } = this.nextLimitReset(provider);
     const o = orig.opts;
     // Only an autopilot STEP is replaced by un-pausing; anyone else's message is sent again.
     const step = autopilot && o?.sender?.kind === 'autopilot';
     const kind = step ? 'autopilot' : run.turnStarted ? 'continue' : 'resend';
-    const rec = this.limitResume().schedule({ projectId: pid, sessionId: sid, provider, kind, until, estimated, now: this.limitEligible(provider, pid, sid),
+    // Never `now`: the router has just said no account can take it. A tick
+    // fires it early once one can (judged with the same context).
+    const rec = this.limitResume().schedule({ projectId: pid, sessionId: sid, provider, kind, until, estimated, origin: orig.origin,
+      ...(o?.account ? { routeAccount: o.account } : {}), ...(o?.useReserve !== undefined ? { useReserve: o.useReserve } : {}),
       ...(autopilot && !step ? { resumeAutopilot: true } : {}), ...(kind === 'resend' && !orig.resume ? { fresh: true } : {}),
       ...(run.limit ? { ...(run.limit.account ? { account: run.limit.account } : {}), limitKind: (run.limit.kind ?? 'unknown') as LimitResumeRecord['limitKind'], limitAt: run.limit.at } : {}),
       ...(kind === 'resend' ? { prompt: orig.prompt, ...(o?.sender ? { sender: o.sender } : {}), model: o?.model, effort: o?.effort, speed: o?.speed, ...(o?.fileRefs?.length ? { attachments: o.fileRefs } : {}), ...(o?.requestId ? { requestId: o.requestId } : {}) } : {}) });
@@ -1334,7 +1431,8 @@ export class SessionManager {
   private parkDelegate(parentPid: string, parentSid: string, d: Delegate, started: boolean, prompt: string, providerSessionId?: string, limit?: ActiveRun['limit']): void {
     this.delegateRuns.delete(d.sessionId);
     const { until, estimated } = this.nextLimitReset(d.provider);
-    this.limitResume().schedule({ kind: 'delegate', projectId: parentPid, sessionId: parentSid, provider: d.provider, until, estimated, now: this.limitEligible(d.provider),
+    // Never `now`: the router has just parked it (see scheduleParkResume).
+    this.limitResume().schedule({ kind: 'delegate', projectId: parentPid, sessionId: parentSid, provider: d.provider, until, estimated,
       ...(limit ? { ...(limit.account ? { account: limit.account } : {}), limitKind: (limit.kind ?? 'unknown') as LimitResumeRecord['limitKind'], limitAt: limit.at } : {}),
       delegate: { parentSessionId: parentSid, delegateId: d.id, mode: started ? 'continue' : 'resend' }, ...(started ? {} : { prompt }) });
     // A turn that started made the session: the continue resumes it, first turn or not.
@@ -1475,7 +1573,7 @@ export class SessionManager {
   clearSelfQueueStreak(sessionId: string): void { this.selfQueueStreak.delete(sessionId); }
 
 
-  enqueue(pid: string, item: { text: string; attachmentPrompt?: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; speed?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string; limitResume?: boolean }): QueueItem {
+  enqueue(pid: string, item: { text: string; attachmentPrompt?: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; speed?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string; limitResume?: boolean; front?: boolean }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
     const text = (item.text ?? '').trim() || (item.fileRefs?.length || item.attachmentPrompt ? 'Use the attached files.' : '');
@@ -1492,7 +1590,11 @@ export class SessionManager {
     if (item.afterSessionId && item.afterSessionId === sessionId) throw new Error('A queue item cannot wait for its own conversation');
     const map = this.loadQueues();
     const q: QueueItem = { id: randomUUID(), text, attachmentPrompt: item.attachmentPrompt, fileRefs: item.fileRefs, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId, ...(item.limitResume ? { limitResume: true } : {}) };
-    (map[pid] ??= []).push(q);
+    const rows = (map[pid] ??= []);
+    // `front`: ahead of this conversation's other items (a usage-limit resend
+    // goes before what queued behind its record), never ahead of one dispatching.
+    const at = item.front ? rows.findIndex((x) => (x.sessionId ?? pid) === sessionId && !x.dispatching) : -1;
+    if (at >= 0) rows.splice(at, 0, q); else rows.push(q);
     this.saveQueues(map);
     this.emitQueue(pid, map);
     // Normally the queue drains when that conversation's turn completes. But if
@@ -3923,7 +4025,10 @@ export class SessionManager {
       this.enqueue(projectId, { text: prompt, ...run, account:opts.account, useReserve:opts.useReserve, sessionId });
       return land(sessionId, true);
     };
-    if (this.sessionBusy(sessionId)) return queue();
+    // A usage-limit record waits for this conversation (a parked message, a
+    // continue): a cron, relay or agent message queues behind it instead of
+    // starting a turn that would park on top of it. The drain waits for it.
+    if (this.sessionBusy(sessionId) || this.limitResume().waiting(sessionId)) return queue();
     try {
       return land(this.continueSession(projectId, sessionId, prompt, run), false);
     } catch (err) {
@@ -4215,6 +4320,11 @@ export class SessionManager {
     // not `sender`, which is dropped for slash commands.
     const origin = originOf(runOpts?.sender);
     if (origin === 'human') this.humanTurns.set(sessionId, (this.humanTurns.get(sessionId) ?? 0) + 1);
+    // A usage-limit continue stays origin `limit_resume` (it must never pass
+    // as the owner: that would close an open question), and carries the
+    // origin of the turn it continues for the notice and the recap.
+    const resumeOrigin = origin === 'limit_resume' ? runOpts?.sender?.resumeOf ?? 'human' : undefined;
+    this.turnOrigins.set(sessionId, resumeOrigin ?? origin);
     const autopilot = this.loadAutopilot()[sessionId];
     // Keep the turn's notification ownership even if autopilot is disabled later.
     const run: ActiveRun = { startedAt: new Date().toISOString(), sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId, suppressCompletion: sender?.kind === 'autopilot' || (!!autopilot && !autopilot.paused) };
@@ -4225,7 +4335,7 @@ export class SessionManager {
     // conversations running at once, and each conversation's activity/messages
     // must land only in its own view, not whatever's currently on screen.
     const emit = (kind: string, data: Record<string, unknown>) => this.emit(kind, { sessionId, requestId: memoryRequestId, ...data, projectId: pid });
-    const turnMeta = () => ({ origin, turnStartedAt: run.startedAt, durationMs: Date.now() - Date.parse(run.startedAt!) });
+    const turnMeta = () => ({ origin, ...(resumeOrigin ? { resumeOrigin } : {}), turnStartedAt: run.startedAt, durationMs: Date.now() - Date.parse(run.startedAt!) });
     try {
       const runFn = this.opts.runSessionFn ?? runSession;
       let fileAccount: string | undefined;
@@ -4342,8 +4452,11 @@ export class SessionManager {
           if((this.capabilityService||this.requiredProjectTools(pid,sessionId).length)&&(reg.get(pid)?.kind==='chat'||this.projectSpacesEnabled())){
             const blocked=await this.chatCapabilities().blocked({...this.assertExecutionAllowed(pid,sessionId),provider:adapter.id},this.requiredProjectTools(pid,sessionId),this.projectSpacesEnabled(),sessionId);
             if(memorySnapshot)this.memory().validateSnapshot(pid,sessionId,adapter.id,memorySnapshot);
+            // The usage-limit scheduler judges eligibility with these (limitEligible).
+            this.lastCapabilityBlocks.set(sessionId, blocked);
             return blocked;
           }
+          this.lastCapabilityBlocks.delete(sessionId);
           return {};
         },
         registry: this.registry(),
@@ -4482,7 +4595,7 @@ export class SessionManager {
           const apBefore = this.loadAutopilot()[sessionId];
           let autoResume: ReturnType<SessionManager['scheduleParkResume']> | undefined;
           if (res.status === 'parked') {
-            try { autoResume = this.scheduleParkResume(pid, sessionId, adapter.id as 'claude' | 'codex', run, !!apBefore && !apBefore.paused, { prompt: resendPrompt, opts: runOpts, resume }); }
+            try { autoResume = this.scheduleParkResume(pid, sessionId, adapter.id as 'claude' | 'codex', run, !!apBefore && !apBefore.paused, { prompt: resendPrompt, opts: runOpts, resume, origin: resumeOrigin ?? origin }); }
             catch (e) { console.warn('[limit-resume] could not schedule the parked turn:', (e as Error).message); }
           }
           const drained = res.status !== 'stopped' && res.status !== 'parked' && this.maybeDrainQueue(pid, sessionId);

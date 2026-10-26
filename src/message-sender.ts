@@ -8,6 +8,10 @@ export interface MessageSender {
   kind: 'conversation' | 'automation' | 'autopilot' | 'mcp' | 'advisor' | 'delegate' | 'recap' | 'bot_event' | 'bot_brief' | 'limit_resume';
   /** For kind `recap`: which ending the gateway asked for. */
   recap?: 'background' | 'autopilot';
+  /** For kind `limit_resume`: the origin of the turn it continues (cron,
+   *  relay, delegate, ...); absent = the owner's. Its ending notifies as that
+   *  turn would have. Read by the gateway only, never parsed back from text. */
+  resumeOf?: string;
   projectId?: string;
   sessionId?: string;
   projectName?: string;

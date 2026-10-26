@@ -18,9 +18,12 @@
  *           an out-of-turn usage limit that continues at once on another
  *           account.
  *
- * A usage limit the gateway continues by itself (a parked turn with a resume
- * scheduled, an out-of-turn limit that has to wait for the reset) is
- * `normal`, never urgent: the owner does not have to act.
+ * A usage limit the gateway continues by itself (a parked turn waiting on a
+ * real limit, an out-of-turn limit that has to wait for the reset) is
+ * `normal`, never urgent: the owner does not have to act. A park with NO
+ * account actually limited (all signed out or paused), an auto-continue that
+ * gave up or hit the loop brake, and a parked message that will not be sent
+ * are urgent `needs_you`: the owner has to act.
  *   none    nothing at all: stopped turns, autopilot steps, per-conversation
  *           orphans (collapsed into one restart notice).
  */
@@ -194,6 +197,17 @@ export function pausedUntil(at: number, tz?: string): string {
   return when ? `Paused by a usage limit until ${when}; continues automatically` : 'Paused by a usage limit; continues automatically';
 }
 
+/** Why a parked message was not sent after the limit, in plain words. */
+function skipWords(reason: string): string {
+  switch (reason) {
+    case 'question': return 'a question is waiting for you';
+    case 'archived': return 'the conversation was archived';
+    case 'autopilot_changed': return 'autopilot changed meanwhile';
+    case 'stopped': return 'it was stopped';
+    default: return reason || 'skipped';
+  }
+}
+
 /** Why a turn failed, in plain words. */
 export function failureReason(data: Record<string, unknown>, tz?: string): string {
   const raw = String(data.reason || data.message || data.error || '').trim();
@@ -282,7 +296,10 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
     case 'conversation_settled': {
       const status = kind === 'session_error' ? 'failed' : String(data.status || '');
       if (data.notificationSuppressed || STOPPED.has(status) || data.reason === 'Stopped by user.') return none();
-      const origin = (data.origin as TurnOrigin | undefined) ?? 'human';
+      let origin = (data.origin as TurnOrigin | undefined) ?? 'human';
+      // A usage-limit continue ends as the turn it continued would have: a
+      // cron's, a relay's or a delegate's stays quiet and never pushes.
+      if (origin === 'limit_resume' && typeof data.resumeOrigin === 'string' && data.resumeOrigin !== 'human') origin = data.resumeOrigin as TurnOrigin;
       const id = `turn:${sid}:${turnId}`;
       if (status === 'completed') {
         // The settled event is the one that counts; a raw completed
@@ -307,9 +324,11 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         return make(Number.isFinite(dur) && dur >= LONG_TURN_MS ? 'normal' : 'quiet', 'finished', body, id);
       }
       if (status === 'parked') {
-        // The gateway continues it by itself (contract R5): worth a buzz, not a need.
-        const resume = data.autoResume as { at?: number; until?: number } | undefined;
-        if (resume && Number.isFinite(Number(resume.until ?? resume.at))) return make('normal', 'finished', withPrefix(ctx, pausedUntil(Number(resume.until ?? resume.at), ctx.timeZone)), id);
+        // The gateway continues it by itself (contract R5): worth a buzz, not a
+        // need -- when it waits on a REAL limit. An estimated reset means no
+        // account is limited at all (signed out, paused): a person has to act.
+        const resume = data.autoResume as { at?: number; until?: number; estimated?: boolean } | undefined;
+        if (resume && resume.estimated !== true && Number.isFinite(Number(resume.until ?? resume.at))) return make('normal', 'finished', withPrefix(ctx, pausedUntil(Number(resume.until ?? resume.at), ctx.timeZone)), id);
         // Parked with no reason = no account could take the turn: every one is
         // at its limit or signed out. That needs a person.
         if (!data.reason) {
@@ -389,17 +408,24 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
     }
 
     case 'limit_continue': {
+      // A gateway turn was already running: nothing was scheduled (see the manager).
+      if (data.skipped) return null;
       const id = `limit:${sid}:${data.until ?? ctx.at ?? ''}`;
-      if (data.waiting === true) return make('normal', 'finished', withPrefix(ctx, pausedUntil(Number(data.until ?? data.continueAt), ctx.timeZone)), id);
+      // A cron's, a relay's or an agent's background work waits quietly.
+      const owners = data.origin === undefined || data.origin === 'human';
+      if (data.waiting === true) return make(owners ? 'normal' : 'quiet', owners ? 'finished' : 'automation', withPrefix(ctx, pausedUntil(Number(data.until ?? data.continueAt), ctx.timeZone)), id);
       const acct = typeof data.account === 'string' ? ` ${data.account}` : '';
       const window = data.kind === 'session' || data.kind === 'weekly' ? `its ${data.kind} limit` : 'a usage limit';
       return make('quiet', 'automation', withPrefix(ctx, `Account${acct} hit ${window}; continuing on another account`), id);
     }
 
     case 'limit_resume': {
+      // The owner must act on each of these: urgent, needs_you.
       const id = `limit-resume:${sid}:${data.state}:${ctx.at ?? ''}`;
-      if (data.state === 'gave_up') return make('normal', 'finished', withPrefix(ctx, `Auto-continue gave up after ${Number(data.attempts) || 6} tries; no account could take it`), id);
-      if (data.state === 'braked') return make('normal', 'finished', withPrefix(ctx, `Auto-continue stopped after ${Number(data.count) || 3} tries in a row; send a message to go on`), id);
+      const quote = typeof data.prompt === 'string' && data.prompt ? ` Not sent: “${data.prompt}”` : '';
+      if (data.state === 'gave_up') return make('urgent', 'needs_you', withPrefix(ctx, `Auto-continue gave up: ${cutWords(String(data.reason || 'no account could take it'), EXCERPT_MAX)}.${quote}`), id);
+      if (data.state === 'braked') return make('urgent', 'needs_you', withPrefix(ctx, `Auto-continue stopped after ${Number(data.count) || 3} tries in a row; send a message to go on.${quote}`), id);
+      if (data.state === 'skipped' && quote) return make('urgent', 'needs_you', withPrefix(ctx, `A message parked by a usage limit was not sent (${skipWords(String(data.reason || ''))}).${quote}`), id);
       return null;
     }
 
