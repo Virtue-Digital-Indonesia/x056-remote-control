@@ -141,3 +141,23 @@ Use temp dirs, real `git` and a mocked `docker`:
 - Approval: only approved items are deleted, after a re-check; a changed item is skipped; a wrong digest is refused; the session-identity call is refused; the gate's code is required.
 - Every run writes `runs.jsonl` and the receipts.
 - A process cwd inside a candidate skips it (inject the process lister).
+
+## As built (2026-10-26)
+
+**The gate is a WebAuthn passkey assertion, pinned by key.** A session holds `$X056_TOKEN`, can read `state/webauthn/` (so the login cookie is no gate), and can list, remove and register passkeys with the token alone. What it cannot do is sign with the owner's private key. So:
+
+- `POST /api/storage/approve/options` returns a challenge (user verification required, single use, 5 min) bound to `sha256(manifestId | digest | sorted itemIds)`. `POST /api/storage/approve` needs the signed assertion for exactly that binding. A login challenge cannot approve and a step-up challenge cannot log in.
+- Only an **approver** passkey counts. An approver is pinned by credential id AND a fingerprint of its public key (`state/storage-sweeper/approvers.json`). The seed is every passkey registered before 2026-10-26 (the sweeper did not exist then, so no session could have registered one to pass this). Anything else joins only with an assertion from an existing approver (Settings > Storage > Passkeys that can approve).
+- Registering a passkey under an id that already exists is refused (it used to replace the key). A session that removes the owner's passkey and re-registers its own key under that id fails the fingerprint.
+- No approver = 403 at every step. There is never a token-only fallback.
+- Routes also refuse a body carrying the MCP bridge's identity (`from`, `self`, `delegate`). No MCP tool, and no system note, mentions storage.
+- Residual: a session with filesystem write could edit `approvers.json` or `credentials.json`. It could equally `rm -rf` anything itself, so this gate keeps the API honest. It is not a sandbox. A session can also *remove* the owner's passkey (denial of service: approvals then fail closed).
+
+**Other choices:**
+- `{workspaceRoot}/poc-ahu-ai` is in the default `protectedPaths`. The dev instance works in that tree, and its processes, turns and containers are invisible from this container, so none of the live-use checks could protect them.
+- A checkout nested inside a missing-gitdir or detached-unreachable tree is protected too (checked by walking up from each target at plan and delete time).
+- M2 and M3 are refused when another repository sits inside (an ignored clone would go with `rm` or `git worktree remove`).
+- Execution acts on the re-plan, never on the stored manifest: docker commands are rebuilt from the target, path actions come from the fresh plan.
+- Without a readable `accounts.json` nothing runs.
+- `storage_sweep` and `storage_manifest` are appended to `events.jsonl` and broadcast. The manifest notice is quiet (category `finished`, so "Automation and background" does not push it).
+- A worktree with a fresh file is left out entirely, not listed as M1: M1 requires idle >= 7 days, so the A1 test bullet "fresh -> M1" is read as "fresh -> not AUTO".
