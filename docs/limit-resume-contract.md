@@ -178,4 +178,6 @@ Low:
 Known gaps:
 
 - The steer in fix 4 is best effort. When the running turn is itself on the limited account and fails over, the steered line reaches the new account only through the transcript.
-- `lastCapabilityBlocks` is in memory, so after a restart the first tick judges without capability blocks. A wrong early fire then parks again and uses one of the loop brake's 3 auto-continues.
+- `lastCapabilityBlocks` is in memory, so after a restart the first tick judges without capability blocks. A wrong early fire does not park: `runSession` sees the "Required tool" block and waits in `routing_wait` until an account can take the turn. It uses one of the loop brake's 3 auto-continues.
+- If a turn starts after the limit is detected but before the woken reply's `result`, `supersedeLimitWatch` ends the watch. No continue is scheduled, which is correct, but the dead agents are not named either: the steer cannot land yet, because `launch` supersedes the watch before the run is registered.
+- A record that ends unsent (skipped, gave up, braked) leaves any cron, relay or agent messages that queued behind it in the queue. The workspace controller's 1 s queue planner (`tickQueuePlanner`) drains them, because the conversation is idle.
