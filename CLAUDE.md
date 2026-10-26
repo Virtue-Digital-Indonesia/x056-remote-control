@@ -1575,9 +1575,12 @@ resets ..." and never went on. Contract and forensics:
   failed over, and the completion gate settled the conversation as "finished"
   with the limit text as its reply. All three reported stops (2026-10-26)
   were this, with another account eligible every time.
-- **Now idle events are classified** (conversation and delegate processes).
-  On a limit the gateway marks the PROCESS's account (from its configDir, not
-  the routed one), logs `limit_detected {outOfTurn: true}`, collects the
+- **Now idle events are classified** (conversation and delegate processes),
+  but only the MAIN thread's own limit acts: the synthetic `error:
+  'rate_limit'` reply or a top-level 429 `result` (a `rate_limit_event` or a
+  failed agent alone does nothing). The gateway marks the PROCESS's account
+  (from its configDir, not the routed one; never for a model-only window such
+  as an Opus limit), logs `limit_detected {outOfTurn: true}`, collects the
   background tasks the limit killed (failed `task_notification`s), destroys
   that process at the woken reply's `result` (or 5 s after) and sends ONE
   continue turn, sender kind `limit_resume` (visible in the owner and Bot
@@ -1585,29 +1588,39 @@ resets ..." and never went on. Contract and forensics:
   the dead agents to re-run. Destroying the process is load-bearing: the pool
   runs a new turn on a conversation's ACTIVE process whatever its account, so
   the continue would otherwise land on the limited process and bench the
-  healthy account it was routed to. No "finished" settle, no recap.
+  healthy account it was routed to. No "finished" settle, no recap. If a
+  gateway turn started during the wake, no continue: the dead agents are
+  steered into that turn instead.
 - **Reset times are parsed from the text** (`parseLimitReset` in
   `src/detector.ts`: "8:30am (UTC)", "3pm (Asia/Jakarta)", "Oct 30, 9am",
   "in 2h 10m", ISO), relative to the MESSAGE time, never rolled past now, so
-  a reset already in the past means "go now". A structured `resetsAt` wins
-  but the later of the two is kept (one weekly limit's `resetsAt` looked like
+  a reset already in the past means "go now", any reset capped at 8 days. A
+  structured `resetsAt` wins but the later of the two is kept (one weekly limit's `resetsAt` looked like
   the 5-hour window). `earliestReset` returns only the future. The 30-minute
   guess is left for a limit with no reset anywhere.
 - **Parked turns resume.** Every account out -> a persisted record in
   `state/limit-resume.json` (`continue`, `resend` for a turn that never
   started -- original prompt, sender, model, effort, files -- `autopilot` for a
   parked autopilot step, `delegate`). A 30 s tick fires it at `until + 60 s`
-  (or at once when an account is free), through the ordinary send path. It
-  survives deploys; a past record fires at boot. Cleared by a human turn
-  since, a stop, delete or archive, or a pending question. Brakes: 3
-  auto-continues per conversation without a human message, 6 attempts, then
-  one normal notice. The queue no longer drains into a second park.
+  (or earlier, on any tick where the router -- same model and capability
+  context -- would take it), through the ordinary send path. It survives
+  deploys; a past record fires at boot; a corrupt file is set aside. Cleared
+  by a human turn since, a stop, delete or archive, or a pending question.
+  While a record waits, cron/relay/agent sends QUEUE behind it, and a parked
+  owner message (`resend`) is never replaced by a later park. Brakes: 3
+  auto-continues per conversation without a human message; 6 "no account"
+  re-parks; guard refusals and failed sends retry 5-minutely for 24 h. The
+  queue no longer drains into a second park.
 - **Delegates**: an idle limit becomes a follow-up; a parked delegate waits
   (`waiting_for_reset`) instead of reporting BLOCKED, and reports BLOCKED only
   if its record gives up.
-- **Notices**: continuing now is quiet; waiting for a reset is `normal`
-  ("Paused by a usage limit until HH:MM; continues automatically"); never
-  urgent, the owner has nothing to do. `GET /api/limit-resume` lists records.
+- **Notices**: continuing now is quiet; waiting on a real limit is `normal`
+  ("Paused by a usage limit until HH:MM; continues automatically"), quiet for
+  an automated conversation. Urgent `needs_you` when the owner must act: a
+  park with no account actually limited (signed out/paused), gave up, braked,
+  or a parked owner message that will not be sent (quoted). A continue ends
+  as quietly as the turn it continues (origin kept as `resumeOf` /
+  `resumeOrigin`). `GET /api/limit-resume` lists records.
 - Not covered: an out-of-turn Codex limit has no test of its own (the path is
   shared); a prompt held during the wake still lands once on the limited
   account and fails over in-turn.
@@ -1633,16 +1646,25 @@ from a manifest he approves, and log every run. Contract with as-built notes:
   fds, cache env, running containers' bind sources), and any chat that is
   running, has background work or queue items, is a cron target or has a live
   workflow.
-- **AUTO** (daily 04:00 Asia/Jakarta, `X056_SWEEP_AT`, `X056_SWEEP=off`
-  disables): `node_modules` and pure caches (`.next/cache`, `.vite`, `.turbo`,
+- **AUTO** (daily 04:00 Asia/Jakarta, `X056_SWEEP_AT`; the schedule is
+  OPT-IN, `X056_SWEEP=on` in production's `.env`, passed by `compose.yaml` --
+  the dev instance must never sweep, and a workspace root inside
+  `poc-ahu-ai` refuses everything but a dry run): `node_modules` and pure caches (`.next/cache`, `.vite`, `.turbo`,
   ...) in FINISHED worktrees (linked, clean status, HEAD in some ref, a
   lockfile, idle >= 7 days); `go clean -cache`, pip/npm caches, old
-  `/tmp/go-build*`, `pnpm store prune`; dind build cache > 7 days and unused
-  Go/npm/pip cache volumes. Never `git worktree prune`, `gc` or `clean`, never
-  follows a symlink, and every item is re-checked right before deletion.
+  `/tmp/go-build*`, `pnpm store prune`; dind build cache > 7 days. A
+  `node_modules` holding a `.git`, or a checkout using `patch-package`, goes to
+  the manifest instead. Never `git worktree prune`, `gc` or `clean`, never
+  follows a symlink, every item is re-checked right before deletion, and a
+  run ABORTS when the process table, mount table, project list or running
+  dind bind mounts cannot be read (fail closed).
 - **MANIFEST** (approval): other idle `node_modules` (M1), git-ignored build
-  outputs (M2), whole finished worktrees via `git worktree remove` (M3),
-  dind leftovers (M4), big unknown `/tmp` dirs (M5).
+  outputs (M2), whole finished worktrees via `git worktree remove` (M3 --
+  refused when the worktree holds ignored non-generated files, skip-worktree
+  or assume-unchanged entries, `refs/worktree/*`, or reflog commits no ref
+  contains), dind leftovers including EVERY unused volume (M4; a container
+  with a writable layer > 50 MB or named before/rollback/backup is
+  protected), big unknown `/tmp` dirs (M5).
 - **Approval is a passkey assertion, not the token**: every session holds
   `$X056_TOKEN`, so a bearer route is no gate. The challenge is bound to the
   manifest id, digest and the exact item ids, single use, 5 min; only an
