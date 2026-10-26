@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildModule, type GatewayConfig } from './app.module.js';
+import { sweepScheduleEnabled } from './storage-sweeper.js';
 import { appleAppSiteAssociation } from './apple-app-site.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -112,6 +113,7 @@ if (isMain) {
     claudePath: process.env.X056_CLAUDE_PATH,
     panelPath: process.env.X056_PANEL_PATH,
     interactiveProjectsDir: process.env.X056_INTERACTIVE_PROJECTS,
+    storageSweep: sweepScheduleEnabled(process.env),
   };
   const port = Number(process.env.PORT ?? 4056);
   createApp(cfg)

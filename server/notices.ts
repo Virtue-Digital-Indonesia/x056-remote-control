@@ -16,7 +16,9 @@
  *   quiet   bell + dot only: short turns, relays, cron, delegate wakes,
  *           advisor follow-ups, delegate progress, a failover that worked,
  *           an out-of-turn usage limit that continues at once on another
- *           account.
+ *           account; a storage cleanup manifest waiting for approval.
+ *   none    nothing at all: stopped turns, autopilot steps, per-conversation
+ *           orphans (collapsed into one restart notice).
  *
  * A usage limit the gateway continues by itself (a parked turn waiting on a
  * real limit, an out-of-turn limit that has to wait for the reset) is
@@ -24,8 +26,6 @@
  * account actually limited (all signed out or paused), an auto-continue that
  * gave up or hit the loop brake, and a parked message that will not be sent
  * are urgent `needs_you`: the owner has to act.
- *   none    nothing at all: stopped turns, autopilot steps, per-conversation
- *           orphans (collapsed into one restart notice).
  */
 import { stripTeamLine } from '../src/message-sender.js';
 import { serverLabel } from './mcp-oauth.js';
@@ -429,6 +429,16 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
       return null;
     }
 
+    case 'storage_manifest': {
+      // Quiet on purpose (bell + dot, never a push): a cleanup can wait for
+      // the owner. Category `finished`, not `automation`: a device with
+      // "Automation and background" on would push an automation notice.
+      const items = Number(data.items) || 0;
+      const gb = (Number(data.bytes) || 0) / 1024 ** 3;
+      return make('quiet', 'finished', `${items} item${items === 1 ? '' : 's'} (${gb >= 10 ? Math.round(gb) : gb.toFixed(1)} GB) wait for your approval`,
+        `storage-manifest:${data.manifestId}`, { title: 'Storage cleanup', tag: 'x056-storage', link: '/settings/storage' });
+    }
+
     case 'turn_orphaned':
       return none();
 
@@ -443,4 +453,4 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
 }
 
 /** Which kinds noticeFor can answer, so the emitter skips the rest cheaply. */
-export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted', 'bot_notice', 'limit_continue', 'limit_resume']);
+export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted', 'bot_notice', 'limit_continue', 'limit_resume', 'storage_manifest']);

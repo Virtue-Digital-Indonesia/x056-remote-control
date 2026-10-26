@@ -1062,13 +1062,75 @@ window.createControlRoom = function (engine) {
     $('notifyTest').onclick=async e=>{const b=e.currentTarget;b.disabled=true;status('Sending…');try{await push.test();status('Sent. It should arrive in a few seconds.');}catch(err){status(err.message);}finally{b.disabled=false;}};
     load();
   }
+  // Settings > Storage: the sweeper's runs, the manifest waiting for approval
+  // (approved with a passkey, never by an agent), and what it protects.
+  const STORAGE_RULES={A1:'Dependencies in finished worktrees',A2:'Build caches in finished worktrees',A3:'Container caches',A4:'Docker build cache',M1:'Dependencies and caches in idle checkouts',M2:'Ignored build outputs',M3:'Whole finished worktrees',M4:'Docker containers, images and volumes',M5:'Large old /tmp directories'};
+  const storageSize=n=>{n=Number(n)||0;if(n<=0)return '0 B';const u=['B','KB','MB','GB','TB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++;}return (n>=10||!i?Math.round(n):n.toFixed(1))+' '+u[i];};
+  const storageWhen=t=>new Date(t).toLocaleString([], {dateStyle:'medium',timeStyle:'short'});
+  const storageMode={auto:'Automatic','dry-run':'Dry run',approved:'Approved'};
+  let storagePoll=null;
+  async function renderStorageSettings(note) {
+    const host=$('storageSettings');if(!host)return;
+    let status,manifest,keys;
+    try{[status,{manifest},keys]=await Promise.all([json('/api/storage'),json('/api/storage/manifest'),json('/api/storage/approvers')]);}
+    catch(e){if(host.isConnected)host.textContent=e.message;return;}
+    if(!host.isConnected||settingSection!=='storage')return;
+    host.removeAttribute('role');
+    const sched=status.schedule||{},running=status.running,runs=status.runs||[];
+    const pending=manifest?manifest.items.filter(i=>!(manifest.executed||{})[i.id]):[];
+    const groups={};for(const i of pending)(groups[i.rule]||(groups[i.rule]=[])).push(i);
+    const expired=manifest&&manifest.expiresAt<Date.now();
+    const item=i=>`<label class="setting-row storage-item"><span><strong>${esc(i.target)}</strong><small>${esc(i.reason)} · ${storageSize(i.bytes)}${i.locked?' · locked worktree':''}${i.mayHoldData?' · may hold data':''}${i.executable?'':' · not approvable'}</small></span><input type="checkbox" data-storage-item="${esc(i.id)}" data-bytes="${Number(i.bytes)||0}" aria-label="Select ${esc(i.target)}" ${i.executable&&!expired?'':'disabled'}></label>`;
+    host.innerHTML=`<p>${sched.enabled?'Every day at '+esc(sched.at)+' ('+esc(sched.tz)+'), the sweeper removes':'The daily run is off. When it is on, the sweeper removes'} only what can be rebuilt: dependencies and caches of finished worktrees, container caches and old Docker build cache. Everything else is listed here and waits for you.</p>
+      <div class="setting-row"><span><strong>Dry run</strong><small>List what would go. Nothing is deleted.</small></span><button class="cr-secondary" id="storageDryRun" ${running?'disabled':''}>${running?'Running…':'Run dry run'}</button></div>
+      <p id="storageStatus" role="status">${esc(note||(running?(storageMode[running.mode]||running.mode)+' run in progress · '+running.phase:''))}</p>
+      <h3>Last runs</h3>${runs.length?runs.slice(0,8).map(r=>`<div class="setting-row storage-run"><span><strong>${esc(storageWhen(r.startedAt))}</strong><small>${esc(storageMode[r.mode]||r.mode)} · ${r.mode==='dry-run'?r.items+' found':r.deleted+' deleted, '+r.skipped+' skipped'}${r.aborted?' · stopped: '+esc(r.aborted):''}</small></span><span>${r.mode==='dry-run'?'':storageSize(r.reclaimedBytes)+' reclaimed'}</span></div>`).join(''):'<p>No runs yet.</p>'}
+      <h3>Waiting for approval</h3>${manifest?`<p>From the run of ${esc(storageWhen(manifest.createdAt))}${expired?' · expired: run a new dry run':' · expires '+esc(storageWhen(manifest.expiresAt))}${manifest.truncated?' · the scan stopped early, so this list is partial':''}.</p>`:'<p>No manifest yet. Run a dry run to make one.</p>'}
+      ${Object.keys(groups).sort().map(rule=>`<fieldset class="storage-group" data-rule="${rule}"><legend><label><input type="checkbox" data-storage-all="${rule}" ${groups[rule].some(i=>i.executable)&&!expired?'':'disabled'}> ${esc(STORAGE_RULES[rule]||rule)} · ${groups[rule].length} · ${storageSize(groups[rule].reduce((n,i)=>n+(Number(i.bytes)||0),0))}</label></legend>${groups[rule].map(item).join('')}</fieldset>`).join('')}
+      ${pending.length?`<div class="cr-dialog-actions"><button class="cr-primary" id="storageApprove" disabled>Approve selected</button><p id="storageSelected">Nothing selected</p></div>`:manifest?'<p>Nothing is waiting.</p>':''}
+      ${manifest&&manifest.protected.length?`<details id="storageProtected"><summary>Protected · ${manifest.protected.length}</summary>${manifest.protected.map(p=>`<div class="setting-row storage-item"><span><strong>${esc(p.target)}</strong><small>${esc(p.reason)}</small></span><span>${p.bytes==null?'':storageSize(p.bytes)}</span></div>`).join('')}</details>`:''}
+      <details id="storageApprovers"><summary>Passkeys that can approve · ${status.approvers||0}</summary><p>An approval needs a fresh passkey check. Passkeys registered before 26 Oct 2026 can approve; one added later can only after a passkey that already can allows it.${status.approvers?'':' No passkey can approve right now, so nothing can be approved.'}</p>${(keys.passkeys||[]).map(k=>`<div class="setting-row"><span><strong>${esc(k.label)}</strong><small>${k.approver?'Can approve':'Cannot approve yet'}</small></span>${k.approver?'':`<button class="cr-secondary" data-storage-allow="${esc(k.id)}">Allow</button>`}</div>`).join('')||'<p>No passkeys. Add one in Settings > Security.</p>'}</details>`;
+    const say=t=>{const el=$('storageStatus');if(el)el.textContent=t;};
+    const boxes=()=>[...host.querySelectorAll('[data-storage-item]:not(:disabled)')];
+    const sync=()=>{
+      const on=boxes().filter(b=>b.checked),total=on.reduce((n,b)=>n+Number(b.dataset.bytes),0);
+      if($('storageApprove'))$('storageApprove').disabled=!on.length;
+      if($('storageSelected'))$('storageSelected').textContent=on.length?on.length+' selected · '+storageSize(total):'Nothing selected';
+      host.querySelectorAll('[data-storage-all]').forEach(all=>{const g=boxes().filter(b=>b.closest('fieldset')===all.closest('fieldset'));all.checked=g.length>0&&g.every(b=>b.checked);all.indeterminate=g.some(b=>b.checked)&&!all.checked;});
+    };
+    host.querySelectorAll('[data-storage-item]').forEach(b=>b.onchange=sync);
+    host.querySelectorAll('[data-storage-all]').forEach(all=>all.onchange=()=>{boxes().filter(b=>b.closest('fieldset')===all.closest('fieldset')).forEach(b=>b.checked=all.checked);sync();});
+    const watch=()=>{clearTimeout(storagePoll);storagePoll=setTimeout(async()=>{if(!$('storageSettings'))return;try{const st=await json('/api/storage');if(st.running){watch();say((storageMode[st.running.mode]||st.running.mode)+' run in progress · '+st.running.phase);return;}const r=(st.runs||[])[0];renderStorageSettings(r?(storageMode[r.mode]||r.mode)+' run finished: '+(r.mode==='dry-run'?r.items+' items found.':r.deleted+' deleted, '+r.skipped+' skipped, '+storageSize(r.reclaimedBytes)+' reclaimed.'):'');}catch(e){say(e.message);}},2000);};
+    if(running)watch();
+    $('storageDryRun').onclick=async e=>{e.currentTarget.disabled=true;try{await json('/api/storage/sweep',{dryRun:true});say('Dry run started. This can take several minutes.');watch();}catch(err){say(err.message);e.currentTarget.disabled=false;}};
+    const passkey=async(options)=>{if(typeof SimpleWebAuthnBrowser==='undefined')throw new Error('The passkey library did not load.');return SimpleWebAuthnBrowser.startAuthentication({optionsJSON:options});};
+    if($('storageApprove'))$('storageApprove').onclick=async()=>{
+      const on=boxes().filter(b=>b.checked),total=on.reduce((n,b)=>n+Number(b.dataset.bytes),0);
+      if(!on.length)return;
+      if(!await engine.confirm({title:'Delete '+on.length+' item'+(on.length===1?'':'s')+'?',message:'About '+storageSize(total)+'. Each item is checked again right before it is deleted; anything that changed is skipped. Your passkey confirms it next.',confirmText:'Continue',danger:true}))return;
+      const body={manifestId:manifest.id,digest:manifest.digest,itemIds:on.map(b=>b.dataset.storageItem)};
+      $('storageApprove').disabled=true;
+      try{
+        say('Waiting for your passkey…');
+        const o=await json('/api/storage/approve/options',body);
+        const response=await passkey(o.options);
+        const r=await json('/api/storage/approve',{...body,flowId:o.flowId,response});
+        say('Approved. Deleting '+r.items+' item'+(r.items===1?'':'s')+'…');watch();
+      }catch(err){say(err&&err.name==='NotAllowedError'?'Passkey check cancelled. Nothing was deleted.':(err.message||'Approval failed')+' Nothing was deleted.');sync();}
+    };
+    host.querySelectorAll('[data-storage-allow]').forEach(b=>b.onclick=async()=>{
+      try{const o=await json('/api/storage/approvers/options',{credentialId:b.dataset.storageAllow});const response=await passkey(o.options);await json('/api/storage/approvers',{credentialId:b.dataset.storageAllow,flowId:o.flowId,response});renderStorageSettings('That passkey can approve now.');}
+      catch(err){say(err.message||'Could not allow that passkey');}
+    });
+    sync();
+  }
   function settingsTab(tab,host) {
     if(typeof tab!=='string')tab='general';settingSection=tab;
     if(host&&host!==settingsHost){releaseSettings();settingsHost.innerHTML='';settingsHost=host;settingsHost.classList.add('settings-surface');}
     releaseSettings();
     const inline=settingsHost!==preferences;
-    if(inline)settingsHost.innerHTML=`<h2 class="sr-only">${{general:'General',notifications:'Notifications',models:'Model defaults',routing:'Account routing',memory:'Memory',connections:'Connections',security:'Security'}[tab]||'Settings'}</h2><div id="settingsBody"></div>`;
-    else preferences.innerHTML=`<div class="settings-shell"><nav class="settings-nav" aria-label="Settings"><h2>Settings</h2>${[['general','controls','General'],['notifications','bell','Notifications'],['models','sparkles','Models'],['routing','route','Routing'],['memory','snippet','Memory'],['connections','plug','Connections'],['security','key','Security']].map(([id,icon,label])=>`<button data-settings="${id}" aria-current="${id===tab?'page':'false'}">${ic(icon)}<span>${label}</span></button>`).join('')}</nav><section class="settings-content"><header><h2>${{general:'General',notifications:'Notifications',models:'Model defaults',routing:'Account routing',memory:'Memory',connections:'Connections',security:'Security'}[tab]}</h2><button class="cr-icon" data-close-settings aria-label="Close settings">${ic('x')}</button></header><div id="settingsBody"></div></section></div>`;
+    if(inline)settingsHost.innerHTML=`<h2 class="sr-only">${{general:'General',notifications:'Notifications',models:'Model defaults',routing:'Account routing',memory:'Memory',connections:'Connections',security:'Security',storage:'Storage'}[tab]||'Settings'}</h2><div id="settingsBody"></div>`;
+    else preferences.innerHTML=`<div class="settings-shell"><nav class="settings-nav" aria-label="Settings"><h2>Settings</h2>${[['general','controls','General'],['notifications','bell','Notifications'],['models','sparkles','Models'],['routing','route','Routing'],['memory','snippet','Memory'],['connections','plug','Connections'],['security','key','Security'],['storage','archive','Storage']].map(([id,icon,label])=>`<button data-settings="${id}" aria-current="${id===tab?'page':'false'}">${ic(icon)}<span>${label}</span></button>`).join('')}</nav><section class="settings-content"><header><h2>${{general:'General',notifications:'Notifications',models:'Model defaults',routing:'Account routing',memory:'Memory',connections:'Connections',security:'Security',storage:'Storage'}[tab]}</h2><button class="cr-icon" data-close-settings aria-label="Close settings">${ic('x')}</button></header><div id="settingsBody"></div></section></div>`;
     if(!inline){
       preferences.querySelector('[data-close-settings]').onclick=()=>preferences.close();
       preferences.querySelectorAll('[data-settings]').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settings));
@@ -1104,6 +1166,9 @@ window.createControlRoom = function (engine) {
     } else if(tab==='memory') {
       body.innerHTML='<p>What conversations remember between turns. Changes apply to the next turn.</p><div id="memorySettingsBody" role="status">Loading…</div>';
       renderMemorySettingsPage();
+    } else if(tab==='storage') {
+      body.innerHTML='<div id="storageSettings" role="status">Loading…</div>';
+      renderStorageSettings();
     } else if(tab==='security') {
       body.innerHTML='<h3>Passkeys</h3><p>Use your device to sign in with Face ID, Touch ID, or a security key.</p><div id="securityControls"></div><div class="setting-row"><span><strong>Sign out</strong><small>End your panel session on this browser</small></span><button class="cr-secondary" id="settingsLogout">Sign out</button></div>';
       mountControl('passkeyPop',$('securityControls'),'passkeyBtn');on('settingsLogout',()=>$('tokenBtn').click());

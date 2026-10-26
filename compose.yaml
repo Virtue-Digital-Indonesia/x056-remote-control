@@ -56,6 +56,11 @@ services:
       X056_PERSISTENT: ${X056_PERSISTENT:-}
       X056_PERSISTENT_MAX: ${X056_PERSISTENT_MAX:-}
       X056_PERSISTENT_TTL_MS: ${X056_PERSISTENT_TTL_MS:-}
+      # Storage sweeper's daily run (docs/storage-sweeper-contract.md). OPT-IN:
+      # only X056_SWEEP=on starts it, so an instance that never set it (the dev
+      # one) never sweeps. X056_SWEEP_AT=HH:MM, default 04:00 Asia/Jakarta.
+      X056_SWEEP: ${X056_SWEEP:-}
+      X056_SWEEP_AT: ${X056_SWEEP_AT:-}
       # Project sessions' `docker`/`docker compose` point at the ISOLATED dind
       # sidecar below — NOT the host's Docker.
       DOCKER_HOST: tcp://dind:2375
