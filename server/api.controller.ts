@@ -143,6 +143,21 @@ export const PRESENCE = Symbol('x056-presence');
 export const READ_STATE = Symbol('x056-read-state');
 export const LIVE_ACTIVITIES = Symbol('x056-live-activities');
 export const WEBAUTHN_SERVICE = Symbol('x056-webauthn-service');
+
+/** The WebAuthn relying party for a request: its origin's host, if allowed. */
+export function relyingParty(req: Request): { rpID: string; origin: string } {
+  const hdrOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
+  const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? (req.secure ? 'https' : 'http');
+  const host = (req.headers['x-forwarded-host'] as string | undefined) ?? req.headers.host ?? '';
+  const origin = hdrOrigin || `${proto}://${host}`;
+  let rpID: string;
+  try { rpID = new URL(origin).hostname; } catch { throw new BadRequestException('bad origin'); }
+  const allowed = (process.env.X056_RP_ID || 'x056.rc.val.id').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!allowed.includes(rpID) && rpID !== 'localhost' && rpID !== '127.0.0.1') {
+    throw new BadRequestException('origin not allowed');
+  }
+  return { rpID, origin };
+}
 export const SESSION_STORE = Symbol('x056-session-store');
 export const PLUGIN_MANAGER = Symbol('x056-plugin-manager');
 export const MCP_SERVER_MANAGER = Symbol('x056-mcp-server-manager');
@@ -269,19 +284,7 @@ export class ApiController {
   /** Derive the RP id + origin the browser used, validated against an allowlist
    *  (the production host, plus localhost for dev/e2e) so WebAuthn can't be
    *  driven for some other origin. */
-  private rp(req: Request): { rpID: string; origin: string } {
-    const hdrOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
-    const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? (req.secure ? 'https' : 'http');
-    const host = (req.headers['x-forwarded-host'] as string | undefined) ?? req.headers.host ?? '';
-    const origin = hdrOrigin || `${proto}://${host}`;
-    let rpID: string;
-    try { rpID = new URL(origin).hostname; } catch { throw new BadRequestException('bad origin'); }
-    const allowed = (process.env.X056_RP_ID || 'x056.rc.val.id').split(',').map((s) => s.trim()).filter(Boolean);
-    if (!allowed.includes(rpID) && rpID !== 'localhost' && rpID !== '127.0.0.1') {
-      throw new BadRequestException('origin not allowed');
-    }
-    return { rpID, origin };
-  }
+  private rp(req: Request): { rpID: string; origin: string } { return relyingParty(req); }
 
   private setSessionCookie(req: Request, res: Response): void {
     const secure = (req.headers['x-forwarded-proto'] as string | undefined) === 'https' || req.secure;

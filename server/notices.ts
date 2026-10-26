@@ -14,7 +14,8 @@
  *           follows), a parked turn, a restart interrupted work, the Bot's
  *           morning brief, a Bot notify_user that is not urgent.
  *   quiet   bell + dot only: short turns, relays, cron, delegate wakes,
- *           advisor follow-ups, delegate progress, a failover that worked.
+ *           advisor follow-ups, delegate progress, a failover that worked,
+ *           a storage cleanup manifest waiting for approval.
  *   none    nothing at all: stopped turns, autopilot steps, per-conversation
  *           orphans (collapsed into one restart notice).
  */
@@ -369,6 +370,16 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         { title: cutWords(String(data.title || ctx.conversationTitle || 'Bot'), TITLE_MAX), link, tag: `x056-bot-${at}` });
     }
 
+    case 'storage_manifest': {
+      // Quiet on purpose (bell + dot, never a push): a cleanup can wait for
+      // the owner. Category `finished`, not `automation`: a device with
+      // "Automation and background" on would push an automation notice.
+      const items = Number(data.items) || 0;
+      const gb = (Number(data.bytes) || 0) / 1024 ** 3;
+      return make('quiet', 'finished', `${items} item${items === 1 ? '' : 's'} (${gb >= 10 ? Math.round(gb) : gb.toFixed(1)} GB) wait for your approval`,
+        `storage-manifest:${data.manifestId}`, { title: 'Storage cleanup', tag: 'x056-storage', link: '/settings/storage' });
+    }
+
     case 'turn_orphaned':
       return none();
 
@@ -383,4 +394,4 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
 }
 
 /** Which kinds noticeFor can answer, so the emitter skips the rest cheaply. */
-export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted', 'bot_notice']);
+export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted', 'bot_notice', 'storage_manifest']);

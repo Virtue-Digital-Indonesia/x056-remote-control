@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { deviceWants, DEFAULT_DEVICE_SETTINGS } from '../server/push.js';
 import { noticeFor, originOf, cutWords, replyExcerpt, noticeTitle, failureReason, formatDuration, LONG_TURN_MS, type NoticeContext, type TurnOrigin } from '../server/notices.js';
 
 const work: NoticeContext = { conversationTitle: 'Fix deed numbers', projectName: 'ocr', projectKind: 'project', provider: 'codex', link: '/work/p/s', at: '2026-10-01T03:00:00Z' };
@@ -210,4 +211,15 @@ describe('helpers', () => {
     expect(cutWords('short', 10)).toBe('short');
     expect(cutWords('alpha beta gamma delta', 12)).toBe('alpha beta…');
   });
+});
+
+it('a storage cleanup manifest is quiet: bell and dot, never a push, even with Automation on', () => {
+  const n = noticeFor('storage_manifest', { manifestId: 'm1', items: 3, bytes: 5.5 * 1024 ** 3 }, {})!;
+  expect(n.tier).toBe('quiet');
+  expect(n.category).toBe('finished');
+  expect(n.title).toBe('Storage cleanup');
+  expect(n.body).toBe('3 items (5.5 GB) wait for your approval');
+  expect(n.link).toBe('/settings/storage');
+  expect(n.id).toBe('storage-manifest:m1');
+  for (const s of [DEFAULT_DEVICE_SETTINGS, { ...DEFAULT_DEVICE_SETTINGS, automation: true, finished: true }]) expect(deviceWants(n, s, Date.now())).toBe(false);
 });

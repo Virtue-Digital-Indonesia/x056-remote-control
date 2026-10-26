@@ -1,5 +1,8 @@
 // Isolated gateway for browser checks. All identities and transcripts are fixtures.
-import { appendFileSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync, symlinkSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync, symlinkSync, readdirSync, lstatSync, utimesSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { STORAGE_SWEEPER, type StorageSweeper } from '../../server/storage-sweeper.js';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -75,7 +78,23 @@ if(process.env.X056_TEST_SPACE_DISABLE==='1'){
   seed.enqueue(chat.id,{sessionId:chat.lastSessionId,text:'Review after feature disable',requestId:'disabled-fixture-message-001',paused:true,notBefore:Date.now()+3600000});
   seed.onModuleDestroy();
 }
-const app=await createApp({token:'browser-fixture-token-0123456789',stateDir:state,workspaceRoot:dir,claudePath:fake,panelPath:join(pub,'panel.html'),titleGenerator:async input=>{await new Promise(r=>setTimeout(r,300));return /keyboard/i.test(input.prompt)?'Keyboard navigation improvements':'Website layout improvements';}});
+// X056_TEST_STORAGE=1: a workspace with two idle, dirty worktrees (their
+// node_modules land in the manifest) and the test-only passkey as approver.
+const storageFixture=process.env.X056_TEST_STORAGE==='1';
+if(storageFixture){
+  const sw=join(dir,'storage-ws'),site=join(sw,'site');
+  const g=(cwd:string,...a:string[])=>execFileSync('git',a,{cwd,stdio:'ignore',env:{...process.env,GIT_AUTHOR_NAME:'f',GIT_AUTHOR_EMAIL:'f@f',GIT_COMMITTER_NAME:'f',GIT_COMMITTER_EMAIL:'f@f'}});
+  mkdirSync(join(site,'src'),{recursive:true});g(site,'init','-q','-b','main');
+  writeFileSync(join(site,'.gitignore'),'node_modules/\ndist/\n');writeFileSync(join(site,'package.json'),'{}');writeFileSync(join(site,'package-lock.json'),'{}');writeFileSync(join(site,'src','index.js'),'1');
+  g(site,'add','-A');g(site,'commit','-q','-m','init');
+  for(const name of ['checkout-redesign','search-filters']){const wt=join(sw,name);g(site,'worktree','add','-q','-b',name,wt);mkdirSync(join(wt,'node_modules','react'),{recursive:true});writeFileSync(join(wt,'node_modules','react','index.js'),'x'.repeat(300000));writeFileSync(join(wt,'src','index.js'),'edited');}
+  mkdirSync(join(sw,'search-filters','dist'));writeFileSync(join(sw,'search-filters','dist','bundle.js'),'y'.repeat(120000));
+  const old=new Date(Date.now()-40*86400000),age=(p:string):void=>{const st=lstatSync(p);if(st.isDirectory()&&!st.isSymbolicLink())for(const n of readdirSync(p))age(join(p,n));if(!st.isSymbolicLink())utimesSync(p,old,old);};age(sw);
+  const key=createRequire(import.meta.url)('./storage-passkey.cjs') as {credentialId:string;coseB64url:()=>string};
+  mkdirSync(join(state,'webauthn'),{recursive:true});writeFileSync(join(state,'webauthn','credentials.json'),JSON.stringify([{id:key.credentialId,publicKey:key.coseB64url(),counter:0,label:'Fixture phone',createdAt:Date.now()-86400000}]));
+}
+const app=await createApp({token:'browser-fixture-token-0123456789',storage:{containerCaches:false,dind:false,processes:()=>[],mounts:()=>[]},stateDir:state,workspaceRoot:dir,claudePath:fake,panelPath:join(pub,'panel.html'),titleGenerator:async input=>{await new Promise(r=>setTimeout(r,300));return /keyboard/i.test(input.prompt)?'Keyboard navigation improvements':'Website layout improvements';}});
 if(process.env.X056_TEST_CHAT)app.get(SessionManager).setChatCapabilities(new ChatCapabilities(state,()=>registry.list(),undefined as never,undefined as never,undefined,async account=>({account:account.name,errors:[],capabilities:[{key:'skill:rc-documents',name:'rc-documents',kind:'skill',state:'ready',fingerprint:'fixture-v1',invocation:'/rc-documents'},{key:'mcp:x056',name:'x056',kind:'mcp',state:'ready',fingerprint:'chat-files-v1'},{key:'plugin:fixture',name:'Fixture plugin',kind:'plugin',state:account.name==='backup'?'authorization-needed':'ready'}]})));
+if(storageFixture)await app.get<StorageSweeper>(STORAGE_SWEEPER).sweep({trigger:'manual',dryRun:true}).done;
 await app.listen(Number(process.env.X056_TEST_PORT||8768),'127.0.0.1');
 console.log('Browser fixture ready at '+await app.getUrl());

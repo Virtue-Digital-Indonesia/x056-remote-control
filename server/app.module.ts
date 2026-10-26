@@ -36,6 +36,9 @@ import { OAuthStore } from './oauth.js';
 import { McpOAuth } from './mcp-oauth.js';
 import { McpOAuthController, MCP_OAUTH } from './mcp-oauth.controller.js';
 import { WebAuthnService, SessionStore } from './webauthn.js';
+import { STORAGE_SWEEPER, StorageApprovers, StorageSweeper, type StorageSweeperOptions } from './storage-sweeper.js';
+import { StorageController, STORAGE_APPROVERS } from './storage.controller.js';
+import { liveWorkflowRuns } from '../src/adapters/workflows.js';
 import type { TurnOptions } from '../src/turn.js';
 
 /** Wire the x056 MCP bridge (scripts/x056-mcp.mjs) into every spawned turn, so
@@ -68,6 +71,44 @@ export interface GatewayConfig {
   publicUrl?: string;
   /** Code-graph / memory-wiki service. Defaults from env; tests inject their own. */
   codegraph?: CodegraphConfig;
+  /** The storage sweeper's daily schedule (production: on unless X056_SWEEP=off). Off by default so no test sweeps. */
+  storageSweep?: boolean;
+  /** Storage sweeper overrides (tests: roots, runners, caches/dind off). */
+  storage?: Partial<StorageSweeperOptions>;
+}
+
+/**
+ * "Is anything of this project busy?" for the storage sweeper, which must not
+ * import the manager: a running turn, background work (delegates included),
+ * queued messages, an enabled scheduled task, a live workflow run. Snapshotted
+ * for 3 s; anything unreadable counts as busy.
+ */
+function storageActivity(manager: SessionManager, cron: CronScheduler): (projectId: string) => { busy: boolean; reason?: string } {
+  let memo: { at: number; busy: Map<string, string>; unknown?: string } | null = null;
+  const snapshot = () => {
+    const busy = new Map<string, string>();
+    const mark = (pid: string, why: string) => { if (!busy.has(pid)) busy.set(pid, why); };
+    let unknown: string | undefined;
+    try {
+      const projects = manager.listProjects().projects;
+      const owner = new Map<string, string>();
+      for (const p of projects) {
+        for (const c of p.conversations ?? []) owner.set(c.sessionId, p.id);
+        if (p.runningSessionIds.length) mark(p.id, 'turn running');
+        if (p.backgroundSessionIds.length) mark(p.id, 'background work');
+      }
+      for (const [pid, items] of Object.entries(manager.queues())) if (items.length) mark(pid, 'queued messages');
+      for (const job of cron.list()) if (job.enabled) mark(job.projectId, 'scheduled task target');
+      for (const r of liveWorkflowRuns(manager.claudeConfigDirs())) { const pid = owner.get(r.sessionId); if (pid) mark(pid, 'live workflow'); }
+    } catch (e) { unknown = (e as Error).message; }
+    return { at: Date.now(), busy, unknown };
+  };
+  return (projectId) => {
+    if (!memo || Date.now() - memo.at > 3000) memo = snapshot();
+    if (memo.unknown) return { busy: true, reason: 'activity unknown: ' + memo.unknown };
+    const why = memo.busy.get(projectId);
+    return why ? { busy: true, reason: why } : { busy: false };
+  };
 }
 
 export function buildModule(cfg: GatewayConfig): unknown {
@@ -180,6 +221,24 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // `claude -p` does it.
   const designConsent = new DesignConsentGranter({ claudePath: cfg.claudePath, cwd: cfg.workspaceRoot });
 
+  // The storage sweeper (docs/storage-sweeper-contract.md): AUTO daily at
+  // 04:00 Asia/Jakarta, then a manifest only a passkey approves.
+  const storage = new StorageSweeper({
+    stateDir: cfg.stateDir,
+    workspaceRoot: cfg.workspaceRoot,
+    schedule: cfg.storageSweep ?? false,
+    sweepAt: process.env.X056_SWEEP_AT,
+    containerCaches: true,
+    dind: true,
+    activity: storageActivity(manager, cron),
+    projects: () => manager.listProjects().projects.flatMap((p) => (p.kind !== 'chat' && p.cwd ? [{ id: p.id, cwd: p.cwd }] : [])),
+    emit: (kind, data) => manager.broadcast(kind, data),
+    ...cfg.storage,
+  });
+  storage.start();
+  const storageApprovers = new StorageApprovers(cfg.stateDir);
+  storageApprovers.init(webauthn.list().map((c) => c.id));
+
   provisioner = new AccountProvisioner(
     () => AccountRegistry.load(join(cfg.stateDir, 'accounts.json')).list(),
     plugins,
@@ -188,7 +247,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   );
 
   @Module({
-    controllers: [ProjectSpacesController, FilesController, ChatsController, MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController, McpOAuthController],
+    controllers: [ProjectSpacesController, FilesController, ChatsController, MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController, McpOAuthController, StorageController],
     providers: [
       { provide: SessionManager, useValue: manager },
       { provide: PUSH_SERVICE, useValue: push },
@@ -204,6 +263,8 @@ export function buildModule(cfg: GatewayConfig): unknown {
       // Memories live in the Claude config dirs; codex accounts have no such tree.
       { provide: PROVISIONER, useValue: provisioner },
       { provide: CRON, useValue: cron },
+      { provide: STORAGE_SWEEPER, useValue: storage },
+      { provide: STORAGE_APPROVERS, useValue: storageApprovers },
       { provide: DESIGN_LOGIN, useValue: designLogin },
       { provide: DESIGN_CONSENT, useValue: designConsent },
       { provide: TEMPLATES, useValue: new TemplateStore(cfg.stateDir) },
@@ -219,6 +280,6 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: APP_GUARD, useFactory: (reflector: Reflector) => new AuthGuard(cfg.token, sessions, reflector, oauth), inject: [Reflector] },
     ],
   })
-  class AppModule { onModuleDestroy(): void { mcpOAuth.stop(); manager.bot().stop(); } }
+  class AppModule { onModuleDestroy(): void { mcpOAuth.stop(); storage.stop(); manager.bot().stop(); } }
   return AppModule;
 }

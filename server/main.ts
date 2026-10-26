@@ -112,6 +112,7 @@ if (isMain) {
     claudePath: process.env.X056_CLAUDE_PATH,
     panelPath: process.env.X056_PANEL_PATH,
     interactiveProjectsDir: process.env.X056_INTERACTIVE_PROJECTS,
+    storageSweep: process.env.X056_SWEEP !== 'off',
   };
   const port = Number(process.env.PORT ?? 4056);
   createApp(cfg)
