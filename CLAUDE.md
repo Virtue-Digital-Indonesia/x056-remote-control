@@ -43,7 +43,7 @@ Sessions started through the panel run **inside the Docker container** this repo
 - **The panel needs a deploy too now.** Production's `X056_PANEL_PATH` is `/app/server/public/panel.html`, the copy baked into the image, so a `panel.html` or `server/public/*` edit reaches the browser only after the actuator flow above -- the same as backend changes (`server/`, `src/`, `Dockerfile`, `compose.yaml`). (It used to point at this checkout and serve edits live.)
 - **A container swap restarts every session, including you.** Graceful swaps wait for idle so no turn is killed; your session resumes on the user's next message. Ungraceful restarts (crash/reboot) kill in-flight turns — they resume on next message too.
 - **Background work now SURVIVES a turn** — the CLI process is kept alive between turns, so `run_in_background` shells, backgrounded agents and `Workflow` keep going and you collect their output on a later turn. Plain subagents were never affected (a Task call runs *inside* the turn). Nothing wakes you when one finishes, and a stop, a failover, a container swap or ~30 min idle still ends it. See "Background work SURVIVES a turn" below.
-- Mounts you can see: the failover config dirs (see "Accounts are a fleet" below — `~/.claude-x056-b` is account **b**; `~/.claude-x056-a` is an orphan, the live `a` is `/app/state/accounts/a`), the workspace (`/home/efran/remote-development`), `~/.claude/projects` **read-only** (interactive transcripts, for session adoption), and the `/app/state` volume. The host's `~/.claude` credentials are NOT visible.
+- Mounts you can see: the failover config dirs (see "Accounts are a fleet" below — `~/.claude-x056-b` is account **b**; `~/.claude-x056-a` is no longer an account (the live `a` is `/app/state/accounts/a`) BUT its `projects/` is the shared transcript tree every account links to -- never delete it), the workspace (`/home/efran/remote-development`), `~/.claude/projects` **read-only** (interactive transcripts, for session adoption), and the `/app/state` volume. The host's `~/.claude` credentials are NOT visible.
 - Tests: `npm test` (vitest, serialized files — keep it green), `npm run typecheck`. Both must pass before requesting a deploy. **Inside the container, run the suite with the gateway's own env unset** -- `env $(env | grep -oE '^X056_[A-Z_]+' | sed 's/^/-u /') npm test` -- or `X056_PROJECT_SPACES_ENABLED`/`X056_CHAT_ENABLED` and friends leak into the fixtures and ~9 manager/chat/routing tests fail with "Project membership is being reconciled" or "Conversation unavailable". Those are not regressions; the same tests pass with the vars unset.
 - Browser tests (`test/browser/<name>.cjs`) run against a fixture gateway: `X056_TEST_PORT=<port> node --import tsx test/browser/fixture.ts`, wait for `/api/projects` to answer, then `node test/browser/<name>.cjs http://127.0.0.1:<port>`.
 - **You CAN screenshot** to eyeball UI work: a headless Chromium (Playwright) is baked into the image at `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`. Start the project's dev server, then `node /app/scripts/shot.cjs <url> <out.png> [width] [height]` and Read the PNG. Any project's own Playwright/Puppeteer also finds the browser via that env var. (Requires a container built after this note — if `shot.cjs` says playwright not found, the image predates it; commit + request a deploy.)
@@ -192,7 +192,8 @@ auto-memory injection only ever gives you the *current* project's.
 
 The Claude accounts are **`a`, `b`, `f`** and the ChatGPT ones `d`, `e`, `g`, `h`, `j`, `k` (2026-09-29; `accounts.json` is the truth -- this list goes stale). Note
 that account **b lives at `/home/efran/.claude-x056-b`**, a HOME path — it is
-live, not stale. Only `~/.claude-x056-a` is orphaned. Reading plugin state from
+live, not stale. `~/.claude-x056-a` is no longer an account, but its
+`projects/` holds every account's transcripts (all `projects/` link there). Reading plugin state from
 the wrong one is an easy and repeated mistake; take the truth from
 `/app/state/accounts.json`.
 
@@ -1560,6 +1561,102 @@ tools; the panel's ⋯ → **Scheduled tasks** lists, pauses and deletes them.
 - Delivery goes through the same path a cross-conversation send uses, so a job
   firing at a busy conversation queues behind the running turn.
 - Jobs live in `state/cron.json` and survive restarts and deploys.
+
+## Usage-limit auto-continue (`server/limit-resume.ts`, 2026-10-27)
+
+Efran via Bot: conversations stopped at "You've hit your session limit ·
+resets ..." and never went on. Contract and forensics:
+`docs/limit-resume-contract.md`.
+
+- **The cause was out-of-turn limits.** A turn ends at `result`; a
+  background agent then wakes the model, and that agent or the woken reply
+  gets the 429. Those events went only to the pool's idle sink, which never
+  reached the failover classifier, so the account was not marked, nothing
+  failed over, and the completion gate settled the conversation as "finished"
+  with the limit text as its reply. All three reported stops (2026-10-26)
+  were this, with another account eligible every time.
+- **Now idle events are classified** (conversation and delegate processes).
+  On a limit the gateway marks the PROCESS's account (from its configDir, not
+  the routed one), logs `limit_detected {outOfTurn: true}`, collects the
+  background tasks the limit killed (failed `task_notification`s), destroys
+  that process at the woken reply's `result` (or 5 s after) and sends ONE
+  continue turn, sender kind `limit_resume` (visible in the owner and Bot
+  views; the panel shows it as "Auto-continue", one line until opened), naming
+  the dead agents to re-run. Destroying the process is load-bearing: the pool
+  runs a new turn on a conversation's ACTIVE process whatever its account, so
+  the continue would otherwise land on the limited process and bench the
+  healthy account it was routed to. No "finished" settle, no recap.
+- **Reset times are parsed from the text** (`parseLimitReset` in
+  `src/detector.ts`: "8:30am (UTC)", "3pm (Asia/Jakarta)", "Oct 30, 9am",
+  "in 2h 10m", ISO), relative to the MESSAGE time, never rolled past now, so
+  a reset already in the past means "go now". A structured `resetsAt` wins
+  but the later of the two is kept (one weekly limit's `resetsAt` looked like
+  the 5-hour window). `earliestReset` returns only the future. The 30-minute
+  guess is left for a limit with no reset anywhere.
+- **Parked turns resume.** Every account out -> a persisted record in
+  `state/limit-resume.json` (`continue`, `resend` for a turn that never
+  started -- original prompt, sender, model, effort, files -- `autopilot` for a
+  parked autopilot step, `delegate`). A 30 s tick fires it at `until + 60 s`
+  (or at once when an account is free), through the ordinary send path. It
+  survives deploys; a past record fires at boot. Cleared by a human turn
+  since, a stop, delete or archive, or a pending question. Brakes: 3
+  auto-continues per conversation without a human message, 6 attempts, then
+  one normal notice. The queue no longer drains into a second park.
+- **Delegates**: an idle limit becomes a follow-up; a parked delegate waits
+  (`waiting_for_reset`) instead of reporting BLOCKED, and reports BLOCKED only
+  if its record gives up.
+- **Notices**: continuing now is quiet; waiting for a reset is `normal`
+  ("Paused by a usage limit until HH:MM; continues automatically"); never
+  urgent, the owner has nothing to do. `GET /api/limit-resume` lists records.
+- Not covered: an out-of-turn Codex limit has no test of its own (the path is
+  shared); a prompt held during the wake still lands once on the limited
+  account and fails over in-turn.
+
+## Storage sweeper (`server/storage-sweeper.ts`, 2026-10-27)
+
+Efran via Bot: delete regenerable data automatically, everything else only
+from a manifest he approves, and log every run. Contract with as-built notes:
+`docs/storage-sweeper-contract.md`.
+
+- **Scope**: `state/chats/*/work`, the workspace root, container caches, and
+  dind via the `docker` CLI. Never host Docker, never anything else in
+  `/app/state`. **The live Claude transcripts are
+  `/home/efran/.claude-x056-a/projects`** -- every account's `projects/`
+  links there, so the dir called an orphan above holds them; protection is by
+  realpath, computed each run from `accounts.json` (unreadable = nothing runs).
+- **PROTECTED, never offered**: transcripts, uploads, artifacts, worktrees
+  whose gitdir is missing (their `node_modules` may be offered, never their
+  source), any checkout whose detached HEAD no ref contains (the UAT
+  checkout), dirty or untracked files, `poc-ahu-ai` (the dev instance works
+  there, invisible to every live-use check), `*rollback*` images, running /
+  `pin-*` / data-holding containers, any path a live process uses (cwd, open
+  fds, cache env, running containers' bind sources), and any chat that is
+  running, has background work or queue items, is a cron target or has a live
+  workflow.
+- **AUTO** (daily 04:00 Asia/Jakarta, `X056_SWEEP_AT`, `X056_SWEEP=off`
+  disables): `node_modules` and pure caches (`.next/cache`, `.vite`, `.turbo`,
+  ...) in FINISHED worktrees (linked, clean status, HEAD in some ref, a
+  lockfile, idle >= 7 days); `go clean -cache`, pip/npm caches, old
+  `/tmp/go-build*`, `pnpm store prune`; dind build cache > 7 days and unused
+  Go/npm/pip cache volumes. Never `git worktree prune`, `gc` or `clean`, never
+  follows a symlink, and every item is re-checked right before deletion.
+- **MANIFEST** (approval): other idle `node_modules` (M1), git-ignored build
+  outputs (M2), whole finished worktrees via `git worktree remove` (M3),
+  dind leftovers (M4), big unknown `/tmp` dirs (M5).
+- **Approval is a passkey assertion, not the token**: every session holds
+  `$X056_TOKEN`, so a bearer route is no gate. The challenge is bound to the
+  manifest id, digest and the exact item ids, single use, 5 min; only an
+  approver passkey counts (pinned by id AND public-key fingerprint; seeded
+  from passkeys registered before 2026-10-26, others join only with an
+  approver's assertion). No approver = 403, never a token fallback. No MCP
+  tool approves; execution acts on a fresh re-plan, not the stored manifest.
+- **Logs**: `state/storage-sweeper/runs.jsonl` (one line per run: mode,
+  items, estimated and reclaimed bytes, df before/after) and
+  `runs/<id>.json` receipts; `storage_sweep` in `events.jsonl`; a quiet
+  `storage_manifest` notice at >= 1 GiB approvable. Panel: Settings > Storage.
+  Routes under `/api/storage` (`POST sweep` defaults to a dry run).
+- A host-side cleaner exists too (`disk-guard` in the valbox crontab prunes
+  dind images/build cache daily), so dind AUTO is kept minimal.
 
 ## MCP OAuth sign-in (`server/mcp-oauth.ts`, 2026-10-06)
 

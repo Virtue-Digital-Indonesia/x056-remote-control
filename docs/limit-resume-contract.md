@@ -154,6 +154,16 @@ Cases:
 9. Delegates: an idle limit gives a follow-up; a parked delegate gets a `delegate` record, not `blocked`.
 10. Loop brake: the 4th continue without a human message is not sent.
 
+## As built (2026-10-27)
+
+- **R5 autopilot:** only a parked autopilot STEP becomes `kind: 'autopilot'` (un-pause). Anyone else's parked message, the owner's included, is resent, and autopilot is un-paused before it goes out. Read literally, the contract would have lost an owner's message parked under autopilot.
+- **R6 clearing:** only a real archive clears a record; guard refusals and failed sends are retried (see review fix 2). A failed send does not count toward the loop brake, and a queued resend carries the brake flag, so it does not reset the brake when it starts.
+- **Resend of a first turn that never ran** starts the session fresh (`--session-id`) unless a later turn has created it. **A delegate parked mid-turn** resumes (`sessionStarted`).
+- **R7:** when a waiting delegate's record gives up or hits the brake, the delegate reports BLOCKED (status `failed`) and wakes the orchestrator, so it never holds a slot forever. Stopping the orchestrator stops its waiting delegates.
+- **Continue text:** it ends either "This continues on another account." or "This continues after the reset.", decided when it fires. Records store `fireAt`, `immediate`, `fresh`, `resumeAutopilot` and `delegate.mode`, not the text.
+- **Panel:** `limit_resume` rows read "Auto-continue · After a usage limit", one line until opened.
+- **Not covered:** an out-of-turn Codex limit has no test of its own (the path is shared). A stop that only stopped waiting delegates answers 409.
+
 ## Review fixes (2026-10-27)
 
 An adversarial review found these. Each one has a test that fails without the fix.
