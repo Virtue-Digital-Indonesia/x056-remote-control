@@ -66,8 +66,16 @@ const MANIFEST_TTL_MS = 7 * DAY;
 /** A manifest with this much approvable earns a (quiet) notice. */
 export const MANIFEST_NOTICE_BYTES = GIB;
 const RUNS_SHOWN = 20;
-/** The UAT detached checkout. `{stateDir}` and a `*` inside one segment are expanded. */
-export const DEFAULT_PROTECTED_PATHS = ['{stateDir}/chats/c06d266a*/work/uat/qol-chatbot/worktree'];
+/**
+ * Protected by default. `{stateDir}`, `{workspaceRoot}` and a `*` inside one
+ * segment are expanded. Override in `<dataDir>/config.json` {protectedPaths}.
+ *  - the UAT detached checkout;
+ *  - poc-ahu-ai: the dev instance (x056-devs) works in this same tree, and its
+ *    processes, turns and containers are invisible from here, so none of the
+ *    live-use checks could protect its work (the contract puts the dev
+ *    instance OUT).
+ */
+export const DEFAULT_PROTECTED_PATHS = ['{stateDir}/chats/c06d266a*/work/uat/qol-chatbot/worktree', '{workspaceRoot}/poc-ahu-ai'];
 /** Outside every IN root already; listed so the protected report names them. */
 const OUT_PATHS = ['/home/efran/backups', '/home/efran/x056-devs', '/home/efran/dev-workspace'];
 const STATE_OUT = ['uploads', 'artifacts', 'project-files', 'file-staging', 'frontend-releases', 'codex-sessions', 'conversation-journal', 'secrets', 'accounts'];
@@ -345,8 +353,9 @@ export function listMounts(): string[] {
 }
 
 /** Expand `{stateDir}` and a `*` within one path segment. */
-export function expandPattern(pattern: string, stateDir: string): string[] {
-  const p = pattern.replace('{stateDir}', stateDir);
+export function expandPattern(pattern: string, stateDir: string, workspaceRoot?: string): string[] {
+  if (pattern.includes('{workspaceRoot}') && !workspaceRoot) return [];
+  const p = pattern.replace('{stateDir}', stateDir).replace('{workspaceRoot}', workspaceRoot ?? '');
   const segs = p.split('/');
   let acc = [segs[0] === '' ? '/' : segs[0]];
   for (const seg of segs.slice(1)) {
@@ -790,7 +799,7 @@ export class StorageSweeper {
     for (const g of gw) add(g, 'gateway', "the gateway's own checkout and .deploy");
     for (const o of OUT_PATHS) add(o, 'out', 'out of scope');
     const configured = this.opts.protectedPaths ?? readJson<{ protectedPaths?: string[] }>(join(this.dir, 'config.json'))?.protectedPaths ?? DEFAULT_PROTECTED_PATHS;
-    for (const pat of configured) for (const p of expandPattern(pat, this.opts.stateDir)) add(p, 'configured', 'configured protectedPaths');
+    for (const pat of configured) for (const p of expandPattern(pat, this.opts.stateDir, this.opts.workspaceRoot)) add(p, 'configured', `configured protectedPaths (${pat})`);
     return out;
   }
 
@@ -879,7 +888,11 @@ export class StorageSweeper {
     // 4. Sizes of what is protected, while the budget lasts.
     this.phase('sizing protected');
     for (const g of ctx.protect) if (!plan.protected.some((p) => p.target === g.path)) plan.protected.push({ category: g.category, target: g.path, bytes: null, reason: g.reason });
-    const unsized = plan.protected.filter((p) => p.bytes == null && p.target.startsWith('/'));
+    // The per-checkout entries first: the account and state trees are the
+    // biggest to walk, and a timed-out du loses only what it had not printed.
+    const last = new Set(['transcripts', 'account', 'state', 'gateway', 'out']);
+    const unsized = plan.protected.filter((p) => p.bytes == null && p.target.startsWith('/'))
+      .sort((a, b) => Number(last.has(a.category)) - Number(last.has(b.category)));
     for (let i = 0; i < unsized.length && this.now < ctx.deadline; i += 8) {
       const chunk = unsized.slice(i, i + 8);
       const sizes = await this.du(ctx, chunk.map((p) => p.target), Math.min(120_000, Math.max(1000, ctx.deadline - this.now)));

@@ -5,7 +5,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  StorageApprovers, StorageSweeper, approvalPurpose, manifestDigest, readOnlyCommand, parseSize, dockerTime,
+  StorageApprovers, StorageSweeper, approvalPurpose, DEFAULT_PROTECTED_PATHS, manifestDigest, readOnlyCommand, parseSize, dockerTime,
   type CmdResult, type LiveProcess, type Manifest, type RunRecord, type StorageSweeperOptions,
 } from '../server/storage-sweeper.js';
 import { StorageController, refuseAgentCaller } from '../server/storage.controller.js';
@@ -478,6 +478,16 @@ describe('schedule and helpers', () => {
     s.tick();
     expect(s.status().running).toBeNull();
     expect(s.runs()).toHaveLength(1);
+  });
+
+  it('protects the UAT checkout and the dev instance\'s shared tree by default', () => {
+    const w = world();
+    const uat = join(w.state, 'chats', 'c06d266a-1234', 'work', 'uat', 'qol-chatbot', 'worktree');
+    mkdirSync(uat, { recursive: true }); mkdirSync(join(w.ws, 'poc-ahu-ai'));
+    const s = new StorageSweeper({ stateDir: w.state, workspaceRoot: w.ws, log: () => {} });
+    const prot = s.protectedPaths().filter((g) => g.category === 'configured').map((g) => g.path).sort();
+    expect(prot).toEqual([join(w.ws, 'poc-ahu-ai'), uat].sort());
+    expect(DEFAULT_PROTECTED_PATHS).toHaveLength(2);
   });
 
   it('read-only commands only, in a dry run', () => {
