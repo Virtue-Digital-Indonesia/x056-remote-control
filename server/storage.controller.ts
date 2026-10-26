@@ -2,7 +2,7 @@ import { BadRequestException, Body, ConflictException, Controller, ForbiddenExce
 import type { Request } from 'express';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import { relyingParty, WEBAUTHN_SERVICE } from './api.controller.js';
-import type { WebAuthnService } from './webauthn.js';
+import type { StepUpKey, WebAuthnService } from './webauthn.js';
 import { STORAGE_SWEEPER, type StorageApprovers, type StorageSweeper } from './storage-sweeper.js';
 
 export const STORAGE_APPROVERS = Symbol('x056-storage-approvers');
@@ -17,8 +17,9 @@ export const STORAGE_APPROVERS = Symbol('x056-storage-approvers');
  * cannot do is sign a WebAuthn assertion with the owner's passkey: the
  * private key is on the owner's device. So an approval needs a fresh
  * assertion with user verification, bound to the manifest id, its digest and
- * the exact item ids, from a passkey in the pinned approver set (a passkey a
- * session registers is not in it). There is no MCP tool for any of this, and
+ * the exact item ids, from a passkey in the approver set, pinned by credential id
+ * AND public-key fingerprint (a passkey a session registers is not in it,
+ * and neither is a key re-registered under an approver's id). There is no MCP tool for any of this, and
  * a request carrying the MCP bridge's caller identity is refused outright.
  */
 @Controller('api/storage')
@@ -31,8 +32,7 @@ export class StorageController {
 
   @Get()
   status(): Record<string, unknown> {
-    const ids = new Set(this.webauthn.list().map((c) => c.id));
-    return { ...this.sweeper.status(), approvers: this.approvers.list().filter((id) => ids.has(id)).length };
+    return { ...this.sweeper.status(), approvers: this.approvers.allowed(this.webauthn.keys()).length };
   }
 
   @Get('manifest')
@@ -92,8 +92,8 @@ export class StorageController {
 
   @Get('approvers')
   approverList(): { passkeys: { id: string; label: string; createdAt: number; approver: boolean }[] } {
-    const pinned = new Set(this.approvers.list());
-    return { passkeys: this.webauthn.list().map((c) => ({ ...c, approver: pinned.has(c.id) })) };
+    const ok = this.approvers.allowed(this.webauthn.keys());
+    return { passkeys: this.webauthn.keys().map(({ key, ...c }) => ({ ...c, approver: ok.some((a) => a.id === c.id && a.key === key) })) };
   }
 
   /** Let another passkey approve: signed by a passkey that already may. */
@@ -101,10 +101,11 @@ export class StorageController {
   @HttpCode(200)
   async approverOptions(@Req() req: Request, @Body() body: { credentialId?: string }): Promise<unknown> {
     refuseAgentCaller(req, body);
-    const id = this.knownCredential(body?.credentialId);
+    const k = this.knownCredential(body?.credentialId);
+    const allow = this.allowed();
     try {
       const { rpID, origin } = relyingParty(req);
-      return await this.webauthn.stepUpOptions(rpID, origin, 'storage-approver:' + id, this.allowed());
+      return await this.webauthn.stepUpOptions(rpID, origin, `storage-approver:${k.id}:${k.key}`, allow);
     } catch (e) { throw new ForbiddenException((e as Error).message); }
   }
 
@@ -112,11 +113,11 @@ export class StorageController {
   @HttpCode(200)
   async addApprover(@Req() req: Request, @Body() body: { credentialId?: string; flowId?: string; response?: AuthenticationResponseJSON }): Promise<{ ok: boolean }> {
     refuseAgentCaller(req, body);
-    const id = this.knownCredential(body?.credentialId);
+    const k = this.knownCredential(body?.credentialId);
     if (!body.flowId || !body.response) throw new BadRequestException('flowId and response required');
-    const by = await this.webauthn.verifyStepUp(body.flowId, body.response, 'storage-approver:' + id, this.allowed());
+    const by = await this.webauthn.verifyStepUp(body.flowId, body.response, `storage-approver:${k.id}:${k.key}`, this.allowed());
     if (!by) throw new ForbiddenException('passkey approval failed');
-    this.approvers.add(id, by);
+    this.approvers.add({ id: k.id, key: k.key, label: k.label }, by);
     return { ok: true };
   }
 
@@ -124,16 +125,16 @@ export class StorageController {
     try { return this.sweeper.approval(body?.manifestId as string, body?.digest as string, body?.itemIds as string[]); }
     catch (e) { throw new BadRequestException((e as Error).message); }
   }
-  /** Approver passkeys that still exist. */
-  private allowed(): string[] {
-    const ids = new Set(this.webauthn.list().map((c) => c.id));
-    const allow = this.approvers.list().filter((id) => ids.has(id));
-    if (!allow.length) throw new ForbiddenException('no passkey may approve storage cleanup yet; register a passkey (Settings > Security) and restart the gateway once');
+  /** Approver passkeys (id + key fingerprint) that exist now. None = refused: never a fallback to the token. */
+  private allowed(): StepUpKey[] {
+    const allow = this.approvers.allowed(this.webauthn.keys());
+    if (!allow.length) throw new ForbiddenException('no passkey may approve storage cleanup: only a passkey registered before 2026-10-26, or one an approver added, can (see docs/storage-sweeper-contract.md)');
     return allow;
   }
-  private knownCredential(id: unknown): string {
-    if (typeof id !== 'string' || !this.webauthn.list().some((c) => c.id === id)) throw new BadRequestException('unknown passkey');
-    return id;
+  private knownCredential(id: unknown): { id: string; key: string; label: string } {
+    const k = typeof id === 'string' ? this.webauthn.keys().find((c) => c.id === id) : undefined;
+    if (!k) throw new BadRequestException('unknown passkey');
+    return k;
   }
 }
 

@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, lutimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,7 @@ import {
 } from '../server/storage-sweeper.js';
 import { StorageController, refuseAgentCaller } from '../server/storage.controller.js';
 import { WebAuthnService } from '../server/webauthn.js';
-import { addPasskey, assertion, type TestPasskey } from './helpers/passkey.js';
+import { addPasskey, assertion, registration, softwarePasskey, type TestPasskey } from './helpers/passkey.js';
 
 const DAY = 86_400_000;
 const roots: string[] = [];
@@ -303,7 +303,7 @@ describe('dind (A4/M4) through an injected docker runner', () => {
       const out = (s: string) => ({ code: 0, stdout: s, stderr: '' });
       if (args[0] === 'version') return out('27.5.1\n');
       if (args[0] === 'ps') return out(containers.filter((c) => args.includes('-a') || (c.State as { Status: string }).Status === 'running').map((c) => JSON.stringify(c.Id)).join('\n'));
-      if (args[0] === 'inspect') return out(JSON.stringify(containers.filter((c) => args.includes(String(c.Id)))));
+      if (args[0] === 'inspect') return out(JSON.stringify(containers.filter((c) => args.includes(String(c.Id)) || args.includes(String((c as { Name?: unknown }).Name).slice(1)))));
       if (args[0] === 'system') return out(JSON.stringify({ Volumes: [{ Name: 'docintel-audit-gocache', Size: '2GB' }, { Name: 'a'.repeat(64), Size: '10MB' }, { Name: 'pgdata-old', Size: '1.5GB' }] }));
       if (args[0] === 'volume' && args[1] === 'ls') return out(['docintel-audit-gocache', 'a'.repeat(64), 'pgdata-old'].map((n) => JSON.stringify(n)).join('\n'));
       if (args[0] === 'images' && args.includes('dangling=true') && args.includes('{{json .ID}}')) return out(JSON.stringify('sha256:old'));
@@ -339,6 +339,21 @@ describe('dind (A4/M4) through an injected docker runner', () => {
     const writes = w.dockerCalls.filter((a) => !readOnlyCommand('docker', a));
     expect(writes).toEqual([['volume', 'rm', 'docintel-audit-gocache'], ['builder', 'prune', '-f', '--filter', 'until=168h']]);
   });
+
+  it('an approved docker item runs the command rebuilt from its target, not the one stored in the manifest', async () => {
+    const w = world();
+    dockerWorld(w);
+    const s = sweeper(w, { dind: true });
+    await sweep(s, true);
+    const m = manifestOf(s);
+    const item = m.items.find((i) => i.target === 'docker:container:old-job')!;
+    item.command = ['docker', 'volume', 'rm', 'pgdata']; // tampered on disk
+    m.digest = manifestDigest(m.items);
+    writeFileSync(join(w.state, 'storage-sweeper', 'manifests', `${m.id}.json`), JSON.stringify(m));
+    w.dockerCalls.length = 0;
+    await s.executeApproved(m.id, m.digest, [item.id]).done;
+    expect(w.dockerCalls.filter((a) => !readOnlyCommand('docker', a))).toEqual([['rm', 'c/old-job']]);
+  });
 });
 
 describe('approval: a passkey, bound to the exact items', () => {
@@ -350,10 +365,10 @@ describe('approval: a passkey, bound to the exact items', () => {
     const a = worktree(w, 'a'), b = worktree(w, 'b');
     for (const d of [a, b]) write(join(d, 'src', 'index.js'), 'dirty');
     age(w.ws, 40);
-    const owner = addPasskey(w.state, 'owner phone');
+    // The owner's passkey predates the sweeper: it is the seed approver.
+    const owner = addPasskey(w.state, 'owner phone', undefined, undefined, Date.parse('2026-07-07T04:05:55Z'));
     const webauthn = new WebAuthnService(w.state);
     const approvers = new StorageApprovers(w.state);
-    approvers.init(webauthn.list().map((c) => c.id));
     const s = sweeper(w);
     await sweep(s, true);
     const m = manifestOf(s);
@@ -433,7 +448,9 @@ describe('approval: a passkey, bound to the exact items', () => {
     await expect(ctl.addApprover(req, { credentialId: second.credentialId, flowId: o.flowId, response: assertion(second, { ...rp, challenge: o.options.challenge }) as never })).rejects.toThrow();
     const o2 = await ctl.approverOptions(req, { credentialId: second.credentialId }) as { flowId: string; options: { challenge: string } };
     await ctl.addApprover(req, { credentialId: second.credentialId, flowId: o2.flowId, response: assertion(t.owner, { ...rp, challenge: o2.options.challenge }) as never });
-    expect(t.approvers.has(second.credentialId)).toBe(true);
+    const key = webauthn.keys().find((k) => k.id === second.credentialId)!.key;
+    expect(t.approvers.has(second.credentialId, key)).toBe(true);
+    expect(t.approvers.allowed(webauthn.keys()).map((a) => a.id).sort()).toEqual([t.owner.credentialId, second.credentialId].sort());
   });
 
   it('expires a manifest after 7 days', async () => {
@@ -472,6 +489,8 @@ describe('schedule and helpers', () => {
     expect(readOnlyCommand('docker', ['volume', 'rm', 'x'])).toBe(false);
     expect(readOnlyCommand('docker', ['system', 'df', '-v'])).toBe(true);
     expect(readOnlyCommand('go', ['clean', '-cache'])).toBe(false);
+    expect(readOnlyCommand('find', ['/x', '-name', '.git', '-print', '-quit'])).toBe(true);
+    for (const bad of ['-delete', '-exec', '-execdir', '-ok', '-fprint', '-fls']) expect(readOnlyCommand('nice', ['-n', '10', 'find', '/x', bad, 'rm'])).toBe(false);
     expect(parseSize('1.5GB')).toBe(1_500_000_000);
     expect(parseSize('512kB')).toBe(512_000);
     expect(dockerTime('2026-01-01 10:00:00 +0700 WIB')).toBe(Date.parse('2026-01-01T03:00:00Z'));
@@ -487,5 +506,137 @@ describe('schedule and helpers', () => {
     expect(calls.every(([c, ...a]) => readOnlyCommand(c, a))).toBe(true);
     const m: Manifest = manifestOf(s);
     expect(m.auto.find((i) => i.command?.[0] === 'go')).toBeTruthy();
+  });
+});
+
+describe('nested checkouts and fail-closed', () => {
+  /** A linked worktree inside `parent`, finished (remote ref), with node_modules. */
+  function inner(w: World, parent: string): string {
+    const branch = parent.slice(w.ws.length + 1).replace(/\//g, '-') + '-inner', dir = join(parent, 'inner');
+    git(w.app, 'worktree', 'add', '-q', '-b', branch, dir);
+    write(join(dir, 'node_modules', 'left-pad', 'index.js'), 'module.exports=1');
+    git(w.app, 'update-ref', `refs/remotes/origin/${branch}`, branch);
+    return dir;
+  }
+
+  it('a finished checkout nested inside a missing-gitdir worktree or a detached-unreachable one is protected too', async () => {
+    const w = world();
+    const orphan = worktree(w, 'orphan'), det = worktree(w, 'det', { detach: true });
+    write(join(det, 'src', 'only-here.js')); git(det, 'add', '-A'); git(det, 'commit', '-q', '-m', 'unreachable');
+    const in1 = inner(w, orphan), in2 = inner(w, det);
+    rmSync(join(w.app, '.git', 'worktrees', 'orphan'), { recursive: true });
+    const control = inner(w, worktree(w, 'plain'));
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, false);
+    expect(existsSync(join(control, 'node_modules'))).toBe(false); // the same setup, not nested in a protected tree: A1
+    for (const d of [in1, in2]) expect(existsSync(join(d, 'node_modules', 'left-pad', 'index.js'))).toBe(true);
+    const m = manifestOf(s);
+    expect(m.items.some((i) => i.target.startsWith(in1 + '/') || i.target.startsWith(in2 + '/') || i.target === in1 || i.target === in2)).toBe(false);
+    expect(m.protected.find((p) => p.target === join(in1, 'node_modules'))?.reason).toMatch(/git metadata is missing/);
+    expect(m.protected.find((p) => p.target === join(in2, 'node_modules'))?.reason).toMatch(/detached HEAD no ref contains/);
+  });
+
+  it('M3 and M2 are refused when another repository sits inside (git worktree remove / rm would take it)', async () => {
+    const w = world();
+    const host = worktree(w, 'host');
+    git(w.app, 'update-ref', 'refs/remotes/origin/host', 'host');
+    const clone = join(host, 'dist', 'clone');
+    mkdirSync(clone, { recursive: true }); git(clone, 'init', '-q'); write(join(clone, 'work.txt'), 'unpushed'); git(clone, 'add', '-A'); git(clone, 'commit', '-q', '-m', 'mine');
+    const plain = worktree(w, 'plain2');
+    git(w.app, 'update-ref', 'refs/remotes/origin/plain2', 'plain2');
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, true);
+    const m = manifestOf(s);
+    expect(m.items.some((i) => i.target === host || i.target === join(host, 'dist'))).toBe(false);
+    expect(m.notes.find((n) => n.target === host)?.reason).toMatch(/another repository inside it/);
+    expect(m.protected.find((p) => p.target === join(host, 'dist'))?.category).toBe('nested-repo');
+    expect(m.items.find((i) => i.target === plain)).toMatchObject({ rule: 'M3', executable: true });
+  });
+
+  it('without a readable accounts.json nothing runs (the transcripts could not be located)', async () => {
+    const w = world();
+    const done = worktree(w, 'done');
+    age(w.ws, 40);
+    rmSync(join(w.state, 'accounts.json'));
+    const s = sweeper(w);
+    const rec = await sweep(s, false);
+    expect(rec.aborted).toMatch(/accounts/);
+    expect(rec.deleted).toBe(0);
+    expect(existsSync(join(done, 'node_modules', 'left-pad'))).toBe(true);
+  });
+
+  it('logs storage_sweep (and a 1 GiB manifest) to events.jsonl and the emitter', async () => {
+    const w = world();
+    worktree(w, 'done');
+    age(w.ws, 40);
+    const seen: string[] = [];
+    const s = sweeper(w, { emit: (k) => seen.push(k) });
+    const rec = await sweep(s, true);
+    const ev = readFileSync(join(w.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(ev.find((e) => e.type === 'storage_sweep')).toMatchObject({ runId: rec.runId, mode: 'dry-run', reclaimedBytes: 0 });
+    expect(seen).toContain('storage_sweep');
+    expect(seen).not.toContain('storage_manifest'); // a few KB is not worth a notice
+  });
+});
+
+describe('approval gate: what a session with the token can and cannot do', () => {
+  const req = { headers: { host: 'localhost:4999', origin: 'http://localhost:4999' }, secure: false } as never;
+  const rp = { rpID: 'localhost', origin: 'http://localhost:4999' };
+  async function setup(ownerCreatedAt: number) {
+    const w = world();
+    const a = worktree(w, 'a');
+    write(join(a, 'src', 'index.js'), 'dirty');
+    age(w.ws, 40);
+    const owner = addPasskey(w.state, 'owner phone', undefined, undefined, ownerCreatedAt);
+    const webauthn = new WebAuthnService(w.state);
+    const approvers = new StorageApprovers(w.state);
+    const s = sweeper(w);
+    await sweep(s, true);
+    const m = manifestOf(s);
+    const body = { manifestId: m.id, digest: m.digest, itemIds: [m.items.find((i) => i.target === join(a, 'node_modules'))!.id] };
+    return { w, a, s, owner, webauthn, approvers, body, ctl: new StorageController(s, approvers, webauthn) };
+  }
+  const register = async (webauthn: WebAuthnService, pk: ReturnType<typeof softwarePasskey>) => {
+    const o = await webauthn.registrationOptions(rp.rpID, rp.origin);
+    return webauthn.verifyRegistration(o.flowId, registration(pk, { ...rp, challenge: o.options.challenge }) as never, 'session key');
+  };
+
+  it('removing the owner passkey and registering a key under its id leaves no approver: refused at both steps', async () => {
+    const t = await setup(Date.parse('2026-07-07T04:05:55Z'));
+    expect(t.approvers.allowed(t.webauthn.keys()).map((k) => k.id)).toEqual([t.owner.credentialId]);
+    const evil = softwarePasskey(t.owner.credentialId);
+    // Registering over an existing id is refused outright.
+    expect(await register(t.webauthn, evil)).toBe(false);
+    // A session can remove the passkey and then register its own key under the id...
+    t.webauthn.remove(t.owner.credentialId);
+    expect(await register(t.webauthn, evil)).toBe(true);
+    expect(await register(t.webauthn, softwarePasskey())).toBe(true);
+    // ...but the pinned fingerprint no longer matches, and a new key is not pinned.
+    expect(t.approvers.allowed(t.webauthn.keys())).toEqual([]);
+    await expect(t.ctl.approveOptions(req, t.body)).rejects.toThrow(/no passkey may approve/);
+    await expect(t.ctl.approve(req, { ...t.body, flowId: 'x', response: assertion(evil, { ...rp, challenge: 'x' }) as never })).rejects.toThrow(/no passkey may approve/);
+    await expect(t.ctl.approverOptions(req, { credentialId: t.owner.credentialId })).rejects.toThrow(/no passkey may approve/);
+    expect(existsSync(join(t.a, 'node_modules', 'left-pad'))).toBe(true);
+  });
+
+  it('a passkey registered after the sweeper existed is never a seed: with no approver, everything is refused', async () => {
+    const t = await setup(Date.now());
+    expect(t.approvers.allowed(t.webauthn.keys())).toEqual([]);
+    expect(t.ctl.status()).toMatchObject({ approvers: 0 });
+    await expect(t.ctl.approveOptions(req, t.body)).rejects.toThrow(/no passkey may approve/);
+    await expect(t.ctl.approve(req, { ...t.body, flowId: 'x', response: assertion(t.owner, { ...rp, challenge: 'x' }) as never })).rejects.toThrow(/no passkey may approve/);
+    expect(existsSync(join(t.a, 'node_modules', 'left-pad'))).toBe(true);
+  });
+
+  it('an approval challenge expires after 5 minutes', async () => {
+    const t = await setup(Date.parse('2026-07-07T04:05:55Z'));
+    const o = await t.ctl.approveOptions(req, t.body) as { flowId: string; options: { challenge: string } };
+    const signed = { ...t.body, flowId: o.flowId, response: assertion(t.owner, { ...rp, challenge: o.options.challenge }) as never };
+    const real = Date.now();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(real + 6 * 60_000);
+    try { await expect(t.ctl.approve(req, signed)).rejects.toThrow(/passkey approval failed/); } finally { spy.mockRestore(); }
+    expect(existsSync(join(t.a, 'node_modules', 'left-pad'))).toBe(true);
   });
 });

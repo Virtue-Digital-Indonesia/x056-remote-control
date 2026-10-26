@@ -2,7 +2,8 @@
 import { appendFileSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync, symlinkSync, readdirSync, lstatSync, utimesSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { STORAGE_SWEEPER, type StorageSweeper } from '../../server/storage-sweeper.js';
+import { STORAGE_SWEEPER, StorageApprovers, type StorageSweeper } from '../../server/storage-sweeper.js';
+import { keyFingerprint } from '../../server/webauthn.js';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -92,6 +93,8 @@ if(storageFixture){
   const old=new Date(Date.now()-40*86400000),age=(p:string):void=>{const st=lstatSync(p);if(st.isDirectory()&&!st.isSymbolicLink())for(const n of readdirSync(p))age(join(p,n));if(!st.isSymbolicLink())utimesSync(p,old,old);};age(sw);
   const key=createRequire(import.meta.url)('./storage-passkey.cjs') as {credentialId:string;coseB64url:()=>string};
   mkdirSync(join(state,'webauthn'),{recursive:true});writeFileSync(join(state,'webauthn','credentials.json'),JSON.stringify([{id:key.credentialId,publicKey:key.coseB64url(),counter:0,label:'Fixture phone',createdAt:Date.now()-86400000}]));
+  // Pinned as the one approver by id AND key fingerprint (it was registered after the seed date).
+  new StorageApprovers(state).add({id:key.credentialId,key:keyFingerprint(key.coseB64url()),label:'Fixture phone'},'fixture');
 }
 const app=await createApp({token:'browser-fixture-token-0123456789',storage:{containerCaches:false,dind:false,processes:()=>[],mounts:()=>[]},stateDir:state,workspaceRoot:dir,claudePath:fake,panelPath:join(pub,'panel.html'),titleGenerator:async input=>{await new Promise(r=>setTimeout(r,300));return /keyboard/i.test(input.prompt)?'Keyboard navigation improvements':'Website layout improvements';}});
 if(process.env.X056_TEST_CHAT)app.get(SessionManager).setChatCapabilities(new ChatCapabilities(state,()=>registry.list(),undefined as never,undefined as never,undefined,async account=>({account:account.name,errors:[],capabilities:[{key:'skill:rc-documents',name:'rc-documents',kind:'skill',state:'ready',fingerprint:'fixture-v1',invocation:'/rc-documents'},{key:'mcp:x056',name:'x056',kind:'mcp',state:'ready',fingerprint:'chat-files-v1'},{key:'plugin:fixture',name:'Fixture plugin',kind:'plugin',state:account.name==='backup'?'authorization-needed':'ready'}]})));

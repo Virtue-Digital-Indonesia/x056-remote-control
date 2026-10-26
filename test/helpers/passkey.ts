@@ -14,13 +14,13 @@ export function coseFromPublicKey(pub: KeyObject): Buffer {
 export interface TestPasskey { credentialId: string; privateKey: KeyObject; counter: number }
 
 /** Add a passkey to a state dir's webauthn/credentials.json. */
-export function addPasskey(stateDir: string, label = 'test passkey', key?: { privateKey: KeyObject; publicKey: KeyObject }, credentialId = randomBytes(16).toString('base64url')): TestPasskey {
+export function addPasskey(stateDir: string, label = 'test passkey', key?: { privateKey: KeyObject; publicKey: KeyObject }, credentialId = randomBytes(16).toString('base64url'), createdAt = Date.now()): TestPasskey {
   const pair = key ?? generateKeyPairSync('ec', { namedCurve: 'P-256' });
   const file = join(stateDir, 'webauthn', 'credentials.json');
   mkdirSync(join(stateDir, 'webauthn'), { recursive: true });
   let creds: unknown[] = [];
   try { creds = JSON.parse(readFileSync(file, 'utf8')) as unknown[]; } catch { /* first */ }
-  creds.push({ id: credentialId, publicKey: coseFromPublicKey(pair.publicKey).toString('base64url'), counter: 0, label, createdAt: Date.now() });
+  creds.push({ id: credentialId, publicKey: coseFromPublicKey(pair.publicKey).toString('base64url'), counter: 0, label, createdAt });
   writeFileSync(file, JSON.stringify(creds));
   return { credentialId, privateKey: pair.privateKey, counter: 0 };
 }
@@ -36,5 +36,29 @@ export function assertion(pk: TestPasskey, o: { rpID: string; origin: string; ch
   return {
     id: pk.credentialId, rawId: pk.credentialId, type: 'public-key' as const, clientExtensionResults: {},
     response: { authenticatorData: authData.toString('base64url'), clientDataJSON: clientDataJSON.toString('base64url'), signature: signature.toString('base64url') },
+  };
+}
+
+/** A fresh software key (what any process with the bearer token can make). */
+export function softwarePasskey(credentialId = randomBytes(16).toString('base64url')): TestPasskey & { publicKey: KeyObject } {
+  const pair = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  return { credentialId, privateKey: pair.privateKey, publicKey: pair.publicKey, counter: 0 };
+}
+
+/** A registration response ('none' attestation) for `challenge`, as a browser would send it. */
+export function registration(pk: TestPasskey & { publicKey: KeyObject }, o: { rpID: string; origin: string; challenge: string }) {
+  const id = Buffer.from(pk.credentialId, 'base64url');
+  const len = Buffer.alloc(2); len.writeUInt16BE(id.length);
+  const authData = Buffer.concat([
+    createHash('sha256').update(o.rpID).digest(), Buffer.from([0x45]), Buffer.alloc(4), // UP|UV|AT, counter 0
+    Buffer.alloc(16), len, id, coseFromPublicKey(pk.publicKey),
+  ]);
+  const text = (t: string) => Buffer.concat([Buffer.from([0x60 + t.length]), Buffer.from(t)]);
+  const bytes = (b: Buffer) => Buffer.concat([b.length < 256 ? Buffer.from([0x58, b.length]) : Buffer.from([0x59, b.length >> 8, b.length & 255]), b]);
+  const attestationObject = Buffer.concat([Buffer.from([0xa3]), text('fmt'), text('none'), text('attStmt'), Buffer.from([0xa0]), text('authData'), bytes(authData)]);
+  const clientDataJSON = Buffer.from(JSON.stringify({ type: 'webauthn.create', challenge: o.challenge, origin: o.origin, crossOrigin: false }));
+  return {
+    id: pk.credentialId, rawId: pk.credentialId, type: 'public-key' as const, clientExtensionResults: {},
+    response: { clientDataJSON: clientDataJSON.toString('base64url'), attestationObject: attestationObject.toString('base64url'), transports: ['internal' as const] },
   };
 }

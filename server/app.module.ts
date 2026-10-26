@@ -237,7 +237,6 @@ export function buildModule(cfg: GatewayConfig): unknown {
   });
   storage.start();
   const storageApprovers = new StorageApprovers(cfg.stateDir);
-  storageApprovers.init(webauthn.list().map((c) => c.id));
 
   provisioner = new AccountProvisioner(
     () => AccountRegistry.load(join(cfg.stateDir, 'accounts.json')).list(),

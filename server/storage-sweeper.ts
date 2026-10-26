@@ -219,6 +219,8 @@ export interface StorageSweeperOptions {
   projects?: () => { id: string; cwd: string }[];
   remove?: (path: string) => Promise<void>;
   emit?: (kind: string, data: Record<string, unknown>) => void;
+  /** Where storage_sweep / storage_manifest are appended. Default `<stateDir>/events.jsonl`. */
+  eventsFile?: string;
   now?: () => number;
   log?: (msg: string) => void;
   concurrency?: number;
@@ -231,6 +233,8 @@ export function inside(child: string, parent: string): boolean {
 }
 function real(p: string): string | null { try { return realpathSync(p); } catch { return null; } }
 function itemId(rule: string, target: string): string { return createHash('sha256').update(rule + '\0' + target).digest('hex').slice(0, 16); }
+/** `checkout:<root>` -> root; anything else has no own checkout. */
+function unitRoot(unit: string): string | null { return unit.startsWith('checkout:') ? unit.slice('checkout:'.length) : null; }
 function exists(p: string): boolean { try { lstatSync(p); return true; } catch { return false; } }
 function isRealDir(p: string): boolean { try { const s = lstatSync(p); return s.isDirectory() && !s.isSymbolicLink(); } catch { return false; } }
 function mtime(p: string): number { try { return lstatSync(p).mtimeMs; } catch { return 0; } }
@@ -266,7 +270,9 @@ export function approvalPurpose(manifestId: string, digest: string, itemIds: str
 /** Read-only commands a dry run may run; anything else is refused. */
 export function readOnlyCommand(cmd: string, args: string[]): boolean {
   const name = basename(cmd);
-  if (name === 'du' || name === 'find') return true;
+  if (name === 'du') return true;
+  // find can write and run things too: -delete, -exec*, -ok*, -fprint*, -fls.
+  if (name === 'find') return !args.some((a) => /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(a));
   if (name === 'nice' || name === 'ionice') {
     const i = args.findIndex((a) => !a.startsWith('-') && !/^\d+$/.test(a));
     return i >= 0 && readOnlyCommand(args[i], args.slice(i + 1));
@@ -382,6 +388,10 @@ interface Guarded { path: string; category: string; reason: string }
 interface Ctx {
   now: number;
   deadline: number;
+  /** Planning stops here; the rest of the budget sizes the protected list. */
+  planDeadline: number;
+  /** dir -> why its whole tree is protected (null = it is not), for nested checkouts. */
+  ancestors: Map<string, string | null>;
   dry: boolean;
   roots: Root[];
   stateReal: string | null;
@@ -406,26 +416,56 @@ class StopRequested extends Error {}
 // ---- approvers -------------------------------------------------------------
 
 /**
+ * Passkeys registered before this moment predate the sweeper, so no session
+ * could have registered one in order to pass this gate. They are the seed.
+ */
+export const APPROVER_TRUST_BEFORE = Date.parse('2026-10-26T00:00:00Z');
+
+export interface ApproverPin { id: string; key: string; label?: string; addedAt: number; by: string }
+export interface PasskeyKey { id: string; label: string; createdAt: number; key: string }
+
+/**
  * Which passkeys may approve a manifest. Registering a passkey takes only the
  * bearer token, which every session holds, so "any passkey" is not a human
- * gate. The set is pinned: at first boot it is the passkeys that already
- * exist; afterwards a passkey joins only with an assertion from one already in
- * it (storage.controller.ts).
+ * gate. An approver is pinned by credential id AND public-key fingerprint:
+ *  - seed: a passkey registered before APPROVER_TRUST_BEFORE, pinned the
+ *    first time it is seen (its key is fixed from then on);
+ *  - afterwards a passkey joins only with an assertion from an approver
+ *    (storage.controller.ts).
+ * A session that removes the owner's passkey and registers its own key under
+ * the same id fails the fingerprint; one that registers a new passkey is not
+ * pinned. No approver at all = no approval (fail closed, never the token).
  */
 export class StorageApprovers {
-  constructor(private readonly stateDir: string) {}
+  constructor(private readonly stateDir: string, private readonly trustBefore = APPROVER_TRUST_BEFORE) {}
   private get file(): string { return join(this.stateDir, 'storage-sweeper', 'approvers.json'); }
-  /** First boot with at least one passkey: those passkeys become the approvers. */
-  init(credentialIds: string[]): void {
-    if (existsSync(this.file) || !credentialIds.length) return;
-    writeJson(this.file, { ids: [...credentialIds], createdAt: Date.now(), history: [{ at: Date.now(), added: credentialIds, by: 'boot' }] });
+  private read(): { approvers: ApproverPin[]; history: unknown[] } {
+    const j = readJson<{ approvers?: ApproverPin[]; history?: unknown[] }>(this.file) ?? {};
+    const approvers = (Array.isArray(j.approvers) ? j.approvers : []).filter((p) => p && typeof p.id === 'string' && typeof p.key === 'string');
+    return { approvers, history: Array.isArray(j.history) ? j.history : [] };
   }
-  list(): string[] { return readJson<{ ids?: string[] }>(this.file)?.ids?.filter((x) => typeof x === 'string') ?? []; }
-  has(id: string): boolean { return this.list().includes(id); }
-  add(id: string, by: string): void {
-    const cur = readJson<{ ids?: string[]; createdAt?: number; history?: unknown[] }>(this.file) ?? {};
-    const ids = [...new Set([...(cur.ids ?? []), id])];
-    writeJson(this.file, { ...cur, ids, history: [...(cur.history ?? []), { at: Date.now(), added: [id], by }] });
+  pins(): ApproverPin[] { return this.read().approvers; }
+  /** The (id, key) pairs that may approve now, given the passkeys that exist. */
+  allowed(keys: PasskeyKey[]): { id: string; key: string }[] {
+    const cur = this.read();
+    const out: { id: string; key: string }[] = [];
+    const seed: ApproverPin[] = [];
+    for (const k of keys) {
+      const pin = cur.approvers.find((p) => p.id === k.id);
+      if (pin) { if (pin.key === k.key) out.push({ id: k.id, key: k.key }); continue; }
+      if (Number.isFinite(k.createdAt) && k.createdAt < this.trustBefore) {
+        seed.push({ id: k.id, key: k.key, label: k.label, addedAt: Date.now(), by: `registered before ${new Date(this.trustBefore).toISOString()}` });
+        out.push({ id: k.id, key: k.key });
+      }
+    }
+    if (seed.length) writeJson(this.file, { approvers: [...cur.approvers, ...seed], history: [...cur.history, { at: Date.now(), added: seed.map((p) => p.id), by: 'seed' }] });
+    return out;
+  }
+  has(id: string, key: string): boolean { return this.pins().some((p) => p.id === id && p.key === key); }
+  add(k: { id: string; key: string; label?: string }, by: string): void {
+    const cur = this.read();
+    const approvers = [...cur.approvers.filter((p) => p.id !== k.id), { id: k.id, key: k.key, ...(k.label ? { label: k.label } : {}), addedAt: Date.now(), by }];
+    writeJson(this.file, { approvers, history: [...cur.history, { at: Date.now(), added: [k.id], by }] });
   }
 }
 
@@ -564,15 +604,28 @@ export class StorageSweeper {
   }
   private end(): void { this.active = null; try { unlinkSync(this.lockFile()); } catch { /* gone */ } }
   private phase(p: string): void { if (this.active) this.active.phase = p; }
-  private checkStop(ctx: Ctx): void {
+  private checkStop(ctx: Ctx, until = ctx.deadline): void {
     if (existsSync(join(this.dir, 'STOP'))) throw new StopRequested('STOP file present');
-    if (this.now > ctx.deadline) throw new StopRequested('time budget used up');
+    if (this.now > until) throw new StopRequested('time budget used up');
+  }
+  /** Fail closed: without the account list the transcripts cannot be located, so nothing runs. */
+  private essentials(ctx: Ctx): string | null {
+    const file = this.opts.accountsFile ?? join(this.opts.stateDir, 'accounts.json');
+    const accounts = readJson<{ accounts?: { configDir?: string }[] }>(file)?.accounts;
+    if (!Array.isArray(accounts) || !accounts.some((a) => typeof a?.configDir === 'string')) return `cannot read the accounts in ${file}: the transcripts cannot be protected, so nothing runs`;
+    if (!ctx.roots.length) return 'no sweep root exists';
+    return null;
   }
 
   private async runSweep(runId: string, o: { trigger: RunTrigger; dryRun: boolean; budgetMs?: number }): Promise<RunRecord> {
     const startedAt = this.now;
     const ctx = await this.context(o.dryRun, o.budgetMs ?? this.opts.budgetMs ?? (o.dryRun ? 15 : 30) * 60_000);
     const dfBefore = this.df(ctx.roots);
+    const missing = this.essentials(ctx);
+    if (missing) {
+      this.log(missing);
+      return this.finishRun(runId, o.trigger, o.dryRun ? 'dry-run' : 'auto', startedAt, ctx, dfBefore, [], { aborted: missing });
+    }
     this.phase('planning');
     let plan: SweepPlan;
     try { plan = await this.plan(ctx); }
@@ -614,6 +667,8 @@ export class StorageSweeper {
     const startedAt = this.now;
     const ctx = await this.context(false, budgetMs ?? this.opts.budgetMs ?? 30 * 60_000);
     const dfBefore = this.df(ctx.roots);
+    const missing = this.essentials(ctx);
+    if (missing) return this.finishRun(runId, 'approval', 'approved', startedAt, ctx, dfBefore, items.map((i) => this.receipt(i, 'skipped', missing)), { manifestId: m.id, aborted: missing });
     this.phase('deleting');
     const receipts: Receipt[] = [];
     let aborted: string | undefined;
@@ -655,7 +710,10 @@ export class StorageSweeper {
     this.log(`${mode} run ${runId}: ${rec.deleted} deleted, ${rec.skipped} skipped, ${fmtBytes(rec.reclaimedBytes)} reclaimed`);
     return rec;
   }
-  private emit(kind: string, data: Record<string, unknown>): void { try { this.opts.emit?.(kind, data); } catch { /* never break a run */ } }
+  private emit(kind: string, data: Record<string, unknown>): void {
+    try { appendFileSync(this.opts.eventsFile ?? join(this.opts.stateDir, 'events.jsonl'), JSON.stringify({ ts: new Date().toISOString(), type: kind, ...data }) + '\n'); } catch { /* logging only */ }
+    try { this.opts.emit?.(kind, data); } catch { /* never break a run */ }
+  }
 
   /** Free bytes per filesystem (keyed by device) holding the roots. */
   private df(roots: Root[]): Record<string, number> {
@@ -676,7 +734,7 @@ export class StorageSweeper {
       : this.docker;
     const procs = (this.opts.processes ?? listProcesses)();
     const ctx: Ctx = {
-      now: this.now, deadline: this.now + budgetMs, dry,
+      now: this.now, deadline: this.now + budgetMs, planDeadline: this.now + budgetMs - Math.min(budgetMs * 0.2, 180_000), ancestors: new Map(), dry,
       roots: this.roots(), stateReal: real(this.opts.stateDir), protect: this.protectedPaths(),
       procs, live: new LiveIndex(procs), liveAt: Date.now(), mounts: (this.opts.mounts ?? listMounts)(),
       projects: (() => { try { return (this.opts.projects?.() ?? []).map((p) => ({ id: p.id, cwd: real(p.cwd) ?? p.cwd })); } catch { return []; } })(),
@@ -788,7 +846,7 @@ export class StorageSweeper {
       // 1. Checkouts and plain dirs under the chat and workspace roots.
       const units = new Map<string, Unit>();
       for (const root of ctx.roots.filter((r) => r.kind === 'chat' || r.kind === 'workspace')) {
-        this.checkStop(ctx);
+        this.checkStop(ctx, ctx.planDeadline);
         plan.scanned.roots++;
         plan.scanned.dirs += await this.discover(ctx, root.path, units);
       }
@@ -800,7 +858,7 @@ export class StorageSweeper {
       const worker = async () => {
         while (next < list.length && !stopped) {
           const u = list[next++];
-          try { this.checkStop(ctx); addResult(await this.evalUnit(ctx, u)); }
+          try { this.checkStop(ctx, ctx.planDeadline); addResult(await this.evalUnit(ctx, u)); }
           catch (e) { if (e instanceof StopRequested) { stopped = e; return; } throw e; }
         }
       };
@@ -810,9 +868,9 @@ export class StorageSweeper {
       if (failed) throw failed.reason;
       if (stopped) throw stopped;
       // 2. Container caches and /tmp.
-      if (this.opts.containerCaches) { this.checkStop(ctx); this.phase('planning caches'); addResult(await this.evalCaches(ctx)); }
+      if (this.opts.containerCaches) { this.checkStop(ctx, ctx.planDeadline); this.phase('planning caches'); addResult(await this.evalCaches(ctx)); }
       // 3. dind.
-      if (this.opts.dind) { this.checkStop(ctx); this.phase('planning docker'); addResult(await this.evalDocker(ctx)); }
+      if (this.opts.dind) { this.checkStop(ctx, ctx.planDeadline); this.phase('planning docker'); addResult(await this.evalDocker(ctx)); }
     } catch (e) {
       if (!(e instanceof StopRequested)) throw e;
       plan.truncated = true;
@@ -838,7 +896,7 @@ export class StorageSweeper {
     let visited = 0;
     const stack: { dir: string; depth: number; co: string | null }[] = [{ dir: rootPath, depth: 0, co: null }];
     while (stack.length) {
-      if (visited >= WALK_MAX_DIRS || this.now > ctx.deadline) throw new StopRequested(visited >= WALK_MAX_DIRS ? 'directory walk limit reached' : 'time budget used up');
+      if (visited >= WALK_MAX_DIRS || this.now > ctx.planDeadline) throw new StopRequested(visited >= WALK_MAX_DIRS ? 'directory walk limit reached' : 'time budget used up');
       if (visited % 200 === 199) await new Promise((r) => setImmediate(r));
       const { dir, depth, co: parentCo } = stack.pop()!;
       visited++;
@@ -1070,7 +1128,7 @@ export class StorageSweeper {
     if (linked && !dirty && idleDays >= SWEEP_IDLE.worktree) {
       const common = gi.commondir ? real(gi.commondir) : null;
       const commonRefusal = common ? this.refusal(ctx, common) : 'unreadable';
-      const refusal = this.refusal(ctx, root);
+      const refusal = this.refusal(ctx, root) ?? await this.ancestorRefusal(ctx, root, root) ?? await this.nestedRepo(ctx, root);
       if (refusal) res.notes.push({ target: root, reason: `M3 not offered: ${refusal}` });
       else if (commonRefusal) res.notes.push({ target: root, reason: `M3 not offered: its main repository ${common ?? ''} is ${commonRefusal}` });
       else {
@@ -1090,6 +1148,46 @@ export class StorageSweeper {
     return { ...p, id: itemId(p.rule, p.target), class: p.rule.startsWith('A') ? 'auto' : 'manifest', executable: p.executable ?? true };
   }
 
+  /**
+   * Is `target` inside ANOTHER checkout whose whole tree is protected (git
+   * metadata missing, or a detached HEAD no ref contains)? Those are recorded
+   * per unit, so a checkout nested inside one would otherwise be planned on
+   * its own. Walks from the target's parent up to its IN root; `ownRoot` is
+   * judged by its own unit. Checked at plan time and again at delete time.
+   */
+  private async ancestorRefusal(ctx: Ctx, target: string, ownRoot: string | null): Promise<string | null> {
+    const root = ctx.roots.find((x) => inside(target, x.path));
+    if (!root) return 'outside every sweep root';
+    for (let d = dirname(target); inside(d, root.path); d = dirname(d)) {
+      if (d !== ownRoot) {
+        let why = ctx.ancestors.get(d);
+        if (why === undefined) { why = await this.wholeTreeProtection(ctx, d); ctx.ancestors.set(d, why); }
+        if (why) return why;
+      }
+      if (d === root.path || d === dirname(d)) break;
+    }
+    return null;
+  }
+  private async wholeTreeProtection(ctx: Ctx, dir: string): Promise<string | null> {
+    const gi = this.gitInfo(dir);
+    if (!gi.type) return null;
+    if (gi.type === 'file' && !gi.gitdirExists) return `inside ${dir}, a worktree whose git metadata is missing`;
+    const head = await this.git(ctx, dir, ['rev-parse', '--verify', '-q', 'HEAD']);
+    if (head.code !== 0) return `inside ${dir}, a checkout whose HEAD git cannot read`;
+    if ((await this.git(ctx, dir, ['symbolic-ref', '-q', 'HEAD'])).code === 0) return null;
+    const refs = await this.git(ctx, dir, ['for-each-ref', '--contains', head.stdout.trim(), '--format=%(refname)', 'refs/heads', 'refs/tags', 'refs/remotes']);
+    if (refs.code !== 0) return `inside ${dir}: git for-each-ref failed`;
+    return refs.stdout.trim() ? null : `inside ${dir}, whose detached HEAD no ref contains`;
+  }
+  /** M3: another repository below the root (ignored, so status is clean) would go with `git worktree remove`. */
+  private async nestedRepo(ctx: Ctx, root: string): Promise<string | null> {
+    const [cmd, args] = this.nice('find', [root, '-mindepth', '1', '(', '-path', join(root, '.git'), '-o', '-name', NM, ')', '-prune', '-o', '-name', '.git', '-print', '-quit']);
+    const r = await ctx.run(cmd, args, { timeoutMs: Math.max(1000, Math.min(120_000, ctx.deadline - this.now)) }).catch((e: Error) => ({ code: 126, stdout: '', stderr: e.message }));
+    if (r.code !== 0) return 'could not check for nested repositories: ' + (r.stderr.trim().split('\n')[0] || `exit ${r.code}`);
+    const hit = r.stdout.trim().split('\n')[0];
+    return hit ? `another repository inside it (${dirname(hit)})` : null;
+  }
+
   /** Gate each path (plan-time refusal, in use), size them in one du, and add them. */
   private async addItems(ctx: Ctx, res: UnitResult, list: { path: string; rule: SweepRule; reason: string; unit: string; evidence: Record<string, unknown>; action?: SweepAction; keep?: string[] }[]): Promise<void> {
     const ok: typeof list = [];
@@ -1099,6 +1197,11 @@ export class StorageSweeper {
       if (refusal) { res.protected.push({ category: refusal.startsWith('protected') || refusal.startsWith('contains') ? 'protected-path' : 'refused', target: x.path, bytes: null, reason: refusal }); continue; }
       const used = this.inUse(ctx, x.path);
       if (used) { res.protected.push({ category: 'in-use', target: x.path, bytes: null, reason: used }); continue; }
+      const outer = await this.ancestorRefusal(ctx, x.path, unitRoot(x.unit));
+      if (outer) { res.protected.push({ category: 'protected-path', target: x.path, bytes: null, reason: outer }); continue; }
+      // A build output is plain rm: a repository someone cloned into it goes too.
+      const nested = x.rule === 'M2' ? await this.nestedRepo(ctx, x.path) : null;
+      if (nested) { res.protected.push({ category: 'nested-repo', target: x.path, bytes: null, reason: nested }); continue; }
       // Nested inside another item of the same unit that goes with it: redundant.
       if (list.some((y) => y !== x && y.rule === x.rule && inside(x.path, y.path) && x.path !== y.path)) continue;
       if (x.rule === 'A2' && list.some((y) => y.rule === 'A1' && inside(x.path, y.path))) continue;
@@ -1162,7 +1265,7 @@ export class StorageSweeper {
         if (bytes < M5_MIN_BYTES) continue;
         const scan = await this.newestAny(p, ctx.now - SWEEP_IDLE.tmpUnknown * DAY, ctx);
         if (scan.stopped || scan.error) continue;
-        const refusal = this.refusal(ctx, p) ?? this.inUse(ctx, p);
+        const refusal = this.refusal(ctx, p) ?? this.inUse(ctx, p) ?? await this.nestedRepo(ctx, p);
         if (refusal) { res.protected.push({ category: 'in-use', target: p, bytes, reason: refusal }); continue; }
         res.items.push(this.item({ rule: 'M5', target: p, bytes, reason: `unknown /tmp directory, idle ${Math.floor((ctx.now - (scan.newest || mtime(p))) / DAY)} days`, unit: 'cache', action: 'rm', evidence: {} }));
       }
@@ -1270,33 +1373,34 @@ export class StorageSweeper {
     return res;
   }
 
-  /** Re-check one docker item against the daemon now. */
-  private async dockerStillValid(ctx: Ctx, i: SweepItem): Promise<string | null> {
-    const [, kind, ...rest] = i.target.split(':');
+  /** Re-check one docker item against the daemon now; the docker arguments to run, built from the target. */
+  private async dockerStillValid(ctx: Ctx, i: SweepItem): Promise<{ args: string[] } | { bad: string }> {
+    const [scheme, kind, ...rest] = i.target.split(':');
     const name = rest.join(':');
+    if (scheme !== 'docker') return { bad: 'not a docker item' };
     try {
       if (kind === 'volume') {
         const v = await this.dockerJson(ctx, ['volume', 'ls', '-f', 'dangling=true', '--format', '{{json .Name}}'], 30_000) as string[];
-        return v.includes(name) ? null : 'volume is in use or gone';
+        return v.includes(name) ? { args: ['volume', 'rm', name] } : { bad: 'volume is in use or gone' };
       }
       if (kind === 'container') {
-        const [c] = await this.inspectContainers(ctx, [String(i.evidence.id)]);
-        if (!c) return 'container gone';
+        const [c] = await this.inspectContainers(ctx, [name]).catch(() => []);
+        if (!c) return { bad: 'container gone' };
         const state = String(c.State?.Status ?? ''), rp = String(c.HostConfig?.RestartPolicy?.Name ?? '');
-        if (!['exited', 'created', 'dead'].includes(state)) return `container is ${state}`;
-        if (String(c.Name ?? '').replace(/^\//, '').startsWith('pin-') || (rp && rp !== 'no') || (c.Mounts ?? []).length) return 'container is now protected';
-        return null;
+        if (!['exited', 'created', 'dead'].includes(state)) return { bad: `container is ${state}` };
+        if (String(c.Name ?? '').replace(/^\//, '').startsWith('pin-') || (rp && rp !== 'no') || (c.Mounts ?? []).length) return { bad: 'container is now protected' };
+        return { args: ['rm', String(c.Id)] };
       }
       if (kind === 'image') {
         const imgs = await this.dockerJson(ctx, ['images', '-f', 'dangling=true', '--no-trunc', '--format', '{{json .ID}}'], 30_000) as string[];
-        if (!imgs.includes(name)) return 'image is no longer dangling';
+        if (!imgs.includes(name)) return { bad: 'image is no longer dangling' };
         const all = await this.dockerJson(ctx, ['ps', '-a', '--no-trunc', '--format', '{{json .ID}}'], 30_000) as string[];
         const info = all.length ? await this.inspectContainers(ctx, all) : [];
-        return info.some((c) => c.Image === name) ? 'image is used by a container' : null;
+        return info.some((c) => c.Image === name) ? { bad: 'image is used by a container' } : { args: ['rmi', name] };
       }
-      if (kind === 'builder') return null;
-    } catch (e) { return 'docker re-check failed: ' + (e as Error).message; }
-    return 'unknown docker item';
+      if (kind === 'builder') return { args: ['builder', 'prune', '-f', '--filter', 'until=168h'] };
+    } catch (e) { return { bad: 'docker re-check failed: ' + (e as Error).message }; }
+    return { bad: 'unknown docker item' };
   }
 
   // ---- execute ----
@@ -1351,12 +1455,13 @@ export class StorageSweeper {
     if (ctx.dry) return this.receipt(i, 'skipped', 'dry run');
     this.refreshLive(ctx);
     try {
-      if (i.action === 'docker') {
+      if (i.action === 'docker' || i.target.startsWith('docker:')) {
         if (!this.opts.dind) return this.receipt(i, 'skipped', 'dind sweeping is off');
-        const bad = await this.dockerStillValid(ctx, i);
-        if (bad) return this.receipt(i, 'skipped', 'conditions changed: ' + bad);
-        if (!i.command || i.command[0] !== 'docker') return this.receipt(i, 'skipped', 'no command');
-        const r = await ctx.docker(i.command[0], i.command.slice(1), { timeoutMs: 300_000 });
+        // The command is rebuilt from the target and the daemon's answer now,
+        // never taken from the stored manifest.
+        const v = await this.dockerStillValid(ctx, i);
+        if ('bad' in v) return this.receipt(i, 'skipped', 'conditions changed: ' + v.bad);
+        const r = await ctx.docker('docker', v.args, { timeoutMs: 300_000 });
         return r.code === 0 ? this.receipt(i, 'deleted') : this.receipt(i, 'error', undefined, r.stderr.trim().split('\n')[0] || `exit ${r.code}`);
       }
       // Re-plan the unit and require the same item back.
@@ -1366,36 +1471,40 @@ export class StorageSweeper {
         const why = fresh.protected.find((p) => inside(i.target, p.target) || inside(p.target, i.target))?.reason ?? (fresh.active ? 'the checkout was used in the last 7 days' : fresh.notes[0]?.reason ?? 'no longer a candidate');
         return this.receipt(i, 'skipped', 'conditions changed: ' + why);
       }
-      if (i.action === 'command') {
-        if (!i.command?.length) return this.receipt(i, 'skipped', 'no command');
-        const r = await ctx.run(i.command[0], i.command.slice(1), { timeoutMs: 600_000 });
+      // From here on, act on the re-plan, never on the stored copy: a
+      // manifest file is only as trustworthy as the disk it sits on.
+      const x = again;
+      if (x.action === 'command') {
+        if (!x.command?.length) return this.receipt(i, 'skipped', 'no command');
+        const r = await ctx.run(x.command[0], x.command.slice(1), { timeoutMs: 600_000 });
         return r.code === 0 ? this.receipt(i, 'deleted') : this.receipt(i, 'error', undefined, r.stderr.trim().split('\n')[0] || `exit ${r.code}`);
       }
       // A path: the delete-time guard, every time.
-      const guard = this.guard(ctx, i.target, i.unit === 'cache');
+      const guard = this.guard(ctx, x.target, x.unit === 'cache') ?? await this.ancestorRefusal(ctx, x.target, unitRoot(x.unit));
       if (guard) return this.receipt(i, 'skipped', guard);
-      if (i.action === 'git-worktree-remove') {
-        const common = typeof i.evidence.commondir === 'string' ? i.evidence.commondir : null;
+      if (x.action === 'git-worktree-remove') {
+        const common = typeof x.evidence.commondir === 'string' ? x.evidence.commondir : null;
         if (!common || this.refusal(ctx, common)) return this.receipt(i, 'skipped', 'main repository is outside the sweep roots or protected');
-        if (i.locked) {
-          const u = await ctx.run('git', ['-c', 'core.fsmonitor=false', `--git-dir=${common}`, 'worktree', 'unlock', i.target], { timeoutMs: 60_000, env: this.gitEnv });
+        if (x.locked) {
+          const u = await ctx.run('git', ['-c', 'core.fsmonitor=false', `--git-dir=${common}`, 'worktree', 'unlock', x.target], { timeoutMs: 60_000, env: this.gitEnv });
           if (u.code !== 0) return this.receipt(i, 'error', undefined, 'unlock failed: ' + u.stderr.trim().split('\n')[0]);
         }
-        const r = await ctx.run('git', ['-c', 'core.fsmonitor=false', `--git-dir=${common}`, 'worktree', 'remove', i.target], { timeoutMs: 600_000, env: this.gitEnv });
+        const r = await ctx.run('git', ['-c', 'core.fsmonitor=false', `--git-dir=${common}`, 'worktree', 'remove', x.target], { timeoutMs: 600_000, env: this.gitEnv });
         return r.code === 0 ? this.receipt(i, 'deleted') : this.receipt(i, 'error', undefined, r.stderr.trim().split('\n')[0] || `exit ${r.code}`);
       }
       const remove = this.opts.remove ?? ((p: string) => rm(p, { recursive: true, force: false }));
-      if (i.action === 'rm-children') {
-        for (const n of readdirSync(i.target)) {
-          if (i.keep?.includes(n)) continue;
-          const p = join(i.target, n);
+      if (x.action === 'rm-children') {
+        for (const n of readdirSync(x.target)) {
+          if (x.keep?.includes(n)) continue;
+          const p = join(x.target, n);
           const g = this.guard(ctx, p, false, true);
           if (g) return this.receipt(i, 'error', undefined, `${n}: ${g}`);
           await remove(p);
         }
         return this.receipt(i, 'deleted');
       }
-      await remove(i.target);
+      if (x.action !== 'rm') return this.receipt(i, 'skipped', `unknown action ${x.action}`);
+      await remove(x.target);
       return this.receipt(i, 'deleted');
     } catch (e) {
       return this.receipt(i, 'error', undefined, (e as Error).message);
