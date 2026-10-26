@@ -1064,7 +1064,7 @@ window.createControlRoom = function (engine) {
   }
   // Settings > Storage: the sweeper's runs, the manifest waiting for approval
   // (approved with a passkey, never by an agent), and what it protects.
-  const STORAGE_RULES={A1:'Dependencies in finished worktrees',A2:'Build caches in finished worktrees',A3:'Container caches',A4:'Docker build cache and cache volumes',M1:'Dependencies and caches in idle checkouts',M2:'Ignored build outputs',M3:'Whole finished worktrees',M4:'Docker containers, images and volumes',M5:'Large old /tmp directories'};
+  const STORAGE_RULES={A1:'Dependencies in finished worktrees',A2:'Build caches in finished worktrees',A3:'Container caches',A4:'Docker build cache',M1:'Dependencies and caches in idle checkouts',M2:'Ignored build outputs',M3:'Whole finished worktrees',M4:'Docker containers, images and volumes',M5:'Large old /tmp directories'};
   const storageSize=n=>{n=Number(n)||0;if(n<=0)return '0 B';const u=['B','KB','MB','GB','TB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++;}return (n>=10||!i?Math.round(n):n.toFixed(1))+' '+u[i];};
   const storageWhen=t=>new Date(t).toLocaleString([], {dateStyle:'medium',timeStyle:'short'});
   const storageMode={auto:'Automatic','dry-run':'Dry run',approved:'Approved'};
@@ -1081,7 +1081,7 @@ window.createControlRoom = function (engine) {
     const groups={};for(const i of pending)(groups[i.rule]||(groups[i.rule]=[])).push(i);
     const expired=manifest&&manifest.expiresAt<Date.now();
     const item=i=>`<label class="setting-row storage-item"><span><strong>${esc(i.target)}</strong><small>${esc(i.reason)} · ${storageSize(i.bytes)}${i.locked?' · locked worktree':''}${i.mayHoldData?' · may hold data':''}${i.executable?'':' · not approvable'}</small></span><input type="checkbox" data-storage-item="${esc(i.id)}" data-bytes="${Number(i.bytes)||0}" aria-label="Select ${esc(i.target)}" ${i.executable&&!expired?'':'disabled'}></label>`;
-    host.innerHTML=`<p>${sched.enabled?'Every day at '+esc(sched.at)+' ('+esc(sched.tz)+'), the sweeper removes':'The daily run is off. When it is on, the sweeper removes'} only what can be rebuilt: dependencies and caches of finished worktrees, container caches and unused Docker cache volumes. Everything else is listed here and waits for you.</p>
+    host.innerHTML=`<p>${sched.enabled?'Every day at '+esc(sched.at)+' ('+esc(sched.tz)+'), the sweeper removes':'The daily run is off. When it is on, the sweeper removes'} only what can be rebuilt: dependencies and caches of finished worktrees, container caches and old Docker build cache. Everything else is listed here and waits for you.</p>
       <div class="setting-row"><span><strong>Dry run</strong><small>List what would go. Nothing is deleted.</small></span><button class="cr-secondary" id="storageDryRun" ${running?'disabled':''}>${running?'Running…':'Run dry run'}</button></div>
       <p id="storageStatus" role="status">${esc(note||(running?(storageMode[running.mode]||running.mode)+' run in progress · '+running.phase:''))}</p>
       <h3>Last runs</h3>${runs.length?runs.slice(0,8).map(r=>`<div class="setting-row storage-run"><span><strong>${esc(storageWhen(r.startedAt))}</strong><small>${esc(storageMode[r.mode]||r.mode)} · ${r.mode==='dry-run'?r.items+' found':r.deleted+' deleted, '+r.skipped+' skipped'}${r.aborted?' · stopped: '+esc(r.aborted):''}</small></span><span>${r.mode==='dry-run'?'':storageSize(r.reclaimedBytes)+' reclaimed'}</span></div>`).join(''):'<p>No runs yet.</p>'}

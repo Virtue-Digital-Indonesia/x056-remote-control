@@ -1,11 +1,12 @@
 import 'reflect-metadata';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, lutimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, lutimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   StorageApprovers, StorageSweeper, approvalPurpose, DEFAULT_PROTECTED_PATHS, manifestDigest, readOnlyCommand, parseSize, dockerTime,
+  CACHE_VOLUME_HINT, defaultRunner, devTreeRoot, listMounts, listProcesses, regenerablePath, sweepScheduleEnabled,
   type CmdResult, type LiveProcess, type Manifest, type RunRecord, type StorageSweeperOptions,
 } from '../server/storage-sweeper.js';
 import { StorageController, refuseAgentCaller } from '../server/storage.controller.js';
@@ -290,7 +291,7 @@ describe('PROTECTED', () => {
 });
 
 describe('dind (A4/M4) through an injected docker runner', () => {
-  const inspect = (o: Record<string, unknown>) => ({ Id: 'c' + String(o.Name), Image: 'sha256:used', State: { Status: 'exited' }, HostConfig: { RestartPolicy: { Name: 'no' } }, Mounts: [], Config: { Image: 'x' }, ...o });
+  const inspect = (o: Record<string, unknown>) => ({ Id: 'c' + String(o.Name), Image: 'sha256:used', State: { Status: 'exited' }, HostConfig: { RestartPolicy: { Name: 'no' } }, Mounts: [], Config: { Image: 'x' }, SizeRw: 0, ...o });
   function dockerWorld(w: World) {
     const containers = [
       inspect({ Name: '/running', State: { Status: 'running' }, Mounts: [{ Type: 'bind', Source: join(w.ws, 'mounted') }] }),
@@ -313,16 +314,17 @@ describe('dind (A4/M4) through an injected docker runner', () => {
     };
   }
 
-  it('plans cache volumes and old build cache as AUTO, everything else as M4, and protects pinned/running/data containers', async () => {
+  it('plans only the old build cache as AUTO, every volume as M4, and protects pinned/running/data containers', async () => {
     const w = world();
     dockerWorld(w);
     write(join(w.ws, 'mounted', 'node_modules', 'x.js')); age(w.ws, 40);
     const s = sweeper(w, { dind: true });
     await sweep(s, true);
     const m = manifestOf(s);
-    expect(m.auto.map((i) => i.target).sort()).toEqual(['docker:builder', 'docker:volume:docintel-audit-gocache']);
+    expect(m.auto.map((i) => i.target).sort()).toEqual(['docker:builder']);
     const m4 = Object.fromEntries(m.items.filter((i) => i.rule === 'M4').map((i) => [i.target, i]));
-    expect(Object.keys(m4).sort()).toEqual(['docker:container:old-job', 'docker:image:sha256:old', `docker:volume:${'a'.repeat(64)}`, 'docker:volume:pgdata-old'].sort());
+    expect(Object.keys(m4).sort()).toEqual(['docker:container:old-job', 'docker:image:sha256:old', `docker:volume:${'a'.repeat(64)}`, 'docker:volume:docintel-audit-gocache', 'docker:volume:pgdata-old'].sort());
+    expect(m4['docker:volume:docintel-audit-gocache'].reason).toMatch(/looks like a build cache \(gocache\)/);
     expect(m4['docker:volume:pgdata-old']).toMatchObject({ mayHoldData: true, bytes: 1_500_000_000 });
     expect(m.protected.map((p) => p.target)).toEqual(expect.arrayContaining(['docker:containers:running', 'docker:containers:pin', 'docker:containers:mounts', 'docker:containers:restart-policy', 'docker:images:rollback']));
     // A running container's bind source is in use: nothing under it is offered.
@@ -331,13 +333,13 @@ describe('dind (A4/M4) through an injected docker runner', () => {
     expect(w.dockerCalls.every((a) => readOnlyCommand('docker', a))).toBe(true);
   });
 
-  it('an AUTO run removes only the cache volume and prunes old build cache', async () => {
+  it('an AUTO run only prunes old build cache: no volume goes without approval', async () => {
     const w = world();
     dockerWorld(w);
     const s = sweeper(w, { dind: true });
     await sweep(s, false);
     const writes = w.dockerCalls.filter((a) => !readOnlyCommand('docker', a));
-    expect(writes).toEqual([['volume', 'rm', 'docintel-audit-gocache'], ['builder', 'prune', '-f', '--filter', 'until=168h']]);
+    expect(writes).toEqual([['builder', 'prune', '-f', '--filter', 'until=168h']]);
   });
 
   it('an approved docker item runs the command rebuilt from its target, not the one stored in the manifest', async () => {
@@ -648,5 +650,346 @@ describe('approval gate: what a session with the token can and cannot do', () =>
     const spy = vi.spyOn(Date, 'now').mockReturnValue(real + 6 * 60_000);
     try { await expect(t.ctl.approve(req, signed)).rejects.toThrow(/passkey approval failed/); } finally { spy.mockRestore(); }
     expect(existsSync(join(t.a, 'node_modules', 'left-pad'))).toBe(true);
+  });
+});
+
+describe('review fixes (2026-10-27)', () => {
+  /** Commit an extended .gitignore on main (and its remote ref) before any worktree is made. */
+  function ignoreMore(w: World, lines: string): void {
+    write(join(w.app, '.gitignore'), readFileSync(join(w.app, '.gitignore'), 'utf8') + lines);
+    git(w.app, 'add', '-A'); git(w.app, 'commit', '-q', '-m', 'ignore more');
+    git(w.app, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+  }
+  /** Give `p` an mtime of `days` ago (a file written after age()). */
+  const old = (p: string, days = 40) => { const t = new Date(Date.now() - days * DAY); utimesSync(p, t, t); };
+  const m3 = (s: StorageSweeper) => manifestOf(s).items.filter((i) => i.rule === 'M3').map((i) => i.target);
+  const noteFor = (s: StorageSweeper, t: string) => manifestOf(s).notes.find((n) => n.target === t)?.reason ?? '';
+
+  // ---- 1. M3 ----
+  it('1: M3 is refused for ignored data, skip-worktree / assume-unchanged edits, per-worktree refs and an unreachable reflog; A1 still takes only node_modules', async () => {
+    const w = world();
+    ignoreMore(w, '.env\nlocal/\n__pycache__/\n*.pyc\n');
+    const control = worktree(w, 'control'), env = worktree(w, 'env'), notes = worktree(w, 'notes'), skip = worktree(w, 'skip'), assume = worktree(w, 'assume'), wref = worktree(w, 'wref'), reflog = worktree(w, 'reflog');
+    write(join(control, 'pkg', '__pycache__', 'm.pyc')); write(join(control, 'x.pyc'));          // regenerable: still offered
+    write(join(env, '.env'), 'SECRET=1');
+    write(join(notes, 'local', 'notes.md'), 'my notes');
+    git(skip, 'update-index', '--skip-worktree', 'src/index.js'); write(join(skip, 'src', 'index.js'), 'skip edit');
+    git(assume, 'update-index', '--assume-unchanged', 'src/index.js'); write(join(assume, 'src', 'index.js'), 'assume edit');
+    git(wref, 'update-ref', 'refs/worktree/keep', 'HEAD');
+    write(join(reflog, 'src', 'gone.js'), 'only in the reflog'); git(reflog, 'add', '-A'); git(reflog, 'commit', '-q', '-m', 'lost'); git(reflog, 'reset', '-q', '--hard', 'HEAD~1');
+    for (const d of [control, env, notes, skip, assume, wref, reflog]) expect(git(d, 'status', '--porcelain')).toBe('');
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, false);
+    expect(m3(s)).toEqual([control]);
+    expect(noteFor(s, env)).toMatch(/ignored \.env is not a regenerable/);
+    expect(noteFor(s, notes)).toMatch(/ignored local\/ is not a regenerable/);
+    expect(noteFor(s, skip)).toMatch(/skip-worktree file \(src\/index\.js\)/);
+    expect(noteFor(s, assume)).toMatch(/assume-unchanged file \(src\/index\.js\)/);
+    expect(noteFor(s, wref)).toMatch(/per-worktree ref refs\/worktree\/keep/);
+    expect(noteFor(s, reflog)).toMatch(/reflog holds commit .* no branch, tag or remote contains/);
+    // A1 removes exactly the node_modules dir: ignored files elsewhere stay.
+    expect(existsSync(join(env, 'node_modules'))).toBe(false);
+    expect(readFileSync(join(env, '.env'), 'utf8')).toBe('SECRET=1');
+    expect(readFileSync(join(notes, 'local', 'notes.md'), 'utf8')).toBe('my notes');
+    expect(readFileSync(join(skip, 'src', 'index.js'), 'utf8')).toBe('skip edit');
+  });
+
+  it('1: the approval re-plan refuses M3 when an ignored file appeared after the manifest', async () => {
+    const w = world();
+    ignoreMore(w, '.env\n');
+    const wt = worktree(w, 'later');
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, true);
+    const m = manifestOf(s);
+    const item = m.items.find((i) => i.rule === 'M3' && i.target === wt)!;
+    expect(item).toBeTruthy();
+    write(join(wt, '.env'), 'SECRET=1'); old(join(wt, '.env'));
+    const rec = await s.executeApproved(m.id, m.digest, [item.id]).done;
+    expect(s.receipts(rec.runId)!.receipts[0]).toMatchObject({ result: 'skipped' });
+    expect(s.receipts(rec.runId)!.receipts[0].reason).toMatch(/\.env/);
+    expect(readFileSync(join(wt, '.env'), 'utf8')).toBe('SECRET=1');
+    expect(regenerablePath('a/node_modules/x')).toBe(true);
+    expect(regenerablePath('sub/z.pyc')).toBe(true);
+    expect(regenerablePath('.env')).toBe(false);
+    expect(regenerablePath('my_dist/x')).toBe(false);
+  });
+
+  // ---- 2. live-use sources fail closed ----
+  it('2: dind on and its running containers cannot be listed: the run aborts, nothing is deleted', async () => {
+    const w = world();
+    const done = worktree(w, 'done');
+    age(w.ws, 40);
+    w.docker = (args) => (args[0] === 'ps' ? { code: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon' } : undefined);
+    const logs: string[] = [];
+    const s = sweeper(w, { dind: true, log: (m) => logs.push(m) });
+    const rec = await sweep(s, false);
+    expect(rec.aborted).toMatch(/bind mounts of running dind containers.*Cannot connect/);
+    expect(rec.deleted).toBe(0);
+    expect(existsSync(join(done, 'node_modules', 'left-pad'))).toBe(true);
+    expect(logs.some((l) => l.includes('Cannot connect'))).toBe(true);
+  });
+
+  it('2: an unreadable process table or mount table aborts the run', async () => {
+    const w = world();
+    const done = worktree(w, 'done');
+    age(w.ws, 40);
+    for (const o of [{ processes: () => { throw new Error('EACCES /proc'); } }, { mounts: () => { throw new Error('EACCES mountinfo'); } }] as Partial<StorageSweeperOptions>[]) {
+      const rec = await sweep(sweeper(w, o), false);
+      expect(rec.aborted).toMatch(/EACCES/);
+      expect(rec.deleted).toBe(0);
+    }
+    expect(existsSync(join(done, 'node_modules', 'left-pad'))).toBe(true);
+    expect(() => listProcesses(join(w.base, 'no-proc'))).toThrow(/cannot read/);
+    mkdirSync(join(w.base, 'empty-proc'));
+    expect(() => listProcesses(join(w.base, 'empty-proc'))).toThrow(/no processes/);
+    expect(() => listMounts(join(w.base, 'no-mountinfo'))).toThrow(/cannot read/);
+  });
+
+  it('2: the process table failing between plan and delete skips the item and the run is still recorded', async () => {
+    const w = world();
+    const a = worktree(w, 'a');
+    age(w.ws, 40);
+    let calls = 0;
+    const s = sweeper(w, { processes: () => { if (++calls > 1) throw new Error('EACCES /proc'); return []; } });
+    const realNow = Date.now;
+    let shift = 0; Date.now = () => realNow() + shift;
+    try {
+      const run = s.sweep({ trigger: 'manual', dryRun: false });
+      shift = 10_000;
+      const rec = await run.done;
+      expect(s.receipts(rec.runId)!.receipts.find((r) => r.target === join(a, 'node_modules'))).toMatchObject({ result: 'skipped', reason: expect.stringMatching(/cannot list processes/) });
+    } finally { Date.now = realNow; }
+    expect(existsSync(join(a, 'node_modules'))).toBe(true);
+  });
+
+  // ---- 3. the dev instance ----
+  it('3: the daily schedule is opt-in (X056_SWEEP=on) and compose passes both vars to the gateway', () => {
+    expect(sweepScheduleEnabled({})).toBe(false);
+    expect(sweepScheduleEnabled({ X056_SWEEP: '' })).toBe(false);
+    expect(sweepScheduleEnabled({ X056_SWEEP: 'off' })).toBe(false);
+    expect(sweepScheduleEnabled({ X056_SWEEP: 'on' })).toBe(true);
+    const compose = readFileSync(join(__dirname, '..', 'compose.yaml'), 'utf8');
+    const x056 = compose.slice(compose.indexOf('\n  x056:'), compose.indexOf('\n  dind:'));
+    const env = x056.slice(x056.indexOf('    environment:'), x056.indexOf('    volumes:'));
+    expect(env).toContain('X056_SWEEP: ${X056_SWEEP:-}');
+    expect(env).toContain('X056_SWEEP_AT: ${X056_SWEEP_AT:-}');
+  });
+
+  it('3: on a poc-ahu-ai workspace root only a dry run is allowed: no schedule, no manual delete, no approval', async () => {
+    const w = world();
+    const dev = join(w.ws, 'poc-ahu-ai');
+    const done = join(dev, 'done');
+    git(w.app, 'worktree', 'add', '-q', '-b', 'devdone', done);
+    git(w.app, 'update-ref', 'refs/remotes/origin/devdone', 'devdone');
+    write(join(done, 'node_modules', 'left-pad', 'index.js'));
+    age(w.ws, 40);
+    // Reached through a symlink too: the realpath is what counts.
+    symlinkSync(dev, join(w.base, 'devroot'));
+    for (const root of [dev, join(w.base, 'devroot')]) {
+      expect(devTreeRoot(root)).toBeTruthy();
+      let now = Date.parse('2026-10-27T21:10:00Z'); // 04:10 WIB
+      const s = sweeper(w, { workspaceRoot: root, schedule: true, now: () => now });
+      const before = s.runs().length;
+      expect(() => s.sweep({ trigger: 'manual', dryRun: false })).toThrow(/poc-ahu-ai/);
+      s.tick();
+      expect(s.status().running).toBeNull();
+      s.start(); s.stop();
+      expect(s.runs()).toHaveLength(before);
+      const rec = await sweep(s, true);
+      expect(rec.mode).toBe('dry-run');
+      const m = manifestOf(s);
+      expect(m.auto.some((i) => i.target === join(done, 'node_modules'))).toBe(true);
+      const m1 = m.items[0];
+      if (m1) expect(() => s.executeApproved(m.id, m.digest, [m1.id])).toThrow(/poc-ahu-ai/);
+      now += DAY;
+    }
+    expect(devTreeRoot(w.ws)).toBeNull();
+    expect(existsSync(join(done, 'node_modules', 'left-pad', 'index.js'))).toBe(true);
+  });
+
+  it('3: approval is refused on a poc-ahu-ai root even for a manifest made elsewhere', async () => {
+    const w = world();
+    const a = worktree(w, 'a'); write(join(a, 'src', 'index.js'), 'dirty');
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, true);
+    const m = manifestOf(s);
+    const item = m.items.find((i) => i.target === join(a, 'node_modules'))!;
+    mkdirSync(join(w.base, 'poc-ahu-ai'));
+    const dev = sweeper(w, { workspaceRoot: join(w.base, 'poc-ahu-ai') });
+    expect(() => dev.executeApproved(m.id, m.digest, [item.id])).toThrow(/poc-ahu-ai/);
+    expect(existsSync(join(a, 'node_modules', 'left-pad'))).toBe(true);
+  });
+
+  // ---- 4 and 5. dind containers and volumes ----
+  function dind(w: World, containers: Record<string, unknown>[], volumes: string[]) {
+    const c = (o: Record<string, unknown>): Record<string, unknown> => ({ Id: 'c' + String(o.Name).slice(1), Image: 'sha256:x', State: { Status: 'exited' }, HostConfig: { RestartPolicy: { Name: 'no' } }, Mounts: [], Config: { Image: 'x' }, ...o });
+    const all = containers.map(c);
+    const sized = { current: new Map<string, number>() };
+    w.docker = (args) => {
+      const out = (x: string) => ({ code: 0, stdout: x, stderr: '' });
+      if (args[0] === 'version') return out('27.5.1\n');
+      if (args[0] === 'ps') return out(all.filter((x) => args.includes('-a') || (x.State as { Status: string }).Status === 'running').map((x) => JSON.stringify(x.Id)).join('\n'));
+      if (args[0] === 'inspect') {
+        const hit = all.filter((x) => args.includes(String(x.Id)) || args.includes(String(x.Name).slice(1)));
+        // Like docker: SizeRw only with --size.
+        return out(JSON.stringify(hit.map((x) => { const { SizeRw, ...rest } = x as Record<string, unknown>; const n = sized.current.get(String(x.Id)) ?? SizeRw; return args.includes('--size') && n !== undefined ? { ...rest, SizeRw: n } : rest; })));
+      }
+      if (args[0] === 'system') return out(JSON.stringify({ Volumes: volumes.map((n) => ({ Name: n, Size: '100MB' })) }));
+      if (args[0] === 'volume' && args[1] === 'ls') return out(volumes.map((n) => JSON.stringify(n)).join('\n'));
+      if (args[0] === 'images') return out('');
+      return out('');
+    };
+    return sized;
+  }
+
+  it('4: a stopped container is sized with --size; a writable layer over 50 MB, an unknown size or a before/rollback/backup name is protected', async () => {
+    const w = world();
+    const sized = dind(w, [
+      { Name: '/exciting_pike', SizeRw: 2_629_646_956 },
+      { Name: '/db-before-migration', SizeRw: 0 },
+      { Name: '/app_rollback_1', SizeRw: 0 },
+      { Name: '/nightly-backup', SizeRw: 0 },
+      { Name: '/no-size-reported' },
+      { Name: '/old-job', SizeRw: 4096 },
+    ], []);
+    const s = sweeper(w, { dind: true });
+    await sweep(s, true);
+    const m = manifestOf(s);
+    expect(m.items.filter((i) => i.target.startsWith('docker:container:')).map((i) => i.target)).toEqual(['docker:container:old-job']);
+    const prot = Object.fromEntries(m.protected.filter((p) => p.target.startsWith('docker:container:')).map((p) => [p.target.slice(17), p]));
+    expect(prot['exciting_pike']).toMatchObject({ bytes: 2_629_646_956, reason: expect.stringMatching(/writable layer holds 2\.4 GB/) });
+    for (const n of ['db-before-migration', 'app_rollback_1', 'nightly-backup']) expect(prot[n]?.reason).toMatch(/before\/rollback\/backup/);
+    expect(prot['no-size-reported']?.reason).toMatch(/size unknown/);
+    expect(w.dockerCalls.some((a) => a[0] === 'inspect' && a.includes('--size'))).toBe(true);
+    // Grown past 50 MB after the manifest: the approval re-check refuses it.
+    const item = m.items.find((i) => i.target === 'docker:container:old-job')!;
+    sized.current.set('cold-job', 60 * 1024 ** 2);
+    w.dockerCalls.length = 0;
+    const rec = await s.executeApproved(m.id, m.digest, [item.id]).done;
+    expect(s.receipts(rec.runId)!.receipts[0]).toMatchObject({ result: 'skipped', reason: expect.stringMatching(/writable layer holds/) });
+    expect(w.dockerCalls.filter((a) => !readOnlyCommand('docker', a))).toEqual([]);
+  });
+
+  it('5: no volume is AUTO; a cache-looking name is only a hint, anchored at the end of the name', async () => {
+    const w = world();
+    dind(w, [], ['docintel-audit-gocache', 'obs-gomod2', 'ergomodel_pg', 'verdaccio-npm-cache-storage', 'b'.repeat(64)]);
+    const s = sweeper(w, { dind: true });
+    await sweep(s, false);
+    expect(w.dockerCalls.filter((a) => !readOnlyCommand('docker', a))).toEqual([['builder', 'prune', '-f', '--filter', 'until=168h']]);
+    const m = manifestOf(s);
+    const vol = Object.fromEntries(m.items.filter((i) => i.target.startsWith('docker:volume:')).map((i) => [i.target.slice(14), i]));
+    expect(Object.values(vol).every((i) => i.rule === 'M4' && i.class === 'manifest')).toBe(true);
+    expect(Object.keys(vol)).toHaveLength(5);
+    expect(vol['docintel-audit-gocache'].evidence.looksLikeCache).toBe('gocache');
+    expect(vol['obs-gomod2'].evidence.looksLikeCache).toBe('gomod');
+    for (const n of ['ergomodel_pg', 'verdaccio-npm-cache-storage']) {
+      expect(vol[n].evidence.looksLikeCache).toBeUndefined();
+      expect(vol[n]).toMatchObject({ mayHoldData: true, reason: 'unused named volume: may hold data' });
+    }
+    expect(CACHE_VOLUME_HINT.test('ergomodel_pg')).toBe(false);
+    expect(CACHE_VOLUME_HINT.test('verdaccio-npm-cache-storage')).toBe(false);
+  });
+
+  // ---- 6. projects ----
+  it('6: the project list failing aborts the run (no workspace path would be checked for busy)', async () => {
+    const w = world();
+    const done = worktree(w, 'done');
+    age(w.ws, 40);
+    const rec = await sweep(sweeper(w, { projects: () => { throw new Error('registry locked'); } }), false);
+    expect(rec.aborted).toMatch(/projects.*registry locked/);
+    expect(existsSync(join(done, 'node_modules', 'left-pad'))).toBe(true);
+  });
+
+  // ---- 7. node_modules that git cannot vouch for ----
+  it('7: a repository inside node_modules, a patches/ dir or patch-package makes A1 a manifest item', async () => {
+    const w = world();
+    const repo = worktree(w, 'repo'), patches = worktree(w, 'patches'), pp = worktree(w, 'pp'), control = worktree(w, 'control');
+    const inner = join(repo, 'node_modules', '@scope', 'linked');
+    mkdirSync(inner, { recursive: true }); git(inner, 'init', '-q'); write(join(inner, 'edit.js'), 'unpushed');
+    mkdirSync(join(patches, 'patches'));
+    git(w.app, 'update-ref', 'refs/remotes/origin/patches', 'patches');
+    write(join(patches, 'patches', 'left-pad+1.0.0.patch'), 'diff'); git(patches, 'add', '-A'); git(patches, 'commit', '-q', '-m', 'patch'); git(w.app, 'update-ref', 'refs/remotes/origin/patches', 'patches');
+    write(join(pp, 'package.json'), '{"scripts":{"postinstall":"patch-package"}}'); git(pp, 'add', '-A'); git(pp, 'commit', '-q', '-m', 'pp'); git(w.app, 'update-ref', 'refs/remotes/origin/pp', 'pp');
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, false);
+    expect(existsSync(join(control, 'node_modules'))).toBe(false);
+    for (const d of [repo, patches, pp]) expect(existsSync(join(d, 'node_modules', 'left-pad', 'index.js'))).toBe(true);
+    const m = manifestOf(s);
+    const reason = (d: string) => m.items.find((i) => i.target === join(d, 'node_modules'))?.rule + ' ' + m.items.find((i) => i.target === join(d, 'node_modules'))?.reason;
+    expect(reason(repo)).toMatch(/^M1 .*git repository inside node_modules \(.*@scope\/linked\)/);
+    expect(reason(patches)).toMatch(/^M1 .*patches exists/);
+    expect(reason(pp)).toMatch(/^M1 .*uses patch-package/);
+    expect(readFileSync(join(inner, 'edit.js'), 'utf8')).toBe('unpushed');
+  });
+
+  it('7: M3 looks inside node_modules for a repository too', async () => {
+    const w = world();
+    const wt = worktree(w, 'nmrepo');
+    const inner = join(wt, 'node_modules', 'forked');
+    mkdirSync(inner, { recursive: true }); git(inner, 'init', '-q');
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, true);
+    expect(m3(s)).not.toContain(wt);
+    expect(noteFor(s, wt)).toMatch(/another repository inside it \(.*node_modules\/forked\)/);
+  });
+
+  // ---- 8. low ----
+  it('8: git ls-files failing protects every candidate', async () => {
+    const w = world();
+    const done = worktree(w, 'done');
+    age(w.ws, 40);
+    const base = defaultRunner();
+    const s = sweeper(w, { run: (cmd, args, o) => (cmd === 'git' && args.includes('ls-files') && args.includes('--') ? Promise.resolve({ code: 128, stdout: '', stderr: 'fatal: index file corrupt' }) : base(cmd, args, o)) });
+    await sweep(s, false);
+    expect(existsSync(join(done, 'node_modules', 'left-pad'))).toBe(true);
+    const m = manifestOf(s);
+    expect(m.items.some((i) => i.target.startsWith(done + '/'))).toBe(false);
+    expect(m.protected.find((p) => p.target === join(done, 'node_modules'))?.reason).toMatch(/ls-files failed: fatal: index file corrupt/);
+  });
+
+  it('8: config.json protectedPaths adds to the defaults; it never replaces them', () => {
+    const w = world();
+    mkdirSync(join(w.ws, 'poc-ahu-ai')); mkdirSync(join(w.ws, 'extra')); mkdirSync(join(w.ws, 'opt'));
+    mkdirSync(join(w.state, 'storage-sweeper'), { recursive: true });
+    writeFileSync(join(w.state, 'storage-sweeper', 'config.json'), JSON.stringify({ protectedPaths: ['{workspaceRoot}/extra'] }));
+    const s = new StorageSweeper({ stateDir: w.state, workspaceRoot: w.ws, protectedPaths: ['{workspaceRoot}/opt'], log: () => {} });
+    expect(s.protectedPaths().filter((g) => g.category === 'configured').map((g) => g.path).sort()).toEqual([join(w.ws, 'extra'), join(w.ws, 'opt'), join(w.ws, 'poc-ahu-ai')].sort());
+  });
+
+  it('8: a pnpm store passes the same gates as a path: in use or protected = not pruned', async () => {
+    const w = world();
+    const home = join(w.base, 'home'), tmp = join(w.base, 'tmp'), bin = join(w.base, 'bin');
+    mkdirSync(tmp, { recursive: true }); mkdirSync(bin);
+    writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\nexit 0\n'); chmodSync(join(bin, 'pnpm'), 0o755);
+    const stateStore = join(w.state, '.pnpm-store'), homeStore = join(home, '.local', 'share', 'pnpm', 'store');
+    write(join(stateStore, 'v3', 'f'), 'pkg'); write(join(homeStore, 'v3', 'f'), 'pkg');
+    const commands: string[][] = [];
+    const base = defaultRunner();
+    const run = (cmd: string, args: string[], o?: Parameters<typeof base>[2]) => {
+      if (['pnpm', 'go', 'npm'].includes(cmd)) { commands.push([cmd, ...args]); return Promise.resolve({ code: 0, stdout: '', stderr: '' }); }
+      return base(cmd, args, o);
+    };
+    const path = process.env.PATH, gocache = process.env.GOCACHE;
+    process.env.PATH = `${bin}:${path}`; delete process.env.GOCACHE;
+    try {
+      // Both stores are offered and pruned when nothing holds them.
+      let s = sweeper(w, { containerCaches: true, home, tmpDir: tmp, run });
+      await sweep(s, false);
+      expect(commands.filter((c) => c[0] === 'pnpm').map((c) => c.at(-1)).sort()).toEqual([homeStore, stateStore].sort());
+      // A process with its cwd in one store, and a protectedPaths entry on the other.
+      commands.length = 0;
+      w.procs = [{ pid: 99, comm: 'node', paths: [join(stateStore, 'v3')] }];
+      s = sweeper(w, { containerCaches: true, home, tmpDir: tmp, run, protectedPaths: [homeStore] });
+      await sweep(s, false);
+      expect(commands.filter((c) => c[0] === 'pnpm')).toEqual([]);
+      const p = manifestOf(s).protected;
+      expect(p.find((x) => x.target === stateStore)?.reason).toMatch(/pid 99/);
+      expect(p.find((x) => x.target === homeStore)?.reason).toMatch(/protected/);
+    } finally { process.env.PATH = path; if (gocache !== undefined) process.env.GOCACHE = gocache; }
   });
 });

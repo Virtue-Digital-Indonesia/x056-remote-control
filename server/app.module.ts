@@ -71,7 +71,7 @@ export interface GatewayConfig {
   publicUrl?: string;
   /** Code-graph / memory-wiki service. Defaults from env; tests inject their own. */
   codegraph?: CodegraphConfig;
-  /** The storage sweeper's daily schedule (production: on unless X056_SWEEP=off). Off by default so no test sweeps. */
+  /** The storage sweeper's daily schedule (opt-in: X056_SWEEP=on, so an instance that never set it, the dev one included, never sweeps). Off by default so no test sweeps. */
   storageSweep?: boolean;
   /** Storage sweeper overrides (tests: roots, runners, caches/dind off). */
   storage?: Partial<StorageSweeperOptions>;

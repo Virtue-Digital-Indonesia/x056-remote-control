@@ -13,8 +13,8 @@ import { localParts, parseBriefAt } from './bot.js';
  *
  * Three classes of thing on the disk:
  *   AUTO       regenerable (dependencies of a finished worktree, pure caches,
- *              container caches, dind build cache and cache volumes): removed
- *              without asking, each re-checked right before it goes.
+ *              container caches, the old dind build cache): removed without
+ *              asking, each re-checked right before it goes.
  *   MANIFEST   everything else that looks unused: listed in a dry-run
  *              manifest, removed only after the owner approves the items with a
  *              passkey (storage.controller.ts holds that gate).
@@ -38,6 +38,10 @@ import { localParts, parseBriefAt } from './bot.js';
  *    `git worktree remove` (M3), without --force.
  *  - A dry run cannot delete: its command runner refuses anything that is not
  *    on the read-only list, and the remover is never called.
+ *  - Every live-use source fails CLOSED: an unreadable process table, mount
+ *    table, project list or dind bind list aborts the whole run.
+ *  - Real runs (scheduled, manual, approved) are refused when the workspace
+ *    root is the dev instance's poc-ahu-ai tree; a dry run is still allowed.
  */
 
 export const STORAGE_SWEEPER = Symbol('x056-storage-sweeper');
@@ -60,7 +64,29 @@ const IDLE_EXCLUDE = ['node_modules', '.next', 'dist', 'build', 'target', '.turb
 /** Never descended into by the discovery walk. */
 const NO_DESCEND = new Set([NM, '.git', '.next', 'dist', 'build', 'target', 'out', 'coverage', '.turbo', '.parcel-cache', '.pytest_cache', '.venv', 'venv', '__pycache__', '.gradle', '.terraform']);
 const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'];
-const CACHE_VOLUME = /gocache|gomod|go-cache|go-mod|npm-cache|pnpm-store|pip-cache/;
+/**
+ * A HINT only, never a reason to delete without approval: the volume's name
+ * ENDS in a cache segment (`docintel-audit-gocache`, `obs-gomod2`). Anchored at
+ * the end so `ergomodel_pg` and `verdaccio-npm-cache-storage` get no hint.
+ */
+export const CACHE_VOLUME_HINT = /(?:^|[-_.])(gocache|gomod|go-cache|go-mod|npm-cache|pnpm-store|pip-cache)\d*$/;
+/** A stopped container whose writable layer holds more than this holds data. */
+export const CONTAINER_DATA_BYTES = 50 * 1024 ** 2;
+const CONTAINER_KEEP_NAME = /before|rollback|backup/i;
+/**
+ * Ignored paths `git worktree remove` may take with it (M3): anything at or
+ * inside one of these names, or a `*.pyc`. Any other ignored path (`.env`,
+ * `local/notes.md`) is data only that worktree has, so M3 is refused.
+ */
+const REGENERABLE = new Set(['node_modules', '.next', 'dist', 'build', 'out', 'target', 'coverage', '.turbo', '.parcel-cache', '.pytest_cache', '.vite', '.vite-temp', '.cache', '__pycache__', '.gradle', '.angular']);
+export function regenerablePath(rel: string): boolean {
+  const segs = rel.replace(/\/+$/, '').split('/').filter(Boolean);
+  return segs.some((x) => REGENERABLE.has(x)) || /\.pyc$/.test(segs[segs.length - 1] ?? '');
+}
+/** How much of the reflog (logs/HEAD) must be reachable from a ref before M3. */
+const REFLOG_LINES = 200;
+/** Index flags / ignored listings bigger than this are not trusted (refused). */
+const GIT_LIST_MAX = 256 * 1024 ** 2;
 const M5_MIN_BYTES = 500 * 1024 ** 2;
 const MANIFEST_TTL_MS = 7 * DAY;
 /** A manifest with this much approvable earns a (quiet) notice. */
@@ -68,7 +94,8 @@ export const MANIFEST_NOTICE_BYTES = GIB;
 const RUNS_SHOWN = 20;
 /**
  * Protected by default. `{stateDir}`, `{workspaceRoot}` and a `*` inside one
- * segment are expanded. Override in `<dataDir>/config.json` {protectedPaths}.
+ * segment are expanded. `<dataDir>/config.json` {protectedPaths} ADDS to these
+ * (it can never remove a default).
  *  - the UAT detached checkout;
  *  - poc-ahu-ai: the dev instance (x056-devs) works in this same tree, and its
  *    processes, turns and containers are invisible from here, so none of the
@@ -89,7 +116,7 @@ export const RULE_LABELS: Record<SweepRule, string> = {
   A1: 'Dependencies in finished worktrees',
   A2: 'Build caches in finished worktrees',
   A3: 'Container caches',
-  A4: 'Docker build cache and cache volumes',
+  A4: 'Docker build cache',
   M1: 'Dependencies and caches in idle checkouts',
   M2: 'Ignored build outputs',
   M3: 'Whole finished worktrees',
@@ -182,7 +209,7 @@ export interface RunRecord {
   truncated?: boolean;
 }
 
-export interface CmdResult { code: number; stdout: string; stderr: string; timedOut?: boolean }
+export interface CmdResult { code: number; stdout: string; stderr: string; timedOut?: boolean; /** stdout passed maxBytes and was cut. */ truncated?: boolean }
 export interface CmdOptions { cwd?: string; timeoutMs?: number; env?: Record<string, string>; input?: string; maxBytes?: number }
 export type CommandRunner = (cmd: string, args: string[], opts?: CmdOptions) => Promise<CmdResult>;
 
@@ -201,7 +228,7 @@ export interface StorageSweeperOptions {
   /** The workspace root (X056_WORKSPACE_ROOT), an IN root. */
   workspaceRoot?: string;
   accountsFile?: string;
-  /** Replaces the configured/default protectedPaths. */
+  /** Added to the default and configured protectedPaths (never replaces them). */
   protectedPaths?: string[];
   /** The gateway's own checkout(s): OUT. Default `<workspaceRoot>/x056-remote-control`. */
   gatewayCheckouts?: string[];
@@ -211,7 +238,7 @@ export interface StorageSweeperOptions {
   containerCaches?: boolean;
   /** Sweep dind through the docker CLI (A4, M4). */
   dind?: boolean;
-  /** Daily schedule on (X056_SWEEP=off turns it off). */
+  /** Daily schedule on (opt-in: X056_SWEEP=on, see sweepScheduleEnabled). */
   schedule?: boolean;
   sweepAt?: string;
   tz?: string;
@@ -259,6 +286,21 @@ function writeJson(file: string, data: unknown): void {
   renameSync(tmp, file);
 }
 function readJson<T>(file: string): T | null { try { return JSON.parse(readFileSync(file, 'utf8')) as T; } catch { return null; } }
+/** The daily schedule is opt-in: only `X056_SWEEP=on` turns it on (unset = off). */
+export function sweepScheduleEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env.X056_SWEEP === 'on';
+}
+/**
+ * The dev instance's tree: its workspace root IS `poc-ahu-ai`, where the
+ * default protected `{workspaceRoot}/poc-ahu-ai` does not exist and
+ * production's turns, processes and dind binds are invisible. Returns the
+ * offending path when the root is, or is inside, a `poc-ahu-ai` directory.
+ */
+export function devTreeRoot(workspaceRoot?: string): string | null {
+  if (!workspaceRoot) return null;
+  for (const p of [resolve(workspaceRoot), real(workspaceRoot)]) if (p && p.split('/').includes('poc-ahu-ai')) return p;
+  return null;
+}
 function onPath(bin: string): boolean {
   for (const d of (process.env.PATH ?? '').split(delimiter)) { try { if (statSync(join(d, bin)).isFile()) return true; } catch { /* next */ } }
   return false;
@@ -287,7 +329,7 @@ export function readOnlyCommand(cmd: string, args: string[]): boolean {
   }
   if (name === 'git') {
     const sub = args.filter((a, i) => !(a === '-c' || args[i - 1] === '-c' || a === '-C' || args[i - 1] === '-C' || a.startsWith('--git-dir')))[0];
-    if (['rev-parse', 'symbolic-ref', 'for-each-ref', 'status', 'check-ignore', 'ls-files'].includes(sub)) return true;
+    if (['rev-parse', 'symbolic-ref', 'for-each-ref', 'status', 'check-ignore', 'ls-files', 'rev-list'].includes(sub)) return true;
     return sub === 'worktree' && args.includes('list');
   }
   if (name === 'docker') {
@@ -301,15 +343,15 @@ export function readOnlyCommand(cmd: string, args: string[]): boolean {
 
 export function defaultRunner(): CommandRunner {
   return (cmd, args, o = {}) => new Promise((done) => {
-    let out = '', err = '', timedOut = false, settled = false;
+    let out = '', err = '', timedOut = false, settled = false, truncated = false;
     const max = o.maxBytes ?? 32 * 1024 * 1024;
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(cmd, args, { cwd: o.cwd, env: { ...process.env, ...(o.env ?? {}) }, stdio: [o.input != null ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     } catch (e) { done({ code: 127, stdout: '', stderr: (e as Error).message }); return; }
-    const finish = (code: number) => { if (settled) return; settled = true; clearTimeout(timer); done({ code, stdout: out, stderr: err, ...(timedOut ? { timedOut } : {}) }); };
+    const finish = (code: number) => { if (settled) return; settled = true; clearTimeout(timer); done({ code, stdout: out, stderr: err, ...(timedOut ? { timedOut } : {}), ...(truncated ? { truncated } : {}) }); };
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, o.timeoutMs ?? 60_000);
-    child.stdout?.on('data', (d: Buffer) => { if (out.length < max) out += d.toString(); });
+    child.stdout?.on('data', (d: Buffer) => { if (out.length < max) out += d.toString(); else truncated = true; });
     child.stderr?.on('data', (d: Buffer) => { if (err.length < 64 * 1024) err += d.toString(); });
     child.on('error', (e) => { err += e.message; finish(127); });
     child.on('close', (code) => finish(timedOut ? 124 : code ?? -1));
@@ -317,24 +359,29 @@ export function defaultRunner(): CommandRunner {
   });
 }
 
-/** Every process's cwd, open files and cache env: what is in use right now. */
-export function listProcesses(): LiveProcess[] {
+/**
+ * Every process's cwd, open files and cache env: what is in use right now.
+ * THROWS when the process table cannot be read: an empty list would read as
+ * "nothing is in use" and fail open. A single process vanishing is normal.
+ */
+export function listProcesses(procDir = '/proc'): LiveProcess[] {
   const out: LiveProcess[] = [];
-  let pids: string[] = [];
-  try { pids = readdirSync('/proc').filter((n) => /^\d+$/.test(n)); } catch { return out; }
+  let pids: string[];
+  try { pids = readdirSync(procDir).filter((n) => /^\d+$/.test(n)); } catch (e) { throw new Error(`cannot read ${procDir}: ${(e as Error).message}`); }
+  if (!pids.length) throw new Error(`${procDir} lists no processes`);
   for (const p of pids) {
     const pid = Number(p), paths: string[] = [];
     let comm = '', argv: string[] = [];
-    try { comm = readFileSync(`/proc/${p}/comm`, 'utf8').trim(); } catch { continue; }
-    try { argv = readFileSync(`/proc/${p}/cmdline`, 'utf8').split('\0').filter(Boolean).slice(0, 4); } catch { /* gone */ }
-    try { paths.push(readlinkSync(`/proc/${p}/cwd`)); } catch { /* gone or not ours */ }
+    try { comm = readFileSync(`${procDir}/${p}/comm`, 'utf8').trim(); } catch { continue; }
+    try { argv = readFileSync(`${procDir}/${p}/cmdline`, 'utf8').split('\0').filter(Boolean).slice(0, 4); } catch { /* gone */ }
+    try { paths.push(readlinkSync(`${procDir}/${p}/cwd`)); } catch { /* gone or not ours */ }
     try {
-      for (const fd of readdirSync(`/proc/${p}/fd`)) {
-        try { const t = readlinkSync(`/proc/${p}/fd/${fd}`); if (t.startsWith('/')) paths.push(t.replace(/ \(deleted\)$/, '')); } catch { /* closed */ }
+      for (const fd of readdirSync(`${procDir}/${p}/fd`)) {
+        try { const t = readlinkSync(`${procDir}/${p}/fd/${fd}`); if (t.startsWith('/')) paths.push(t.replace(/ \(deleted\)$/, '')); } catch { /* closed */ }
       }
     } catch { /* not ours */ }
     try {
-      for (const kv of readFileSync(`/proc/${p}/environ`, 'utf8').split('\0')) {
+      for (const kv of readFileSync(`${procDir}/${p}/environ`, 'utf8').split('\0')) {
         const i = kv.indexOf('=');
         if (i > 0 && CACHE_ENV.includes(kv.slice(0, i)) && kv.slice(i + 1).startsWith('/')) paths.push(kv.slice(i + 1));
       }
@@ -344,12 +391,15 @@ export function listProcesses(): LiveProcess[] {
   return out;
 }
 
-export function listMounts(): string[] {
-  try {
-    return readFileSync('/proc/self/mountinfo', 'utf8').split('\n').filter(Boolean)
-      .map((l) => l.split(' ')[4]).filter(Boolean)
-      .map((m) => m.replace(/\\(\d{3})/g, (_s, o: string) => String.fromCharCode(parseInt(o, 8))));
-  } catch { return []; }
+/** Every mount point. THROWS when the table cannot be read (an empty list would fail open). */
+export function listMounts(file = '/proc/self/mountinfo'): string[] {
+  let raw: string;
+  try { raw = readFileSync(file, 'utf8'); } catch (e) { throw new Error(`cannot read ${file}: ${(e as Error).message}`); }
+  const out = raw.split('\n').filter(Boolean)
+    .map((l) => l.split(' ')[4]).filter(Boolean)
+    .map((m) => m.replace(/\\(\d{3})/g, (_s, o: string) => String.fromCharCode(parseInt(o, 8))));
+  if (!out.length) throw new Error(`${file} lists no mounts`);
+  return out;
 }
 
 /** Expand `{stateDir}` and a `*` within one path segment. */
@@ -414,6 +464,8 @@ interface Ctx {
   run: CommandRunner;
   docker: CommandRunner;
   busyMemo: Map<string, string | null>;
+  /** A live-use source could not be read (processes, mounts, projects, dind binds): nothing runs. */
+  failed: string | null;
 }
 
 interface Candidate { path: string; kind: 'nm' | 'cache' | 'output' | 'next' }
@@ -496,10 +548,17 @@ export class StorageSweeper {
   private log(m: string): void { (this.opts.log ?? ((x) => console.log(x)))(`[storage] ${m}`); }
   private get sweepAt(): string { return this.opts.sweepAt && parseBriefAt(this.opts.sweepAt) != null ? this.opts.sweepAt : '04:00'; }
   private get tz(): string { return this.opts.tz || 'Asia/Jakarta'; }
+  /** Non-null on the dev instance's tree: only a dry run is allowed there. */
+  private devRefusal(): string | null {
+    const p = devTreeRoot(this.opts.workspaceRoot);
+    return p ? `the workspace root ${p} is the dev instance's poc-ahu-ai tree, where production's turns, processes and dind binds are invisible: only a dry run is allowed` : null;
+  }
 
   // ---- schedule ----
   start(): void {
     if (this.timer || !this.opts.schedule) return;
+    const dev = this.devRefusal();
+    if (dev) { this.log('daily schedule not started: ' + dev); return; }
     this.timer = setInterval(() => { try { this.tick(); } catch (e) { this.log('tick failed: ' + (e as Error).message); } }, 60_000);
     this.timer.unref?.();
   }
@@ -507,7 +566,7 @@ export class StorageSweeper {
 
   /** Once a day at sweepAt in tz; a swap inside the next two hours catches up. */
   tick(): void {
-    if (!this.opts.schedule || this.active) return;
+    if (!this.opts.schedule || this.active || this.devRefusal()) return;
     const at = parseBriefAt(this.sweepAt)!;
     const { date, minutes } = localParts(this.now, this.tz);
     const st = this.state();
@@ -580,6 +639,8 @@ export class StorageSweeper {
   // ---- runs ----
   /** Start a run. Throws (synchronously) when one is already going. */
   sweep(o: { trigger: RunTrigger; dryRun: boolean; budgetMs?: number }): { runId: string; done: Promise<RunRecord> } {
+    const dev = o.dryRun ? null : this.devRefusal();
+    if (dev) throw new Error(dev);
     const runId = this.begin(o.trigger, o.dryRun ? 'dry-run' : 'auto');
     const done = this.runSweep(runId, o).finally(() => this.end());
     return { runId, done };
@@ -587,6 +648,8 @@ export class StorageSweeper {
 
   /** Execute approved manifest items. The caller has verified the human gate. */
   executeApproved(manifestId: string, digest: string, itemIds: string[], budgetMs?: number): { runId: string; done: Promise<RunRecord> } {
+    const dev = this.devRefusal();
+    if (dev) throw new Error(dev);
     const { manifest, items } = this.approval(manifestId, digest, itemIds);
     const runId = this.begin('approval', 'approved');
     const done = this.runApproved(runId, manifest, items, budgetMs).finally(() => this.end());
@@ -619,6 +682,7 @@ export class StorageSweeper {
   }
   /** Fail closed: without the account list the transcripts cannot be located, so nothing runs. */
   private essentials(ctx: Ctx): string | null {
+    if (ctx.failed) return ctx.failed;
     const file = this.opts.accountsFile ?? join(this.opts.stateDir, 'accounts.json');
     const accounts = readJson<{ accounts?: { configDir?: string }[] }>(file)?.accounts;
     if (!Array.isArray(accounts) || !accounts.some((a) => typeof a?.configDir === 'string')) return `cannot read the accounts in ${file}: the transcripts cannot be protected, so nothing runs`;
@@ -677,6 +741,7 @@ export class StorageSweeper {
     const ctx = await this.context(false, budgetMs ?? this.opts.budgetMs ?? 30 * 60_000);
     const dfBefore = this.df(ctx.roots);
     const missing = this.essentials(ctx);
+    if (missing) this.log(missing);
     if (missing) return this.finishRun(runId, 'approval', 'approved', startedAt, ctx, dfBefore, items.map((i) => this.receipt(i, 'skipped', missing)), { manifestId: m.id, aborted: missing });
     this.phase('deleting');
     const receipts: Receipt[] = [];
@@ -741,29 +806,39 @@ export class StorageSweeper {
     const docker: CommandRunner = dry
       ? (cmd, args, o) => readOnlyCommand(cmd, args) ? this.docker(cmd, args, o) : Promise.reject(new Error(`dry run refuses: ${cmd} ${args.join(' ')}`))
       : this.docker;
-    const procs = (this.opts.processes ?? listProcesses)();
+    // Every live-use source fails CLOSED: an unreadable one aborts the run
+    // (essentials), never reads as "nothing in use".
+    const failed: string[] = [];
+    const attempt = <T>(what: string, f: () => T, fallback: T): T => { try { return f(); } catch (e) { failed.push(`${what}: ${(e as Error).message}`); return fallback; } };
+    const procs = attempt('cannot list processes', () => (this.opts.processes ?? listProcesses)(), [] as LiveProcess[]);
+    const mounts = attempt('cannot read the mount table', () => (this.opts.mounts ?? listMounts)(), [] as string[]);
+    const projects = attempt('cannot list the workspace projects for the busy check', () => (this.opts.projects?.() ?? []).map((p) => ({ id: p.id, cwd: real(p.cwd) ?? p.cwd })), [] as { id: string; cwd: string }[]);
     const ctx: Ctx = {
       now: this.now, deadline: this.now + budgetMs, planDeadline: this.now + budgetMs - Math.min(budgetMs * 0.2, 180_000), ancestors: new Map(), dry,
       roots: this.roots(), stateReal: real(this.opts.stateDir), protect: this.protectedPaths(),
-      procs, live: new LiveIndex(procs), liveAt: Date.now(), mounts: (this.opts.mounts ?? listMounts)(),
-      projects: (() => { try { return (this.opts.projects?.() ?? []).map((p) => ({ id: p.id, cwd: real(p.cwd) ?? p.cwd })); } catch { return []; } })(),
-      dockerBinds: [], run, docker, busyMemo: new Map(),
+      procs, live: new LiveIndex(procs), liveAt: Date.now(), mounts, projects,
+      dockerBinds: [], run, docker, busyMemo: new Map(), failed: null,
     };
     if (this.opts.dind) {
-      ctx.dockerBinds = await this.runningBindSources(ctx).catch(() => []);
+      try { ctx.dockerBinds = await this.runningBindSources(ctx); }
+      catch (e) { failed.push(`cannot list the bind mounts of running dind containers: ${(e as Error).message}`); }
       ctx.live = new LiveIndex(procs, ctx.dockerBinds);
     }
+    if (failed.length) ctx.failed = `${failed.join('; ')}: what is in use cannot be known, so nothing runs`;
     return ctx;
   }
+  /** Throws (leaving ctx as it was) when the process table cannot be read. */
   private refreshLive(ctx: Ctx): void {
     if (Date.now() - ctx.liveAt < 5000) return;
-    ctx.procs = (this.opts.processes ?? listProcesses)();
+    const procs = (this.opts.processes ?? listProcesses)();
+    ctx.procs = procs;
     ctx.live = new LiveIndex(ctx.procs, ctx.dockerBinds);
     ctx.liveAt = Date.now();
     ctx.busyMemo.clear();
   }
 
   private home(): string { return this.opts.home ?? process.env.HOME ?? '/root'; }
+  private pnpmStores(): string[] { return [join(this.opts.stateDir, '.pnpm-store'), join(this.home(), '.local', 'share', 'pnpm', 'store')]; }
   private goCacheDir(): string { return process.env.GOCACHE && process.env.GOCACHE.startsWith('/') ? process.env.GOCACHE : join(this.home(), '.cache', 'go-build'); }
 
   roots(): Root[] {
@@ -778,7 +853,7 @@ export class StorageSweeper {
     } catch { /* no chats */ }
     if (this.opts.workspaceRoot) { const r = real(this.opts.workspaceRoot); if (r) out.push({ path: r, kind: 'workspace' }); }
     if (this.opts.containerCaches) {
-      for (const p of [this.goCacheDir(), join(this.home(), '.cache', 'pip'), join(this.home(), '.npm', '_cacache')]) { const r = isRealDir(p) ? real(p) : null; if (r) out.push({ path: r, kind: 'cache' }); }
+      for (const p of [this.goCacheDir(), join(this.home(), '.cache', 'pip'), join(this.home(), '.npm', '_cacache'), ...this.pnpmStores()]) { const r = isRealDir(p) ? real(p) : null; if (r) out.push({ path: r, kind: 'cache' }); }
       const t = real(this.opts.tmpDir ?? '/tmp'); if (t) out.push({ path: t, kind: 'tmp' });
     }
     return out;
@@ -798,7 +873,9 @@ export class StorageSweeper {
     const gw = this.opts.gatewayCheckouts ?? (this.opts.workspaceRoot ? [join(this.opts.workspaceRoot, 'x056-remote-control')] : []);
     for (const g of gw) add(g, 'gateway', "the gateway's own checkout and .deploy");
     for (const o of OUT_PATHS) add(o, 'out', 'out of scope');
-    const configured = this.opts.protectedPaths ?? readJson<{ protectedPaths?: string[] }>(join(this.dir, 'config.json'))?.protectedPaths ?? DEFAULT_PROTECTED_PATHS;
+    // Additive: config.json (and the option) can only add, never drop a default.
+    const fromConfig = readJson<{ protectedPaths?: unknown }>(join(this.dir, 'config.json'))?.protectedPaths;
+    const configured = [...new Set([...DEFAULT_PROTECTED_PATHS, ...(this.opts.protectedPaths ?? []), ...(Array.isArray(fromConfig) ? fromConfig.filter((x): x is string => typeof x === 'string') : [])])];
     for (const pat of configured) for (const p of expandPattern(pat, this.opts.stateDir, this.opts.workspaceRoot)) add(p, 'configured', `configured protectedPaths (${pat})`);
     return out;
   }
@@ -810,7 +887,9 @@ export class StorageSweeper {
     if (r !== resolve(target)) return 'path goes through a symlink';
     const root = ctx.roots.find((x) => inside(r, x.path) && (r !== x.path || (allowRootItself && x.kind === 'cache')));
     if (!root) return 'outside every sweep root';
-    if (ctx.stateReal && inside(r, ctx.stateReal) && !ctx.roots.some((x) => x.kind === 'chat' && inside(r, x.path) && r !== x.path)) return 'inside the gateway state';
+    // Inside the state dir only a chat's work tree, or a cache root itself (the
+    // pnpm store, acted on by command), may be touched.
+    if (ctx.stateReal && inside(r, ctx.stateReal) && !ctx.roots.some((x) => (x.kind === 'chat' && inside(r, x.path) && r !== x.path) || (allowRootItself && x.kind === 'cache' && r === x.path))) return 'inside the gateway state';
     for (const g of ctx.protect) {
       if (inside(r, g.path)) return `protected: ${g.reason}`;
       if (inside(g.path, r)) return `contains protected ${g.reason}`;
@@ -1109,7 +1188,15 @@ export class StorageSweeper {
     const rels = u.candidates.map((c) => relative(root, c.path));
     const ign = rels.length ? await this.git(ctx, root, ['check-ignore', '-z', '--stdin'], { input: rels.join('\0') + '\0' }) : { code: 1, stdout: '', stderr: '' };
     const ignored = new Set(ign.stdout.split('\0').filter(Boolean));
-    const tr = rels.length ? await this.git(ctx, root, ['ls-files', '-z', '--', ...rels]) : { code: 0, stdout: '', stderr: '' };
+    const tr: CmdResult = rels.length ? await this.git(ctx, root, ['ls-files', '-z', '--', ...rels], { maxBytes: GIT_LIST_MAX }) : { code: 0, stdout: '', stderr: '' };
+    // Without a trustworthy answer from git, every candidate may be source.
+    const gitFailed = ign.code > 1 ? `git check-ignore failed: ${ign.stderr.trim().split('\n')[0] || 'exit ' + ign.code}`
+      : tr.code !== 0 || tr.truncated ? `git ls-files failed: ${tr.truncated ? 'output too large' : tr.stderr.trim().split('\n')[0] || 'exit ' + tr.code}` : null;
+    if (gitFailed) {
+      for (const c of u.candidates) res.protected.push({ category: 'refused', target: c.path, bytes: null, reason: gitFailed });
+      res.notes.push({ target: root, reason: gitFailed });
+      return res;
+    }
     const tracked = tr.stdout.split('\0').filter(Boolean);
     const hasTracked = (rel: string) => tracked.some((t) => inside(t, rel));
     const t: Parameters<StorageSweeper['addItems']>[2] = [];
@@ -1121,10 +1208,14 @@ export class StorageSweeper {
       }
       if (c.kind === 'nm') {
         const lock = this.lockfileFor(dirname(c.path), root);
-        if (finished && lock) t.push({ path: c.path, rule: 'A1', reason: 'finished worktree, idle ' + idleDays + ' days', unit, evidence: { ...evid, lockfile: lock } });
+        // A1 holds only for a node_modules git cannot vouch for being a pure
+        // install: a repository inside it, or patch-package edits not yet
+        // extracted, are invisible to git status. Those wait for approval.
+        const holds = finished && lock ? await this.nodeModulesHolds(ctx, root, c.path) : [];
+        if (finished && lock && !holds.length) t.push({ path: c.path, rule: 'A1', reason: 'finished worktree, idle ' + idleDays + ' days', unit, evidence: { ...evid, lockfile: lock } });
         else {
-          t.push({ path: c.path, rule: 'M1', reason: [...why, ...(lock ? [] : ['no lockfile'])].join('; '), unit, evidence: { ...evid, lockfile: lock } });
-          if (finished) for (const p of nmCaches(c.path)) t.push({ path: p, rule: 'A2', reason: 'pure cache in a finished worktree', unit, evidence: evid });
+          t.push({ path: c.path, rule: 'M1', reason: [...why, ...(lock ? [] : ['no lockfile']), ...holds].join('; '), unit, evidence: { ...evid, lockfile: lock } });
+          if (finished && !holds.length) for (const p of nmCaches(c.path)) t.push({ path: p, rule: 'A2', reason: 'pure cache in a finished worktree', unit, evidence: evid });
         }
       } else if (c.kind === 'cache') {
         t.push({ path: c.path, rule: finished ? 'A2' : 'M1', reason: finished ? 'pure cache in a finished worktree' : why.join('; '), unit, evidence: evid });
@@ -1141,7 +1232,7 @@ export class StorageSweeper {
     if (linked && !dirty && idleDays >= SWEEP_IDLE.worktree) {
       const common = gi.commondir ? real(gi.commondir) : null;
       const commonRefusal = common ? this.refusal(ctx, common) : 'unreadable';
-      const refusal = this.refusal(ctx, root) ?? await this.ancestorRefusal(ctx, root, root) ?? await this.nestedRepo(ctx, root);
+      const refusal = this.refusal(ctx, root) ?? await this.worktreeOnlyData(ctx, root, gi.gitdir!) ?? await this.ancestorRefusal(ctx, root, root) ?? await this.nestedRepo(ctx, root);
       if (refusal) res.notes.push({ target: root, reason: `M3 not offered: ${refusal}` });
       else if (commonRefusal) res.notes.push({ target: root, reason: `M3 not offered: its main repository ${common ?? ''} is ${commonRefusal}` });
       else {
@@ -1192,9 +1283,79 @@ export class StorageSweeper {
     if (refs.code !== 0) return `inside ${dir}: git for-each-ref failed`;
     return refs.stdout.trim() ? null : `inside ${dir}, whose detached HEAD no ref contains`;
   }
-  /** M3: another repository below the root (ignored, so status is clean) would go with `git worktree remove`. */
+  /**
+   * M3: what `git worktree remove` would take that git status does not show.
+   * Measured on git 2.39.5: with status empty it deleted an ignored `.env`, an
+   * ignored `local/notes.md`, a skip-worktree edit and an assume-unchanged edit,
+   * and the worktree's own reflog and refs/worktree/* go with its gitdir. Null
+   * when none of that holds; checked at plan time and in the approval re-plan.
+   */
+  private async worktreeOnlyData(ctx: Ctx, root: string, gitdir: string): Promise<string | null> {
+    const first = (r: CmdResult) => (r.truncated ? 'output too large' : r.stderr.trim().split('\n')[0] || `exit ${r.code}`);
+    // 1. Index flags: lowercase = assume-unchanged, S/s = skip-worktree.
+    const lf = await this.git(ctx, root, ['ls-files', '-v', '-z'], { maxBytes: GIT_LIST_MAX });
+    if (lf.code !== 0 || lf.truncated) return 'could not read the index flags: ' + first(lf);
+    for (const l of lf.stdout.split('\0')) {
+      if (l.length < 3 || l[1] !== ' ') continue;
+      const tag = l[0];
+      if (tag === 'S' || (tag >= 'a' && tag <= 'z')) return `${tag === 'S' || tag === 's' ? 'a skip-worktree' : 'an assume-unchanged'} file (${l.slice(2)}) may hold edits git status does not show`;
+    }
+    // 2. Ignored files: only regenerable ones may go.
+    const st = await this.git(ctx, root, ['status', '--porcelain=v1', '-z', '--ignored=matching', '--untracked-files=normal'], { maxBytes: GIT_LIST_MAX });
+    if (st.code !== 0 || st.truncated) return 'could not list ignored files: ' + first(st);
+    const recs = st.stdout.split('\0');
+    for (let i = 0; i < recs.length; i++) {
+      const r = recs[i];
+      if (!r) continue;
+      if (!r.startsWith('!! ')) return `uncommitted change ${r.slice(3)}`;
+      if (!regenerablePath(r.slice(3))) return `ignored ${r.slice(3)} is not a regenerable build or dependency dir (git worktree remove would delete it)`;
+    }
+    // 3. Refs that live in this worktree only.
+    const wr = await this.git(ctx, root, ['for-each-ref', '--format=%(refname)', 'refs/worktree', 'refs/bisect', 'refs/rewritten']);
+    if (wr.code !== 0) return 'could not list per-worktree refs: ' + first(wr);
+    const own = wr.stdout.split('\n').filter(Boolean);
+    if (own.length) return `per-worktree ref ${own[0]} would be lost`;
+    // 4. The worktree's reflog: every commit in its last entries must be in a
+    //    branch, tag or remote ref, or it is reachable from nowhere after removal.
+    let log = '';
+    try { log = readFileSync(join(gitdir, 'logs', 'HEAD'), 'utf8'); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return 'could not read its reflog: ' + (e as Error).message; }
+    const shas = new Set<string>();
+    for (const l of log.split('\n').filter(Boolean).slice(-REFLOG_LINES)) {
+      for (const x of l.split(' ').slice(0, 2)) if (/^[0-9a-f]{40,64}$/.test(x) && !/^0+$/.test(x)) shas.add(x);
+    }
+    if (shas.size) {
+      const rl = await this.git(ctx, root, ['rev-list', '-n', '1', ...shas, '--not', '--branches', '--tags', '--remotes']);
+      if (rl.code !== 0) return 'could not check its reflog against the refs: ' + first(rl);
+      const lost = rl.stdout.trim().split('\n')[0];
+      if (lost) return `its reflog holds commit ${lost.slice(0, 12)}, which no branch, tag or remote contains`;
+    }
+    return null;
+  }
+
+  /**
+   * A1: a node_modules git cannot vouch for. A repository inside it (bounded
+   * find), or patch-package in use (a `patches/` dir or the dependency in
+   * package.json at the checkout root or beside node_modules): edits made
+   * there and not yet extracted are invisible to git. Empty = pure install.
+   */
+  private async nodeModulesHolds(ctx: Ctx, root: string, nm: string): Promise<string[]> {
+    const holds: string[] = [];
+    for (const d of new Set([root, dirname(nm)])) {
+      if (isRealDir(join(d, 'patches'))) { holds.push(`${join(d, 'patches')} exists: patch-package edits in node_modules are invisible to git`); break; }
+      let pkg = ''; try { pkg = readFileSync(join(d, 'package.json'), 'utf8'); } catch { /* none */ }
+      if (pkg.includes('patch-package')) { holds.push(`${join(d, 'package.json')} uses patch-package: edits in node_modules are invisible to git`); break; }
+    }
+    const [cmd, args] = this.nice('find', [nm, '-maxdepth', '3', '-name', '.git', '-print', '-quit']);
+    const r = await ctx.run(cmd, args, { timeoutMs: Math.max(1000, Math.min(120_000, ctx.deadline - this.now)) }).catch((e: Error) => ({ code: 126, stdout: '', stderr: e.message }));
+    if (r.code !== 0) holds.push('could not check node_modules for a repository: ' + (r.stderr.trim().split('\n')[0] || `exit ${r.code}`));
+    else if (r.stdout.trim()) holds.push(`a git repository inside node_modules (${dirname(r.stdout.trim().split('\n')[0])})`);
+    return holds;
+  }
+
+  /** M2/M3/M5: another repository below the root (ignored, so status is clean) would go with rm or `git worktree remove`. node_modules is searched too. */
   private async nestedRepo(ctx: Ctx, root: string): Promise<string | null> {
-    const [cmd, args] = this.nice('find', [root, '-mindepth', '1', '(', '-path', join(root, '.git'), '-o', '-name', NM, ')', '-prune', '-o', '-name', '.git', '-print', '-quit']);
+    const [cmd, args] = this.nice('find', [root, '-mindepth', '1', '-path', join(root, '.git'), '-prune', '-o', '-name', '.git', '-print', '-quit']);
     const r = await ctx.run(cmd, args, { timeoutMs: Math.max(1000, Math.min(120_000, ctx.deadline - this.now)) }).catch((e: Error) => ({ code: 126, stdout: '', stderr: e.message }));
     if (r.code !== 0) return 'could not check for nested repositories: ' + (r.stderr.trim().split('\n')[0] || `exit ${r.code}`);
     const hit = r.stdout.trim().split('\n')[0];
@@ -1236,7 +1397,7 @@ export class StorageSweeper {
   private async evalCaches(ctx: Ctx, skipUnknownTmp = false): Promise<UnitResult> {
     const res: UnitResult = { items: [], protected: [], notes: [] };
     const home = this.home(), tmp = this.opts.tmpDir ?? '/tmp';
-    const cmdItem = async (rule: SweepRule, target: string, command: string[], reason: string, proc: (p: LiveProcess) => boolean, procName: string) => {
+    const cmdItem = async (rule: SweepRule, target: string, command: string[], reason: string, proc: (p: LiveProcess) => boolean, procName: string, sizeUnknown = false) => {
       if (!isRealDir(target)) return;
       const refusal = this.refusal(ctx, target, true);
       if (refusal) { res.protected.push({ category: 'refused', target, bytes: null, reason: refusal }); return; }
@@ -1244,18 +1405,17 @@ export class StorageSweeper {
       if (p) { res.protected.push({ category: 'in-use', target, bytes: null, reason: `a ${procName} process is running (pid ${p.pid})` }); return; }
       const used = this.inUse(ctx, target);
       if (used) { res.protected.push({ category: 'in-use', target, bytes: null, reason: used }); return; }
-      const bytes = (await this.du(ctx, [target], 120_000)).get(target) ?? 0;
-      res.items.push(this.item({ rule, target, bytes, reason, unit: 'cache', action: command.length ? 'command' : 'rm', evidence: {}, ...(command.length ? { command } : {}) }));
+      const bytes = sizeUnknown ? 0 : (await this.du(ctx, [target], 120_000)).get(target) ?? 0;
+      res.items.push(this.item({ rule, target, bytes, reason, unit: 'cache', action: command.length ? 'command' : 'rm', evidence: sizeUnknown ? { sizeUnknown: true } : {}, ...(command.length ? { command } : {}) }));
     };
     await cmdItem('A3', this.goCacheDir(), ['go', 'clean', '-cache'], 'Go build cache (go clean -cache)', this.isGo, 'go');
     await cmdItem('A3', join(home, '.cache', 'pip'), [], 'pip cache', () => false, 'pip');
     await cmdItem('A3', join(home, '.npm', '_cacache'), ['npm', 'cache', 'clean', '--force'], 'npm cache (npm cache clean --force)', this.isNpm, 'npm');
-    for (const store of [join(this.opts.stateDir, '.pnpm-store'), join(home, '.local', 'share', 'pnpm', 'store')]) {
+    // The pnpm stores pass the same refusal and in-use gates as every path.
+    for (const store of this.pnpmStores()) {
       if (!isRealDir(store)) continue;
       if (!onPath('pnpm')) { res.notes.push({ target: store, reason: 'pnpm store not pruned: pnpm is not installed in the container' }); continue; }
-      const p = this.procNamed(ctx, this.isPnpm);
-      if (p) { res.protected.push({ category: 'in-use', target: store, bytes: null, reason: `a pnpm process is running (pid ${p.pid})` }); continue; }
-      res.items.push(this.item({ rule: 'A3', target: store, bytes: 0, reason: 'pnpm store prune (unreferenced packages only)', unit: 'cache', action: 'command', command: ['pnpm', 'store', 'prune', '--store-dir', store], evidence: { sizeUnknown: true } }));
+      await cmdItem('A3', store, ['pnpm', 'store', 'prune', '--store-dir', store], 'pnpm store prune (unreferenced packages only)', this.isPnpm, 'pnpm', true);
     }
     // /tmp: Go caches older than 3 days (AUTO), other big old dirs (M5).
     let names: string[] = [];
@@ -1311,9 +1471,10 @@ export class StorageSweeper {
     if (t.startsWith('[')) return JSON.parse(t) as unknown[];
     return t.split('\n').filter(Boolean).map((l) => JSON.parse(l) as unknown);
   }
-  private async inspectContainers(ctx: Ctx, ids: string[]): Promise<Record<string, any>[]> {
+  /** `withSize` adds `--size` (SizeRw): slow, so only for the stopped candidates. */
+  private async inspectContainers(ctx: Ctx, ids: string[], withSize = false): Promise<Record<string, any>[]> {
     const out: Record<string, any>[] = [];
-    for (let i = 0; i < ids.length; i += 50) out.push(...(await this.dockerJson(ctx, ['inspect', '--type', 'container', ...ids.slice(i, i + 50)])) as Record<string, any>[]);
+    for (let i = 0; i < ids.length; i += 50) out.push(...(await this.dockerJson(ctx, ['inspect', '--type', 'container', ...(withSize ? ['--size'] : []), ...ids.slice(i, i + 50)], withSize ? 300_000 : 60_000)) as Record<string, any>[]);
     return out;
   }
   private async runningBindSources(ctx: Ctx): Promise<string[]> {
@@ -1332,19 +1493,25 @@ export class StorageSweeper {
       const all = await this.dockerJson(ctx, ['ps', '-a', '--no-trunc', '--format', '{{json .ID}}'], 30_000) as string[];
       const info = all.length ? await this.inspectContainers(ctx, all) : [];
       const usedImages = new Set(info.map((c) => String(c.Image ?? '')));
-      let running = 0, pinned = 0, withMounts = 0, restart = 0;
+      const counts = { running: 0, pin: 0, restart: 0, mounts: 0 };
+      const stopped: string[] = [];
       for (const c of info) {
+        const hold = containerHold(c, false);
+        if (hold && hold.kind in counts) { counts[hold.kind as keyof typeof counts]++; continue; }
+        const name = String(c.Name ?? '').replace(/^\//, '');
+        if (hold) { res.protected.push({ category: 'docker', target: `docker:container:${name}`, bytes: null, reason: hold.reason }); continue; }
+        stopped.push(String(c.Id));
+      }
+      // Only the stopped candidates are sized: a writable layer is data until
+      // shown otherwise (exciting_pike: 2.6 GB, read as 0 B without --size).
+      for (const c of stopped.length ? await this.inspectContainers(ctx, stopped, true) : []) {
         const name = String(c.Name ?? '').replace(/^\//, '');
         const state = String(c.State?.Status ?? '');
-        const rp = String(c.HostConfig?.RestartPolicy?.Name ?? '');
-        const mounts = (c.Mounts ?? []) as unknown[];
-        if (state === 'running' || state === 'restarting' || state === 'paused') { running++; continue; }
-        if (name.startsWith('pin-')) { pinned++; continue; }
-        if (rp && rp !== 'no') { restart++; continue; }
-        if (mounts.length) { withMounts++; continue; }
-        if (state !== 'exited' && state !== 'created' && state !== 'dead') continue;
-        res.items.push(this.item({ rule: 'M4', target: `docker:container:${name}`, bytes: Number(c.SizeRw ?? 0) || 0, reason: `${state} container with no mounts (image ${String(c.Config?.Image ?? '?')})`, unit: 'docker', action: 'docker', command: ['docker', 'rm', String(c.Id)], evidence: { id: c.Id, name, state, created: c.Created } }));
+        const hold = containerHold(c, true);
+        if (hold) { res.protected.push({ category: 'docker', target: `docker:container:${name}`, bytes: typeof c.SizeRw === 'number' ? c.SizeRw : null, reason: hold.reason }); continue; }
+        res.items.push(this.item({ rule: 'M4', target: `docker:container:${name}`, bytes: Number(c.SizeRw), reason: `${state} container with no mounts, writable layer ${fmtBytes(Number(c.SizeRw))} (image ${String(c.Config?.Image ?? '?')})`, unit: 'docker', action: 'docker', command: ['docker', 'rm', String(c.Id)], evidence: { id: c.Id, name, state, created: c.Created, sizeRw: c.SizeRw } }));
       }
+      const { running, pin: pinned, restart, mounts: withMounts } = counts;
       if (running) res.protected.push({ category: 'docker', target: 'docker:containers:running', bytes: null, reason: `${running} running container(s)` });
       if (pinned) res.protected.push({ category: 'docker', target: 'docker:containers:pin', bytes: null, reason: `${pinned} pin-* container(s)` });
       if (restart) res.protected.push({ category: 'docker', target: 'docker:containers:restart-policy', bytes: null, reason: `${restart} stopped container(s) with a restart policy` });
@@ -1357,13 +1524,15 @@ export class StorageSweeper {
       } catch (e) { res.notes.push({ reason: 'docker volume sizes unknown: ' + (e as Error).message }); }
       // Volumes no container references.
       const vols = await this.dockerJson(ctx, ['volume', 'ls', '-f', 'dangling=true', '--format', '{{json .Name}}'], 30_000) as string[];
+      // Every unused volume waits for approval (none is AUTO): a name is only
+      // a hint, and a loose match once put `ergomodel_pg` among the caches.
       for (const name of vols) {
         const bytes = volSize.get(name) ?? 0;
-        const ev = { name, ...(volSize.has(name) ? {} : { sizeUnknown: true }) };
-        const cmd = ['docker', 'volume', 'rm', name];
-        if (CACHE_VOLUME.test(name)) res.items.push(this.item({ rule: 'A4', target: `docker:volume:${name}`, bytes, reason: 'unused cache volume', unit: 'docker', action: 'docker', command: cmd, evidence: ev }));
-        else if (/^[0-9a-f]{64}$/.test(name)) res.items.push(this.item({ rule: 'M4', target: `docker:volume:${name}`, bytes, reason: 'unused anonymous volume', unit: 'docker', action: 'docker', command: cmd, evidence: ev }));
-        else res.items.push(this.item({ rule: 'M4', target: `docker:volume:${name}`, bytes, reason: 'unused named volume: may hold data', unit: 'docker', action: 'docker', command: cmd, evidence: ev, mayHoldData: true }));
+        const anon = /^[0-9a-f]{64}$/.test(name);
+        const hint = anon ? null : CACHE_VOLUME_HINT.exec(name)?.[1] ?? null;
+        const ev = { name, ...(volSize.has(name) ? {} : { sizeUnknown: true }), ...(hint ? { looksLikeCache: hint } : {}) };
+        const reason = anon ? 'unused anonymous volume' : hint ? `unused named volume; looks like a build cache (${hint}), may still hold data` : 'unused named volume: may hold data';
+        res.items.push(this.item({ rule: 'M4', target: `docker:volume:${name}`, bytes, reason, unit: 'docker', action: 'docker', command: ['docker', 'volume', 'rm', name], evidence: ev, ...(anon ? {} : { mayHoldData: true }) }));
       }
       // Dangling images older than 72h that no container uses.
       const imgs = await this.dockerJson(ctx, ['images', '-f', 'dangling=true', '--no-trunc', '--format', '{{json .}}'], 30_000) as Record<string, any>[];
@@ -1397,11 +1566,10 @@ export class StorageSweeper {
         return v.includes(name) ? { args: ['volume', 'rm', name] } : { bad: 'volume is in use or gone' };
       }
       if (kind === 'container') {
-        const [c] = await this.inspectContainers(ctx, [name]).catch(() => []);
+        const [c] = await this.inspectContainers(ctx, [name], true).catch(() => []);
         if (!c) return { bad: 'container gone' };
-        const state = String(c.State?.Status ?? ''), rp = String(c.HostConfig?.RestartPolicy?.Name ?? '');
-        if (!['exited', 'created', 'dead'].includes(state)) return { bad: `container is ${state}` };
-        if (String(c.Name ?? '').replace(/^\//, '').startsWith('pin-') || (rp && rp !== 'no') || (c.Mounts ?? []).length) return { bad: 'container is now protected' };
+        const hold = containerHold(c, true);
+        if (hold) return { bad: `container is now protected: ${hold.reason}` };
         return { args: ['rm', String(c.Id)] };
       }
       if (kind === 'image') {
@@ -1466,7 +1634,7 @@ export class StorageSweeper {
    */
   private async execute(ctx: Ctx, i: SweepItem, level: 'quick' | 'full'): Promise<Receipt> {
     if (ctx.dry) return this.receipt(i, 'skipped', 'dry run');
-    this.refreshLive(ctx);
+    try { this.refreshLive(ctx); } catch (e) { return this.receipt(i, 'skipped', 'cannot list processes: ' + (e as Error).message); }
     try {
       if (i.action === 'docker' || i.target.startsWith('docker:')) {
         if (!this.opts.dind) return this.receipt(i, 'skipped', 'dind sweeping is off');
@@ -1489,6 +1657,9 @@ export class StorageSweeper {
       const x = again;
       if (x.action === 'command') {
         if (!x.command?.length) return this.receipt(i, 'skipped', 'no command');
+        // The same delete-time guard as a path: the command empties x.target.
+        const g = this.guard(ctx, x.target, true);
+        if (g) return this.receipt(i, 'skipped', g);
         const r = await ctx.run(x.command[0], x.command.slice(1), { timeoutMs: 600_000 });
         return r.code === 0 ? this.receipt(i, 'deleted') : this.receipt(i, 'error', undefined, r.stderr.trim().split('\n')[0] || `exit ${r.code}`);
       }
@@ -1537,6 +1708,27 @@ export class StorageSweeper {
     if (busy) return busy;
     return null;
   }
+}
+
+/**
+ * Why a dind container must stay (null = it may be offered as M4). Without
+ * `sized` the writable layer is not judged (the cheap first pass); with it,
+ * an unknown SizeRw is data too.
+ */
+export function containerHold(c: Record<string, any>, sized: boolean): { kind: 'running' | 'pin' | 'restart' | 'mounts' | 'state' | 'name' | 'size'; reason: string } | null {
+  const name = String(c.Name ?? '').replace(/^\//, '');
+  const state = String(c.State?.Status ?? '');
+  const rp = String(c.HostConfig?.RestartPolicy?.Name ?? '');
+  if (state === 'running' || state === 'restarting' || state === 'paused') return { kind: 'running', reason: `container is ${state}` };
+  if (name.startsWith('pin-')) return { kind: 'pin', reason: 'pin-* container' };
+  if (rp && rp !== 'no') return { kind: 'restart', reason: `restart policy ${rp}` };
+  if (((c.Mounts ?? []) as unknown[]).length) return { kind: 'mounts', reason: 'has mounts (fixtures/DBs)' };
+  if (!['exited', 'created', 'dead'].includes(state)) return { kind: 'state', reason: `container is ${state || 'in an unknown state'}` };
+  if (CONTAINER_KEEP_NAME.test(name)) return { kind: 'name', reason: `its name (${name}) says before/rollback/backup` };
+  if (!sized) return null;
+  if (typeof c.SizeRw !== 'number' || !Number.isFinite(c.SizeRw)) return { kind: 'size', reason: 'writable layer size unknown: may hold data' };
+  if (c.SizeRw > CONTAINER_DATA_BYTES) return { kind: 'size', reason: `writable layer holds ${fmtBytes(c.SizeRw)}: data` };
+  return null;
 }
 
 /** docker's "2026-10-20 10:11:12 +0000 UTC" -> epoch ms (NaN when unreadable). */

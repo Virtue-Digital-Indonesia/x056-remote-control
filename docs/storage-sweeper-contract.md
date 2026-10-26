@@ -52,6 +52,7 @@ Never deleted and never offered for approval. Reported in a `protected` section 
 - images tagged `*rollback*`, or any image referenced by a container
 - running containers, `pin-*` containers, containers with a restart policy, and containers with mounts holding data (fixtures/DBs)
 - any path a live process uses: a container `/proc/*/cwd`, open fds, or a `GOCACHE`/`npm_config_cache` env pointing inside; also any running dind container's bind-mount source
+  - Host processes and host containers are invisible from the container: nothing here can see what the host uses.
 - any path inside a chat whose conversation is running, has background work or queue items, is a cron target, or has a live workflow (asked through an injected callback from the manager)
 
 ### AUTO
@@ -63,6 +64,7 @@ Regenerable. Runs without approval. Each item is RE-CHECKED immediately before d
   - `git status --porcelain --untracked-files=normal` is empty
   - HEAD is contained in some branch, tag or remote ref
   - a lockfile is present (`package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` / `bun.lock*`)
+  - no git repository inside the `node_modules` (`find <nm> -maxdepth 3 -name .git`), no `patches/` dir and no `patch-package` in `package.json` at the checkout root or beside the `node_modules` (otherwise M1 with that reason)
   - idle ≥ 7 days: the gitdir's `index`, `HEAD` and `logs/HEAD`, and every file outside `node_modules`, `.next`, `dist`, `build`, `target`, `.turbo` and `coverage`, are older than 7 days (a bounded `find -newer`, stop at the first hit)
   - nothing PROTECTED applies
 - **A2. Pure caches in a finished worktree** (same test as A1): `.next/cache`, `node_modules/.vite`, `node_modules/.vite-temp`, `node_modules/.cache`, `.turbo`, `.parcel-cache`, `.pytest_cache`.
@@ -72,7 +74,8 @@ Regenerable. Runs without approval. Each item is RE-CHECKED immediately before d
   - `npm cache clean --force` when no `npm` process runs
   - `/tmp/go-build*` and `/tmp/gocache-*` older than 3 days with no live process referencing them
   - `pnpm store prune` on `/app/state/.pnpm-store` and `~/.local/share/pnpm/store` when no `pnpm` process runs
-- **A4. dind:** build cache older than 7 days (`docker builder prune -f --filter until=168h`), and unused volumes (`docker volume ls -f dangling=true`) whose name matches `gocache|gomod|go-cache|go-mod|npm-cache|pnpm-store|pip-cache`. Nothing else in dind is AUTO.
+- **A4. dind:** build cache older than 7 days (`docker builder prune -f --filter until=168h`). Nothing else in dind is AUTO; unused volumes are M4.
+- A1/A2 remove only the named directory (`rm` of a real directory, never through a symlink, never across a mount). Ignored files elsewhere in the worktree are not touched.
 
 ### MANIFEST
 
@@ -80,12 +83,17 @@ A dry run lists these; nothing is removed until Efran approves the items.
 
 - **M1.** `node_modules`/caches in a checkout that is idle ≥ 7 days but not "finished": dirty, missing metadata, no lockfile, or HEAD reachable only from a local branch. Each item carries the reason.
 - **M2.** Git-ignored build outputs (`git check-ignore`; never tracked content): `dist`, `build`, `.next` minus its cache, `target`, `out`, `coverage`, in checkouts idle ≥ 14 days.
-- **M3.** Whole linked worktrees that are finished (A1) and idle ≥ 30 days, removed with `git worktree remove` run in the container. A locked one is listed with `locked: true` and is unlocked only at execution. A clean worktree whose HEAD is on local refs only is listed as `needsBundle: true` and is NOT executable until a bundle exists. Bundling is out of scope for v1, so these are informational.
+- **M3.** Whole linked worktrees that are finished (A1) and idle ≥ 30 days, removed with `git worktree remove` run in the container. Refused (a note, not an item) when any of these holds, at plan time and in the approval re-plan:
+  - `git ls-files -v` shows a lowercase tag (assume-unchanged) or `S` (skip-worktree)
+  - `git status --porcelain=v1 -z --ignored=matching` lists an ignored path outside the regenerable names `node_modules .next dist build out target coverage .turbo .parcel-cache .pytest_cache .vite .vite-temp .cache __pycache__ *.pyc .gradle .angular`
+  - the worktree has `refs/worktree/*` (or `refs/bisect/*`, `refs/rewritten/*`)
+  - a commit in the last 200 entries of its `logs/HEAD` is in no branch, tag or remote ref
+  - another repository sits anywhere inside, `node_modules` included A locked one is listed with `locked: true` and is unlocked only at execution. A clean worktree whose HEAD is on local refs only is listed as `needsBundle: true` and is NOT executable until a bundle exists. Bundling is out of scope for v1, so these are informational.
 - **M4.** dind:
-  - exited or created containers with no mounts and not `pin-*`
+  - exited or created containers with no mounts and not `pin-*`, sized with `docker inspect --size`. A writable layer over 50 MB, an unknown size, or a name containing `before`, `rollback` or `backup` makes it PROTECTED instead.
   - dangling images older than 72h
   - unused anonymous volumes
-  - unused named volumes, flagged `mayHoldData: true`
+  - unused named volumes, flagged `mayHoldData: true`. A name ENDING in a cache segment (`gocache`, `gomod`, `go-cache`, `go-mod`, `npm-cache`, `pnpm-store`, `pip-cache`, optional digits) gets the hint "looks like a build cache" in its reason; it is still approval-only.
 - **M5.** Unknown large `/tmp` dirs in the container: over 500 MB, older than 7 days, no live process.
 
 ## Approval: a human gate, not a convention
@@ -105,7 +113,8 @@ Require that. If nothing like it exists, build the smallest real gate. For examp
 ## Running
 
 - `server/storage-sweeper.ts`, class `StorageSweeper`, started in `server/app.module.ts` in the same way as `McpOAuth`: `start()` / `stop()`, `unref`, stopped in `onModuleDestroy`.
-- Scheduled once a day at 04:00 Asia/Jakarta (`X056_SWEEP_AT=HH:MM`). It runs AUTO and then writes a fresh manifest. `X056_SWEEP=off` disables the schedule.
+- Scheduled once a day at 04:00 Asia/Jakarta (`X056_SWEEP_AT=HH:MM`). It runs AUTO and then writes a fresh manifest. The schedule is OPT-IN: only `X056_SWEEP=on` starts it (both vars are in `compose.yaml`'s x056 environment, since compose passes only listed vars).
+- On a workspace root that is, or is inside, a `poc-ahu-ai` directory (the dev instance), the schedule, a manual delete run and an approval are refused; a manual dry run is allowed.
 - Manual: `POST /api/storage/sweep {dryRun?: boolean}` (default `dryRun: true`, which lists AUTO items too without deleting).
 - Routes: `GET /api/storage` (status, last 20 runs, the current manifest summary), `GET /api/storage/manifest`, plus the approve route (gated as above).
 - One run at a time (a lock file). A `STOP` file in the sweeper dir aborts between items. Each run has a time budget. Use `nice`/`ionice` for `du`/`find`, and a bounded walk; never stat the whole tree twice.
@@ -161,3 +170,20 @@ Use temp dirs, real `git` and a mocked `docker`:
 - Without a readable `accounts.json` nothing runs.
 - `storage_sweep` and `storage_manifest` are appended to `events.jsonl` and broadcast. The manifest notice is quiet (category `finished`, so "Automation and background" does not push it).
 - A worktree with a fresh file is left out entirely, not listed as M1: M1 requires idle >= 7 days, so the A1 test bullet "fresh -> M1" is read as "fresh -> not AUTO".
+
+## Review fixes (2026-10-27)
+
+An adversarial review found these; each has a test in `test/storage-sweeper.test.ts` ("review fixes") that fails on the previous code.
+
+1. **M3 deleted real source.** `git status` is empty for ignored files and for skip-worktree / assume-unchanged edits, and `git worktree remove` takes them, plus the worktree's reflog and `refs/worktree/*`. `worktreeOnlyData` now refuses M3 on any of the conditions listed under M3. It runs in `evalCheckout`, so the approval re-plan runs it too.
+2. **Live-use checks failed open.** A failure to list running dind binds (with dind on), to read `/proc`, or to read mountinfo used to become an empty list. Now it aborts the whole run with a logged reason. `listProcesses` / `listMounts` throw. A process-table failure between plan and delete skips the item.
+3. **Dev instance.** The schedule is opt-in (`X056_SWEEP=on`; `X056_SWEEP` and `X056_SWEEP_AT` are in `compose.yaml`). A `poc-ahu-ai` workspace root (by path or realpath) refuses the schedule, manual delete runs and approvals; a dry run still works.
+4. **M4 containers** are sized with `--size`. Over 50 MB of writable layer, an unknown size, or a before/rollback/backup name is PROTECTED, at plan time and in the approval re-check.
+5. **No volume is AUTO.** All unused volumes are M4; the anchored cache-name pattern is only a hint. A4 is `docker builder prune` only.
+6. **The project list** failing aborts the run. **Remaining gap:** a worktree outside every project cwd (and outside every chat) has no busy check; only idle >= 7 days and the process checks protect it.
+7. **A1** becomes M1 when a repository is inside `node_modules` (bounded `find`, depth 3) or patch-package is in use (`patches/`, or `patch-package` in `package.json`). `nestedRepo` (M2/M3/M5) no longer skips `node_modules`.
+8. **Low.**
+   - A failed `git ls-files` (or `check-ignore` erroring) protects every candidate of the checkout.
+   - `config.json` `protectedPaths` (and the option) add to the defaults instead of replacing them.
+   - Command items (`go clean`, `npm cache clean`, `pnpm store prune`) pass the delete-time `guard`. The pnpm stores are cache roots now and pass the same refusal and in-use gates as path items.
+   - Host processes and host containers are invisible from the container (see PROTECTED).
