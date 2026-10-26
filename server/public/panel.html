@@ -3755,15 +3755,15 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     var lab = document.createElement('div'); lab.className = 'role';
     lab.textContent = role === 'user' ? 'you' : (provider === 'codex' ? 'chatgpt' : 'claude');
     if (role !== 'user') { var roleName = document.createElement('span'); roleName.className = 'role-name'; roleName.textContent = lab.textContent; lab.textContent = ''; lab.appendChild(roleName); } // the Bot chat names it (rc-chat.js nameBotRow)
-    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor','delegate','recap','bot_event','bot_brief'].indexOf(sender.kind) >= 0) {
+    if (role === 'user' && sender && ['conversation','automation','autopilot','mcp','advisor','delegate','recap','bot_event','bot_brief','limit_resume'].indexOf(sender.kind) >= 0) {
       wrap.classList.add('from-sender', 'sender-' + sender.kind);
       if (sender.messageId) { wrap.dataset.messageSourceId = sender.messageId; wrap.dataset.senderMessageId = sender.messageId; }
       if (sender.sessionId) wrap.dataset.senderSession = sender.sessionId; // owner view: a message from the conversation itself is a continuation
       lab.classList.add('message-sender'); lab.textContent = '';
-      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : sender.kind === 'delegate' ? 'fanout' : sender.kind === 'recap' ? 'results' : sender.kind === 'bot_event' ? 'bell' : sender.kind === 'bot_brief' ? 'sun' : 'plug', 'sm'));
+      lab.appendChild(icon(sender.kind === 'conversation' ? 'fanout' : sender.kind === 'autopilot' ? 'repeat' : sender.kind === 'automation' ? 'alarm' : sender.kind === 'advisor' ? 'sparkles' : sender.kind === 'delegate' ? 'fanout' : sender.kind === 'recap' ? 'results' : sender.kind === 'bot_event' ? 'bell' : sender.kind === 'bot_brief' ? 'sun' : sender.kind === 'limit_resume' ? 'repeat' : 'plug', 'sm'));
       var identity = document.createElement('span'), name = document.createElement('strong'), project = document.createElement('small');
-      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : sender.kind === 'delegate' ? (sender.conversationTitle || 'Delegates') : sender.kind === 'recap' ? 'Recap requested by the gateway' : sender.kind === 'bot_event' ? ((window.rcChat && window.rcChat.botName ? window.rcChat.botName() : 'Bot') + ' digest') : sender.kind === 'bot_brief' ? 'Morning brief' : 'External sender';
-      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : sender.kind === 'advisor' ? 'Review' : sender.kind === 'delegate' ? 'Reports' : sender.kind === 'recap' ? (sender.recap === 'autopilot' ? 'Autopilot finished' : 'Background work finished') : sender.kind === 'bot_event' ? 'Things that need you' : sender.kind === 'bot_brief' ? 'Scheduled by the gateway' : 'MCP');
+      name.textContent = sender.kind === 'conversation' ? (sender.conversationTitle || 'Another conversation') : sender.kind === 'autopilot' ? 'Autopilot' : sender.kind === 'automation' ? 'Scheduled task' : sender.kind === 'advisor' ? 'Advisor' : sender.kind === 'delegate' ? (sender.conversationTitle || 'Delegates') : sender.kind === 'recap' ? 'Recap requested by the gateway' : sender.kind === 'bot_event' ? ((window.rcChat && window.rcChat.botName ? window.rcChat.botName() : 'Bot') + ' digest') : sender.kind === 'bot_brief' ? 'Morning brief' : sender.kind === 'limit_resume' ? 'Auto-continue' : 'External sender';
+      project.textContent = sender.projectName || (sender.kind === 'conversation' ? 'Project unavailable' : ['automation','autopilot'].indexOf(sender.kind) >= 0 ? 'Automation' : sender.kind === 'advisor' ? 'Review' : sender.kind === 'delegate' ? 'Reports' : sender.kind === 'recap' ? (sender.recap === 'autopilot' ? 'Autopilot finished' : 'Background work finished') : sender.kind === 'bot_event' ? 'Things that need you' : sender.kind === 'bot_brief' ? 'Scheduled by the gateway' : sender.kind === 'limit_resume' ? 'After a usage limit' : 'MCP');
       identity.appendChild(name); identity.appendChild(project);
       // An AI's steer landed INSIDE a running turn, not as a turn of its own.
       if (steered) { var how = document.createElement('small'); how.className = 'steer-tag'; how.textContent = 'Steered into the running turn'; identity.appendChild(how); }
@@ -3782,6 +3782,13 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       var instructionAt = String(text).indexOf(marker), instruction = instructionAt < 0 ? '' : String(text).slice(instructionAt + marker.length).trim();
       sum.textContent = instruction ? 'Continue task · ' + instruction.replace(/\s+/g, ' ') : 'Continue task';
       sum.title = instruction || 'Autopilot continuation';
+      var full = document.createElement('div'); full.className = 'delegate-digest-body'; full.appendChild(renderMarkdown(text));
+      det.appendChild(sum); det.appendChild(full); content.appendChild(det);
+    }
+    // The gateway continuing after a usage limit: one line until opened.
+    else if (role === 'user' && sender && sender.kind === 'limit_resume') {
+      var det = document.createElement('details'); det.className = 'delegate-digest recap-digest';
+      var sum = document.createElement('summary'); sum.textContent = 'Continue after the usage limit';
       var full = document.createElement('div'); full.className = 'delegate-digest-body'; full.appendChild(renderMarkdown(text));
       det.appendChild(sum); det.appendChild(full); content.appendChild(det);
     }
