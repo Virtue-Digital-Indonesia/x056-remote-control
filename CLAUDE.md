@@ -59,7 +59,8 @@ pill. **Focus alone never opens it (2026-10-27, owner):** opening a
 conversation focuses `#prompt`, and the next click anywhere used to fold the
 pill again, a flicker on every click. Once open it stays open while focus is
 anywhere in the box (backspacing to empty does not fold it) and folds on blur
-when empty. Focus moved onto a hidden control (⌥M/⌥E, `revealComposer`) still
+when empty; a programmatic clear (send, a conversation switch) folds it at once,
+so the first click after a send changes nothing. Focus moved onto a hidden control (⌥M/⌥E, `revealComposer`) still
 opens it. The pill shows: `+` (attach, template, reference), the helpers chip, ONE chip holding
 the two native `#model` / `#effort` selects (kept native on purpose: phones
 get the OS picker and tests use `selectOption`), send. While a turn runs an

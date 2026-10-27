@@ -76,7 +76,7 @@ fs.mkdirSync(shots, { recursive: true });
       if (label === 'desktop-1440') {
         await page.locator('#prompt').focus(); await page.waitForTimeout(400);
         const refocused = await composerState();
-        assert.ok(before.open ? refocused.open : true, label + ': with the prompt focused again the composer is open, as in the default view');
+        assert.equal(refocused.open, before.open, label + ': with the prompt focused again the composer is as in the default view (focus alone keeps it quiet)');
         await page.screenshot({ path: file('shown-focused') }); out.push(file('shown-focused'));
         await page.locator('#rcOwnerHide').focus(); await page.waitForTimeout(300);
       }

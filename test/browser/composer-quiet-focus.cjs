@@ -136,6 +136,24 @@ const TOKEN = 'browser-fixture-token-0123456789';
   assert.equal(await isOpen(page), true, 'Alt+M opens the pill on the model popover');
   await page.keyboard.press('Escape');
   await page.locator('#chat').click({ position: { x: 5, y: 5 } }); await settle(page);
+
+  // Send: the box is cleared while focus stays in it. The pill folds with the
+  // send, not on the next click (that would be the same flicker, after every message).
+  await page.locator('#prompt').click();
+  await page.keyboard.type('Sent from the quiet focus test');
+  assert.equal(await isOpen(page), true);
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.getElementById('prompt').value === '');
+  await settle(page);
+  assert.equal(await isOpen(page), false, 'sending folds the pill');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'prompt', 'the caret stays in the box after a send');
+  measured.afterSend = await height(page);
+  assert.equal(measured.afterSend, rest, 'back to the resting height after a send');
+  const ns = await mark(page);
+  await page.locator('#chat').click({ position: { x: 5, y: 5 } }); await settle(page);
+  assert.deepEqual(await since(page, ns), [], 'the first click after a send changes nothing');
+  // Let the fixture's turn finish: the caption hides while a turn runs.
+  await page.waitForFunction(() => !document.querySelector('.composer-wrap').hasAttribute('data-qp-run'), null, { timeout: 30000 });
   assert.deepEqual(errors, []);
   await ctx.close();
 

@@ -6512,7 +6512,9 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
         get: function () { return nativeValue.get.call(this); },
         // syncComposer too: a template, a reference or a restored draft opens
         // the pill the moment the box holds text (focus alone no longer does).
-        set: function (v) { nativeValue.set.call(this, v); scheduleHighlight(); syncComposer(); },
+        // A programmatic clear (send, a conversation switch) drops the open
+        // latch, so the pill folds then and not on the next click.
+        set: function (v) { nativeValue.set.call(this, v); scheduleHighlight(); if (v === '') qpUnlatch = true; syncComposer(); },
       });
     }
     promptEl.addEventListener('input', scheduleHighlight);
@@ -7320,7 +7322,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   // it under the caret: it folds on blur. Only the CSS differs between the two
   // states: every control keeps its element and listeners.
   var composerWrap = document.querySelector('.composer-wrap'), composerBox = $('composerBox'), qpSendEl = $('composerSend');
-  var qpHold = false, qpHoldTimer = null, qpForce = false;
+  var qpHold = false, qpHoldTimer = null, qpForce = false, qpUnlatch = false;
   function composerHasFiles() { return !!(attachRow && attachRow.querySelector('.chip')); }
   function composerHasContent() { return !!(promptEl && promptEl.value.trim()) || composerHasFiles(); }
   function composerMenuOpen() {
@@ -7345,7 +7347,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (!composerWrap || !composerBox) return;
     scheduleHighlight();
     var a = document.activeElement, running = composerRunning(), content = composerHasContent();
-    var wasOpen = composerWrap.hasAttribute('data-qp-open');
+    var wasOpen = !qpUnlatch && composerWrap.hasAttribute('data-qp-open');
+    qpUnlatch = false;
     var focusIn = !!(a && a !== document.body && composerBox.contains(a));
     var quietFocus = focusIn && (a === promptEl || (qpSendEl && qpSendEl.contains(a)));
     var open = qpForce || (wasOpen && (qpHold || focusIn)) || (focusIn && !quietFocus) || promptEl.value.length > 0 || composerHasFiles() || composerMenuOpen();
