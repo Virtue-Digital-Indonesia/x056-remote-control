@@ -2,6 +2,8 @@
 // Start fixture.ts first (with X056_PROJECT_SPACES_ENABLED=1 X056_CHAT_ENABLED=1).
 // Never sends a chat message: a turn would call the real Jev API.
 const assert = require('node:assert/strict');
+// The composer rests as one line and focus alone keeps it so: its caption opens the pill.
+const revealPill = async (page) => { if (!(await page.locator('#helperBtn').isVisible())) { await page.locator('#composerCaption').click(); await page.keyboard.press('Escape'); } };
 const fs = require('node:fs'), path = require('node:path');
 const { execSync } = require('node:child_process');
 let playwright; try { playwright = require('playwright'); } catch { playwright = require('/usr/local/lib/node_modules/playwright'); }
@@ -28,7 +30,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
     await page.goto(base); await page.waitForSelector('.cr-task');
     await page.locator('.cr-task').filter({ hasText: 'Build the new homepage' }).first().click();
     await page.waitForFunction(() => !document.getElementById('helperBtn').disabled);
-    await page.locator('#prompt').click(); // the composer rests as one line; focus opens its controls
+    await revealPill(page);
     await page.locator('#helperBtn').click();
     await page.waitForFunction(() => !document.querySelector('#helperMenu [data-value=jev]').disabled);
     return { page, errors };

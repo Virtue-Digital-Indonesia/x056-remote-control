@@ -2,6 +2,8 @@
 // Start fixture.ts first; this finds the fixture's transcript on disk to append
 // entries and prove the view tails a running conversation.
 const assert = require('node:assert/strict');
+// The composer rests as one line and focus alone keeps it so: its caption opens the pill.
+const revealPill = async (page) => { if (!(await page.locator('#helperBtn').isVisible())) { await page.locator('#composerCaption').click(); await page.keyboard.press('Escape'); } };
 const fs = require('node:fs');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
@@ -62,7 +64,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
   // The helper menu: helpers combine; Jev is offered only with a key.
   const helper = page.locator('#helperBtn');
   assert.equal(await helper.isDisabled(), false);
-  await page.locator('#prompt').click(); // the composer rests as one line; focus opens its controls
+  await revealPill(page);
   await helper.click();
   assert.equal(await page.locator('#helperMenu [data-value=jev]').isDisabled(), true, 'no Jev key in the fixture');
   // OpenAI Decisions is the alternative to Jev, offered once an OpenAI key exists.

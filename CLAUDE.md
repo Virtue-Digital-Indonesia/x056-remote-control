@@ -53,13 +53,23 @@ Sessions started through the panel run **inside the Docker container** this repo
 
 The owner chose draft D ("quiet until you type" + "one pill"). At rest the
 composer is one line with send and a faded caption of model · effort ·
-helpers; focus, text, files, a saved draft or an open menu open it into the
-pill: `+` (attach, template, reference), the helpers chip, ONE chip holding
+helpers; text (typed, pasted or a programmatic `value` write), files, a saved
+draft, an open menu or a click on the caption open it into the
+pill. **Focus alone never opens it (2026-10-27, owner):** opening a
+conversation focuses `#prompt`, and the next click anywhere used to fold the
+pill again, a flicker on every click. Once open it stays open while focus is
+anywhere in the box (backspacing to empty does not fold it) and folds on blur
+when empty. Focus moved onto a hidden control (⌥M/⌥E, `revealComposer`) still
+opens it. The pill shows: `+` (attach, template, reference), the helpers chip, ONE chip holding
 the two native `#model` / `#effort` selects (kept native on purpose: phones
 get the OS picker and tests use `selectOption`), send. While a turn runs an
 empty box's send is Stop; with content it is Steer + Queue. Status, account
 chip and delivery dot share the quiet line under it. All element ids are
-unchanged. Tests that touch the hidden controls must click `#prompt` first.
+unchanged. Tests that touch the hidden controls must open the pill first: click
+`#composerCaption` (opens the model popover; Escape leaves the pill open) or
+type a character; clicking `#prompt` no longer opens it. While a turn runs the
+caption is hidden, so there it is typing, ⌥M/⌥E or a dropped/pasted file.
+`test/browser/composer-quiet-focus.cjs` measures that nothing resizes.
 Collapse on blur checks `relatedTarget` and holds on pointerdown, so a tap on
 send never lands on a moved button.
 

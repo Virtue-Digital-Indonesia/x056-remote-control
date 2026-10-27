@@ -4,8 +4,8 @@ const { chromium } = require('/usr/local/lib/node_modules/playwright');
 const base = process.argv[2] || 'http://127.0.0.1:8795';
 const shots = process.env.X056_SHOTS; // optional dir for screenshots
 const pick = async (page, kind, value) => {
-  if (!(await page.locator('#runChip').isVisible())) await page.locator('#prompt').click();
-  if (await page.locator('#runMenu').isHidden()) await page.locator('#runChip').click();
+  // At rest the chip is hidden and focus alone keeps it so; the caption opens the popover.
+  if (await page.locator('#runMenu').isHidden()) await page.locator((await page.locator('#runChip').isVisible()) ? '#runChip' : '#composerCaption').click();
   await page.locator('#runMenu [data-run=' + kind + '][data-value="' + value + '"]').click();
 };
 (async () => {
@@ -69,7 +69,7 @@ const pick = async (page, kind, value) => {
       }, { pid: research.id, sid: gpt.sessionId });
       // A Claude conversation shows no Speed row.
       await open(projects[0].id, claude);
-      if (await page.locator('#runMenu').isHidden()) await page.locator('#runChip').click();
+      if (await page.locator('#runMenu').isHidden()) await page.locator((await page.locator('#runChip').isVisible()) ? '#runChip' : '#composerCaption').click();
       assert.equal(await page.locator('#runMenu [data-run=speed]').count(), 0);
       assert.doesNotMatch(await page.locator('#composerCaption').textContent(), /Fast|Ultrafast/);
       assert.deepEqual(errors, []);

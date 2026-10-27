@@ -66,7 +66,8 @@ fs.mkdirSync(shots, { recursive: true });
       const after = await composerState();
       console.log(label, 'composer before Show', JSON.stringify(before), 'after Show', JSON.stringify(after));
       // Show moves focus to the pill's Hide (the control that undoes it), so the composer folds to its resting pill:
-      // the quiet composer's own rule (open while focus is inside it). It is not the owner view changing its shape.
+      // the quiet composer's own rule (open while it holds text, a file or a menu; focus alone never opens it). It is
+      // not the owner view changing its shape.
       assert.equal(after.focus, 'rcOwnerHide', label + ': focus goes to Hide');
       // Shown at the bottom of the thread, where a reader is after reading: mid-scroll the panel's existing floating
       // jump and stage buttons sit over a bubble on a phone, which is not what this change adds.

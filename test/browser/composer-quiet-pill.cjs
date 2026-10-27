@@ -1,5 +1,6 @@
 // The quiet pill: the composer rests as one line and opens into the full pill
-// (+ menu, helpers, model·effort chip) on focus, text, files or an open menu.
+// (+ menu, helpers, model·effort chip) on text, files, an open menu or a click
+// on its caption. Focus alone keeps it quiet (no flicker on the next click).
 // Start fixture.ts first (X056_PROJECT_SPACES_ENABLED=1 X056_CHAT_ENABLED=1), then:
 //   node test/browser/composer-quiet-pill.cjs http://127.0.0.1:<port>
 const assert = require('node:assert/strict');
@@ -58,6 +59,13 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   const isOpen = (page) => page.evaluate(() => document.querySelector('.composer-wrap').hasAttribute('data-qp-open'));
   const blur = async (page) => { await page.locator('#chat').click({ position: { x: 5, y: 5 } }); await page.waitForTimeout(60); };
   const running = (page, active) => page.evaluate(([pid, sid, a]) => window.__source.dispatchEvent(new MessageEvent('turn_state', { data: JSON.stringify({ data: { projectId: pid, sessionId: sid, active: a } }) })), [work.id, conv.sessionId, active]);
+  // The pill without typing: the caption opens the model popover (and the pill);
+  // Escape leaves focus on the chip and the pill open, so + and helpers are reachable.
+  const reveal = async (page) => {
+    if (await isOpen(page)) return;
+    await page.locator('#composerCaption').click(); await page.keyboard.press('Escape');
+    assert.equal(await isOpen(page), true, 'the caption opens the pill');
+  };
   const noOverflow = (page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
 
   // ---- rest and open, desktop ----
@@ -79,10 +87,15 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   await page.screenshot({ path: shots + '/rest-dark-1440.png' });
 
   await page.locator('#prompt').click();
-  assert.equal(await isOpen(page), true, 'focus opens the pill');
+  assert.equal(await isOpen(page), false, 'focus alone keeps it quiet');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'prompt');
+  await page.keyboard.type('x');
+  assert.equal(await isOpen(page), true, 'typing opens the pill');
   for (const id of ['#composerPlusBtn', '#helperBtn', '#runChip']) assert.equal(await page.locator(id).isVisible(), true, id + ' visible when open');
   const sendOpen = await page.locator('#sendBtn').boundingBox();
   assert.ok(Math.abs(sendOpen.x - sendRest.x) < 1 && Math.abs(sendOpen.y - sendRest.y) < 1, 'send does not move between rest and open');
+  await page.keyboard.press('Backspace');
+  assert.equal(await isOpen(page), true, 'emptied while focused: stays open until blur');
   // One chip opens the model · effort popover; the native selects stay hidden as the source of truth.
   assert.equal(await page.locator('#composerRunChip select#model').count(), 1);
   assert.equal(await page.locator('#model').isHidden(), true, 'native model select hidden');
@@ -122,7 +135,7 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   assert.equal(await page.locator('#runMenu').isHidden(), true, 'outside click closes the model popover');
 
   // The account popover: one row per Claude account, a meter coloured by level.
-  await page.locator('#prompt').click();
+  await reveal(page);
   await page.locator('#sendAccountChip').click();
   assert.equal(await page.locator('#sendAccountPicker').isVisible(), true, 'account popover opens');
   assert.equal(await isOpen(page), true, 'the account popover keeps the pill open');
@@ -145,7 +158,7 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   assert.equal(await page.evaluate(() => document.activeElement.id), 'sendAccountChip', 'focus returns to the account chip');
   await page.locator('#sendAccountChip').click(); await blur(page);
   assert.equal(await page.locator('#sendAccountPicker').isHidden(), true, 'outside click closes it');
-  await page.locator('#prompt').click();
+  await reveal(page);
   await page.locator('#helperBtn').click();
   await page.waitForTimeout(300); await page.screenshot({ path: shots + '/pop-helpers-dark-1440.png' });
   await page.keyboard.press('Escape');
@@ -181,7 +194,7 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   assert.equal(await isOpen(page), false, 'removing the file lets it fold');
 
   // + menu: attach, template (Alt+T), and no reference outside a chat.
-  await page.locator('#prompt').click();
+  await reveal(page);
   await page.locator('#composerPlusBtn').click();
   assert.equal(await page.locator('#composerPlusMenu').isVisible(), true);
   assert.equal(await page.locator('#attachBtn').isVisible(), true);
@@ -191,13 +204,13 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   assert.ok(menu.y >= 0 && menu.x >= 0 && menu.x + menu.width <= 1440, 'menu on screen');
   await blur(page);
   assert.equal(await page.locator('#composerPlusMenu').isHidden(), true, 'outside click closes the + menu');
-  await page.locator('#prompt').click(); await page.locator('#composerPlusBtn').click();
+  await reveal(page); await page.locator('#composerPlusBtn').click();
   const chooser = page.waitForEvent('filechooser');
   await page.locator('#attachBtn').click();
   await (await chooser).setFiles({ name: 'picked.txt', mimeType: 'text/plain', buffer: Buffer.from('picked') });
   await page.locator('#attachRow .chip').filter({ hasText: 'picked.txt' }).waitFor();
   await page.locator('#attachRow .chip button').click();
-  await page.locator('#prompt').click(); await page.locator('#composerPlusBtn').click();
+  await reveal(page); await page.locator('#composerPlusBtn').click();
   await page.locator('#tplBtn').click();
   await page.locator('#tplPop').waitFor({ state: 'visible' });
   await page.keyboard.press('Escape');
@@ -261,7 +274,9 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
     assert.ok(chip.x + chip.width <= vp.width, 'account chip on screen ' + tag);
     await page.screenshot({ path: shots + '/rest-' + tag + '.png' });
     await page.locator('#prompt').click();
-    assert.equal(await isOpen(page), true);
+    assert.equal(await isOpen(page), false, 'a tap into the box keeps it quiet ' + tag);
+    assert.equal(await page.locator('#composerCaption').isVisible(), true, 'caption visible ' + tag);
+    await reveal(page);
     assert.equal(await noOverflow(page), true, 'no overflow open ' + tag);
     for (const id of ['#composerPlusBtn', '#helperBtn', '#runChip', '#sendBtn']) {
       const b = await page.locator(id).boundingBox();
@@ -304,7 +319,7 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   const chat = await api('chats', { requestId: require('node:crypto').randomUUID(), name: 'Quiet pill chat', provider: 'claude' });
   r = await open({ width: 1440, height: 900 }, 'dark', base + '/chat/' + encodeURIComponent(chat.id)); page = r.page;
   await page.waitForSelector('body.rc-chat-active');
-  await page.locator('#prompt').click(); await page.locator('#composerPlusBtn').click();
+  await reveal(page); await page.locator('#composerPlusBtn').click();
   assert.equal(await page.locator('#composerRefItem').isVisible(), true, 'reference offered in a chat');
   await page.screenshot({ path: shots + '/chat-open-dark-1440.png' });
   await page.locator('#composerRefItem').click();
@@ -320,7 +335,7 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   r = await open({ width: 1440, height: 900 }, 'dark', base + '/chat/' + encodeURIComponent(codexChat.id)); page = r.page;
   await page.waitForSelector('body.rc-chat-active');
   await page.waitForFunction(() => document.querySelector('#model option[value="gpt-6-astra"]'));
-  await page.locator('#prompt').click(); await page.locator('#runChip').click();
+  await page.locator('#composerCaption').click(); await page.locator('#runMenu').waitFor();
   assert.deepEqual(await page.locator('#runMenu [data-run=model]').evaluateAll((bs) => bs.map((b) => b.dataset.value)), ['', 'gpt-6-astra', 'gpt-5.6-terra']);
   assert.match(await page.locator('#runMenu .helper-head').first().textContent(), /catalog/);
   assert.equal(await page.locator('#runMenu [data-run=model][data-value="gpt-6-astra"] .hi-desc').textContent(), 'Catalog text: strongest for long multi-step work', 'the catalog description wins');
@@ -339,5 +354,5 @@ const shots = '/tmp/x056-composer-quiet-pill'; fs.mkdirSync(shots, { recursive: 
   await r.ctx.close();
 
   await browser.close();
-  console.log('PASS quiet pill: rests as one line, opens on focus/text/files/draft/menu, folds only when empty and unfocused, send never moves, Stop when empty and Steer+Queue with text while running, + menu attach/template/reference, one chip opening the model · effort popover (rows from #model, segments from #effort), the account popover with level-coloured meters, desktop and phone in dark and light with no overflow');
+  console.log('PASS quiet pill: rests as one line, stays quiet on focus alone, opens on text/files/draft/menu/caption, folds only when empty and unfocused, send never moves, Stop when empty and Steer+Queue with text while running, + menu attach/template/reference, one chip opening the model · effort popover (rows from #model, segments from #effort), the account popover with level-coloured meters, desktop and phone in dark and light with no overflow');
 })().catch((e) => { console.error(e); process.exit(1); });

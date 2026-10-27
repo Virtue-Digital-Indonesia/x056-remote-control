@@ -1,8 +1,8 @@
 const assert=require('node:assert/strict');
 // #model / #effort are hidden behind the model · effort popover: pick through it.
 const pickRun = async (page, kind, value) => {
-  if (!(await page.locator('#runChip').isVisible())) await page.locator('#prompt').click();
-  if (await page.locator('#runMenu').isHidden()) await page.locator('#runChip').click();
+  // At rest the chip is hidden and focus alone keeps it so; the caption opens the popover.
+  if (await page.locator('#runMenu').isHidden()) await page.locator((await page.locator('#runChip').isVisible()) ? '#runChip' : '#composerCaption').click();
   await page.locator('#runMenu [data-run=' + kind + '][data-value="' + value + '"]').click();
   await page.keyboard.press('Escape');
 };

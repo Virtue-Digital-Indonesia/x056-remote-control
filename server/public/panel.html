@@ -441,9 +441,10 @@
   .send:disabled { opacity: .4; }
 
   /* ---- composer: the quiet pill ----
-     At rest (unfocused, empty, no files, no menu) it is ONE line: the textarea
-     and send, with a quiet status line under it. Focused, holding text or files,
-     or with a menu open (.composer-wrap[data-qp-open]) it opens into the pill:
+     At rest (empty, no files, no menu; focus in the box alone does not count) it
+     is ONE line: the textarea and send, with a quiet status line under it.
+     Holding text or files, or with a menu open (.composer-wrap[data-qp-open]),
+     it opens into the pill (the caption under it opens it too):
      text on top, then + / helpers / model·effort / send. Send sits bottom-right
      in both, so a collapse on blur never moves it under a tap.
      #conversationSurface prefixes every rule: control-room.css and workspace.css
@@ -2059,8 +2060,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     <div id="otherRuns"></div>
     <div id="delegatesBar" hidden></div>
     <div id="queueBar"></div>
-    <!-- One pill: quiet (one line) until it is focused, holds text or files, or
-         has a menu open; then it opens into + / helpers / model·effort / send. -->
+    <!-- One pill: quiet (one line, focused or not) until it holds text or files
+         or has a menu open; then it opens into + / helpers / model·effort / send. -->
     <div class="composer" id="composerBox">
       <div id="attachRow"></div>
       <button type="button" class="qp-badge" id="composerAttachBadge" hidden></button>
@@ -6509,7 +6510,9 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       Object.defineProperty(promptEl, 'value', {
         configurable: true,
         get: function () { return nativeValue.get.call(this); },
-        set: function (v) { nativeValue.set.call(this, v); scheduleHighlight(); },
+        // syncComposer too: a template, a reference or a restored draft opens
+        // the pill the moment the box holds text (focus alone no longer does).
+        set: function (v) { nativeValue.set.call(this, v); scheduleHighlight(); syncComposer(); },
       });
     }
     promptEl.addEventListener('input', scheduleHighlight);
@@ -7308,10 +7311,15 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     [modelEl, effortEl, speedEl].forEach(function (el) { runObs.observe(el, { childList: true, subtree: true, characterData: true }); });
   }
   // ---- the quiet pill ------------------------------------------------------
-  // One line at rest; open (data-qp-open on .composer-wrap) while focus is in
-  // it, it holds text or files, or one of its menus is open. Only the CSS
-  // differs between the two: every control keeps its element and listeners.
-  var composerWrap = document.querySelector('.composer-wrap'), composerBox = $('composerBox');
+  // One line at rest; open (data-qp-open on .composer-wrap) while it holds text
+  // or files or one of its menus is open. Focus in #prompt (or on send) alone
+  // never opens it: opening a conversation focuses the box, and the next click
+  // anywhere would fold it again, a flicker on every click. Focus on a hidden
+  // control (⌥M/⌥E, revealComposer) does open it, and once open it stays open
+  // while focus is anywhere in the box, so backspacing to empty does not fold
+  // it under the caret: it folds on blur. Only the CSS differs between the two
+  // states: every control keeps its element and listeners.
+  var composerWrap = document.querySelector('.composer-wrap'), composerBox = $('composerBox'), qpSendEl = $('composerSend');
   var qpHold = false, qpHoldTimer = null, qpForce = false;
   function composerHasFiles() { return !!(attachRow && attachRow.querySelector('.chip')); }
   function composerHasContent() { return !!(promptEl && promptEl.value.trim()) || composerHasFiles(); }
@@ -7337,7 +7345,10 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (!composerWrap || !composerBox) return;
     scheduleHighlight();
     var a = document.activeElement, running = composerRunning(), content = composerHasContent();
-    var open = qpForce || qpHold || !!(a && a !== document.body && composerBox.contains(a)) || promptEl.value.length > 0 || composerHasFiles() || composerMenuOpen();
+    var wasOpen = composerWrap.hasAttribute('data-qp-open');
+    var focusIn = !!(a && a !== document.body && composerBox.contains(a));
+    var quietFocus = focusIn && (a === promptEl || (qpSendEl && qpSendEl.contains(a)));
+    var open = qpForce || (wasOpen && (qpHold || focusIn)) || (focusIn && !quietFocus) || promptEl.value.length > 0 || composerHasFiles() || composerMenuOpen();
     composerWrap.toggleAttribute('data-qp-open', open);
     // Phones show composer menus as bottom sheets; the floating stage bubble sits over them.
     document.body.classList.toggle('qp-menu-open', composerMenuOpen());
@@ -7416,7 +7427,8 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
   // iOS does not focus a tapped button, so focusout sees no relatedTarget: hold
   // the pill open from pointerdown until that tap's click has run.
   function releaseHold() { if (!qpHold) return; clearTimeout(qpHoldTimer); setTimeout(function () { qpHold = false; syncComposer(); }, 0); }
-  composerBox.addEventListener('pointerdown', function () { qpHold = true; clearTimeout(qpHoldTimer); qpHoldTimer = setTimeout(releaseHold, 1200); });
+  // Only an OPEN pill is held: a tap into the resting box must not open it.
+  composerBox.addEventListener('pointerdown', function () { if (!composerWrap.hasAttribute('data-qp-open')) return; qpHold = true; clearTimeout(qpHoldTimer); qpHoldTimer = setTimeout(releaseHold, 1200); });
   document.addEventListener('click', releaseHold, true);
   document.addEventListener('pointercancel', releaseHold, true);
   // A click on the pill's padding lands in the box, as a click on a field would.

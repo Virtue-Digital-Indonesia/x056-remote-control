@@ -178,8 +178,9 @@ const LINUX_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, lik
     assert.deepEqual(sent, ['line', '- **bold** item'], tag + ' Enter sends the Markdown source');
     await page.unroute('**/api/sessions/current/messages');
 
-    // The cheat sheet lists every shortcut with this platform's keys.
-    await prompt.click();
+    // The cheat sheet lists every shortcut with this platform's keys. The box is
+    // empty and focus alone keeps the composer quiet: its caption opens the pill.
+    if (!(await page.locator('#composerPlusBtn').isVisible())) { await page.locator('#composerCaption').click(); await page.keyboard.press('Escape'); }
     await page.locator('#composerPlusBtn').click();
     await page.locator('#composerFormatItem').click();
     const sheet = page.locator('#composerFormatMenu');

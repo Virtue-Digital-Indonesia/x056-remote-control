@@ -1,6 +1,8 @@
 // Advisor cards in the chat, and the helper menu. Start fixture.ts first (with
 // X056_PROJECT_SPACES_ENABLED=1 X056_CHAT_ENABLED=1 to match production).
 const assert = require('node:assert/strict');
+// The composer rests as one line and focus alone keeps it so: its caption opens the pill.
+const revealPill = async (page) => { if (!(await page.locator('#helperBtn').isVisible())) { await page.locator('#composerCaption').click(); await page.keyboard.press('Escape'); } };
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const { execSync } = require('node:child_process');
 let playwright; try { playwright = require('playwright'); } catch { playwright = require('/usr/local/lib/node_modules/playwright'); }
@@ -55,7 +57,7 @@ const TOKEN = 'browser-fixture-token-0123456789';
       assert.equal(over, false, 'card content overflows at ' + vp.width + 'px');
     }
     // The helper menu opens fully on screen, works from the keyboard, and closes on Escape.
-    await page.locator('#prompt').click(); // the composer rests as one line; focus opens its controls
+    await revealPill(page);
     await page.locator('#helperBtn').click();
     const box = await page.locator('#helperMenu').boundingBox();
     assert.ok(box && box.y >= 0 && box.x >= 0 && box.x + box.width <= vp.width && box.height > 150, 'menu fully visible');

@@ -5,9 +5,11 @@
 // Jev API is never called.
 const assert = require('node:assert/strict');
 // #model / #effort are hidden behind the model · effort popover: pick through it.
+// The composer rests as one line and focus alone keeps it so: its caption opens the pill.
+const revealPill = async (page) => { if (!(await page.locator('#helperBtn').isVisible())) { await page.locator('#composerCaption').click(); await page.keyboard.press('Escape'); } };
 const pickRun = async (page, kind, value) => {
-  if (!(await page.locator('#runChip').isVisible())) await page.locator('#prompt').click();
-  if (await page.locator('#runMenu').isHidden()) await page.locator('#runChip').click();
+  // At rest the chip is hidden and focus alone keeps it so; the caption opens the popover.
+  if (await page.locator('#runMenu').isHidden()) await page.locator((await page.locator('#runChip').isVisible()) ? '#runChip' : '#composerCaption').click();
   await page.locator('#runMenu [data-run=' + kind + '][data-value="' + value + '"]').click();
   await page.keyboard.press('Escape');
 };
@@ -48,7 +50,7 @@ const TITLE = 'Review accessibility findings';
     await page.goto(base); await page.waitForSelector('.cr-task');
     await page.locator('.cr-task').filter({ hasText: TITLE }).first().click();
     await page.waitForFunction(() => !document.getElementById('helperBtn').disabled);
-    await page.locator('#prompt').click(); // the composer rests as one line; focus opens its controls
+    await revealPill(page);
     const sent = [];
     await page.route('**/api/sessions/current/messages', (route) => { sent.push(route.request().postDataJSON()); return route.fulfill({ status: 400, json: { message: 'Fixture captured send' } }); });
     return { ctx, page, errors, sent };
@@ -70,7 +72,7 @@ const TITLE = 'Review accessibility findings';
   let r = await open(desk);
   assert.equal(await autoText(r.page, 'model'), 'Jev picks', 'default: Auto names Jev');
   await pickRun(r.page, 'model', ''); await pickRun(r.page, 'effort', '');
-  await r.page.locator('#prompt').click();
+  await revealPill(r.page);
   await r.page.locator('#helperBtn').click();
   await r.page.waitForFunction(() => document.querySelector('#helperMenu [data-value=jev]').getAttribute('aria-checked') === 'true');
   assert.equal(await r.page.locator('#helperJevDefault').isVisible(), true, 'Jev tagged as the default');
@@ -120,7 +122,7 @@ const TITLE = 'Review accessibility findings';
   assert.equal(await autoText(r.page, 'effort'), 'Jev picks');
   assert.equal(await r.page.locator('#model').inputValue(), '');
   // The model · effort popover names the picker on its Auto row and segment.
-  await r.page.locator('#prompt').click(); await r.page.locator('#runChip').click();
+  await r.page.locator((await r.page.locator('#runChip').isVisible()) ? '#runChip' : '#composerCaption').click();
   assert.equal(await r.page.locator('#runMenu [data-run=model][data-value=""] .hi-title').textContent(), 'Jev picks');
   assert.match(await r.page.locator('#runMenu [data-run=model][data-value=""] .hi-desc').textContent(), /Chosen per turn, starting from Sonnet/);
   assert.equal(await r.page.locator('#runMenu [data-run=effort][data-value=""]').textContent(), 'Jev');
