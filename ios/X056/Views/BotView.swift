@@ -17,13 +17,14 @@ struct BotView: View {
             if let model {
                 BotHome(model: model, dictation: dictation)
             } else {
-                BotWelcome(waking: waking, error: error) { Task { await wake() } }
+                BotWelcome(name: app.botName, waking: waking, error: error) { Task { await wake() } }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // A background, so its wide glows never widen the screen's layout.
         .background { BotBackdrop() }
         .fontDesign(.rounded)
+        .navigationTitle(app.botName)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button("Back", systemImage: "chevron.left") { app.botOpen = false }
@@ -93,6 +94,7 @@ struct BotView: View {
 
 /// Before there is a Bot: the orb asleep, and one button that wakes it.
 private struct BotWelcome: View {
+    let name: String
     let waking: Bool
     let error: String?
     let wake: () -> Void
@@ -101,10 +103,10 @@ private struct BotWelcome: View {
     var body: some View {
         VStack(spacing: 22) {
             Spacer(minLength: 20)
-            BotOrb(mood: waking ? .thinking : appeared ? .idle : .asleep, size: 150)
+            BotOrb(mood: waking ? .thinking : appeared ? .idle : .asleep, size: 150, name: name)
                 .scaleEffect(appeared ? 1 : 0.85)
             VStack(spacing: 10) {
-                Text("Meet your Bot")
+                Text("Meet your \(name)")
                     .font(.largeTitle.weight(.bold))
                 Text("A personal assistant that keeps an eye on your conversations and tells you, in plain words, what is running, what finished and what needs you.")
                     .font(.body)
@@ -116,7 +118,8 @@ private struct BotWelcome: View {
             Button(action: wake) {
                 HStack(spacing: 8) {
                     if waking { ProgressView().tint(.white) } else { Image(systemName: "sparkles") }
-                    Text(waking ? "Waking up…" : "Wake the Bot")
+                    // "Wake the Bot" until it has a name of its own.
+                    Text(waking ? "Waking up…" : name == "Bot" ? "Wake the Bot" : "Wake \(name)")
                 }
                 .font(.headline)
                 .foregroundStyle(.white)
@@ -167,7 +170,7 @@ private struct BotHome: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     BotGreeting(nodes: nodes)
-                    Constellation(nodes: nodes, mood: mood, level: dictation.level, orbSize: 118) { node in
+                    Constellation(nodes: nodes, mood: mood, level: dictation.level, orbSize: 118, botName: app.botName) { node in
                         app.botPath.append(.conversation(projectId: node.projectId, sessionId: node.sessionId))
                     }
                     .frame(height: 290)
@@ -353,6 +356,7 @@ private struct MomentCard: View {
 /// The conversation with the Bot, in its own style: its replies beside a
 /// small orb, yours in a bright bubble, its look-ups folded into one line.
 private struct BotThread: View {
+    @Environment(AppModel.self) private var app
     let model: ConversationModel
 
     var body: some View {
@@ -380,7 +384,7 @@ private struct BotThread: View {
             }
             if model.isWorking {
                 HStack(spacing: 10) {
-                    BotOrb(mood: .thinking, size: 22)
+                    BotOrb(mood: .thinking, size: 22, name: app.botName)
                         .frame(width: 30, height: 30)
                     Text(model.activity.map { "\($0)…" } ?? "Thinking…")
                         .font(.subheadline)
@@ -396,6 +400,7 @@ private struct BotThread: View {
 }
 
 private struct BotLine: View {
+    @Environment(AppModel.self) private var app
     let row: ChatRow
     /// The last reply of a morning-brief turn: the brief itself.
     var brief = false
@@ -421,9 +426,17 @@ private struct BotLine: View {
             }
         case .assistant:
             HStack(alignment: .top, spacing: 10) {
-                BotOrb(mood: .idle, size: 22)
+                BotOrb(mood: .idle, size: 22, name: app.botName)
                     .frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 6) {
+                    if row.ownerMessage {
+                        Text(row.needsYou ? "Needs you" : "For you")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(row.needsYou ? BotColors.peach : BotColors.sky)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background((row.needsYou ? BotColors.peach : BotColors.sky).opacity(0.18), in: .capsule)
+                    }
                     if brief {
                         Label("Morning brief", systemImage: "sun.max.fill")
                             .font(.caption.weight(.semibold))
@@ -536,16 +549,18 @@ private struct BotNotice: View {
     }
 }
 
-/// Shows or folds away the Bot's system rows (BotHistory), on the Bot
-/// screen and when the Bot's chat is opened as a conversation.
+/// Shows or folds away the rows the owner did not ask for: the Bot's system
+/// rows (BotHistory) and, in every other conversation, the turns agents and
+/// schedules started. On the Bot screen and in More.
 struct SystemHistoryToggle: View {
     let model: ConversationModel
 
     var body: some View {
         // The panel's wording (Today > "Show N hidden system messages").
-        let hidden = model.botStates.values.filter { $0 == .hide }.count
-        Button(model.showSystemHistory ? "Hide system messages"
-               : hidden == 1 ? "Show 1 hidden system message" : "Show \(hidden) hidden system messages",
+        let hidden = model.hiddenCount
+        let noun = model.isBot ? "system message" : "message"
+        Button(model.showSystemHistory ? "Hide \(noun)s"
+               : hidden == 1 ? "Show 1 hidden \(noun)" : "Show \(hidden) hidden \(noun)s",
                systemImage: model.showSystemHistory ? "eye.slash" : "eye") {
             withAnimation(.snappy) { model.showSystemHistory.toggle() }
         }
