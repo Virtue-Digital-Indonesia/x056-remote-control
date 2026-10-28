@@ -61,13 +61,14 @@ export function withTeamLine(text: string, line: string | undefined): string {
   const r = readMessageSender(text);
   return r.sender ? r.text + '\n\n' + line + text.slice(r.text.length) : text + '\n\n' + line;
 }
-/** The open-question line: an automated turn arrives while a question to the
- *  owner is still unanswered, and may close it with the RESOLVED marker. Same
- *  mechanism as the team line (the message, never the system prompt). */
+/** The open-question line: a turn (the owner's own included) arrives while a
+ *  question to the owner is still unanswered, and may close it with the
+ *  RESOLVED marker. Same mechanism as the team line (the message, never the
+ *  system prompt). */
 export const OPEN_QUESTION_LINE_PREFIX = '[Open question to the owner, still unanswered: ';
 export function openQuestionLine(questions: string[]): string {
   const one = (q: string) => '"' + q.replace(/\s+/g, ' ').trim().slice(0, 300).replace(/"/g, "'") + '"';
-  return `${OPEN_QUESTION_LINE_PREFIX}${questions.slice(0, 6).map(one).join(', ')}. If this message answers it or makes it moot, end your reply with <<<RESOLVED>>> on its own line. Otherwise leave it open.]`;
+  return `${OPEN_QUESTION_LINE_PREFIX}${questions.slice(0, 6).map(one).join(', ')}. Only if THIS message gives the owner's answer or makes the question moot, end your reply with <<<RESOLVED>>> on its own line. Never add it as a sign-off or while you still need the owner's answer.]`;
 }
 /** Removes the team line, the advisor line and the open-question line (whichever are there). */
 export function stripTeamLine(text: string): string {

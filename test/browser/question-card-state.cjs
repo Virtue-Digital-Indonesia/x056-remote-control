@@ -46,7 +46,23 @@ const base = process.argv[2] || 'http://127.0.0.1:8779';
   await page.waitForTimeout(2500); // let session_started and the turn land
   assert.equal(await userBubbles('Which colour should the header use?'), 1, 'a batch answer must render exactly one user bubble');
 
+  // 4. An owner message that is not an answer leaves the card open, live and on the server. The turn above
+  //    ended with the same two-question ASK, so a card is up again.
+  await page.locator('.qcard.pending .qbatch').waitFor({ timeout: 15000 });
+  const questionsNow = async () => (await (await page.request.get(base + '/api/questions', { headers: { Authorization: 'Bearer browser-fixture-token-0123456789' } })).json()).length;
+  const openBefore = await questionsNow();
+  assert.ok(openBefore >= 1, 'the server holds the open card');
+  await page.locator('#prompt').fill('Unrelated: change the footer email to contact@example.com');
+  const freeSent = page.waitForResponse((r) => /\/api\/(sessions\/current\/messages|steer|queue)/.test(r.url()) && r.request().method() === 'POST');
+  await page.locator('#prompt').press('Enter');
+  assert.equal((await freeSent).status() < 300, true, 'the free-text message must be accepted');
+  await page.waitForTimeout(800);
+  assert.equal(await page.locator('.qcard.pending').count(), 1, 'the card stays visible while the free-text turn runs');
+  await page.waitForTimeout(2500); // the turn ends (re-asking the same questions: merged, nothing new)
+  assert.equal(await page.locator('.qcard.pending').count(), 1, 'the card stays visible after the free-text turn');
+  assert.equal(await questionsNow(), openBefore, 'the server still holds the card');
+
   assert.deepEqual(errors, []);
   await browser.close();
-  console.log('PASS question answers render once; the multi-question card survives leaving and reopening the conversation');
+  console.log('PASS question answers render once; the multi-question card survives leaving and reopening the conversation; an owner free-text message leaves the card open');
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -4361,9 +4361,9 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
         var shown = Array.prototype.some.call(host.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === (data.messageId || data.sender.messageId); });
         if (!shown) { var message = nodeMsg('user', data.displayPrompt, data.attachments, data.ts, providerFor(pid, sid), data.sender); message.dataset.messageSourceId = data.messageId || data.sender.messageId; appendNode(pid, sid, message); }
       }
-      // Only the owner's own turn answers an open question. An agent, cron, digest or recap turn leaves it open;
-      // the server ends it with question_answered / question_dismissed.
-      if (!data.sender) clearQuestion(pid, sid);
+      // A turn starting never clears a question card, the owner's own included: a message that is not an
+      // answer leaves it open. The server owns the card and says when it changes: question_answered /
+      // question_dismissed close it, and a `question` event carries what is left of a partly answered batch.
       var v = viewOf(pid, sid);
       if (data.resume === false) v.activityLog = []; // brand-new session — don't inherit the prior one's trail
       if (data.model) activeModel[viewKey(pid, sid)] = data.model;
@@ -4745,13 +4745,16 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // answer showed twice. The requestId becomes that messageId; tag ours with
     // it, and skip ours if the echo won the race.
     var requestId = crypto.randomUUID();
-    api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, prompt: answer, requestId: requestId }) })
+    // answersQuestionAt tells the server this message IS the card's answer, so free text typed into the
+    // card closes it too (an ordinary message the card does not match leaves it open).
+    api('/api/sessions/current/messages', { method: 'POST', body: JSON.stringify({ projectId: pid, sessionId: sid, prompt: answer, requestId: requestId, answersQuestionAt: card.dataset.questionAt || undefined }) })
       .then(function (r) { return r.json().then(function (result) {
         if (!r.ok) throw new Error(result.message || 'Could not send answer');
-        // Only resolve the card after the server accepts the answer.
-        if (sid) delete pendingQ[sid];
+        // Only settle the card after the server accepts the answer. pendingQ is the server's to clear
+        // (question_answered), or to replace with what is left of the batch (`question`, same `at`):
+        // that event can arrive before this response, so deleting it here could drop the remainder.
         try { localStorage.removeItem('x056_question_draft_'+sid+'_'+card.dataset.questionAt); } catch {}
-        card.classList.remove('pending'); card.classList.add('answered');
+        if (card.isConnected && card.classList.contains('pending')) { card.classList.remove('pending'); card.classList.add('answered'); }
         var host = qContainer(pid, sid);
         var echoed = Array.prototype.some.call(host.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === requestId; });
         if (!echoed) { var mine = nodeMsg('user', answer, null, new Date().toISOString(), providerFor(pid, sid)); mine.dataset.messageSourceId = requestId; appendNode(pid, sid, mine); }

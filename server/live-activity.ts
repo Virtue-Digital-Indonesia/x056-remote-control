@@ -134,6 +134,7 @@ export class LiveActivities {
         return this.push(a, 5);
       }
       case 'question': {
+        if (d.remainder === true) return; // the rest of a batch the owner partly answered
         c.status = 'waiting';
         c.activity = undefined;
         c.detail = String(d.question ?? 'It asked you something').slice(0, 300);

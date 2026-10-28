@@ -55,7 +55,7 @@ import { CodexTransport } from '../src/persistent-codex.js';
 import type { TurnHandle, TurnOptions } from '../src/turn.js';
 import type { ProviderAdapter, ProviderId } from '../src/provider.js';
 import type { RawEvent } from '../src/types.js';
-import { hasForOwner, hasResolved, parseQuestion, stripAsk, stripAskInstructions, withAskInstructions } from '../src/question.js';
+import { answeredQuestionIndexes, hasForOwner, hasResolved, parseQuestion, stripAsk, stripAskInstructions, withAskInstructions } from '../src/question.js';
 import { closeAllGatewayDbs, closeGatewayDb, gatewayDb } from './gateway-db.js';
 import { BOT_CHAT_NAME, BOT_DENIED_TOOLS, BOT_REQUEST_ID, botAttention, botSystemNote, BotService, type BotAttention, type BotOptions, type BotStatus } from './bot.js';
 import type { ReadView } from './read-state.js';
@@ -176,6 +176,9 @@ export interface TurnRunOptions {
   /** Internal: a resend of a conversation's first turn, which parked before
    *  any process ran it, so there is no session to resume yet. */
   freshSession?: boolean;
+  /** The `at` of the question card this message answers (the panel's card
+   *  sends it). With nothing else matched, it closes that whole batch. */
+  answersQuestionAt?: string;
 }
 
 /** A follow-up message queued to send when the current turn completes. */
@@ -195,6 +198,8 @@ export interface QueueItem {
   requestId?: string;
   /** Sent by the usage-limit scheduler: draining it is not the owner's next message. */
   limitResume?: boolean;
+  /** The question card this queued message answers (TurnRunOptions.answersQuestionAt). */
+  answersQuestionAt?: string;
   id: string;
   text: string;
   model?: string;
@@ -333,6 +338,9 @@ interface ActiveRun {
   pendingAdvice?: Promise<unknown>;
   /** An agent-started turn of a normal conversation (owner view): its trigger's message id. */
   ownerAgent?: { messageId: string };
+  /** The questions still open when this turn began (after the owner's message
+   *  closed what it answered): the only ones its <<<RESOLVED>>> may close. */
+  openAtStart?: string[];
   /** Why this agent turn was marked for the owner, once a reply says so. */
   ownerReason?: OwnerReason;
   /** A turn started on some process (turn_started), so a park is a continue, not a resend. */
@@ -385,6 +393,22 @@ interface AfterTurn {
   lastTaskDone?: number;
   lastText?: string;
   reply?: { text: string; seq: number; at: string };
+  /** The questions open when the turn began (what its open-question line
+   *  named), minus any the turn re-asked: all a woken reply's
+   *  <<<RESOLVED>>> may close. */
+  openAtStart?: string[];
+  /** The ended turn's origin, for a woken reply read before the settle. */
+  origin?: string;
+}
+
+/** The reply background work woke after a turn, if it came after the last task finished. */
+function wokenReply(st: AfterTurn | undefined): AfterTurn['reply'] {
+  return st?.reply && (st.lastTaskDone === undefined || st.reply.seq > st.lastTaskDone) ? st.reply : undefined;
+}
+
+/** A pending question's items, a single question included. */
+function questionItems(q: { question: string; options: string[]; questions?: { question: string; options: string[] }[] }): { question: string; options: string[] }[] {
+  return q.questions ?? [{ question: q.question, options: q.options }];
 }
 
 /** One line per question for the recap prompt: question, then options. */
@@ -1084,17 +1108,11 @@ export class SessionManager {
     // never a "finished" quoting the limit text, and no recap (R4).
     if (sid && this.limitSettles.delete(sid)) { this.emit('conversation_settled', { ...data, notificationSuppressed: true, limit: true }); return; }
     if (!st?.sawWork || data.notificationSuppressed) { this.emit('conversation_settled', data); return; }
-    const reply = st.reply && (st.lastTaskDone === undefined || st.reply.seq > st.lastTaskDone) ? st.reply : undefined;
+    const reply = wokenReply(st);
     if (reply) {
       data = this.ownerWoken(pid, sid, data, reply.text);
-      const ap = this.loadAutopilot()[sid];
-      const botQuiet = data.origin !== 'human' && this.bot().isBotProject(pid); // an agent's / digest's / brief's woken reply is never the owner's card
-      if (hasResolved(reply.text)) this.resolvePendingQuestion(pid, sid, 'resolved');
-      const q = (!ap || ap.paused) && !botQuiet && !this.sessionBusy(sid) ? parseQuestion(reply.text) : null;
-      // A woken reply's ask joins the question already open (identical text once).
-      const prior = this.pendingQuestions.get(sid);
-      const added = q ? this.addPendingQuestion(pid, sid, q, 'merge', typeof data.requestId === 'string' ? data.requestId : undefined) : null;
-      if (added && added !== prior) return;
+      const added = !this.sessionBusy(sid) && this.applyWokenReply(pid, sid, st, reply.text, typeof data.origin === 'string' ? data.origin : undefined, typeof data.requestId === 'string' ? data.requestId : undefined);
+      if (added) return;
       this.emit('conversation_settled', { ...data, resultText: reply.text, woken: true });
       return;
     }
@@ -1108,6 +1126,33 @@ export class SessionManager {
       }
     }
     this.emit('conversation_settled', data);
+  }
+
+  /** A woken reply's endings: its <<<RESOLVED>>> closes only the questions
+   *  open when its turn began (`openAtStart`), then its ASK joins whatever is
+   *  still open. True when that added a question (the card replaces the
+   *  settle notice). Never a card under autopilot, nor in a Bot turn the
+   *  owner did not start. */
+  private applyWokenReply(pid: string, sid: string, st: AfterTurn, text: string, origin: string | undefined, requestId?: string): boolean {
+    if (hasResolved(text) && st.openAtStart?.length) this.closePendingQuestions(pid, sid, new Set(st.openAtStart), 'resolved');
+    const ap = this.loadAutopilot()[sid];
+    const botQuiet = origin !== 'human' && this.bot().isBotProject(pid); // an agent's / digest's / brief's woken reply is never the owner's card
+    const q = (!ap || ap.paused) && !botQuiet ? parseQuestion(text) : null;
+    // A woken reply's ask joins the question already open (identical text once).
+    const prior = this.pendingQuestions.get(sid);
+    const added = q ? this.addPendingQuestion(pid, sid, q, 'merge', requestId) : null;
+    return !!added && added !== prior;
+  }
+
+  /** A new turn is starting while the previous one's background work has not
+   *  settled (an agent still running, so the completion gate never fired): a
+   *  woken reply it already finished would be dropped with `afterTurns`, and
+   *  its ASK with it. Read it now. */
+  private harvestWokenReply(pid: string, sid: string): void {
+    const st = this.afterTurns.get(sid);
+    const reply = wokenReply(st);
+    if (!st || !reply || !st.origin) return;
+    try { this.applyWokenReply(pid, sid, st, reply.text, st.origin); } catch (error) { console.warn('[questions] could not read a woken reply:', (error as Error).message); }
   }
 
   private backgroundRecapAllowed(pid: string, sid: string, data: Record<string, unknown>): boolean {
@@ -1205,7 +1250,12 @@ export class SessionManager {
       if (!d) return 'gone';
       return d.status === 'stopped' || d.dismissedAt ? 'stopped' : undefined;
     }
-    if (this.pendingQuestions.has(rec.sessionId)) return 'question';
+    // A question waits for the owner. But the owner's own parked message (or
+    // the continue of their turn) is not held by a card that was already open
+    // when it was sent: that message used to close any card, and now leaves
+    // one it does not answer open, so only a newer question holds it.
+    const open = this.pendingQuestions.get(rec.sessionId);
+    if (open && !((rec.origin ?? 'human') === 'human' && Date.parse(open.at) < Date.parse(rec.createdAt))) return 'question';
     if (rec.kind === 'autopilot' && !this.loadAutopilot()[rec.sessionId]?.paused) return 'autopilot_changed';
     return undefined;
   }
@@ -1579,7 +1629,7 @@ export class SessionManager {
   clearSelfQueueStreak(sessionId: string): void { this.selfQueueStreak.delete(sessionId); }
 
 
-  enqueue(pid: string, item: { text: string; attachmentPrompt?: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; speed?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string; limitResume?: boolean; front?: boolean }): QueueItem {
+  enqueue(pid: string, item: { text: string; attachmentPrompt?: string; fileRefs?: FileReference[]; sender?: MessageSender; account?: string; useReserve?: boolean; model?: string; effort?: string; speed?: string; sessionId?: string; notBefore?: number; afterSessionId?: string; paused?: boolean; requestId?: string; limitResume?: boolean; front?: boolean; answersQuestionAt?: string }): QueueItem {
     const proj = this.projects().get(pid);
     if (!proj) throw new Error(`unknown project ${pid}`);
     const text = (item.text ?? '').trim() || (item.fileRefs?.length || item.attachmentPrompt ? 'Use the attached files.' : '');
@@ -1595,7 +1645,7 @@ export class SessionManager {
     if (item.afterSessionId && !this.listProjects().projects.some(p=>p.conversations?.some(c=>c.sessionId===item.afterSessionId))) throw new Error('Dependency conversation not found');
     if (item.afterSessionId && item.afterSessionId === sessionId) throw new Error('A queue item cannot wait for its own conversation');
     const map = this.loadQueues();
-    const q: QueueItem = { id: randomUUID(), text, attachmentPrompt: item.attachmentPrompt, fileRefs: item.fileRefs, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId, ...(item.limitResume ? { limitResume: true } : {}) };
+    const q: QueueItem = { id: randomUUID(), text, attachmentPrompt: item.attachmentPrompt, fileRefs: item.fileRefs, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve, at: Date.now(), sessionId, notBefore: item.notBefore, afterSessionId: item.afterSessionId, paused: item.paused, requestId: item.requestId, ...(item.limitResume ? { limitResume: true } : {}), ...(typeof item.answersQuestionAt === 'string' && item.answersQuestionAt ? { answersQuestionAt: item.answersQuestionAt } : {}) };
     const rows = (map[pid] ??= []);
     // `front`: ahead of this conversation's other items (a usage-limit resend
     // goes before what queued behind its record), never ahead of one dispatching.
@@ -1684,7 +1734,7 @@ export class SessionManager {
       try {this.saveQueues(current);} catch {return;} // Never send before the recovery marker is durable.
       if(item.requestId)this.emit('message_delivery',{requestId:item.requestId,sessionId,projectId:pid,status:'uncertain'});
       try {
-        this.continueSession(pid, sessionId, item.text + (item.attachmentPrompt || ''), { fileRefs: item.fileRefs, requestId: item.requestId, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve, ...(item.limitResume ? { limitResume: true } : {}) });
+        this.continueSession(pid, sessionId, item.text + (item.attachmentPrompt || ''), { fileRefs: item.fileRefs, requestId: item.requestId, sender: item.sender, model: item.model, effort: item.effort, speed: item.speed, account: item.account, useReserve: item.useReserve, ...(item.limitResume ? { limitResume: true } : {}), ...(item.answersQuestionAt ? { answersQuestionAt: item.answersQuestionAt } : {}) });
       } catch(e) {
         if (e instanceof BusyError) {
           item.dispatching=false;
@@ -4203,8 +4253,46 @@ export class SessionManager {
     return true;
   }
 
-  /** The user answered the pending question by a route that starts no new
-   *  turn of its own (a steer, a queued reply): close the card everywhere. */
+  /**
+   * Closes the named questions of a conversation's open batch. With none
+   * left it is `question_answered`; otherwise the rest stays open under the
+   * SAME `at` (the dismiss guard and the notice id key on it, so nothing is
+   * pushed again) and a `question` event carries the remaining batch, which
+   * the panel's card re-renders from. `remainder: true` marks it.
+   */
+  private closePendingQuestions(projectId: string, sessionId: string, close: Set<string>, by: 'steer' | 'queue' | 'turn' | 'resolved'): boolean {
+    const current = this.pendingQuestions.get(sessionId);
+    if (!current) return false;
+    const list = questionItems(current);
+    const rest = list.filter((x) => !close.has(x.question));
+    if (rest.length === list.length) return false;
+    if (!rest.length) return this.resolvePendingQuestion(projectId, sessionId, by);
+    const pending: PendingQuestion = { projectId: current.projectId, sessionId, question: rest[0].question, options: rest[0].options, ...(rest.length > 1 ? { questions: rest } : {}), at: current.at };
+    this.pendingQuestions.set(sessionId, pending);
+    this.savePendingQuestions();
+    this.emit('question', { ...pending, remainder: true, answered: list.filter((x) => close.has(x.question)).map((x) => x.question), by });
+    return true;
+  }
+
+  /**
+   * The owner's message (a turn or a steer) against the open batch. It closes
+   * the questions it answers (`answeredQuestionIndexes`: "N. q / Answer: x"
+   * blocks, or a message that IS an option); with nothing matched, a message
+   * the panel sent from the card itself (`answersQuestionAt` = the batch's
+   * `at`) closes the whole batch. Anything else leaves the card open: the
+   * owner talking about something else is no answer.
+   */
+  private answerPendingQuestion(projectId: string, sessionId: string, message: string, answersQuestionAt: string | undefined, by: 'steer' | 'turn'): boolean {
+    const current = this.pendingQuestions.get(sessionId);
+    if (!current) return false;
+    const list = questionItems(current);
+    const answered = answeredQuestionIndexes(list, message);
+    if (answered.length) return this.closePendingQuestions(projectId, sessionId, new Set(answered.map((i) => list[i].question)), by);
+    if (answersQuestionAt && answersQuestionAt === current.at) return this.resolvePendingQuestion(projectId, sessionId, by);
+    return false;
+  }
+
+  /** Closes the whole batch everywhere (`question_answered`). */
   resolvePendingQuestion(projectId: string, sessionId: string, by: 'steer' | 'queue' | 'turn' | 'resolved'): boolean {
     const question = this.pendingQuestions.get(sessionId);
     if (!question) return false;
@@ -4287,13 +4375,17 @@ export class SessionManager {
     }
     if (this.projects().get(pid)?.kind === 'chat') this.files().fence(pid);
     this.titleWorker?.preempt();
-    // Only a HUMAN turn answers an open question (answering one IS a new
-    // turn). An agent, delegate, cron, digest, brief, recap or advisor turn
-    // leaves it open: it may close it itself with <<<RESOLVED>>> at its end,
-    // and is told so by one line in its message.
+    // A card stays open until the owner answers it or the asking chat
+    // resolves it. The owner's message closes only what it answers (the
+    // card's own reply, an "N. q / Answer: x" block, an option's exact text);
+    // an agent, delegate, cron, digest, brief, recap or advisor turn never
+    // does. Whatever is still open is named to THIS turn in one line, and the
+    // turn may close exactly those with <<<RESOLVED>>> on its own line.
     const startOrigin = originOf(runOpts?.sender);
+    this.harvestWokenReply(pid, sessionId);
+    if (startOrigin === 'human') this.answerPendingQuestion(pid, sessionId, stripAskInstructions(resendPrompt), runOpts?.answersQuestionAt, 'turn');
     const openQuestion = this.pendingQuestions.get(sessionId);
-    if (startOrigin === 'human') this.resolvePendingQuestion(pid, sessionId, 'turn');
+    const openAtStart = openQuestion ? questionItems(openQuestion).map((x) => x.question) : [];
     // The owner's own message is the next step: a waiting auto-continue is
     // dropped and the loop brake starts over (R6). A resend of a parked
     // message is the scheduler's, not the owner's.
@@ -4365,7 +4457,7 @@ export class SessionManager {
     this.turnOrigins.set(sessionId, resumeOrigin ?? origin);
     const autopilot = this.loadAutopilot()[sessionId];
     // Keep the turn's notification ownership even if autopilot is disabled later.
-    const run: ActiveRun = { startedAt: new Date().toISOString(), sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId, suppressCompletion: sender?.kind === 'autopilot' || (!!autopilot && !autopilot.paused) };
+    const run: ActiveRun = { startedAt: new Date().toISOString(), sessionId, projectId: pid, cwd, route, nextChoice:pendingChoice, requestId: memoryRequestId, suppressCompletion: sender?.kind === 'autopilot' || (!!autopilot && !autopilot.paused), openAtStart };
     if (sender && isAgentSender(sender, sessionId) && sender.messageId && !this.bot().isBotProject(pid)) run.ownerAgent = { messageId: sender.messageId };
     this.runs.set(sessionId, run);
     // Every event from this run carries its projectId AND sessionId so the panel
@@ -4447,7 +4539,7 @@ export class SessionManager {
       // fork hint. Advisor (Claude): when to consult it.
       const forks = !!team && !!this.forkBackend(helpers);
       const advisorLine = runAdvisor ? advisorTurnLine(adapter.id) : undefined;
-      const openLine = openQuestion && startOrigin !== 'human' ? openQuestionLine((openQuestion.questions ?? [openQuestion]).map((x) => x.question)) : undefined;
+      const openLine = openAtStart.length ? openQuestionLine(openAtStart) : undefined;
       const ownerLine = run.ownerAgent ? OWNER_HIDDEN_LINE : undefined;
       const withLines = (p: string, teamLine?: string) => withTeamLine(withTeamLine(withTeamLine(withTeamLine(p, teamLine), advisorLine), openLine), ownerLine);
       // The advisor that actually runs: chosen from the model the turn runs
@@ -4620,8 +4712,8 @@ export class SessionManager {
           // continuation of this conversation resumes the same underlying session.
           if (res.providerSessionId) this.projects().setProviderSessionId(pid, sessionId, res.providerSessionId);
           // Queued follow-ups for THIS conversation take priority: on a clean
-          // completion, drain its head (ahead of autopilot). A queued message is
-          // the user's explicit next step, so it also pre-empts a question card.
+          // completion, drain its head (ahead of autopilot). It no longer
+          // pre-empts a question card: the card is made below all the same.
           // PRIORITY: a queued message always beats autopilot — it's an explicit
           // instruction from the operator or another conversation, while
           // autopilot is just "keep going". Draining on a FAILED/parked turn too,
@@ -4646,10 +4738,15 @@ export class SessionManager {
           // the brief's push, make a digest reply loud, or put an agent's
           // question in front of the owner. Such a turn may still RESOLVE one.
           const botReply = sender?.kind === 'bot_brief' || sender?.kind === 'bot_event' || (origin !== 'human' && this.bot().isBotProject(pid));
-          // <<<RESOLVED>>> closes the open question first; a new ASK in the
-          // same reply then replaces it instead of joining it.
-          const resolved = res.status === 'completed' && hasResolved(res.resultText ?? '') && this.resolvePendingQuestion(pid, sessionId, 'resolved');
-          const q = res.status !== 'completed' || run.suppressCompletion || onAutopilot || drained || botReply ? null : parseQuestion(res.resultText ?? '');
+          // <<<RESOLVED>>> on its own line closes the questions that were open
+          // when this turn began, and only those; a new ASK in the same reply
+          // then joins whatever is still open. A queued message draining next
+          // does not swallow the ASK: the card is made here, before the
+          // drained turn starts (that waits 400 ms), so it sees the card and
+          // is told about it.
+          if (res.status === 'completed' && run.openAtStart?.length && hasResolved(res.resultText ?? '')) this.closePendingQuestions(pid, sessionId, new Set(run.openAtStart), 'resolved');
+          const asked = res.status === 'completed' ? parseQuestion(res.resultText ?? '') : null;
+          const q = res.status !== 'completed' || run.suppressCompletion || onAutopilot || botReply ? null : asked;
           // Autopilot swallows its steps' questions (the final step's too:
           // this runs before evaluateAutopilot disarms); its recap re-asks them.
           if (res.status === 'completed' && currentAutopilot && (onAutopilot || sender?.kind === 'autopilot')) {
@@ -4657,8 +4754,13 @@ export class SessionManager {
           }
           // From here a Claude conversation's out-of-turn work is watched, so
           // its settle can quote the reply that work woke.
-          if (res.status === 'completed' && adapter.id === 'claude') this.afterTurns.set(sessionId, { sawWork: this.providerActivity(sessionId).active, seq: 0 });
-          if (q) this.addPendingQuestion(pid, sessionId, q, resolved ? 'replace' : 'merge', run.requestId);
+          // A woken reply's <<<RESOLVED>>> reaches only what was open at this
+          // turn's start, never what this turn (re-)asked.
+          if (res.status === 'completed' && adapter.id === 'claude') {
+            const reasked = new Set(asked ? questionItems(asked).map((x) => x.question) : []);
+            this.afterTurns.set(sessionId, { sawWork: this.providerActivity(sessionId).active, seq: 0, origin, openAtStart: (run.openAtStart ?? []).filter((t) => !reasked.has(t)) });
+          }
+          if (q) this.addPendingQuestion(pid, sessionId, q, 'merge', run.requestId);
           emit('session_done', { sessionId, ...res, ...turnMeta(), ...this.ownerFields(pid, sessionId, run, res), ...(autoResume ? { autoResume } : {}) });
           if (res.status === 'completed') {
             try { this.titles().observe(pid, sessionId, sourcePrompt, res.resultText || ''); }
@@ -5075,7 +5177,7 @@ export class SessionManager {
    * the token did not already open. Bounding AI-origin traffic properly would
    * mean a separate credential, which is a bigger change than this.
    */
-  async steerSession(projectId: string, sessionId: string, text: string, opts: { humanOrigin?: boolean; requireTurn?: boolean } = {}): Promise<boolean> {
+  async steerSession(projectId: string, sessionId: string, text: string, opts: { humanOrigin?: boolean; requireTurn?: boolean; answersQuestionAt?: string } = {}): Promise<boolean> {
     if (!this.pools().length) return false;
     const conv = this.projects().conversations(projectId).find((c) => c.sessionId === sessionId);
     if (!conv) return false;
@@ -5090,8 +5192,8 @@ export class SessionManager {
     if (opts.humanOrigin === false) return true;
     this.clearSelfQueueStreak(sessionId);
     this.clearRelayChain(sessionId);
-    // A human steer while a question waits is the answer to it.
-    this.resolvePendingQuestion(projectId, sessionId, 'steer');
+    // A human steer closes what it answers, by the same rule as a message.
+    this.answerPendingQuestion(projectId, sessionId, text, opts.answersQuestionAt, 'steer');
     return true;
   }
 

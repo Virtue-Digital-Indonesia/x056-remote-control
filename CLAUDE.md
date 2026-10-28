@@ -985,15 +985,36 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   `POST /api/bot {name}` (1-40 chars, no control chars or `<>`) renames the
   Chat and its conversation (notice titles follow); the Bot's replies, its
   question card, header, sidebar and buttons show the name; the process
-  restarts once per rename. **Open questions survive agents (all
-  conversations)**: only a human-origin turn closes a pending question
-  (`question_answered {by:'turn'}`); a non-human turn gets a stripped "[Open
-  question to the owner ...]" line and closes it only with `<<<RESOLVED>>>`
-  (stripped from display); a new ASK merges into the batch. The panel and iOS
-  clear a card only on `question_answered`/`question_dismissed` or a human
-  `session_started`. Tests: `test/bot-owner-view.test.ts`; browser
-  `bot-indicator`, `bot-view-table`, `question-survives-agent`,
-  `bot-system-history`. **iOS is not in this release**: the Mac session's
+  restarts once per rename. **Open questions stay open until answered
+  (all conversations, 2026-10-28, owner: a card stays open until Efran
+  answers it or the asking chat resolves it)**. The owner's message (a turn
+  or a steer) closes only what it answers (`answerPendingQuestion`, pure
+  matcher `answeredQuestionIndexes` in `src/question.ts`): an `N. <question>
+  / Answer: x` block closes that question, a message that IS an option
+  closes the first open question listing it, and with nothing matched the
+  panel card's own reply (`answersQuestionAt` = the batch's `at`, threaded
+  through `TurnRunOptions`, the queue, the 409 fallback and `/api/steer`)
+  closes the whole batch. Any other owner message, and every agent, cron,
+  relay, digest, brief, recap or advisor turn, leaves it open. A partial
+  answer keeps the rest under the SAME `at` and emits `question` with
+  `remainder: true` (no push, no unread). Every turn that starts with a card
+  open, the owner's included, gets a stripped "[Open question to the owner
+  ...]" line; `<<<RESOLVED>>>` counts only on its own line (not inline, not
+  in backticks or a code fence) and closes only the questions named in that
+  turn's line (`run.openAtStart`; a woken reply uses `AfterTurn.openAtStart`,
+  minus what the turn re-asked), never a later one. RESOLVED plus an ASK:
+  resolve, then the ASK merges. A queued message draining after an ASK no
+  longer swallows it (the card is made before the drained turn starts), and
+  a woken reply's ASK the settle never reached becomes a card when the next
+  turn starts (`harvestWokenReply`). A parked owner message is not held by
+  a card older than its limit-resume record. The panel clears a card only on
+  `question_answered`/`question_dismissed` (a `question` re-renders it),
+  never on `session_started`; the iOS app must do the same (stop clearing on
+  `session_started`, rely on `question_answered`/`question_dismissed`/
+  `question`) and may send `answersQuestionAt` from its card. Tests:
+  `test/question-close-paths.test.ts`, `test/bot-owner-view.test.ts`; browser
+  `question-survives-agent`, `question-card-state`, `bot-indicator`,
+  `bot-view-table`, `bot-system-history`. **iOS is not in this release**: the Mac session's
   iOS commits (0413a12, 9c868d6: the app ports the panel's row rule itself)
   landed on main meanwhile and conflicted, and this container cannot compile
   Swift, so the merge kept main's iOS tree. The owner-view iOS changes (Bot tab

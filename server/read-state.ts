@@ -85,6 +85,8 @@ export class ReadState {
     if (this.isBot(pid)) return this.observeBot(kind, data, pid, sid, tier);
     switch (kind) {
       case 'question':
+        // What is left of a batch the owner just partly answered is not news.
+        if (data.remainder === true) return;
         return this.notice(pid, sid, 'question');
       case 'conversation_settled':
         if (data.notificationSuppressed !== true && data.ownerHidden !== true && tier !== 'none') this.notice(pid, sid, 'done');

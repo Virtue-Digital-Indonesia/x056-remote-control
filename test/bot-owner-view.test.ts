@@ -200,12 +200,13 @@ describe('message_owner', () => {
     expect(kinds(f, 'bot_message')).toHaveLength(0);
   });
 
-  it('answering the card (a human turn) closes it and leaves an unrelated FYI alone', async () => {
+  it('answering the card (a human turn from the card) closes it and leaves an unrelated FYI alone', async () => {
     const f = fixture(), s = f.manager.bot().update({ enabled: true }), api = controller(f);
     api.botMessage({ from: s.sessionId!, text: 'Heads up' });
     api.botMessage({ from: s.sessionId!, text: 'Ship it?', needsYou: true });
     expect(f.manager.botAttention()).toMatchObject({ needsMe: 1, fyi: true });
-    f.manager.continueSession(s.projectId!, s.sessionId!, 'yes');
+    // An option-less card answered with free text: only the card's own marker says it is the answer.
+    f.manager.continueSession(s.projectId!, s.sessionId!, 'yes', { answersQuestionAt: f.manager.listPendingQuestions()[0].at });
     await until(() => turnsDone(f, s.sessionId!) === 1);
     expect(kinds(f, 'question_answered')[0].data).toMatchObject({ by: 'turn' });
     expect(f.manager.botAttention()).toMatchObject({ needsMe: 0, fyi: true });
@@ -649,16 +650,16 @@ describe('open questions survive agent messages (all conversations)', () => {
     expect(still).toHaveLength(1);
     expect(still[0]).toMatchObject({ question: 'Proceed with the migration?', at });
     expect(kinds(f, 'question_answered')).toHaveLength(0);
-    expect(f.calls[1].prompt).toContain('[Open question to the owner, still unanswered: "Proceed with the migration?". If this message answers it or makes it moot, end your reply with <<<RESOLVED>>> on its own line. Otherwise leave it open.]');
+    expect(f.calls[1].prompt).toContain('[Open question to the owner, still unanswered: "Proceed with the migration?". Only if THIS message gives the owner\'s answer or makes the question moot, end your reply with <<<RESOLVED>>> on its own line. Never add it as a sign-off or while you still need the owner\'s answer.]');
     // the sender marker stays last, and a reading client sees none of it
     expect(readMessageSender(f.calls[1].prompt).sender?.kind).toBe('conversation');
     expect(stripTeamLine(readMessageSender(f.calls[1].prompt).text)).not.toContain('Open question');
   });
 
-  it('a human turn gets no line and closes it (question_answered by turn)', async () => {
+  it('a human turn that answers it (an option\'s text) gets no line and closes it (question_answered by turn)', async () => {
     const f = fixture([A, { status: 'completed', resultText: 'Done.' }]);
     await open(f);
-    f.manager.continueSession('p1', 'x', 'yes, go');
+    f.manager.continueSession('p1', 'x', 'yes');
     await until(() => turnsDone(f, 'x') === 2);
     expect(f.calls[1].prompt).not.toContain('Open question');
     expect(f.manager.listPendingQuestions()).toEqual([]);
@@ -689,7 +690,7 @@ describe('open questions survive agent messages (all conversations)', () => {
     expect(f.calls[2].prompt).toContain('"Proceed with the migration?", "Also rotate the key?"');
   });
 
-  it('RESOLVED plus a new ASK in the same reply replaces the old question', async () => {
+  it('RESOLVED plus a new ASK in the same reply: the old question is resolved, the new one stays', async () => {
     const f = fixture([A, { status: 'completed', resultText: ask('Use the new plan instead?') + '\n<<<RESOLVED>>>' }]);
     await open(f);
     await agentSend(f);

@@ -276,7 +276,9 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
       const q = typeof asked === 'string' && asked.trim() ? cutWords(asked, QUESTION_MAX) : 'The assistant asked you something.';
       // pushDeduped: the Bot's ask about an item the gateway already pushed. It
       // stays a pending question (needs-me, card) but is not pushed again.
-      return make('urgent', 'needs_you', withPrefix(ctx, q), `question:${sid}:${data.at || turnId}`, data.pushDeduped === true ? { screenSuppressed: true } : {});
+      // remainder: the owner answered part of an open batch and the rest stays
+      // open under the same `at`: nothing new to push or pop up.
+      return make('urgent', 'needs_you', withPrefix(ctx, q), `question:${sid}:${data.at || turnId}`, data.pushDeduped === true || data.remainder === true ? { screenSuppressed: true } : {});
     }
 
     case 'mcp_approval': {

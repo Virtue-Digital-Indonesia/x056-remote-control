@@ -1,6 +1,9 @@
 // An open question survives agent messages (every conversation, not only the Bot's): a turn started by another
 // conversation leaves the card up; a merged `question` batch re-renders the card with every question and keeps
-// what the owner already chose or typed; question_answered clears it; only a human-origin session_started does too.
+// what the owner already chose or typed; question_answered clears it; no session_started does, the owner's own
+// included (a message that is not an answer leaves it open). A partly answered batch is re-sent as a `question`
+// with the same `at`: the card shows what is left, in either order against the answer's HTTP response, and
+// stays dismissable. The card's own answer carries answersQuestionAt.
 // The <<<RESOLVED>>> marker is never shown. Events are driven through a fake EventSource.
 // Run against the isolated browser fixture:
 //   X056_TEST_BROWSER=chromium|webkit node test/browser/question-survives-agent.cjs http://127.0.0.1:<port>
@@ -84,11 +87,54 @@ assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
     served = null; await emit('question_answered', { by: 'resolved' });
     check('question_answered clears the card', await cards() === 0);
 
-    // 4. A human-origin turn (no sender) answers it, too.
+    // 4. The owner's own free-text turn (no sender) leaves it open: the server says when it closes.
     await emitQuestion({ ...first, at: new Date(Date.now() + 1000).toISOString() });
     check('a new question shows again', await cards() === 1);
-    await emit('session_started', { messageId: 'human-1', displayPrompt: 'My answer' });
-    check('a session_started with no sender (the owner) clears it', await cards() === 0);
+    await emit('session_started', { messageId: 'human-1', displayPrompt: 'Change the footer email first' });
+    await emit('session_done', { status: 'completed' });
+    check('an owner message that is not an answer leaves the card visible', await cards() === 1 && /Which file\?/.test(await card.innerText()));
+
+    // 5. A partly answered batch: the card's answer carries answersQuestionAt, and the remainder re-renders
+    //    the card in either order against the HTTP response, still dismissable (pendingQ kept).
+    const sends = [], dismissals = [];
+    let beforeResponse = null; // a `question` / `question_answered` the server emits before it answers the POST
+    await context.route('**/api/sessions/current/messages', async route => {
+      sends.push(JSON.parse(route.request().postData() || '{}'));
+      if (beforeResponse) { await page.evaluate(([k, d]) => window.__emit(k, d), beforeResponse); beforeResponse = null; }
+      await route.fulfill({ json: { sessionId: ids.sessionId } });
+    });
+    await context.route('**/api/questions/dismiss', async route => { dismissals.push(JSON.parse(route.request().postData() || '{}')); served = null; await route.fulfill({ json: { dismissed: true } }); });
+    const two = [q('Which file?', ['a.ts', 'b.ts']), q('Which env?', ['dev', 'prod'])];
+    const answerBoth = async () => {
+      await page.locator('#chat .qcard.pending fieldset').nth(0).locator('.qcustom').fill('b.ts');
+      await page.locator('#chat .qcard.pending fieldset').nth(1).locator('.qcustom').fill('prod');
+      await page.locator('#chat .qcard.pending .qbatch button[type=submit]').click();
+      await page.waitForTimeout(400);
+    };
+    const remainder = at => ({ ...ids, question: 'Which env?', options: ['dev', 'prod'], at, remainder: true });
+    // a) response first, then the remainder
+    const at3 = new Date(Date.now() + 2000).toISOString();
+    await emitQuestion({ ...first, at: at3, questions: two });
+    await answerBoth();
+    check('the card answer carries answersQuestionAt', sends.length === 1 && sends[0].answersQuestionAt === at3, sends);
+    served = remainder(at3); await emit('question', remainder(at3)); await page.waitForTimeout(300);
+    check('response first: the remainder shows as the pending card', await cards() === 1 && /Which env\?/.test(await card.innerText()) && !/Which file\?/.test(await card.innerText()));
+    await page.locator('#chat .qcard.pending .qdismiss').click(); await page.waitForTimeout(300);
+    check('response first: the remainder is still dismissable (same at)', dismissals.length === 1 && dismissals[0].at === at3 && await cards() === 0, dismissals);
+    // b) the remainder first (emitted while the POST is in flight), then the response
+    const at4 = new Date(Date.now() + 3000).toISOString();
+    await emitQuestion({ ...first, at: at4, questions: two });
+    served = remainder(at4); beforeResponse = ['question', remainder(at4)];
+    await answerBoth();
+    check('remainder first: the remainder shows as the pending card', await cards() === 1 && /Which env\?/.test(await card.innerText()) && !/Which file\?/.test(await card.innerText()));
+    await page.locator('#chat .qcard.pending .qdismiss').click(); await page.waitForTimeout(300);
+    check('remainder first: the remainder is still dismissable (the response did not drop it)', dismissals.length === 2 && dismissals[1].at === at4 && await cards() === 0, dismissals);
+    // c) fully answered: question_answered before the response clears it, nothing left pending
+    const at5 = new Date(Date.now() + 4000).toISOString();
+    await emitQuestion({ ...first, at: at5, questions: two });
+    served = null; beforeResponse = ['question_answered', { ...ids, at: at5, by: 'turn' }];
+    await answerBoth();
+    check('fully answered: question_answered clears the card', await cards() === 0);
     assert.deepEqual(errors, []);
     console.log(`PASS ${engine} question-survives-agent: ${checks.length} checks`);
   } finally { await browser.close(); }

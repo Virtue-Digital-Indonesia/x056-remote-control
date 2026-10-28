@@ -58,10 +58,50 @@ export function stripAsk(text: string): string {
   return stripResolved(text.replace(/<<<ASK[\s\S]*?>>>/g, '')).replace(/\n{3,}/g, '\n\n').trim();
 }
 
-/** The marker an automated turn ends its reply with to close the open question. */
+/** The marker a reply ends with to close the questions that were open when its turn began. */
 export const RESOLVED_MARKER = '<<<RESOLVED>>>';
+/** True only when a line of the text, trimmed, is exactly the marker: never
+ *  inline (models added it as a sign-off mid-sentence), never in backticks or
+ *  inside a fenced code block. `stripResolved` still removes it anywhere. */
 export function hasResolved(text: string): boolean {
-  return typeof text === 'string' && text.includes(RESOLVED_MARKER);
+  if (typeof text !== 'string' || !text.includes(RESOLVED_MARKER)) return false;
+  let fenced = false;
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (/^(```|~~~)/.test(t)) { fenced = !fenced; continue; }
+    if (!fenced && t === RESOLVED_MARKER) return true;
+  }
+  return false;
+}
+
+export interface QuestionItem { question: string; options: string[] }
+const normalise = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * Which questions of an open batch an owner's message answers, as indexes.
+ * (i) a block `N. <question>\nAnswer: <x>` (the panel's batch form, and the
+ *     iOS app) answers the question with that text (whitespace and case
+ *     normalised; a question may span lines, so blocks are never split on
+ *     blank lines);
+ * (ii) a message that IS one option (trimmed, case-insensitive) answers the
+ *     first not-yet-answered question that lists it.
+ * Anything else answers nothing: the card stays open.
+ */
+export function answeredQuestionIndexes(batch: QuestionItem[], message: string): number[] {
+  const text = typeof message === 'string' ? message : '';
+  const answered = new Set<number>();
+  batch.forEach((item, index) => {
+    const words = String(item.question ?? '').trim().split(/\s+/).filter(Boolean).map(escapeRe);
+    if (!words.length) return;
+    const block = new RegExp('(?:^|\\n)[ \\t]*\\d+\\.[ \\t]*' + words.join('\\s+') + '[ \\t]*\\r?\\n[ \\t]*Answer:', 'i');
+    if (block.test(text)) answered.add(index);
+  });
+  const whole = normalise(text);
+  if (whole) {
+    const index = batch.findIndex((item, i) => !answered.has(i) && (item.options ?? []).some((o) => normalise(o) === whole));
+    if (index >= 0) answered.add(index);
+  }
+  return [...answered].sort((a, b) => a - b);
 }
 /** The marker a reply carries (on its own line) to say an agent-started turn is for the owner. */
 export const FOR_OWNER = '<<<FOR_OWNER>>>';

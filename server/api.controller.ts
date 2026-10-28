@@ -124,6 +124,13 @@ interface SendBody {
   projectId?: string;
   sessionId?: string; // the conversation a queued follow-up is for
   interactive?: boolean;
+  /** The `at` of the question card this message answers (sent by the panel's card). */
+  answersQuestionAt?: string;
+}
+
+/** The card a message answers, when the body names one (a string, else nothing). */
+function answersQuestionAt(body: SendBody): { answersQuestionAt?: string } {
+  return typeof body?.answersQuestionAt === 'string' && body.answersQuestionAt ? { answersQuestionAt: body.answersQuestionAt } : {};
 }
 
 /** True if the body carries at least one attachment (new or legacy). */
@@ -324,7 +331,7 @@ export class ApiController {
     // it into the command's arguments and break the invocation.
     const isSlashCommand = (body.prompt ?? '').trimStart().startsWith('/');
     if (body.interactive !== false && !isSlashCommand) prompt = withAskInstructions(prompt);
-    return { prompt, opts: { fileRefs: body.fileRefs, requestId: body.requestId, model: body.model, effort: body.effort, speed: body.speed, account:body.account, useReserve:body.useReserve } };
+    return { prompt, opts: { fileRefs: body.fileRefs, requestId: body.requestId, model: body.model, effort: body.effort, speed: body.speed, account:body.account, useReserve:body.useReserve, ...answersQuestionAt(body) } };
   }
 
   @Post('sessions')
@@ -2115,7 +2122,7 @@ export class ApiController {
       if(body.sessionId&&!this.manager.listConversations(body.projectId).some(c=>c.sessionId===body.sessionId))throw new BadRequestException('Conversation not found');
       const attachmentPrompt = hasAttachments(body) ? this.composePrompt({ ...body, prompt: '', interactive: false }).prompt : undefined;
       const prompt = body.prompt ?? '';
-      const item = this.manager.enqueue(body.projectId, { text: prompt, attachmentPrompt, fileRefs: body.fileRefs, model: body.model, effort: body.effort, speed: body.speed, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId });
+      const item = this.manager.enqueue(body.projectId, { text: prompt, attachmentPrompt, fileRefs: body.fileRefs, model: body.model, effort: body.effort, speed: body.speed, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId, notBefore: body.notBefore, afterSessionId: body.afterSessionId, paused: body.paused, requestId: body.requestId, ...answersQuestionAt(body) });
       return { queued: true, id: item.id, sessionId:item.sessionId };
     } catch (err) {
       throw new BadRequestException((err as Error).message);
@@ -2141,14 +2148,14 @@ export class ApiController {
     // no Stop, no reply attributed, and the "done" state stayed up.
     const startTurn = () => ({ ...this.continueSessionInternal(body), started: true, steered: false, queued: false });
     const idle = () => !!body.projectId && !!body.sessionId && !this.manager.isSessionRunning(body.sessionId);
-    if(body.requestId)return this.deliveryOnceAsync(body,async()=>{if(idle())return startTurn();if(body.projectId&&body.sessionId&&body.prompt&&await this.manager.steerSession(body.projectId,body.sessionId,body.prompt))return {steered:true,queued:false,sessionId:body.sessionId};return {...this.enqueueInternal(body),steered:false};});
+    if(body.requestId)return this.deliveryOnceAsync(body,async()=>{if(idle())return startTurn();if(body.projectId&&body.sessionId&&body.prompt&&await this.manager.steerSession(body.projectId,body.sessionId,body.prompt,answersQuestionAt(body)))return {steered:true,queued:false,sessionId:body.sessionId};return {...this.enqueueInternal(body),steered:false};});
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.sessionId) throw new BadRequestException('sessionId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
     if (idle()) {
       try { return startTurn(); } catch (err) { if (!(err instanceof ConflictException)) throw err; /* a turn began meanwhile: steer into it */ }
     }
-    if (await this.manager.steerSession(body.projectId, body.sessionId, body.prompt)) {
+    if (await this.manager.steerSession(body.projectId, body.sessionId, body.prompt, answersQuestionAt(body))) {
       return { steered: true, queued: false };
     }
     try {
@@ -2158,7 +2165,7 @@ export class ApiController {
       this.manager.clearSelfQueueStreak(body.sessionId);
       this.manager.clearRelayChain(body.sessionId);
       const item = this.manager.enqueue(body.projectId, {
-        text: body.prompt, model: body.model, effort: body.effort, speed: body.speed, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId,
+        text: body.prompt, model: body.model, effort: body.effort, speed: body.speed, account:body.account, useReserve:body.useReserve, sessionId: body.sessionId, ...answersQuestionAt(body),
       });
       return { steered: false, queued: true, id: item.id };
     } catch (err) {
