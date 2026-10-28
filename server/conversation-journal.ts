@@ -46,6 +46,10 @@ export class ConversationJournal {
       const notice = (data.notice || {}) as { id?: string; tier?: string; category?: string };
       const needsYou = notice.tier === 'urgent' || notice.category === 'needs_you' || data.tier === 'urgent';
       row = { role: 'notice', messageId: 'bot-notice:' + String(notice.id || data.at || ts), text: `${needsYou ? 'Bot needs you' : 'Bot status'}: ${String(data.title || 'Bot')}\n${String(data.body || '')}`, ts, needsYou };
+    } else if (kind === 'session_reset' && typeof data.text === 'string' && data.newSessionId) {
+      // A Claude conversation whose transcript was gone went on in a fresh
+      // session: one line in the chat, live and on reload.
+      row = { role: 'notice', messageId: 'session-reset:' + String(data.newSessionId), text: data.text, ts };
     } else if (kind === 'session_done' && data.status === 'stopped') {
       row = { role: 'notice', messageId: data.requestId ? 'stopped:' + data.requestId : undefined, text: String(data.reason || 'Turn stopped.'), ts };
     } else return;

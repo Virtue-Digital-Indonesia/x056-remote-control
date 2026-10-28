@@ -6,6 +6,24 @@ export interface TurnExit {
   code: number | null;
   signal: NodeJS.Signals | null;
   spawnError?: string;
+  /** The last line the CLI wrote to stderr (forwarded to the gateway's own
+   *  stderr as before), for a failure the stream did not explain. */
+  stderr?: string;
+}
+
+/** Keeps the tail of a child's stderr while forwarding every byte to ours. */
+export class StderrTail {
+  private text = '';
+  push(d: Buffer | string): void {
+    try { process.stderr.write(d); } catch { /* never break the turn */ }
+    this.text = (this.text + d.toString()).slice(-4096);
+  }
+  reset(): void { this.text = ''; }
+  /** The last non-empty line, cut to 500 chars. */
+  lastLine(): string | undefined {
+    const lines = this.text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    return lines.length ? lines[lines.length - 1].slice(0, 500) : undefined;
+  }
 }
 
 export interface TurnHandle {
@@ -91,7 +109,12 @@ export function spawnJsonlTurn(
   // live: a "stopped" turn still executing minutes later with PPID 1). Claude
   // is a single process either way, so group-kill only widens the blast to its
   // own tool subprocesses — exactly what "stop this turn" should kill anyway.
-  const child = spawn(bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'inherit'], detached: true });
+  // stderr is piped (and forwarded) rather than inherited so its last line can
+  // explain a failure: "No conversation found with session ID: ..." went only
+  // to the container log, and the turn failed as "exit code 1".
+  const child = spawn(bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const stderr = new StderrTail();
+  child.stderr?.on('data', (d: Buffer) => stderr.push(d));
 
   const rl = createInterface({ input: child.stdout });
   rl.on('line', (line) => {
@@ -105,7 +128,7 @@ export function spawnJsonlTurn(
 
   const done = new Promise<TurnExit>((resolve) => {
     child.on('error', (err) => resolve({ code: null, signal: null, spawnError: err.message }));
-    child.on('close', (code, signal) => resolve({ code, signal }));
+    child.on('close', (code, signal) => { const line = stderr.lastLine(); resolve({ code, signal, ...(line ? { stderr: line } : {}) }); });
   });
 
   const killGroup = (): void => {

@@ -4279,6 +4279,13 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       if (!Array.prototype.some.call(bhost.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === bid; }))
         { var bUrgent = bn.tier === 'urgent' || bn.category === 'needs_you' || data.tier === 'urgent'; appendNode(pid, sid, nodeNotice(((window.rcChat && window.rcChat.botName ? window.rcChat.botName() : 'Bot') + (bUrgent ? ' needs you: ' : ' status: ')) + (data.title || 'Bot') + '\n' + (data.body || ''), bid, bUrgent)); }
     }
+    // A Claude conversation whose transcript was gone went on in a fresh
+    // session. The same notice row the journal gives it on reload.
+    if (kind === 'session_reset' && pid && sid && typeof data.text === 'string') {
+      var rid = 'session-reset:' + data.newSessionId, rhost = mineConvo ? chatEl : viewOf(pid, sid).frag;
+      if (!Array.prototype.some.call(rhost.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === rid; })) appendNode(pid, sid, nodeNotice(data.text, rid, false));
+      return;
+    }
     if (kind === 'bot_message' && pid && sid && typeof data.text === 'string' && data.text.trim()) { appendOwnerLive(pid, sid, { id: data.id, text: data.text.trim(), needsYou: !!data.needsYou, ts: data.at || data.ts, src: 'event' }); return; }
     if (kind === 'cron_failed' || kind === 'restart_interrupted' || kind === 'bot_notice' || kind === 'bot_message' || kind === 'bot_attention') return;
     if (kind === 'background_state') {
@@ -6417,7 +6424,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
     es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); loadReadState(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
     es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
-    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'question_answered', 'identity_held', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'steered', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state', 'bot_notice', 'bot_message', 'bot_attention', 'owner_view'].forEach(function (kind) {
+    ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'question_answered', 'identity_held', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'steered', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state', 'bot_notice', 'bot_message', 'bot_attention', 'owner_view', 'session_reset'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
         var data; try { data = JSON.parse(evt.data); } catch (e) { return; }

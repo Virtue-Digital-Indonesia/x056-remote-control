@@ -444,6 +444,22 @@ function parseTranscript(input: RawLine[]): { rows: HistoryEntry[]; offsets: num
 }
 
 /**
+ * The CLI's own explanation of an error `result`. Usually in `result`; an
+ * `error_during_execution` result (e.g. `--resume` of a session with no
+ * transcript) has NO `result` string and carries it in `errors[]` instead:
+ * `{"subtype":"error_during_execution","is_error":true,"errors":["No
+ * conversation found with session ID: ..."]}` (CLI 2.1.x, verified). Reading
+ * only `result` made those turns fail as "exit code 0" with no reason.
+ */
+export function claudeFailureText(e: RawEvent): string | undefined {
+  if (e.type !== 'result' || e.is_error !== true) return undefined;
+  if (typeof e.result === 'string' && e.result) return e.result;
+  const errors = Array.isArray(e.errors) ? (e.errors as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
+  if (errors.length) return errors.join('; ');
+  return typeof e.subtype === 'string' && e.subtype !== 'success' ? `Claude ended the turn with ${e.subtype}` : undefined;
+}
+
+/**
  * Anthropic `claude` CLI adapter — the original, reference behavior. Every method
  * here is the logic that used to live inline in turn.ts / detector.ts /
  * failover.ts / server/activity.ts, now behind the ProviderAdapter seam so a
@@ -467,8 +483,7 @@ export const claudeAdapter: ProviderAdapter = {
   toActivity,
   activeModel,
   assistantText,
-  // An error result carries the CLI's own explanation in `result`.
-  failureText: (e) => (e.type === 'result' && e.is_error === true && typeof e.result === 'string' && e.result ? e.result : undefined),
+  failureText: claudeFailureText,
 
   readIdentity,
   hasCredentials,

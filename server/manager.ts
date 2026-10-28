@@ -6,6 +6,7 @@ import { advisorTurnLine, claudeTeamAgents, codexTeamConfig, teamInstructions, t
 import { ClaudeAdvisorLog, buildTurns, forkSummary, mainRun, tailJsonl, teamRun } from './agent-tree.js';
 import { autoDismissible, checkBrief, checkRole, decideGate, isActive, delegateInstructions, DelegateStore, digest, GATE_OPTIONS, GATE_QUESTION, gateState, MAX_DELEGATES, reportKey, ROUND_LIMIT, shouldWake, type Delegate, type DelegateReport } from './delegates.js';
 import { findTranscript as findClaudeTranscript } from '../src/adapters/claude.js';
+import { buildRecap, resolveClaudeTranscript, sessionResetText, withRecoveredContext } from '../src/claude-transcript.js';
 import { findRollout } from '../src/adapters/codex.js';
 import { advisorFor, AUTO_MODEL, CLAUDE_DEFAULT_EFFORT, jevCandidates, teamCandidates } from './decision-maker.js';
 import { CodexAdvisor, TurnWatcher, type AdvisorConsult, type AdvisorTrigger } from './codex-advisor.js';
@@ -4352,6 +4353,40 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Before a Claude turn resumes: is its transcript where the CLI will look?
+   * Present -> nothing. Under another project dir -> symlinked into place.
+   * Gone (Claude Code's own cleanup removes old transcripts) -> a fresh CLI
+   * session with a NEW id, stored as the conversation's providerSessionId,
+   * whose first prompt carries a recap from the conversation journal. Without
+   * this every turn failed in a second with "No conversation found" (seen
+   * live on obscura "Mobile", 2026-10-28). Skipped while a process of the
+   * conversation is still working (it has the session loaded), and fail-open:
+   * anything it cannot read resumes as before.
+   */
+  private checkClaudeTranscript(pid: string, sessionId: string, cwd: string):
+    | { relinked?: { from: string; to: string[] }; fresh?: { previousSessionId: string; newSessionId: string; recap: string; recapMessages: number } }
+    | undefined {
+    try {
+      if (this.persistent?.heldIdentity(sessionId)) return undefined;
+      const previousSessionId = this.projects().providerSessionId(pid, sessionId) ?? sessionId;
+      const configDirs = this.registry().list().filter((a) => a.provider === 'claude').map((a) => a.configDir);
+      const v = resolveClaudeTranscript({ configDirs, cwd, sessionId: previousSessionId });
+      if (v.decision === 'relinked') return { relinked: { from: v.from, to: v.to } };
+      if (v.decision !== 'missing') return undefined;
+      // An idle process of the old id must not take this turn.
+      for (const pool of this.pools()) pool.retireIdleSession(sessionId);
+      const { rows } = new ConversationJournal(this.opts.stateDir).turnSource(pid, sessionId);
+      const recap = buildRecap(rows);
+      const newSessionId = randomUUID();
+      this.projects().setProviderSessionId(pid, sessionId, newSessionId);
+      return { fresh: { previousSessionId, newSessionId, recap: recap.text, recapMessages: recap.count } };
+    } catch (e) {
+      console.warn('[transcript] could not check the Claude transcript:', (e as Error).message);
+      return undefined;
+    }
+  }
+
   private launch(pid: string, sessionId: string, prompt: string, cwd: string, resume: boolean, runOpts?: TurnRunOptions): void {
     this.assertExecutionAllowed(pid, sessionId);
     // As the caller sent it, before references, files and memory are added: a park resends this.
@@ -4422,7 +4457,10 @@ export class SessionManager {
     // Resuming a provider-assigned session (Codex) needs the CLI's own id, not
     // our conversation key; look up what the first turn captured. (For Claude
     // this is just the sessionId, so it's a harmless no-op.)
-    const providerSessionId = resume ? reg.providerSessionId(pid, sessionId) : undefined;
+    // Claude: resume only a transcript the CLI can find (see claude-transcript.ts).
+    const recovery = resume && adapter.id === 'claude' ? this.checkClaudeTranscript(pid, sessionId, cwd) : undefined;
+    if (recovery?.fresh) resume = false;
+    const providerSessionId = recovery?.fresh ? recovery.fresh.newSessionId : resume ? reg.providerSessionId(pid, sessionId) : undefined;
     const routingState=new RoutingState(this.opts.stateDir);
     const route={...routingState.context(pid,sessionId),model,...(runOpts?.account?{preferredAccount:runOpts.account}:{}),...(runOpts?.useReserve!==undefined?{useReserve:runOpts.useReserve}:{})};
     for(const name of [route.lockedAccount,route.preferredAccount])if(name&&this.registry().get(name).provider!==adapter.id)throw new Error('Account belongs to another provider');
@@ -4445,6 +4483,8 @@ export class SessionManager {
     }
     const sender = runOpts?.sender && !prompt.trimStart().startsWith('/') ? { ...runOpts.sender, messageId: runOpts.sender.messageId || randomUUID() } : undefined;
     turnPrompt = withMessageSender(turnPrompt, sender);
+    // Only the CLI sees the recap: `prompt` (display, journal, memory) stays as sent.
+    if (recovery?.fresh) turnPrompt = withRecoveredContext(turnPrompt, recovery.fresh.recap);
     const sourcePrompt=prompt;
     // Who started this turn, for the notice policy. Read from the request,
     // not `sender`, which is dropped for slash commands.
@@ -4505,6 +4545,12 @@ export class SessionManager {
         }
       };
       this.writeMarker(pid, sessionId, cwd, prompt);
+      if (recovery?.relinked) log.append({ type: 'transcript_relinked', sessionId, from: recovery.relinked.from, to: recovery.relinked.to });
+      if (recovery?.fresh) {
+        const f = recovery.fresh;
+        log.append({ type: 'session_reset', sessionId, reason: 'transcript_missing', previousSessionId: f.previousSessionId, newSessionId: f.newSessionId, recapMessages: f.recapMessages });
+        emit('session_reset', { reason: 'transcript_missing', previousSessionId: f.previousSessionId, newSessionId: f.newSessionId, recapMessages: f.recapMessages, text: sessionResetText(f.recapMessages) });
+      }
       emit('session_started', { sessionId, cwd, resume, prompt, model, effort, ...(speed ? { speed } : {}), sender, messageId: sender?.messageId || memoryRequestId, displayPrompt: cleanMemorySource(prompt), attachments: messageImages(prompt, owner => '/api/' + (this.fileOwner(owner).kind === 'chat' ? 'chats/' : 'project-spaces/') + encodeURIComponent(owner)) });
       emit('turn_state', { active: true });
       if(memoryRecord)emit('memory_context',memoryRecord);

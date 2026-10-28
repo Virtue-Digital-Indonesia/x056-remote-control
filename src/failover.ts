@@ -126,9 +126,12 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   // we start with what the caller knows — the real id when resuming an existing
   // session, else undefined — and capture the assigned id off the first turn's
   // stream so a failover resumes THE SAME session on the next account.
+  // Claude takes the id it is given. That is the conversation id, except
+  // after a fresh start for a conversation whose transcript was gone
+  // (SessionManager.launch): then the caller passes the new id here.
   let cliSessionId: string | undefined = adapter.captureSessionId
     ? (opts.resume ? (opts.providerSessionId ?? opts.sessionId) : undefined)
-    : opts.sessionId;
+    : (opts.providerSessionId ?? opts.sessionId);
   let aborted = false, wakeWait: (() => void) | undefined;
   let retryAccount: string | undefined;
   let requestedAccount: string | undefined;
@@ -316,7 +319,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // Codex thread id) so it continues the SAME session; on a new turn the
         // provider either takes this id (Claude) or ignores it and assigns its
         // own (Codex).
-        sessionId: mode === 'resume' ? (cliSessionId ?? sessionId) : sessionId,
+        sessionId: mode === 'resume' || !adapter.captureSessionId ? (cliSessionId ?? sessionId) : sessionId,
         conversationId: sessionId,
         mode,
         prompt,
@@ -392,6 +395,9 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           continue;
         }
         const exitReason = exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`;
+        // The stream's own message first; else the CLI's last stderr line
+        // ("No conversation found with session ID: ..."), never a bare exit code.
+        if (!state.lastError && exit.stderr) state.lastError = exit.stderr;
         const reason = state.overloaded
           ? `the API was overloaded (5xx) — still failing after ${overloadRetries} retr${overloadRetries === 1 ? 'y' : 'ies'}`
           : exit.spawnError
@@ -408,6 +414,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           spawnError: exit.spawnError ?? null,
           overloaded: state.overloaded,
           error: state.lastError ?? null,
+          ...(exit.stderr ? { stderr: exit.stderr } : {}),
         });
         return { status: 'failed', finalAccount: account.name, failovers: failoverTimes.length, reason, providerSessionId: cliSessionId };
       }

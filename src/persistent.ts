@@ -2,6 +2,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { RawEvent } from './types.js';
 import type { TurnExit, TurnHandle, TurnOptions } from './turn.js';
+import { StderrTail } from './turn.js';
 import { ClaudeTransport, type Transport, type TransportState } from './persistent-transport.js';
 import { ProviderActivity } from './provider-activity.js';
 
@@ -107,6 +108,8 @@ interface Live {
    */
   early: RawEvent[];
   endedEarly: boolean;
+  /** The tail of the process's stderr, reset at each turn start. */
+  stderr: StderrTail;
   exited: boolean;
   /**
    * The main session is mid-reply: it has streamed since its last `result`.
@@ -471,15 +474,18 @@ export class PersistentTurns {
         ? this.opts.spawnFn(bin, args, o.cwd, env)
         // Own process group, so kill() takes out the CLI and everything it is
         // running — same reasoning as the one-shot path in turn.ts.
-        : spawn(bin, args, { cwd: o.cwd, env, stdio: ['pipe', 'pipe', 'inherit'], detached: true });
+        // stderr piped and forwarded: its last line explains a turn the
+        // stream did not (see StderrTail).
+        : spawn(bin, args, { cwd: o.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     } catch (err) {
       return { error: (err as Error).message };
     }
 
     // Looked up by the gateway's conversation id (steer, interrupt, "working"),
     // which for Codex is not what the CLI was handed after the first turn.
-    const entry: Live = { key, child, configDir: o.configDir, sessionId: o.conversationId ?? o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), activity: new ProviderActivity(() => this.now()), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false };
+    const entry: Live = { key, child, configDir: o.configDir, sessionId: o.conversationId ?? o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), activity: new ProviderActivity(() => this.now()), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false, stderr: new StderrTail() };
     child.stdout?.on('data', (d: Buffer) => this.onData(entry, d));
+    child.stderr?.on('data', (d: Buffer) => entry.stderr.push(d));
     child.on('error', (err) => this.settle(entry, { code: null, signal: null, spawnError: err.message }));
     child.on('close', (code, signal) => this.settle(entry, { code, signal }));
     // Codex needs a handshake before it can take a prompt; Claude is ready at
@@ -589,6 +595,10 @@ export class PersistentTurns {
 
   /** End the in-flight turn without touching the process. */
   private settleTurn(entry: Live, exit: TurnExit): void {
+    // What the CLI said on stderr during this turn, for a failure the stream
+    // did not explain (TurnExit.stderr).
+    const line = entry.finish ? entry.stderr.lastLine() : undefined;
+    if (line && !exit.stderr) exit = { ...exit, stderr: line };
     const finish = entry.finish;
     entry.finish = undefined;
     entry.sink = undefined;   // the turn's classifier stops here…
@@ -623,6 +633,8 @@ export class PersistentTurns {
     // Refreshed each turn: the newest caller is the one whose UI is listening.
     if (o.onIdleEvent) entry.idleSink = o.onIdleEvent;
     const done = new Promise<TurnExit>((resolve) => { entry.finish = resolve; });
+    // Only this turn's stderr can explain this turn.
+    if (!midReply) entry.stderr.reset();
     entry.opts = o;
     entry.activity.start();
 
