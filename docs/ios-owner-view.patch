@@ -108,9 +108,9 @@ index 9267791..a387e3f 100644
              if let sid {
                  running.insert(sid)
 -                questions[sid] = nil
-+                // Only a human turn answers an open question; agent, cron and
-+                // other turns leave it (`question_answered` closes it later).
-+                if d["sender"]?.decode(Sender.self)?.kind == nil { questions[sid] = nil }
++                // A turn starting never clears a card, the owner's own included:
++                // the gateway closes it (`question_answered` / `question_dismissed`)
++                // or re-sends what is left of a partly answered batch (`question`).
                  if let pid {
                      touch(pid, sid)
                      updateConversation(pid, sid) { $0.lastOutcome = nil }
