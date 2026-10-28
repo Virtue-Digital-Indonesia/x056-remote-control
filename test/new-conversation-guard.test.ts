@@ -198,6 +198,20 @@ describe('send_message to a NEW conversation (/api/conversations/send without se
   });
 });
 
+describe('a Claude conversation in a Codex Work', () => {
+  it('does not leave a Claude model behind as that Work\'s default for its next Codex conversation', async () => {
+    const f = fixture({ spaces: true });
+    const space = f.manager.createProjectSpace({ requestId: 'ncg-space-0002', name: 'Guarded' });
+    // Provider and account only: no model of its own to shadow the inherited one.
+    const created = f.manager.createSpaceWorkspace(space.id, { requestId: 'ncg-work-0002', name: 'Codex work', folder: 'codex-work-2', provider: 'codex', account: 'cx' });
+    f.manager.setMcpSendMode('auto');
+    await controller(f).conversationSend({ projectId: created.projectId, prompt: 'a Claude task', provider: 'claude', model: 'opus', effort: 'high', helpers: { team: false } });
+    await waitFor(() => f.calls.length === 1 && !f.manager.snapshot().running);
+    const next = f.manager.prepareProjectWork(created.projectId, { requestId: 'ncg-next-0001' });
+    expect(f.manager.listConversations(created.projectId).find((c) => c.sessionId === next.sessionId)?.provider).toBe('codex');
+  });
+});
+
 describe('create_chat (/api/chats)', () => {
   it('an MCP call must choose; the panel call (no marker) is unchanged; the team is applied', () => {
     const f = fixture(), chats = new ChatsController(f.manager);

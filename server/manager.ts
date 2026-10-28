@@ -4320,7 +4320,12 @@ export class SessionManager {
     } : undefined;
     reg.setConversationPrefs(pid, sessionId, prefs);
     // setPrefs snapshots legacy siblings before changing defaults for new chats.
-    if (model || effort) reg.setPrefs(pid, { model, effort });
+    // Only from a conversation on the project's own default provider: a Claude
+    // conversation an MCP caller chose in a Codex project would otherwise
+    // leave its Claude model as that project's default for the next one.
+    const projectRow = reg.get(pid);
+    const defaultProvider = projectRow?.defaults?.work?.provider || projectRow?.provider || 'claude';
+    if ((model || effort) && (projectRow?.kind === 'chat' || adapter.id === defaultProvider)) reg.setPrefs(pid, { model, effort });
     this.emitConversations(pid);
     // Resuming a provider-assigned session (Codex) needs the CLI's own id, not
     // our conversation key; look up what the first turn captured. (For Claude

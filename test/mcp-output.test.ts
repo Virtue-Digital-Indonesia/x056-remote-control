@@ -441,6 +441,16 @@ describe('all advertised output contracts', () => {
     expect((await send).data.data.delivery.status).toBe('denied');
   });
 
+  it('a refusal only the gateway can make (Codex catalog) reaches the AI over the real transport, with the choices', async () => {
+    // The bridge passes it (it leaves Codex membership to the gateway); this
+    // fixture has no Codex catalog cached, so the gateway's shape check refuses.
+    const r = (await api('/mcp', { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'send_message', arguments: { projectId: 'p', message: 'fixture', provider: 'codex', model: 'mystery-model', effort: 'high', helpers: { team: false } } } }) })).result;
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('invalid model "mystery-model" for codex');
+    expect(r.content[0].text).toContain('no catalog cached yet');
+    expect(manager.listMcpApprovals().some((a: any) => a.message === 'fixture' && a.provider === 'codex')).toBe(false);
+  });
+
   it('covers every advertised action', () => { expect([...covered].sort()).toEqual(TOOLS.map(t => t.name).sort()); });
 });
 

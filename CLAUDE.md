@@ -1531,7 +1531,10 @@ returns the same message:
   A new conversation in a Codex project asking for `opus` used to run on
   Codex with the model silently dropped. With an explicit provider other than
   the inherited one, `prepareProjectWork` drops the inherited model, effort
-  and account.
+  and account. `launch()` updates the project's saved model and effort only
+  when the conversation runs on the project's default provider. Before this,
+  a Claude conversation left `opus` as a Codex Work's default, and that Work's
+  next conversation failed.
 - **Not covered.** Sends to an existing conversation, a send to a Chat project
   with no `sessionId` (it continues the Chat's one conversation), `delegate`,
   `send_chat_message`, `message_self`, `steer`, and anything internal
