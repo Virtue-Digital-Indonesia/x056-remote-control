@@ -22,7 +22,7 @@ import type { RunSessionOptions } from '../src/failover.js';
 type Result = { status: 'completed' | 'failed'; reason?: string; resultText?: string };
 type Pending = { projectId: string; sessionId: string; question: string; options: string[]; questions?: { question: string; options: string[] }[]; at: string };
 
-function fixture(script: Result[] = [], opts: { gate?: (call: number) => Promise<void>; questions?: Record<string, Pending> } = {}) {
+function fixture(script: Result[] = [], opts: { gate?: (call: number) => Promise<void>; questions?: Record<string, Pending>; chatEnabled?: boolean } = {}) {
   const dir = mkdtempSync(join(realpathSync(tmpdir()), 'x056-qclose-'));
   const stateDir = join(dir, 'state'), work = join(dir, 'work');
   mkdirSync(stateDir, { recursive: true }); mkdirSync(work, { recursive: true });
@@ -38,7 +38,7 @@ function fixture(script: Result[] = [], opts: { gate?: (call: number) => Promise
     const r = script.shift() ?? { status: 'completed', resultText: 'ok' };
     return { ...r, sessionId: o.sessionId, finalAccount: 'a', failovers: 0 };
   }) as unknown as typeof import('../src/failover.js').runSession;
-  const manager = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn });
+  const manager = new SessionManager({ stateDir, workspaceRoot: dir, runSessionFn, ...(opts.chatEnabled ? { chatEnabled: true } : {}) });
   const events: { kind: string; data: Record<string, unknown> }[] = [];
   manager.subscribe((e) => events.push({ kind: e.kind, data: e.data }));
   return { dir, stateDir, manager, calls, events };
@@ -155,6 +155,19 @@ describe('the owner answers the card', () => {
     await ownerSays(f, `1. ${SLA[0]}\nAnswer: Use them`);
     expect(pending(f)).toEqual([]);
     expect(kinds(f, 'question_answered')).toHaveLength(1);
+  });
+
+  it('4c. the Bot\'s digest never takes the remainder (not even after a restart forgot the first push)', async () => {
+    const f = fixture([TWO], { chatEnabled: true });
+    const bot = f.manager.bot();
+    bot.update({ enabled: true });
+    await openCard(f);
+    expect(bot.pendingDigest().lines).toHaveLength(1); // the card itself is digested, as before
+    const digest = bot as unknown as { seen: Set<string>; buffer: string[] };
+    digest.seen.clear(); digest.buffer.length = 0; // what a restart leaves
+    await ownerSays(f, 'Publish now');
+    expect(kinds(f, 'question').at(-1)!.data).toMatchObject({ remainder: true });
+    expect(bot.pendingDigest().lines).toEqual([]);
   });
 
   it('4b. a question that spans lines (a Bot needs_you) is matched across them', () => {

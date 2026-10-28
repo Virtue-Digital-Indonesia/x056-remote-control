@@ -391,6 +391,9 @@ export class BotService {
    *  throws into the caller (the manager wraps it as well). */
   observe(kind: string, data: Record<string, unknown>, notice: Notice | undefined): void {
     if (!notice || !this.state.enabled || kind === 'bot_notice') return;
+    // What is left of a card the owner just partly answered is not news (its
+    // first push was digested already; after a restart `seen` forgets that).
+    if (kind === 'question' && data.remainder === true) return;
     if (notice.tier !== 'urgent' && notice.tier !== 'normal') return;
     if (this.aboutBot(kind, data, notice)) return;
     this.logEvent(notice);

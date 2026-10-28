@@ -997,7 +997,7 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   closes the whole batch. Any other owner message, and every agent, cron,
   relay, digest, brief, recap or advisor turn, leaves it open. A partial
   answer keeps the rest under the SAME `at` and emits `question` with
-  `remainder: true` (no push, no unread). Every turn that starts with a card
+  `remainder: true` (no push, no unread, not in the Bot's digest). Every turn that starts with a card
   open, the owner's included, gets a stripped "[Open question to the owner
   ...]" line; `<<<RESOLVED>>>` counts only on its own line (not inline, not
   in backticks or a code fence) and closes only the questions named in that
