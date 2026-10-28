@@ -29,6 +29,21 @@ struct ChatRow: Identifiable, Equatable {
     var inFlight = false
     var toolUseId: String?
     var card: ChatCard?
+    /// The Bot's chat: the server's "show" / "hide" for this row, and "brief"
+    /// on the last reply of a morning-brief turn.
+    var botView: String?
+    var botLabel: String?
+    /// The Bot spoke to the owner on purpose; `needsYou` says it wants an answer.
+    var ownerMessage = false
+    var needsYou = false
+    /// A turn another conversation, a delegate or a schedule started, which the
+    /// owner did not ask for: folded away until "Show hidden messages", unless
+    /// the turn was marked for the owner.
+    var ownerHidden = false
+    /// The messageId of the message that started this row's turn (an agent's).
+    var turnId: String?
+    /// On an agent turn's reply: who it replies to.
+    var replyTo: String?
 }
 
 /// The Bot chat keeps quiet by default. This is the panel's rule, row for
@@ -176,8 +191,40 @@ final class ConversationModel {
     var isBot: Bool { project?.isBot ?? false }
     /// The Bot's system rows, folded away until asked for (BotHistory).
     var showSystemHistory = false
-    /// How each of the Bot's rows shows (BotHistory); empty elsewhere.
-    var botStates: [UUID: BotHistory.State] { isBot ? BotHistory.states(rows) : [:] }
+    /// How each of the Bot's rows shows; empty elsewhere. The gateway's own
+    /// `botView` decides where a row has one (history); the port in
+    /// BotHistory covers the rows that arrived live. An agent turn the live
+    /// rule hid stays hidden.
+    var botStates: [UUID: BotHistory.State] {
+        guard isBot else { return [:] }
+        let local = BotHistory.states(rows)
+        var out: [UUID: BotHistory.State] = [:]
+        for r in rows {
+            if r.ownerHidden {
+                out[r.id] = .hide
+            } else if let v = r.botView {
+                if v == "hide" { out[r.id] = .hide } else if r.botLabel == "brief" { out[r.id] = .brief }
+            } else if let s = local[r.id] {
+                out[r.id] = s
+            }
+        }
+        return out
+    }
+    /// The rows folded away until "Show hidden messages": the Bot's
+    /// `botStates`, in any other conversation the agent turns the owner did
+    /// not ask for.
+    var hiddenIDs: Set<UUID> {
+        if isBot { return Set(botStates.filter { $0.value == .hide }.keys) }
+        return Set(rows.filter(\.ownerHidden).map(\.id))
+    }
+    /// How many messages that is (tool calls are not counted).
+    var hiddenCount: Int {
+        let ids = hiddenIDs
+        return ids.isEmpty ? 0 : rows.filter { ids.contains($0.id) && $0.role != .action }.count
+    }
+    /// The turn the live stream is in: its trigger's messageId, whether the
+    /// owner sees it, and who started it. Nil outside an agent turn.
+    @ObservationIgnored private var liveTurn: (id: String?, sender: String?)?
     var queued: [QueueItem] { sessionId.map { app.queued(projectId, $0) } ?? [] }
     var model: String { sessionId == nil ? draftModel : (conversation?.model ?? "") }
     var effort: String { sessionId == nil ? draftEffort : (conversation?.effort ?? "") }
@@ -196,8 +243,8 @@ final class ConversationModel {
     var items: [DisplayItem] {
         var out: [DisplayItem] = []
         var run: [ChatRow] = []
-        let states = isBot && !showSystemHistory ? BotHistory.states(rows) : [:]
-        for r in rows where states[r.id] != .hide {
+        let hidden = showSystemHistory ? [] : hiddenIDs
+        for r in rows where !hidden.contains(r.id) {
             if r.role == .action { run.append(r); continue }
             if !run.isEmpty { out.append(.steps(run)); run = [] }
             out.append(.row(r))
@@ -214,7 +261,8 @@ final class ConversationModel {
         defer { loading = false }
         do {
             let page = try await client.get("/api/conversations/history-page", query: ["projectId": projectId, "sessionId": sessionId, "limit": "80"], as: HistoryPage.self)
-            rows = page.rows.compactMap(Self.row)
+            rows = Self.rows(page.rows)
+            restoreLiveTurn()
             cursor = page.cursor
             done = page.done ?? true
             loadError = nil
@@ -231,8 +279,9 @@ final class ConversationModel {
         // Fresh ids for every row made the list drop each measured height
         // and guess again: the last message ended under the composer, and
         // scrolling to it sprang back.
-        let next = Self.keepingIDs(page.rows.compactMap(Self.row), from: rows.filter { !$0.pending && !$0.failed }) + unsent
+        let next = Self.keepingIDs(Self.rows(page.rows), from: rows.filter { !$0.pending && !$0.failed }) + unsent
         if next != rows { rows = next }
+        restoreLiveTurn()
         cursor = page.cursor
         done = page.done ?? true
     }
@@ -243,7 +292,7 @@ final class ConversationModel {
         defer { loadingOlder = false }
         do {
             let page = try await client.get("/api/conversations/history-page", query: ["projectId": projectId, "sessionId": sessionId, "limit": "60", "before": String(cursor)], as: HistoryPage.self)
-            rows = page.rows.compactMap(Self.row) + rows
+            rows = Self.rows(page.rows) + rows
             self.cursor = page.cursor
             done = page.done ?? true
         } catch {
@@ -267,7 +316,36 @@ final class ConversationModel {
         }
     }
 
+    /// A page of history as rows. The gateway marks each row's `ownerView`;
+    /// the trigger's messageId is carried down the turn, so a later
+    /// `owner_view` / `session_done` can show the whole turn.
+    static func rows(_ entries: [HistoryEntry]) -> [ChatRow] {
+        var out: [ChatRow] = []
+        var turn: String?
+        for h in entries {
+            guard var r = row(h) else { continue }
+            if h.role == "user", h.steered != true {
+                turn = h.ownerTurn == "agent" ? h.sender?.messageId : nil
+            }
+            if r.ownerHidden || r.replyTo != nil { r.turnId = turn }
+            out.append(r)
+        }
+        return out
+    }
+
     static func row(_ h: HistoryEntry) -> ChatRow? {
+        guard var r = baseRow(h) else { return nil }
+        r.botView = h.botView
+        r.botLabel = h.botLabel
+        r.ownerMessage = h.ownerMessage == true
+        r.needsYou = h.needsYou == true
+        // An error banner is always shown, whatever the turn.
+        r.ownerHidden = h.ownerView == "hide" && r.role != .error
+        if h.ownerTurn == "agent", r.role == .assistant { r.replyTo = h.ownerSender }
+        return r
+    }
+
+    private static func baseRow(_ h: HistoryEntry) -> ChatRow? {
         let text = h.text ?? ""
         let sender = h.sender.flatMap(senderLabel)
         switch h.role {
@@ -293,6 +371,39 @@ final class ConversationModel {
         case "delegate": return "Delegate reports"
         default: return nil
         }
+    }
+
+    /// Who started an agent's turn, for "reply to ...".
+    static func ownerSenderName(_ s: Sender) -> String {
+        s.conversationTitle ?? s.projectName ?? senderLabel(s)?.replacingOccurrences(of: "From ", with: "") ?? "another conversation"
+    }
+
+    /// The senders whose turns the owner did not ask for.
+    static let agentKinds: Set<String> = ["conversation", "mcp", "delegate", "automation"]
+
+    /// A row the live stream adds to the turn it is in: hidden when that turn is.
+    private func inTurn(_ row: ChatRow) -> ChatRow {
+        guard let t = liveTurn else { return row }
+        var r = row
+        r.ownerHidden = true
+        r.turnId = t.id
+        if r.role == .assistant { r.replyTo = t.sender }
+        return r
+    }
+
+    /// Opened mid-turn: when the running turn was started by an agent (the last
+    /// real user row is a hidden trigger), the rest of it stays hidden too.
+    private func restoreLiveTurn() {
+        guard isRunning, liveTurn == nil,
+              let t = rows.last(where: { $0.role == .user && !($0.ownerHidden && $0.turnId == nil) }),
+              t.ownerHidden, let id = t.turnId else { return }
+        liveTurn = (id, t.sender?.replacingOccurrences(of: "From ", with: ""))
+    }
+
+    /// The turn `id` is for the owner after all: show its rows.
+    private func showTurn(_ id: String) {
+        for i in rows.indices where rows[i].turnId == id && rows[i].ownerHidden { rows[i].ownerHidden = false }
+        if liveTurn?.id == id { liveTurn = nil }
     }
 
     /// A journal row with an `advisor` payload: a Jev pick, a delegate
@@ -337,12 +448,23 @@ final class ConversationModel {
             activeModel = d["model"]?.string
             let text = d["displayPrompt"]?.string ?? d["prompt"]?.string ?? ""
             let reqId = d["requestId"]?.string
-            if let i = rows.firstIndex(where: { $0.pending && ($0.requestId == reqId || $0.text == text) }) ?? rows.firstIndex(where: \.pending) {
+            let from = d["sender"]?.decode(Sender.self)
+            // An agent's message (not this conversation talking to itself) starts
+            // a turn the owner does not see unless it is marked for them.
+            var hidden = false
+            if let from, let kind = from.kind, Self.agentKinds.contains(kind), from.sessionId != sessionId {
+                liveTurn = (from.messageId, Self.ownerSenderName(from))
+                hidden = true
+            } else {
+                liveTurn = nil
+            }
+            if let i = rows.firstIndex(where: { $0.pending && ($0.requestId == reqId || $0.text == text) }) ?? (hidden ? nil : rows.firstIndex(where: \.pending)) {
                 rows[i].pending = false
             } else if !repeatsTail(.user, text) {
                 let attachments = d["attachments"]?.decode([AttachmentRef].self) ?? []
-                let from = d["sender"]?.decode(Sender.self)
-                rows.append(ChatRow(role: .user, text: text, attachments: attachments, sender: from.flatMap(Self.senderLabel), senderKind: from?.kind))
+                var row = ChatRow(role: .user, text: text, attachments: attachments, sender: from.flatMap(Self.senderLabel), senderKind: from?.kind)
+                if hidden { row = inTurn(row) }
+                rows.append(row)
             }
         case "bot_notice":
             // The journal keeps it as this same text, so a reload matches it.
@@ -352,8 +474,20 @@ final class ConversationModel {
             if !repeatsTail(.notice, text) { rows.append(ChatRow(role: .notice, text: text)) }
         case "assistant_text":
             if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
-                rows.append(ChatRow(role: .assistant, text: text))
+                rows.append(inTurn(ChatRow(role: .assistant, text: text)))
             }
+        case "bot_message":
+            // The Bot wrote to the owner (an FYI; a needs-you one also arrives
+            // as a question).
+            if let text = d["text"]?.string, !text.isEmpty, !repeatsTail(.assistant, text) {
+                var row = ChatRow(role: .assistant, text: text)
+                row.ownerMessage = true
+                row.needsYou = d["needsYou"]?.bool == true
+                rows.append(row)
+            }
+        case "owner_view":
+            // A woken reply marked an already finished turn for the owner.
+            if d["shown"]?.bool != false, let id = d["messageId"]?.string { showTurn(id) }
         case "active_model":
             activeModel = d["model"]?.string ?? activeModel
         case "activity":
@@ -363,17 +497,17 @@ final class ConversationModel {
                 rows[i].inFlight = a.status == "start"
                 if a.status == "error" { rows[i].failed = true }
             } else {
-                rows.append(ChatRow(role: .action, text: label, detail: a.detail, failed: a.status == "error", inFlight: a.status == "start", toolUseId: a.toolUseId))
+                rows.append(inTurn(ChatRow(role: .action, text: label, detail: a.detail, failed: a.status == "error", inFlight: a.status == "start", toolUseId: a.toolUseId)))
             }
             activity = a.status == "start" ? label : nil
         case "jev_decision":
             if let dec = d.decode(JevDecision.self) {
-                rows.append(ChatRow(role: .card, text: dec.noteLine, card: .decision(dec)))
+                rows.append(inTurn(ChatRow(role: .card, text: dec.noteLine, card: .decision(dec))))
             }
         case "advisor_call":
-            if d["phase"]?.string == "done", let row = Self.card(d, fallback: "") { rows.append(row) }
+            if d["phase"]?.string == "done", let row = Self.card(d, fallback: "") { rows.append(inTurn(row)) }
         case "advisor_consult":
-            if let row = Self.card(d, fallback: "") { rows.append(row) }
+            if let row = Self.card(d, fallback: "") { rows.append(inTurn(row)) }
         case "delegate_report":
             if let role = d["role"]?.string {
                 rows.append(ChatRow(role: .card, text: d["text"]?.string ?? "", card: .delegate(role: role, gate: d["gate"]?.string, text: d["text"]?.string ?? "")))
@@ -381,6 +515,7 @@ final class ConversationModel {
         case "session_done", "conversation_settled":
             activity = nil
             for i in rows.indices where rows[i].inFlight { rows[i].inFlight = false }
+            if d["forOwner"]?.bool == true, let id = d["triggerMessageId"]?.string { showTurn(id) }
             let status = d["status"]?.string ?? ""
             if status == "failed" || status == "parked", let reason = d["reason"]?.string, !repeatsTail(.error, reason) {
                 rows.append(ChatRow(role: .error, text: reason))

@@ -84,10 +84,20 @@ struct Project: Decodable, Sendable, Identifiable, Hashable {
     var backgroundSessionIds: [String]?
     /// The owner's Bot chat; absent on every other row and on older servers.
     var bot: Bool?
+    /// The Bot's name (owners can rename it); only on the Bot's row.
+    var botName: String?
+    /// What the Bot wants from the owner; only on the Bot's row.
+    var botAttention: BotAttention?
 
     var isChat: Bool { kind == "chat" }
     var isBot: Bool { bot == true }
     var providerName: String { provider ?? "claude" }
+}
+
+/// `needsMe` questions waiting, and whether there is something to read (`fyi`).
+struct BotAttention: Decodable, Sendable, Hashable {
+    let needsMe: Int?
+    let fyi: Bool?
 }
 
 struct Conversation: Codable, Sendable, Identifiable, Hashable {
@@ -148,6 +158,23 @@ struct HistoryEntry: Decodable, Sendable {
     let sub: Bool?
     let args: String?
     let advisor: JSONValue?
+    /// A steered user row: text put into a running turn, never a turn of its own.
+    let steered: Bool?
+    /// The Bot's chat only: "show" or "hide" (absent on older servers).
+    let botView: String?
+    /// The Bot's chat: "brief" on the last reply of a morning-brief turn.
+    let botLabel: String?
+    /// A message the Bot sent to the owner on purpose (`message_owner`).
+    let ownerMessage: Bool?
+    let needsYou: Bool?
+    /// Every other conversation: "show" or "hide" (absent on older servers).
+    let ownerView: String?
+    /// "agent" on the rows of a turn another conversation or a schedule started.
+    let ownerTurn: String?
+    /// Who started that turn, as a label.
+    let ownerSender: String?
+    /// On a trigger row: the turn was marked for the owner.
+    let forOwner: Bool?
 }
 
 struct AttachmentRef: Codable, Sendable, Hashable {
@@ -160,6 +187,8 @@ struct AttachmentRef: Codable, Sendable, Hashable {
 
 struct Sender: Codable, Sendable, Hashable {
     let kind: String?
+    let messageId: String?
+    let sessionId: String?
     let projectName: String?
     let conversationTitle: String?
 }

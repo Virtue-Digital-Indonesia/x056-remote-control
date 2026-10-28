@@ -51,8 +51,13 @@ final class FlowTests: XCTestCase {
         // Optimistic row first, then the fake CLI's reply over the event stream.
         XCTAssertTrue(app.staticTexts["Ship the campaign page."].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Fixture response received."].waitForExistence(timeout: 20))
-        // The question is cleared by the new turn.
-        XCTAssertFalse(app.staticTexts["Which landing page should we publish?"].exists)
+        // A turn starting never clears a card, and a message that answers
+        // nothing leaves it open: only an answer on the card (or the chat
+        // resolving it) closes it.
+        // The fixture's reply asks two questions of its own, which the gateway
+        // merges into the open card: it then reads "3 questions".
+        let card = app.staticTexts.matching(NSPredicate(format: "label == %@ OR label MATCHES %@", "Which landing page should we publish?", "[0-9]+ questions")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 5), "an unrelated message leaves the card open")
         snapshot(app, "6-reply")
 
         // Helpers sheet and the agent tree.
@@ -288,7 +293,11 @@ final class FlowTests: XCTestCase {
     /// transcript, and this iPhone's notification settings.
     func testAutopilotTranscriptAndNotifications() throws {
         let app = signInToFixture(["-X056PushToken", "f00dfeed"])
-        app.buttons["Projects"].firstMatch.tap()
+        // Right after sign-in a tab can take a tap before it can act on it.
+        let projectsTab = app.buttons["Projects"].firstMatch
+        XCTAssertTrue(projectsTab.waitForExistence(timeout: 10))
+        for _ in 0..<20 where !projectsTab.isHittable { usleep(250_000) }
+        projectsTab.tap()
         XCTAssertTrue(app.staticTexts["Website refresh"].waitForExistence(timeout: 10))
         snapshot(app, "20-projects")
         app.buttons["Settings"].firstMatch.tap()

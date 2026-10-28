@@ -48,7 +48,7 @@ struct ConversationView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu("More", systemImage: "ellipsis") {
-                            if model.isBot { SystemHistoryToggle(model: model) }
+                            if model.isBot || model.showSystemHistory || model.hiddenCount > 0 { SystemHistoryToggle(model: model) }
                             Button(app.autopilot[sid] == nil ? "Autopilot…" : "Autopilot", systemImage: "repeat") { showAutopilot = true }
                             Button("Transcript", systemImage: "terminal") { showTranscript = true }
                             if LiveTurns.shared.isFollowing(sid) {
@@ -288,8 +288,8 @@ struct ChatRows: View, Equatable {
             }
             ForEach(items) { item in
                 switch item {
-                case .row(let r): MessageRow(row: r).equatable()
-                case .steps(let rs): StepsRow(rows: rs)
+                case .row(let r): MessageRow(row: r).equatable().opacity(r.ownerHidden ? 0.55 : 1)
+                case .steps(let rs): StepsRow(rows: rs).opacity(rs.allSatisfy(\.ownerHidden) ? 0.55 : 1)
                 }
             }
             if let working {
@@ -350,8 +350,15 @@ struct MessageRow: View, Equatable {
                 }
             }
         case .assistant:
-            MarkdownText(text: row.text)
-                .contextMenu { CopyButton(text: row.text) }
+            VStack(alignment: .leading, spacing: 4) {
+                if row.ownerHidden, let to = row.replyTo {
+                    Label("reply to \(to)", systemImage: "arrow.turn.up.left")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                MarkdownText(text: row.text)
+            }
+            .contextMenu { CopyButton(text: row.text) }
         case .error:
             VStack(alignment: .leading, spacing: 10) {
                 Label(row.text, systemImage: "exclamationmark.triangle.fill")

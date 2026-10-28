@@ -1041,15 +1041,14 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   `question`) and may send `answersQuestionAt` from its card. Tests:
   `test/question-close-paths.test.ts`, `test/bot-owner-view.test.ts`; browser
   `question-survives-agent`, `question-card-state`, `bot-indicator`,
-  `bot-view-table`, `bot-system-history`. **iOS is not in this release**: the Mac session's
-  iOS commits (0413a12, 9c868d6: the app ports the panel's row rule itself)
-  landed on main meanwhile and conflicted, and this container cannot compile
-  Swift, so the merge kept main's iOS tree. The owner-view iOS changes (Bot tab
-  badge from `botAttention`, filter on the server's `botView` instead of a
-  client port of the rule, owner bubbles, the name, questions kept across agent
-  turns, Bot out of `needsYouCount`) are in `docs/ios-owner-view.patch` for the
-  Mac session to apply and build. The server fields are optional, so the
-  current app keeps working.
+  `bot-view-table`, `bot-system-history`. **iOS**: the owner-view changes
+  shipped as `docs/ios-owner-view.patch`, applied and built on the Mac on
+  2026-10-28. They cover the Bot tab badge from `botAttention`, the Bot's name,
+  owner bubbles, rows filtered on the server's `botView` (with the client port
+  `BotHistory` kept as the fallback for live rows), and cards that only
+  `question_answered` / `question_dismissed` close (never `session_started`). A
+  `remainder: true` question raises no unread. The server fields are optional,
+  so an older app keeps working.
   **Push de-dupe**: `message_owner` / `POST /api/bot/message` take an
   optional `source {projectId, sessionId}`; when the Bot's digest saw an
   urgent notice for that conversation within 24 h (`rememberPushed` /
@@ -1107,9 +1106,10 @@ Contract: `docs/owner-view-all-contract.md`; shared table
   `owner_view` set `data-for-owner` on the trigger row. `loadHistory`
   dedupe ignores the `ov-` classes and skips the buttons. Browser tests:
   `owner-view-table`, `owner-hidden-live`; review shots `owner-view-shots`.
-- **iOS**: `docs/ios-owner-view.patch` is ONE patch rebased on main's
-  `ios/` (Bot owner view + this rule), uncompiled; the Mac session
-  applies and builds it.
+- **iOS**: applied from `docs/ios-owner-view.patch` (2026-10-28). History rows
+  with `ownerView: "hide"` fold away. Live, a `session_started` from an agent
+  sender opens a hidden turn, and `session_done {forOwner}` or `owner_view`
+  shows it. More > "Show N hidden messages" shows hidden rows, dimmed.
 
 ## Delegates: an orchestrator's hidden workers (`server/delegates.ts`)
 

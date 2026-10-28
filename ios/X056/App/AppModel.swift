@@ -342,6 +342,17 @@ final class AppModel {
         return Set(counted.keys).union(questions.values.map { Self.key($0.projectId, $0.sessionId) }).count + approvals.count
     }
 
+    /// The Bot's name; "Bot" until the gateway says otherwise.
+    var botName: String {
+        let n = projects.first(where: { $0.isBot && $0.archivedAt == nil })?.botName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (n?.isEmpty == false ? n : nil) ?? "Bot"
+    }
+
+    /// What the Bot wants from the owner (nil on older gateways).
+    var botAttention: BotAttention? {
+        projects.first(where: { $0.isBot && $0.archivedAt == nil })?.botAttention
+    }
+
     // MARK: Home state
 
     nonisolated static func key(_ projectId: String, _ sessionId: String) -> String { projectId + "::" + sessionId }
@@ -966,7 +977,9 @@ final class AppModel {
         case "session_started":
             if let sid {
                 running.insert(sid)
-                questions[sid] = nil
+                // A turn starting never clears a card, the owner's own included:
+                // the gateway closes it (`question_answered` / `question_dismissed`)
+                // or re-sends what is left of a partly answered batch (`question`).
                 if let pid {
                     touch(pid, sid)
                     updateConversation(pid, sid) { $0.lastOutcome = nil }
@@ -1006,9 +1019,11 @@ final class AppModel {
         case "question":
             if let q = d.decode(PendingQuestion.self) {
                 questions[q.sessionId] = q
-                raiseUnread(q.projectId, q.sessionId, .question, at: e.ts)
+                // What is left of a batch the owner just partly answered is
+                // not news: it must not mark the conversation unread again.
+                if d["remainder"]?.bool != true { raiseUnread(q.projectId, q.sessionId, .question, at: e.ts) }
             }
-        case "question_dismissed":
+        case "question_dismissed", "question_answered":
             if let sid { questions[sid] = nil }
             if let pid, let sid { markRead(pid, sid) }
         case "queue":
@@ -1024,6 +1039,15 @@ final class AppModel {
             scheduleProjectsRefresh()
         case "accounts":
             accountsTick += 1
+        case "bot_attention":
+            if let pid, let a = d["attention"]?.decode(BotAttention.self),
+               let i = projects.firstIndex(where: { $0.id == pid }) {
+                projects[i].botAttention = a
+            } else {
+                scheduleProjectsRefresh()
+            }
+        case "bot_message":
+            scheduleProjectsRefresh()
         case "read_state":
             if let pid, let sid, let item = d.decode(ReadItem.self) { applyReadState(pid, sid, item) }
         case "autopilot":
