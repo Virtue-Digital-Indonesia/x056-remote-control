@@ -218,6 +218,12 @@ export class PersistentTurns {
 
   workingAccounts(): {sessionId:string;configDir:string}[] {return [...this.live.values()].filter(e=>this.working(e)&&e.opts).map(e=>({sessionId:e.sessionId,configDir:e.opts!.configDir}));}
 
+  /** Does any process of this conversation still live (working, idle or in its grace)? */
+  hasLive(conversationId: string): boolean {
+    for (const e of this.live.values()) if (e.sessionId === conversationId && !e.exited) return true;
+    return false;
+  }
+
   /** Reload provider configuration on the next turn without interrupting work. */
   retireIdleSession(sessionId: string): boolean {
     let pending = false;
@@ -486,6 +492,10 @@ export class PersistentTurns {
     const entry: Live = { key, child, configDir: o.configDir, sessionId: o.conversationId ?? o.sessionId, busy: false, lastUsed: this.now(), lastOutput: this.now(), activity: new ProviderActivity(() => this.now()), st: { buf: '', ext: {} }, exited: false, pendingSteers: 0, lastTurnStart: 0, early: [], endedEarly: false, stderr: new StderrTail() };
     child.stdout?.on('data', (d: Buffer) => this.onData(entry, d));
     child.stderr?.on('data', (d: Buffer) => entry.stderr.push(d));
+    // A CLI that exits at once (e.g. "No conversation found") closes stdin
+    // before the prompt is written: the EPIPE arrives as an 'error' event,
+    // which unheard is an uncaught exception. `close` settles the turn.
+    if (typeof child.stdin?.on === 'function') child.stdin.on('error', () => {});
     child.on('error', (err) => this.settle(entry, { code: null, signal: null, spawnError: err.message }));
     child.on('close', (code, signal) => this.settle(entry, { code, signal }));
     // Codex needs a handshake before it can take a prompt; Claude is ready at

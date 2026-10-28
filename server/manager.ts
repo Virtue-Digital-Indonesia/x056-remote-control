@@ -4360,22 +4360,22 @@ export class SessionManager {
    * session with a NEW id, stored as the conversation's providerSessionId,
    * whose first prompt carries a recap from the conversation journal. Without
    * this every turn failed in a second with "No conversation found" (seen
-   * live on obscura "Mobile", 2026-10-28). Skipped while a process of the
-   * conversation is still working (it has the session loaded), and fail-open:
+   * live on obscura "Mobile", 2026-10-28). Skipped while any process of the
+   * conversation lives (it has the session loaded), and fail-open:
    * anything it cannot read resumes as before.
    */
   private checkClaudeTranscript(pid: string, sessionId: string, cwd: string):
     | { relinked?: { from: string; to: string[] }; fresh?: { previousSessionId: string; newSessionId: string; recap: string; recapMessages: number } }
     | undefined {
     try {
-      if (this.persistent?.heldIdentity(sessionId)) return undefined;
+      // A live process has the session loaded and a turn would run on it,
+      // whatever id is passed: never switch ids under it.
+      if (this.persistent?.hasLive(sessionId)) return undefined;
       const previousSessionId = this.projects().providerSessionId(pid, sessionId) ?? sessionId;
       const configDirs = this.registry().list().filter((a) => a.provider === 'claude').map((a) => a.configDir);
       const v = resolveClaudeTranscript({ configDirs, cwd, sessionId: previousSessionId });
       if (v.decision === 'relinked') return { relinked: { from: v.from, to: v.to } };
       if (v.decision !== 'missing') return undefined;
-      // An idle process of the old id must not take this turn.
-      for (const pool of this.pools()) pool.retireIdleSession(sessionId);
       const { rows } = new ConversationJournal(this.opts.stateDir).turnSource(pid, sessionId);
       const recap = buildRecap(rows);
       const newSessionId = randomUUID();

@@ -92,8 +92,9 @@ export function resolveClaudeTranscript(input: ResolveTranscriptInput): Transcri
     return { decision: 'unknown', reason: 'could not list projects: ' + (e as Error).message };
   }
   if (!found) return { decision: 'missing' };
-  const from = found;
-  const siblingDir = from.slice(0, -'.jsonl'.length);
+  // Link to the real file, not to a path through some account's projects/ link.
+  const from = realOr(found);
+  const siblingDir = realOr(found.slice(0, -'.jsonl'.length));
   const to: string[] = [];
   const plan = roots.map((root) => join(root, primary));
   if (input.dryRun) return { decision: 'relinked', from, to: plan.map((d) => join(d, file)), dryRun: true };

@@ -536,6 +536,32 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   and the panel says "no saved history for this thread -- started a fresh
   one". With the shared store above, "no rollout found" means no history
   anywhere, so nothing is lost. A second miss is final.
+- **A Claude conversation whose transcript is gone continues in a fresh
+  session (2026-10-29).** `claude -p --resume <id>` with no
+  `projects/<encoded cwd>/<id>.jsonl` answers "No conversation found with
+  session ID" in an error `result` that has `errors[]` and no `result`
+  string, so every turn failed in about a second as `exit code 0` with
+  `error: null`. The obscura "Mobile" chat stopped this way on 2026-10-28,
+  most likely because of Claude Code's own 30-day transcript cleanup (no
+  account sets `cleanupPeriodDays`): any conversation idle that long would
+  hit it. Before a resuming Claude turn, `launch()` calls
+  `checkClaudeTranscript` (`src/claude-transcript.ts`). If the file is at the
+  expected path, nothing changes. If it is under another project dir (one
+  level deep, never a recursive walk), it is symlinked into the expected
+  path, together with its `<id>/` subagents dir, and the event is
+  `transcript_relinked`. If it is nowhere, the turn starts a NEW session id
+  (`--session-id`). That id is stored as `providerSessionId`, which
+  `runSession` now honours for Claude. The CLI alone receives a bounded recap
+  from the conversation journal (last 20 messages, 600 chars each, 12k
+  total), and `stripMemoryContext` strips it from readback. The journal holds
+  only the prompts the gateway dispatched, with no assistant text, so older
+  replies are lost. The chat shows one `session_reset` notice, live and on
+  reload. The check fails open: it is skipped when there is no `projects/`
+  tree, the path is over-long, a read fails, or the conversation still has a
+  live process. Separately, a Claude failure now carries the CLI's text:
+  `failureText` reads `errors[]`, and both spawn paths pipe stderr (still
+  forwarded to the log) and use its last line when the stream gave no
+  reason. Delegates call `runSession` directly and do not get the check yet.
 - **codex-cli 0.153.4 rollouts carry the text as ITEMS, not message events.**
   There is no `event_msg/user_message` or `agent_message` any more; the user
   and assistant text are `item_completed` items of type `UserMessage` /
