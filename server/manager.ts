@@ -4459,6 +4459,8 @@ export class SessionManager {
     // this is just the sessionId, so it's a harmless no-op.)
     // Claude: resume only a transcript the CLI can find (see claude-transcript.ts).
     const recovery = resume && adapter.id === 'claude' ? this.checkClaudeTranscript(pid, sessionId, cwd) : undefined;
+    // The panel reads session_started.resume (false = a brand-new conversation): it keeps what was asked.
+    const resumeAsked = resume;
     if (recovery?.fresh) resume = false;
     const providerSessionId = recovery?.fresh ? recovery.fresh.newSessionId : resume ? reg.providerSessionId(pid, sessionId) : undefined;
     const routingState=new RoutingState(this.opts.stateDir);
@@ -4551,7 +4553,7 @@ export class SessionManager {
         log.append({ type: 'session_reset', sessionId, reason: 'transcript_missing', previousSessionId: f.previousSessionId, newSessionId: f.newSessionId, recapMessages: f.recapMessages });
         emit('session_reset', { reason: 'transcript_missing', previousSessionId: f.previousSessionId, newSessionId: f.newSessionId, recapMessages: f.recapMessages, text: sessionResetText(f.recapMessages) });
       }
-      emit('session_started', { sessionId, cwd, resume, prompt, model, effort, ...(speed ? { speed } : {}), sender, messageId: sender?.messageId || memoryRequestId, displayPrompt: cleanMemorySource(prompt), attachments: messageImages(prompt, owner => '/api/' + (this.fileOwner(owner).kind === 'chat' ? 'chats/' : 'project-spaces/') + encodeURIComponent(owner)) });
+      emit('session_started', { sessionId, cwd, resume: resumeAsked, ...(recovery?.fresh ? { freshSession: true } : {}), prompt, model, effort, ...(speed ? { speed } : {}), sender, messageId: sender?.messageId || memoryRequestId, displayPrompt: cleanMemorySource(prompt), attachments: messageImages(prompt, owner => '/api/' + (this.fileOwner(owner).kind === 'chat' ? 'chats/' : 'project-spaces/') + encodeURIComponent(owner)) });
       emit('turn_state', { active: true });
       if(memoryRecord)emit('memory_context',memoryRecord);
       if(memoryWarning)emit('memory_warning',{message:memoryWarning});

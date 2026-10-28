@@ -234,6 +234,8 @@ describe('a Claude conversation whose transcript is gone', () => {
       }
       const started = f.seen.filter((e) => e.kind === 'session_started')[1];
       expect(started.data.displayPrompt).toBe('second ask');
+      // The panel keeps the conversation's trail: still a continuation to it.
+      expect(started.data).toMatchObject({ resume: true, freshSession: true });
       // One notice row in the journal (what a reload shows), before the prompt.
       const rows = new ConversationJournal(f.stateDir).turnSource(projectId, sid).rows;
       const notice = rows.find((r) => r.messageId === 'session-reset:' + newId)!;

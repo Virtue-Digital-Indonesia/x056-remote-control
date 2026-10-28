@@ -560,8 +560,9 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   tree, the path is over-long, a read fails, or the conversation still has a
   live process. Separately, a Claude failure now carries the CLI's text:
   `failureText` reads `errors[]`, and both spawn paths pipe stderr (still
-  forwarded to the log) and use its last line when the stream gave no
-  reason. Delegates call `runSession` directly and do not get the check yet.
+  forwarded to the log) and, for Claude only, use its last line when the
+  stream gave no reason. `session_started` keeps the `resume` the caller asked
+  for and adds `freshSession: true`. Delegates call `runSession` directly and do not get the check yet.
 - **codex-cli 0.153.4 rollouts carry the text as ITEMS, not message events.**
   There is no `event_msg/user_message` or `agent_message` any more; the user
   and assistant text are `item_completed` items of type `UserMessage` /

@@ -397,7 +397,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         const exitReason = exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`;
         // The stream's own message first; else the CLI's last stderr line
         // ("No conversation found with session ID: ..."), never a bare exit code.
-        if (!state.lastError && exit.stderr) state.lastError = exit.stderr;
+        // Claude only: Codex's app-server logs to stderr, so its last line is not a reason.
+        if (!state.lastError && exit.stderr && adapter.id === 'claude') state.lastError = exit.stderr;
         const reason = state.overloaded
           ? `the API was overloaded (5xx) — still failing after ${overloadRetries} retr${overloadRetries === 1 ? 'y' : 'ies'}`
           : exit.spawnError
@@ -414,7 +415,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           spawnError: exit.spawnError ?? null,
           overloaded: state.overloaded,
           error: state.lastError ?? null,
-          ...(exit.stderr ? { stderr: exit.stderr } : {}),
+          ...(exit.stderr && adapter.id === 'claude' ? { stderr: exit.stderr } : {}),
         });
         return { status: 'failed', finalAccount: account.name, failovers: failoverTimes.length, reason, providerSessionId: cliSessionId };
       }
