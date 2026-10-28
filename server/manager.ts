@@ -3048,7 +3048,7 @@ export class SessionManager {
       if (backend === 'jev') { answer = await this.jev().choose(parentSid, q); by = 'jev'; }
       else if (backend === 'decisions') { answer = await this.openaiDecisions().fork(parentSid, { question: GATE_QUESTION, options: Object.keys(GATE_OPTIONS), context: JSON.stringify(q.state) }); by = 'openai'; }
     }
-    const g = decideGate(status, answer, JEV_POLICY.forkSharp);
+    const g = decideGate(status, answer, JEV_POLICY.forkSharp, text);
     const report: DelegateReport = { at: new Date().toISOString(), delegateId: id, role: d.role, turn, status, text, durationMs: Date.now() - run.started,
       gate: g.gate, ...(g.confidence != null ? { gateConfidence: g.confidence } : {}), gateBy: g.by === 'jev' ? by : g.by, woke: status === 'stopped' };
     store.addReport(parentSid, report);

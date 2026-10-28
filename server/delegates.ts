@@ -219,12 +219,19 @@ export function gateState(d: Pick<Delegate, 'role' | 'brief'>, status: DelegateR
   };
 }
 
-/** Rules first (code decides what code can), then the model's answer if sure. */
-export function decideGate(status: DelegateReport['status'], answer: { choice?: string; confidence?: number } | undefined, sharp: number): { gate: Gate; confidence?: number; by: DelegateReport['gateBy'] } {
+/**
+ * Rules first (code decides what code can), then the model's answer if sure.
+ * A report whose own first line is DONE is never gated needs_human: the
+ * picker's needs_human becomes needs_orchestrator (by 'rule'), so routine
+ * finished work never pushes to the owner; the orchestrator asks if a person
+ * is really needed (2026-10-28).
+ */
+export function decideGate(status: DelegateReport['status'], answer: { choice?: string; confidence?: number } | undefined, sharp: number, text = ''): { gate: Gate; confidence?: number; by: DelegateReport['gateBy'] } {
   if (status !== 'completed') return { gate: 'blocked', by: 'rule' };
   if (!answer?.choice || !(answer.choice in GATE_OPTIONS)) return { gate: 'needs_orchestrator', by: 'none' };
   // A close call goes to the orchestrator, never to "done".
   if ((answer.confidence ?? 0) < sharp) return { gate: 'needs_orchestrator', confidence: answer.confidence, by: 'jev' };
+  if (answer.choice === 'needs_human' && saysDone(text)) return { gate: 'needs_orchestrator', confidence: answer.confidence, by: 'rule' };
   return { gate: answer.choice as Gate, confidence: answer.confidence, by: 'jev' };
 }
 
