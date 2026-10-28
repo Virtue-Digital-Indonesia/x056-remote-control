@@ -199,7 +199,11 @@ export function buildModule(cfg: GatewayConfig): unknown {
   // it instead of failing.
   const cron = new CronScheduler({
     stateDir: cfg.stateDir,
-    deliver: (projectId, sessionId, prompt) => manager.deliverMcpMessage(projectId, sessionId, prompt, { sender: { kind: 'automation' } }),
+    // A job that starts a conversation carries its creator's explicit choice
+    // (provider, model, effort, team); a legacy job has none and keeps the
+    // project defaults.
+    deliver: (projectId, sessionId, prompt, choice) => manager.deliverMcpMessage(projectId, sessionId, prompt, { sender: { kind: 'automation' },
+      ...(choice ? { provider: choice.provider, model: choice.model, effort: choice.effort, helpers: { team: choice.team } } : {}) }),
     onFailure: (job, reason) => manager.reportCronFailure(job, reason),
   });
   manager.setProjectAutomationPauser((targets, reason, operationId) => {

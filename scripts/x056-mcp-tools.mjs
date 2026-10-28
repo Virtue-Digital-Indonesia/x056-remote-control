@@ -4,6 +4,7 @@ import { WORKSPACE_TOOLS, callWorkspaceTool } from './x056-mcp-workspace.mjs';
 import { CHAT_TOOLS, CHAT_OUTPUT, callChatTool } from './x056-mcp-chat.mjs';
 import { PROJECT_FILE_TOOLS, callProjectFileTool } from './x056-mcp-project-files.mjs';
 import { BOT_TOOLS, BOT_TOOL_NAMES, callBotTool } from './x056-mcp-bot.mjs';
+import { checkNewConversationChoice } from './x056-new-conversation.mjs';
 // Tool definitions + implementations for the x056 MCP bridge, shared by BOTH
 // transports: the stdio server the gateway spawns per turn (scripts/x056-mcp.mjs)
 // and the Streamable HTTP endpoint the gateway serves at /mcp for external
@@ -55,6 +56,7 @@ export const TOOLS = [
     name: 'send_message',
     description:
       'Send a message to a conversation (it resumes with full context and runs a turn), or omit sessionId to start a NEW conversation in the project. ' +
+      'A NEW conversation (no sessionId) REQUIRES all four of: provider (claude or codex), model (a concrete model for that provider, not empty or "auto"), effort (a concrete level that model supports, not empty or "auto") and helpers.team (true or false: whether the agent team is on). The call is refused without them, with the valid choices listed, so choose deliberately. A send to an existing conversation needs none of them. ' +
       'The operator chooses the delivery mode in the panel: in APPROVAL mode (the default) this call pauses until they approve or deny it — it is not sent until approved, and may be denied; in AUTOMATIC mode it is delivered immediately. You cannot choose the mode. '
       + 'If that conversation is mid-turn the message is QUEUED and delivered when its current turn ends, ahead of any autopilot continuation. ' +
       'Set waitSeconds > 0 to additionally wait for and return the reply once sent; otherwise returns as soon as it is sent. Use read_reply with the returned messageId for the exact reply later, including queued messages. Reply text may still be streaming; it does not prove task completion. The receiving AI may take minutes on hard tasks — prefer a short wait plus polling over a long block. '
@@ -65,13 +67,14 @@ export const TOOLS = [
         projectId: { type: 'string' },
         sessionId: { type: 'string', description: 'omit to start a new conversation' },
         message: { type: 'string' },
-        model: { type: 'string', description: 'Model id for the target conversation\'s provider. Omit to reuse that conversation\'s last selected model; new conversations use the project default. Empty string selects the provider default. The choice is retained through approval and queueing.' },
-        effort: { type: 'string', description: 'Reasoning effort for the target provider. Omit to reuse the target conversation\'s last selection; empty string selects the provider default.' },
+        provider: { type: 'string', enum: ['claude', 'codex'], description: 'REQUIRED for a new conversation (no sessionId): the provider it runs on for life. Ignored for an existing conversation.' },
+        model: { type: 'string', description: 'Model id for the conversation\'s provider. REQUIRED for a new conversation: a concrete model (Claude: fable, opus, sonnet, haiku; Codex: an id from the live catalog), never empty or "auto". For an existing conversation, omit to reuse its last selected model; empty string selects the provider default there. The choice is retained through approval and queueing.' },
+        effort: { type: 'string', description: 'Reasoning effort. REQUIRED for a new conversation: a concrete level (Claude: low, medium, high, xhigh, max, ultracode; Codex: what the model supports), never empty or "auto". For an existing conversation, omit to reuse its last selection; empty string selects the provider default there.' },
         speed: { type: 'string', enum: ['off', 'fast', 'ultrafast'], description: 'ChatGPT conversations only: Fast (priority service tier, 1.5-2x speed, uses more credits) or Ultrafast (highest plans, GPT-6.1-Sol and GPT-6-Astra only). Omit to keep the conversation\'s saved speed; off = standard. An account or model without the tier runs one step slower. Rejected for a Claude conversation. Retained through approval and queue.' },
         waitSeconds: { type: 'number', description: 'wait up to this long for the reply (default 0 = don\'t wait)' },
         steer: { type: 'boolean', description: 'STEER: if that conversation is mid-turn, put this message INTO its running turn (it reads it now, not after the turn) instead of queueing it. If it is not running a turn this is an ordinary send. Same approval mode and relay checkpoints. Default false. See the steer tool for when to use it.' },
         confirm_relay: { type: 'boolean', description: 'Confirm a relay checkpoint: set it only when a previous call answered "Not sent yet (relay checkpoint)" and you have decided the exchange is converging. Ignored when no checkpoint is due.' },
-        helpers: { type: 'object', properties: { advisor: { type: 'boolean' }, team: { type: 'boolean' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'], description: 'per-turn model/effort picker; none = the conversation\'s own model/effort (saved, so the Jev default no longer applies)' }, lean: { type: 'string', enum: ['low', 'medium', 'high'], description: 'which way the picker errs: low = cheaper models and less effort, high = stronger ones' } }, additionalProperties: false, description: 'Turn helpers on or off for the target before this message runs (only those named change): advisor, the agent team, the Jev/OpenAI Decisions picker. Applied only if the send is delivered.' },
+        helpers: { type: 'object', properties: { advisor: { type: 'boolean' }, team: { type: 'boolean', description: 'the agent team on or off; REQUIRED (true or false) for a new conversation' }, router: { type: 'string', enum: ['jev', 'decisions', 'none'], description: 'per-turn model/effort picker; none = the conversation\'s own model/effort (saved, so the Jev default no longer applies)' }, lean: { type: 'string', enum: ['low', 'medium', 'high'], description: 'which way the picker errs: low = cheaper models and less effort, high = stronger ones' } }, additionalProperties: false, description: 'Turn helpers on or off for the target before this message runs (only those named change): advisor, the agent team, the Jev/OpenAI Decisions picker. Applied only if the send is delivered.' },
       },
       required: ['projectId', 'message'],
       additionalProperties: false,
@@ -124,7 +127,8 @@ const CRON_TOOLS = [
       + 'The prompt runs as a real turn in that conversation, so write it as an instruction to whoever picks it up, with the context they will need; they will not remember why it was scheduled. '
       + 'Omit sessionId to target your own conversation. Schedule is 5-field cron (minute hour day-of-month month day-of-week). '
       + 'Times are interpreted in the operator\'s timezone unless you pass tz, NOT in UTC — "0 9 * * *" means 9am where they are. '
-      + 'For anything meant to happen only once, PASS once: true — a bare "0 3 * * *" is a job that fires every night forever, and the surprise lands a day after everyone stopped thinking about it.',
+      + 'For anything meant to happen only once, PASS once: true — a bare "0 3 * * *" is a job that fires every night forever, and the surprise lands a day after everyone stopped thinking about it. '
+      + 'A job with projectId and NO sessionId starts a NEW conversation on its first run (later runs go to that conversation), so it REQUIRES provider, model, effort and team, all explicit (no empty or "auto"); it is refused without them, with the valid choices listed. A job into an existing conversation, or your own, needs none of them.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -135,6 +139,10 @@ const CRON_TOOLS = [
         tz: { type: 'string', description: 'IANA timezone, e.g. Asia/Jakarta. Defaults to the operator\'s.' },
         label: { type: 'string', description: 'short note on what this job is for' },
         once: { type: 'boolean', description: 'run at the next matching time, then delete the job' },
+        provider: { type: 'string', enum: ['claude', 'codex'], description: 'REQUIRED when the job starts a new conversation (projectId, no sessionId)' },
+        model: { type: 'string', description: 'REQUIRED for a new-conversation job: a concrete model for that provider (not "auto")' },
+        effort: { type: 'string', description: 'REQUIRED for a new-conversation job: a concrete effort level (not "auto")' },
+        team: { type: 'boolean', description: 'REQUIRED for a new-conversation job: whether the agent team is on (true or false)' },
       },
       required: ['schedule', 'prompt'],
       additionalProperties: false,
@@ -577,6 +585,26 @@ const relayCheckpointOf = (err) => {
   return null;
 };
 export const RELAY_CHECKPOINT_PREFIX = 'Not sent yet (relay checkpoint):';
+
+/**
+ * The new-conversation guard, run here before the HTTP call so the AI gets the
+ * gateway's own message without a round trip (scripts/x056-new-conversation.mjs;
+ * the gateway enforces the same rule). The bridge checks presence and shape;
+ * whether a Codex model is in the live catalog is the gateway's call, since a
+ * legacy id maps forward there. A Chat's send continues its one conversation,
+ * so it is not a new one.
+ */
+export async function guardNewConversation(api, input, { projectId, teamField = 'team' } = {}) {
+  if (checkNewConversationChoice(input, { teamField }).ok) return;
+  if (projectId) {
+    const reg = await api('/api/projects').catch(() => null);
+    const list = Array.isArray(reg?.projects) ? reg.projects : Array.isArray(reg) ? reg : [];
+    if (list.find((p) => p?.id === projectId)?.kind === 'chat') return;
+  }
+  const models = await api('/api/models').catch(() => null);
+  const codexList = Array.isArray(models?.codex) ? models.codex.filter((m) => m && typeof m.slug === 'string').map((m) => ({ slug: m.slug, efforts: m.efforts })) : undefined;
+  throw new Error(checkNewConversationChoice(input, { teamField, codexList }).message);
+}
 const relayFields = (r) => ({ ...(typeof r.hopsUntilCheck === 'number' ? { hopsUntilCheck: r.hopsUntilCheck } : {}),
   ...(typeof (r.hopsUntilCheck ?? r.hopsLeft) === 'number' ? { hopsLeft: r.hopsUntilCheck ?? r.hopsLeft } : {}), ...(r.confirmedCheckpoint ? { confirmedCheckpoint: true } : {}) });
 const relayTail = (r) => {
@@ -603,6 +631,9 @@ export async function callToolResult(api, name, args) {
   }
   const validate = inputs.get(name);
   if (!validate) throw new Error(`unknown tool: ${name}`);
+  // Before the schema check, so a missing choice gets the guard's message
+  // (with the valid choices) rather than Ajv's "must have required property".
+  if (name === 'create_chat') await guardNewConversation(api, { provider: args?.provider, model: args?.model, effort: args?.effort, team: args?.team });
   if (!validate(args)) throw new Error('Invalid tool arguments: ' + inputValidator.errorsText(validate.errors));
   if (WORKSPACE_TOOLS.some(tool => tool.name === name)) return callWorkspaceTool(api, name, args);
   if (CHAT_TOOLS.some(tool => tool.name === name)) return callChatTool(api, name, args, SELF, callToolResult);
@@ -649,9 +680,12 @@ export async function callToolResult(api, name, args) {
       const projectId = args.projectId ?? SELF.projectId;
       if (!projectId) throw new Error('projectId is required (this client has no project of its own)');
       const sessionId = args.sessionId ?? (args.projectId ? undefined : SELF.sessionId || undefined);
+      const choice = { provider: args.provider, model: args.model, effort: args.effort, team: args.team };
+      if (!sessionId) await guardNewConversation(api, choice, { projectId });
       const job = await api('/api/cron', {
         method: 'POST',
-        body: JSON.stringify({ schedule: args.schedule, prompt: args.prompt, projectId, sessionId, tz: args.tz, label: args.label, once: args.once, createdBy: SELF.sessionId || 'mcp' }),
+        body: JSON.stringify({ schedule: args.schedule, prompt: args.prompt, projectId, sessionId, tz: args.tz, label: args.label, once: args.once, createdBy: SELF.sessionId || 'mcp',
+          ...(!sessionId ? Object.fromEntries(Object.entries(choice).filter(([, v]) => v !== undefined)) : {}) }),
       });
       return result(`scheduled job ${job.id}: "${job.schedule}" in ${job.tz}${job.once ? ' — ONCE, then deleted' : ' (repeats)'}`
         + `${job.sessionId ? ` → conversation ${job.sessionId}` : ' → a new conversation each run'}.`
@@ -832,6 +866,7 @@ export async function callToolResult(api, name, args) {
     return result(head + fmtHistory(rows), { messages: messages(rows), ...(state ? { helpers: state.helpers, ...(state.speed ? { speed: state.speed } : {}), ...(state.effectiveRouter !== undefined ? { effectiveRouter: state.effectiveRouter } : {}), delegates: team } : {}) });
   }
   if (name === 'send_message') {
+    if (!args.sessionId) await guardNewConversation(api, { provider: args.provider, model: args.model, effort: args.effort, team: args.helpers?.team }, { projectId: args.projectId, teamField: 'helpers.team' });
     let requested;
     try { requested = await api('/api/conversations/send', {
       method: 'POST',
@@ -839,7 +874,7 @@ export async function callToolResult(api, name, args) {
       // model chose: it is what lets the gateway count this exchange's hops.
       // A delegate has no identity of its own; its sends count against its
       // orchestrator's chain (X056_RELAY_FROM) rather than starting a new one.
-      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, model: args.model, effort: args.effort, ...(args.speed !== undefined ? { speed: args.speed } : {}), from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}), ...(args.steer ? { steer: true } : {}), ...(args.confirm_relay ? { confirmRelay: true } : {}) }),
+      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, ...(args.provider !== undefined && !args.sessionId ? { provider: args.provider } : {}), model: args.model, effort: args.effort, ...(args.speed !== undefined ? { speed: args.speed } : {}), from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}), ...(args.steer ? { steer: true } : {}), ...(args.confirm_relay ? { confirmRelay: true } : {}) }),
     }); } catch (err) {
       // A relay checkpoint is a question for the model, not a failure: plain
       // text it answers by stopping or by calling again with confirm_relay.

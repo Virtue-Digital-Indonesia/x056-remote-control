@@ -53,7 +53,8 @@ describe('Automations across providers', () => {
       const result = await callTool(api, 'schedule_task', { projectId, sessionId, schedule: '0 12 1 1 *', tz: 'Asia/Jakarta', prompt: 'Check the scheduled result', once: true });
       expect(result).toContain('ONCE'); expect(result).toContain(sessionId);
     }
-    await api('/api/cron', { method: 'POST', body: JSON.stringify({ projectId: 'p2', schedule: '0 12 1 1 *', prompt: 'New chat each run' }) });
+    // A new conversation each run names its own choice; the list shows it.
+    await api('/api/cron', { method: 'POST', body: JSON.stringify({ projectId: 'p2', schedule: '0 12 1 1 *', prompt: 'New chat each run', provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', team: false }) });
     const { jobs } = await api('/api/cron');
     expect(jobs.find((j: any) => j.sessionId === 'cx')).toMatchObject({ provider: 'codex', projectName: 'Mixed project', conversationTitle: 'Codex follow-up', source: 'gateway', once: true });
     expect(jobs.find((j: any) => j.sessionId === 'cl').provider).toBe('claude');

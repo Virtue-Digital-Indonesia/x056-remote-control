@@ -3,7 +3,7 @@ const tool = (name, description, properties, required) => ({ name, description, 
 const ref = { chatId: string, fileId: string, versionId: string };
 export const CHAT_TOOLS = [
   tool('list_chats', 'List Chats, including id, lastSessionId, provider and Project membership. Pass id as chatId to Chat tools, or as projectId with lastSessionId to queue and scheduling tools.', {}, []),
-  tool('create_chat', 'Create an empty Chat without starting a turn. Reuse requestId on retry; use send_chat_message to send through the operator approval flow.', { requestId: string, name: string, provider: { type: 'string', enum: ['claude','codex'] }, model: string, effort: string, account: string, spaceId: string }, ['requestId']),
+  tool('create_chat', 'Create an empty Chat without starting a turn. Reuse requestId on retry; use send_chat_message to send through the operator approval flow. REQUIRES provider, model, effort and team, all explicit (no empty or "auto"), so choose deliberately: the call is refused without them, with the valid choices listed.', { requestId: string, name: string, provider: { type: 'string', enum: ['claude','codex'], description: 'the provider this Chat runs on for life' }, model: { type: 'string', description: 'a concrete model for that provider (Claude: fable, opus, sonnet, haiku; Codex: an id from the live catalog)' }, effort: { type: 'string', description: 'a concrete effort level the model supports (Claude: low, medium, high, xhigh, max, ultracode)' }, team: { type: 'boolean', description: 'whether the agent team is on (true or false)' }, account: string, spaceId: string }, ['requestId','provider','model','effort','team']),
   tool('read_chat', 'Read a Chat history across providers. chatId is the id from list_chats; no separate sessionId is needed.', { chatId: string, limit: { type: 'integer', minimum: 1, maximum: 500 } }, ['chatId']),
   tool('send_chat_message', 'Send to a Chat through the SAME approval, queue and relay-checkpoint rules as send_message: the first 6 AI-to-AI hops are free; at hop 7 and every 6 hops after, the answer starts "Not sent yet (relay checkpoint):", a question, not a block; stop and report, or call again with confirm_relay: true. Omitted model/effort reuse the Chat selection. Does not bypass operator approval.', { chatId: string, message: string, model: string, effort: string, waitSeconds: { type: 'number' }, confirm_relay: { type: 'boolean', description: 'confirm a relay checkpoint after a "Not sent yet (relay checkpoint)" answer; ignored when none is due' } }, ['chatId','message']),
   tool('update_chat', 'Rename or archive/unarchive a Chat. Archiving refuses active or queued work.', { chatId: string, name: string, archived: { type: 'boolean' } }, ['chatId']),
@@ -19,7 +19,9 @@ export const CHAT_OUTPUT = { type: 'object', properties: { data: { type: 'object
 export async function callChatTool(api, name, args, self, conversationTool) {
   const response = data => ({ content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: { data } });
   if (name === 'list_chats') return response(await api('/api/chats'));
-  if (name === 'create_chat') return response(await api('/api/chats', { method: 'POST', body: JSON.stringify(args) }));
+  // `mcp: true` asks the gateway to enforce the new-conversation guard (the
+  // route is shared with the panel, which does not send it); `from` = caller.
+  if (name === 'create_chat') return response(await api('/api/chats', { method: 'POST', body: JSON.stringify({ ...args, mcp: true, ...(self?.sessionId ? { from: self.sessionId } : {}) }) }));
   if (['read_chat','send_chat_message','update_chat','chat_status','stop_chat'].includes(name)) {
     const chat = await api('/api/chats/' + encodeURIComponent(args.chatId));
     if (name === 'update_chat') {

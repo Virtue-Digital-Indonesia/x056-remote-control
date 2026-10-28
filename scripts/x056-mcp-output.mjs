@@ -62,6 +62,7 @@ const jobFields = {
   id: str, schedule: str, tz: str, projectId: str, sessionId: str, prompt: str,
   label: str, once: bool, enabled: bool, createdAt: num, createdBy: str,
   lastRunAt: num, lastResult: str, runCount: num,
+  choice: object({ provider: choices('claude', 'codex'), model: str, effort: str, team: bool }),
 };
 const jobRequired = ['id', 'schedule', 'tz', 'projectId', 'prompt', 'enabled', 'createdAt', 'runCount'];
 const targetFields = { provider: nullableProvider, projectName: str, conversationTitle: str, source: literal('gateway') };

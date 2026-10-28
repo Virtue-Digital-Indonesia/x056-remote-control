@@ -206,7 +206,7 @@ describe('x056 MCP bridge (real script against a live gateway)', () => {
   it('send_message pauses for approval, lists as pending, and only dispatches once approved', async () => {
     // The tool call blocks (polling) until a human decides — fire it, then act
     // as the panel operator would: see it in the pending list and approve it.
-    const call = rpc('tools/call', { name: 'send_message', arguments: { projectId: 'p1', message: 'kick off a fresh thread' } });
+    const call = rpc('tools/call', { name: 'send_message', arguments: { projectId: 'p1', message: 'kick off a fresh thread', provider: 'claude', model: 'sonnet', effort: 'medium', helpers: { team: false } } });
     const pending = await waitForPendingApproval('kick off a fresh thread');
     const listed = await (await fetch(`${base}/api/mcp/approvals`, { headers: auth })).json() as { id: string; projectName: string; targetLabel: string }[];
     expect(listed.some((a) => a.id === pending.id && a.projectName === 'SeededProj' && a.targetLabel === 'a new conversation')).toBe(true);
@@ -284,11 +284,13 @@ describe('send modes and queueing', () => {
     fetch(`${base}/api/conversations/send`, { method: 'POST', headers: auth2, body: JSON.stringify(body) }).then((r) => r.json() as Promise<any>);
 
   afterAll(async () => { await setMode('approval'); }); // leave the default as we found it
+  // A new conversation from MCP names all four (owner, 2026-10-28).
+  const CHOICE = { provider: 'claude', model: 'sonnet', effort: 'medium', helpers: { team: false } };
 
   it('approval is the default and still gates the send', async () => {
     const s = await (await fetch(`${base}/api/settings`, { headers: auth2 })).json() as any;
     expect(s.mcpSendMode).toBe('approval');
-    const out = await send({ projectId: 'p1', prompt: 'gated please' });
+    const out = await send({ projectId: 'p1', prompt: 'gated please', ...CHOICE });
     expect(out.mode).toBe('approval');
     expect(out.approvalId).toBeTruthy();
     expect(out.sessionId).toBeUndefined(); // nothing dispatched yet
@@ -299,7 +301,7 @@ describe('send modes and queueing', () => {
   it('automatic mode delivers straight away, with no approval to decide', async () => {
     await setMode('auto');
     const before = await (await fetch(`${base}/api/mcp/approvals`, { headers: auth2 })).json() as unknown[];
-    const out = await send({ projectId: 'p1', prompt: 'no approval needed' });
+    const out = await send({ projectId: 'p1', prompt: 'no approval needed', ...CHOICE });
     expect(out.mode).toBe('auto');
     expect(out.sessionId).toBeTruthy();
     expect(out.queued).toBe(false);
@@ -310,7 +312,7 @@ describe('send modes and queueing', () => {
 
   it('queues instead of failing when that conversation is mid-turn', async () => {
     await setMode('auto');
-    const first = await send({ projectId: 'p1', prompt: 'start a turn' });
+    const first = await send({ projectId: 'p1', prompt: 'start a turn', ...CHOICE });
     const sid = first.sessionId as string;
     // second message while the first turn is still running
     const second = await send({ projectId: 'p1', sessionId: sid, prompt: 'while busy' });

@@ -1505,6 +1505,44 @@ An AI can put text INTO a running turn instead of queueing it after:
   (tested through the tool, the route and a busy run). Codex child agents
   inheriting the MCP server is **unverified**.
 
+### New conversations from MCP must choose (2026-10-28)
+
+Owner: an AI that creates a conversation has to fill in the provider, model,
+effort and agent team "so they actually put some thought to it". Enforced in
+the gateway (`server/new-conversation-guard.ts` over the shared check in
+`scripts/x056-new-conversation.mjs`). The bridge runs the same check first and
+returns the same message:
+
+- **Routes.** `POST /api/conversations/send` with no `sessionId` (MCP-only,
+  so it always applies) needs `provider`, `model`, `effort` and
+  `helpers.team`. `POST /api/chats` needs `provider`, `model`, `effort` and
+  `team` only when the bridge marks the call `mcp: true`; the panel's dialog
+  is unchanged. `POST /api/cron` with a `projectId` and no `sessionId` needs
+  `provider`, `model`, `effort` and `team`.
+- **Values.** All four must be explicit: no empty value and no `auto`; `team`
+  is a boolean. Claude takes fable / opus / sonnet / haiku or a full
+  `claude-*` id, at low..max or ultracode. Codex is checked against the live
+  catalog (the `/api/models` list, re-read at most every 5 s; legacy ids map
+  forward first), at that model's efforts. A 400 names what is missing or
+  wrong and lists every valid choice for the chosen provider.
+- **Provider is plumbed through.** `TurnRunOptions.provider` /
+  `McpApproval.provider` reach `start()` -> `prepareProjectWork` /
+  `addConversation`, and `conversationRunPrefs` uses it before its fit filter.
+  A new conversation in a Codex project asking for `opus` used to run on
+  Codex with the model silently dropped. With an explicit provider other than
+  the inherited one, `prepareProjectWork` drops the inherited model, effort
+  and account.
+- **Not covered.** Sends to an existing conversation, a send to a Chat project
+  with no `sessionId` (it continues the Chat's one conversation), `delegate`,
+  `send_chat_message`, `message_self`, `steer`, and anything internal
+  (`deliverMcpMessage` itself is unguarded).
+- **Cron.** A new-conversation job stores `choice` and uses it only while the
+  job has no `sessionId`. The first run binds the job to the conversation it
+  created, and later runs go there without overriding later changes. Jobs from
+  before the rule have no `choice`, keep running on the project defaults, and
+  are grandfathered. Approvals already pending when this shipped replay as
+  before.
+
 ## Notifications (`server/notices.ts`, 2026-10-01)
 
 Three live days had pushed ~500 "finished - tap to continue" to both phones,

@@ -37,7 +37,7 @@ import { CODEGRAPH, CodegraphClient } from './codegraph.js';
 import { cleanMemorySource } from './memory-sources.js';
 import { MEMORY_WRITER, MemoryWriter } from './memories.js';
 import { PROVISIONER, AccountProvisioner } from './provision.js';
-import { CRON, CronScheduler } from './cron.js';
+import { CRON, CronScheduler, type CronChoice } from './cron.js';
 import { DESIGN_LOGIN, DesignLoginManager } from './design-login.js';
 import { DESIGN_CONSENT, DesignConsentGranter } from './design-consent.js';
 import { TEMPLATES, TemplateStore } from './templates.js';
@@ -834,7 +834,7 @@ export class ApiController {
    *  moves, the panel's "current" selection. */
   @Post('conversations/send')
   @HttpCode(200)
-  async conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; model?: string; effort?: string; speed?: string; interactive?: boolean; from?: string; helpers?: HelperPatch; steer?: boolean; confirmRelay?: boolean }):
+  async conversationSend(@Body() body: { projectId?: string; sessionId?: string; prompt?: string; provider?: string; model?: string; effort?: string; speed?: string; interactive?: boolean; from?: string; helpers?: HelperPatch; steer?: boolean; confirmRelay?: boolean }):
     Promise<({ mode: 'auto'; sessionId: string; queued: boolean; steered?: boolean; messageId: string } & RelayReceipt) | { mode: 'approval'; approvalId: string; messageId?: string; steer?: boolean }> {
     if (!body?.projectId) throw new BadRequestException('projectId required');
     if (!body?.prompt) throw new BadRequestException('prompt required');
@@ -844,10 +844,21 @@ export class ApiController {
       const known = this.manager.listConversations(body.projectId).some((c) => c.sessionId === body.sessionId);
       if (!known) throw new BadRequestException('unknown conversation for that project');
     }
+    // A NEW conversation must be chosen, not defaulted (owner, 2026-10-28):
+    // provider, model, effort and helpers.team, all explicit. This route is
+    // MCP-only, so it always applies; a send to an existing conversation is
+    // unchanged. The provider rides through approval and start() so the new
+    // conversation really runs on it (it used to take the project default and
+    // silently drop a model that did not fit).
+    let provider: ProviderId | undefined;
+    if (this.manager.createsConversation(body.projectId, body.sessionId)) {
+      if (!this.manager.listProjects().projects.some((p) => p.id === body.projectId)) throw new BadRequestException('unknown project');
+      provider = this.manager.requireNewConversationChoice({ provider: body.provider, model: body.model, effort: body.effort, team: body.helpers && typeof body.helpers === 'object' ? body.helpers.team : undefined }, 'helpers.team').provider;
+    }
     // `from` is the CALLING conversation, supplied by the per-turn MCP config
     // rather than the model, so a caller cannot disown its own chain by leaving
     // it out — an external client (Claude Desktop) genuinely has none.
-    const opts = { model: body.model, effort: body.effort, speed: body.speed, interactive: body.interactive, from: body.from, ...(body.helpers ? { helpers: body.helpers } : {}) };
+    const opts = { model: body.model, effort: body.effort, speed: body.speed, interactive: body.interactive, from: body.from, ...(provider ? { provider } : {}), ...(body.helpers ? { helpers: body.helpers } : {}) };
     // Confirms a relay checkpoint (every RELAY_HOP_LIMIT hops); ignored when none is due.
     const relay = { ...opts, confirmRelay: body.confirmRelay === true };
     try { this.manager.validateConversationRunPrefs(body.projectId, body.sessionId, opts); if (body.helpers) this.manager.checkHelperPatch(body.helpers); }
@@ -2562,7 +2573,7 @@ export class ApiController {
   @Get('cron')
   listCron(): unknown {
     const projects = this.manager.listProjects().projects;
-    return { jobs: this.cron.list().map(job => ({ ...job, ...this.automationTarget(projects, job.projectId, job.sessionId), source: 'gateway' })), defaultTz: this.cron.defaultTimezone };
+    return { jobs: this.cron.list().map(job => { const target = this.automationTarget(projects, job.projectId, job.sessionId); return { ...job, ...target, ...(job.choice && !job.sessionId && target.provider ? { provider: job.choice.provider } : {}), source: 'gateway' }; }), defaultTz: this.cron.defaultTimezone };
   }
 
   private automationTarget(projects: Project[], projectId: string, sessionId?: string) {
@@ -2576,7 +2587,15 @@ export class ApiController {
 
   @Post('cron')
   @HttpCode(200)
-  addCron(@Body() body: { schedule?: string; projectId?: string; sessionId?: string; prompt?: string; tz?: string; label?: string; createdBy?: string; once?: boolean }) {
+  addCron(@Body() body: { schedule?: string; projectId?: string; sessionId?: string; prompt?: string; tz?: string; label?: string; createdBy?: string; once?: boolean; provider?: string; model?: string; effort?: string; team?: boolean }) {
+    // A job with no target conversation starts a NEW one on its first run, so
+    // it must name what that conversation runs with (owner, 2026-10-28), the
+    // same as send_message. This route is MCP-only (the panel only lists).
+    let choice: CronChoice | undefined;
+    if (body?.projectId && this.manager.createsConversation(body.projectId, body.sessionId)) {
+      if (!this.manager.listProjects().projects.some((p) => p.id === body.projectId)) throw new BadRequestException('unknown project');
+      choice = this.manager.requireNewConversationChoice({ provider: body.provider, model: body.model, effort: body.effort, team: body.team });
+    }
     try {
       return this.cron.add({
         schedule: body?.schedule ?? '',
@@ -2587,6 +2606,7 @@ export class ApiController {
         label: body?.label,
         once: body?.once,
         createdBy: body?.createdBy,
+        ...(choice ? { choice } : {}),
       });
     } catch (err) {
       throw new BadRequestException((err as Error).message);

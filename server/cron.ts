@@ -40,6 +40,16 @@ export interface CronJob {
    * it. The schedule field still says WHEN — `once` only says "not again".
    */
   once?: boolean;
+  /**
+   * What a run that STARTS a conversation runs with (owner, 2026-10-28: a
+   * conversation MCP creates names its provider, model, effort and team).
+   * Required by /api/cron for a new-conversation job; absent on jobs from
+   * before the rule, which keep the project defaults (grandfathered). Used
+   * only while the job has no sessionId: the first run binds it to the
+   * conversation it created, and later runs never override what a person
+   * changed there since.
+   */
+  choice?: CronChoice;
   enabled: boolean;
   createdAt: number;
   createdBy?: string;
@@ -49,10 +59,12 @@ export interface CronJob {
   contextReview?: { operationId: string; reason: string };
 }
 
+export interface CronChoice { provider: 'claude' | 'codex'; model: string; effort: string; team: boolean }
+
 export interface CronDeps {
   stateDir: string;
   /** Deliver a prompt; queues if the conversation is mid-turn. */
-  deliver(projectId: string, sessionId: string | undefined, prompt: string): { sessionId: string; queued: boolean };
+  deliver(projectId: string, sessionId: string | undefined, prompt: string, choice?: CronChoice): { sessionId: string; queued: boolean };
   /** A job's delivery failed: tell a person (it will not retry by itself). */
   onFailure?(job: CronJob, reason: string): void;
   /** Default zone for jobs that don't name one. */
@@ -166,7 +178,7 @@ export class CronScheduler {
 
   add(input: {
     schedule: string; projectId: string; prompt: string;
-    sessionId?: string; tz?: string; label?: string; createdBy?: string; once?: boolean;
+    sessionId?: string; tz?: string; label?: string; createdBy?: string; once?: boolean; choice?: CronChoice;
   }): CronJob {
     parseCron(input.schedule); // throws on a bad expression, before anything is stored
     const tz = input.tz ?? this.defaultTz;
@@ -182,6 +194,7 @@ export class CronScheduler {
       prompt: input.prompt,
       label: input.label,
       once: input.once ? true : undefined,
+      ...(input.choice && !input.sessionId ? { choice: { ...input.choice } } : {}),
       enabled: true,
       createdAt: this.now().getTime(),
       createdBy: input.createdBy,
@@ -228,7 +241,9 @@ export class CronScheduler {
       if (this.fired.has(key)) continue;
       this.fired.add(key);
       try {
-        const out = this.deps.deliver(job.projectId, job.sessionId, job.prompt);
+        const out = job.choice && !job.sessionId
+          ? this.deps.deliver(job.projectId, job.sessionId, job.prompt, { ...job.choice })
+          : this.deps.deliver(job.projectId, job.sessionId, job.prompt);
         job.lastResult = out.queued ? 'queued' : 'delivered';
         // Bind a job that had no conversation to the one it just created, so a
         // daily job accumulates in one thread instead of littering new ones.

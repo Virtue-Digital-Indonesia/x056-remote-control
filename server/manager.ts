@@ -45,6 +45,7 @@ import { shareCodexSessions, prepareCodexHome, codexHomeIndexed } from './codex-
 import { EventLog } from '../src/eventlog.js';
 import { findTranscript } from './history.js';
 import { getAdapter } from '../src/adapters/registry.js';
+import { codexCatalog, requireNewConversationChoice, type NewConversationChoice } from './new-conversation-guard.js';
 import { ProjectRegistry, ProjectConflict, validateModeDefaults, requireWorkspace, requireWork, type ModeDefaults, type RunnableProject, type Project, type Conversation, type ConversationHelpers, type HelperPatch, type Router, helpersOf, effectiveRouter } from './projects.js';
 import { adoptFromInteractive, listInteractiveSessions, type AvailableSession } from './discover.js';
 import { runSession, type RunControl, type SessionResult } from '../src/failover.js';
@@ -164,6 +165,9 @@ export interface TurnRunOptions {
   effort?: string;
   /** ChatGPT Speed: '' | 'off' = standard, 'fast', 'ultrafast'. Absent = the conversation's saved one. */
   speed?: string;
+  /** Provider of a NEW conversation (no sessionId); ignored for an existing
+   *  one, which is bound to its provider for life. Absent = the project default. */
+  provider?: ProviderId;
   account?: string;
   useReserve?: boolean;
   /** Internal: sent by the usage-limit scheduler (a resend of a parked
@@ -220,6 +224,8 @@ export interface McpApproval {
   model?: string;
   effort?: string;
   speed?: string;
+  /** Provider chosen for a NEW conversation (absent for an existing target). */
+  provider?: ProviderId;
   /** Helper changes the sender asked for, applied only if this is approved. */
   helpers?: HelperPatch;
   /** Whether the ASK-protocol convention should be appended at dispatch time
@@ -2227,13 +2233,16 @@ export class SessionManager {
     };
   }
 
-  conversationRunPrefs(projectId: string, sessionId?: string, opts: TurnRunOptions = {}): Pick<TurnRunOptions, 'model' | 'effort' | 'speed'> {
+  conversationRunPrefs(projectId: string, sessionId?: string, opts: Pick<TurnRunOptions, 'model' | 'effort' | 'speed' | 'provider'> = {}): Pick<TurnRunOptions, 'model' | 'effort' | 'speed'> {
     const project = this.projects().get(projectId);
     if (!project) throw new Error('unknown project');
     const conversation = project.conversations?.find(c => c.sessionId === sessionId);
     if (sessionId && !conversation) throw new Error('unknown conversation for that project');
     const defaults = !sessionId && this.projectSpacesEnabled() && project.kind !== 'chat' ? project.defaults?.work : undefined;
-    const provider = sessionId ? this.projects().conversationProvider(projectId, sessionId) : defaults?.provider ?? project.provider ?? 'claude';
+    // A new conversation's explicit provider wins over the defaults, BEFORE the
+    // fit filter below: otherwise a Claude model asked for in a Codex project
+    // was silently dropped and the conversation ran on Codex.
+    const provider = sessionId ? this.projects().conversationProvider(projectId, sessionId) : opts.provider ?? defaults?.provider ?? project.provider ?? 'claude';
     const fitsModel = (value?: string) => !value || (provider === 'codex' ? /^(gpt-|codex-)/i.test(value) : !/^(gpt-|codex-)/i.test(value));
     const fitsEffort = (value?: string) => !value || (provider === 'codex' ? value !== 'ultracode' : value !== 'ultra');
     const model = [opts.model, conversation?.model, defaults?.model, project.model].find(value => value !== undefined && fitsModel(value)) ?? '';
@@ -2243,7 +2252,8 @@ export class SessionManager {
     return provider === 'codex' ? { ...currentCodexPrefs(model, effort), ...(speed ? { speed } : {}) } : { model: currentClaudeModel(model), effort };
   }
 
-  validateConversationRunPrefs(projectId: string, sessionId: string | undefined, prefs: Pick<TurnRunOptions, 'model' | 'effort' | 'speed'>): void {
+  validateConversationRunPrefs(projectId: string, sessionId: string | undefined, prefs: Pick<TurnRunOptions, 'model' | 'effort' | 'speed' | 'provider'>): void {
+    if (prefs.provider !== undefined && prefs.provider !== 'claude' && prefs.provider !== 'codex') throw new Error('invalid provider');
     if (prefs.speed !== undefined && !['', 'off', 'fast', 'ultrafast'].includes(prefs.speed as string)) throw new Error('invalid speed');
     for (const key of ['model', 'effort'] as const) {
       const value = prefs[key];
@@ -2256,6 +2266,22 @@ export class SessionManager {
       if (prefs[key] !== undefined && expected[key] !== resolved[key]) throw new Error(key + ' is not compatible with this conversation’s provider');
     }
     if (asSpeed(prefs.speed) && resolved.speed !== prefs.speed) throw new Error('speed is only available on ChatGPT conversations');
+  }
+
+  /** True when a send with this address CREATES a conversation: no sessionId,
+   *  in a project that is not a Chat (a Chat's send continues its one
+   *  conversation). Where the new-conversation guard applies. */
+  createsConversation(projectId: string, sessionId?: string): boolean {
+    return !sessionId && this.projects().get(projectId)?.kind !== 'chat';
+  }
+
+  /** The new-conversation guard (server/new-conversation-guard.ts) against this
+   *  gateway's live Codex catalog. Throws a 400 naming what is missing or wrong
+   *  and every valid choice. */
+  requireNewConversationChoice(input: { provider?: unknown; model?: unknown; effort?: unknown; team?: unknown }, teamField = 'team'): NewConversationChoice {
+    let dirs: string[] = [];
+    try { dirs = this.registry().list().filter((a) => a.provider === 'codex').map((a) => a.configDir); } catch { /* no accounts file: empty catalog */ }
+    return requireNewConversationChoice(input, codexCatalog(dirs), teamField);
   }
 
   setConversationRunPrefs(projectId: string, sessionId: string, prefs: Pick<TurnRunOptions, 'model' | 'effort' | 'speed'>): void {
@@ -3215,7 +3241,12 @@ export class SessionManager {
     this.spaces().assertReady(id);
     if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 300)) throw new Error('Invalid conversation name');
     const spaceId = input.spaceId || this.spaces().defaultForWork(id), space = spaceId ? this.spaces().get(spaceId) : undefined;
-    const defaults = { model: p.model, effort: p.effort, ...p.defaults?.work, ...space?.defaults?.work, ...Object.fromEntries(Object.entries(input).filter(([,value])=>value!==undefined)) }, provider = defaults.provider || p.provider || 'claude';
+    const inherited: { provider?: ProviderId; model?: string; effort?: string; account?: string } = { model: p.model, effort: p.effort, ...p.defaults?.work, ...space?.defaults?.work };
+    // An explicit provider other than the inherited one: the inherited model,
+    // effort and account belong to that other provider, so they do not carry
+    // (a Codex default account would otherwise refuse a Claude conversation).
+    if (input.provider && input.provider !== (inherited.provider || p.provider || 'claude')) { delete inherited.model; delete inherited.effort; delete inherited.account; }
+    const defaults = { ...inherited, ...Object.fromEntries(Object.entries(input).filter(([,value])=>value!==undefined)) }, provider = defaults.provider || p.provider || 'claude';
     this.validateProjectDefaults({ work: { provider, model: defaults.model, effort: defaults.effort, account: defaults.account } });
     const fingerprint = createHash('sha256').update(JSON.stringify([input.name, input.provider, input.model, input.effort, input.account, input.spaceId])).digest('hex');
     const previous = p.conversations?.find(c => c.creationRequestId === input.requestId);
@@ -3782,14 +3813,14 @@ export class SessionManager {
     const dir = this.resolveCwd(cwd ?? proj.cwd, pid);
     if (this.projectSpacesEnabled()) {
       if (dir !== proj.cwd) throw new Error('Work uses its configured Project workspace');
-      const input = Object.fromEntries(Object.entries({ requestId: randomUUID(), name: titleFromPrompt(prompt), model: opts?.model, effort: opts?.effort, account: opts?.account }).filter(([, value]) => value !== undefined)) as Parameters<SessionManager['prepareProjectWork']>[1];
+      const input = Object.fromEntries(Object.entries({ requestId: randomUUID(), name: titleFromPrompt(prompt), provider: opts?.provider, model: opts?.model, effort: opts?.effort, account: opts?.account }).filter(([, value]) => value !== undefined)) as Parameters<SessionManager['prepareProjectWork']>[1];
       const target = this.prepareProjectWork(pid, input);
       return this.continueSession(pid, target.sessionId, prompt, opts);
     }
     const sessionId = randomUUID();
     // Register the new session as its own conversation (prompt-derived title),
     // grouped under the project, and make it current.
-    this.projects().addConversation(pid, sessionId, titleFromPrompt(prompt), undefined, 'temporary');
+    this.projects().addConversation(pid, sessionId, titleFromPrompt(prompt), opts?.provider, 'temporary');
     this.emitConversations(pid);
     this.launch(pid, sessionId, prompt, dir, false, opts);
     return sessionId;
@@ -3869,6 +3900,7 @@ export class SessionManager {
       model: prefs.model,
       effort: prefs.effort,
       ...(prefs.speed ? { speed: prefs.speed } : {}),
+      ...(!sessionId && opts?.provider ? { provider: opts.provider } : {}),
       ...(opts?.helpers ? { helpers: opts.helpers } : {}),
       interactive: opts?.interactive !== false,
       ...(opts?.steer && sessionId ? { steer: true } : {}),
@@ -3942,6 +3974,7 @@ export class SessionManager {
       // exchange they are explicitly waving through, one card at a time.
       const out = this.deliverMcpMessage(a.projectId, a.sessionId, a.message, {
         model: a.model, effort: a.effort, speed: a.speed, interactive: a.interactive, sender: a.sender, helpers: a.helpers,
+        ...(!a.sessionId && a.provider ? { provider: a.provider } : {}),
       });
       a.resultSessionId = out.sessionId;
       a.queued = out.queued;
@@ -4017,7 +4050,7 @@ export class SessionManager {
       return { sessionId: sid, queued, ...this.relayReceipt(hop), messageId: run.sender.messageId };
     };
     if (opts.helpers) this.checkHelperPatch(opts.helpers);
-    if (!sessionId) return land(this.start(prompt, undefined, { ...run, helpers: opts.helpers }, projectId), false);
+    if (!sessionId) return land(this.start(prompt, undefined, { ...run, helpers: opts.helpers, ...(opts.provider ? { provider: opts.provider } : {}) }, projectId), false);
     // An existing conversation takes the change now: its next turn -- this
     // message, queued or not -- is the first to run with it.
     if (opts.helpers) this.patchHelpers(projectId, sessionId, opts.helpers);
