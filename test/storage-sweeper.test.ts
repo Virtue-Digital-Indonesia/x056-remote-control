@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   StorageApprovers, StorageSweeper, approvalPurpose, DEFAULT_PROTECTED_PATHS, manifestDigest, readOnlyCommand, parseSize, dockerTime,
-  CACHE_VOLUME_HINT, defaultRunner, devTreeRoot, listMounts, listProcesses, regenerablePath, sweepScheduleEnabled,
+  CACHE_VOLUME_HINT, defaultRunner, devTreeRoot, freeByFilesystem, listMounts, listProcesses, regenerablePath, sweepScheduleEnabled,
   type CmdResult, type LiveProcess, type Manifest, type RunRecord, type StorageSweeperOptions,
 } from '../server/storage-sweeper.js';
 import { StorageController, refuseAgentCaller } from '../server/storage.controller.js';
@@ -991,5 +991,36 @@ describe('review fixes (2026-10-27)', () => {
       expect(p.find((x) => x.target === stateStore)?.reason).toMatch(/pid 99/);
       expect(p.find((x) => x.target === homeStore)?.reason).toMatch(/protected/);
     } finally { process.env.PATH = path; if (gocache !== undefined) process.env.GOCACHE = gocache; }
+  });
+});
+
+describe('reclaimedBytes counts each filesystem once (2026-10-28)', () => {
+  // The production numbers: one disk seen as the ext4 workspace bind (64512)
+  // and the overlay root (5242955), same totals, same free space.
+  const disk = { bsize: 4096, blocks: 257232685, files: 65404928 };
+  it('folds two device ids of one filesystem into one entry', () => {
+    const free = freeByFilesystem([
+      { dev: '64512', ...disk, bavail: 14347802 },
+      { dev: '64512', ...disk, bavail: 14347802 },
+      { dev: '5242955', ...disk, bavail: 14347801 },
+    ]);
+    expect(free).toEqual({ '64512': 14347802 * 4096 });
+  });
+  it('keeps two different filesystems apart', () => {
+    const free = freeByFilesystem([
+      { dev: '64512', ...disk, bavail: 10 },
+      { dev: '2049', bsize: 4096, blocks: 1000, files: 100, bavail: 7 },
+    ]);
+    expect(free).toEqual({ '64512': 10 * 4096, '2049': 7 * 4096 });
+  });
+  it('a real run: reclaimed equals the df delta of the one filesystem', async () => {
+    const w = world();
+    worktree(w, 'done');
+    age(w.ws, 40);
+    const rec = await sweep(sweeper(w), false);
+    const keys = Object.keys(rec.df.before);
+    expect(keys).toEqual(Object.keys(rec.df.after));
+    const delta = keys.reduce((n, k) => n + (rec.df.after[k] - rec.df.before[k]), 0);
+    expect(rec.reclaimedBytes).toBe(Math.max(0, delta));
   });
 });

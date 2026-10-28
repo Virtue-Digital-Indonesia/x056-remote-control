@@ -279,6 +279,26 @@ export function fmtBytes(n: number): string {
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
   return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${u[i]}`;
 }
+export interface FsSample { dev: string; bsize: number; blocks: number; files: number; bavail: number }
+/** Free bytes, ONE entry per filesystem, named by the first device seen on it.
+ *  A device id is not a filesystem: in the container the workspace bind
+ *  (ext4, dev 64512) and the overlay root holding /tmp and the caches
+ *  (dev 5242955) are the same disk, and overlay's statfs reports the backing
+ *  filesystem's numbers. Keyed by device, the first AUTO run (2026-10-28) counted
+ *  that disk twice: reclaimedBytes 42.4 GB against a df delta of 21.2 GB. So
+ *  block size + total blocks + total inodes identify the filesystem (free
+ *  counts move between two calls, so they are left out). */
+export function freeByFilesystem(samples: FsSample[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  const seen = new Set<string>();
+  for (const s of samples) {
+    const fs = `${s.bsize}:${s.blocks}:${s.files}`;
+    if (out[s.dev] != null || seen.has(fs)) continue;
+    seen.add(fs);
+    out[s.dev] = s.bavail * s.bsize;
+  }
+  return out;
+}
 function writeJson(file: string, data: unknown): void {
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}`;
@@ -789,13 +809,16 @@ export class StorageSweeper {
     try { this.opts.emit?.(kind, data); } catch { /* never break a run */ }
   }
 
-  /** Free bytes per filesystem (keyed by device) holding the roots. */
+  /** Free bytes per filesystem holding the roots (see `freeByFilesystem`). */
   private df(roots: Root[]): Record<string, number> {
-    const out: Record<string, number> = {};
+    const samples: FsSample[] = [];
     for (const r of roots) {
-      try { const dev = String(statSync(r.path).dev); if (out[dev] != null) continue; const s = statfsSync(r.path); out[dev] = Number(s.bavail) * Number(s.bsize); } catch { /* gone */ }
+      try {
+        const s = statfsSync(r.path);
+        samples.push({ dev: String(statSync(r.path).dev), bsize: Number(s.bsize), blocks: Number(s.blocks), files: Number(s.files), bavail: Number(s.bavail) });
+      } catch { /* gone */ }
     }
-    return out;
+    return freeByFilesystem(samples);
   }
 
   // ---- context ----
