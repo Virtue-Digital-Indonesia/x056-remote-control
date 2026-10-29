@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, lstatSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, lstatSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { sourceFingerprint } from './version.js';
 import { writeState } from './workspace-store.js';
@@ -8,25 +8,46 @@ export const frontendFiles = ['panel.html','control-room.js','control-room.css',
 const hash=(data:Buffer|string)=>createHash('sha256').update(data).digest('hex');
 const sync=(file:string)=>{const fd=openSync(file,'r');try{fsyncSync(fd);}finally{closeSync(fd);}};
 const validId=(id:string)=>/^[a-f0-9]{64}$/.test(id);
+// Identity of a file's current content for memoization: a rewrite (or an
+// atomic rename over it) changes at least one of these.
+const statKey=(file:string)=>{const s=statSync(file);return s.ino+':'+s.size+':'+s.mtimeMs;};
 export interface FrontendManifest { id:string; revision:string; backendSource:string; files:Record<string,string> }
 export class FrontendReleases {
   readonly root:string;
+  // Every read below is memoized by the file's stat key, so a request costs a
+  // stat instead of a read + parse + sha256; a changed file is re-read and
+  // re-verified. Only successful results are kept.
+  private manifests=new Map<string,{key:string;m:FrontendManifest}>();
+  private assets=new Map<string,{key:string;data:Buffer}>();
+  private pointer?:{key:string;id:unknown};
+  private page?:{id:string;backend:string;source:Buffer;html:string};
   constructor(stateDir:string,readonly backendSource:string){this.root=join(stateDir,'frontend-releases');}
   manifest(id:string):FrontendManifest {
     if(!validId(id))throw new Error('Invalid frontend release');
-    const m=JSON.parse(readFileSync(join(this.root,id,'release.json'),'utf8')) as FrontendManifest;
+    const file=join(this.root,id,'release.json'),key=statKey(file),hit=this.manifests.get(id);
+    if(hit&&hit.key===key)return hit.m;
+    const m=JSON.parse(readFileSync(file,'utf8')) as FrontendManifest;
     if(m.id!==id||!/^([a-f0-9]{40}|[a-f0-9]{64})$/.test(m.revision)||m.id!==hash(JSON.stringify([m.revision,m.backendSource,m.files])))throw new Error('Invalid frontend manifest');
+    this.manifests.set(id,{key,m});
     return m;
   }
   current():FrontendManifest|undefined {
-    try{const m=this.manifest(JSON.parse(readFileSync(join(this.root,'current.json'),'utf8')).id);return m.backendSource===this.backendSource?m:undefined;}catch{return undefined;}
+    try{
+      const file=join(this.root,'current.json'),key=statKey(file);
+      if(this.pointer?.key!==key)this.pointer={key,id:JSON.parse(readFileSync(file,'utf8')).id};
+      const m=this.manifest(this.pointer.id as string);return m.backendSource===this.backendSource?m:undefined;
+    }catch{return undefined;}
   }
   asset(id:string,name:string):Buffer {
     if(!frontendFiles.includes(name))throw new Error('Unknown frontend asset');
     const m=this.manifest(id),file=join(this.root,id,name);
     if(!lstatSync(file).isFile())throw new Error('Invalid frontend asset');
-    const data=readFileSync(file);if(hash(data)!==m.files[name])throw new Error('Frontend asset checksum mismatch');
-    if(name==='manifest.webmanifest'){let text=data.toString();for(const icon of frontendFiles.filter(n=>n.endsWith('.png')))text=text.split('/'+icon).join('/ui-releases/'+id+'/'+icon);return Buffer.from(text);}
+    const cacheKey=id+'/'+name,key=statKey(file)+':'+m.files[name],hit=this.assets.get(cacheKey);
+    if(hit&&hit.key===key)return hit.data;
+    let data=readFileSync(file);if(hash(data)!==m.files[name])throw new Error('Frontend asset checksum mismatch');
+    if(name==='manifest.webmanifest'){let text=data.toString();for(const icon of frontendFiles.filter(n=>n.endsWith('.png')))text=text.split('/'+icon).join('/ui-releases/'+id+'/'+icon);data=Buffer.from(text);}
+    // Old tabs keep fetching their own release, so keep a few releases' worth.
+    this.assets.delete(cacheKey);this.assets.set(cacheKey,{key,data});if(this.assets.size>frontendFiles.length*3)this.assets.delete(this.assets.keys().next().value as string);
     return data;
   }
   activate(id:string){
@@ -59,9 +80,13 @@ export class FrontendReleases {
     return this.activate(m.id);
   }
   html(m:FrontendManifest,backend:unknown){
-    let html=this.asset(m.id,'panel.html').toString();
+    const source=this.asset(m.id,'panel.html'),backendJson=JSON.stringify(backend);
+    if(this.page&&this.page.id===m.id&&this.page.backend===backendJson&&this.page.source===source)return this.page.html;
+    let html=source.toString();
     for(const name of frontendFiles.filter(n=>n!=='panel.html'))html=html.split('/'+name).join('/ui-releases/'+m.id+'/'+name);
     const info=JSON.stringify({backend,ui:{revision:m.revision.slice(0,7),fingerprint:m.id,dirty:false}}).replace(/</g,'\\u003c');
-    return html.replace('</head>','<script>window.X056_RELEASE='+info+';</script></head>');
+    html=html.replace('</head>','<script>window.X056_RELEASE='+info+';</script></head>');
+    this.page={id:m.id,backend:backendJson,source,html};
+    return html;
   }
 }
