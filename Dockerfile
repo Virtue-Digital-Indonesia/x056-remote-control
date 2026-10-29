@@ -71,5 +71,5 @@ EXPOSE 4056
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -fsS http://localhost:4056/healthz || exit 1
 # Node itself, with tsx as a loader: npx + the tsx CLI added two launcher
 # processes (~125 MB) in front of it. tsx is installed by the full `npm ci`
-# above (it is a devDependency; nothing here omits those).
+# above (a runtime dependency in package.json).
 CMD ["node", "--import", "tsx", "server/main.ts"]

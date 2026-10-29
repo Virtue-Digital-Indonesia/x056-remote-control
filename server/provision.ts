@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -231,8 +232,12 @@ export class AccountProvisioner {
           }
           if (applied.length) {
             mkdirSync(target.configDir, { recursive: true });
-            const tmp = `${path}.${process.pid}.tmp`;
-            writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n');
+            // Unique tmp name (onboarding and POST /provision can overlap) and
+            // the existing file's mode kept across the rename.
+            const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+            let mode = 0o644;
+            try { mode = statSync(path).mode & 0o777; } catch { /* new file */ }
+            writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', { mode });
             renameSync(tmp, path);
           }
           result.settings = applied;
