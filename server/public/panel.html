@@ -5475,8 +5475,20 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     ((projCache[pid] || {}).conversations || []).forEach(function (c) { markConvSeen(pid, c.sessionId); });
     applyNotifs();
   }
+  // Polls skip their tick while the tab is hidden. A skipped poll is
+  // remembered and runs once when the tab becomes visible again, so a tab that
+  // was hidden for a while catches up immediately instead of on its next tick.
+  var hiddenMissed = {};
+  function whenVisible(name, fn) {
+    return function () { if (document.hidden) { hiddenMissed[name] = fn; return; } fn(); };
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) return;
+    var due = hiddenMissed; hiddenMissed = {};
+    Object.keys(due).forEach(function (k) { due[k](); });
+  });
   var projectActivityTimer;
-  function loadProjects() { return api('/api/projects').then(function (r) { if (!r.ok) throw new Error('Could not load projects. Reconnect or sign in again.'); return r.json(); }).then(function (reg) { renderProjects(reg); clearTimeout(projectActivityTimer); if(reg.activityPending)projectActivityTimer=setTimeout(loadProjects,1000); if (controlRoom) controlRoom.error(''); }).catch(function (e) { if (controlRoom) controlRoom.error(e.message || 'Could not load projects.'); }); }
+  function loadProjects() { return api('/api/projects').then(function (r) { if (!r.ok) throw new Error('Could not load projects. Reconnect or sign in again.'); return r.json(); }).then(function (reg) { renderProjects(reg); clearTimeout(projectActivityTimer); if(reg.activityPending)projectActivityTimer=setTimeout(whenVisible('projects',loadProjects),1000); if (controlRoom) controlRoom.error(''); }).catch(function (e) { if (controlRoom) controlRoom.error(e.message || 'Could not load projects.'); }); }
   function switchProject(p) {
     if (controlRoom) { controlRoom.beforeSwitch(); controlRoom.open(false); }
     saveConversationPick();
@@ -6365,16 +6377,16 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       // Cold-opened from a notification tap (service worker openWindow): jump to it.
       try { var want = new URLSearchParams(location.search).get('project'); if (want && projCache[want]) {var wantedSession=new URLSearchParams(location.search).get('session');if(wantedSession)switchProject(Object.assign({},projCache[want],{lastSessionId:wantedSession}));else switchProject(projCache[want]);} } catch (e) {}
     });
-    setInterval(pollAccounts, 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings(); loadMcpApprovals(); // pollAccounts() also loads the provider model catalog
+    setInterval(whenVisible('accounts', pollAccounts), 60000); pollAccounts(); loadAutopilot(); loadQueue(); loadSettings(); loadMcpApprovals(); // pollAccounts() also loads the provider model catalog
     // Safety-net reconciliation for the running-turn state: SSE can silently
     // miss turn_state/session_done events (mobile tab backgrounded, reconnect
     // gap), leaving the busy indicator stuck. loadProjects() re-derives it from
     // the server's authoritative state.
-    setInterval(loadProjects, 20000);
+    setInterval(whenVisible('projects', loadProjects), 20000);
     // Same safety net for pending MCP approvals: a request is a blocking gate an
     // AI is actively waiting on, so a missed SSE event must not leave it
     // invisible until the next reconnect. Re-hydrate on a short interval.
-    setInterval(loadMcpApprovals, 15000);
+    setInterval(whenVisible('approvals', loadMcpApprovals), 15000);
     var snapshotReady = pollSnapshot().then(function () {
       restoreDraft();
       restoreAttachments();
@@ -6861,13 +6873,13 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
 
   // A running turn spawns and feeds subagents; poll while one is live so the
   // count, the list and any open shell all move on their own.
-  setInterval(function () {
+  setInterval(whenVisible('subagents', function () {
     var shellOpen = Object.keys(subShells).length > 0;
     var agentsRunning = subMetas.some(function(m){return m.status === 'running';});
     if (!active && !agentsRunning && !shellOpen) return;
     refreshSubagents();
     for (var id in subShells) subShells[id]();
-  }, 5000);
+  }), 5000);
 
   // ---- prompt templates -----------------------------------------------------
   // Saved snippets, inserted into the composer AT THE CARET.
