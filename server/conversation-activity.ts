@@ -1,7 +1,7 @@
 import { statSync } from 'node:fs';
 import { readFilePage } from '../src/adapters/claude.js';
 import { readHistoryPage as codexPage, rolloutHeads } from '../src/adapters/codex.js';
-import { transcriptIndex } from '../src/adapters/subagents.js';
+import { cachedTranscriptIndex } from '../src/adapters/subagents.js';
 import type { Account } from '../src/accounts.js';
 import type { Project } from './projects.js';
 
@@ -14,7 +14,7 @@ export class ConversationActivity {
   enrich<T extends Project>(projects:T[],accounts:Account[],budgetMs=60) {
     this.pending=0;
     const claudeDirs=accounts.filter(a=>a.provider==='claude').map(a=>a.configDir),codexDirs=accounts.filter(a=>a.provider==='codex').map(a=>a.configDir);
-    const claude=transcriptIndex(claudeDirs),codex=new Map(rolloutHeads(codexDirs).map(h=>[h.id,h.file]));
+    const claude=cachedTranscriptIndex(claudeDirs),codex=new Map(rolloutHeads(codexDirs).map(h=>[h.id,h.file]));
     const start=Date.now();
     return projects.map(p=>({...p,conversations:p.conversations?.map(c=>{
       const id=c.providerSessionId||c.sessionId,provider=c.provider||'claude',file=(provider==='codex'?codex:claude).get(id);

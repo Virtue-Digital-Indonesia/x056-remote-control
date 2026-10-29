@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { findTranscript, readFilePage, type HistoryPage } from './claude.js';
+import { findTranscript, readFilePage, uniqueProjectsDirs, type HistoryPage } from './claude.js';
 
 /**
  * Subagents, as Claude Code already records them.
@@ -95,8 +95,8 @@ export function cachedBrief(file: string): string {
  */
 export function transcriptIndex(configDirs: string[]): Map<string, string> {
   const out = new Map<string, string>();
-  for (const configDir of configDirs) {
-    const projects = join(configDir, 'projects');
+  // Every account's projects/ links to one shared tree: walk it once.
+  for (const projects of uniqueProjectsDirs(configDirs)) {
     let dirs: string[];
     try { dirs = readdirSync(projects); } catch { continue; }
     for (const d of dirs) {
@@ -112,6 +112,28 @@ export function transcriptIndex(configDirs: string[]): Map<string, string> {
   }
   return out;
 }
+
+/**
+ * transcriptIndex(), memoized for a few seconds per config dir list.
+ *
+ * GET /api/projects builds the index on every call, and several panels poll
+ * it. A transcript that appears in the meantime is picked up on the next build,
+ * so a new conversation's activity shows at most TRANSCRIPT_INDEX_TTL_MS late.
+ * Callers must treat the returned map as read-only: it is shared.
+ */
+const TRANSCRIPT_INDEX_TTL_MS = 3000;
+const indexMemo = new Map<string, { at: number; index: Map<string, string> }>();
+export function cachedTranscriptIndex(configDirs: string[], now = Date.now()): Map<string, string> {
+  const key = configDirs.join('\0');
+  const hit = indexMemo.get(key);
+  if (hit && now - hit.at >= 0 && now - hit.at < TRANSCRIPT_INDEX_TTL_MS) return hit.index;
+  const index = transcriptIndex(configDirs);
+  if (indexMemo.size > 32) indexMemo.clear();
+  indexMemo.set(key, { at: now, index });
+  return index;
+}
+/** Test hook. */
+export function clearTranscriptIndexMemo(): void { indexMemo.clear(); }
 
 /** The parent session's own transcript, for its usage totals and Task results. */
 export function parentTranscript(configDirs: string[], sessionId: string): string | null {

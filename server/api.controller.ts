@@ -6,6 +6,7 @@ import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { SessionTimerReader } from './session-timers.js';
 import { helpersOf, type HelperPatch, type Project } from './projects.js';
 import { transcriptIndex } from '../src/adapters/subagents.js';
+import { SseWriter, sseFrame } from './sse.js';
 import { ArtifactStore } from './workspace-store.js';
 import { accountHealth } from './routing-health.js';
 import { DeliveryStore, type DeliveryReceipt } from './workspace-store.js';
@@ -399,12 +400,19 @@ export class ApiController {
     // while a busy turn's burst of events flushes the buffer and looks fine live.
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
-    const ping = setInterval(() => res.write(': ping\n\n'), 15000);
+    // Each event is serialized once for every panel (sseFrame), and a client
+    // that stops reading is held, then dropped, instead of growing its socket
+    // buffer without bound (SseWriter). A dropped panel reconnects with since=.
+    let unsub: (() => void) | undefined, done = false;
+    const cleanup = () => { if (done) return; done = true; clearInterval(ping); writer.close(); unsub?.(); };
+    const writer = new SseWriter(res, { onDrop: cleanup });
+    const ping = setInterval(() => writer.ping(), 15000);
     const sinceSeq = Number.isFinite(Number(since)) ? Number(since) : 0;
-    const unsub = this.manager.subscribe((e) => {
-      res.write(`id: ${e.seq}\nevent: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`);
-    }, sinceSeq);
-    const cleanup = () => { clearInterval(ping); unsub(); };
+    writer.replaying = true;
+    try {
+      unsub = this.manager.subscribe((e) => writer.send(sseFrame(e)), sinceSeq);
+    } finally { writer.replaying = false; }
+    if (done) unsub();
     res.on('close', cleanup);
     res.on('error', cleanup);
   }

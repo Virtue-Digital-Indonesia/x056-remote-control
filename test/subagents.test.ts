@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { cachedBrief, listSubagents, readSubagentPage, subagentBrief, subagentDir, subagentFile, subagentFiles, transcriptIndex } from '../src/adapters/subagents.js';
+import { cachedBrief, cachedTranscriptIndex, clearTranscriptIndexMemo, listSubagents, readSubagentPage, subagentBrief, subagentDir, subagentFile, subagentFiles, transcriptIndex } from '../src/adapters/subagents.js';
 
 /** A config dir shaped exactly like the CLI's: projects/<dir>/<session>/subagents. */
 function fixture(agents: { id: string; meta?: unknown; lines?: string[] }[]) {
@@ -186,5 +186,33 @@ describe('indexing transcripts', () => {
 
   it('skips an account with no projects tree instead of throwing', () => {
     expect(transcriptIndex([mkdtempSync(join(tmpdir(), 'x056-idx-'))]).size).toBe(0);
+  });
+
+  it('walks a projects/ tree shared by several accounts once, first account path kept', () => {
+    const shared = withTranscripts([{ project: '-p', sessionId: 's1' }]);
+    const a = mkdtempSync(join(tmpdir(), 'x056-idx-')), b = mkdtempSync(join(tmpdir(), 'x056-idx-'));
+    symlinkSync(join(shared, 'projects'), join(a, 'projects'));
+    symlinkSync(join(shared, 'projects'), join(b, 'projects'));
+    // Which dirs get walked is uniqueProjectsDirs (find-transcript-cache.test);
+    // here: the result still names the first account's path.
+    expect(transcriptIndex([a, b, shared]).get('s1')).toBe(join(a, 'projects', '-p', 's1.jsonl'));
+  });
+
+  it('memoizes the index for a few seconds per dir list', () => {
+    clearTranscriptIndexMemo();
+    const cfg = withTranscripts([{ project: '-a', sessionId: 's1' }]);
+    const first = cachedTranscriptIndex([cfg], 1_000_000);
+    writeFileSync(join(cfg, 'projects', '-a', 's2.jsonl'), '{}\n');
+    // Within the window: the same map, the new transcript not yet in it.
+    expect(cachedTranscriptIndex([cfg], 1_002_000)).toBe(first);
+    expect(first.has('s2')).toBe(false);
+    // Past it: rebuilt, the new transcript is there.
+    const later = cachedTranscriptIndex([cfg], 1_003_500);
+    expect(later).not.toBe(first);
+    expect(later.has('s2')).toBe(true);
+    // Another dir list is its own entry.
+    const other = withTranscripts([{ project: '-b', sessionId: 'x' }]);
+    expect([...cachedTranscriptIndex([other], 1_003_600).keys()]).toEqual(['x']);
+    clearTranscriptIndexMemo();
   });
 });
