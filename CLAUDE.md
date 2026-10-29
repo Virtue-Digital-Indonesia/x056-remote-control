@@ -1785,9 +1785,12 @@ from a manifest he approves, and log every run. Contract with as-built notes:
   a checkout whose gitdir has a `commondir` file is a linked worktree, so a
   submodule is never M3 -- refused when the worktree holds ignored non-generated files, skip-worktree
   or assume-unchanged entries, `refs/worktree/*`, or reflog commits no ref
-  contains), dind leftovers including EVERY unused volume (M4; a container
+  contains), dind leftovers including every unused volume (M4; a container
   with a writable layer > 50 MB or named before/rollback/backup is
-  protected), big unknown `/tmp` dirs (M5).
+  protected, so is a volume whose compose project still has a running
+  container, and a data-looking volume name (`_db`, `pg`, `minio`, `*data`,
+  `uploads`, `config`, ...) is flagged `dataVolume`), big unknown `/tmp`
+  dirs (M5).
 - **Approval is a passkey assertion, not the token**: every session holds
   `$X056_TOKEN`, so a bearer route is no gate. The challenge is bound to the
   manifest id, digest and the exact item ids, single use, 5 min; only an

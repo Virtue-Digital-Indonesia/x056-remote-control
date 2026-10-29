@@ -335,6 +335,7 @@ describe('dind (A4/M4) through an injected docker runner', () => {
       if (args[0] === 'inspect') return out(JSON.stringify(containers.filter((c) => args.includes(String(c.Id)) || args.includes(String((c as { Name?: unknown }).Name).slice(1)))));
       if (args[0] === 'system') return out(JSON.stringify({ Volumes: [{ Name: 'docintel-audit-gocache', Size: '2GB' }, { Name: 'a'.repeat(64), Size: '10MB' }, { Name: 'pgdata-old', Size: '1.5GB' }] }));
       if (args[0] === 'volume' && args[1] === 'ls') return out(['docintel-audit-gocache', 'a'.repeat(64), 'pgdata-old'].map((n) => JSON.stringify(n)).join('\n'));
+      if (args[0] === 'volume' && args[1] === 'inspect') return out(JSON.stringify(args.slice(2).map((n) => ({ Name: n, Labels: null }))));
       if (args[0] === 'images' && args.includes('dangling=true') && args.includes('{{json .ID}}')) return out(JSON.stringify('sha256:old'));
       if (args[0] === 'images' && args.includes('dangling=true')) return out([JSON.stringify({ ID: 'sha256:old', CreatedAt: '2026-01-01 10:00:00 +0000 UTC', Size: '300MB' }), JSON.stringify({ ID: 'sha256:used', CreatedAt: '2026-01-01 10:00:00 +0000 UTC', Size: '1GB' })].join('\n'));
       if (args[0] === 'images') return out('app:rollback-1\napp:latest\n');
@@ -872,10 +873,10 @@ describe('review fixes (2026-10-27)', () => {
   });
 
   // ---- 4 and 5. dind containers and volumes ----
-  function dind(w: World, containers: Record<string, unknown>[], volumes: string[]) {
+  function dind(w: World, containers: Record<string, unknown>[], volumes: string[], volumeLabels: Record<string, Record<string, string>> = {}) {
     const c = (o: Record<string, unknown>): Record<string, unknown> => ({ Id: 'c' + String(o.Name).slice(1), Image: 'sha256:x', State: { Status: 'exited' }, HostConfig: { RestartPolicy: { Name: 'no' } }, Mounts: [], Config: { Image: 'x' }, ...o });
     const all = containers.map(c);
-    const sized = { current: new Map<string, number>() };
+    const sized = { current: new Map<string, number>(), all };
     w.docker = (args) => {
       const out = (x: string) => ({ code: 0, stdout: x, stderr: '' });
       if (args[0] === 'version') return out('27.5.1\n');
@@ -887,6 +888,7 @@ describe('review fixes (2026-10-27)', () => {
       }
       if (args[0] === 'system') return out(JSON.stringify({ Volumes: volumes.map((n) => ({ Name: n, Size: '100MB' })) }));
       if (args[0] === 'volume' && args[1] === 'ls') return out(volumes.map((n) => JSON.stringify(n)).join('\n'));
+      if (args[0] === 'volume' && args[1] === 'inspect') return out(JSON.stringify(args.slice(2).filter((n) => volumes.includes(n)).map((n) => ({ Name: n, Labels: volumeLabels[n] ?? null }))));
       if (args[0] === 'images') return out('');
       return out('');
     };
@@ -933,12 +935,54 @@ describe('review fixes (2026-10-27)', () => {
     expect(Object.keys(vol)).toHaveLength(5);
     expect(vol['docintel-audit-gocache'].evidence.looksLikeCache).toBe('gocache');
     expect(vol['obs-gomod2'].evidence.looksLikeCache).toBe('gomod');
-    for (const n of ['ergomodel_pg', 'verdaccio-npm-cache-storage']) {
-      expect(vol[n].evidence.looksLikeCache).toBeUndefined();
-      expect(vol[n]).toMatchObject({ mayHoldData: true, reason: 'unused named volume: may hold data' });
-    }
+    for (const n of ['ergomodel_pg', 'verdaccio-npm-cache-storage']) expect(vol[n].evidence.looksLikeCache).toBeUndefined();
+    expect(vol['verdaccio-npm-cache-storage']).toMatchObject({ mayHoldData: true, reason: 'unused named volume: may hold data' });
+    expect(vol['ergomodel_pg']).toMatchObject({ mayHoldData: true, dataVolume: true, reason: expect.stringMatching(/looks like a data volume \(pg\)/) });
     expect(CACHE_VOLUME_HINT.test('ergomodel_pg')).toBe(false);
     expect(CACHE_VOLUME_HINT.test('verdaccio-npm-cache-storage')).toBe(false);
+  });
+
+  it('5b: a volume of a compose project with a running container is protected, at plan time and at approval', async () => {
+    const w = world();
+    const P = 'com.docker.compose.project';
+    const fx = dind(w, [
+      { Name: '/ahu-ai-sso-demo-native-auth-1', State: { Status: 'running' }, Config: { Image: 'x', Labels: { [P]: 'ahu-ai-sso-demo' } } },
+      { Name: '/other-web-1', State: { Status: 'exited' }, Config: { Image: 'x', Labels: { [P]: 'other' } }, SizeRw: 0 },
+    ], ['ahu-ai-sso-demo_gocache', 'other_gocache', 'loose_gocache'], {
+      'ahu-ai-sso-demo_gocache': { [P]: 'ahu-ai-sso-demo', 'com.docker.compose.volume': 'gocache' },
+      'other_gocache': { [P]: 'other', 'com.docker.compose.volume': 'gocache' },
+    });
+    const s = sweeper(w, { dind: true });
+    await sweep(s, true);
+    const m = manifestOf(s);
+    const vols = m.items.filter((i) => i.target.startsWith('docker:volume:')).map((i) => i.target.slice(14)).sort();
+    expect(vols).toEqual(['loose_gocache', 'other_gocache']);
+    expect(m.protected.find((p) => p.target === 'docker:volume:ahu-ai-sso-demo_gocache')?.reason).toMatch(/compose project ahu-ai-sso-demo has a running container/);
+    // The stack comes up after the manifest: the approval re-check refuses it.
+    const item = m.items.find((i) => i.target === 'docker:volume:other_gocache')!;
+    (fx.all.find((c) => c.Name === '/other-web-1')!.State as { Status: string }).Status = 'running';
+    w.dockerCalls.length = 0;
+    const rec = await s.executeApproved(m.id, m.digest, [item.id]).done;
+    expect(s.receipts(rec.runId)!.receipts[0]).toMatchObject({ result: 'skipped', reason: expect.stringMatching(/compose project other has a running container/) });
+    expect(w.dockerCalls.filter((a) => !readOnlyCommand('docker', a))).toEqual([]);
+  });
+
+  it('5c: a data-looking volume is flagged dataVolume (never AUTO); cache names keep their hint and win', async () => {
+    const w = world();
+    const names = ['ahu-ai-sso-demo_pgdata', 'app_db', 'app-db-1', 'svc_pg', 'store_minio', 'files_s3', 'web_uploads', 'kc_config', 'x_audit', 'mongo-data', 'proj_staff',
+      'docintel-audit-gocache', 'obs-gomod2', 'api_gomodcache', 'build-cache', 'misc'];
+    dind(w, [], names, { 'proj_staff': { 'com.docker.compose.project': 'proj', 'com.docker.compose.volume': 'staff' } });
+    const s = sweeper(w, { dind: true });
+    await sweep(s, false);
+    expect(w.dockerCalls.filter((a) => !readOnlyCommand('docker', a))).toEqual([['builder', 'prune', '-f', '--filter', 'until=168h']]);
+    const m = manifestOf(s);
+    expect(m.auto.some((i) => i.target.startsWith('docker:volume:'))).toBe(false);
+    const vol = Object.fromEntries(m.items.filter((i) => i.target.startsWith('docker:volume:')).map((i) => [i.target.slice(14), i]));
+    expect(Object.keys(vol)).toHaveLength(names.length);
+    for (const n of names.slice(0, 11)) expect(vol[n], n).toMatchObject({ class: 'manifest', mayHoldData: true, dataVolume: true, reason: expect.stringMatching(/data volume/) });
+    for (const n of names.slice(11)) expect(vol[n].dataVolume, n).toBeUndefined();
+    expect(vol['api_gomodcache'].evidence.looksLikeCache).toBe('gomodcache');
+    expect(vol['build-cache'].evidence.looksLikeCache).toBe('cache');
   });
 
   // ---- 6. projects ----
