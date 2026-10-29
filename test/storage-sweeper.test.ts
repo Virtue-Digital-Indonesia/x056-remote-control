@@ -517,7 +517,27 @@ describe('schedule and helpers', () => {
     const s = new StorageSweeper({ stateDir: w.state, workspaceRoot: w.ws, log: () => {} });
     const prot = s.protectedPaths().filter((g) => g.category === 'configured').map((g) => g.path).sort();
     expect(prot).toEqual([join(w.ws, 'poc-ahu-ai'), uat].sort());
-    expect(DEFAULT_PROTECTED_PATHS).toHaveLength(2);
+    expect(DEFAULT_PROTECTED_PATHS).toHaveLength(3);
+  });
+
+  it('protects ahu-codebase (bind-mounted into the dev instance): an idle finished worktree there is neither AUTO nor offered', async () => {
+    const w = world();
+    const wt = join(w.ws, 'ahu-codebase', 'ahu-apostille', 'ap-fe');
+    mkdirSync(join(wt, '..'), { recursive: true });
+    git(w.app, 'worktree', 'add', '-q', '-b', 'apfe', wt);
+    git(w.app, 'update-ref', 'refs/remotes/origin/apfe', 'apfe');
+    write(join(wt, 'node_modules', 'left-pad', 'index.js'), 'module.exports=1');
+    write(join(wt, '.next', 'cache', 'c.bin'));
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, false);
+    const m = manifestOf(s);
+    const under = (t: string) => t.startsWith(join(w.ws, 'ahu-codebase'));
+    expect(m.auto.some((i) => under(i.target))).toBe(false);
+    expect(m.items.some((i) => under(i.target))).toBe(false);
+    expect(existsSync(join(wt, 'node_modules', 'left-pad', 'index.js'))).toBe(true);
+    expect(existsSync(join(wt, '.next', 'cache', 'c.bin'))).toBe(true);
+    expect(m.protected.find((p) => p.target === join(w.ws, 'ahu-codebase'))).toMatchObject({ category: 'configured', reason: expect.stringMatching(/ahu-codebase/) });
   });
 
   it('read-only commands only, in a dry run', () => {

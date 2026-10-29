@@ -166,6 +166,7 @@ Use temp dirs, real `git` and a mocked `docker`:
 
 **Other choices:**
 - `{workspaceRoot}/poc-ahu-ai` is in the default `protectedPaths`. The dev instance works in that tree, and its processes, turns and containers are invisible from this container, so none of the live-use checks could protect them.
+- `{workspaceRoot}/ahu-codebase` is in the default `protectedPaths` for the same reason: the dev instance's `compose.override.yaml` bind-mounts it into its containers at `poc-ahu-ai/ahu-codebase`, so from production it sits outside `poc-ahu-ai`.
 - A checkout nested inside a missing-gitdir or detached-unreachable tree is protected too (checked by walking up from each target at plan and delete time).
 - M2 and M3 are refused when another repository sits inside (an ignored clone would go with `rm` or `git worktree remove`).
 - Execution acts on the re-plan, never on the stored manifest: docker commands are rebuilt from the target, path actions come from the fresh plan.
@@ -195,3 +196,4 @@ An adversarial review found these; each has a test in `test/storage-sweeper.test
 A review of the first live manifest found three gaps; each has a test in `test/storage-sweeper.test.ts` that fails on the previous code.
 
 1. **Submodules were offered as M3.** `gitInfo` treated any `.git` file as a linked worktree, so `ahu-online/protected/modules/*` and `ahu-cv-firma/protected/modules/*` were offered for `git worktree remove`, which refuses them. Linked now means the gitdir holds `commondir`.
+2. **The dev instance's `ahu-codebase` was swept.** It is bind-mounted into the dev containers inside `poc-ahu-ai`, but production sees it at `{workspaceRoot}/ahu-codebase`: 13 items were offered and `ahu-apostille/ap-fe/.next/cache` was AUTO-deleted. It is now a default protected path (no env list exists; `config.json` `protectedPaths` only adds).

@@ -1761,8 +1761,9 @@ from a manifest he approves, and log every run. Contract with as-built notes:
 - **PROTECTED, never offered**: transcripts, uploads, artifacts, worktrees
   whose gitdir is missing (their `node_modules` may be offered, never their
   source), any checkout whose detached HEAD no ref contains (the UAT
-  checkout), dirty or untracked files, `poc-ahu-ai` (the dev instance works
-  there, invisible to every live-use check), `*rollback*` images, running /
+  checkout), dirty or untracked files, `poc-ahu-ai` and `ahu-codebase` (the
+  dev instance works there -- the latter is bind-mounted into its containers
+  inside poc-ahu-ai -- invisible to every live-use check), `*rollback*` images, running /
   `pin-*` / data-holding containers, any path a live process uses (cwd, open
   fds, cache env, running containers' bind sources), and any chat that is
   running, has background work or queue items, is a cron target or has a live

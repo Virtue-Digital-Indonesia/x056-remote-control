@@ -101,8 +101,12 @@ const RUNS_SHOWN = 20;
  *    processes, turns and containers are invisible from here, so none of the
  *    live-use checks could protect its work (the contract puts the dev
  *    instance OUT).
+ *  - ahu-codebase: the same reason. The dev instance's compose.override.yaml
+ *    (on the host, not in git) bind-mounts `<workspace>/ahu-codebase` into its
+ *    containers at `poc-ahu-ai/ahu-codebase`, so production sees that tree
+ *    here, outside poc-ahu-ai, while the dev devs work in it.
  */
-export const DEFAULT_PROTECTED_PATHS = ['{stateDir}/chats/c06d266a*/work/uat/qol-chatbot/worktree', '{workspaceRoot}/poc-ahu-ai'];
+export const DEFAULT_PROTECTED_PATHS = ['{stateDir}/chats/c06d266a*/work/uat/qol-chatbot/worktree', '{workspaceRoot}/poc-ahu-ai', '{workspaceRoot}/ahu-codebase'];
 /** Outside every IN root already; listed so the protected report names them. */
 const OUT_PATHS = ['/home/efran/backups', '/home/efran/x056-devs', '/home/efran/dev-workspace'];
 const STATE_OUT = ['uploads', 'artifacts', 'project-files', 'file-staging', 'frontend-releases', 'codex-sessions', 'conversation-journal', 'secrets', 'accounts'];
