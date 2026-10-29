@@ -1149,7 +1149,10 @@ only), and Jev gates which reports wake the orchestrator.
   interrupted turn is `blocked` without asking anyone -- then one Jev Choice
   (`JevService.choose`, logged in the fork log as `report gate · <role>`):
   done / needs_orchestrator / needs_human / blocked, followed only at >= 75%;
-  unsure or no model = needs_orchestrator. `needs_orchestrator` and `blocked`
+  unsure or no model = needs_orchestrator. A report whose own first line is
+  DONE is never gated needs_human (a picker's needs_human becomes
+  needs_orchestrator, `gateBy: 'rule'`, in `decideGate`), so routine finished
+  work never pushes to the owner (2026-10-28). `needs_orchestrator` and `blocked`
   wake at once; `done` and `needs_human` wait until no delegate of that
   orchestrator is working, then everything unseen goes over together.
   `needs_human` also sends a push notification.

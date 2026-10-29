@@ -22,6 +22,14 @@ describe('the report gate', () => {
     expect(decideGate('completed', { choice: 'reboot', confidence: 1 }, 0.75).gate).toBe('needs_orchestrator');
   });
 
+  it('never gates a report the worker called DONE as needs_human', () => {
+    const done = 'DONE Implemented the trusted-parent runner; ready for parent review.\nRemaining gaps: parent review required.';
+    expect(decideGate('completed', { choice: 'needs_human', confidence: 0.84 }, 0.75, done)).toEqual({ gate: 'needs_orchestrator', confidence: 0.84, by: 'rule' });
+    expect(decideGate('completed', { choice: 'needs_human', confidence: 0.84 }, 0.75, 'NEEDS HUMAN: staging creds expired')).toEqual({ gate: 'needs_human', confidence: 0.84, by: 'jev' });
+    expect(decideGate('completed', { choice: 'done', confidence: 0.9 }, 0.75, done)).toEqual({ gate: 'done', confidence: 0.9, by: 'jev' });
+    expect(decideGate('failed', { choice: 'needs_human', confidence: 0.84 }, 0.75, done)).toEqual({ gate: 'blocked', by: 'rule' });
+  });
+
   it('wakes at once for the orchestrator or a blocker, and gathers the rest until the team is quiet', () => {
     expect(shouldWake('needs_orchestrator', true)).toBe(true);
     expect(shouldWake('blocked', true)).toBe(true);
