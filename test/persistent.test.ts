@@ -569,26 +569,22 @@ describe('switching model and back does not reuse a stale process', () => {
     p.shutdown();
   });
 
-  it('leaves a working A process alone at B spawn, and still never reuses it', async () => {
+  // Incident d3d950c5 (2026-10-29): A had written 2 s earlier, so it was
+  // inside the output grace -- not held (activeProcess ignores the grace) and
+  // not killed (retireSiblings honoured it): two writers on one transcript.
+  it('kills an idle A at B spawn even inside its output grace (no second writer)', async () => {
     let t = 1_000;
-    const { p, spawned } = pool({ maxSessions: 5, workingGraceMs: 100, now: () => t });
-    const h1 = p.startTurn(turn({ model: 'sonnet' }));
+    const { p, spawned } = pool({ maxSessions: 5, now: () => t }); // default 2-min grace
+    const h1 = p.startTurn(turn({ model: 'opus', effort: 'high' }));
     spawned[0].cli.result('a'); await h1.done;
-    t += 50; // A still within its working grace
-    const h2 = p.startTurn(turn({ model: 'opus', mode: 'resume' }));
-    expect(spawned[0].cli.killed).toBe(false);
-    spawned[1].cli.result('b'); await h2.done;
-    // A keeps doing background work while the conversation returns to sonnet.
-    spawned[0].cli.emit({ type: 'assistant', message: { content: [] } });
-    const h3 = p.startTurn(turn({ model: 'sonnet', mode: 'resume', prompt: 'three' }));
-    expect(spawned).toHaveLength(3);
-    expect(spawned[0].cli.killed).toBe(false); // background work survives
-    expect(spawned[0].cli.msgs().some((m) => m.message?.content?.[0]?.text === 'three')).toBe(false);
-    expect(spawned[2].cli.msgs().map((m) => m.message.content[0].text)).toEqual(['three']);
-    spawned[2].cli.result('c'); await h3.done;
-    // Still tracked: shutdown reaches the retired process.
-    p.shutdown();
+    t += 2_000;
+    expect(p.heldIdentity('s1')).toBeUndefined();
+    const h2 = p.startTurn(turn({ model: 'opus', effort: 'xhigh', mode: 'resume', prompt: 'two' }));
+    expect(spawned).toHaveLength(2);
     expect(spawned[0].cli.killed).toBe(true);
+    expect(p.stats().sessions).toBe(1);
+    spawned[1].cli.result('b'); await h2.done;
+    p.shutdown();
   });
 
   it('same model on consecutive turns still reuses one process', async () => {
@@ -710,6 +706,88 @@ describe('one process per conversation while it works', () => {
     const h2 = p.startTurn(turn({ mode: 'resume', prompt: 'next' }));
     expect(texts(spawned[0])).toEqual(['hello', 'next']);
     spawned[0].result('ok'); await h2.done;
+    p.shutdown();
+  });
+});
+
+// An identity change never kills a process with a tool call in flight or a
+// background task still running; the turn is held on it instead (2026-10-29).
+describe('in-flight work decides both the hold and the retire', () => {
+  const texts = (cli: ReturnType<typeof fakeCli>) => cli.msgs().filter((m) => m.type === 'user').map((m) => m.message.content[0].text);
+  const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
+  function flightPool(now: () => number) {
+    const spawned: ReturnType<typeof fakeCli>[] = [];
+    const held: unknown[] = [];
+    const p = new PersistentTurns({ now, deferPollMs: 5, onHeld: (i) => held.push(i), spawnFn: () => { const cli = fakeCli(); spawned.push(cli); return cli.child as never; } });
+    return { p, spawned, held };
+  }
+
+  it('a silent long tool past the grace is not killed: the turn is held on it and runs once the reply ends', async () => {
+    let t = 1_000_000;
+    const { p, spawned, held } = flightPool(() => t);
+    const h1 = p.startTurn(turn({ model: 'opus', effort: 'high' }));
+    spawned[0].result('turn over'); await h1.done;
+    // A woken reply starts a long Bash (sleep 120, a migration): nothing more is written.
+    spawned[0].emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'sleep 300' } }] } });
+    t += 3 * 60_000;                                   // past the 2-min output grace
+    expect(p.heldIdentity('s1')).toEqual({ model: 'opus', effort: 'high', advisor: undefined });
+    const h2 = p.startTurn(turn({ model: 'opus', effort: 'xhigh', mode: 'resume', prompt: 'next' }));
+    await tick();
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].killed).toBe(false);
+    expect(held).toHaveLength(1);
+    expect(texts(spawned[0])).toEqual(['hello']);      // waits for the tool's reply
+    spawned[0].emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'ok' }] } });
+    spawned[0].emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'slept' }] } });
+    spawned[0].result('woken reply');
+    expect(texts(spawned[0])).toEqual(['hello', 'next']);
+    spawned[0].result('answered'); await h2.done;
+    p.shutdown();
+  });
+
+  it('a live run_in_background shell is not killed on an identity change', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = flightPool(() => t);
+    const h1 = p.startTurn(turn({ model: 'opus', effort: 'high' }));
+    spawned[0].emit({ type: 'system', subtype: 'task_started', task_id: 'sh1', task_type: 'local_bash', description: 'npm test' });
+    spawned[0].result('started it'); await h1.done;
+    t += 3 * 60_000;
+    const h2 = p.startTurn(turn({ model: 'opus', effort: 'xhigh', mode: 'resume', prompt: 'next' }));
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].killed).toBe(false);
+    expect(texts(spawned[0])).toEqual(['hello', 'next']);
+    spawned[0].result('ok'); await h2.done;
+    p.shutdown();
+  });
+
+  it('a reply in progress holds the turn on another effort instead of spawning', async () => {
+    let t = 1_000_000;
+    const { p, spawned } = flightPool(() => t);
+    const h1 = p.startTurn(turn({ model: 'opus', effort: 'high' }));
+    spawned[0].result('turn over'); await h1.done;
+    spawned[0].emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'woken, thinking' }] } });
+    t += 1_000;
+    const h2 = p.startTurn(turn({ model: 'opus', effort: 'xhigh', mode: 'resume', prompt: 'next' }));
+    expect(spawned).toHaveLength(1);
+    expect(texts(spawned[0])).toEqual(['hello']);
+    spawned[0].result('woken reply');
+    expect(texts(spawned[0])).toEqual(['hello', 'next']);
+    spawned[0].result('ok'); await h2.done;
+    p.shutdown();
+  });
+
+  it('a truly idle sibling is retired on an identity change', async () => {
+    let t = 1_000_000;
+    const { p, spawned, held } = flightPool(() => t);
+    const h1 = p.startTurn(turn({ model: 'opus', effort: 'high' }));
+    spawned[0].emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: {} }] } });
+    spawned[0].emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'ok' }] } });
+    spawned[0].result('done'); await h1.done;
+    t += 1_000;
+    p.startTurn(turn({ model: 'opus', effort: 'xhigh', mode: 'resume' }));
+    expect(spawned).toHaveLength(2);
+    expect(spawned[0].killed).toBe(true);
+    expect(held).toHaveLength(0);
     p.shutdown();
   });
 });

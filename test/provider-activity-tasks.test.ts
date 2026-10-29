@@ -94,3 +94,21 @@ describe('nesting as the CLI marks it', () => {
     expect(a.counts().total).toBe(0);
   });
 });
+
+describe('Claude main-thread tool calls in flight', () => {
+  it('counts a top-level tool_use until its tool_result, ignoring subagent tools', () => {
+    const { activity, emit } = claude();
+    emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] } });
+    emit({ type: 'assistant', parent_tool_use_id: 'agent', message: { content: [{ type: 'tool_use', id: 'sub1', name: 'Read', input: {} }] } });
+    expect(activity.toolsInFlight()).toBe(1);
+    emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } });
+    expect(activity.toolsInFlight()).toBe(0);
+  });
+
+  it('a result clears what is left (an interrupted reply)', () => {
+    const { activity, emit } = claude();
+    emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] } });
+    emit({ type: 'result', result: 'interrupted' });
+    expect(activity.toolsInFlight()).toBe(0);
+  });
+});

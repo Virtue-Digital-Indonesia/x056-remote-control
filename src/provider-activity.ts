@@ -25,13 +25,19 @@ export class ProviderActivity {
   private claudeTasks = new Map<string, { agent: boolean; running: boolean }>();
   private commands = new Map<string, string>();
   private earlyChildren = new Map<string, boolean>();
+  /** Claude main-thread tool calls in flight: top-level tool_use ids with no
+   *  tool_result yet. Never timed out: a silent `sleep 120` or a migration
+   *  writes nothing for minutes and is still work (2026-10-29). Cleared at the
+   *  main thread's `result`, which cannot come while its own tool runs. */
+  private tools = new Set<string>();
+  toolsInFlight(): number { return this.tools.size; }
 
   start(): void { this.parent = true; }
   endTurn(): void { this.parent = false; }
   agentRunning(id: string): boolean | undefined {
     return this.agents.get(id) ?? this.claudeTasks.get(id)?.running;
   }
-  stop(): void { this.parent = false; this.wakeAt = null; this.agents.clear(); this.claudeTasks.clear(); this.commands.clear(); }
+  stop(): void { this.parent = false; this.wakeAt = null; this.tools.clear(); this.agents.clear(); this.claudeTasks.clear(); this.commands.clear(); }
   /** Running work by kind. `agents` = subagents (Claude agent-type tasks and Codex children);
    * `shells` = Claude background shells and any other top-level Claude task whose kind is not an agent. */
   counts(): { agents: number; shells: number; total: number } {
@@ -97,7 +103,10 @@ export class ProviderActivity {
       if (m.type === 'system' && typeof m.task_id === 'string' && ['task_started', 'task_progress', 'task_notification'].includes(m.subtype)) {
         this.claudeTask(m);
       }
-      if (m.type === 'result') { this.parent = false; this.wakeAt = null; }
+      const content = Array.isArray(m.message?.content) ? m.message.content : [];
+      if (m.type === 'assistant') for (const b of content) { if (b?.type === 'tool_use' && typeof b.id === 'string') this.tools.add(b.id); }
+      else if (m.type === 'user') for (const b of content) { if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string') this.tools.delete(b.tool_use_id); }
+      if (m.type === 'result') { this.parent = false; this.wakeAt = null; this.tools.clear(); }
       else if (['assistant', 'stream_event', 'tool_progress'].includes(m.type)) { this.parent = true; this.wakeAt = null; }
       return;
     }

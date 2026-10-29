@@ -389,6 +389,22 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   `agents` (top-level agent tasks, workflows included) and `shells` (other
   top-level tasks); nested tasks are not counted. The agent tree's latest
   turn is open-ended, so agents launched after it ended show there.
+- **Hold and retire use ONE predicate (2026-10-29, incident d3d950c5).**
+  The hold ignored the 2-minute output grace and the sibling retire honoured
+  it, so a process that had written 2 s before a Jev effort change was
+  neither held nor killed: two processes on account d wrote one transcript
+  for ~3 minutes. Both now ask `hasInFlightWork` (busy, a reply open, a
+  main-thread `tool_use` with no `tool_result` yet -- never timed out, a
+  silent `sleep 300` counts -- or a live top-level task); every other sibling
+  is killed at a new spawn, grace or not. An identity change never kills a
+  process with a tool call in flight or a background task still running;
+  the turn is held on it instead. Eviction and the TTL keep the grace. The
+  price: a reply thinking silently with no tool and no task in flight is
+  killed by an identity change (the new process resumes from the
+  transcript) -- one lost reply instead of two writers. A notification for
+  a task the process never saw start is NOT a wake: `task_notification`
+  carries no nesting fields, so that would also catch nested tasks and hold
+  ordinary prompts for 3 minutes (tried and reverted).
 - **The real ending of background work and autopilot (2026-10-12).** A turn
   often ends "agents launched"; the summary and the ASK question come later in
   the reply a finished task WAKES. That reply was stripped of its ASK and
