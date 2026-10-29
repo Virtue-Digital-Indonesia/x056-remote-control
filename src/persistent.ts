@@ -359,7 +359,7 @@ export class PersistentTurns {
     // this entry stale: never reuse it; spawn fresh, which resumes from the
     // transcript.
     if (entry && this.isStale(entry)) {
-      if (this.working(entry) && !this.transport.singleWriter) {
+      if (!this.transport.singleWriter && this.hasInFlightWork(entry)) {
         // Still doing background work: move it off the key rather than kill it.
         // It stays in the pool (sweep, eviction and shutdown still reach it,
         // interrupt still hits it), is found by no key lookup, and loses every
@@ -426,16 +426,33 @@ export class PersistentTurns {
   }
 
   /** Mid-reply, and not a flag left behind: a reply in progress writes,
-   *  and one silent past the grace is taken as over. */
+   *  and one silent past the grace is taken as over -- unless a main-thread
+   *  tool call is still in flight, which may run silent for minutes and
+   *  ends only with its result. */
   private replying(e: Live): boolean {
-    return (!!e.queryOpen && this.now() - e.lastOutput < this.workingGraceMs) || e.activity.waking();
+    return (!!e.queryOpen && this.now() - e.lastOutput < this.workingGraceMs) || e.activity.waking() || e.activity.toolsInFlight() > 0;
+  }
+
+  /**
+   * In-flight work: a gateway turn, a reply open (writing, a wake expected,
+   * or a main-thread tool call with no result yet: replying), or a top-level
+   * background task (agent, run_in_background shell) still running. NOT the
+   * output grace of working(). This ONE predicate decides both whether a turn
+   * is held on a process (activeProcess) and whether a sibling may be killed
+   * when a new process spawns (retireSiblings). They used to disagree: the
+   * hold ignored the grace and the retire honoured it, so a process 2 s past
+   * its last write was neither held nor killed and became a second writer on
+   * the transcript (incident d3d950c5, 2026-10-29).
+   */
+  private hasInFlightWork(e: Live): boolean {
+    return e.busy || this.replying(e) || e.activity.snapshot().active;
   }
 
   private activeProcess(conversationId: string): Live | undefined {
     let best: Live | undefined;
     for (const e of this.live.values()) {
       if (e.sessionId !== conversationId || e.exited || e.limitHit) continue;
-      if (!(e.busy || this.replying(e) || e.activity.snapshot().active)) continue;
+      if (!this.hasInFlightWork(e)) continue;
       // A process a newer sibling has moved past is parked work, not the
       // conversation: its context lacks that sibling's turns (see isStale).
       if (this.isStale(e)) continue;
@@ -462,13 +479,21 @@ export class PersistentTurns {
 
   /**
    * A new process for a conversation makes its other processes stale: they
-   * hold a context the new one is about to move past. Idle ones go now; a
-   * working one is left to finish its background work (isStale keeps it from
-   * ever being reused).
+   * hold a context the new one is about to move past. Every sibling without
+   * in-flight work goes now, even one inside the output grace: such a process
+   * is exactly what activeProcess declined to hold the turn on, so leaving it
+   * alive made a second writer. An identity change never kills a process with
+   * a tool call in flight or a background task still running; the turn is
+   * held on it instead (startTurn). A sibling with in-flight work can still
+   * be here only when activeProcess skipped it -- stale (the `#retired:N`
+   * path) or limit-hit and busy -- and is left to finish, as before (isStale
+   * keeps it from ever being reused). Eviction and the TTL keep the grace.
    */
   private retireSiblings(fresh: Live): void {
     for (const e of [...this.live.values()]) {
-      if (e !== fresh && e.sessionId === fresh.sessionId && !this.working(e)) this.destroy(e);
+      if (e === fresh || e.sessionId !== fresh.sessionId) continue;
+      const keep = this.transport.singleWriter ? this.working(e) : this.hasInFlightWork(e);
+      if (!keep) this.destroy(e);
     }
   }
 
@@ -568,6 +593,11 @@ export class PersistentTurns {
       for (const e of events) { try { if (entry.sink) entry.sink(e); else entry.idleSink?.(e, src); } catch { /* a sink must never break the stream */ } }
       if (entry.exited) return;
       // The turn is over here, but the PROCESS is not — that is the point.
+      // TODO(incident d3d950c5, 2026-10-29): on `--resume` the CLI first
+      // emits synthetic repair entries (an interrupted tool_result, a stopped
+      // task_notification) and a `result` for them, which ends the continue
+      // turn here after ~0.5 s; the real reply then runs out of turn. Needs a
+      // live capture of that output before it can be told apart safely.
       if (turnEnded) {
         entry.lastUsed = this.now();
         // stdin is FIFO, so results come back in the order the messages went

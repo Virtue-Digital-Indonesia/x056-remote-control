@@ -602,7 +602,7 @@ describe('renaming the Bot', () => {
       expect(spawned[0].st.killed).toBe(false); // the turn completed on its own process
       p.startTurn(turn(botSystemNote('Jarvis'), { mode: 'resume' }));
       expect(spawned).toHaveLength(2);          // new identity: a new process
-      expect(spawned[0].st.killed).toBe(false); // the old one is inside its output grace: kept, stale, never reused (retired once quiet)
+      expect(spawned[0].st.killed).toBe(true);  // idle (no in-flight work), so killed even inside its output grace: one writer (incident d3d950c5)
       p.shutdown();
     });
 
