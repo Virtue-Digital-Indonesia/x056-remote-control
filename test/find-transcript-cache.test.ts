@@ -78,4 +78,14 @@ describe('findTranscript cache', () => {
     write(shared, '-p', 's');
     expect(findTranscript([b, a], 's')).toBe(join(b, 'projects', '-p', 's.jsonl'));
   });
+  it('refuses an id that is not a plain id (no path traversal)', () => {
+    const a = cfg();
+    write(a, '-proj', 's1');
+    mkdirSync(join(a, 'outside'), { recursive: true });
+    writeFileSync(join(a, 'outside', 'secret.jsonl'), '{}\n');
+    for (const bad of ['../outside/secret', '../../outside/secret', '-proj/s1', '..', '', 'a/b', 'a\\b']) {
+      expect(findTranscript([a], bad)).toBeNull();
+    }
+    expect(findTranscript([a], 's1')).not.toBeNull();
+  });
 });
