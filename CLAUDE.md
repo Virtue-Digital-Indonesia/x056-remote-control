@@ -1780,8 +1780,9 @@ from a manifest he approves, and log every run. Contract with as-built notes:
   run ABORTS when the process table, mount table, project list or running
   dind bind mounts cannot be read (fail closed).
 - **MANIFEST** (approval): other idle `node_modules` (M1), git-ignored build
-  outputs (M2), whole finished worktrees via `git worktree remove` (M3 --
-  refused when the worktree holds ignored non-generated files, skip-worktree
+  outputs (M2), whole finished worktrees via `git worktree remove` (M3; only
+  a checkout whose gitdir has a `commondir` file is a linked worktree, so a
+  submodule is never M3 -- refused when the worktree holds ignored non-generated files, skip-worktree
   or assume-unchanged entries, `refs/worktree/*`, or reflog commits no ref
   contains), dind leftovers including EVERY unused volume (M4; a container
   with a writable layer > 50 MB or named before/rollback/backup is

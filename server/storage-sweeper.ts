@@ -1096,7 +1096,13 @@ export class StorageSweeper {
     return out;
   }
 
-  private gitInfo(root: string): { type: 'dir' | 'file' | null; gitdir?: string; gitdirExists?: boolean; commondir?: string; locked?: boolean } {
+  /**
+   * `linked` = a linked worktree (`git worktree add`): only its gitdir holds a
+   * `commondir` file. A submodule also has a `.git` FILE, pointing into
+   * `<parent>/.git/modules/<name>`, but no `commondir`: it is a checkout of its
+   * own, never M3 (`git worktree remove` refuses it: "is not a working tree").
+   */
+  private gitInfo(root: string): { type: 'dir' | 'file' | null; gitdir?: string; gitdirExists?: boolean; commondir?: string; locked?: boolean; linked?: boolean } {
     let st; try { st = lstatSync(join(root, '.git')); } catch { return { type: null }; }
     if (st.isDirectory()) return { type: 'dir', gitdir: join(root, '.git'), gitdirExists: true, commondir: join(root, '.git') };
     if (!st.isFile()) return { type: null };
@@ -1106,10 +1112,10 @@ export class StorageSweeper {
     const gitdir = resolve(root, m[1].trim());
     let isDir = false; try { isDir = statSync(gitdir).isDirectory(); } catch { /* missing */ }
     if (!isDir) return { type: 'file', gitdir, gitdirExists: false };
-    let commondir = gitdir;
-    try { commondir = resolve(gitdir, readFileSync(join(gitdir, 'commondir'), 'utf8').trim()); } catch { /* not a linked one */ }
-    if (!existsSync(join(commondir, 'HEAD'))) return { type: 'file', gitdir, gitdirExists: false, commondir };
-    return { type: 'file', gitdir, gitdirExists: true, commondir, locked: existsSync(join(gitdir, 'locked')) };
+    let commondir = gitdir, linked = false;
+    try { commondir = resolve(gitdir, readFileSync(join(gitdir, 'commondir'), 'utf8').trim()); linked = true; } catch { /* not a linked one (a submodule) */ }
+    if (!existsSync(join(commondir, 'HEAD'))) return { type: 'file', gitdir, gitdirExists: false, commondir, linked };
+    return { type: 'file', gitdir, gitdirExists: true, commondir, linked, locked: existsSync(join(gitdir, 'locked')) };
   }
 
   private lockfileFor(nmParent: string, stopAt: string): string | null {
@@ -1198,9 +1204,9 @@ export class StorageSweeper {
     if (st.code !== 0) { res.notes.push({ target: root, reason: 'git status failed: ' + st.stderr.trim().split('\n')[0] }); return res; }
     const dirty = st.stdout.length > 0;
     const shared = refs.some((r) => r.startsWith('refs/tags/') || r.startsWith('refs/remotes/'));
-    const linked = gi.type === 'file';
+    const linked = gi.type === 'file' && gi.linked === true;
     const why: string[] = [];
-    if (!linked) why.push('main checkout, not a linked worktree');
+    if (!linked) why.push(gi.type === 'file' ? 'submodule checkout, not a linked worktree' : 'main checkout, not a linked worktree');
     if (dirty) why.push('uncommitted changes');
     if (!shared) why.push(refs.length ? 'HEAD only on local branches' : 'HEAD in no ref');
     const finished = why.length === 0;

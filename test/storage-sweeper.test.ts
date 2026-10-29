@@ -288,6 +288,34 @@ describe('PROTECTED', () => {
     expect(manifestOf(s).items.some((i) => i.rule === 'M3')).toBe(false);
     expect(manifestOf(s).notes.some((n) => n.target === old && /main repository/.test(n.reason))).toBe(true);
   });
+
+  it('M3: a submodule (.git file into .git/modules, no commondir) is never a linked worktree; a real worktree still is', async () => {
+    const w = world();
+    const src = join(w.base, 'subsrc');
+    mkdirSync(src);
+    git(src, 'init', '-q', '-b', 'main');
+    write(join(src, '.gitignore'), 'node_modules/\n');
+    write(join(src, 'package.json'), '{}');
+    write(join(src, 'package-lock.json'), '{}');
+    git(src, 'add', '-A'); git(src, 'commit', '-q', '-m', 'sub');
+    git(w.app, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', src, 'sub');
+    git(w.app, 'commit', '-q', '-m', 'add sub');
+    git(w.app, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    const sub = join(w.app, 'sub');
+    expect(readFileSync(join(sub, '.git'), 'utf8')).toMatch(/modules\/sub/);
+    write(join(sub, 'node_modules', 'left-pad', 'index.js'), 'module.exports=1');
+    const done = worktree(w, 'done');
+    git(w.app, 'update-ref', 'refs/remotes/origin/done', 'done');
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, true);
+    const m = manifestOf(s);
+    const m3 = m.items.filter((i) => i.rule === 'M3').map((i) => i.target);
+    expect(m3).toContain(done);
+    expect(m3).not.toContain(sub);
+    // The submodule's own deps follow the ordinary checkout rules: offered, never AUTO.
+    expect(m.items.find((i) => i.target === join(sub, 'node_modules'))).toMatchObject({ rule: 'M1', reason: expect.stringMatching(/not a linked worktree/) });
+  });
 });
 
 describe('dind (A4/M4) through an injected docker runner', () => {

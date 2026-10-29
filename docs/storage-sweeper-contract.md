@@ -88,7 +88,9 @@ A dry run lists these; nothing is removed until Efran approves the items.
   - `git status --porcelain=v1 -z --ignored=matching` lists an ignored path outside the regenerable names `node_modules .next dist build out target coverage .turbo .parcel-cache .pytest_cache .vite .vite-temp .cache __pycache__ *.pyc .gradle .angular`
   - the worktree has `refs/worktree/*` (or `refs/bisect/*`, `refs/rewritten/*`)
   - a commit in the last 200 entries of its `logs/HEAD` is in no branch, tag or remote ref
-  - another repository sits anywhere inside, `node_modules` included A locked one is listed with `locked: true` and is unlocked only at execution. A clean worktree whose HEAD is on local refs only is listed as `needsBundle: true` and is NOT executable until a bundle exists. Bundling is out of scope for v1, so these are informational.
+  - another repository sits anywhere inside, `node_modules` included
+
+  Only a checkout whose gitdir holds a `commondir` file is a linked worktree. A submodule (a `.git` file into `<parent>/.git/modules/<name>`, no `commondir`) is never M3; its own `node_modules` and outputs follow the main-checkout rules (M1/M2). A locked one is listed with `locked: true` and is unlocked only at execution. A clean worktree whose HEAD is on local refs only is listed as `needsBundle: true` and is NOT executable until a bundle exists. Bundling is out of scope for v1, so these are informational.
 - **M4.** dind:
   - exited or created containers with no mounts and not `pin-*`, sized with `docker inspect --size`. A writable layer over 50 MB, an unknown size, or a name containing `before`, `rollback` or `backup` makes it PROTECTED instead.
   - dangling images older than 72h
@@ -187,3 +189,9 @@ An adversarial review found these; each has a test in `test/storage-sweeper.test
    - `config.json` `protectedPaths` (and the option) add to the defaults instead of replacing them.
    - Command items (`go clean`, `npm cache clean`, `pnpm store prune`) pass the delete-time `guard`. The pnpm stores are cache roots now and pass the same refusal and in-use gates as path items.
    - Host processes and host containers are invisible from the container (see PROTECTED).
+
+## Live-manifest review fixes (2026-10-29)
+
+A review of the first live manifest found three gaps; each has a test in `test/storage-sweeper.test.ts` that fails on the previous code.
+
+1. **Submodules were offered as M3.** `gitInfo` treated any `.git` file as a linked worktree, so `ahu-online/protected/modules/*` and `ahu-cv-firma/protected/modules/*` were offered for `git worktree remove`, which refuses them. Linked now means the gitdir holds `commondir`.
