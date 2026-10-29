@@ -24,7 +24,8 @@ describe('findTranscript cache', () => {
     expect(findTranscript([a], 'agent-x')).toBeNull();
   });
 
-  it('serves a hit from the cache without listing the tree again', () => {
+  // Root ignores the mode bits the test relies on.
+  it.skipIf(process.getuid?.() === 0)('serves a hit from the cache without listing the tree again', () => {
     const a = cfg();
     const f = write(a, '-proj', 's1');
     expect(findTranscript([a], 's1')).toBe(f);
