@@ -1,7 +1,7 @@
 import { readMessageSender, stripTeamLine } from '../message-sender.js';
 import { toolImagePaths } from '../artifact-references.js';
 import { stripMemoryContext } from '../memory-context.js';
-import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { classifyEvent } from '../detector.js';
 import { fetchUsage } from '../quota.js';
@@ -157,23 +157,69 @@ function hasCredentials(configDir: string): boolean | null {
   } catch { return null; }
 }
 
-/** Locate <sessionId>.jsonl anywhere under any of the config dirs' projects
- *  trees. Exported separately from readHistory because the manager's session
- *  ADOPTION check (a Claude-only concept — there's no equivalent for Codex)
- *  needs just the existence check, not the parsed history. */
-export function findTranscript(configDirs: string[], sessionId: string): string | null {
-  const target = `${sessionId}.jsonl`;
+/**
+ * Each config dir's `projects/` tree, once per REAL directory, in config-dir
+ * order. Every account's `projects/` links to one shared tree, so walking each
+ * account's copy walked the same 15k entries nine times. The first config dir
+ * keeps its own (non-resolved) path, so callers see the same paths as before.
+ * A dir whose `projects/` does not exist is left out.
+ */
+export function uniqueProjectsDirs(configDirs: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
   for (const configDir of configDirs) {
     const projects = join(configDir, 'projects');
-    if (!existsSync(projects)) continue;
+    let real: string;
+    try { real = realpathSync(projects); } catch { continue; }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    out.push(projects);
+  }
+  return out;
+}
+
+/**
+ * sessionId -> transcript path, keyed by the config dir list too (two lists
+ * can hold different trees). A hit is trusted only while the file is still
+ * there. Misses are never cached: a new session's file appears at its first
+ * write, and a transcript relink creates a path mid-life.
+ */
+const transcriptCache = new Map<string, string>();
+const TRANSCRIPT_CACHE_MAX = 5000;
+/** Test hook. */
+export function clearTranscriptCache(): void { transcriptCache.clear(); }
+
+/** Locate <sessionId>.jsonl under any of the config dirs' projects trees.
+ *  Exported separately from readHistory because the manager's session
+ *  ADOPTION check (a Claude-only concept — there's no equivalent for Codex)
+ *  needs just the existence check, not the parsed history.
+ *
+ *  The CLI writes a session's transcript at `projects/<encoded cwd>/<id>.jsonl`
+ *  and nothing deeper is a session transcript (`<id>/subagents/agent-*.jsonl`
+ *  and workflow agents are named by agent id), so a two-level look-up finds
+ *  every one without listing the subagent subtrees. It used to be a recursive
+ *  listing of the whole tree on every history read (~300 ms, ~2.5 s on a miss
+ *  across nine accounts). */
+const PLAIN_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
+export function findTranscript(configDirs: string[], sessionId: string): string | null {
+  // The id is joined into a path below, so anything but a plain id (a `../`
+  // from a query string) must never reach the filesystem.
+  if (!PLAIN_ID.test(sessionId) || sessionId.includes('..')) return null;
+  const key = configDirs.join('\0') + '\0' + sessionId;
+  const hit = transcriptCache.get(key);
+  if (hit !== undefined) {
+    if (existsSync(hit)) return hit;
+    transcriptCache.delete(key);
+  }
+  const target = `${sessionId}.jsonl`;
+  for (const projects of uniqueProjectsDirs(configDirs)) {
     let names: string[];
-    try {
-      names = readdirSync(projects, { recursive: true }) as string[];
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      if (name.endsWith(target)) return join(projects, name);
+    try { names = readdirSync(projects); } catch { continue; }
+    const found = [target, ...names.map((d) => join(d, target))].map((n) => join(projects, n)).find((p) => existsSync(p));
+    if (found) {
+      if (transcriptCache.size >= TRANSCRIPT_CACHE_MAX) transcriptCache.delete(transcriptCache.keys().next().value as string);
+      transcriptCache.set(key, found);
+      return found;
     }
   }
   return null;

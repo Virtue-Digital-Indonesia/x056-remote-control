@@ -3,8 +3,9 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, exist
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { ProjectRegistry } from '../server/projects.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ProjectSpaceRegistry } from '../server/project-space-registry.js';
+import { ProjectRegistry, helpersOf } from '../server/projects.js';
 import { SessionManager } from '../server/manager.js';
 import { AccountRegistry } from '../src/accounts.js';
 import type { RunSessionOptions } from '../src/failover.js';
@@ -30,6 +31,18 @@ describe('Project spaces contracts and migration', () => {
     const before=readFileSync(f.file,'utf8'),view=f.manager.listProjects().projects.find(x=>x.id===p.id)!;
     expect(view.provider).toBe('codex');expect(view.conversations.map(c=>c.provider)).toEqual(['claude','codex']);
     expect(readFileSync(f.file,'utf8')).toBe(before);
+  });
+  it('lists conversations with one Space registry read, same output as resolving each', () => {
+    const f=fixture(),space=f.manager.createProjectSpace({requestId:'list-view-parent',name:'List view'});
+    const created=f.manager.createSpaceWorkspace(space.id,{requestId:'list-view-work',name:'Listed',folder:'listed',provider:'claude' as const});
+    const reg=ProjectRegistry.load(f.file);reg.addConversation(created.projectId,'second','Second','claude');reg.addConversation(created.projectId,'third','Third','codex');
+    const expected=ProjectRegistry.load(f.file).conversations(created.projectId).map(c=>({...c,effectiveRouter:f.manager.routerFor(helpersOf(c))??null,...f.manager.spaces().resolve(created.projectId,c.sessionId)}));
+    const readView=vi.spyOn(ProjectSpaceRegistry.prototype,'readView'),resolve=vi.spyOn(ProjectSpaceRegistry.prototype,'resolve');
+    try {
+      const listed=f.manager.listConversations(created.projectId);
+      expect(readView).toHaveBeenCalledTimes(1);expect(resolve).not.toHaveBeenCalled();
+      expect(listed).toEqual(expected);expect(listed.map(c=>c.spaceId)).toEqual([space.id,space.id,space.id]);
+    } finally { readView.mockRestore();resolve.mockRestore(); }
   });
   it('creates a Git workspace and first Work once, including after restart', () => {
     const f=fixture(),space=f.manager.createProjectSpace({requestId:'new-work-parent',name:'Fresh project'});

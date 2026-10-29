@@ -278,3 +278,76 @@ describe('provider-aware account setup', () => {
   });
 
 });
+
+describe('settings.json: hooks and cleanupPeriodDays follow the fleet', () => {
+  const HOOKS = { Stop: [{ hooks: [{ type: 'command', command: 'node /app/state/skills/writing-style/scripts/stop.js' }] }] };
+  const readSettings = (dir: string) => JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
+  const writeSettings = (dir: string, s: Record<string, unknown>) => writeFileSync(join(dir, 'settings.json'), JSON.stringify(s));
+
+  it('gives a new account cleanupPeriodDays 365 and the peers\' hooks, keeping its other keys', async () => {
+    const { accounts } = fleet();
+    writeSettings(accounts[0].configDir, { hooks: HOOKS, cleanupPeriodDays: 365 });
+    writeSettings(accounts[1].configDir, { hooks: HOOKS });
+    writeSettings(accounts[2].configDir, { theme: 'dark', enabledPlugins: { 'x@m': false } });
+    const res = await new AccountProvisioner(() => accounts, fakePlugins()).provision(accounts[2]);
+    expect(res.settings).toEqual(['cleanupPeriodDays', 'hooks']);
+    expect(res.errors).toEqual([]);
+    expect(readSettings(accounts[2].configDir)).toEqual({ theme: 'dark', enabledPlugins: { 'x@m': false }, cleanupPeriodDays: 365, hooks: HOOKS });
+  });
+
+  it('never overwrites hooks the account already has', async () => {
+    const { accounts } = fleet();
+    writeSettings(accounts[0].configDir, { hooks: HOOKS });
+    const own = { PostToolUse: [] };
+    writeSettings(accounts[2].configDir, { hooks: own, cleanupPeriodDays: 500 });
+    const res = await new AccountProvisioner(() => accounts, fakePlugins()).provision(accounts[2]);
+    expect(res.settings).toEqual([]);
+    expect(readSettings(accounts[2].configDir)).toEqual({ hooks: own, cleanupPeriodDays: 500 });
+  });
+
+  it('takes the highest peer cleanupPeriodDays, never below 365', () => {
+    const { accounts } = fleet();
+    const prov = new AccountProvisioner(() => accounts, fakePlugins());
+    expect(prov.settingsPlan(accounts[2].configDir)).toEqual({ cleanupPeriodDays: 365 });
+    writeSettings(accounts[0].configDir, { cleanupPeriodDays: 30 });
+    expect(prov.settingsPlan(accounts[2].configDir).cleanupPeriodDays).toBe(365);
+    writeSettings(accounts[1].configDir, { cleanupPeriodDays: 400 });
+    expect(prov.settingsPlan(accounts[2].configDir).cleanupPeriodDays).toBe(400);
+  });
+
+  it('picks the hooks most peers hold when they disagree', () => {
+    const root = mkdtempSync(join(tmpdir(), 'x056-prov-'));
+    const accounts = ['a', 'b', 'c', 'd'].map((n) => ({ name: n, configDir: join(root, n) }));
+    for (const a of accounts) mkdirSync(a.configDir, { recursive: true });
+    const other = { Stop: [] };
+    writeSettings(accounts[0].configDir, { hooks: other });
+    writeSettings(accounts[1].configDir, { hooks: HOOKS });
+    writeSettings(accounts[2].configDir, { hooks: HOOKS });
+    expect(new AccountProvisioner(() => accounts, fakePlugins()).settingsPlan(accounts[3].configDir).hooks).toEqual(HOOKS);
+  });
+
+  it('creates settings.json when the account has none', async () => {
+    const { accounts } = fleet();
+    writeSettings(accounts[0].configDir, { hooks: HOOKS, cleanupPeriodDays: 365 });
+    const res = await new AccountProvisioner(() => accounts, fakePlugins()).provision(accounts[2]);
+    expect(res.settings).toEqual(['cleanupPeriodDays', 'hooks']);
+    expect(readSettings(accounts[2].configDir)).toEqual({ cleanupPeriodDays: 365, hooks: HOOKS });
+  });
+
+  it('leaves an unreadable settings.json alone and reports it', async () => {
+    const { accounts } = fleet();
+    writeFileSync(join(accounts[2].configDir, 'settings.json'), '{ not json');
+    const res = await new AccountProvisioner(() => accounts, fakePlugins()).provision(accounts[2]);
+    expect(res.errors.some(e => e.startsWith('settings:'))).toBe(true);
+    expect(readFileSync(join(accounts[2].configDir, 'settings.json'), 'utf8')).toBe('{ not json');
+  });
+
+  it('leaves Codex accounts untouched', async () => {
+    const { accounts } = fleet();
+    const codex = accounts.map(a => ({ ...a, provider: 'codex' as const }));
+    writeSettings(codex[0].configDir, { hooks: HOOKS });
+    const res = await new AccountProvisioner(() => codex, fakePlugins()).provision(codex[2]);
+    expect(res.settings).toBeUndefined();
+    expect(existsSync(join(codex[2].configDir, 'settings.json'))).toBe(false);
+  });
+});

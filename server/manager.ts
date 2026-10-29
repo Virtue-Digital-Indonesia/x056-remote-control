@@ -2254,7 +2254,11 @@ export class SessionManager {
 
   listConversations(projectId: string) {
     const jev = this.jev().available();
-    return this.projects().conversations(projectId).map(c => ({ ...c, effectiveRouter: effectiveRouter(helpersOf(c), jev) ?? null, ...(this.projectSpacesEnabled() ? this.spaces().resolve(projectId, c.sessionId) : {}) }));
+    const conversations = this.projects().conversations(projectId);
+    // One read of the Space registry for the whole list, as listProjects does:
+    // resolve() re-parsed project-spaces.json and projects.json per conversation.
+    const spaceView = this.projectSpacesEnabled() && conversations.length ? this.spaces().readView() : undefined;
+    return conversations.map(c => ({ ...c, effectiveRouter: effectiveRouter(helpersOf(c), jev) ?? null, ...(spaceView ? spaceView.resolve(projectId, c.sessionId) : {}) }));
   }
 
   /** The picker this conversation's turns actually run with (see

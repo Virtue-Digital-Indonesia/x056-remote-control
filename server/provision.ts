@@ -1,4 +1,5 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { ProviderId } from '../src/provider.js';
@@ -45,12 +46,21 @@ export interface ProvisionResult extends ProvisionPlan {
    * there is no file to copy and no way to inherit one account's from another.
    */
   designConsent?: string;
+  /** settings.json keys brought in line with the fleet (Claude only). */
+  settings?: string[];
   /** Non-fatal problems; provisioning never blocks onboarding. */
   errors: string[];
 }
 
 /** Opt-in dotfiles that live in a config dir and must follow the fleet. */
 const SEED_FLAG_FILES = ['.i-have-adhd-always'];
+
+/** Claude Code's default 30-day cleanup deleted transcripts and broke resumes;
+ *  the owner chose to keep them a year (2026-10-29). */
+export const MIN_CLEANUP_PERIOD_DAYS = 365;
+
+/** The settings.json keys every Claude account must share. */
+export interface SettingsPlan { cleanupPeriodDays: number; hooks?: Record<string, unknown> }
 
 function readJson(path: string): Record<string, unknown> | null {
   try { return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>; } catch { return null; }
@@ -108,6 +118,30 @@ export class AccountProvisioner {
   }
 
   /**
+   * The settings.json keys a Claude account must share with its peers:
+   * `cleanupPeriodDays` is the highest any peer has, never below the floor;
+   * `hooks` is the object the most peers hold (ties: the first account's).
+   */
+  settingsPlan(exclude?: string): SettingsPlan {
+    let cleanupPeriodDays = MIN_CLEANUP_PERIOD_DAYS;
+    const hooks: { value: Record<string, unknown>; count: number }[] = [];
+    for (const acct of this.claudeAccounts()) {
+      if (exclude && acct.configDir === exclude) continue;
+      const settings = readJson(join(acct.configDir, 'settings.json'));
+      const days = settings?.cleanupPeriodDays;
+      if (typeof days === 'number' && Number.isFinite(days) && days > cleanupPeriodDays) cleanupPeriodDays = days;
+      const h = settings?.hooks;
+      if (!h || typeof h !== 'object' || Array.isArray(h)) continue;
+      const seen = hooks.find(e => isDeepStrictEqual(e.value, h));
+      if (seen) seen.count++;
+      else hooks.push({ value: h as Record<string, unknown>, count: 1 });
+    }
+    let best: (typeof hooks)[number] | undefined;
+    for (const e of hooks) if (!best || e.count > best.count) best = e;
+    return best ? { cleanupPeriodDays, hooks: best.value } : { cleanupPeriodDays };
+  }
+
+  /**
    * Apply the fleet baseline to one account. Setup failures are reported in
    * the result and never prevent account onboarding.
    */
@@ -132,8 +166,10 @@ export class AccountProvisioner {
       try { peers = this.allAccounts().filter(a => a.configDir !== target.configDir && (a.provider ?? 'claude') === provider); }
       catch { errors.push('accounts: could not read registry'); }
       let p: ProvisionPlan = { marketplaces: [], plugins: [], skills: [], flags: [] };
+      let want: SettingsPlan | undefined;
       try {
         p = provider === 'claude' ? this.plan(target.configDir) : { ...p, skills: [...new Set(peers.flatMap(a => listDirs(join(a.configDir, 'skills')).filter(n => !n.startsWith('.'))))].sort() };
+        if (provider === 'claude') want = this.settingsPlan(target.configDir);
       } catch { errors.push('baseline: could not read plan'); }
 
       // Legacy callers can supply simple plugin operations. The runtime uses
@@ -173,6 +209,39 @@ export class AccountProvisioner {
         if (existsSync(dest)) continue;
         try { writeFileSync(dest, ''); done.flags.push(flag); }
         catch (err) { errors.push(`flag ${flag}: ${(err as Error).message}`); }
+      }
+
+      // settings.json: raise cleanupPeriodDays to the fleet's, and copy the
+      // fleet's hooks only when the account has none (never overwrite them).
+      if (want) {
+        try {
+          const path = join(target.configDir, 'settings.json');
+          const raw = existsSync(path) ? readFileSync(path, 'utf8') : '';
+          const parsed: unknown = raw.trim() ? JSON.parse(raw) : {};
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a JSON object');
+          const settings = parsed as Record<string, unknown>;
+          const applied: string[] = [];
+          const days = settings.cleanupPeriodDays;
+          if (typeof days !== 'number' || days < want.cleanupPeriodDays) {
+            settings.cleanupPeriodDays = want.cleanupPeriodDays;
+            applied.push('cleanupPeriodDays');
+          }
+          if (want.hooks && !('hooks' in settings)) {
+            settings.hooks = structuredClone(want.hooks);
+            applied.push('hooks');
+          }
+          if (applied.length) {
+            mkdirSync(target.configDir, { recursive: true });
+            // Unique tmp name (onboarding and POST /provision can overlap) and
+            // the existing file's mode kept across the rename.
+            const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+            let mode = 0o644;
+            try { mode = statSync(path).mode & 0o777; } catch { /* new file */ }
+            writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', { mode });
+            renameSync(tmp, path);
+          }
+          result.settings = applied;
+        } catch (err) { errors.push(`settings: ${(err as Error).message}`); }
       }
 
       if (this.capabilities) {

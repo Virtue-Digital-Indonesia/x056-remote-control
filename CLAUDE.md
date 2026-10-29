@@ -287,7 +287,9 @@ failover happens to land on the right one — which reads as "randomly broken":
   enforcement. `WRITING_STYLE_HOOK=off`
   disables both hooks for a process.
 - **A newly onboarded account** is provisioned automatically to the fleet's
-  baseline (`server/provision.ts`), design consent included. A shared skill
+  baseline (`server/provision.ts`), design consent included. A Claude account
+  also gets `cleanupPeriodDays` (the fleet's highest, never below 365) and the
+  fleet's `hooks` in its `settings.json` when it has no `hooks` of its own. A shared skill
   is provisioned as the SAME symlink, never a copy. `GET
   /api/accounts/baseline` shows that baseline and which accounts lag; `POST
   /api/accounts/provision` re-applies it.
