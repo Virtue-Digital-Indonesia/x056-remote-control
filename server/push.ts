@@ -265,6 +265,7 @@ export class PushService {
     const json = JSON.stringify({
       title: n.title, body: n.body, tag: n.tag, url: n.link, tier: n.tier, kind: n.kind,
       projectId: n.projectId ?? '', sessionId: n.sessionId ?? '', ...(n.id ? { notificationId: n.id } : {}),
+      ...(n.bot ? { bot: true } : {}),
     });
     const dead: string[] = [];
     await Promise.all(targets.map(async (s) => {

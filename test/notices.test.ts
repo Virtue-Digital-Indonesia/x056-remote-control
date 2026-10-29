@@ -23,6 +23,13 @@ it('retains routine Bot notices as events while suppressing screens, and never s
   expect(noticeFor('conversation_settled', turn(), work)?.screenSuppressed).toBeUndefined();
 });
 
+it('marks every notice about the Bot project, and nothing else', () => {
+  const bot = { ...chat, bot: true };
+  expect(noticeFor('question', { projectId: 'p', sessionId: 's', question: 'Ship?' }, bot)?.bot).toBe(true);
+  expect(noticeFor('bot_notice', { projectId: 'p', sessionId: 's', tier: 'urgent', body: 'Please decide' }, bot)?.bot).toBe(true);
+  expect(noticeFor('question', { projectId: 'p', sessionId: 's', question: 'Ship?' }, chat)?.bot).toBeUndefined();
+});
+
 describe('Bot project: only automated notices leave the screen', () => {
   const bot: NoticeContext = { ...chat, bot: true };
   it('a long turn the owner started in the Bot chat keeps its ordinary notice', () => {

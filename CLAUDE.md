@@ -938,6 +938,22 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   search (`AppModel.botOpen`), and Back closes it. The Bot's box is the
   composer's `ComposerTextView`, so both get the Markdown editing in
   `MarkdownEditing.swift` (lists carry on at Return, Format in the edit menu).
+  **Bot pushes (2026-10-29)**: a notice about the Bot's project carries
+  `bot: true` (`Notice.bot`, from `NoticeContext.bot`); APNs adds
+  `mutable-content` and the app's service extension (`ios/X056Notifications`)
+  turns it into a communication notification from the Bot (an
+  `INSendMessageIntent` sender with the orb, `BotAvatar.png`), so it shows the
+  orb with the app icon small in its corner. That needs the
+  `com.apple.developer.usernotifications.communication` entitlement and
+  `NSUserActivityTypes: INSendMessageIntent`; without them the push still
+  shows, with the app icon. `simctl push` does not run the extension, so
+  check it on a phone. The panel's push uses `/icon-bot-192.png`. A tap on a
+  Bot push (or a Bot `x056://conversation` link) opens the Bot screen, not
+  its chat (`AppModel.open(projectId:sessionId:bot:)`).
+  **Select Text**: each message's long-press menu has Copy and Select Text
+  (`SelectText.swift`): a sheet with a read-only `UITextView`, all selected,
+  to copy a part. Replies show rendered (no Markdown marks; a table's cells
+  a tab apart).
 - **What the owner sees (2026-10-19, owner: "Bot's system notices must not
   appear on his screen"; 2dc9bfc, ce1e30f, polished after review).** Server:
   `noticeFor` marks a notice `screenSuppressed` (kept in events and history, no

@@ -1117,11 +1117,23 @@ final class AppModel {
         open(projectId: pid, sessionId: items.first(where: { $0.name == "sessionId" })?.value)
     }
 
-    func open(projectId: String, sessionId: String?) {
+    /// `bot`: the push said it is the Bot's, which counts before the
+    /// project list has loaded on a cold launch.
+    func open(projectId: String, sessionId: String?, bot: Bool = false) {
         guard !projectId.isEmpty else { return }
+        // The Bot's chat opens as the Bot, not as a plain conversation.
+        if bot || isBotProject(projectId) {
+            botPath = []
+            botOpen = true
+            return
+        }
         botOpen = false
         tab = .home
         homePath = [sessionId.map { .conversation(projectId: projectId, sessionId: $0) } ?? .project(projectId)]
+    }
+
+    func isBotProject(_ id: String) -> Bool {
+        project(id)?.isBot == true || bot?.projectId == id
     }
 
     /// A reply typed into a notification. Runs while the app may be in the background.

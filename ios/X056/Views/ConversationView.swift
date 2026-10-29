@@ -341,7 +341,7 @@ struct MessageRow: View, Equatable {
                         .padding(.vertical, 10)
                         .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 20, style: .continuous))
                         .opacity(row.pending ? 0.55 : 1)
-                        .contextMenu { CopyButton(text: row.text) }
+                        .messageMenu(row.text)
                     if row.failed {
                         Label("Not sent", systemImage: "exclamationmark.circle")
                             .font(.caption)
@@ -358,7 +358,7 @@ struct MessageRow: View, Equatable {
                 }
                 MarkdownText(text: row.text)
             }
-            .contextMenu { CopyButton(text: row.text) }
+            .messageMenu(row.text, markdown: true)
         case .error:
             VStack(alignment: .leading, spacing: 10) {
                 Label(row.text, systemImage: "exclamationmark.triangle.fill")
@@ -728,7 +728,7 @@ struct CardRow: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 14, style: .continuous))
-            .contextMenu { CopyButton(text: text) }
+            .messageMenu(text)
         }
     }
 }

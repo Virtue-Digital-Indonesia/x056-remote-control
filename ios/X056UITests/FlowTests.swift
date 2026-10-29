@@ -214,6 +214,23 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["What I need from you"].exists)
         sleep(1)
 
+        // Select Text opens the reply as it reads, to copy a part of it.
+        app.staticTexts["What I need from you"].press(forDuration: 1.2)
+        let selectText = app.buttons["Select Text"]
+        XCTAssertTrue(selectText.waitForExistence(timeout: 5), "the long-press menu offers Select Text")
+        XCTAssertTrue(app.buttons["Copy"].exists)
+        selectText.tap()
+        let selectable = app.textViews["select-text"]
+        XCTAssertTrue(selectable.waitForExistence(timeout: 5))
+        let shown = selectable.value as? String ?? ""
+        XCTAssertTrue(shown.contains("What I need from you"), shown)
+        XCTAssertTrue(shown.contains("Public specimen lookup"), "the table's cells")
+        XCTAssertFalse(shown.contains("**") || shown.contains("|---") || shown.contains("## "), "no Markdown marks: \(shown)")
+        XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 2), "it opens with everything selected")
+        snapshot(app, "14-select-text")
+        app.buttons["Done"].tap()
+        XCTAssertTrue(selectable.waitForNonExistence(timeout: 5))
+
         // The question card fills the bottom of a phone: it folds to its
         // header, and reading back folds it away with the composer.
         XCTAssertTrue(app.staticTexts["2 questions"].waitForExistence(timeout: 10))
@@ -584,6 +601,16 @@ final class FlowTests: XCTestCase {
         XCTAssertEqual(named.count, 1, "one Bot: the gateway's own")
         XCTAssertEqual(named.first?["bot"] as? Bool, true)
 
+        // A reply's long-press menu selects text too.
+        app.staticTexts["Fixture response received."].firstMatch.press(forDuration: 1.2)
+        XCTAssertTrue(app.buttons["Select Text"].waitForExistence(timeout: 5))
+        app.buttons["Select Text"].tap()
+        let reply = app.textViews["select-text"].value as? String ?? ""
+        XCTAssertTrue(reply.hasPrefix("Fixture response received."), reply)
+        XCTAssertFalse(reply.contains("**"), "shown as it reads: \(reply)")
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.textViews["select-text"].waitForNonExistence(timeout: 5))
+
         // The morning brief's trigger is system history: shown on request,
         // folded away again. (The fixture answers every turn with the same
         // text, which the stream drops as a replay, so the brief's own reply
@@ -623,6 +650,23 @@ final class FlowTests: XCTestCase {
         for _ in 0..<20 where !projectsTab.isHittable { usleep(250_000) }
         XCTAssertTrue(projectsTab.isHittable)
         XCTAssertFalse(app.staticTexts["What's running?"].exists)
+
+        // A link to the Bot's chat (a push or a Live Activity) opens the Bot,
+        // not its chat as a plain conversation.
+        if let bot = named.first, let pid = bot["id"] as? String,
+           let sid = (bot["conversations"] as? [[String: Any]])?.first?["sessionId"] as? String,
+           let url = URL(string: "x056://conversation?projectId=\(pid)&sessionId=\(sid)") {
+            XCUIDevice.shared.system.open(url)
+            let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+            if springboard.buttons["Open"].waitForExistence(timeout: 2) { springboard.buttons["Open"].tap() }
+            XCTAssertTrue(app.textViews["bot-input"].waitForExistence(timeout: 10), "the Bot screen")
+            XCTAssertFalse(projectsTab.isHittable, "over the tabs")
+            snapshot(app, "45-bot-from-link")
+            app.buttons["Back"].firstMatch.tap()
+            XCTAssertTrue(app.textViews["bot-input"].waitForNonExistence(timeout: 5))
+        } else {
+            XCTFail("the Bot's chat has no conversation")
+        }
 
         // Off again: on, the Bot wakes on every later test's urgent notice and
         // its chat turns up unread on their Home screens.

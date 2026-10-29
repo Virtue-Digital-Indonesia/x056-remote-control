@@ -8,5 +8,7 @@
 	<array>
 		<string>webcredentials:x056.rc.val.id</string>
 	</array>
+	<key>com.apple.developer.usernotifications.communication</key>
+	<true/>
 </dict>
 </plist>
