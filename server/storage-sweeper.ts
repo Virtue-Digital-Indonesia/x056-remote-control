@@ -1608,7 +1608,7 @@ export class StorageSweeper {
         const data = anon || hint ? null : DATA_VOLUME_HINT.exec(name)?.[1] ?? (short ? DATA_VOLUME_HINT.exec(short)?.[1] : undefined) ?? null;
         const project = labels.get(name)?.[COMPOSE_PROJECT];
         const ev = { name, ...(volSize.has(name) ? {} : { sizeUnknown: true }), ...(hint ? { looksLikeCache: hint } : {}), ...(data ? { looksLikeData: data } : {}), ...(project ? { composeProject: project } : {}) };
-        const reason = anon ? 'unused anonymous volume' : hint ? `unused named volume; looks like a build cache (${hint}), may still hold data`
+        const reason = anon ? 'unused anonymous volume' : hint ? `unused named volume; looks like a build cache (${hint})`
           : data ? `unused named volume; looks like a data volume (${data}): approve only if it is disposable` : 'unused named volume: may hold data';
         res.items.push(this.item({ rule: 'M4', target: `docker:volume:${name}`, bytes, reason, unit: 'docker', action: 'docker', command: ['docker', 'volume', 'rm', name], evidence: ev, ...(anon ? {} : { mayHoldData: true }), ...(data ? { dataVolume: true } : {}) }));
       }

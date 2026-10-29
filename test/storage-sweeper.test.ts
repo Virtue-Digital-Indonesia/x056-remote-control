@@ -354,6 +354,7 @@ describe('dind (A4/M4) through an injected docker runner', () => {
     const m4 = Object.fromEntries(m.items.filter((i) => i.rule === 'M4').map((i) => [i.target, i]));
     expect(Object.keys(m4).sort()).toEqual(['docker:container:old-job', 'docker:image:sha256:old', `docker:volume:${'a'.repeat(64)}`, 'docker:volume:docintel-audit-gocache', 'docker:volume:pgdata-old'].sort());
     expect(m4['docker:volume:docintel-audit-gocache'].reason).toMatch(/looks like a build cache \(gocache\)/);
+    expect(m4['docker:volume:docintel-audit-gocache'].reason).not.toMatch(/hold data/);
     expect(m4['docker:volume:pgdata-old']).toMatchObject({ mayHoldData: true, bytes: 1_500_000_000 });
     expect(m.protected.map((p) => p.target)).toEqual(expect.arrayContaining(['docker:containers:running', 'docker:containers:pin', 'docker:containers:mounts', 'docker:containers:restart-policy', 'docker:images:rollback']));
     // A running container's bind source is in use: nothing under it is offered.
