@@ -288,6 +288,34 @@ describe('PROTECTED', () => {
     expect(manifestOf(s).items.some((i) => i.rule === 'M3')).toBe(false);
     expect(manifestOf(s).notes.some((n) => n.target === old && /main repository/.test(n.reason))).toBe(true);
   });
+
+  it('M3: a submodule (.git file into .git/modules, no commondir) is never a linked worktree; a real worktree still is', async () => {
+    const w = world();
+    const src = join(w.base, 'subsrc');
+    mkdirSync(src);
+    git(src, 'init', '-q', '-b', 'main');
+    write(join(src, '.gitignore'), 'node_modules/\n');
+    write(join(src, 'package.json'), '{}');
+    write(join(src, 'package-lock.json'), '{}');
+    git(src, 'add', '-A'); git(src, 'commit', '-q', '-m', 'sub');
+    git(w.app, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', src, 'sub');
+    git(w.app, 'commit', '-q', '-m', 'add sub');
+    git(w.app, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    const sub = join(w.app, 'sub');
+    expect(readFileSync(join(sub, '.git'), 'utf8')).toMatch(/modules\/sub/);
+    write(join(sub, 'node_modules', 'left-pad', 'index.js'), 'module.exports=1');
+    const done = worktree(w, 'done');
+    git(w.app, 'update-ref', 'refs/remotes/origin/done', 'done');
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, true);
+    const m = manifestOf(s);
+    const m3 = m.items.filter((i) => i.rule === 'M3').map((i) => i.target);
+    expect(m3).toContain(done);
+    expect(m3).not.toContain(sub);
+    // The submodule's own deps follow the ordinary checkout rules: offered, never AUTO.
+    expect(m.items.find((i) => i.target === join(sub, 'node_modules'))).toMatchObject({ rule: 'M1', reason: expect.stringMatching(/not a linked worktree/) });
+  });
 });
 
 describe('dind (A4/M4) through an injected docker runner', () => {
@@ -307,6 +335,7 @@ describe('dind (A4/M4) through an injected docker runner', () => {
       if (args[0] === 'inspect') return out(JSON.stringify(containers.filter((c) => args.includes(String(c.Id)) || args.includes(String((c as { Name?: unknown }).Name).slice(1)))));
       if (args[0] === 'system') return out(JSON.stringify({ Volumes: [{ Name: 'docintel-audit-gocache', Size: '2GB' }, { Name: 'a'.repeat(64), Size: '10MB' }, { Name: 'pgdata-old', Size: '1.5GB' }] }));
       if (args[0] === 'volume' && args[1] === 'ls') return out(['docintel-audit-gocache', 'a'.repeat(64), 'pgdata-old'].map((n) => JSON.stringify(n)).join('\n'));
+      if (args[0] === 'volume' && args[1] === 'inspect') return out(JSON.stringify(args.slice(2).map((n) => ({ Name: n, Labels: null }))));
       if (args[0] === 'images' && args.includes('dangling=true') && args.includes('{{json .ID}}')) return out(JSON.stringify('sha256:old'));
       if (args[0] === 'images' && args.includes('dangling=true')) return out([JSON.stringify({ ID: 'sha256:old', CreatedAt: '2026-01-01 10:00:00 +0000 UTC', Size: '300MB' }), JSON.stringify({ ID: 'sha256:used', CreatedAt: '2026-01-01 10:00:00 +0000 UTC', Size: '1GB' })].join('\n'));
       if (args[0] === 'images') return out('app:rollback-1\napp:latest\n');
@@ -489,7 +518,27 @@ describe('schedule and helpers', () => {
     const s = new StorageSweeper({ stateDir: w.state, workspaceRoot: w.ws, log: () => {} });
     const prot = s.protectedPaths().filter((g) => g.category === 'configured').map((g) => g.path).sort();
     expect(prot).toEqual([join(w.ws, 'poc-ahu-ai'), uat].sort());
-    expect(DEFAULT_PROTECTED_PATHS).toHaveLength(2);
+    expect(DEFAULT_PROTECTED_PATHS).toHaveLength(3);
+  });
+
+  it('protects ahu-codebase (bind-mounted into the dev instance): an idle finished worktree there is neither AUTO nor offered', async () => {
+    const w = world();
+    const wt = join(w.ws, 'ahu-codebase', 'ahu-apostille', 'ap-fe');
+    mkdirSync(join(wt, '..'), { recursive: true });
+    git(w.app, 'worktree', 'add', '-q', '-b', 'apfe', wt);
+    git(w.app, 'update-ref', 'refs/remotes/origin/apfe', 'apfe');
+    write(join(wt, 'node_modules', 'left-pad', 'index.js'), 'module.exports=1');
+    write(join(wt, '.next', 'cache', 'c.bin'));
+    age(w.ws, 40);
+    const s = sweeper(w);
+    await sweep(s, false);
+    const m = manifestOf(s);
+    const under = (t: string) => t.startsWith(join(w.ws, 'ahu-codebase'));
+    expect(m.auto.some((i) => under(i.target))).toBe(false);
+    expect(m.items.some((i) => under(i.target))).toBe(false);
+    expect(existsSync(join(wt, 'node_modules', 'left-pad', 'index.js'))).toBe(true);
+    expect(existsSync(join(wt, '.next', 'cache', 'c.bin'))).toBe(true);
+    expect(m.protected.find((p) => p.target === join(w.ws, 'ahu-codebase'))).toMatchObject({ category: 'configured', reason: expect.stringMatching(/ahu-codebase/) });
   });
 
   it('read-only commands only, in a dry run', () => {
@@ -824,10 +873,10 @@ describe('review fixes (2026-10-27)', () => {
   });
 
   // ---- 4 and 5. dind containers and volumes ----
-  function dind(w: World, containers: Record<string, unknown>[], volumes: string[]) {
+  function dind(w: World, containers: Record<string, unknown>[], volumes: string[], volumeLabels: Record<string, Record<string, string>> = {}) {
     const c = (o: Record<string, unknown>): Record<string, unknown> => ({ Id: 'c' + String(o.Name).slice(1), Image: 'sha256:x', State: { Status: 'exited' }, HostConfig: { RestartPolicy: { Name: 'no' } }, Mounts: [], Config: { Image: 'x' }, ...o });
     const all = containers.map(c);
-    const sized = { current: new Map<string, number>() };
+    const sized = { current: new Map<string, number>(), all };
     w.docker = (args) => {
       const out = (x: string) => ({ code: 0, stdout: x, stderr: '' });
       if (args[0] === 'version') return out('27.5.1\n');
@@ -839,6 +888,7 @@ describe('review fixes (2026-10-27)', () => {
       }
       if (args[0] === 'system') return out(JSON.stringify({ Volumes: volumes.map((n) => ({ Name: n, Size: '100MB' })) }));
       if (args[0] === 'volume' && args[1] === 'ls') return out(volumes.map((n) => JSON.stringify(n)).join('\n'));
+      if (args[0] === 'volume' && args[1] === 'inspect') return out(JSON.stringify(args.slice(2).filter((n) => volumes.includes(n)).map((n) => ({ Name: n, Labels: volumeLabels[n] ?? null }))));
       if (args[0] === 'images') return out('');
       return out('');
     };
@@ -885,12 +935,54 @@ describe('review fixes (2026-10-27)', () => {
     expect(Object.keys(vol)).toHaveLength(5);
     expect(vol['docintel-audit-gocache'].evidence.looksLikeCache).toBe('gocache');
     expect(vol['obs-gomod2'].evidence.looksLikeCache).toBe('gomod');
-    for (const n of ['ergomodel_pg', 'verdaccio-npm-cache-storage']) {
-      expect(vol[n].evidence.looksLikeCache).toBeUndefined();
-      expect(vol[n]).toMatchObject({ mayHoldData: true, reason: 'unused named volume: may hold data' });
-    }
+    for (const n of ['ergomodel_pg', 'verdaccio-npm-cache-storage']) expect(vol[n].evidence.looksLikeCache).toBeUndefined();
+    expect(vol['verdaccio-npm-cache-storage']).toMatchObject({ mayHoldData: true, reason: 'unused named volume: may hold data' });
+    expect(vol['ergomodel_pg']).toMatchObject({ mayHoldData: true, dataVolume: true, reason: expect.stringMatching(/looks like a data volume \(pg\)/) });
     expect(CACHE_VOLUME_HINT.test('ergomodel_pg')).toBe(false);
     expect(CACHE_VOLUME_HINT.test('verdaccio-npm-cache-storage')).toBe(false);
+  });
+
+  it('5b: a volume of a compose project with a running container is protected, at plan time and at approval', async () => {
+    const w = world();
+    const P = 'com.docker.compose.project';
+    const fx = dind(w, [
+      { Name: '/ahu-ai-sso-demo-native-auth-1', State: { Status: 'running' }, Config: { Image: 'x', Labels: { [P]: 'ahu-ai-sso-demo' } } },
+      { Name: '/other-web-1', State: { Status: 'exited' }, Config: { Image: 'x', Labels: { [P]: 'other' } }, SizeRw: 0 },
+    ], ['ahu-ai-sso-demo_gocache', 'other_gocache', 'loose_gocache'], {
+      'ahu-ai-sso-demo_gocache': { [P]: 'ahu-ai-sso-demo', 'com.docker.compose.volume': 'gocache' },
+      'other_gocache': { [P]: 'other', 'com.docker.compose.volume': 'gocache' },
+    });
+    const s = sweeper(w, { dind: true });
+    await sweep(s, true);
+    const m = manifestOf(s);
+    const vols = m.items.filter((i) => i.target.startsWith('docker:volume:')).map((i) => i.target.slice(14)).sort();
+    expect(vols).toEqual(['loose_gocache', 'other_gocache']);
+    expect(m.protected.find((p) => p.target === 'docker:volume:ahu-ai-sso-demo_gocache')?.reason).toMatch(/compose project ahu-ai-sso-demo has a running container/);
+    // The stack comes up after the manifest: the approval re-check refuses it.
+    const item = m.items.find((i) => i.target === 'docker:volume:other_gocache')!;
+    (fx.all.find((c) => c.Name === '/other-web-1')!.State as { Status: string }).Status = 'running';
+    w.dockerCalls.length = 0;
+    const rec = await s.executeApproved(m.id, m.digest, [item.id]).done;
+    expect(s.receipts(rec.runId)!.receipts[0]).toMatchObject({ result: 'skipped', reason: expect.stringMatching(/compose project other has a running container/) });
+    expect(w.dockerCalls.filter((a) => !readOnlyCommand('docker', a))).toEqual([]);
+  });
+
+  it('5c: a data-looking volume is flagged dataVolume (never AUTO); cache names keep their hint and win', async () => {
+    const w = world();
+    const names = ['ahu-ai-sso-demo_pgdata', 'app_db', 'app-db-1', 'svc_pg', 'store_minio', 'files_s3', 'web_uploads', 'kc_config', 'x_audit', 'mongo-data', 'proj_staff',
+      'docintel-audit-gocache', 'obs-gomod2', 'api_gomodcache', 'build-cache', 'misc'];
+    dind(w, [], names, { 'proj_staff': { 'com.docker.compose.project': 'proj', 'com.docker.compose.volume': 'staff' } });
+    const s = sweeper(w, { dind: true });
+    await sweep(s, false);
+    expect(w.dockerCalls.filter((a) => !readOnlyCommand('docker', a))).toEqual([['builder', 'prune', '-f', '--filter', 'until=168h']]);
+    const m = manifestOf(s);
+    expect(m.auto.some((i) => i.target.startsWith('docker:volume:'))).toBe(false);
+    const vol = Object.fromEntries(m.items.filter((i) => i.target.startsWith('docker:volume:')).map((i) => [i.target.slice(14), i]));
+    expect(Object.keys(vol)).toHaveLength(names.length);
+    for (const n of names.slice(0, 11)) expect(vol[n], n).toMatchObject({ class: 'manifest', mayHoldData: true, dataVolume: true, reason: expect.stringMatching(/data volume/) });
+    for (const n of names.slice(11)) expect(vol[n].dataVolume, n).toBeUndefined();
+    expect(vol['api_gomodcache'].evidence.looksLikeCache).toBe('gomodcache');
+    expect(vol['build-cache'].evidence.looksLikeCache).toBe('cache');
   });
 
   // ---- 6. projects ----

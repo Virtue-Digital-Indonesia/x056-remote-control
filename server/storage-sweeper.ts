@@ -69,7 +69,16 @@ const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'];
  * ENDS in a cache segment (`docintel-audit-gocache`, `obs-gomod2`). Anchored at
  * the end so `ergomodel_pg` and `verdaccio-npm-cache-storage` get no hint.
  */
-export const CACHE_VOLUME_HINT = /(?:^|[-_.])(gocache|gomod|go-cache|go-mod|npm-cache|pnpm-store|pip-cache)\d*$/;
+export const CACHE_VOLUME_HINT = /(?:^|[-_.])(gocache|gomodcache|gomod|go-cache|go-mod|npm-cache|pnpm-store|pip-cache|cache)\d*$/;
+/**
+ * A volume whose name (or compose short name) has one of these SEGMENTS looks
+ * like a database / object store / uploads / config: still offered (M4), but
+ * flagged `dataVolume` so the approver sees it. The sweeper never reads volume
+ * contents and a dangling volume has no container to name its image, so the
+ * name is all there is. A cache hint (above) wins: `docintel-audit-gocache`.
+ */
+export const DATA_VOLUME_HINT = /(?:^|[-_.])(db|pg|postgres|postgresql|mysql|mariadb|mongo|mongodb|minio|redis|s3|[a-z]*data|uploads?|staff|config|audit)(?=[-_.\d]|$)/;
+const COMPOSE_PROJECT = 'com.docker.compose.project';
 /** A stopped container whose writable layer holds more than this holds data. */
 export const CONTAINER_DATA_BYTES = 50 * 1024 ** 2;
 const CONTAINER_KEEP_NAME = /before|rollback|backup/i;
@@ -101,8 +110,12 @@ const RUNS_SHOWN = 20;
  *    processes, turns and containers are invisible from here, so none of the
  *    live-use checks could protect its work (the contract puts the dev
  *    instance OUT).
+ *  - ahu-codebase: the same reason. The dev instance's compose.override.yaml
+ *    (on the host, not in git) bind-mounts `<workspace>/ahu-codebase` into its
+ *    containers at `poc-ahu-ai/ahu-codebase`, so production sees that tree
+ *    here, outside poc-ahu-ai, while the dev devs work in it.
  */
-export const DEFAULT_PROTECTED_PATHS = ['{stateDir}/chats/c06d266a*/work/uat/qol-chatbot/worktree', '{workspaceRoot}/poc-ahu-ai'];
+export const DEFAULT_PROTECTED_PATHS = ['{stateDir}/chats/c06d266a*/work/uat/qol-chatbot/worktree', '{workspaceRoot}/poc-ahu-ai', '{workspaceRoot}/ahu-codebase'];
 /** Outside every IN root already; listed so the protected report names them. */
 const OUT_PATHS = ['/home/efran/backups', '/home/efran/x056-devs', '/home/efran/dev-workspace'];
 const STATE_OUT = ['uploads', 'artifacts', 'project-files', 'file-staging', 'frontend-releases', 'codex-sessions', 'conversation-journal', 'secrets', 'accounts'];
@@ -143,6 +156,8 @@ export interface SweepItem {
   locked?: boolean;
   needsBundle?: boolean;
   mayHoldData?: boolean;
+  /** M4 volume whose name looks like data (DATA_VOLUME_HINT): approve with care. */
+  dataVolume?: boolean;
   projectId?: string;
 }
 
@@ -1096,7 +1111,13 @@ export class StorageSweeper {
     return out;
   }
 
-  private gitInfo(root: string): { type: 'dir' | 'file' | null; gitdir?: string; gitdirExists?: boolean; commondir?: string; locked?: boolean } {
+  /**
+   * `linked` = a linked worktree (`git worktree add`): only its gitdir holds a
+   * `commondir` file. A submodule also has a `.git` FILE, pointing into
+   * `<parent>/.git/modules/<name>`, but no `commondir`: it is a checkout of its
+   * own, never M3 (`git worktree remove` refuses it: "is not a working tree").
+   */
+  private gitInfo(root: string): { type: 'dir' | 'file' | null; gitdir?: string; gitdirExists?: boolean; commondir?: string; locked?: boolean; linked?: boolean } {
     let st; try { st = lstatSync(join(root, '.git')); } catch { return { type: null }; }
     if (st.isDirectory()) return { type: 'dir', gitdir: join(root, '.git'), gitdirExists: true, commondir: join(root, '.git') };
     if (!st.isFile()) return { type: null };
@@ -1106,10 +1127,10 @@ export class StorageSweeper {
     const gitdir = resolve(root, m[1].trim());
     let isDir = false; try { isDir = statSync(gitdir).isDirectory(); } catch { /* missing */ }
     if (!isDir) return { type: 'file', gitdir, gitdirExists: false };
-    let commondir = gitdir;
-    try { commondir = resolve(gitdir, readFileSync(join(gitdir, 'commondir'), 'utf8').trim()); } catch { /* not a linked one */ }
-    if (!existsSync(join(commondir, 'HEAD'))) return { type: 'file', gitdir, gitdirExists: false, commondir };
-    return { type: 'file', gitdir, gitdirExists: true, commondir, locked: existsSync(join(gitdir, 'locked')) };
+    let commondir = gitdir, linked = false;
+    try { commondir = resolve(gitdir, readFileSync(join(gitdir, 'commondir'), 'utf8').trim()); linked = true; } catch { /* not a linked one (a submodule) */ }
+    if (!existsSync(join(commondir, 'HEAD'))) return { type: 'file', gitdir, gitdirExists: false, commondir, linked };
+    return { type: 'file', gitdir, gitdirExists: true, commondir, linked, locked: existsSync(join(gitdir, 'locked')) };
   }
 
   private lockfileFor(nmParent: string, stopAt: string): string | null {
@@ -1198,9 +1219,9 @@ export class StorageSweeper {
     if (st.code !== 0) { res.notes.push({ target: root, reason: 'git status failed: ' + st.stderr.trim().split('\n')[0] }); return res; }
     const dirty = st.stdout.length > 0;
     const shared = refs.some((r) => r.startsWith('refs/tags/') || r.startsWith('refs/remotes/'));
-    const linked = gi.type === 'file';
+    const linked = gi.type === 'file' && gi.linked === true;
     const why: string[] = [];
-    if (!linked) why.push('main checkout, not a linked worktree');
+    if (!linked) why.push(gi.type === 'file' ? 'submodule checkout, not a linked worktree' : 'main checkout, not a linked worktree');
     if (dirty) why.push('uncommitted changes');
     if (!shared) why.push(refs.length ? 'HEAD only on local branches' : 'HEAD in no ref');
     const finished = why.length === 0;
@@ -1500,6 +1521,30 @@ export class StorageSweeper {
     for (let i = 0; i < ids.length; i += 50) out.push(...(await this.dockerJson(ctx, ['inspect', '--type', 'container', ...(withSize ? ['--size'] : []), ...ids.slice(i, i + 50)], withSize ? 300_000 : 60_000)) as Record<string, any>[]);
     return out;
   }
+  /** Compose projects (com.docker.compose.project) with a running container. */
+  private runningProjectsOf(info: Record<string, any>[]): Set<string> {
+    const out = new Set<string>();
+    for (const c of info) {
+      const p = c.Config?.Labels?.[COMPOSE_PROJECT];
+      if (typeof p === 'string' && p && containerHold(c, false)?.kind === 'running') out.add(p);
+    }
+    return out;
+  }
+  private async volumeLabels(ctx: Ctx, names: string[]): Promise<Map<string, Record<string, string>>> {
+    const out = new Map<string, Record<string, string>>();
+    for (let i = 0; i < names.length; i += 50) {
+      for (const v of await this.dockerJson(ctx, ['volume', 'inspect', ...names.slice(i, i + 50)], 60_000) as Record<string, any>[]) {
+        out.set(String(v.Name), v.Labels && typeof v.Labels === 'object' ? v.Labels as Record<string, string> : {});
+      }
+    }
+    return out;
+  }
+  /** Why an unused volume must stay: its compose stack still runs (no name-prefix guessing; the label only). */
+  private volumeHold(labels: Record<string, string> | undefined, running: Set<string>): string | null {
+    if (!labels) return 'volume labels unreadable';
+    const p = labels[COMPOSE_PROJECT];
+    return p && running.has(p) ? `compose project ${p} has a running container` : null;
+  }
   private async runningBindSources(ctx: Ctx): Promise<string[]> {
     const ps = await this.dockerJson(ctx, ['ps', '--no-trunc', '--format', '{{json .ID}}'], 30_000) as string[];
     if (!ps.length) return [];
@@ -1549,13 +1594,23 @@ export class StorageSweeper {
       const vols = await this.dockerJson(ctx, ['volume', 'ls', '-f', 'dangling=true', '--format', '{{json .Name}}'], 30_000) as string[];
       // Every unused volume waits for approval (none is AUTO): a name is only
       // a hint, and a loose match once put `ergomodel_pg` among the caches.
+      // A volume of a compose project with a running container belongs to a
+      // live stack (stopped service, `down` without -v): protected.
+      const liveProjects = this.runningProjectsOf(info);
+      const labels = vols.length ? await this.volumeLabels(ctx, vols) : new Map<string, Record<string, string>>();
       for (const name of vols) {
         const bytes = volSize.get(name) ?? 0;
+        const hold = this.volumeHold(labels.get(name), liveProjects);
+        if (hold) { res.protected.push({ category: 'docker', target: `docker:volume:${name}`, bytes: volSize.get(name) ?? null, reason: hold }); continue; }
         const anon = /^[0-9a-f]{64}$/.test(name);
+        const short = labels.get(name)?.['com.docker.compose.volume'];
         const hint = anon ? null : CACHE_VOLUME_HINT.exec(name)?.[1] ?? null;
-        const ev = { name, ...(volSize.has(name) ? {} : { sizeUnknown: true }), ...(hint ? { looksLikeCache: hint } : {}) };
-        const reason = anon ? 'unused anonymous volume' : hint ? `unused named volume; looks like a build cache (${hint}), may still hold data` : 'unused named volume: may hold data';
-        res.items.push(this.item({ rule: 'M4', target: `docker:volume:${name}`, bytes, reason, unit: 'docker', action: 'docker', command: ['docker', 'volume', 'rm', name], evidence: ev, ...(anon ? {} : { mayHoldData: true }) }));
+        const data = anon || hint ? null : DATA_VOLUME_HINT.exec(name)?.[1] ?? (short ? DATA_VOLUME_HINT.exec(short)?.[1] : undefined) ?? null;
+        const project = labels.get(name)?.[COMPOSE_PROJECT];
+        const ev = { name, ...(volSize.has(name) ? {} : { sizeUnknown: true }), ...(hint ? { looksLikeCache: hint } : {}), ...(data ? { looksLikeData: data } : {}), ...(project ? { composeProject: project } : {}) };
+        const reason = anon ? 'unused anonymous volume' : hint ? `unused named volume; looks like a build cache (${hint}), may still hold data`
+          : data ? `unused named volume; looks like a data volume (${data}): approve only if it is disposable` : 'unused named volume: may hold data';
+        res.items.push(this.item({ rule: 'M4', target: `docker:volume:${name}`, bytes, reason, unit: 'docker', action: 'docker', command: ['docker', 'volume', 'rm', name], evidence: ev, ...(anon ? {} : { mayHoldData: true }), ...(data ? { dataVolume: true } : {}) }));
       }
       // Dangling images older than 72h that no container uses.
       const imgs = await this.dockerJson(ctx, ['images', '-f', 'dangling=true', '--no-trunc', '--format', '{{json .}}'], 30_000) as Record<string, any>[];
@@ -1586,7 +1641,10 @@ export class StorageSweeper {
     try {
       if (kind === 'volume') {
         const v = await this.dockerJson(ctx, ['volume', 'ls', '-f', 'dangling=true', '--format', '{{json .Name}}'], 30_000) as string[];
-        return v.includes(name) ? { args: ['volume', 'rm', name] } : { bad: 'volume is in use or gone' };
+        if (!v.includes(name)) return { bad: 'volume is in use or gone' };
+        const ps = await this.dockerJson(ctx, ['ps', '--no-trunc', '--format', '{{json .ID}}'], 30_000) as string[];
+        const hold = this.volumeHold((await this.volumeLabels(ctx, [name])).get(name), this.runningProjectsOf(ps.length ? await this.inspectContainers(ctx, ps) : []));
+        return hold ? { bad: `volume is now protected: ${hold}` } : { args: ['volume', 'rm', name] };
       }
       if (kind === 'container') {
         const [c] = await this.inspectContainers(ctx, [name], true).catch(() => []);

@@ -1777,8 +1777,9 @@ from a manifest he approves, and log every run. Contract with as-built notes:
 - **PROTECTED, never offered**: transcripts, uploads, artifacts, worktrees
   whose gitdir is missing (their `node_modules` may be offered, never their
   source), any checkout whose detached HEAD no ref contains (the UAT
-  checkout), dirty or untracked files, `poc-ahu-ai` (the dev instance works
-  there, invisible to every live-use check), `*rollback*` images, running /
+  checkout), dirty or untracked files, `poc-ahu-ai` and `ahu-codebase` (the
+  dev instance works there -- the latter is bind-mounted into its containers
+  inside poc-ahu-ai -- invisible to every live-use check), `*rollback*` images, running /
   `pin-*` / data-holding containers, any path a live process uses (cwd, open
   fds, cache env, running containers' bind sources), and any chat that is
   running, has background work or queue items, is a cron target or has a live
@@ -1796,12 +1797,16 @@ from a manifest he approves, and log every run. Contract with as-built notes:
   run ABORTS when the process table, mount table, project list or running
   dind bind mounts cannot be read (fail closed).
 - **MANIFEST** (approval): other idle `node_modules` (M1), git-ignored build
-  outputs (M2), whole finished worktrees via `git worktree remove` (M3 --
-  refused when the worktree holds ignored non-generated files, skip-worktree
+  outputs (M2), whole finished worktrees via `git worktree remove` (M3; only
+  a checkout whose gitdir has a `commondir` file is a linked worktree, so a
+  submodule is never M3 -- refused when the worktree holds ignored non-generated files, skip-worktree
   or assume-unchanged entries, `refs/worktree/*`, or reflog commits no ref
-  contains), dind leftovers including EVERY unused volume (M4; a container
+  contains), dind leftovers including every unused volume (M4; a container
   with a writable layer > 50 MB or named before/rollback/backup is
-  protected), big unknown `/tmp` dirs (M5).
+  protected, so is a volume whose compose project still has a running
+  container, and a data-looking volume name (`_db`, `pg`, `minio`, `*data`,
+  `uploads`, `config`, ...) is flagged `dataVolume`), big unknown `/tmp`
+  dirs (M5).
 - **Approval is a passkey assertion, not the token**: every session holds
   `$X056_TOKEN`, so a bearer route is no gate. The challenge is bound to the
   manifest id, digest and the exact item ids, single use, 5 min; only an

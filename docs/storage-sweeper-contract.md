@@ -88,12 +88,15 @@ A dry run lists these; nothing is removed until Efran approves the items.
   - `git status --porcelain=v1 -z --ignored=matching` lists an ignored path outside the regenerable names `node_modules .next dist build out target coverage .turbo .parcel-cache .pytest_cache .vite .vite-temp .cache __pycache__ *.pyc .gradle .angular`
   - the worktree has `refs/worktree/*` (or `refs/bisect/*`, `refs/rewritten/*`)
   - a commit in the last 200 entries of its `logs/HEAD` is in no branch, tag or remote ref
-  - another repository sits anywhere inside, `node_modules` included A locked one is listed with `locked: true` and is unlocked only at execution. A clean worktree whose HEAD is on local refs only is listed as `needsBundle: true` and is NOT executable until a bundle exists. Bundling is out of scope for v1, so these are informational.
+  - another repository sits anywhere inside, `node_modules` included
+
+  Only a checkout whose gitdir holds a `commondir` file is a linked worktree. A submodule (a `.git` file into `<parent>/.git/modules/<name>`, no `commondir`) is never M3; its own `node_modules` and outputs follow the main-checkout rules (M1/M2). A locked one is listed with `locked: true` and is unlocked only at execution. A clean worktree whose HEAD is on local refs only is listed as `needsBundle: true` and is NOT executable until a bundle exists. Bundling is out of scope for v1, so these are informational.
 - **M4.** dind:
   - exited or created containers with no mounts and not `pin-*`, sized with `docker inspect --size`. A writable layer over 50 MB, an unknown size, or a name containing `before`, `rollback` or `backup` makes it PROTECTED instead.
   - dangling images older than 72h
   - unused anonymous volumes
   - unused named volumes, flagged `mayHoldData: true`. A name ENDING in a cache segment (`gocache`, `gomod`, `go-cache`, `go-mod`, `npm-cache`, `pnpm-store`, `pip-cache`, optional digits) gets the hint "looks like a build cache" in its reason; it is still approval-only.
+  - a volume whose `com.docker.compose.project` label names a project with a running container is PROTECTED, at plan time and in the approval re-check (by label only; no name-prefix guessing). A name or compose short name with a data segment (`db`, `pg`, `postgres`, `mysql`, `mariadb`, `mongo`, `minio`, `redis`, `s3`, `*data`, `upload(s)`, `staff`, `config`, `audit`) is still M4 but flagged `dataVolume: true` with "looks like a data volume" in its reason; a cache name (`gocache`, `gomodcache`, `*-cache`, ...) wins over it. Volume contents are never read.
 - **M5.** Unknown large `/tmp` dirs in the container: over 500 MB, older than 7 days, no live process.
 
 ## Approval: a human gate, not a convention
@@ -164,6 +167,7 @@ Use temp dirs, real `git` and a mocked `docker`:
 
 **Other choices:**
 - `{workspaceRoot}/poc-ahu-ai` is in the default `protectedPaths`. The dev instance works in that tree, and its processes, turns and containers are invisible from this container, so none of the live-use checks could protect them.
+- `{workspaceRoot}/ahu-codebase` is in the default `protectedPaths` for the same reason: the dev instance's `compose.override.yaml` bind-mounts it into its containers at `poc-ahu-ai/ahu-codebase`, so from production it sits outside `poc-ahu-ai`.
 - A checkout nested inside a missing-gitdir or detached-unreachable tree is protected too (checked by walking up from each target at plan and delete time).
 - M2 and M3 are refused when another repository sits inside (an ignored clone would go with `rm` or `git worktree remove`).
 - Execution acts on the re-plan, never on the stored manifest: docker commands are rebuilt from the target, path actions come from the fresh plan.
@@ -187,3 +191,11 @@ An adversarial review found these; each has a test in `test/storage-sweeper.test
    - `config.json` `protectedPaths` (and the option) add to the defaults instead of replacing them.
    - Command items (`go clean`, `npm cache clean`, `pnpm store prune`) pass the delete-time `guard`. The pnpm stores are cache roots now and pass the same refusal and in-use gates as path items.
    - Host processes and host containers are invisible from the container (see PROTECTED).
+
+## Live-manifest review fixes (2026-10-29)
+
+A review of the first live manifest found three gaps; each has a test in `test/storage-sweeper.test.ts` that fails on the previous code.
+
+1. **Submodules were offered as M3.** `gitInfo` treated any `.git` file as a linked worktree, so `ahu-online/protected/modules/*` and `ahu-cv-firma/protected/modules/*` were offered for `git worktree remove`, which refuses them. Linked now means the gitdir holds `commondir`.
+2. **The dev instance's `ahu-codebase` was swept.** It is bind-mounted into the dev containers inside `poc-ahu-ai`, but production sees it at `{workspaceRoot}/ahu-codebase`: 13 items were offered and `ahu-apostille/ap-fe/.next/cache` was AUTO-deleted. It is now a default protected path (no env list exists; `config.json` `protectedPaths` only adds).
+3. **Volumes of a live compose stack were offered.** `ahu-ai-sso-demo_*` volumes were listed as unused while `ahu-ai-sso-demo-native-auth-1` ran. A volume of a compose project with a running container is now protected (plan and approval), and data-looking names carry `dataVolume: true` (the panel tags them "data volume").
