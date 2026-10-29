@@ -3,7 +3,7 @@ import { VersionInfo } from './version.js';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildModule, type GatewayConfig } from './app.module.js';
@@ -11,6 +11,20 @@ import { sweepScheduleEnabled } from './storage-sweeper.js';
 import { appleAppSiteAssociation } from './apple-app-site.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
+
+// Panel files are read once and kept, keyed by the file's stat, so a request
+// costs a stat instead of a read; an edited or replaced file is read again.
+const fileCache = new Map<string, { key: string; body: Buffer }>();
+function readCached(file: string): Buffer {
+  const s = statSync(file);
+  const key = s.ino + ':' + s.size + ':' + s.mtimeMs;
+  const hit = fileCache.get(file);
+  if (hit && hit.key === key) return hit.body;
+  const body = readFileSync(file);
+  fileCache.set(file, { key, body });
+  return body;
+}
+const IMMUTABLE = 'public, max-age=31536000, immutable';
 
 export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   if (!cfg.token || cfg.token.length < 24) {
@@ -52,7 +66,7 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
     try {
       res.setHeader('Cache-Control','no-cache');
       const active=frontend.current();
-      res.type('html').send(active?frontend.html(active,version.backend):version.html(readFileSync(panelPath, 'utf8')));
+      res.type('html').send(active?frontend.html(active,version.backend):version.html(readCached(panelPath).toString('utf8')));
     } catch {
       res.status(500).send('panel unavailable');
     }
@@ -61,21 +75,26 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
     try{const body=frontend.asset(req.params.release,req.params.file);res.setHeader('Cache-Control','public, max-age=31536000, immutable');res.setHeader('X-Content-Type-Options','nosniff');res.type(req.params.file).send(body);}catch{res.status(404).send('Frontend asset unavailable');}
   });
   // Served without auth: the browser fetches these before/without the token.
-  const serveStatic = (urlPath: string, file: string, type: string, headers?: Record<string, string>) => {
-    express.get(urlPath, (_req, res) => {
+  // A URL carrying ?v= is a fingerprinted reference (the panel HTML, itself
+  // no-cache, changes the value when the content changes), so it may be cached
+  // for good. Without ?v= the headers given here apply unchanged.
+  const serveStatic = (urlPath: string, file: string, type: string, headers?: Record<string, string>, versionable = true) => {
+    express.get(urlPath, (req, res) => {
       try {
-        const body = readFileSync(join(publicDir, file));
+        const body = readCached(join(publicDir, file));
         res.type(type);
         if (headers) for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+        if (versionable && req.query.v !== undefined) res.setHeader('Cache-Control', IMMUTABLE);
         res.send(body);
       } catch {
         res.status(404).send('not found');
       }
     });
   };
-  // no-cache on sw.js so an updated worker is picked up promptly; the scope
-  // header lets a worker served from /sw.js control the whole origin.
-  serveStatic('/sw.js', 'sw.js', 'application/javascript', { 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' });
+  // no-cache on sw.js so an updated worker is picked up promptly, even when
+  // requested with ?v=; the scope header lets a worker served from /sw.js
+  // control the whole origin.
+  serveStatic('/sw.js', 'sw.js', 'application/javascript', { 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' }, false);
   serveStatic('/manifest.webmanifest', 'manifest.webmanifest', 'application/manifest+json');
   serveStatic('/control-room.css', 'control-room.css', 'text/css', { 'Cache-Control': 'no-cache' });
   serveStatic('/control-room.js', 'control-room.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
