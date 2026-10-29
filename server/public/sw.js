@@ -17,7 +17,8 @@ self.addEventListener('push', function (event) {
   var title = data.title || 'x056';
   event.waitUntil(self.registration.showNotification(title, {
     body: data.body || '',
-    icon: '/icon-192.png?v=31f56a235316',
+    // The Bot's pushes carry its orb, so they read apart from conversations.
+    icon: data.bot ? '/icon-bot-192.png' : '/icon-192.png?v=31f56a235316',
     badge: '/icon-192.png?v=31f56a235316',
     tag: data.tag || ('x056-' + (data.notificationId || data.sessionId || data.projectId || 'general')),
     renotify: false,

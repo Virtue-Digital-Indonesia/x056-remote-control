@@ -421,7 +421,7 @@ private struct BotLine: View {
                         .background(LinearGradient(colors: [BotColors.violet, BotColors.sky], startPoint: .topLeading, endPoint: .bottomTrailing),
                                     in: .rect(cornerRadius: 22, style: .continuous))
                         .opacity(row.pending ? 0.6 : 1)
-                        .contextMenu { CopyButton(text: row.text) }
+                        .messageMenu(row.text)
                 }
             }
         case .assistant:
@@ -445,7 +445,7 @@ private struct BotLine: View {
                     MarkdownText(text: row.text)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contextMenu { CopyButton(text: row.text) }
+                .messageMenu(row.text, markdown: true)
             }
         case .error:
             Label(row.text, systemImage: "exclamationmark.triangle.fill")

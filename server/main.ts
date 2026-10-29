@@ -95,6 +95,7 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   serveStatic('/icon-32.png', 'icon-32.png', 'image/png');
   serveStatic('/icon-180.png', 'icon-180.png', 'image/png');
   serveStatic('/icon-192.png', 'icon-192.png', 'image/png');
+  serveStatic('/icon-bot-192.png', 'icon-bot-192.png', 'image/png'); // a Bot push's icon (sw.js)
   serveStatic('/icon-512.png', 'icon-512.png', 'image/png');
   // Full-bleed variant for the manifest's maskable purpose: a launcher crops
   // the icon to its OWN shape, so transparent corners would leave gaps inside

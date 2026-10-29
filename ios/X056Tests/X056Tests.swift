@@ -226,6 +226,50 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
     }
 }
 
+@MainActor @Suite(.serialized) struct NotificationTapTests {
+    /// A push about the Bot's chat opens the Bot over the tabs; any other
+    /// opens its conversation in Home. The push's own `bot` flag counts
+    /// before the project list has loaded.
+    @Test func botPushesOpenTheBot() throws {
+        let app = AppModel.shared
+        let saved = (app.projects, app.projectsLoaded, app.tab, app.homePath, app.botOpen)
+        defer { (app.projects, app.projectsLoaded, app.tab, app.homePath, app.botOpen) = saved }
+        let decode = { (json: String) in try JSONDecoder().decode(Project.self, from: Data(json.utf8)) }
+        app.projects = [try decode(#"{"id":"botp","name":"Bot","kind":"chat","bot":true,"lastSessionId":"bs"}"#),
+                        try decode(#"{"id":"work","name":"ocr"}"#)]
+        app.projectsLoaded = true
+        app.botOpen = false
+        app.open(projectId: "botp", sessionId: "bs")
+        #expect(app.botOpen)
+        app.open(projectId: "work", sessionId: "s1")
+        #expect(!app.botOpen)
+        #expect(app.tab == .home)
+        #expect(app.homePath == [.conversation(projectId: "work", sessionId: "s1")])
+        app.projects = []
+        app.projectsLoaded = false
+        app.open(projectId: "unknown", sessionId: "x", bot: true)
+        #expect(app.botOpen)
+    }
+}
+
+@MainActor @Suite struct SelectTextTests {
+    /// Select Text shows a reply as it reads: no Markdown marks, styles
+    /// kept as fonts, a table's cells a tab apart.
+    @Test func rendersMarkdownWithoutItsMarks() {
+        let text = SelectableText.rendered("# Plan\nShip **today** and run `npm test`, see [docs](https://x.example).\n\n```sh\nnpm ci\n```\n| Item | State |\n|---|---|\n| **Lookup** | done |")
+        #expect(text.string == "Plan\n\nShip today and run npm test, see docs.\n\nnpm ci\n\nItem\tState\nLookup\tdone")
+        let ns = text.string as NSString
+        let font = { (word: String) in text.attribute(.font, at: ns.range(of: word).location, effectiveRange: nil) as? UIFont }
+        #expect(font("Plan")?.fontDescriptor.symbolicTraits.contains(.traitBold) == true)
+        #expect(font("today")?.fontDescriptor.symbolicTraits.contains(.traitBold) == true)
+        #expect(font("Ship")?.fontDescriptor.symbolicTraits.contains(.traitBold) == false)
+        #expect(font("npm test")?.fontDescriptor.symbolicTraits.contains(.traitMonoSpace) == true)
+        #expect(text.attribute(.link, at: ns.range(of: "docs").location, effectiveRange: nil) as? URL == URL(string: "https://x.example"))
+        #expect(font("Lookup")?.fontDescriptor.symbolicTraits.contains(.traitBold) == true, "a table cell's own Markdown")
+        #expect(SelectableText.plain("**as typed**").string == "**as typed**")
+    }
+}
+
 @MainActor @Suite(.serialized) struct SharedReadStateTests {
     @Test func unreadMirrorsTheGatewayAndSkipsTheScreen() {
         let app = AppModel.shared

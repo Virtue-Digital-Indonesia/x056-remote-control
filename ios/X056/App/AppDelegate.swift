@@ -74,6 +74,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             await AppModel.shared.replyFromNotification(projectId: pid, sessionId: sid, text: text)
             return
         }
-        await MainActor.run { AppModel.shared.open(projectId: pid, sessionId: sid) }
+        let bot = info["bot"] as? Bool == true
+        await MainActor.run { AppModel.shared.open(projectId: pid, sessionId: sid, bot: bot) }
     }
 }

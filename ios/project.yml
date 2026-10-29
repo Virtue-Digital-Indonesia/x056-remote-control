@@ -25,6 +25,8 @@ targets:
     dependencies:
       - target: X056Widgets
         embed: true
+      - target: X056Notifications
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: id.val.x056
@@ -66,6 +68,10 @@ targets:
             CFBundleURLSchemes: [x056]
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        # A Bot push is shown as a message from the Bot, with its face
+        # (X056Notifications); iOS asks the app to declare the intent.
+        NSUserActivityTypes:
+          - INSendMessageIntent
     entitlements:
       path: X056/Support/X056.entitlements
       properties:
@@ -74,6 +80,8 @@ targets:
         # /.well-known/apple-app-site-association (server/apple-app-site.ts).
         com.apple.developer.associated-domains:
           - webcredentials:x056.rc.val.id
+        # Lets a push carry a sender picture: the Bot's (X056Notifications).
+        com.apple.developer.usernotifications.communication: true
   X056Widgets:
     type: app-extension
     platform: iOS
@@ -96,6 +104,31 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+  X056Notifications:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: X056Notifications
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: id.val.x056.notifications
+        PRODUCT_NAME: X056Notifications
+        INFOPLIST_FILE: X056Notifications/Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: "YES"
+    info:
+      path: X056Notifications/Info.plist
+      properties:
+        CFBundleDisplayName: x056
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+          NSExtensionAttributes:
+            IntentsSupported:
+              - INSendMessageIntent
   X056Tests:
     type: bundle.unit-test
     platform: iOS

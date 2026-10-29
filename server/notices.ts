@@ -52,6 +52,8 @@ export interface Notice {
   sessionId?: string;
   /** Retained in events/history, but omitted from presentation and device pushes. */
   screenSuppressed?: boolean;
+  /** About the Bot's project: a phone shows it with the Bot's face and opens the Bot. */
+  bot?: boolean;
 }
 
 export interface NoticeContext {
@@ -264,6 +266,7 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
     ...(id ? { id } : {}),
     ...(pid ? { projectId: pid } : {}),
     ...(sid ? { sessionId: sid } : {}),
+    ...(ctx.bot ? { bot: true } : {}),
     ...over,
     ...(screenSuppressed(kind, data, ctx) && category !== 'needs_you' && tier !== 'urgent' ? { screenSuppressed: true } : {}),
   });

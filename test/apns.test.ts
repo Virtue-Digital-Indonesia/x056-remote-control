@@ -116,6 +116,16 @@ describe('ApnsService send', () => {
     expect((svc.payload({ title: 't', body: 'b', kind: 'autopilot', projectId: 'p', sessionId: 's' }).aps as Record<string, unknown>).category).toBe('X056_REPLY');
   });
 
+  it('lets the service extension dress a Bot push, and only a Bot push', () => {
+    const { svc } = setup();
+    const bot = svc.payload({ title: 'Bot', body: 'Morning', kind: 'bot_notice', projectId: 'p', sessionId: 's', bot: true });
+    expect((bot.aps as Record<string, unknown>)['mutable-content']).toBe(1);
+    expect(bot.bot).toBe(true);
+    const plain = svc.payload({ title: 't', body: 'b', kind: 'question', projectId: 'p', sessionId: 's' });
+    expect((plain.aps as Record<string, unknown>)['mutable-content']).toBeUndefined();
+    expect(plain.bot).toBeUndefined();
+  });
+
   it('sends only to the tokens it is given', async () => {
     const { svc, calls } = setup();
     svc.setConfig(CFG);

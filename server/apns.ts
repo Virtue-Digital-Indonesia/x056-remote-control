@@ -22,7 +22,7 @@ export interface ApnsConfig { keyId: string; teamId: string; bundleId: string; k
 export interface ApnsDevice { token: string; env: ApnsEnv; name?: string; at: number }
 
 /** What APNs needs from a notice (server/notices.ts). */
-export type ApnsAlert = Pick<Notice, 'title' | 'body' | 'kind'> & Partial<Pick<Notice, 'projectId' | 'sessionId' | 'id' | 'link' | 'tag'>>;
+export type ApnsAlert = Pick<Notice, 'title' | 'body' | 'kind'> & Partial<Pick<Notice, 'projectId' | 'sessionId' | 'id' | 'link' | 'tag' | 'bot'>>;
 
 /** An iPhone's key for push settings and presence (server/presence.ts deviceKey),
  *  in the same namespace as a browser's push endpoint. */
@@ -216,8 +216,12 @@ export class ApnsService {
         'thread-id': alert.sessionId || alert.projectId || 'x056',
         // Any notice about a conversation can be answered from the banner.
         ...(alert.sessionId ? { category: 'X056_REPLY' } : {}),
+        // The app's service extension (X056Notifications) gives a Bot push
+        // the Bot's face as its sender; every other push keeps the app icon.
+        ...(alert.bot ? { 'mutable-content': 1 } : {}),
       },
       kind: alert.kind,
+      ...(alert.bot ? { bot: true } : {}),
       projectId: alert.projectId ?? '',
       ...(alert.sessionId ? { sessionId: alert.sessionId } : {}),
       ...(alert.link ? { url: alert.link } : {}),
