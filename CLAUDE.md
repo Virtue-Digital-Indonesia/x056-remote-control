@@ -398,7 +398,13 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   silent `sleep 300` counts -- or a live top-level task); every other sibling
   is killed at a new spawn, grace or not. An identity change never kills a
   process with a tool call in flight or a background task still running;
-  the turn is held on it instead. Eviction and the TTL keep the grace.
+  the turn is held on it instead. Eviction and the TTL keep the grace. The
+  price: a reply thinking silently with no tool and no task in flight is
+  killed by an identity change (the new process resumes from the
+  transcript) -- one lost reply instead of two writers. A notification for
+  a task the process never saw start is NOT a wake: `task_notification`
+  carries no nesting fields, so that would also catch nested tasks and hold
+  ordinary prompts for 3 minutes (tried and reverted).
 - **The real ending of background work and autopilot (2026-10-12).** A turn
   often ends "agents launched"; the summary and the ASK question come later in
   the reply a finished task WAKES. That reply was stripped of its ASK and
