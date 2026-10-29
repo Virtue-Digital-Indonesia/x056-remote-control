@@ -95,7 +95,8 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
   // requested with ?v=; the scope header lets a worker served from /sw.js
   // control the whole origin.
   serveStatic('/sw.js', 'sw.js', 'application/javascript', { 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' }, false);
-  serveStatic('/manifest.webmanifest', 'manifest.webmanifest', 'application/manifest+json');
+  // The manifest's ?v= is a hand-named label, not a content hash: keep it revalidating.
+  serveStatic('/manifest.webmanifest', 'manifest.webmanifest', 'application/manifest+json', undefined, false);
   serveStatic('/control-room.css', 'control-room.css', 'text/css', { 'Cache-Control': 'no-cache' });
   serveStatic('/control-room.js', 'control-room.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
   serveStatic('/terminal.js', 'terminal.js', 'application/javascript', { 'Cache-Control': 'no-cache' });
