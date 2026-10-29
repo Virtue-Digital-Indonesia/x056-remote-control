@@ -69,4 +69,7 @@ RUN mkdir -p /app/state && rm -rf /home/efran/.ssh && ln -s /app/state/ssh /home
 ENV PORT=4056
 EXPOSE 4056
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -fsS http://localhost:4056/healthz || exit 1
-CMD ["npx", "tsx", "server/main.ts"]
+# Node itself, with tsx as a loader: npx + the tsx CLI added two launcher
+# processes (~125 MB) in front of it. tsx is installed by the full `npm ci`
+# above (it is a devDependency; nothing here omits those).
+CMD ["node", "--import", "tsx", "server/main.ts"]
