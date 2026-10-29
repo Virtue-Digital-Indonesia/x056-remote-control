@@ -61,7 +61,15 @@ export class ProviderActivity {
     const id: string = m.task_id;
     const prev = this.claudeTasks.get(id);
     if (m.subtype === 'task_notification') {
-      if (!prev) return;
+      if (!prev) {
+        // A notification for a task this process never saw start: on
+        // `--resume` the CLI reports a background task the PREVIOUS process
+        // started (status stopped), and that can wake the model just the
+        // same (incident d3d950c5, 2026-10-29). Nested ones stay ignored.
+        if (m.owned_by_subagent === true || !!m.parent_task_id || (typeof m.spawn_depth === 'number' && m.spawn_depth > 1)) return;
+        if (!this.parent) this.wakeAt = this.now();
+        return;
+      }
       prev.running = false;
       // Between replies, a finished task wakes the model; until its first
       // message nothing is written, and that silence must not read as idle.
