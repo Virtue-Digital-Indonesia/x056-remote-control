@@ -6,7 +6,7 @@ import { STORAGE_SWEEPER, StorageApprovers, type StorageSweeper } from '../../se
 import { keyFingerprint } from '../../server/webauthn.js';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createApp } from '../../server/main.js';
 import { SessionManager } from '../../server/manager.js';
 import { ChatCapabilities } from '../../server/chat-capabilities.js';
@@ -95,6 +95,19 @@ if(storageFixture){
   mkdirSync(join(state,'webauthn'),{recursive:true});writeFileSync(join(state,'webauthn','credentials.json'),JSON.stringify([{id:key.credentialId,publicKey:key.coseB64url(),counter:0,label:'Fixture phone',createdAt:Date.now()-86400000}]));
   // Pinned as the one approver by id AND key fingerprint (it was registered after the seed date).
   new StorageApprovers(state).add({id:key.credentialId,key:keyFingerprint(key.coseB64url()),label:'Fixture phone'},'fixture');
+}
+// X056_TEST_STORAGE=volumes: a seeded manifest with one idle node_modules and
+// two unused Docker volumes, a database one (dataVolume) and a recognised cache.
+if(process.env.X056_TEST_STORAGE==='volumes'){
+  const d=join(state,'storage-sweeper'),id=(r:string,t:string)=>createHash('sha256').update(r+'\0'+t).digest('hex').slice(0,16);
+  const items=[
+    {rule:'M1',target:join(dir,'site-redesign','node_modules'),bytes:412*1048576,reason:'dependencies in an idle checkout (no activity for 21 days)',evidence:{},action:'rm-dir',unit:'checkout:'+join(dir,'site-redesign'),executable:true},
+    {rule:'M4',target:'docker:volume:ocr-pp-lab_db',bytes:1.4*1073741824,reason:'unused named volume; looks like a data volume (db): approve only if it is disposable',evidence:{name:'ocr-pp-lab_db',looksLikeData:'db',composeProject:'ocr-pp-lab'},action:'docker',unit:'docker',executable:true,command:['docker','volume','rm','ocr-pp-lab_db'],mayHoldData:true,dataVolume:true},
+    {rule:'M4',target:'docker:volume:obs-gocache',bytes:2.1*1073741824,reason:'unused named volume; looks like a build cache (gocache)',evidence:{name:'obs-gocache',looksLikeCache:'gocache'},action:'docker',unit:'docker',executable:true,command:['docker','volume','rm','obs-gocache'],mayHoldData:true},
+  ].map(i=>({id:id(i.rule,i.target),...i}));
+  mkdirSync(join(d,'manifests'),{recursive:true});
+  writeFileSync(join(d,'manifests','run-fixture-volumes.json'),JSON.stringify({id:'run-fixture-volumes',createdAt:Date.now(),expiresAt:Date.now()+7*86400000,runId:'run-fixture-volumes',digest:'fixture',items,protected:[],auto:[],notes:[],truncated:false}));
+  writeFileSync(join(d,'state.json'),JSON.stringify({currentManifest:'run-fixture-volumes'}));
 }
 const app=await createApp({token:'browser-fixture-token-0123456789',storage:{containerCaches:false,dind:false,processes:()=>[],mounts:()=>[]},stateDir:state,workspaceRoot:dir,claudePath:fake,panelPath:join(pub,'panel.html'),titleGenerator:async input=>{await new Promise(r=>setTimeout(r,300));return /keyboard/i.test(input.prompt)?'Keyboard navigation improvements':'Website layout improvements';}});
 if(process.env.X056_TEST_CHAT)app.get(SessionManager).setChatCapabilities(new ChatCapabilities(state,()=>registry.list(),undefined as never,undefined as never,undefined,async account=>({account:account.name,errors:[],capabilities:[{key:'skill:rc-documents',name:'rc-documents',kind:'skill',state:'ready',fingerprint:'fixture-v1',invocation:'/rc-documents'},{key:'mcp:x056',name:'x056',kind:'mcp',state:'ready',fingerprint:'chat-files-v1'},{key:'plugin:fixture',name:'Fixture plugin',kind:'plugin',state:account.name==='backup'?'authorization-needed':'ready'}]})));
