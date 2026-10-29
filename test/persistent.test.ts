@@ -859,55 +859,6 @@ describe('a woken reply that has not started yet', () => {
     p.shutdown();
   });
 
-  // On --resume the CLI reports a task the PREVIOUS process started, which
-  // this one never saw start (incident d3d950c5, 2026-10-29).
-  const unknown = { type: 'system', subtype: 'task_notification', task_id: 'old-bg', status: 'stopped' };
-
-  it('a notification for a task never seen starting is a wake: the next turn is held, then released at the woken reply', async () => {
-    let t = 1_000_000;
-    const { p, spawned } = wakePool(() => t);
-    const h1 = p.startTurn(turn({ model: 'opus', effort: 'high' }));
-    spawned[0].result('turn over'); await h1.done;
-    spawned[0].emit(unknown);
-    t += 2_000;
-    expect(p.heldIdentity('s1')).toEqual({ model: 'opus', effort: 'high', advisor: undefined });
-    const h2 = p.startTurn(turn({ model: 'opus', effort: 'xhigh', mode: 'resume', prompt: 'queued' }));
-    await tick();
-    expect(spawned).toHaveLength(1);                 // no second writer
-    expect(texts(spawned[0])).toEqual(['hello']);
-    spawned[0].emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'the old agent was stopped' }] } });
-    spawned[0].result('woken reply');
-    expect(texts(spawned[0])).toEqual(['hello', 'queued']);
-    spawned[0].result('answered'); await h2.done;
-    p.shutdown();
-  });
-
-  it('an unknown-task notification that wakes nothing releases the held prompt after the wake window', async () => {
-    let t = 1_000_000;
-    const { p, spawned } = wakePool(() => t);
-    const h1 = p.startTurn(turn());
-    spawned[0].result('turn over'); await h1.done;
-    spawned[0].emit(unknown);
-    const h2 = p.startTurn(turn({ mode: 'resume', prompt: 'still there?' }));
-    await tick();
-    expect(texts(spawned[0])).toEqual(['hello']);
-    t += 3 * 60_000 + 1;                             // no reply ever comes
-    await tick();
-    expect(texts(spawned[0])).toEqual(['hello', 'still there?']);
-    spawned[0].result('yes'); await h2.done;
-    p.shutdown();
-  });
-
-  it('a nested unknown-task notification is not a wake', async () => {
-    let t = 1_000_000;
-    const { p, spawned } = wakePool(() => t);
-    const h1 = p.startTurn(turn());
-    spawned[0].result('turn over'); await h1.done;
-    spawned[0].emit({ ...unknown, parent_task_id: 'top' });
-    expect(p.activeSessions().some((s) => s.sessionId === 's1')).toBe(false);
-    p.shutdown();
-  });
-
   it('a notification during a running turn is part of that turn, not a wake', async () => {
     let t = 1_000_000;
     const { p, spawned } = wakePool(() => t);

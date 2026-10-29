@@ -399,10 +399,6 @@ message per turn over `--input-format stream-json`. A turn now ends at the
   is killed at a new spawn, grace or not. An identity change never kills a
   process with a tool call in flight or a background task still running;
   the turn is held on it instead. Eviction and the TTL keep the grace.
-  A top-level `task_notification` for a task the process never saw start
-  (on `--resume` the CLI reports the previous process's stopped agent) now
-  counts as a wake between replies, so the next turn is held; with no reply
-  the defer watch lets it go after `WAKE_WINDOW_MS`.
 - **The real ending of background work and autopilot (2026-10-12).** A turn
   often ends "agents launched"; the summary and the ASK question come later in
   the reply a finished task WAKES. That reply was stripped of its ASK and
