@@ -87,11 +87,11 @@ export function cachedBrief(file: string): string {
 /**
  * sessionId → transcript path, from one shallow walk per account.
  *
- * findTranscript() lists `projects/` RECURSIVELY, which now descends into every
- * session's `subagents/` directory as well — 904 files here. Calling it once per
- * conversation cost 3.5s just to enumerate 52 of them, before a single byte was
- * scanned. Transcripts only ever live one level down, so a two-level walk finds
- * all of them and skips the subtree entirely.
+ * A recursive walk of `projects/` descends into every session's `subagents/`
+ * directory as well — 904 files here — and cost 3.5s to enumerate 52
+ * conversations before a single byte was scanned. Transcripts only ever live
+ * one level down, so a two-level walk finds all of them and skips the subtree
+ * entirely (findTranscript() uses the same layout).
  */
 export function transcriptIndex(configDirs: string[]): Map<string, string> {
   const out = new Map<string, string>();

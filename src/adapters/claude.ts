@@ -200,7 +200,11 @@ export function clearTranscriptCache(): void { transcriptCache.clear(); }
  *  every one without listing the subagent subtrees. It used to be a recursive
  *  listing of the whole tree on every history read (~300 ms, ~2.5 s on a miss
  *  across nine accounts). */
+const PLAIN_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 export function findTranscript(configDirs: string[], sessionId: string): string | null {
+  // The id is joined into a path below, so anything but a plain id (a `../`
+  // from a query string) must never reach the filesystem.
+  if (!PLAIN_ID.test(sessionId) || sessionId.includes('..')) return null;
   const key = configDirs.join('\0') + '\0' + sessionId;
   const hit = transcriptCache.get(key);
   if (hit !== undefined) {
