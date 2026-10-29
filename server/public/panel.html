@@ -6429,13 +6429,35 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
 
   // ---- SSE ----
   var es = null;
+  // Reconnect backoff: 2 s doubling to 30 s, with jitter, reset by a
+  // successful open.
+  var reconnectDelay = 2000, reconnectTimer = null;
+  // The re-hydration after an open runs at most once per 10 s; an open inside
+  // that window schedules one trailing run, so a flapping connection still
+  // repairs whatever it missed, just not on every flap.
+  var rehydrateAt = 0, rehydrateTimer = null;
+  function rehydrate() {
+    rehydrateTimer = null; rehydrateAt = Date.now();
+    loadProjects(); loadMcpApprovals(); loadQuestions(); loadReadState(); document.dispatchEvent(new CustomEvent('x056:reconnected'));
+  }
   function connect() {
+    clearTimeout(reconnectTimer); reconnectTimer = null;
     if (es) es.close();
     es = new EventSource('/api/sessions/current/stream?token=' + encodeURIComponent(token) + '&since=' + lastSeq);
     // A reconnect may have missed the 'question' event entirely (the gap, or a
     // restart that cleared the replay buffer) — re-hydrate so the card returns.
-    es.onopen = function () { dot.className = 'on'; loadProjects(); loadMcpApprovals(); loadQuestions(); loadReadState(); document.dispatchEvent(new CustomEvent('x056:reconnected')); };
-    es.onerror = function () { dot.className = 'off'; es.close(); setTimeout(connect, 2000); };
+    es.onopen = function () {
+      dot.className = 'on'; reconnectDelay = 2000;
+      var wait = rehydrateAt + 10000 - Date.now();
+      if (wait <= 0) { clearTimeout(rehydrateTimer); rehydrate(); }
+      else if (!rehydrateTimer) rehydrateTimer = setTimeout(rehydrate, wait);
+    };
+    es.onerror = function () {
+      dot.className = 'off'; es.close();
+      var delay = Math.min(30000, reconnectDelay * (0.8 + Math.random() * 0.4));
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+      clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, delay);
+    };
     ['chat_files', 'projects', 'session_started', 'assistant_text', 'supervisor', 'session_done', 'conversation_settled', 'background_state', 'session_error', 'message_rejected', 'activity', 'turn_state', 'project_selected', 'project_removed', 'turn_orphaned', 'autopilot', 'queue', 'conversation', 'question', 'question_dismissed', 'question_answered', 'identity_held', 'active_model', 'settings', 'accounts', 'mcp_approval', 'message_delivery', 'steered', 'memory_context', 'memory_warning', 'jev_decision', 'jev_fork', 'delegate_report', 'delegate_update', 'delegate_warning', 'advisor_state', 'advisor_consult', 'advisor_call', 'turn_result', 'cron_failed', 'restart_interrupted', 'read_state', 'bot_notice', 'bot_message', 'bot_attention', 'owner_view', 'session_reset'].forEach(function (kind) {
       es.addEventListener(kind, function (evt) {
         if (evt.lastEventId) lastSeq = Number(evt.lastEventId) || lastSeq;
