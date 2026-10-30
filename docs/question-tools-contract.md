@@ -26,6 +26,14 @@ Mutating routes need `from`. A target conversation defaults to the caller's
 own (`X056_SELF_PROJECT_ID` / `_SESSION_ID`). An external `/mcp` client with
 no identity can only list.
 
+**Delegates manage no cards.** A delegate's bridge has no `X056_SELF_*` and
+sends its orchestrator's session as `from` (`X056_RELAY_FROM`), so the server
+would take its mutations as the orchestrator's own. The bridge therefore also
+sends `delegateId` (`X056_DELEGATE_ID`) on ask, edit and close, and the server
+refuses any of those that carries one: 403 `{error: 'delegate_no_questions',
+message: 'Delegates do not manage question cards; put what you need in your
+report (NEEDS HUMAN / NEEDS ORCHESTRATOR).'}`. `list_questions` stays allowed.
+
 ## Routes
 
 ### `POST /api/questions/ask`
@@ -46,19 +54,36 @@ asks only on its own card), else 403.
 
 ### `POST /api/questions/edit`
 Body `{from, projectId, sessionId, at, id, question?, options?, reason}`.
-Any agent may edit any conversation's open card. It keeps `at` and `id`.
+Only the conversation that asked may edit its card (`from` = the target, and
+not a delegate). Anyone else gets 403 `{error: 'edit_own_only', message:
+'Only the conversation that asked can edit its card; dismiss it or answer it
+instead.'}`: a direct store write on another conversation's card would bypass
+approval mode and relay checkpoints. It keeps `at` and `id`.
 It emits `question` with the full batch plus `{edited: true, remainder: true, by, byAgent, reason}`
 (`remainder` keeps notices, read-state and the Bot digest quiet on every
 client, old ones included).
 
 ### `POST /api/questions/close`
-Body `{from, projectId, sessionId, at, ids?: string[], action: 'dismiss' | 'answer', answer?, reason}`.
+Body `{from, projectId, sessionId, at, ids?: string[], action: 'dismiss' | 'answer', answer?, reason, confirmRelay?}`.
 Omitting `ids` means the whole batch. `reason` is required for dismiss (1-300
 chars). `answer` is required for answer (1-2000 chars).
 
-- **Dismiss, any conversation:** close those items. A partial close uses the
-  `closePendingQuestions` path (remainder event); a whole-batch close emits
-  `question_dismissed {at, by, byAgent, reason}`.
+- **Dismiss on the caller's own card:** close those items at once (no
+  message to self). A partial close uses the `closePendingQuestions` path
+  (remainder event); a whole-batch close emits
+  `question_dismissed {at, by, byAgent, reason}`. Returns
+  `{status: 'dismissed', at, closed, open}`.
+- **Dismiss on another conversation's card:** the same at-delivery pattern
+  as a cross answer (below). ONE short message goes to the asking
+  conversation through the ordinary send: `Your open question was dismissed
+  by <caller title>: <reason>` followed by one `- <question>` line per
+  dismissed item. The items close at delivery (automatic mode: at once;
+  approval mode: on approve, re-checking `at` and ids; if gone, the message
+  goes as a plain message with `cardClosed: false, note: 'card already
+  closed'`), with the same events as an own dismiss, so the
+  `question_agent_action` line appears in the target at close time, before
+  the turn the message starts. Same receipt as a cross answer; the relay
+  checkpoint 409 passes through and `confirmRelay` sends it.
 - **Answer on the caller's own card:** close with the answer recorded:
   `question_answered {at, by, byAgent, answer, ids}` (partial: the remainder event with
   `answered`, `by`, `byAgent`, `answer`). The agent goes on in its own turn.
@@ -74,7 +99,15 @@ chars). `answer` is required for answer (1-2000 chars).
   Turn start gains NO new rule: an agent-origin turn still never closes a
   card through `answersQuestionAt`.
   Return the delivery receipt (`sent`/`queued`/`pending_approval`), and
-  pass the relay-checkpoint 409 through unchanged.
+  pass the relay-checkpoint 409 through unchanged. The receipt (cross answer
+  and cross dismiss alike): automatic mode `{mode: 'auto', status, sessionId,
+  queued, messageId, hopsLeft, hopsUntilCheck, confirmedCheckpoint?,
+  cardClosed, note?}`; approval mode `{mode: 'approval', status:
+  'pending_approval', approvalId, messageId}`, and `GET
+  /api/conversations/send-status` carries `cardClosed` / `note` once approved.
+  The close request rides on the `McpApproval` as `closeQuestion {at, ids, by,
+  action: 'answer' | 'dismiss', answer?, reason?}` (an approval saved before
+  `action` existed is an answer).
 
 `by` stays a STRING on every event: `'agent'` for these, and what it was
 before for a human close (`'turn'`, `'steer'`, ...), because older panels and
@@ -114,12 +147,16 @@ shared fixtures `test/fixtures/owner-view-table.json` and
   call it, then END YOUR TURN; the owner's answer arrives as your next
   message. Refuses without SELF.
 - `list_questions {project_id?, session_id?, all?}`: own conversation by default; `all: true` lists every open card.
-- `edit_question {at, id, question?, options?, reason, project_id?, session_id?}`
-- `dismiss_question {at, ids?, reason, project_id?, session_id?}`: replaces `<<<RESOLVED>>>`.
+- `edit_question {at, id, question?, options?, reason, project_id?, session_id?}`: own card only (the description says so).
+- `dismiss_question {at, ids?, reason, project_id?, session_id?, confirm_relay?}`: replaces `<<<RESOLVED>>>`.
 - `answer_question {at, ids?, answer, project_id?, session_id?, confirm_relay?}`
-- Each has an output schema (the import-time check throws without one).
-  Non-blocking: one request, except `answer_question` cross-conversation in
-  approval mode, which polls like `send_message` (`waitForApproval`).
+- Each has an output schema (the import-time check throws without one);
+  `dismiss_question`'s covers the delivery receipt fields, as
+  `answer_question`'s does. Non-blocking: one request, except
+  `answer_question` and `dismiss_question` cross-conversation in approval
+  mode, which poll like `send_message` (`waitForApproval`).
+- With `X056_DELEGATE_ID` set (a delegate) the bridge adds `delegateId` to
+  ask, edit and close bodies; the gateway refuses them (see Caller identity).
 
 ## Prompts
 

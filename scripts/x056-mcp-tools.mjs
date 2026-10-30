@@ -424,7 +424,8 @@ const QUESTION_TOOLS = [
   {
     name: 'edit_question',
     description:
-      'Rewrite one question of an open card (its text, its options, or both), keeping its place and id. Any conversation\'s card. '
+      'Rewrite one question of YOUR OWN open card (its text, its options, or both), keeping its place and id. Only the conversation that asked can edit its card: '
+      + 'for another conversation\'s card use dismiss_question or answer_question instead. '
       + 'The user sees a line "Question edited by <you>: <reason>". Take `at` and `id` from list_questions.',
     inputSchema: {
       type: 'object',
@@ -444,7 +445,8 @@ const QUESTION_TOOLS = [
     name: 'dismiss_question',
     description:
       'Close questions on an open card that no longer need the user: the question was settled another way, or it is moot. This replaces writing <<<RESOLVED>>>. '
-      + 'Omit ids to close the whole card. A reason is required; the user sees "Question dismissed by <you>: <reason>". Any conversation\'s card. Take `at` and ids from list_questions.',
+      + 'Omit ids to close the whole card. A reason is required; the user sees "Question dismissed by <you>: <reason>". Take `at` and ids from list_questions. '
+      + 'On YOUR OWN card it closes at once. On ANOTHER conversation\'s card that conversation is sent one short message ("Your open question was dismissed by <you>: <reason>"), following send_message\'s rules (the operator\'s approval mode; AI-to-AI hops count toward a relay checkpoint, where the result starts "Not sent yet (relay checkpoint):" and you either stop and report, or call again with confirm_relay: true); the card closes when the message is delivered.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -452,6 +454,7 @@ const QUESTION_TOOLS = [
         ids: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'question ids; omit for the whole card' },
         reason: { type: 'string', minLength: 1, maxLength: 300, description: 'why it no longer needs the user, shown to them' },
         ...QUESTION_TARGET,
+        confirm_relay: { type: 'boolean', description: 'Confirm a relay checkpoint after a "Not sent yet (relay checkpoint)" answer. Ignored when no checkpoint is due.' },
       },
       required: ['at', 'reason'],
       additionalProperties: false,
@@ -1075,6 +1078,9 @@ async function callQuestionTool(api, name, args) {
   // OUR identity from the per-turn config; a delegate has none of its own and
   // acts as its orchestrator's relay chain (X056_RELAY_FROM), as send_message does.
   const from = SELF.sessionId || process.env.X056_RELAY_FROM || '';
+  // ...and it says it is a delegate, so the gateway refuses its card
+  // mutations instead of taking them as the orchestrator's own.
+  const asDelegate = process.env.X056_DELEGATE_ID ? { delegateId: process.env.X056_DELEGATE_ID } : {};
   const named = !!(args.project_id || args.session_id);
   if (named && !(args.project_id && args.session_id)) throw new Error('give project_id and session_id together');
   const target = named ? { projectId: args.project_id, sessionId: args.session_id } : { projectId: SELF.projectId, sessionId: SELF.sessionId };
@@ -1093,7 +1099,7 @@ async function callQuestionTool(api, name, args) {
   if (name === 'ask_user') {
     if (!SELF.projectId || !SELF.sessionId) throw new Error('ask_user needs a conversation identity; delegates report NEEDS HUMAN instead');
     const r = await post('/api/questions/ask', {
-      from: SELF.sessionId, projectId: SELF.projectId, sessionId: SELF.sessionId,
+      from: SELF.sessionId, ...asDelegate, projectId: SELF.projectId, sessionId: SELF.sessionId,
       questions: args.questions.map((q) => ({ question: q.question, options: q.options ?? [] })),
       ...(args.replace ? { replace: true } : {}),
     });
@@ -1115,7 +1121,7 @@ async function callQuestionTool(api, name, args) {
     if (args.question === undefined && args.options === undefined) throw new Error('give question or options (or both) to change');
     let r;
     try {
-      r = await post('/api/questions/edit', { from, ...where, at: args.at, id: args.id, reason: args.reason,
+      r = await post('/api/questions/edit', { from, ...asDelegate, ...where, at: args.at, id: args.id, reason: args.reason,
         ...(args.question !== undefined ? { question: args.question } : {}), ...(args.options !== undefined ? { options: args.options } : {}) });
     } catch (err) { const s = staleOf(err); if (s === undefined) throw err; return staleResult(s); }
     const card = Array.isArray(r?.questions) ? questionCard({ ...where, at: args.at, ...r }) : undefined;
@@ -1123,20 +1129,13 @@ async function callQuestionTool(api, name, args) {
       { status: 'edited', ...where, at: args.at, id: args.id, ...(card ? { card } : {}) });
   }
 
-  if (name === 'dismiss_question') {
-    try {
-      await post('/api/questions/close', { from, ...where, at: args.at, ...(args.ids ? { ids: args.ids } : {}), action: 'dismiss', reason: args.reason });
-    } catch (err) { const s = staleOf(err); if (s === undefined) throw err; return staleResult(s); }
-    return result(`Dismissed ${args.ids ? `question(s) ${args.ids.join(', ')}` : 'the whole card'} (at=${args.at}). The user sees "Question dismissed by <this conversation>: ${args.reason}".`,
-      { status: 'dismissed', ...where, at: args.at, ...(args.ids ? { ids: args.ids } : {}) });
-  }
-
-  // answer_question
   const own = target.projectId === SELF.projectId && target.sessionId === SELF.sessionId;
+  const base = { ...where, at: args.at, ...(args.ids ? { ids: args.ids } : {}) };
+  const action = name === 'dismiss_question' ? 'dismiss' : 'answer';
   let r;
   try {
-    r = await post('/api/questions/close', { from, ...where, at: args.at, ...(args.ids ? { ids: args.ids } : {}), action: 'answer', answer: args.answer,
-      ...(args.confirm_relay ? { confirmRelay: true } : {}) });
+    r = await post('/api/questions/close', { from, ...asDelegate, ...where, at: args.at, ...(args.ids ? { ids: args.ids } : {}), action,
+      ...(action === 'dismiss' ? { reason: args.reason } : { answer: args.answer }), ...(args.confirm_relay ? { confirmRelay: true } : {}) });
   } catch (err) {
     const s = staleOf(err);
     if (s !== undefined) return staleResult(s);
@@ -1146,10 +1145,14 @@ async function callQuestionTool(api, name, args) {
       ...(typeof cp.hops === 'number' ? { hops: cp.hops } : {}), ...(typeof cp.checkpointEvery === 'number' ? { checkpointEvery: cp.checkpointEvery } : {}), note: cp.message });
   }
   r = r || {};
-  const base = { ...where, at: args.at, ...(args.ids ? { ids: args.ids } : {}) };
-  if (own || r.status === 'answered') {
+  const what = args.ids ? `question(s) ${args.ids.join(', ')}` : 'the whole card';
+  if (action === 'dismiss' && (r.status === 'dismissed' || (own && !r.mode))) {
+    return result(`Dismissed ${what} (at=${args.at}). The user sees "Question dismissed by <this conversation>: ${args.reason}".`,
+      { status: 'dismissed', ...base, cardClosed: true });
+  }
+  if (action === 'answer' && (own || r.status === 'answered')) {
     const closed = r.cardClosed !== false;
-    return result(`Answered ${args.ids ? `question(s) ${args.ids.join(', ')}` : 'the whole card'} on your own card (at=${args.at})${closed ? '; it is closed' : ''}. Carry on in this turn.${r.note ? '\n' + r.note : ''}`,
+    return result(`Answered ${what} on your own card (at=${args.at})${closed ? '; it is closed' : ''}. Carry on in this turn.${r.note ? '\n' + r.note : ''}`,
       { status: 'answered', ...base, cardClosed: closed, ...(r.note ? { note: String(r.note) } : {}) });
   }
   // Another conversation's card: a delivery receipt. The card closes at delivery.
@@ -1165,12 +1168,12 @@ async function callQuestionTool(api, name, args) {
   }
   const delivered = ['sent', 'queued', 'steered', 'started'].includes(status);
   if (status === 'started') status = 'sent';
-  // A note on a delivered answer is the gateway saying why the card did NOT
+  // A note on a delivered message is the gateway saying why the card did NOT
   // close ('card already closed'); without either, delivery closed it.
   if (typeof out.cardClosed !== 'boolean') out.cardClosed = delivered && !out.note;
   const said = {
     sent: 'delivered to that conversation as a message (its turn is running now).',
-    queued: 'queued for that conversation (it is mid-turn); it reads the answer when its current turn ends.',
+    queued: 'queued for that conversation (it is mid-turn); it reads it when its current turn ends.',
     steered: 'steered into that conversation\'s running turn.',
     pending_approval: 'still awaiting the operator\'s approval: not delivered, and the card stays open.',
     denied: 'the operator DENIED it: not delivered, and the card stays open.',
@@ -1179,7 +1182,7 @@ async function callQuestionTool(api, name, args) {
   }[status] || String(status);
   const closedLine = delivered ? (out.cardClosed ? 'The card is closed.' : 'The card was NOT closed.') : '';
   const tail = [closedLine, out.note, relayTail(out)].filter(Boolean).join('\n');
-  return result(`Answer ${said}${tail ? '\n' + tail : ''}`, { status, ...out });
+  return result(`${action === 'dismiss' ? 'Dismissal' : 'Answer'} ${said}${tail ? '\n' + tail : ''}`, { status, ...out });
 }
 
 /** Wait for the operator's decision on an approval -- and, for an approved

@@ -21,7 +21,7 @@ const httpError = (status: number, body: Record<string, unknown>) =>
   Object.assign(new Error(String(body.message ?? `gateway returned ${status}`)), { status, body });
 
 async function bridge(env: Record<string, string> = { X056_SELF_PROJECT_ID: 'p', X056_SELF_SESSION_ID: 's' }) {
-  for (const k of ['X056_SELF_PROJECT_ID', 'X056_SELF_SESSION_ID', 'X056_RELAY_FROM', 'X056_BOT']) vi.stubEnv(k, env[k] ?? '');
+  for (const k of ['X056_SELF_PROJECT_ID', 'X056_SELF_SESSION_ID', 'X056_RELAY_FROM', 'X056_DELEGATE_ID', 'X056_BOT']) vi.stubEnv(k, env[k] ?? '');
   vi.resetModules();
   return import('../scripts/x056-mcp-tools.mjs');
 }
@@ -149,14 +149,67 @@ describe('edit_question / dismiss_question', () => {
     expect(data).toEqual({ status: 'stale', open: null });
   });
 
-  it('a delegate acts with its orchestrator as from; no identity at all refuses', async () => {
-    const delegate = await bridge({ X056_RELAY_FROM: 'orch' });
-    const { api, calls } = mockApi(() => ({}));
-    await run(delegate, api, 'dismiss_question', { at: 'a', reason: 'r', project_id: 'p', session_id: 'o' });
-    expect(calls[0].body.from).toBe('orch');
+  it('a delegate sends its orchestrator as from AND its delegateId (the gateway refuses it); no identity at all refuses', async () => {
+    const delegate = await bridge({ X056_RELAY_FROM: 'orch', X056_DELEGATE_ID: 'd1' });
+    const refused = { error: 'delegate_no_questions', message: 'Delegates do not manage question cards; put what you need in your report (NEEDS HUMAN / NEEDS ORCHESTRATOR).' };
+    const { api, calls } = mockApi((c) => { if (c.path.startsWith('/api/questions/')) throw httpError(403, refused); return [CARD]; });
+    for (const [name, args] of [
+      ['dismiss_question', { at: 'a', reason: 'r', project_id: 'p', session_id: 'o' }],
+      ['edit_question', { at: 'a', id: 'b', question: 'q', reason: 'r', project_id: 'p', session_id: 'o' }],
+      ['answer_question', { at: 'a', answer: 'x', project_id: 'p', session_id: 'o' }],
+    ] as const) {
+      await expect(delegate.callToolResult(api, name, args), name).rejects.toThrow(/Delegates do not manage question cards/);
+      expect(calls.at(-1)!.body).toMatchObject({ from: 'orch', delegateId: 'd1' });
+    }
+    await expect(delegate.callToolResult(api, 'ask_user', { questions: [{ question: 'q?' }] })).rejects.toThrow(/delegates report NEEDS HUMAN/);
+    const listed = await run(delegate, api, 'list_questions', { project_id: 'p', session_id: 's' });
+    expect(calls.at(-1)!.path).toBe('/api/questions?projectId=p&sessionId=s');
+    expect(listed.data).toMatchObject({ cards: [{ at: CARD.at }] });
     await expect(delegate.callToolResult(api, 'dismiss_question', { at: 'a', reason: 'r' })).rejects.toThrow(/give project_id and session_id/);
     const none = await bridge({});
     await expect(none.callToolResult(api, 'edit_question', { at: 'a', id: 'b', question: 'q', reason: 'r', project_id: 'p', session_id: 's' })).rejects.toThrow(/needs a conversation identity/);
+  });
+
+  it('a conversation without X056_DELEGATE_ID sends no delegateId', async () => {
+    const tools = await bridge();
+    const { api, calls } = mockApi(() => ({ status: 'dismissed' }));
+    await run(tools, api, 'dismiss_question', { at: CARD.at, reason: 'r' });
+    expect(calls[0].body).not.toHaveProperty('delegateId');
+  });
+
+  it('dismiss on another conversation\'s card, automatic mode: a delivery receipt with cardClosed and relay fields', async () => {
+    const tools = await bridge();
+    const { api, calls } = mockApi(() => ({ mode: 'auto', status: 'sent', sessionId: 't', queued: false, messageId: 'm1', hopsUntilCheck: 5, hopsLeft: 5, cardClosed: true }));
+    const { text, data } = await run(tools, api, 'dismiss_question', { at: CARD.at, reason: 'moot', project_id: 'q', session_id: 't' });
+    expect(calls[0].body).toEqual({ from: 's', projectId: 'q', sessionId: 't', at: CARD.at, action: 'dismiss', reason: 'moot' });
+    expect(text).toMatch(/^Dismissal delivered to that conversation/);
+    expect(text).toMatch(/The card is closed\./);
+    expect(data).toMatchObject({ status: 'sent', cardClosed: true, messageId: 'm1', hopsUntilCheck: 5 });
+  });
+
+  it('dismiss on another conversation\'s card, approval mode: polls send-status; a card gone meanwhile reports the note', async () => {
+    const tools = await bridge();
+    const { api, calls } = mockApi((c) => c.path.startsWith('/api/conversations/send-status')
+      ? { status: 'approved', delivered: 'started', resultSessionId: 't', cardClosed: false, note: 'card already closed' }
+      : { mode: 'approval', status: 'pending_approval', approvalId: 'ap1', messageId: 'm2' });
+    const { text, data } = await run(tools, api, 'dismiss_question', { at: CARD.at, reason: 'moot', project_id: 'q', session_id: 't' });
+    expect(calls[1].path).toBe('/api/conversations/send-status?id=ap1');
+    expect(data).toMatchObject({ status: 'sent', approvalId: 'ap1', cardClosed: false, note: 'card already closed' });
+    expect(text).toMatch(/The card was NOT closed\./);
+  });
+
+  it('dismiss passes the relay checkpoint through and sends confirmRelay on retry', async () => {
+    const tools = await bridge();
+    const { api, calls } = mockApi(({ body }) => {
+      if (!body.confirmRelay) throw httpError(409, { error: 'relay_confirm_required', hops: 7, checkpointEvery: 6, message: 'Hop 7: is this converging?' });
+      return { mode: 'auto', status: 'sent', sessionId: 't', confirmedCheckpoint: true, hopsUntilCheck: 6, cardClosed: true };
+    });
+    const held = await run(tools, api, 'dismiss_question', { at: CARD.at, reason: 'moot', project_id: 'q', session_id: 't' });
+    expect(held.text.startsWith(tools.RELAY_CHECKPOINT_PREFIX)).toBe(true);
+    expect(held.data).toMatchObject({ status: 'relay_checkpoint', hops: 7, cardClosed: false });
+    const ok = await run(tools, api, 'dismiss_question', { at: CARD.at, reason: 'moot', project_id: 'q', session_id: 't', confirm_relay: true });
+    expect(calls[1].body.confirmRelay).toBe(true);
+    expect(ok.data).toMatchObject({ status: 'sent', confirmedCheckpoint: true, cardClosed: true });
   });
 
   it('other errors pass through', async () => {
@@ -247,6 +300,8 @@ describe('advertised metadata', () => {
     expect(t('list_questions').annotations.readOnlyHint).toBe(true);
     expect(t('dismiss_question').annotations.destructiveHint).toBe(true);
     expect(t('ask_user').annotations.readOnlyHint).toBe(false);
+    expect(t('edit_question').description).toMatch(/YOUR OWN open card/);
+    expect(t('dismiss_question').inputSchema.properties).toHaveProperty('confirm_relay');
     const { api } = mockApi(() => ({}));
     await expect(tools.callToolResult(api, 'ask_user', { questions: [] })).rejects.toThrow(/Invalid tool arguments/);
     await expect(tools.callToolResult(api, 'dismiss_question', { at: 'a' })).rejects.toThrow(/Invalid tool arguments/);

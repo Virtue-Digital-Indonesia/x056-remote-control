@@ -1102,9 +1102,10 @@ Contract: `docs/question-tools-contract.md`.
 
 - **Tools** (x056 MCP, both providers): `ask_user {questions, replace?}`
   (own conversation only; the model is told to END ITS TURN after it),
-  `list_questions`, `edit_question {at, id, reason}`, `dismiss_question
-  {at, ids?, reason}` (replaces `<<<RESOLVED>>>`), `answer_question {at,
-  ids?, answer}`. Routes `POST /api/questions/ask|edit|close`, `GET
+  `list_questions`, `edit_question {at, id, reason}` (the asking
+  conversation's OWN card only; anyone else 403 `edit_own_only`),
+  `dismiss_question {at, ids?, reason, confirm_relay?}` (replaces
+  `<<<RESOLVED>>>`), `answer_question {at, ids?, answer, confirm_relay?}`. Routes `POST /api/questions/ask|edit|close`, `GET
   /api/questions?projectId=&sessionId=`. The store is unchanged and still
   the only truth, so panel and iOS needed no new reading code.
 - **Items have stable 8-hex `id`s** (legacy items get one at load). Tools
@@ -1112,8 +1113,7 @@ Contract: `docs/question-tools-contract.md`.
   current batch. Edits keep `at` and ids, so an answer in flight still lands.
 - **The rules of the text path still apply**: autopilot records the question
   for its recap instead of opening a card, a Bot turn the owner did not start
-  is refused (Bot keeps `message_owner`), a delegate has no SELF and cannot
-  ask, an ask marks a hidden agent turn as shown (`run.ownerReason`, or the
+  is refused (Bot keeps `message_owner`), an ask marks a hidden agent turn as shown (`run.ownerReason`, or the
   woken-reply owner-view record).
 - **An answer to ANOTHER conversation's card is a normal send** (approval
   mode and relay checkpoints apply) and closes the card AT DELIVERY, where
@@ -1121,6 +1121,18 @@ Contract: `docs/question-tools-contract.md`.
   re-checking `at` and ids; else it goes as a plain message with
   `cardClosed: false, note: 'card already closed'`. Turn start gained no rule:
   an agent-origin turn still never closes a card via `answersQuestionAt`.
+  **A dismiss of ANOTHER conversation's card takes the same path**: ONE
+  message to the asker ("Your open question was dismissed by <title>:
+  <reason>" plus a `- <question>` line per item), the items closing at
+  delivery with the same re-check, receipt (`cardClosed`/`note`, relay
+  fields), 409 checkpoint and `confirm_relay`. An own-card dismiss or answer
+  stays a direct close, with no message to self. The close request rides on
+  the `McpApproval` as `closeQuestion {action: 'answer' | 'dismiss'}`.
+- **Delegates manage no cards.** Their bridge has no SELF and sends the
+  orchestrator as `from` (`X056_RELAY_FROM`), so it would pass as "own"; it
+  also sends `delegateId` (`X056_DELEGATE_ID`), and ask / edit / close with
+  one are 403 `delegate_no_questions` ("put what you need in your report").
+  `list_questions` stays allowed.
 - **The owner sees every agent edit or close**: `question_agent_action` (tier
   quiet), journalled as a notice row `question-action:<id>` ("Question
   dismissed by <title>: <reason>"). Those rows are `keep` in both owner-view

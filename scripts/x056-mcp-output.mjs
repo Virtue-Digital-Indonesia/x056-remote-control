@@ -93,7 +93,11 @@ const questionSchemas = {
   ask_user: object({ status: choices('open', 'recorded_autopilot'), projectId: str, sessionId: str, at: str, questions: array(questionItem) }, ['status']),
   list_questions: object({ cards: array(questionCard) }),
   edit_question: object({ status: choices('edited', 'stale'), projectId: str, sessionId: str, at: str, id: str, card: questionCard, open: staleCard }, ['status']),
-  dismiss_question: object({ status: choices('dismissed', 'stale'), projectId: str, sessionId: str, at: str, ids: array(str), open: staleCard }, ['status']),
+  dismiss_question: object({
+    status: choices('dismissed', 'sent', 'queued', 'steered', 'pending_approval', 'denied', 'expired', 'failed', 'relay_checkpoint', 'stale'),
+    projectId: str, sessionId: str, at: str, ids: array(str), cardClosed: bool, note: str, error: str, messageId: str, approvalId: str,
+    hopsLeft: num, hopsUntilCheck: num, confirmedCheckpoint: bool, hops: num, checkpointEvery: num, open: staleCard,
+  }, ['status']),
   answer_question: object({
     status: choices('answered', 'sent', 'queued', 'steered', 'pending_approval', 'denied', 'expired', 'failed', 'relay_checkpoint', 'stale'),
     projectId: str, sessionId: str, at: str, ids: array(str), cardClosed: bool, note: str, error: str, messageId: str, approvalId: str,

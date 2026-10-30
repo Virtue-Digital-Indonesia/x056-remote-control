@@ -1409,7 +1409,11 @@ export class ApiController {
   //      orchestrator, so its answer to the orchestrator's card is "own"). ----
 
   /** The caller and the target conversation; 403 without a known caller. */
-  private questionCaller(body: { from?: string; projectId?: string; sessionId?: string }): { by: QuestionAgent; pid: string; sid: string } {
+  private questionCaller(body: { from?: string; projectId?: string; sessionId?: string; delegateId?: unknown }): { by: QuestionAgent; pid: string; sid: string } {
+    // A delegate's bridge has no identity of its own and sends its
+    // orchestrator's session as `from`, so without this its mutations would
+    // pass as the orchestrator's own. Delegates report instead.
+    if (body?.delegateId !== undefined && body.delegateId !== null && body.delegateId !== '') throw new ForbiddenException({ error: 'delegate_no_questions', message: 'Delegates do not manage question cards; put what you need in your report (NEEDS HUMAN / NEEDS ORCHESTRATOR).' });
     const by = this.manager.questionAgent(typeof body?.from === 'string' ? body.from : undefined);
     if (!by) throw new ForbiddenException({ error: 'identity_required', message: 'Question tools need the calling conversation (from); an external MCP client can only list questions.' });
     const sid = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : by.sessionId;
@@ -1443,7 +1447,7 @@ export class ApiController {
   /** ask_user: open (or join) the caller's OWN card. */
   @Post('questions/ask')
   @HttpCode(200)
-  questionsAsk(@Body() body: { from?: string; projectId?: string; sessionId?: string; questions?: { question?: unknown; options?: unknown }[]; replace?: boolean }) {
+  questionsAsk(@Body() body: { from?: string; delegateId?: string; projectId?: string; sessionId?: string; questions?: { question?: unknown; options?: unknown }[]; replace?: boolean }) {
     const { by, pid, sid } = this.questionCaller(body);
     if (sid !== by.sessionId || pid !== by.projectId) throw new ForbiddenException({ error: 'own_conversation_only', message: 'ask_user asks only on your own conversation\'s card.' });
     if (!Array.isArray(body.questions) || body.questions.length < 1 || body.questions.length > 8) throw new BadRequestException({ error: 'invalid_request', message: 'questions must hold 1-8 questions' });
@@ -1456,11 +1460,12 @@ export class ApiController {
     }
   }
 
-  /** edit_question: any agent, any conversation's open card. */
+  /** edit_question: only the conversation that asked, on its own card. */
   @Post('questions/edit')
   @HttpCode(200)
-  questionsEdit(@Body() body: { from?: string; projectId?: string; sessionId?: string; at?: string; id?: string; question?: unknown; options?: unknown; reason?: unknown }) {
+  questionsEdit(@Body() body: { from?: string; delegateId?: string; projectId?: string; sessionId?: string; at?: string; id?: string; question?: unknown; options?: unknown; reason?: unknown }) {
     const { by, pid, sid } = this.questionCaller(body);
+    if (sid !== by.sessionId || pid !== by.projectId) throw new ForbiddenException({ error: 'edit_own_only', message: 'Only the conversation that asked can edit its card; dismiss it or answer it instead.' });
     if (typeof body.at !== 'string' || !body.at || typeof body.id !== 'string' || !/^[0-9a-f]{8}$/.test(body.id)) throw new BadRequestException({ error: 'invalid_request', message: 'at and id (8 hex characters) required' });
     const question = ApiController.questionText(body.question, 500, 'question', false);
     const options = ApiController.questionOptions(body.options);
@@ -1475,26 +1480,34 @@ export class ApiController {
     }
   }
 
-  /** dismiss_question / answer_question. */
+  /** dismiss_question / answer_question. On the caller's own card: a direct
+   *  close. On another conversation's: a message through the ordinary send,
+   *  and the card closes at delivery. */
   @Post('questions/close')
   @HttpCode(200)
-  questionsClose(@Body() body: { from?: string; projectId?: string; sessionId?: string; at?: string; ids?: unknown; action?: string; answer?: unknown; reason?: unknown; confirmRelay?: boolean }) {
+  questionsClose(@Body() body: { from?: string; delegateId?: string; projectId?: string; sessionId?: string; at?: string; ids?: unknown; action?: string; answer?: unknown; reason?: unknown; confirmRelay?: boolean }) {
     const { by, pid, sid } = this.questionCaller(body);
     if (typeof body.at !== 'string' || !body.at) throw new BadRequestException({ error: 'invalid_request', message: 'at required' });
     const ids = ApiController.questionIds(body.ids);
+    const own = sid === by.sessionId && pid === by.projectId;
     try {
+      let out: ReturnType<SessionManager['answerQuestionFor']>;
       if (body.action === 'dismiss') {
         const reason = ApiController.questionText(body.reason, 300, 'reason')!;
-        const out = this.manager.dismissQuestions(by, pid, sid, body.at, ids, reason);
-        return { status: 'dismissed', at: body.at, closed: out.closed, open: out.open };
+        if (own) {
+          const mine = this.manager.dismissQuestions(by, pid, sid, body.at, ids, reason);
+          return { status: 'dismissed', at: body.at, closed: mine.closed, open: mine.open };
+        }
+        out = this.manager.dismissQuestionFor(by, pid, sid, body.at, ids, reason, body.confirmRelay === true);
+      } else {
+        if (body.action !== 'answer') throw new BadRequestException({ error: 'invalid_request', message: "action must be 'dismiss' or 'answer'" });
+        const answer = ApiController.questionText(body.answer, 2000, 'answer')!;
+        if (own) {
+          const mine = this.manager.answerOwnQuestions(by, pid, sid, body.at, ids, answer);
+          return { status: 'answered', cardClosed: true, at: body.at, closed: mine.closed, open: mine.open };
+        }
+        out = this.manager.answerQuestionFor(by, pid, sid, body.at, ids, answer, body.confirmRelay === true);
       }
-      if (body.action !== 'answer') throw new BadRequestException({ error: 'invalid_request', message: "action must be 'dismiss' or 'answer'" });
-      const answer = ApiController.questionText(body.answer, 2000, 'answer')!;
-      if (sid === by.sessionId) {
-        const out = this.manager.answerOwnQuestions(by, pid, sid, body.at, ids, answer);
-        return { status: 'answered', cardClosed: true, at: body.at, closed: out.closed, open: out.open };
-      }
-      const out = this.manager.answerQuestionFor(by, pid, sid, body.at, ids, answer, body.confirmRelay === true);
       if (out.mode === 'approval') return out;
       return { mode: 'auto', status: out.status, sessionId: out.sessionId, queued: out.queued, messageId: out.messageId, ...relayReceipt(out), cardClosed: out.cardClosed, ...(out.note ? { note: out.note } : {}) };
     } catch (err) {

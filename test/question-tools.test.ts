@@ -165,52 +165,123 @@ describe('ask_user', () => {
 });
 
 describe('edit_question', () => {
-  it('any agent edits any card: same at and id, a quiet remainder event, and a system line', () => {
+  it('the asker edits its own card: same at and id, a quiet remainder event, and a system line', () => {
     const f = fixture();
     const open = openTwo(f);
     const target = open.questions[1];
-    const out = f.api.questionsEdit({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, id: target.id, question: 'Deploy on Friday?', options: ['Friday', 'Monday'], reason: 'Tonight is a freeze' }) as { ok: boolean; at: string; questions: Item[] };
+    const out = f.api.questionsEdit({ from: 'x', projectId: 'p1', sessionId: 'x', at: open.at, id: target.id, question: 'Deploy on Friday?', options: ['Friday', 'Monday'], reason: 'Tonight is a freeze' }) as { ok: boolean; at: string; questions: Item[] };
     expect(out.ok).toBe(true);
     expect(out.at).toBe(open.at);
     expect(out.questions[1]).toEqual({ id: target.id, question: 'Deploy on Friday?', options: ['Friday', 'Monday'] });
     expect(out.questions[0]).toEqual(open.questions[0]);
     const ev = kinds(f, 'question').at(-1)!.data;
-    expect(ev).toMatchObject({ edited: true, remainder: true, reason: 'Tonight is a freeze', at: open.at, by: 'agent', byAgent: { kind: 'agent', sessionId: 'y', projectId: 'p1', title: 'Helper' } });
+    expect(ev).toMatchObject({ edited: true, remainder: true, reason: 'Tonight is a freeze', at: open.at, by: 'agent', byAgent: { kind: 'agent', sessionId: 'x', projectId: 'p1', title: 'Asker' } });
     expect((ev.notice as { screenSuppressed?: boolean }).screenSuppressed).toBe(true);
     const line = kinds(f, 'question_agent_action').at(-1)!.data;
-    expect(line).toMatchObject({ projectId: 'p1', sessionId: 'x', action: 'edited', reason: 'Tonight is a freeze', ids: [target.id], at: open.at, text: 'Question edited by Helper: Tonight is a freeze', by: 'agent', byAgent: { kind: 'agent', sessionId: 'y', title: 'Helper' } });
+    expect(line).toMatchObject({ projectId: 'p1', sessionId: 'x', action: 'edited', reason: 'Tonight is a freeze', ids: [target.id], at: open.at, text: 'Question edited by Asker: Tonight is a freeze', by: 'agent', byAgent: { kind: 'agent', sessionId: 'x', title: 'Asker' } });
     expect(line.notice).toMatchObject({ tier: 'quiet' });
+  });
+
+  it('another conversation\'s card: 403 edit_own_only, nothing changes', () => {
+    const f = fixture();
+    const open = openTwo(f);
+    const r = httpError(() => f.api.questionsEdit({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, id: open.questions[0].id, question: 'Changed?', reason: 'r' }));
+    expect(r.status).toBe(403);
+    expect(r.body).toEqual({ error: 'edit_own_only', message: 'Only the conversation that asked can edit its card; dismiss it or answer it instead.' });
+    expect(items(card(f))).toEqual(open.questions);
+    expect(kinds(f, 'question_agent_action')).toHaveLength(0);
   });
 
   it('409 question_stale for a stale at or an unknown id, with the open batch', () => {
     const f = fixture();
     const open = openTwo(f);
-    const staleAt = httpError(() => f.api.questionsEdit({ from: 'y', projectId: 'p1', sessionId: 'x', at: '2020-01-01T00:00:00.000Z', id: open.questions[0].id, question: 'x?', reason: 'r' }));
+    const staleAt = httpError(() => f.api.questionsEdit({ from: 'x', projectId: 'p1', sessionId: 'x', at: '2020-01-01T00:00:00.000Z', id: open.questions[0].id, question: 'x?', reason: 'r' }));
     expect(staleAt.status).toBe(409);
     expect(staleAt.body).toMatchObject({ error: 'question_stale', open: { at: open.at } });
     expect(typeof staleAt.body.message).toBe('string');
-    const unknown = httpError(() => f.api.questionsEdit({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, id: 'deadbeef', question: 'x?', reason: 'r' }));
+    const unknown = httpError(() => f.api.questionsEdit({ from: 'x', projectId: 'p1', sessionId: 'x', at: open.at, id: 'deadbeef', question: 'x?', reason: 'r' }));
     expect(unknown.status).toBe(409);
     expect(unknown.body).toMatchObject({ error: 'question_stale' });
-    const none = httpError(() => f.api.questionsEdit({ from: 'x', projectId: 'p1', sessionId: 'y', at: open.at, id: open.questions[0].id, question: 'x?', reason: 'r' }));
+    const none = httpError(() => f.api.questionsEdit({ from: 'y', projectId: 'p1', sessionId: 'y', at: open.at, id: open.questions[0].id, question: 'x?', reason: 'r' }));
     expect(none.body).toMatchObject({ error: 'question_stale', open: null });
   });
 });
 
 describe('dismiss_question', () => {
-  it('a partial dismiss keeps at and the remaining ids; the whole card emits question_dismissed with by and reason', () => {
+  it('own card: a partial dismiss keeps at and the remaining ids; the whole card emits question_dismissed with by and reason', () => {
     const f = fixture();
     const open = openTwo(f);
-    const partial = f.api.questionsClose({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, ids: [open.questions[0].id], action: 'dismiss', reason: 'Schema already merged' }) as Record<string, unknown>;
+    const partial = f.api.questionsClose({ from: 'x', projectId: 'p1', sessionId: 'x', at: open.at, ids: [open.questions[0].id], action: 'dismiss', reason: 'Schema already merged' }) as Record<string, unknown>;
     expect(partial).toMatchObject({ status: 'dismissed', closed: [open.questions[0].id] });
     expect(card(f)!.at).toBe(open.at);
     expect(items(card(f))).toEqual([open.questions[1]]);
-    expect(kinds(f, 'question').at(-1)!.data).toMatchObject({ remainder: true, dismissed: ['Use the new schema?'], reason: 'Schema already merged', by: 'agent', byAgent: { title: 'Helper' } });
-    expect(kinds(f, 'question_agent_action').at(-1)!.data.text).toBe('Question dismissed by Helper: Schema already merged');
-    f.api.questionsClose({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, action: 'dismiss', reason: 'Moot now' });
+    expect(kinds(f, 'question').at(-1)!.data).toMatchObject({ remainder: true, dismissed: ['Use the new schema?'], reason: 'Schema already merged', by: 'agent', byAgent: { title: 'Asker' } });
+    expect(kinds(f, 'question_agent_action').at(-1)!.data.text).toBe('Question dismissed by Asker: Schema already merged');
+    f.api.questionsClose({ from: 'x', projectId: 'p1', sessionId: 'x', at: open.at, action: 'dismiss', reason: 'Moot now' });
     expect(card(f)).toBeUndefined();
-    expect(kinds(f, 'question_dismissed').at(-1)!.data).toMatchObject({ projectId: 'p1', sessionId: 'x', at: open.at, reason: 'Moot now', by: 'agent', byAgent: { kind: 'agent', sessionId: 'y' } });
+    expect(kinds(f, 'question_dismissed').at(-1)!.data).toMatchObject({ projectId: 'p1', sessionId: 'x', at: open.at, reason: 'Moot now', by: 'agent', byAgent: { kind: 'agent', sessionId: 'x' } });
     expect(kinds(f, 'question_answered')).toHaveLength(0);
+    expect(f.calls).toHaveLength(0); // no message to self
+  });
+
+  it('another conversation, automatic mode: one message to the asker, and the items close at delivery', async () => {
+    const f = fixture();
+    f.manager.setMcpSendMode('auto');
+    const open = openTwo(f);
+    const out = f.api.questionsClose({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, ids: [open.questions[0].id], action: 'dismiss', reason: 'Schema already merged' }) as Record<string, unknown>;
+    expect(out).toMatchObject({ mode: 'auto', status: 'sent', cardClosed: true, queued: false, sessionId: 'x' });
+    expect(typeof out.messageId).toBe('string');
+    expect(typeof out.hopsUntilCheck).toBe('number');
+    expect(items(card(f))).toEqual([open.questions[1]]);
+    expect(kinds(f, 'question').at(-1)!.data).toMatchObject({ remainder: true, dismissed: ['Use the new schema?'], reason: 'Schema already merged', byAgent: { sessionId: 'y', title: 'Helper' } });
+    expect(kinds(f, 'question_agent_action').at(-1)!.data).toMatchObject({ action: 'dismissed', ids: [open.questions[0].id], text: 'Question dismissed by Helper: Schema already merged' });
+    await until(() => turnsDone(f) === 1);
+    expect(f.calls[0].prompt).toContain('Your open question was dismissed by Helper: Schema already merged\n- Use the new schema?');
+    expect(f.calls[0].prompt).not.toContain('- Deploy tonight?');
+  });
+
+  it('another conversation, approval mode: nothing closes until approve; the asker gets the message then', async () => {
+    const f = fixture();
+    const open = openTwo(f);
+    const out = f.api.questionsClose({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, action: 'dismiss', reason: 'Moot now' }) as Record<string, unknown>;
+    expect(out).toMatchObject({ mode: 'approval', status: 'pending_approval' });
+    expect(card(f)).toBeDefined();
+    expect(kinds(f, 'question_agent_action')).toHaveLength(0);
+    expect(f.calls).toHaveLength(0);
+    await f.api.mcpApprovalDecide({ id: String(out.approvalId), approve: true });
+    expect(card(f)).toBeUndefined();
+    expect(kinds(f, 'question_dismissed').at(-1)!.data).toMatchObject({ at: open.at, reason: 'Moot now', byAgent: { sessionId: 'y' } });
+    expect(kinds(f, 'question_agent_action').at(-1)!.data.text).toBe('Question dismissed by Helper: Moot now');
+    expect(f.api.conversationSendStatus(String(out.approvalId))).toMatchObject({ status: 'approved', cardClosed: true });
+    await until(() => turnsDone(f) === 1);
+    expect(f.calls[0].prompt).toContain('Your open question was dismissed by Helper: Moot now\n- Use the new schema?\n- Deploy tonight?');
+  });
+
+  it('approval mode: a card that closed before approve is delivered as a plain message with cardClosed false', async () => {
+    const f = fixture();
+    const open = openTwo(f);
+    const out = f.api.questionsClose({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, action: 'dismiss', reason: 'Moot' }) as Record<string, unknown>;
+    f.manager.dismissPendingQuestion('p1', 'x', open.at);
+    await f.api.mcpApprovalDecide({ id: String(out.approvalId), approve: true });
+    expect(f.api.conversationSendStatus(String(out.approvalId))).toMatchObject({ status: 'approved', cardClosed: false, note: 'card already closed' });
+    await until(() => turnsDone(f) === 1);
+    expect(f.calls[0].prompt).toContain('Your open question was dismissed by Helper: Moot');
+    expect(kinds(f, 'question_agent_action')).toHaveLength(0);
+  });
+
+  it('a relay checkpoint passes through as a 409; confirmRelay sends it', () => {
+    const f = fixture();
+    f.manager.setMcpSendMode('auto');
+    const open = openTwo(f);
+    (f.manager as unknown as { relayChains: Map<string, unknown> }).relayChains.set('y', { id: 'c', depth: 6, from: 'z' });
+    const r = httpError(() => f.api.questionsClose({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, action: 'dismiss', reason: 'Moot' }));
+    expect(r.status).toBe(409);
+    expect(r.body).toMatchObject({ error: 'relay_confirm_required' });
+    expect(card(f)).toBeDefined();
+    expect(kinds(f, 'question_agent_action')).toHaveLength(0);
+    const ok = f.api.questionsClose({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, action: 'dismiss', reason: 'Moot', confirmRelay: true }) as Record<string, unknown>;
+    expect(ok).toMatchObject({ status: 'sent', cardClosed: true, confirmedCheckpoint: true });
+    expect(card(f)).toBeUndefined();
   });
 
   it('needs a reason', () => {
@@ -298,9 +369,37 @@ describe('answer_question', () => {
   });
 });
 
+describe('delegates do not manage question cards', () => {
+  it('ask, edit, dismiss and answer carrying a delegateId are 403 delegate_no_questions; listing still works', () => {
+    const f = fixture();
+    f.manager.setMcpSendMode('auto');
+    const open = openTwo(f);
+    const refused = { error: 'delegate_no_questions', message: 'Delegates do not manage question cards; put what you need in your report (NEEDS HUMAN / NEEDS ORCHESTRATOR).' };
+    // A delegate's bridge sends its orchestrator's session as `from`, so each of these would otherwise pass as "own".
+    const tries = [
+      () => f.api.questionsAsk({ from: 'x', delegateId: 'd1', questions: [{ question: 'Hm?' }] } as never),
+      () => f.api.questionsEdit({ from: 'x', delegateId: 'd1', projectId: 'p1', sessionId: 'x', at: open.at, id: open.questions[0].id, question: 'Changed?', reason: 'r' } as never),
+      () => f.api.questionsClose({ from: 'x', delegateId: 'd1', projectId: 'p1', sessionId: 'x', at: open.at, action: 'dismiss', reason: 'r' } as never),
+      () => f.api.questionsClose({ from: 'x', delegateId: 'd1', projectId: 'p1', sessionId: 'x', at: open.at, action: 'answer', answer: 'Yes' } as never),
+      () => f.api.questionsClose({ from: 'x', delegateId: 'd1', projectId: 'p1', sessionId: 'y', at: open.at, action: 'answer', answer: 'Yes' } as never),
+    ];
+    for (const t of tries) {
+      const r = httpError(t);
+      expect(r.status).toBe(403);
+      expect(r.body).toEqual(refused);
+    }
+    expect(items(card(f))).toEqual(open.questions);
+    expect(kinds(f, 'question_agent_action')).toHaveLength(0);
+    expect(f.calls).toHaveLength(0);
+    const listed = f.api.pendingQuestions(undefined, 'x');
+    expect(JSON.stringify(listed)).toContain(open.at);
+  });
+});
+
 describe('the owner sees it, and the store keeps ids', () => {
   it('question_agent_action is journalled as a notice row and comes back on reload', () => {
     const f = fixture();
+    f.manager.setMcpSendMode('auto'); // a cross-conversation dismiss closes at delivery
     const open = openTwo(f);
     f.api.questionsClose({ from: 'y', projectId: 'p1', sessionId: 'x', at: open.at, action: 'dismiss', reason: 'Moot' });
     const action = kinds(f, 'question_agent_action')[0].data;
