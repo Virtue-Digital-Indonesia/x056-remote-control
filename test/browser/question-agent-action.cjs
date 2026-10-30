@@ -7,7 +7,9 @@
 //    "Question dismissed by <title>: <reason>", even inside a hidden agent turn (a 'keep' row);
 //  - after a reload the line is still there, from history only (the event stream is cut for the reload);
 //  - `by` stays the string 'agent' on the events, the agent itself rides in `byAgent`.
-// Screenshots go to /tmp/qtool-shots/ (line-1440-light.png, line-390-light.png, line-1440-dark.png).
+// Screenshots go to /tmp/qtool-shots/: shot A, an open card an agent just edited (edit-1440-light.png,
+// edit-390-light.png, edit-1440-dark.png); shot B, after a cross-chat dismiss (dismiss-1440-light.png, dismiss-390-light.png).
+// Prints the bell count right before and right after ONE agent edit (asserted equal) and what the bell counts.
 // Run against the isolated browser fixture with Chat and Project spaces enabled:
 //   X056_CHAT_ENABLED=1 X056_PROJECT_SPACES_ENABLED=1 X056_TEST_PORT=<port> node --import tsx test/browser/fixture.ts
 //   X056_TEST_BROWSER=chromium|webkit node test/browser/question-agent-action.cjs http://127.0.0.1:<port>
@@ -82,6 +84,27 @@ assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
     const lines = page => page.evaluate(() => [...document.querySelectorAll('#chat .notice[data-question-action]')].map(e => ({ text: e.textContent.trim(), shown: getComputedStyle(e).display !== 'none' })));
     const cards = page => page.locator('#chat .qcard.pending').count();
     const settle = (page, ms = 400) => page.waitForTimeout(ms);
+    // The dismissal message the asker is sent runs a (fixture) turn; let it end so the shot is not mid-spinner.
+    const idle = page => page.waitForFunction(() => !document.querySelector('#busy .spin'), null, { timeout: 15000 }).catch(() => {});
+    // The line sits directly above the open card: before it in DOM order, nothing visible in between.
+    const lineAboveCard = (page, text) => page.evaluate(t => {
+      const line = [...document.querySelectorAll('#chat .notice[data-question-action]')].find(e => e.textContent.trim() === t), card = document.querySelector('#chat .qcard.pending');
+      if (!line || !card) return { ok: false, line: !!line, card: !!card };
+      const before = !!(line.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const between = []; for (let n = line.nextElementSibling; n && n !== card; n = n.nextElementSibling) if (getComputedStyle(n).display !== 'none' && n.getBoundingClientRect().height > 0) between.push(n.className);
+      return { ok: before && line.parentNode === card.parentNode && between.length === 0, before, between };
+    }, text);
+    // Top-bar bell, and the sidebar bell of this conversation when the sidebar shows its row.
+    const bell = page => page.evaluate(sid => ({ top: document.getElementById('crNotifications')?.dataset.unread || '0', sidebar: (() => { const b = document.querySelector('.conv[data-sid="' + sid + '"] .nbell'); return b ? (b.hidden ? 'off' : b.className) : 'no row'; })() }), ids.sessionId);
+    // What the bell counts: the notification menu's entries (opened, read, closed again).
+    const bellEntries = async page => {
+      await page.click('#crNotifications');
+      const d = page.locator('dialog.rc-notification-dialog'); await d.waitFor();
+      const entries = await d.evaluate(el => [...el.querySelectorAll('.rc-notification-item')].map(i => i.className.replace('rc-notification-item ', '') + ' | ' + i.querySelector('strong').textContent + ' | ' + i.querySelector('.rc-notification-body').textContent.replace(/\s+/g, ' ').slice(0, 80)));
+      await page.keyboard.press('Escape'); await d.waitFor({ state: 'detached' }); await page.evaluate(() => document.activeElement?.blur()); await page.mouse.move(5, 600);
+      return entries;
+    };
+    const pendingQuestions = async () => (await (await admin.request.get(base + '/api/questions', { headers: H })).json()).map(q => q.sessionId === ids.sessionId ? 'this chat: ' + q.question : q.sessionId);
 
     // 1. An open card, seen live.
     const asked = await ask();
@@ -91,21 +114,26 @@ assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
     check('the card shows', await cards(page) === 1 && /Deploy the release tonight\?/.test(await page.locator('#chat .qcard.pending').innerText()));
     check('the agent turn is hidden behind one button', await page.locator('#chat>.ov-btn').count() === 1 && await page.evaluate(() => [...document.querySelectorAll('#chat>.msg')].filter(e => getComputedStyle(e).display === 'none').length) === 2);
 
-    // 2. An agent edit from the Helper conversation: the card re-renders with the new text, no push, no unread.
+    // 2. ONE agent edit (shot A): the card re-renders with the new text, no push, no unread, the bell does not move,
+    //    and the line sits directly above the card.
     const beforeEdit = await readState();
     const notesBefore = await page.evaluate(() => window.__notifications);
-    const bell = () => page.evaluate(() => document.getElementById('crNotifications')?.dataset.unread ?? '');
-    const bellBefore = await bell();
     const foreign = await admin.request.post(base + '/api/questions/edit', { headers: H, data: { from: helper.lastSessionId, ...ids, at: asked.at, id: asked.questions[0].id, question: 'Hijack?', reason: 'r' } });
     check('another conversation cannot edit the card: 403 edit_own_only', foreign.status() === 403 && (await foreign.json()).error === 'edit_own_only');
+    await settle(page);
+    const bellBefore = await bell(page);
     const edited = await api('/api/questions/edit', { from: ids.sessionId, ...ids, at: asked.at, id: asked.questions[0].id, question: 'Deploy the release on Monday instead?', options: ['Yes, Monday', 'No, hold it'], reason: 'Tonight is a change freeze' });
     check('the edit kept at and the id', edited.at === asked.at && edited.questions[0].id === asked.questions[0].id, edited);
     await page.locator('#chat .qcard.pending', { hasText: 'Monday instead' }).waitFor({ timeout: 5000 });
     const editLine = 'Question edited by Release plan ' + tag + ': Tonight is a change freeze';
     await page.waitForFunction(t => [...document.querySelectorAll('#chat .notice[data-question-action]')].some(e => e.textContent.trim() === t), editLine, { timeout: 5000 });
-    await settle(page);
+    await settle(page, 800);
+    const bellAfter = await bell(page);
+    console.log(`bell before edit: ${bellBefore.top}, after edit: ${bellAfter.top} (sidebar bell of this chat: ${bellBefore.sidebar} -> ${bellAfter.sidebar})`);
+    check('the top-bar bell and the sidebar bell do not move for the edit', JSON.stringify(bellBefore) === JSON.stringify(bellAfter), { bellBefore, bellAfter });
     check('the edited card re-renders with the new text and options, still one card', await cards(page) === 1 && !/tonight\?/.test(await page.locator('#chat .qcard.pending').innerText()) && /Yes, Monday/.test(await page.locator('#chat .qcard.pending').innerText()));
     check('the edit line shows, once, inside the hidden agent turn', JSON.stringify(await lines(page)) === JSON.stringify([{ text: editLine, shown: true }]), await lines(page));
+    check('live: the edit line sits directly above the card', (await lineAboveCard(page, editLine)).ok, await lineAboveCard(page, editLine));
     // The stream replays the gateway's whole buffer (earlier runs included): keep this conversation's events.
     const mine = async () => (await page.evaluate(() => window.__events)).filter(e => e.data && e.data.projectId === ids.projectId && e.data.sessionId === ids.sessionId);
     const events = await mine();
@@ -116,13 +144,29 @@ assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
     check('the edit event is quiet: remainder + screenSuppressed (no push, no pop-up)', editEvent.data.remainder === true && editEvent.data.notice?.screenSuppressed === true, editEvent.data.notice);
     check('the edit line event is quiet and carries by/byAgent', editAction && editAction.data.by === 'agent' && editAction.data.byAgent?.title === 'Release plan ' + tag && editAction.data.notice?.tier === 'quiet', editAction);
     check('no desktop notification for the edit', await page.evaluate(() => window.__notifications) === notesBefore);
-    check('the top-bar bell count does not move for the edit', await bell() === bellBefore, { before: bellBefore, after: await bell() });
     const afterEdit = await readState();
     check('no unread raised by the edit', !afterEdit.unread && (afterEdit.noticeAt || 0) === (beforeEdit.noticeAt || 0), { beforeEdit, afterEdit });
     await page.screenshot({ path: shots + '/edit-1440-light.png' });
+    console.log('bell entries in shot A (card open): ' + JSON.stringify(await bellEntries(page)) + '; pending questions: ' + JSON.stringify(await pendingQuestions()));
+
+    // Shot A on fresh loads (phone width, dark): the line comes from history, the card from /api/questions; same
+    // order as live, and the same bell count as the live page right after the edit.
+    for (const [file, opts] of [['edit-390-light.png', { width: 390, height: 844 }], ['edit-1440-dark.png', { width: 1440, height: 900, theme: 'dark' }]]) {
+      const v = await open(opts);
+      await v.page.locator('#chat .qcard.pending', { hasText: 'Monday instead' }).waitFor({ timeout: 5000 });
+      await v.page.waitForFunction(() => document.querySelectorAll('#chat .notice[data-question-action]').length >= 1, null, { timeout: 8000 });
+      await settle(v.page, 600);
+      check(file + ': one edit line, shown', JSON.stringify(await lines(v.page)) === JSON.stringify([{ text: editLine, shown: true }]), await lines(v.page));
+      check(file + ': after reload the edit line sits directly above the card', (await lineAboveCard(v.page, editLine)).ok, await lineAboveCard(v.page, editLine));
+      const b = await bell(v.page);
+      console.log(`${file}: bell ${b.top}`);
+      check(file + ': the bell matches the live count right after the edit', b.top === bellAfter.top, { fresh: b, live: bellAfter });
+      await v.page.screenshot({ path: shots + '/' + file });
+      await v.context.close();
+    }
 
     // 3. A dismiss from the Obscura chat goes through the ordinary send (approval mode): nothing closes until the
-    //    operator approves; then the card goes, one line shows live, and the asker is sent one message.
+    //    operator approves; then the card goes, one line shows live, and the asker is sent one message (shot B).
     await api('/api/settings/mcp-send-mode', { mode: 'approval' });
     const dismissed = await api('/api/questions/close', { from: obscura.lastSessionId, ...ids, at: asked.at, action: 'dismiss', reason: 'Answered in the Obscura chat' });
     check('the cross dismiss waits for approval', dismissed.mode === 'approval' && dismissed.status === 'pending_approval' && !!dismissed.approvalId, dismissed);
@@ -132,20 +176,22 @@ assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
     check('on approve the card closed at delivery', approved.status === 'approved' && approved.cardClosed === true && /Your open question was dismissed by Obscura chat/.test(approved.message), approved);
     const dismissLine = 'Question dismissed by Obscura chat ' + tag + ': Answered in the Obscura chat';
     await page.waitForFunction(t => [...document.querySelectorAll('#chat .notice[data-question-action]')].some(e => e.textContent.trim() === t), dismissLine, { timeout: 5000 });
-    await settle(page);
+    await settle(page, 800);
     check('the card disappears', await cards(page) === 0);
     const live = await lines(page);
-    check('ONE dismiss line live, shown inside the hidden agent turn', live.filter(l => l.text === dismissLine).length === 1 && live.every(l => l.shown), live);
+    check('live after the dismiss: the edit line and ONE dismiss line, both shown', JSON.stringify(live) === JSON.stringify([{ text: editLine, shown: true }, { text: dismissLine, shown: true }]), live);
     const dismissEvent = (await mine()).find(e => e.kind === 'question_dismissed');
     check('question_dismissed: by "agent", byAgent the Obscura chat', dismissEvent && dismissEvent.data.by === 'agent' && dismissEvent.data.byAgent?.title === 'Obscura chat ' + tag, dismissEvent);
     check('no desktop notification for the dismiss', await page.evaluate(() => window.__notifications) === notesBefore);
-    await page.screenshot({ path: shots + '/line-1440-light.png' });
+    await idle(page); await settle(page);
+    await page.screenshot({ path: shots + '/dismiss-1440-light.png' });
+    console.log(`bell after dismiss: ${(await bell(page)).top}; entries: ` + JSON.stringify(await bellEntries(page)) + '; pending questions: ' + JSON.stringify(await pendingQuestions()));
     await context.close();
 
-    // 4. Reload with the event stream cut: only history can bring the lines back.
-    ({ context, page } = await open({ noStream: true }));
+    // 4. Reload with the event stream cut: only history can bring the lines back (shot B at phone width).
+    ({ context, page } = await open({ noStream: true, width: 390, height: 844 }));
     await page.waitForFunction(n => document.querySelectorAll('#chat .notice[data-question-action]').length >= n, 2, { timeout: 8000 });
-    await settle(page);
+    await settle(page, 600);
     const reloaded = await lines(page);
     check('after a reload both lines are back from history, once each, shown', JSON.stringify(reloaded) === JSON.stringify([{ text: editLine, shown: true }, { text: dismissLine, shown: true }]), reloaded);
     check('after a reload no card', await cards(page) === 0);
@@ -154,21 +200,9 @@ assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
     const dismissMsg = rowsAfter.filter(r => /Your open question was dismissed by Obscura chat/.test(r.text) && /Deploy the release on Monday instead\?/.test(r.text));
     check('after a reload the asker holds ONE dismissal message naming the question, hidden as an agent turn', dismissMsg.length === 1 && !dismissMsg[0].shown, dismissMsg);
     check('after a reload both agent turns are still hidden behind their buttons', await page.locator('#chat>.ov-btn').count() === 2 && rowsAfter.slice(2).every(r => !r.shown), rowsAfter.map(r => r.shown));
+    await idle(page);
+    await page.screenshot({ path: shots + '/dismiss-390-light.png' });
     await context.close();
-
-    // 5. Screenshots: phone width and dark, with a second card edited and left open so both lines and the card show.
-    const again = await ask();
-    await api('/api/questions/edit', { from: ids.sessionId, ...ids, at: again.at, id: again.questions[0].id, question: 'Deploy the release on Monday instead?', options: ['Yes, Monday', 'No, hold it'], reason: 'Tonight is a change freeze' });
-    for (const [file, opts] of [['line-390-light.png', { width: 390, height: 844 }], ['line-1440-dark.png', { width: 1440, height: 900, theme: 'dark' }]]) {
-      ({ context, page } = await open(opts));
-      await page.locator('#chat .qcard.pending', { hasText: 'Monday instead' }).waitFor({ timeout: 5000 });
-      await page.waitForFunction(() => document.querySelectorAll('#chat .notice[data-question-action]').length >= 3, null, { timeout: 8000 });
-      await settle(page, 600);
-      const ls = await lines(page);
-      check(file + ': every agent-action line shown', ls.length === 3 && ls.every(l => l.shown), ls);
-      await page.screenshot({ path: shots + '/' + file });
-      await context.close();
-    }
     await admin.close();
     assert.deepEqual(errors, []);
     console.log(`PASS ${engine} question-agent-action: ${checks.length} checks; screenshots in ${shots}`);

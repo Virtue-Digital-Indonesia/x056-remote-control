@@ -4291,7 +4291,14 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // An agent edited, dismissed or answered a question card: the journal's notice row, live.
     if (kind === 'question_agent_action' && pid && sid && typeof data.text === 'string') {
       var qaid = 'question-action:' + data.actionId, qahost = mineConvo ? chatEl : viewOf(pid, sid).frag;
-      if (!Array.prototype.some.call(qahost.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === qaid; })) appendNode(pid, sid, nodeNotice(data.text, qaid, false));
+      if (!Array.prototype.some.call(qahost.querySelectorAll('[data-message-source-id]'), function (el) { return el.dataset.messageSourceId === qaid; })) {
+        // Above the open card, as after a reload (history rows come first, the card is appended after them).
+        var qaNode = nodeNotice(data.text, qaid, false), qaCard = qahost.querySelector('.qcard.pending');
+        if (qaCard && !historyBatch) {
+          var qaStick = qahost === chatEl && atBottom(); qaCard.parentNode.insertBefore(qaNode, qaCard);
+          if (qahost === chatEl) { if (qaStick) down(); updateJump(); }
+        } else appendNode(pid, sid, qaNode);
+      }
       return;
     }
     if (kind === 'bot_message' && pid && sid && typeof data.text === 'string' && data.text.trim()) { appendOwnerLive(pid, sid, { id: data.id, text: data.text.trim(), needsYou: !!data.needsYou, ts: data.at || data.ts, src: 'event' }); return; }
