@@ -1,10 +1,9 @@
 /**
- * Answering Claude's questions from the UI. Headless `claude -p` can't take
- * mid-turn input, so the feasible design (verified live against the CLI) is:
- * the model ends its turn with a question in a detectable block, the panel
- * surfaces it with quick-reply buttons, and the answer is just the next message
- * (which resumes the session with full context). We append a small convention
- * to user prompts so detection is deterministic rather than a fuzzy heuristic.
+ * Answering the model's questions from the UI. Headless `claude -p` can't take
+ * mid-turn input, so the model asks with the x056 `ask_user` tool and ends its
+ * turn; the panel shows the card and the answer is just the next message. The
+ * `<<<ASK>>>` block below is the one-release fallback (logged as
+ * `question_fallback`); see docs/question-tools-contract.md.
  */
 
 export interface ParsedQuestion {
@@ -19,20 +18,20 @@ export const ASK_SENTINEL = '\n\n〈x056 question protocol〉\n';
 export const ASK_INSTRUCTIONS =
   ASK_SENTINEL +
   'Keep working autonomously by default. But when you genuinely need a decision only the user can make ' +
-  'before continuing (and guessing would risk real rework), you may end your turn with this exact block ' +
-  'as the very last thing you output:\n' +
-  '<<<ASK\n' +
-  'question: <your one-line question>\n' +
-  'options: <choices separated by |; use as many as needed>\n' +
-  '>>>\n' +
-  'There is no fixed number of choices or questions. Repeat question/options lines inside the block for multiple decisions. Omit the options line for a free-form answer. The user replies in the panel and you resume with full context.';
+  'before continuing (and guessing would risk real rework), call the x056 tool ask_user with the question(s) ' +
+  'and their options (as many as needed; none for a free-form answer), then END YOUR TURN. The user answers in ' +
+  'the panel and the answer arrives as your next message, with full context. Do not ask in plain text. ' +
+  'Manage open question cards with list_questions, edit_question, dismiss_question (a question that became moot) ' +
+  'and answer_question. Only if the x056 tools are unavailable, end your reply instead with a block ' +
+  '<<<ASK / question: <one line> / options: <a | b> / >>> (each part on its own line).';
 
 /** Append the ASK convention to a user prompt (skip for non-interactive turns). */
 export function withAskInstructions(prompt: string): string {
   return prompt + ASK_INSTRUCTIONS;
 }
 
-/** Extract a question the model left at the end of its turn, if any. */
+/** Extract a question the model left in an <<<ASK>>> block (the fallback path;
+ *  the x056 ask_user tool is the primary one), if any. */
 export function parseQuestion(text: string): ParsedQuestion | null {
   if (typeof text !== 'string' || text.length === 0) return null;
   const questions: { question: string; options: string[] }[] = [];
@@ -45,11 +44,9 @@ export function parseQuestion(text: string): ParsedQuestion | null {
       else if (options && current) current.options = options[1].split('|').map(s => s.trim()).filter(Boolean);
     }
   }
+  // Only an explicit block counts: the old "last line ends in ?" guess turned
+  // rhetorical questions into cards. ask_user is the primary path now.
   if (questions.length) return { ...questions[0], ...(questions.length > 1 ? { questions } : {}) };
-  // Fallback: a short trailing line ending in '?' is very likely a question.
-  const lines = text.trim().split('\n').map((l) => l.trim()).filter(Boolean);
-  const last = lines[lines.length - 1] ?? '';
-  if (last.endsWith('?') && last.length <= 280) return { question: last, options: [] };
   return null;
 }
 

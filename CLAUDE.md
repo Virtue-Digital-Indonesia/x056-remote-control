@@ -1094,6 +1094,45 @@ and when something needs them**. Contract: `docs/bot-v0-contract.md`.
   idle (`activeProcess` holds a busy or background-working process whatever
   its key).
 
+## Question cards over MCP (2026-10-30)
+
+Efran: question cards should be "controlled via MCP instead of interpreting
+it from the prompt", and agents may "dismiss, answer, and edit" them.
+Contract: `docs/question-tools-contract.md`.
+
+- **Tools** (x056 MCP, both providers): `ask_user {questions, replace?}`
+  (own conversation only; the model is told to END ITS TURN after it),
+  `list_questions`, `edit_question {at, id, reason}`, `dismiss_question
+  {at, ids?, reason}` (replaces `<<<RESOLVED>>>`), `answer_question {at,
+  ids?, answer}`. Routes `POST /api/questions/ask|edit|close`, `GET
+  /api/questions?projectId=&sessionId=`. The store is unchanged and still
+  the only truth, so panel and iOS needed no new reading code.
+- **Items have stable 8-hex `id`s** (legacy items get one at load). Tools
+  address `at` + `id`; a stale either is 409 `question_stale` with the
+  current batch. Edits keep `at` and ids, so an answer in flight still lands.
+- **The rules of the text path still apply**: autopilot records the question
+  for its recap instead of opening a card, a Bot turn the owner did not start
+  is refused (Bot keeps `message_owner`), a delegate has no SELF and cannot
+  ask, an ask marks a hidden agent turn as shown (`run.ownerReason`, or the
+  woken-reply owner-view record).
+- **An answer to ANOTHER conversation's card is a normal send** (approval
+  mode and relay checkpoints apply) and closes the card AT DELIVERY, where
+  `send_message {helpers}` is applied (on approve in approval mode), after
+  re-checking `at` and ids; else it goes as a plain message with
+  `cardClosed: false, note: 'card already closed'`. Turn start gained no rule:
+  an agent-origin turn still never closes a card via `answersQuestionAt`.
+- **The owner sees every agent edit or close**: `question_agent_action` (tier
+  quiet), journalled as a notice row `question-action:<id>` ("Question
+  dismissed by <title>: <reason>"). Those rows are `keep` in both owner-view
+  rule sets, server and `rc-chat.js` (fixtures cover it). `by` stays a string
+  (`'agent'`) on every question event for old clients; the agent is in
+  `byAgent`. An edit is `question {edited, remainder: true}` so no client
+  pushes or counts it unread.
+- **Fallback, one release**: the `<<<ASK>>>` parser and `<<<RESOLVED>>>` still
+  work (the prompt mentions the block only for a chat whose x056 tools did
+  not load) and log `question_fallback` to events.jsonl; remove them once that
+  count stays near zero. The trailing-`?` guess is gone.
+
 ## Owner view in every conversation (`server/owner-view.ts`, 2026-10-22)
 
 Efran via Bot: "if for me or needs me then show, else hide by default".

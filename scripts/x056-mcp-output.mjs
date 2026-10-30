@@ -84,8 +84,26 @@ const sendResult = { oneOf: [
   delivery('relay_checkpoint', {}, ['note']),
 ] };
 
+// Question cards (docs/question-tools-contract.md). `id` is optional: an older
+// gateway's items have none.
+const questionItem = object({ id: str, question: str, options: array(str) }, ['question', 'options']);
+const questionCard = object({ projectId: str, sessionId: str, at: str, questions: array(questionItem), stale: bool }, ['projectId', 'sessionId', 'at', 'questions']);
+const staleCard = { anyOf: [questionCard, { type: 'null' }] };
+const questionSchemas = {
+  ask_user: object({ status: choices('open', 'recorded_autopilot'), projectId: str, sessionId: str, at: str, questions: array(questionItem) }, ['status']),
+  list_questions: object({ cards: array(questionCard) }),
+  edit_question: object({ status: choices('edited', 'stale'), projectId: str, sessionId: str, at: str, id: str, card: questionCard, open: staleCard }, ['status']),
+  dismiss_question: object({ status: choices('dismissed', 'stale'), projectId: str, sessionId: str, at: str, ids: array(str), open: staleCard }, ['status']),
+  answer_question: object({
+    status: choices('answered', 'sent', 'queued', 'steered', 'pending_approval', 'denied', 'expired', 'failed', 'relay_checkpoint', 'stale'),
+    projectId: str, sessionId: str, at: str, ids: array(str), cardClosed: bool, note: str, error: str, messageId: str, approvalId: str,
+    hopsLeft: num, hopsUntilCheck: num, confirmedCheckpoint: bool, hops: num, checkpointEvery: num, open: staleCard,
+  }, ['status']),
+};
+
 const schemas = {
   ...WORKSPACE_SCHEMAS,
+  ...questionSchemas,
   read_reply: object({ messageId: str, found: bool, messages: array(message), truncated: bool }),
   list_projects: object({ projects: array(object({ id: str, name: str, cwd: { anyOf: [str, { type: 'null' }] }, provider, current: bool, kind: choices('project','chat'), parentProjectId: str, membershipRevision: integer }, ['id','name','cwd','provider','current'])) }),
   list_conversations: object({ conversations: array(object({ sessionId: str, title: str, provider, model: str,

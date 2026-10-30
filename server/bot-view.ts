@@ -20,7 +20,8 @@
  *
  * Every row has one kind:
  *   keep     an owner message, an error banner, a "needs you" notice, a steer
- *            by the owner: always shown
+ *            by the owner, an agent's question edit/dismiss/answer line
+ *            (`question-action:` notice): always shown
  *   system   a relay checkpoint, a non-urgent Bot notice: always hidden
  *   steer    an AI's steer into a running turn: hidden, and it never starts a turn
  *   trigger  the user row that starts a turn
@@ -47,6 +48,12 @@ export const CHECKPOINT = /^(?:Not sent yet(?: \(relay checkpoint\))?[:.]|Relay 
 /** Turn origins whose result the owner is meant to see (read-state gating). */
 export const VISIBLE_ORIGINS: ReadonlySet<string> = new Set(['human', 'brief', 'recap', 'limit_resume']);
 
+/** An agent edited, dismissed or answered a question card (journal `question-action:<actionId>`):
+ *  the owner always sees that line, in every turn and both rule sets. */
+export function isQuestionActionRow(row: Pick<HistoryEntry, 'role' | 'messageId'>): boolean {
+  return row.role === 'notice' && !!row.messageId?.startsWith('question-action:');
+}
+
 export function turnKindOf(row: Pick<HistoryEntry, 'sender'>): BotTurnKind {
   const k = row.sender?.kind;
   if (k === 'bot_event' || k === 'bot_brief' || k === 'advisor') return k;
@@ -56,6 +63,7 @@ export function turnKindOf(row: Pick<HistoryEntry, 'sender'>): BotTurnKind {
 export function botRowKind(row: HistoryEntry): BotRowKind {
   if (row.ownerMessage) return 'keep';
   if (row.role === 'error') return 'keep';
+  if (isQuestionActionRow(row)) return 'keep';
   if (row.role === 'notice' && row.messageId?.startsWith('bot-notice:')) return row.needsYou ? 'keep' : 'system';
   if (row.role === 'user') {
     if (!row.steered) return 'trigger';

@@ -9,8 +9,21 @@ describe('question parsing', () => {
   it('parses an ASK block without options (free-form)', () => {
     expect(parseQuestion('<<<ASK\nquestion: What should the app be called?\n>>>')).toEqual({ question: 'What should the app be called?', options: [] });
   });
-  it('falls back to a trailing question line', () => {
-    expect(parseQuestion('I did the thing.\nShould I also deploy it?')).toEqual({ question: 'Should I also deploy it?', options: [] });
+  it('no longer guesses from a trailing question line (ask_user replaced it)', () => {
+    expect(parseQuestion('I did the thing.\nShould I also deploy it?')).toBeNull();
+  });
+  it('the protocol teaches ask_user and keeps the sentinel, so old prompts still strip', () => {
+    expect(ASK_SENTINEL).toBe('\n\n〈x056 question protocol〉\n');
+    const sent = withAskInstructions('go');
+    expect(sent).toContain('ask_user');
+    expect(sent).toContain('END YOUR TURN');
+    // The text block survives only as the fallback for a chat whose x056 tools did not load.
+    expect(sent.indexOf('ask_user')).toBeLessThan(sent.indexOf('<<<ASK'));
+    expect(sent).toContain('Only if the x056 tools are unavailable');
+    // Quoting the protocol back must never open a card: the hint is not a parseable block.
+    expect(parseQuestion(sent)).toBeNull();
+    const old = 'go' + ASK_SENTINEL + 'Keep working autonomously by default. ... <<<ASK\nquestion: x\n>>>';
+    expect(stripAskInstructions(old)).toBe('go');
   });
   it('returns null when there is no question', () => {
     expect(parseQuestion('All done. Everything passes.')).toBeNull();

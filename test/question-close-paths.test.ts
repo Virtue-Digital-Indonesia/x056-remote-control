@@ -56,6 +56,8 @@ function controller(f: Fixture): ApiController {
   const Ctor = ApiController as unknown as new (...args: unknown[]) => ApiController;
   return new Ctor(f.manager, f.stateDir, {}, {}, {}, {}, {}, {}, {}, {}, { list: () => [] }, {}, {}, {}, {});
 }
+/** The open-question line names each item's id; these checks are about the texts. */
+const noIds = (prompt: string) => prompt.replace(/ \(id [0-9a-f]{8}\)/g, '');
 const until = async (cond: () => boolean, ms = 4000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 20)); if (!cond()) throw new Error('timed out'); };
 const turnsDone = (f: Fixture, sid = 'x') => f.events.filter((e) => e.kind === 'session_done' && e.data.sessionId === sid).length;
 const kinds = (f: Fixture, k: string) => f.events.filter((e) => e.kind === k);
@@ -111,7 +113,8 @@ describe('the owner answers the card', () => {
     expect(pending(f)[0].at).toBe(card.at);
     expect(kinds(f, 'question_answered')).toHaveLength(0);
     const prompt = f.calls[1].prompt;
-    expect(prompt).toContain(`[Open question to the owner, still unanswered: "${SLA[0]}", "${PUBLISH[0]}".`);
+    expect(noIds(prompt)).toContain(`[Open question to the owner, still unanswered: "${SLA[0]}", "${PUBLISH[0]}". Card at=${card.at}.`);
+    for (const item of card.questions ?? []) expect(prompt).toContain(`(id ${(item as { id?: string }).id})`);
     // What the owner sees of their own message: no line, live or read back.
     const started = kinds(f, 'session_started').at(-1)!.data;
     expect(String(started.displayPrompt)).not.toContain('Open question');
@@ -128,7 +131,7 @@ describe('the owner answers the card', () => {
     expect(pending(f)[0].questions).toBeUndefined();
     expect(kinds(f, 'question_answered')).toHaveLength(0);
     // The turn is told about what is still open, and only that.
-    expect(f.calls[1].prompt).toContain(`still unanswered: "${SLA[0]}".`);
+    expect(noIds(f.calls[1].prompt)).toContain(`still unanswered: "${SLA[0]}".`);
   });
 
   it('3b. an option shared by two questions closes only the first one still open', () => {
@@ -188,7 +191,7 @@ describe('nobody but the owner or the asking chat closes it', () => {
     await until(() => turnsDone(f) === 4);
     expect(texts(f)).toEqual(['Proceed with the migration?']);
     expect(kinds(f, 'question_answered')).toHaveLength(0);
-    for (const c of f.calls.slice(1)) expect(c.prompt).toContain('[Open question to the owner, still unanswered: "Proceed with the migration?"');
+    for (const c of f.calls.slice(1)) expect(noIds(c.prompt)).toContain('[Open question to the owner, still unanswered: "Proceed with the migration?"');
   });
 });
 
@@ -272,7 +275,7 @@ describe('<<<RESOLVED>>> closes what was open when the turn began, and only on i
     f.manager.deliverMcpMessage('p1', 'x', 'status?', { from: 'y', interactive: false });
     await until(() => turnsDone(f) === 2);
     expect(texts(f)).toEqual(['Merge the agents\' branches?']);
-    expect(f.calls[1].prompt).toContain('still unanswered: "Merge the agents\' branches?"');
+    expect(noIds(f.calls[1].prompt)).toContain('still unanswered: "Merge the agents\' branches?"');
   });
 });
 
@@ -292,7 +295,7 @@ describe('a queued message draining right after the ASK', () => {
     // The card came before the drained turn started.
     const order = f.events.map((e) => e.kind);
     expect(order.indexOf('question')).toBeLessThan(order.lastIndexOf('session_started'));
-    expect(f.calls[1].prompt).toContain('[Open question to the owner, still unanswered: "Proceed with the migration?"');
+    expect(noIds(f.calls[1].prompt)).toContain('[Open question to the owner, still unanswered: "Proceed with the migration?"');
   });
 });
 

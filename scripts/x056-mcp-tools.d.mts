@@ -2,6 +2,9 @@
 // under bare node, while the TS server imports it too).
 export declare const SERVER_INFO: { name: string; version: string };
 
+/** How a tool result held at a relay checkpoint begins (send_message, steer, answer_question). */
+export declare const RELAY_CHECKPOINT_PREFIX: string;
+
 export declare const TOOLS: {
   name: string;
   description: string;

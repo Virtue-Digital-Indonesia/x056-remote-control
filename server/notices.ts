@@ -444,6 +444,14 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
         `storage-manifest:${data.manifestId}`, { title: 'Storage cleanup', tag: 'x056-storage', link: '/settings/storage' });
     }
 
+    case 'question_agent_action': {
+      // An agent edited, dismissed or answered a question card: the owner is
+      // told (bell + dot), never pushed. Category `finished`, not
+      // `automation`, for the same reason as storage_manifest.
+      const text = typeof data.text === 'string' && data.text ? data.text : 'An agent changed a question card';
+      return make('quiet', 'finished', withPrefix(ctx, cutWords(text, EXCERPT_MAX)), `question-action:${data.actionId || ctx.at || ''}`);
+    }
+
     case 'turn_orphaned':
       return none();
 
@@ -458,4 +466,4 @@ export function noticeFor(kind: string, data: Record<string, unknown>, ctx: Noti
 }
 
 /** Which kinds noticeFor can answer, so the emitter skips the rest cheaply. */
-export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted', 'bot_notice', 'limit_continue', 'limit_resume', 'storage_manifest']);
+export const NOTICE_KINDS = new Set(['question', 'mcp_approval', 'session_done', 'session_error', 'conversation_settled', 'supervisor', 'autopilot', 'delegate_report', 'cron_failed', 'mcp_oauth', 'turn_orphaned', 'restart_interrupted', 'bot_notice', 'limit_continue', 'limit_resume', 'storage_manifest', 'question_agent_action']);

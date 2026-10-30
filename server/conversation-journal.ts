@@ -50,6 +50,10 @@ export class ConversationJournal {
       // A Claude conversation whose transcript was gone went on in a fresh
       // session: one line in the chat, live and on reload.
       row = { role: 'notice', messageId: 'session-reset:' + String(data.newSessionId), text: data.text, ts };
+    } else if (kind === 'question_agent_action' && typeof data.text === 'string' && data.actionId) {
+      // An agent edited, dismissed or answered a question card: one line,
+      // live and on reload, the same way as session_reset.
+      row = { role: 'notice', messageId: 'question-action:' + String(data.actionId), text: data.text, ts };
     } else if (kind === 'session_done' && data.status === 'stopped') {
       row = { role: 'notice', messageId: data.requestId ? 'stopped:' + data.requestId : undefined, text: String(data.reason || 'Turn stopped.'), ts };
     } else return;

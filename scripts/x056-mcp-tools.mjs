@@ -372,6 +372,141 @@ QUEUE_TOOLS.push({
 for (const t of QUEUE_TOOLS) TOOLS.push(t);
 const QUEUE_TOOL_NAMES = new Set(QUEUE_TOOLS.map((t) => t.name));
 
+// Question cards (docs/question-tools-contract.md): the card on the web and
+// mobile is opened, edited and closed through these tools, not read out of the
+// reply text. Items are addressed by the batch's `at` + each item's `id`.
+const QUESTION_TARGET = {
+  project_id: { type: 'string', description: 'the conversation\'s project; omit for your own conversation' },
+  session_id: { type: 'string', description: 'the conversation whose card it is; omit for your own' },
+};
+const QUESTION_TOOLS = [
+  {
+    name: 'ask_user',
+    description:
+      'Ask the user (the owner) a question as a card on the web panel and phone. '
+      + 'Use it ONLY when you genuinely need a decision only the user can make: a choice between real alternatives, a permission, a missing fact you cannot find yourself. Not for status updates, not for "shall I continue?" when the next step is obvious. '
+      + 'When there are choices, give them as options (short, distinct). Several questions can go in one card. '
+      + 'After calling it, END YOUR TURN. The user\'s answer arrives as your next message. Do not keep working on a guess of what they will say. '
+      + 'By default a new question joins the card already open; replace: true swaps the open card for this one. '
+      + 'With autopilot on, nothing opens: the question is recorded and asked in the autopilot recap.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        questions: {
+          type: 'array', minItems: 1, maxItems: 8,
+          items: {
+            type: 'object',
+            properties: {
+              question: { type: 'string', minLength: 1, maxLength: 500 },
+              options: { type: 'array', maxItems: 12, items: { type: 'string', minLength: 1, maxLength: 200 }, description: 'the choices, when there are any' },
+            },
+            required: ['question'],
+            additionalProperties: false,
+          },
+        },
+        replace: { type: 'boolean', description: 'replace the open card instead of adding to it (default false)' },
+      },
+      required: ['questions'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_questions',
+    description:
+      'List open question cards: each card\'s `at` and every question\'s `id`, text and options. Your own conversation by default; project_id + session_id for another one; all: true for every open card on the gateway. '
+      + 'edit_question, dismiss_question and answer_question take the `at` and ids from here.',
+    inputSchema: {
+      type: 'object',
+      properties: { ...QUESTION_TARGET, all: { type: 'boolean', description: 'every open card on the gateway (default false)' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'edit_question',
+    description:
+      'Rewrite one question of an open card (its text, its options, or both), keeping its place and id. Any conversation\'s card. '
+      + 'The user sees a line "Question edited by <you>: <reason>". Take `at` and `id` from list_questions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        at: { type: 'string', description: 'the card\'s `at` from list_questions' },
+        id: { type: 'string', description: 'the question\'s id from list_questions' },
+        question: { type: 'string', minLength: 1, maxLength: 500, description: 'new text' },
+        options: { type: 'array', maxItems: 12, items: { type: 'string', minLength: 1, maxLength: 200 }, description: 'new options (replaces them all; [] removes them)' },
+        reason: { type: 'string', minLength: 1, maxLength: 300, description: 'why, shown to the user' },
+        ...QUESTION_TARGET,
+      },
+      required: ['at', 'id', 'reason'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dismiss_question',
+    description:
+      'Close questions on an open card that no longer need the user: the question was settled another way, or it is moot. This replaces writing <<<RESOLVED>>>. '
+      + 'Omit ids to close the whole card. A reason is required; the user sees "Question dismissed by <you>: <reason>". Any conversation\'s card. Take `at` and ids from list_questions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        at: { type: 'string', description: 'the card\'s `at` from list_questions' },
+        ids: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'question ids; omit for the whole card' },
+        reason: { type: 'string', minLength: 1, maxLength: 300, description: 'why it no longer needs the user, shown to them' },
+        ...QUESTION_TARGET,
+      },
+      required: ['at', 'reason'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'answer_question',
+    description:
+      'Answer questions on an open card. On YOUR OWN card it closes them with the answer recorded, and you carry on in this turn. '
+      + 'On ANOTHER conversation\'s card the answer is delivered to that conversation as a message, following send_message\'s rules (the operator\'s approval mode; AI-to-AI hops count toward a relay checkpoint, where the result starts "Not sent yet (relay checkpoint):" and you either stop and report, or call again with confirm_relay: true); the card closes when the message is delivered. '
+      + 'Omit ids to answer the whole card. The user sees "Question answered by <you>: <answer>". Take `at` and ids from list_questions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        at: { type: 'string', description: 'the card\'s `at` from list_questions' },
+        ids: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'question ids; omit for the whole card' },
+        answer: { type: 'string', minLength: 1, maxLength: 2000 },
+        ...QUESTION_TARGET,
+        confirm_relay: { type: 'boolean', description: 'Confirm a relay checkpoint after a "Not sent yet (relay checkpoint)" answer. Ignored when no checkpoint is due.' },
+      },
+      required: ['at', 'answer'],
+      additionalProperties: false,
+    },
+  },
+];
+for (const t of QUESTION_TOOLS) TOOLS.push(t);
+const QUESTION_TOOL_NAMES = new Set(QUESTION_TOOLS.map((t) => t.name));
+
+/** An open card in the shape the tools return (GET /api/questions rows carry
+ *  the single-question fields too; older gateways have no `questions[]` or ids). */
+function questionCard(q) {
+  const items = Array.isArray(q?.questions) && q.questions.length ? q.questions : [{ question: q?.question, options: q?.options, ...(q?.id ? { id: q.id } : {}) }];
+  return {
+    projectId: String(q?.projectId ?? ''), sessionId: String(q?.sessionId ?? ''), at: String(q?.at ?? ''),
+    questions: items.map((it) => ({ ...(it?.id ? { id: String(it.id) } : {}), question: String(it?.question ?? ''), options: Array.isArray(it?.options) ? it.options.map(String) : [] })),
+    ...(q?.stale ? { stale: true } : {}),
+  };
+}
+function fmtCard(c) {
+  const head = `card at=${c.at}  project=${c.projectId} conversation=${c.sessionId}${c.stale ? '  (stale: older than 3 days)' : ''}`;
+  return head + '\n' + c.questions.map((it, i) => `  ${i + 1}. [id ${it.id ?? '?'}] ${it.question}${it.options.length ? `\n     options: ${it.options.join(' | ')}` : ''}`).join('\n');
+}
+/** HTTP 409 question_stale -> the card as it is now (or null), else undefined. */
+function staleOf(err) {
+  const b = err?.body;
+  if (b && b.error === 'question_stale') return b.open ? questionCard(b.open) : null;
+  return undefined;
+}
+function staleResult(stale) {
+  const text = stale
+    ? 'That card has changed (a stale `at` or an unknown id): nothing was done. The open card is now:\n' + fmtCard(stale) + '\nCall list_questions again if you need to, and retry with these ids.'
+    : 'That card is no longer open (answered, dismissed or replaced): nothing was done. Call list_questions to see what is open.';
+  return result(text, { status: 'stale', open: stale });
+}
+
 function fmtQueue(map, filter) {
   const rows = [];
   for (const [pid, items] of Object.entries(map ?? {})) {
@@ -555,7 +690,7 @@ for (const tool of TOOLS) {
   if (!OUTPUT_SCHEMAS[tool.name]) throw new Error(`missing output schema: ${tool.name}`);
   tool.outputSchema = OUTPUT_SCHEMAS[tool.name];
   const readOnly = /^(list_|read_|search_|get_|code_|wiki_)/.test(tool.name) || ['chat_status', 'memory_search', 'memory_read', 'memory_context','memory_source_search','memory_source_read'].includes(tool.name);
-  tool.annotations = { readOnlyHint: readOnly, destructiveHint: ['stop_chat', 'update_chat', 'stop_conversation', 'cancel_queued', 'cancel_scheduled', 'edit_queued', 'pause_scheduled', 'memory_update', 'memory_approve', 'memory_delete'].includes(tool.name), idempotentHint: readOnly, openWorldHint: ['send_chat_message', 'send_message', 'message_self', 'schedule_task'].includes(tool.name) };
+  tool.annotations = { readOnlyHint: readOnly, destructiveHint: ['stop_chat', 'update_chat', 'stop_conversation', 'cancel_queued', 'cancel_scheduled', 'edit_queued', 'pause_scheduled', 'memory_update', 'memory_approve', 'memory_delete', 'dismiss_question'].includes(tool.name), idempotentHint: readOnly, openWorldHint: ['send_chat_message', 'send_message', 'message_self', 'schedule_task', 'answer_question'].includes(tool.name) };
 
 }
 
@@ -819,6 +954,7 @@ export async function callToolResult(api, name, args) {
         + `${res?.remaining != null ? `${res.remaining} consecutive self-message(s) left before a human message is required.` : ''}`, { id: res.id, remaining: res.remaining });
     }
   }
+  if (QUESTION_TOOL_NAMES.has(name)) return callQuestionTool(api, name, args);
   if (CODEGRAPH_TOOL_NAMES.has(name)) {
     const res = await api('/api/codegraph/call', {
       method: 'POST',
@@ -930,6 +1066,120 @@ export async function callToolResult(api, name, args) {
     return result(text, { delivery: { ...delivery, ...reply } });
   }
   throw new Error(`unknown tool: ${name}`);
+}
+
+/** ask_user, list_questions, edit_question, dismiss_question, answer_question
+ *  (docs/question-tools-contract.md). One request each, except an answer to
+ *  another conversation's card in approval mode, which waits like send_message. */
+async function callQuestionTool(api, name, args) {
+  // OUR identity from the per-turn config; a delegate has none of its own and
+  // acts as its orchestrator's relay chain (X056_RELAY_FROM), as send_message does.
+  const from = SELF.sessionId || process.env.X056_RELAY_FROM || '';
+  const named = !!(args.project_id || args.session_id);
+  if (named && !(args.project_id && args.session_id)) throw new Error('give project_id and session_id together');
+  const target = named ? { projectId: args.project_id, sessionId: args.session_id } : { projectId: SELF.projectId, sessionId: SELF.sessionId };
+  const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
+
+  if (name === 'list_questions') {
+    if (!args.all && (!target.projectId || !target.sessionId)) throw new Error('give project_id and session_id, or all: true (this client has no conversation of its own)');
+    const raw = await api('/api/questions' + (args.all ? '' : '?' + new URLSearchParams(target)));
+    const rows = Array.isArray(raw) ? raw : Array.isArray(raw?.questions) ? raw.questions : [];
+    // Filtered here too, so an older gateway that ignores the query still answers right.
+    const cards = rows.filter((r) => args.all || (r?.projectId === target.projectId && r?.sessionId === target.sessionId)).map(questionCard);
+    const none = args.all ? 'No open question cards.' : 'No open question card on that conversation.';
+    return result(cards.length ? cards.map(fmtCard).join('\n\n') : none, { cards });
+  }
+
+  if (name === 'ask_user') {
+    if (!SELF.projectId || !SELF.sessionId) throw new Error('ask_user needs a conversation identity; delegates report NEEDS HUMAN instead');
+    const r = await post('/api/questions/ask', {
+      from: SELF.sessionId, projectId: SELF.projectId, sessionId: SELF.sessionId,
+      questions: args.questions.map((q) => ({ question: q.question, options: q.options ?? [] })),
+      ...(args.replace ? { replace: true } : {}),
+    });
+    if (r?.status === 'recorded_autopilot') {
+      return result('No card opened: autopilot is on, so the question was recorded for the autopilot recap, which asks the user when the run ends.',
+        { status: 'recorded_autopilot', projectId: SELF.projectId, sessionId: SELF.sessionId });
+    }
+    const card = questionCard({ projectId: SELF.projectId, sessionId: SELF.sessionId, ...r });
+    const ids = card.questions.map((q) => q.id).filter(Boolean);
+    return result(`Card open (at=${card.at}, ids ${ids.join(', ') || '?'}). End your turn now: the user's answer arrives as your next message.`,
+      { status: 'open', projectId: card.projectId, sessionId: card.sessionId, at: card.at, questions: card.questions });
+  }
+
+  if (!from) throw new Error(`${name} needs a conversation identity (this client has none); it can only list_questions`);
+  if (!target.projectId || !target.sessionId) throw new Error('give project_id and session_id');
+  const where = { projectId: target.projectId, sessionId: target.sessionId };
+
+  if (name === 'edit_question') {
+    if (args.question === undefined && args.options === undefined) throw new Error('give question or options (or both) to change');
+    let r;
+    try {
+      r = await post('/api/questions/edit', { from, ...where, at: args.at, id: args.id, reason: args.reason,
+        ...(args.question !== undefined ? { question: args.question } : {}), ...(args.options !== undefined ? { options: args.options } : {}) });
+    } catch (err) { const s = staleOf(err); if (s === undefined) throw err; return staleResult(s); }
+    const card = Array.isArray(r?.questions) ? questionCard({ ...where, at: args.at, ...r }) : undefined;
+    return result(`Edited question ${args.id} on the card at=${args.at}. The user sees "Question edited by <this conversation>: ${args.reason}".${card ? '\n' + fmtCard(card) : ''}`,
+      { status: 'edited', ...where, at: args.at, id: args.id, ...(card ? { card } : {}) });
+  }
+
+  if (name === 'dismiss_question') {
+    try {
+      await post('/api/questions/close', { from, ...where, at: args.at, ...(args.ids ? { ids: args.ids } : {}), action: 'dismiss', reason: args.reason });
+    } catch (err) { const s = staleOf(err); if (s === undefined) throw err; return staleResult(s); }
+    return result(`Dismissed ${args.ids ? `question(s) ${args.ids.join(', ')}` : 'the whole card'} (at=${args.at}). The user sees "Question dismissed by <this conversation>: ${args.reason}".`,
+      { status: 'dismissed', ...where, at: args.at, ...(args.ids ? { ids: args.ids } : {}) });
+  }
+
+  // answer_question
+  const own = target.projectId === SELF.projectId && target.sessionId === SELF.sessionId;
+  let r;
+  try {
+    r = await post('/api/questions/close', { from, ...where, at: args.at, ...(args.ids ? { ids: args.ids } : {}), action: 'answer', answer: args.answer,
+      ...(args.confirm_relay ? { confirmRelay: true } : {}) });
+  } catch (err) {
+    const s = staleOf(err);
+    if (s !== undefined) return staleResult(s);
+    const cp = relayCheckpointOf(err);
+    if (!cp) throw err;
+    return result(`${RELAY_CHECKPOINT_PREFIX} ${cp.message}`, { status: 'relay_checkpoint', ...where, at: args.at, cardClosed: false,
+      ...(typeof cp.hops === 'number' ? { hops: cp.hops } : {}), ...(typeof cp.checkpointEvery === 'number' ? { checkpointEvery: cp.checkpointEvery } : {}), note: cp.message });
+  }
+  r = r || {};
+  const base = { ...where, at: args.at, ...(args.ids ? { ids: args.ids } : {}) };
+  if (own || r.status === 'answered') {
+    const closed = r.cardClosed !== false;
+    return result(`Answered ${args.ids ? `question(s) ${args.ids.join(', ')}` : 'the whole card'} on your own card (at=${args.at})${closed ? '; it is closed' : ''}. Carry on in this turn.${r.note ? '\n' + r.note : ''}`,
+      { status: 'answered', ...base, cardClosed: closed, ...(r.note ? { note: String(r.note) } : {}) });
+  }
+  // Another conversation's card: a delivery receipt. The card closes at delivery.
+  let status = r.delivered || (r.status && r.status !== 'open' ? r.status : '') || (r.mode === 'approval' ? 'pending_approval' : r.steered ? 'steered' : r.queued ? 'queued' : 'sent');
+  let out = { ...base, ...(r.sessionId ? { sessionId: r.sessionId } : {}), ...(r.messageId ? { messageId: r.messageId } : {}), ...(r.approvalId ? { approvalId: r.approvalId } : {}), ...relayFields(r),
+    ...(typeof r.cardClosed === 'boolean' ? { cardClosed: r.cardClosed } : {}), ...(r.note ? { note: String(r.note) } : {}), ...(r.error ? { error: String(r.error) } : {}) };
+  if (status === 'pending' && r.approvalId) status = 'pending_approval';
+  if (status === 'pending_approval' && r.approvalId) {
+    const a = await waitForApproval(api, r.approvalId);
+    status = a.status === 'approved' ? (a.error ? 'failed' : a.delivered || (a.queued ? 'queued' : 'sent')) : a.status === 'pending' ? 'pending_approval' : a.status;
+    out = { ...out, ...(a.resultSessionId ? { sessionId: a.resultSessionId } : {}), ...(typeof a.cardClosed === 'boolean' ? { cardClosed: a.cardClosed } : {}),
+      ...(a.note ? { note: String(a.note) } : {}), ...(a.error ? { error: String(a.error) } : {}) };
+  }
+  const delivered = ['sent', 'queued', 'steered', 'started'].includes(status);
+  if (status === 'started') status = 'sent';
+  // A note on a delivered answer is the gateway saying why the card did NOT
+  // close ('card already closed'); without either, delivery closed it.
+  if (typeof out.cardClosed !== 'boolean') out.cardClosed = delivered && !out.note;
+  const said = {
+    sent: 'delivered to that conversation as a message (its turn is running now).',
+    queued: 'queued for that conversation (it is mid-turn); it reads the answer when its current turn ends.',
+    steered: 'steered into that conversation\'s running turn.',
+    pending_approval: 'still awaiting the operator\'s approval: not delivered, and the card stays open.',
+    denied: 'the operator DENIED it: not delivered, and the card stays open.',
+    expired: 'the approval request expired: not delivered, and the card stays open.',
+    failed: 'approved, but delivery failed: ' + (out.error || 'unknown error'),
+  }[status] || String(status);
+  const closedLine = delivered ? (out.cardClosed ? 'The card is closed.' : 'The card was NOT closed.') : '';
+  const tail = [closedLine, out.note, relayTail(out)].filter(Boolean).join('\n');
+  return result(`Answer ${said}${tail ? '\n' + tail : ''}`, { status, ...out });
 }
 
 /** Wait for the operator's decision on an approval -- and, for an approved

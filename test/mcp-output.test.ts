@@ -52,7 +52,7 @@ afterAll(async () => { await app?.close(); manager?.memory().close(); rmSync(dir
 
 describe('all advertised output contracts', () => {
   it('compiles all useful object schemas strictly and rejects empty or wrong results', () => {
-    expect(TOOLS).toHaveLength(63);
+    expect(TOOLS).toHaveLength(68);
     expect(validators.size).toBe(TOOLS.length);
     for (const tool of TOOLS) {
       expect(tool.outputSchema.type).toBe('object');
@@ -449,6 +449,29 @@ describe('all advertised output contracts', () => {
     expect(r.content[0].text).toContain('invalid model "mystery-model" for codex');
     expect(r.content[0].text).toContain('no catalog cached yet');
     expect(manager.listMcpApprovals().some((a: any) => a.message === 'fixture' && a.provider === 'codex')).toBe(false);
+  });
+
+  it('question card tools: list reads the real store; mutations without an identity are error results', async () => {
+    (manager as any).addPendingQuestion('p', 's', { question: 'Which DB?', options: ['pg', 'sqlite'] });
+    const own = (await tool('list_questions', { project_id: 'p', session_id: 's' })).data;
+    expect(own.cards).toHaveLength(1);
+    expect(own.cards[0]).toMatchObject({ projectId: 'p', sessionId: 's', questions: [{ question: 'Which DB?', options: ['pg', 'sqlite'] }] });
+    expect((await tool('list_questions', { all: true })).data.cards.length).toBeGreaterThanOrEqual(1);
+    expect((await tool('list_questions', { project_id: 'p', session_id: 'c' })).data.cards).toEqual([]);
+    const at = own.cards[0].at;
+    // The HTTP bridge has no conversation identity: ask and every mutation refuse.
+    const refused = [
+      ['ask_user', { questions: [{ question: 'x?' }] }, /needs a conversation identity; delegates report NEEDS HUMAN/],
+      ['edit_question', { at, id: 'x', question: 'y', reason: 'r', project_id: 'p', session_id: 's' }, /needs a conversation identity/],
+      ['dismiss_question', { at, reason: 'r', project_id: 'p', session_id: 's' }, /needs a conversation identity/],
+      ['answer_question', { at, answer: 'pg', project_id: 'p', session_id: 's' }, /needs a conversation identity/],
+    ] as const;
+    for (const [name, args, msg] of refused) {
+      const r = await tool(name, args);
+      expect(r.isError, name).toBe(true);
+      expect(r.content[0].text).toMatch(msg);
+    }
+    (manager as any).pendingQuestions.delete('s');
   });
 
   it('covers every advertised action', () => { expect([...covered].sort()).toEqual(TOOLS.map(t => t.name).sort()); });

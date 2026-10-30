@@ -598,6 +598,71 @@
     "show",
     "hide"
    ]
+  },
+  {
+   "name": "an agent's question action line is kept in agent, digest and brief turns",
+   "rows": [
+    {
+     "role": "user",
+     "text": "u:conversation",
+     "sender": {
+      "kind": "conversation"
+     }
+    },
+    {
+     "role": "notice",
+     "messageId": "question-action:b1b2b3b4b5b6",
+     "text": "Question dismissed by Obscura chat: Answered in the Obscura chat"
+    },
+    {
+     "role": "notice",
+     "messageId": "stopped:r2",
+     "text": "Turn stopped."
+    },
+    {
+     "role": "assistant",
+     "text": "r"
+    },
+    {
+     "role": "user",
+     "text": "u:bot_event",
+     "sender": {
+      "kind": "bot_event"
+     }
+    },
+    {
+     "role": "notice",
+     "messageId": "question-action:c1c2c3c4c5c6",
+     "text": "Question edited by Helper: Tonight is a freeze"
+    },
+    {
+     "role": "user",
+     "text": "u:bot_brief",
+     "sender": {
+      "kind": "bot_brief"
+     }
+    },
+    {
+     "role": "notice",
+     "messageId": "question-action:d1d2d3d4d5d6",
+     "text": "Question answered by Helper: yes"
+    },
+    {
+     "role": "assistant",
+     "text": "brief"
+    }
+   ],
+   "expected": [
+    "hide",
+    "show",
+    "hide",
+    "hide",
+    "hide",
+    "show",
+    "hide",
+    "show",
+    "show"
+   ]
   }
  ]
 }

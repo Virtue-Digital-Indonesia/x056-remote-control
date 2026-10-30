@@ -62,13 +62,19 @@ export function withTeamLine(text: string, line: string | undefined): string {
   return r.sender ? r.text + '\n\n' + line + text.slice(r.text.length) : text + '\n\n' + line;
 }
 /** The open-question line: a turn (the owner's own included) arrives while a
- *  question to the owner is still unanswered, and may close it with the
- *  RESOLVED marker. Same mechanism as the team line (the message, never the
- *  system prompt). */
+ *  question to the owner is still unanswered, and may close it with
+ *  dismiss_question / answer_question (the card's `at` and item ids are named
+ *  here). Same mechanism as the team line (the message, never the system
+ *  prompt). Plain strings are accepted for items without an id. */
 export const OPEN_QUESTION_LINE_PREFIX = '[Open question to the owner, still unanswered: ';
-export function openQuestionLine(questions: string[]): string {
-  const one = (q: string) => '"' + q.replace(/\s+/g, ' ').trim().slice(0, 300).replace(/"/g, "'") + '"';
-  return `${OPEN_QUESTION_LINE_PREFIX}${questions.slice(0, 6).map(one).join(', ')}. Only if THIS message gives the owner's answer or makes the question moot, end your reply with <<<RESOLVED>>> on its own line. Never add it as a sign-off or while you still need the owner's answer.]`;
+export function openQuestionLine(questions: (string | { question: string; id?: string })[], at?: string): string {
+  const one = (q: string | { question: string; id?: string }) => {
+    const text = typeof q === 'string' ? q : q.question;
+    const id = typeof q === 'string' ? undefined : q.id;
+    return '"' + text.replace(/\s+/g, ' ').trim().slice(0, 300).replace(/"/g, "'") + '"' + (id ? ` (id ${id})` : '');
+  };
+  const card = at ? ` Card at=${at}.` : '';
+  return `${OPEN_QUESTION_LINE_PREFIX}${questions.slice(0, 6).map(one).join(', ')}.${card} Only if THIS message gives the owner's answer or makes a question moot, close it with the x056 tool answer_question (the owner's answer) or dismiss_question (moot, with a reason). Never close one while you still need the owner's answer.]`;
 }
 /** Removes the team line, the advisor line and the open-question line (whichever are there). */
 export function stripTeamLine(text: string): string {
@@ -77,4 +83,4 @@ export function stripTeamLine(text: string): string {
 
 /** The per-turn line on a turn another conversation / MCP / delegate / schedule started. */
 export const OWNER_HIDDEN_LINE_PREFIX = '[Hidden from the owner: ';
-export const OWNER_HIDDEN_LINE = OWNER_HIDDEN_LINE_PREFIX + 'the owner does not see this turn or your reply unless you mark it. If your reply is for the owner or needs them (for example it reports finished work they asked for), put <<<FOR_OWNER>>> on its own line, or end with an ASK block for a decision.]';
+export const OWNER_HIDDEN_LINE = OWNER_HIDDEN_LINE_PREFIX + 'the owner does not see this turn or your reply unless you mark it. If your reply is for the owner or needs them (for example it reports finished work they asked for), put <<<FOR_OWNER>>> on its own line; for a decision only the owner can make, call the x056 tool ask_user and end your turn.]';

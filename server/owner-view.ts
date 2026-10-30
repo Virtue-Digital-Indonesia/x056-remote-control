@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import type { HistoryEntry } from '../src/provider.js';
 import type { MessageSender } from '../src/message-sender.js';
 import { readState, writeState } from './workspace-store.js';
+import { isQuestionActionRow } from './bot-view.js';
 
 const AGENT_KINDS = new Set(['conversation', 'mcp', 'delegate', 'automation']);
 const KEEP = 500;
@@ -92,7 +93,8 @@ export function ownerRowView(
       who = agent ? ownerSenderLabel(row.sender) : '';
       if (marked) row.forOwner = true;
       view = agent && !marked ? 'hide' : 'show';
-    } else if (row.role === 'error') {
+    } else if (row.role === 'error' || isQuestionActionRow(row)) {
+      // Error banners and an agent's question edit/dismiss/answer line always show.
       view = 'show';
     } else if (row.role === 'user') { // a steer
       if (!isAgentSender(row.sender, opts.sessionId)) view = 'show';

@@ -621,7 +621,7 @@ describe('renaming the Bot', () => {
 
   it('the persona teaches the agent-reply and message_owner rules', () => {
     const note = botSystemNote();
-    for (const s of ['message_owner', 'needs_you', 'hidden from the owner', 'Never end an agent-directed reply with an ASK', 'notify_user is the older name']) expect(note).toContain(s);
+    for (const s of ['message_owner', 'needs_you', 'hidden from the owner', 'Never call ask_user or end an agent-directed reply with a closing question', 'notify_user is the older name']) expect(note).toContain(s);
   });
 });
 
@@ -650,7 +650,9 @@ describe('open questions survive agent messages (all conversations)', () => {
     expect(still).toHaveLength(1);
     expect(still[0]).toMatchObject({ question: 'Proceed with the migration?', at });
     expect(kinds(f, 'question_answered')).toHaveLength(0);
-    expect(f.calls[1].prompt).toContain('[Open question to the owner, still unanswered: "Proceed with the migration?". Only if THIS message gives the owner\'s answer or makes the question moot, end your reply with <<<RESOLVED>>> on its own line. Never add it as a sign-off or while you still need the owner\'s answer.]');
+    const id = f.manager.listPendingQuestions()[0].id;
+    expect(id).toMatch(/^[0-9a-f]{8}$/);
+    expect(f.calls[1].prompt).toContain(`[Open question to the owner, still unanswered: "Proceed with the migration?" (id ${id}). Card at=${at}. Only if THIS message gives the owner's answer or makes a question moot, close it with the x056 tool answer_question (the owner's answer) or dismiss_question (moot, with a reason). Never close one while you still need the owner's answer.]`);
     // the sender marker stays last, and a reading client sees none of it
     expect(readMessageSender(f.calls[1].prompt).sender?.kind).toBe('conversation');
     expect(stripTeamLine(readMessageSender(f.calls[1].prompt).text)).not.toContain('Open question');
@@ -687,7 +689,8 @@ describe('open questions survive agent messages (all conversations)', () => {
     await agentSend(f);
     expect(f.manager.listPendingQuestions()[0].questions).toHaveLength(2);
     // the line names both
-    expect(f.calls[2].prompt).toContain('"Proceed with the migration?", "Also rotate the key?"');
+    const [a, b] = f.manager.listPendingQuestions()[0].questions!;
+    expect(f.calls[2].prompt).toContain(`"Proceed with the migration?" (id ${a.id}), "Also rotate the key?" (id ${b.id})`);
   });
 
   it('RESOLVED plus a new ASK in the same reply: the old question is resolved, the new one stays', async () => {

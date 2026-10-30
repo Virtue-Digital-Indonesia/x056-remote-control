@@ -272,7 +272,8 @@ window.createRCChat = function (engine, room) {
   // Every row has one kind (botRowKind):
   //   'keep'    a question card, an orphaned-turn card, an error banner, an owner message (the Bot's
   //             message_owner bubble), a Bot notice that needs the owner (bot-notice: id + urgent), the
-  //             owner's own steer
+  //             owner's own steer, an agent's question edit/dismiss/answer line (.notice[data-question-action],
+  //             history messageId question-action:)
   //   'system'  a relay checkpoint ("Not sent yet ..." / "Relay checkpoint ..."), a system line,
   //             a non-error banner, a non-urgent Bot notice (by its bot-notice: id, never by its text:
   //             the Bot can be renamed)
@@ -306,7 +307,7 @@ window.createRCChat = function (engine, room) {
   const NOT_OWNER_STEER = [...AGENT_SENDERS, 'advisor', 'bot_event', 'bot_brief'];
   const senderKindOf = row => (/(?:^|\s)sender-(\w+)/.exec(row.className) || [])[1] || '';
   function botRowKind(row) {
-    if (row.matches('.qcard,.orphan,.banner.err,.msg.assistant.owner-message')) return 'keep';
+    if (row.matches('.qcard,.orphan,.banner.err,.msg.assistant.owner-message,.notice[data-question-action]')) return 'keep';
     if (row.matches('.notice')) { const id = row.dataset.messageSourceId || ''; if (id.startsWith('bot-notice:')) return row.dataset.botUrgent ? 'keep' : 'system'; }
     if (row.matches('.msg.user')) return !row.classList.contains('steered') ? 'trigger' : NOT_OWNER_STEER.includes(senderKindOf(row)) ? 'steer' : 'keep';
     if (CHECKPOINT.test(row._messageText ?? row.textContent.trim())) return 'system';
@@ -764,7 +765,7 @@ window.createRCChat = function (engine, room) {
   const ovIsBtn = n => n.nodeType === 1 && n.classList.contains('ov-btn');
   const ovFurniture = n => n.nodeType !== 1 || ovIsBtn(n) || n.classList.contains('older-bar');
   function ovKind(row) {
-    if (row.matches('.qcard,.orphan,.banner.err')) return 'keep';
+    if (row.matches('.qcard,.orphan,.banner.err,.notice[data-question-action]')) return 'keep';
     if (row.matches('.msg.user')) return !row.classList.contains('steered') ? 'trigger' : AGENT_SENDERS.includes(senderKindOf(row)) ? 'steer' : 'keep';
     return 'row';
   }
