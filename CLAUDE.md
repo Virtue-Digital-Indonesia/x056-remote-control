@@ -1140,6 +1140,14 @@ Contract: `docs/question-tools-contract.md`.
   (`'agent'`) on every question event for old clients; the agent is in
   `byAgent`. An edit is `question {edited, remainder: true}` so no client
   pushes or counts it unread.
+- **iOS (2026-10-31)**: the app shows `question_agent_action` and
+  `session_reset` live as notice rows keyed by the journal's messageId
+  (`question-action:` / `session-reset:`), so a reload never doubles them;
+  a `question-action:` row always shows, even in a hidden agent turn. Every
+  answer from the card (an option, its own answer box, "Send answers") and
+  a banner reply to a `question` push carry `answersQuestionAt`, so a free
+  answer closes the card. A single-question card has its own answer box now;
+  the message box stays an ordinary message, as on the panel.
 - **Fallback, one release**: the `<<<ASK>>>` parser and `<<<RESOLVED>>>` still
   work (the prompt mentions the block only for a chat whose x056 tools did
   not load) and log `question_fallback` to events.jsonl; remove them once that

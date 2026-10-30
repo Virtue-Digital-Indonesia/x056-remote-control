@@ -44,6 +44,9 @@ struct ChatRow: Identifiable, Equatable {
     var turnId: String?
     /// On an agent turn's reply: who it replies to.
     var replyTo: String?
+    /// The journal's messageId, where a live line must not repeat its history
+    /// row (`question-action:<id>`, `session-reset:<id>`).
+    var messageId: String?
 }
 
 /// The Bot chat keeps quiet by default. This is the panel's rule, row for
@@ -335,15 +338,21 @@ final class ConversationModel {
 
     static func row(_ h: HistoryEntry) -> ChatRow? {
         guard var r = baseRow(h) else { return nil }
+        r.messageId = h.messageId
         r.botView = h.botView
         r.botLabel = h.botLabel
         r.ownerMessage = h.ownerMessage == true
         r.needsYou = h.needsYou == true
-        // An error banner is always shown, whatever the turn.
-        r.ownerHidden = h.ownerView == "hide" && r.role != .error
+        // An error banner is always shown, whatever the turn, and so is an
+        // agent's edit or close of a question card.
+        let questionAction = Self.isQuestionAction(h.messageId)
+        r.ownerHidden = h.ownerView == "hide" && r.role != .error && !questionAction
+        if questionAction { r.botView = "show" }
         if h.ownerTurn == "agent", r.role == .assistant { r.replyTo = h.ownerSender }
         return r
     }
+
+    static func isQuestionAction(_ id: String?) -> Bool { id?.hasPrefix("question-action:") == true }
 
     private static func baseRow(_ h: HistoryEntry) -> ChatRow? {
         let text = h.text ?? ""
@@ -485,6 +494,20 @@ final class ConversationModel {
                 row.needsYou = d["needsYou"]?.bool == true
                 rows.append(row)
             }
+        case "question_agent_action":
+            // An agent edited, dismissed or answered a question card. Never
+            // `inTurn`: it shows even inside a hidden agent turn. The card
+            // itself still closes only on question_answered / _dismissed.
+            if let id = d["actionId"]?.string, let text = d["text"]?.string, !text.isEmpty {
+                var row = ChatRow(role: .notice, text: text)
+                row.botView = "show"
+                appendLine(row, messageId: "question-action:" + id)
+            }
+        case "session_reset":
+            // The transcript was gone, so the conversation went on in a fresh session.
+            if let id = d["newSessionId"]?.string, let text = d["text"]?.string, !text.isEmpty {
+                appendLine(ChatRow(role: .notice, text: text), messageId: "session-reset:" + id)
+            }
         case "owner_view":
             // A woken reply marked an already finished turn for the owner.
             if d["shown"]?.bool != false, let id = d["messageId"]?.string { showTurn(id) }
@@ -534,6 +557,14 @@ final class ConversationModel {
         }
     }
 
+    /// A line the journal keeps under `messageId`, so a reload matches it.
+    private func appendLine(_ row: ChatRow, messageId: String) {
+        guard !rows.contains(where: { $0.messageId == messageId }), !repeatsTail(row.role, row.text) else { return }
+        var row = row
+        row.messageId = messageId
+        rows.append(row)
+    }
+
     /// The stream can replay an event the history page already holds.
     private func repeatsTail(_ role: ChatRow.Role, _ text: String) -> Bool {
         rows.suffix(8).contains { $0.role == role && $0.text == text }
@@ -555,7 +586,8 @@ final class ConversationModel {
     // MARK: actions
 
     /// Send, queue for after this turn, or steer into the running turn.
-    func send(_ text: String, files: [PendingFile], mode: SendMode = .send) async {
+    /// `answering`: the open question card's `at`, when this is its answer.
+    func send(_ text: String, files: [PendingFile], mode: SendMode = .send, answering: String? = nil) async {
         guard let client = app.client else { return }
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty || !files.isEmpty else { return }
@@ -571,6 +603,7 @@ final class ConversationModel {
         let rowId = rows[rows.count - 1].id
         do {
             var body = SendBody(prompt: prompt, projectId: projectId, sessionId: sessionId, requestId: requestId)
+            body.answersQuestionAt = answering
             // With Jev or Decisions on, Auto is sent empty so the picker
             // decides; otherwise Auto means the house default model.
             if routerOn && model.isEmpty {

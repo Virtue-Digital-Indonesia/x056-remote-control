@@ -586,12 +586,20 @@ struct QuestionCard: View {
             if collapsed {
                 EmptyView()
             } else if parts.count == 1 {
+                // Its own answer box: the server closes a card on an answer
+                // tagged with it, not on an ordinary message it cannot match.
                 let opts = parts[0].options ?? []
                 if !opts.isEmpty {
-                    options(opts) { choice in Task { await model.send(choice, files: []) } }
-                    Text("Or write your own answer in the message box.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    options(opts) { choice in reply(choice) }
+                }
+                HStack(alignment: .bottom, spacing: 8) {
+                    answerField(0, parts[0], placeholder: opts.isEmpty ? "Your answer" : "Or write your own answer")
+                    Button("Send answer", systemImage: "arrow.up") {
+                        if let a = answer(0) { reply(a) }
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.glassProminent)
+                    .disabled(!hasWritten(0))
                 }
             } else {
                 // A long batch scrolls inside the card, so the message box
@@ -606,8 +614,7 @@ struct QuestionCard: View {
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollIndicatorsFlash(onAppear: true)
                 Button("Send answers") {
-                    let text = parts.indices.map { i in "\(i + 1). \(parts[i].question)\nAnswer: \(answer(i) ?? "")" }.joined(separator: "\n\n")
-                    Task { await model.send(text, files: []) }
+                    reply(parts.indices.map { i in "\(i + 1). \(parts[i].question)\nAnswer: \(answer(i) ?? "")" }.joined(separator: "\n\n"))
                 }
                 .buttonStyle(.glassProminent)
                 .disabled(parts.indices.contains { answer($0) == nil })
@@ -630,17 +637,28 @@ struct QuestionCard: View {
                     written[i] = ""
                 }
             }
-            TextField(opts.isEmpty ? "Your answer" : "Or write your own answer", text: Binding(
-                get: { written[i] ?? "" },
-                set: { written[i] = $0 }
-            ), axis: .vertical)
-            .lineLimit(1...4)
-            .font(.footnote)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(Color(.tertiarySystemFill), in: .rect(cornerRadius: 12, style: .continuous))
-            .accessibilityLabel("Your answer: \(q.question)")
+            answerField(i, q, placeholder: opts.isEmpty ? "Your answer" : "Or write your own answer")
         }
+    }
+
+    private func answerField(_ i: Int, _ q: QuestionPart, placeholder: String) -> some View {
+        TextField(placeholder, text: Binding(
+            get: { written[i] ?? "" },
+            set: { written[i] = $0 }
+        ), axis: .vertical)
+        .lineLimit(1...4)
+        .font(.footnote)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color(.tertiarySystemFill), in: .rect(cornerRadius: 12, style: .continuous))
+        .accessibilityLabel("Your answer: \(q.question)")
+    }
+
+    /// The card's answer, tagged with its `at` so the server closes it.
+    private func reply(_ text: String) {
+        written = [:]
+        picked = [:]
+        Task { await model.send(text, files: [], answering: question.at) }
     }
 
     private func hasWritten(_ i: Int) -> Bool {

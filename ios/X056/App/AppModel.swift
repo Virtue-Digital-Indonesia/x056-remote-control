@@ -1137,18 +1137,24 @@ final class AppModel {
     }
 
     /// A reply typed into a notification. Runs while the app may be in the background.
-    func replyFromNotification(projectId: String, sessionId: String, text: String) async {
+    /// `kind`: the push's notice kind. A reply to a question's push is that
+    /// card's answer, so it carries the card's `at` and closes it.
+    func replyFromNotification(projectId: String, sessionId: String, text: String, kind: String? = nil) async {
         guard let client, !text.isEmpty else { return }
         // Launched cold into the background: learn the conversation's model first,
         // or the reply would run on the Auto model instead of the one it was on.
         if !projectsLoaded { await refreshProjects() }
         let provider = conversation(projectId, sessionId)?.provider ?? project(projectId)?.providerName
         let saved = conversation(projectId, sessionId)
-        let body = SendBody(
+        var body = SendBody(
             prompt: text, projectId: projectId, sessionId: sessionId,
             model: ModelCatalog.effectiveModel(saved?.model, provider: provider ?? "claude"),
             effort: saved?.effort.flatMap { $0.isEmpty ? nil : $0 },
             requestId: UUID().uuidString.lowercased())
+        if kind == "question" {
+            let open = try? await client.get("/api/questions", as: [PendingQuestion].self)
+            body.answersQuestionAt = open?.first { $0.sessionId == sessionId }?.at ?? questions[sessionId]?.at
+        }
         _ = try? await client.post("/api/sessions/current/messages", body, as: SendReply.self)
     }
 }

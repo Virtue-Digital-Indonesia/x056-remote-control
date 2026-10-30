@@ -113,6 +113,53 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         #expect(user?.sender == "Scheduled task")
         #expect(user?.attachments.first?.isImage == true)
     }
+
+    /// An agent's edit or close of a question card is one line: live (even
+    /// inside a hidden agent turn) and again on reload, never twice.
+    @Test func showsAQuestionActionOnceLiveAndAfterReload() {
+        let decode = { (json: String) in try! JSONDecoder().decode(HistoryEntry.self, from: Data(json.utf8)) }
+        let history = ConversationModel.rows([
+            decode(#"{"role":"user","text":"check the logs","ownerView":"hide","ownerTurn":"agent","sender":{"kind":"conversation","messageId":"m1","sessionId":"other"}}"#),
+            decode(#"{"role":"notice","text":"Question dismissed by Ops: done","messageId":"question-action:aa11","ownerView":"hide","botView":"hide"}"#),
+        ])
+        #expect(history[0].ownerHidden)
+        #expect(!history[1].ownerHidden, "an agent's action on a card always shows")
+        #expect(history[1].botView == "show")
+
+        let m = ConversationModel(projectId: "p", sessionId: "s")
+        m.rows = history
+        m.apply(event("question_agent_action", #"{"projectId":"p","sessionId":"s","action":"dismissed","actionId":"aa11","text":"Question dismissed by Ops: done"}"#))
+        #expect(m.rows.count == 2, "the reload already holds it")
+        // A hidden agent turn is running; the line still shows.
+        m.apply(event("session_started", #"{"projectId":"p","sessionId":"s","displayPrompt":"next","sender":{"kind":"conversation","messageId":"m2","sessionId":"other"}}"#))
+        m.apply(event("question_agent_action", #"{"projectId":"p","sessionId":"s","action":"edited","actionId":"bb22","text":"Question edited by Ops: clearer"}"#))
+        let line = m.rows.last
+        #expect(line?.role == .notice && line?.text == "Question edited by Ops: clearer")
+        #expect(line?.messageId == "question-action:bb22")
+        #expect(line?.ownerHidden == false)
+        #expect(!m.hiddenIDs.contains(line!.id))
+        m.apply(event("question_agent_action", #"{"projectId":"p","sessionId":"s","action":"edited","actionId":"bb22","text":"Question edited by Ops: clearer"}"#, seq: 2))
+        #expect(m.rows.filter { $0.messageId == "question-action:bb22" }.count == 1)
+    }
+
+    @Test func showsAFreshSessionLineLive() {
+        let m = ConversationModel(projectId: "p", sessionId: "s")
+        let e = event("session_reset", #"{"projectId":"p","sessionId":"s","newSessionId":"n1","text":"The saved history was gone, so this went on in a fresh session."}"#)
+        m.apply(e)
+        m.apply(e)
+        #expect(m.rows.map(\.messageId) == ["session-reset:n1"])
+        #expect(m.rows.first?.role == .notice)
+    }
+
+    /// A card's answer names the card, so the server closes it even when the
+    /// text matches none of its options.
+    @Test func aCardAnswerCarriesItsCard() throws {
+        let encode = { (b: SendBody) in try JSONSerialization.jsonObject(with: JSONEncoder().encode(b)) as? [String: Any] }
+        var body = SendBody(prompt: "Ship it on Friday", projectId: "p", sessionId: "s")
+        #expect(try encode(body)?["answersQuestionAt"] == nil, "an ordinary message names no card")
+        body.answersQuestionAt = "2026-10-31T01:00:00.000Z"
+        #expect(try encode(body)?["answersQuestionAt"] as? String == "2026-10-31T01:00:00.000Z")
+    }
 }
 
 @Suite struct TranscriptLineTests {

@@ -416,6 +416,9 @@ struct SendBody: Encodable, Sendable {
     var fileRefs: [FileRef]?
     /// The account for a NEW conversation's first turn (a lock with project spaces).
     var account: String?
+    /// The open question card's `at`: this message IS its answer, so the
+    /// server closes the card even when it cannot match the text to it.
+    var answersQuestionAt: String?
 }
 
 struct FileRef: Codable, Sendable, Hashable {

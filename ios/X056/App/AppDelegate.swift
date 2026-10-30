@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let sid = info["sessionId"] as? String
         if response.actionIdentifier == Push.replyAction, let sid,
            let text = (response as? UNTextInputNotificationResponse)?.userText {
-            await AppModel.shared.replyFromNotification(projectId: pid, sessionId: sid, text: text)
+            await AppModel.shared.replyFromNotification(projectId: pid, sessionId: sid, text: text, kind: info["kind"] as? String)
             return
         }
         let bot = info["bot"] as? Bool == true

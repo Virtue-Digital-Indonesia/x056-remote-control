@@ -22,7 +22,7 @@ The live event `question_agent_action` falls through to `default: break` in
 `ConversationModel.apply`. Until the next reload, the phone shows the card
 vanishing with no line.
 
-## Change (`ios/X056/App/ConversationModel.swift`; not applied, line numbers approximate)
+## Change (`ios/X056/App/ConversationModel.swift`; applied 2026-10-31, with `session_reset` the same way)
 
 ```diff
  struct ChatRow: Identifiable, Equatable {

@@ -772,6 +772,73 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(read, "the phone's read reaches the gateway")
     }
 
+    /// A card with no options takes its answer in its own box, and the server
+    /// closes it, because the answer names the card. An agent's close of a
+    /// card shows as one line, live and again after a reload.
+    func testQuestionCardAnswersAndAgentLines() throws {
+        let projects = try XCTUnwrap(api("GET", "/api/projects")?["projects"] as? [[String: Any]])
+        let site = try XCTUnwrap(projects.first { ($0["name"] as? String) == "Website refresh" })
+        let pid = try XCTUnwrap(site["id"] as? String)
+        let conv = try XCTUnwrap((site["conversations"] as? [[String: Any]])?.first { ($0["title"] as? String) == "Update the component library" })
+        let sid = try XCTUnwrap(conv["sessionId"] as? String)
+        let ref: [String: Any] = ["from": sid, "projectId": pid, "sessionId": sid]
+        func clearCards() {
+            for q in apiList("/api/questions") where q["sessionId"] as? String == sid {
+                _ = api("POST", "/api/questions/dismiss", ["projectId": pid, "sessionId": sid, "at": q["at"]!])
+            }
+        }
+        clearCards()
+        let asked = api("POST", "/api/questions/ask", ref.merging(["questions": [["question": "What should the footer say?", "options": [String]()]]]) { a, _ in a })
+        XCTAssertNotNil(asked?["at"], "the fixture opened the card")
+
+        let app = signInToFixture()
+        app.buttons["Projects"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Website refresh"].waitForExistence(timeout: 10))
+        app.staticTexts["Website refresh"].tap()
+        XCTAssertTrue(app.staticTexts["Update the component library"].waitForExistence(timeout: 10))
+        app.staticTexts["Update the component library"].tap()
+
+        // The card's own answer box, not "write it in the message box".
+        XCTAssertTrue(app.staticTexts["What should the footer say?"].waitForExistence(timeout: 10))
+        let field = app.textFields["Your answer: What should the footer say?"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Send answer"].isEnabled, "nothing to send yet")
+        field.tap()
+        field.typeText("Contact us any time")
+        snapshot(app, "15-card-answer")
+        app.buttons["Send answer"].tap()
+        XCTAssertTrue(app.staticTexts["Contact us any time"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["What should the footer say?"].waitForNonExistence(timeout: 15), "the answer closes the card")
+        XCTAssertFalse(apiList("/api/questions").contains { ($0["question"] as? String) == "What should the footer say?" }, "the gateway closed the card")
+        XCTAssertTrue(app.staticTexts["Fixture response received."].waitForExistence(timeout: 30))
+        // The turn ends first: a rich reply's own questions would join the next card.
+        for _ in 0..<30 {
+            let rows = api("GET", "/api/projects")?["projects"] as? [[String: Any]] ?? []
+            let busy = rows.first { ($0["id"] as? String) == pid }.map { (($0["runningSessionIds"] as? [String] ?? []) + ($0["backgroundSessionIds"] as? [String] ?? [])).contains(sid) } ?? true
+            if !busy { break }
+            sleep(1)
+        }
+        sleep(1)
+
+        // The conversation's own agent closes a fresh card: one line, live.
+        clearCards()
+        let font = try XCTUnwrap(api("POST", "/api/questions/ask", ref.merging(["questions": [["question": "Serif or sans for the footer?", "options": ["Serif", "Sans"]]]]) { a, _ in a }))
+        XCTAssertTrue(app.staticTexts["Serif or sans for the footer?"].waitForExistence(timeout: 10))
+        _ = api("POST", "/api/questions/close", ref.merging(["at": font["at"]!, "action": "dismiss", "reason": "settled in the chat"]) { a, _ in a })
+        let line = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@ AND label ENDSWITH %@", "Question dismissed by", "settled in the chat"))
+        XCTAssertTrue(line.firstMatch.waitForExistence(timeout: 10), "the agent's close shows live")
+        XCTAssertTrue(app.staticTexts["Serif or sans for the footer?"].waitForNonExistence(timeout: 10))
+        snapshot(app, "16-agent-closed-card")
+
+        // A reload holds the same line once, not twice.
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Update the component library"].waitForExistence(timeout: 10))
+        app.staticTexts["Update the component library"].tap()
+        XCTAssertTrue(line.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(line.count, 1)
+        clearCards()
+    }
+
     /// One JSON call to the fixture gateway, synchronously.
     private func api(_ method: String, _ path: String, _ body: [String: Any]? = nil) -> [String: Any]? {
         request(method, path, body) as? [String: Any]
