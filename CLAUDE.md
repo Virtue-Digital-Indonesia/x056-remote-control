@@ -1154,6 +1154,7 @@ Contract: `docs/question-tools-contract.md`.
   older gateway), so an agent's edit or a partly answered batch keeps each
   answer on its own question (`QuestionCard.carried`); a send that fails
   keeps them.
+- **Panel card (2026-10-31)**: the single-question card has its own answer box (input + "Send answer", Enter sends, the option buttons stay), like iOS since 53458dc; it goes through `answerQuestion`, so it carries `answersQuestionAt` and closes the card (the message box stays an ordinary message, the old hint is gone). Batch drafts (`x056_question_draft_<sid>_<at>`, now `{v:2, items:{<id:...|q:text>: {v, p}}}`; an old index array is read only when its length matches) and the re-render carry are keyed by item `id` (question text when it has none), so a partial close or an edit keeps each answer on its own item; a pick whose option an edit removed is dropped. A re-render of the same `at` keeps the draft, so a reload that replays earlier states cannot wipe it. Test: `test/browser/question-card-answer.cjs`.
 - **Fallback, one release**: the `<<<ASK>>>` parser and `<<<RESOLVED>>>` still
   work (the prompt mentions the block only for a chat whose x056 tools did
   not load) and log `question_fallback` to events.jsonl; remove them once that

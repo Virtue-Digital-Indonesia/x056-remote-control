@@ -322,6 +322,8 @@
   .mcp-appr-actions .send { width: auto; padding: 0 14px; flex: 1; }
   .qopt-insert:disabled { display: none; }
   .qhint { font-size: 12px; color: var(--muted); }
+  .qsingle { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .qsingle .qcustom { flex: 1 1 220px; width: auto; min-width: 0; }
 
   /* A slash command the user ran. Rendered as its own chip rather than a chat
      bubble: it is an instruction to the harness, not something said. */
@@ -4608,6 +4610,43 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     return d;
   }
 
+  // A card's typed answers and picks belong to an ITEM: its stable id (questions[].id; edits and partial closes
+  // keep it), else its text for an item with no id. An entry is {v: value, p: 1 when v is a picked option}.
+  function questionKey(item) { return item && item.id ? 'id:' + item.id : 'q:' + String(item && item.question || ''); }
+  // What was typed or picked, by item key: the saved draft (a v2 object; an old index array only when it still
+  // lines up with the items), overlaid with what the card being replaced held.
+  function questionDraftFor(draftKey, items, carried) {
+    var raw = null, out = {};
+    try { raw = JSON.parse(localStorage.getItem(draftKey) || 'null'); } catch (e) { raw = null; }
+    if (Array.isArray(raw)) {
+      if (raw.length === items.length) items.forEach(function (item, i) { if (typeof raw[i] === 'string' && raw[i]) out[questionKey(item)] = { v: raw[i], p: (item.options || []).includes(raw[i]) ? 1 : 0 }; });
+    } else if (raw && raw.v === 2 && raw.items && typeof raw.items === 'object') {
+      Object.keys(raw.items).forEach(function (k) { var e = raw.items[k]; if (e && typeof e.v === 'string' && e.v) out[k] = { v: e.v, p: e.p ? 1 : 0 }; });
+    }
+    if (carried) Object.keys(carried).forEach(function (k) { out[k] = carried[k]; });
+    return out;
+  }
+  // The entry for an item, or null. A pick whose option the item no longer offers (an edit removed it) is dropped.
+  function questionEntry(draft, item) {
+    var e = draft[questionKey(item)];
+    if (!e || !e.v) return null;
+    if (e.p && !(item.options || []).includes(e.v)) return null;
+    return e;
+  }
+  // Reads the answer boxes (elements carrying data-qkey, holding a .qcustom and maybe radios) back into entries.
+  function questionEntriesOf(els) {
+    var out = {};
+    Array.prototype.forEach.call(els, function (el) {
+      var custom = el.querySelector('.qcustom'), checked = el.querySelector(':checked'), text = custom ? custom.value.trim() : '';
+      if (text) out[el.dataset.qkey] = { v: text, p: 0 };
+      else if (checked) out[el.dataset.qkey] = { v: checked.value, p: 1 };
+    });
+    return out;
+  }
+  function saveQuestionDraftOf(draftKey, els) {
+    var items = questionEntriesOf(els);
+    try { if (Object.keys(items).length) localStorage.setItem(draftKey, JSON.stringify({ v: 2, items: items })); else localStorage.removeItem(draftKey); } catch (e) {}
+  }
   // Card shown when Claude ended its turn asking the user something.
   function nodeQuestion(pid, data, carried) {
     var d = document.createElement('div'); d.className = 'qcard'; d.dataset.session = data.sessionId || ''; d.dataset.questionAt = data.at || '';
@@ -4620,29 +4659,29 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     d.appendChild(head);
     if (Array.isArray(data.questions) && data.questions.length > 1) {
       var form = document.createElement('form'); form.className = 'qbatch';
-      var draftKey='x056_question_draft_'+data.sessionId+'_'+data.at, draft=[];
-      try { draft=JSON.parse(localStorage.getItem(draftKey)||'[]'); } catch {}
-      // The batch grew (a merged question): keep what was already chosen or typed, matched by question text.
-      if (carried) draft = data.questions.map(function (item, index) { return carried[item.question] !== undefined ? carried[item.question] : (draft[index] || ''); });
+      var draftKey='x056_question_draft_'+data.sessionId+'_'+data.at;
+      // Typed answers and picks are kept per ITEM (its stable id, else its text), so a partial close that shifts
+      // the indices, or an edit that rewords an item, leaves every answer on the item it was typed for.
+      var draft = questionDraftFor(draftKey, data.questions, carried);
       data.questions.forEach(function (item, index) {
-        var group = document.createElement('fieldset'), legend = document.createElement('legend');
+        var group = document.createElement('fieldset'), legend = document.createElement('legend'), entry = questionEntry(draft, item);
+        group.dataset.qkey = questionKey(item); group.dataset.qtext = item.question;
         legend.textContent = (index + 1) + '. ' + item.question; group.appendChild(legend);
         (item.options || []).forEach(function (option) {
           var label = document.createElement('label'), radio = document.createElement('input');
-          radio.type = 'radio'; radio.name = 'question-' + index; radio.value = option; radio.checked = draft[index] === option;
+          radio.type = 'radio'; radio.name = 'question-' + index; radio.value = option; radio.checked = !!entry && entry.p && entry.v === option;
           label.appendChild(radio); label.appendChild(document.createTextNode(option)); group.appendChild(label);
         });
         var custom = document.createElement('input'); custom.type = 'text'; custom.className = 'qcustom';
-        custom.value = draft[index] && !(item.options || []).includes(draft[index]) ? draft[index] : '';
-        custom.placeholder = item.options.length ? 'Or write your own answer' : 'Your answer';
+        custom.value = entry && !entry.p ? entry.v : '';
+        custom.placeholder = (item.options || []).length ? 'Or write your own answer' : 'Your answer';
         custom.setAttribute('aria-label', 'Your answer: ' + item.question);
         custom.addEventListener('input', function () { if (custom.value.trim()) group.querySelectorAll('[type=radio]').forEach(function (r) { r.checked = false; }); });
         group.addEventListener('change', function (e) { custom.setCustomValidity(''); if (e.target.type === 'radio') custom.value = ''; });
         group.appendChild(custom); form.appendChild(group);
       });
-      function saveQuestionDraft() { var values=[];form.querySelectorAll('fieldset').forEach(function(group){var checked=group.querySelector(':checked');values.push(group.querySelector('.qcustom').value.trim()||(checked&&checked.value)||'');});try{localStorage.setItem(draftKey,JSON.stringify(values));}catch{} }
+      function saveQuestionDraft() { saveQuestionDraftOf(draftKey, form.querySelectorAll('[data-qkey]')); }
       form.addEventListener('input', saveQuestionDraft); form.addEventListener('change', saveQuestionDraft);
-      if (carried) saveQuestionDraft();
       var submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'cr-primary'; submit.textContent = 'Send answers'; form.appendChild(submit);
       form.addEventListener('submit', function (e) {
         e.preventDefault(); var answers = [], missing;
@@ -4659,6 +4698,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     }
     var q = document.createElement('div'); q.className = 'qtext'; q.appendChild(renderInline(String(data.question || ''))); d.appendChild(q);
     var opts = Array.isArray(data.options) ? data.options : [];
+    var single = { id: data.id, question: String(data.question || ''), options: opts };
     if (opts.length) {
       var row = document.createElement('div'); row.className = 'qopts';
       opts.forEach(function (o) {
@@ -4674,9 +4714,27 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
         row.appendChild(wrap);
       });
       d.appendChild(row);
-    } else {
-      var hint = document.createElement('div'); hint.className = 'qhint'; hint.textContent = 'Type your answer in the message box below.'; d.appendChild(hint);
     }
+    // The card's own answer box. A message-box send carries no answersQuestionAt, so only this path closes the
+    // card with free text. It mirrors a batch item's .qcustom; Enter submits the form.
+    var sform = document.createElement('form'); sform.className = 'qsingle'; sform.dataset.qkey = questionKey(single); sform.dataset.qtext = single.question;
+    var sdraftKey = 'x056_question_draft_' + data.sessionId + '_' + data.at;
+    var sentry = questionEntry(questionDraftFor(sdraftKey, [single], carried), single);
+    var scustom = document.createElement('input'); scustom.type = 'text'; scustom.className = 'qcustom';
+    scustom.value = sentry && !sentry.p ? sentry.v : '';
+    scustom.placeholder = opts.length ? 'Or write your own answer' : 'Your answer';
+    scustom.setAttribute('aria-label', 'Your answer: ' + single.question);
+    sform.appendChild(scustom);
+    var ssend = document.createElement('button'); ssend.type = 'submit'; ssend.className = 'cr-primary'; ssend.textContent = 'Send answer'; sform.appendChild(ssend);
+    function saveSingleDraft() { saveQuestionDraftOf(sdraftKey, [sform]); }
+    sform.addEventListener('input', saveSingleDraft);
+    sform.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var value = scustom.value.trim();
+      if (!value) { scustom.focus(); return; }
+      answerQuestion(pid, d, value);
+    });
+    d.appendChild(sform);
     return d;
   }
   // A question is an ephemeral SSE event, not part of the transcript, so a history
@@ -4694,12 +4752,11 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (old.length === 1 && old[0].dataset.questionAt === String(data.at || '') && old[0].dataset.questionSig === sig) return;
     var carried = null;
     for (var i = 0; i < old.length; i++) {
-      old[i].querySelectorAll('fieldset').forEach(function (group) {
-        var legend = group.querySelector('legend'), checked = group.querySelector(':checked'), custom = group.querySelector('.qcustom');
-        var value = (custom && custom.value.trim()) || (checked && checked.value) || '';
-        if (legend && value) { carried = carried || {}; carried[legend.textContent.replace(/^\d+\.\s/, '')] = value; }
-      });
-      try { localStorage.removeItem('x056_question_draft_' + data.sessionId + '_' + old[i].dataset.questionAt); } catch (e) {}
+      var held = questionEntriesOf(old[i].querySelectorAll('[data-qkey]'));
+      Object.keys(held).forEach(function (k) { carried = carried || {}; carried[k] = held[k]; });
+      // A re-render of the same card keeps its draft: it is keyed by item, so it stays right through a remainder or an edit,
+      // and a replayed earlier state (a reload) must not wipe it. Only a card for another `at` is gone for good.
+      if (old[i].dataset.questionAt !== String(data.at || '')) { try { localStorage.removeItem('x056_question_draft_' + data.sessionId + '_' + old[i].dataset.questionAt); } catch (e) {} }
       old[i].parentNode.removeChild(old[i]);
     }
     var node = nodeQuestion(pid, data, carried); node.dataset.questionSig = sig; node.classList.add('pending'); appendNode(pid, data.sessionId, node);
