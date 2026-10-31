@@ -626,6 +626,8 @@ private struct BotInput: View {
     /// again while the keyboard went down.
     @State private var sending = false
     @State private var sends = 0
+    /// Set while the box has the keyboard: an open card folds to its header.
+    @State private var typing = false
 
     private static let suggestions: [(String, String)] = [
         ("Brief me", "sun.max"),
@@ -636,8 +638,13 @@ private struct BotInput: View {
 
     var body: some View {
         let empty = !text.contains(where: { !$0.isWhitespace })
-        let suggest = empty && !sending && !dictation.isListening && !model.isWorking
+        // An open card is what needs you; the suggestions wait behind it.
+        let suggest = empty && !sending && !dictation.isListening && !model.isWorking && model.question == nil
         VStack(spacing: 10) {
+            if let q = model.question {
+                QuestionCard(question: q, model: model, folded: typing)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if suggest {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -677,7 +684,7 @@ private struct BotInput: View {
                     } else {
                         // The composer's own box: Markdown as you type, and
                         // Return is a newline (the arrow button sends).
-                        ComposerTextView(text: $text, placeholder: "Ask Bot…", longTextLimit: 50_000, maxLines: 5, identifier: "bot-input") { _ in }
+                        ComposerTextView(text: $text, placeholder: "Ask Bot…", longTextLimit: 50_000, maxLines: 5, identifier: "bot-input", editing: $typing) { _ in }
                     }
                 }
                 .frame(minHeight: 48)
@@ -720,6 +727,7 @@ private struct BotInput: View {
         .frame(maxWidth: .infinity)
         .animation(.snappy, value: empty)
         .animation(.snappy, value: suggest)
+        .animation(.snappy, value: model.question?.at)
         .animation(.snappy, value: dictation.isListening)
         .onChange(of: dictation.transcript) { _, heard in
             if !dictation.isListening, !heard.isEmpty { text = heard }

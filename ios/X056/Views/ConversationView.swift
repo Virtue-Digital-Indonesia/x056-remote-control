@@ -553,9 +553,13 @@ struct QuestionCard: View {
     let model: ConversationModel
     /// Folded while a message is being typed below it.
     var folded = false
-    @State private var picked: [Int: String] = [:]
+    /// Answers by item id, so an agent's edit or a partly answered batch
+    /// keeps each one on its own question.
+    @State private var picked: [String: String] = [:]
     /// A written answer wins over a picked option, as on the panel.
-    @State private var written: [Int: String] = [:]
+    @State private var written: [String: String] = [:]
+    /// From a tap on send until the gateway took the answer.
+    @State private var sending = false
     @State private var formHeight: CGFloat = 0
     /// Folded to its header, to read the conversation behind it.
     @State private var collapsed = false
@@ -588,41 +592,45 @@ struct QuestionCard: View {
             } else if parts.count == 1 {
                 // Its own answer box: the server closes a card on an answer
                 // tagged with it, not on an ordinary message it cannot match.
-                let opts = parts[0].options ?? []
+                let p = parts[0]
+                let opts = p.options ?? []
                 if !opts.isEmpty {
                     options(opts) { choice in reply(choice) }
                 }
                 HStack(alignment: .bottom, spacing: 8) {
-                    answerField(0, parts[0], placeholder: opts.isEmpty ? "Your answer" : "Or write your own answer")
+                    answerField(p, placeholder: opts.isEmpty ? "Your answer" : "Or write your own answer")
                     Button("Send answer", systemImage: "arrow.up") {
-                        if let a = answer(0) { reply(a) }
+                        if let a = answer(p) { reply(a) }
                     }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.glassProminent)
-                    .disabled(!hasWritten(0))
+                    .disabled(!hasWritten(p))
                 }
+                .disabled(sending)
             } else {
                 // A long batch scrolls inside the card, so the message box
                 // and the conversation stay on screen.
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        ForEach(parts.indices, id: \.self) { i in part(i, parts[i]) }
+                        ForEach(Array(parts.enumerated()), id: \.element.key) { i, p in part(i, p) }
                     }
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { formHeight = $0 }
                 }
                 .frame(height: min(max(formHeight, 1), 240))
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollIndicatorsFlash(onAppear: true)
+                .disabled(sending)
                 Button("Send answers") {
-                    reply(parts.indices.map { i in "\(i + 1). \(parts[i].question)\nAnswer: \(answer(i) ?? "")" }.joined(separator: "\n\n"))
+                    reply(parts.enumerated().map { i, p in "\(i + 1). \(p.question)\nAnswer: \(answer(p) ?? "")" }.joined(separator: "\n\n"))
                 }
                 .buttonStyle(.glassProminent)
-                .disabled(parts.indices.contains { answer($0) == nil })
+                .disabled(sending || parts.contains { answer($0) == nil })
             }
         }
         .padding(14)
         .glassEffect(.regular.tint(.orange.opacity(0.12)), in: .rect(cornerRadius: 22, style: .continuous))
         .animation(.snappy, value: folded)
+        .onChange(of: question) { old, new in keepAnswers(from: old, to: new) }
     }
 
     private func part(_ i: Int, _ q: QuestionPart) -> some View {
@@ -632,19 +640,19 @@ struct QuestionCard: View {
                 .font(.footnote)
                 .fixedSize(horizontal: false, vertical: true)
             if !opts.isEmpty {
-                options(opts, selected: hasWritten(i) ? nil : picked[i]) { choice in
-                    picked[i] = choice
-                    written[i] = ""
+                options(opts, selected: hasWritten(q) ? nil : picked[q.key]) { choice in
+                    picked[q.key] = choice
+                    written[q.key] = ""
                 }
             }
-            answerField(i, q, placeholder: opts.isEmpty ? "Your answer" : "Or write your own answer")
+            answerField(q, placeholder: opts.isEmpty ? "Your answer" : "Or write your own answer")
         }
     }
 
-    private func answerField(_ i: Int, _ q: QuestionPart, placeholder: String) -> some View {
+    private func answerField(_ q: QuestionPart, placeholder: String) -> some View {
         TextField(placeholder, text: Binding(
-            get: { written[i] ?? "" },
-            set: { written[i] = $0 }
+            get: { written[q.key] ?? "" },
+            set: { written[q.key] = $0 }
         ), axis: .vertical)
         .lineLimit(1...4)
         .font(.footnote)
@@ -654,19 +662,41 @@ struct QuestionCard: View {
         .accessibilityLabel("Your answer: \(q.question)")
     }
 
-    /// The card's answer, tagged with its `at` so the server closes it.
+    /// The card's answer, tagged with its `at` so the server closes it. What
+    /// was typed stays if the send fails.
     private func reply(_ text: String) {
-        written = [:]
-        picked = [:]
-        Task { await model.send(text, files: [], answering: question.at) }
+        sending = true
+        Task {
+            await model.send(text, files: [], answering: question.at)
+            sending = false
+            if model.sendError == nil {
+                written = [:]
+                picked = [:]
+            }
+        }
     }
 
-    private func hasWritten(_ i: Int) -> Bool {
-        !(written[i] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    /// The batch changed under the card: an agent edited it, or part of it
+    /// was answered. Answers stay with the questions still open; a new
+    /// batch starts empty, and a pick the edit removed is dropped.
+    private func keepAnswers(from old: PendingQuestion, to new: PendingQuestion) {
+        (written, picked) = Self.carried(written, picked, from: old, to: new)
     }
 
-    private func answer(_ i: Int) -> String? {
-        hasWritten(i) ? written[i]!.trimmingCharacters(in: .whitespacesAndNewlines) : picked[i]
+    static func carried(_ written: [String: String], _ picked: [String: String],
+                        from old: PendingQuestion, to new: PendingQuestion) -> ([String: String], [String: String]) {
+        guard old.at == new.at else { return ([:], [:]) }
+        let open = Dictionary(new.parts.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        return (written.filter { open[$0.key] != nil },
+                picked.filter { k, v in open[k]?.options?.contains(v) == true })
+    }
+
+    private func hasWritten(_ q: QuestionPart) -> Bool {
+        !(written[q.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func answer(_ q: QuestionPart) -> String? {
+        hasWritten(q) ? written[q.key]!.trimmingCharacters(in: .whitespacesAndNewlines) : picked[q.key]
     }
 
     /// Options wrap onto as many lines as they need; a long one wraps its text.
@@ -681,6 +711,7 @@ struct QuestionCard: View {
                 }
             }
         }
+        .disabled(sending)
     }
 }
 

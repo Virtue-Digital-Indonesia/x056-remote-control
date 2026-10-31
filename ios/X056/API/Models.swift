@@ -230,6 +230,11 @@ struct QueueItem: Decodable, Sendable, Identifiable, Hashable {
 struct QuestionPart: Decodable, Sendable, Hashable {
     let question: String
     let options: [String]?
+    /// Stable per item: an agent's edit or a partial answer keeps it.
+    var id: String? = nil
+
+    /// What an answer typed into the card is kept under.
+    var key: String { id ?? question }
 }
 
 struct PendingQuestion: Decodable, Sendable, Hashable {
@@ -239,11 +244,13 @@ struct PendingQuestion: Decodable, Sendable, Hashable {
     let options: [String]?
     let questions: [QuestionPart]?
     let at: String
+    /// The single question's item id (the first item's, for a batch).
+    var id: String? = nil
 
     /// The parts to render: `questions` when the model asked several.
     var parts: [QuestionPart] {
         if let questions, questions.count > 1 { return questions }
-        return [QuestionPart(question: question, options: options)]
+        return [QuestionPart(question: question, options: options, id: id)]
     }
 }
 

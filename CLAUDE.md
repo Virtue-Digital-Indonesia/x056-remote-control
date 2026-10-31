@@ -1147,7 +1147,13 @@ Contract: `docs/question-tools-contract.md`.
   answer from the card (an option, its own answer box, "Send answers") and
   a banner reply to a `question` push carry `answersQuestionAt`, so a free
   answer closes the card. A single-question card has its own answer box now;
-  the message box stays an ordinary message, as on the panel.
+  the message box stays an ordinary message, as on the panel. The Bot screen
+  shows the Bot's card over its box (it had none; only "Open as a
+  conversation" did), and its suggestion chips wait while one is open. The
+  card keeps typed and picked answers by item `id` (the question text on an
+  older gateway), so an agent's edit or a partly answered batch keeps each
+  answer on its own question (`QuestionCard.carried`); a send that fails
+  keeps them.
 - **Fallback, one release**: the `<<<ASK>>>` parser and `<<<RESOLVED>>>` still
   work (the prompt mentions the block only for a chat whose x056 tools did
   not load) and log `question_fallback` to events.jsonl; remove them once that

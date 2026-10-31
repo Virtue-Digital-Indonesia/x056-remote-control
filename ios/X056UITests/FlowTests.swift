@@ -839,6 +839,35 @@ final class FlowTests: XCTestCase {
         clearCards()
     }
 
+    /// A question the Bot asks with `message_owner {needsYou}` shows on the
+    /// Bot screen as a card over its box, and an option there answers it.
+    /// Sorts after testBotWakesAndAnswers, which needs a gateway with no Bot.
+    func testBotWithAQuestionCard() throws {
+        let bot = try XCTUnwrap(api("POST", "/api/bot", ["enabled": true]))
+        let pid = try XCTUnwrap(bot["projectId"] as? String)
+        let sid = try XCTUnwrap(bot["sessionId"] as? String)
+        for q in apiList("/api/questions") where q["sessionId"] as? String == sid {
+            _ = api("POST", "/api/questions/dismiss", ["projectId": pid, "sessionId": sid, "at": q["at"]!])
+        }
+        let asked = api("POST", "/api/bot/message", ["from": sid, "text": "Approve the footer copy?", "needsYou": true, "options": ["Approve", "Hold"]])
+        XCTAssertEqual(asked?["needsYou"] as? Bool, true, "the fixture's Bot opened a card")
+
+        let app = signInToFixture()
+        openBot(app)
+        let field = app.textFields["Your answer: Approve the footer copy?"]
+        XCTAssertTrue(field.waitForExistence(timeout: 15), "the card is on the Bot screen")
+        XCTAssertTrue(app.buttons["Hold"].exists)
+        XCTAssertFalse(app.buttons["What needs me?"].exists, "the suggestions wait behind the card")
+        sleep(1)
+        snapshot(app, "46-bot-question-card")
+        app.buttons["Approve"].firstMatch.tap()
+        XCTAssertTrue(field.waitForNonExistence(timeout: 15), "the answer closes the card")
+        XCTAssertFalse(apiList("/api/questions").contains { $0["sessionId"] as? String == sid && ($0["question"] as? String)?.contains("footer copy") == true }, "the gateway closed the card")
+
+        _ = api("POST", "/api/bot", ["enabled": false])
+        _ = api("POST", "/api/conversations/read", ["projectId": pid, "sessionId": sid])
+    }
+
     /// One JSON call to the fixture gateway, synchronously.
     private func api(_ method: String, _ path: String, _ body: [String: Any]? = nil) -> [String: Any]? {
         request(method, path, body) as? [String: Any]

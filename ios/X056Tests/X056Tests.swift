@@ -160,6 +160,39 @@ private func event(_ kind: String, _ data: String, seq: Int = 1) -> GatewayEvent
         body.answersQuestionAt = "2026-10-31T01:00:00.000Z"
         #expect(try encode(body)?["answersQuestionAt"] as? String == "2026-10-31T01:00:00.000Z")
     }
+
+    /// Answers follow the item ids: an agent's edit keeps them, a partly
+    /// answered batch drops the closed ones, a new batch starts empty.
+    @Test func cardAnswersFollowTheItemIds() throws {
+        let decode = { (s: String) in try JSONDecoder().decode(PendingQuestion.self, from: Data(s.utf8)) }
+        let batch = try decode(#"{"projectId":"p","sessionId":"s","question":"Which day?","options":["Fri","Mon"],"id":"aaaa0001","at":"t1","questions":[{"id":"aaaa0001","question":"Which day?","options":["Fri","Mon"]},{"id":"aaaa0002","question":"Who reviews?","options":[]}]}"#)
+        #expect(batch.parts.map(\.key) == ["aaaa0001", "aaaa0002"])
+        let written = ["aaaa0001": "", "aaaa0002": "Dina"]
+        let picked = ["aaaa0001": "Mon"]
+
+        // Question 1 answered from the message box: question 2 is all that is left.
+        let rest = try decode(#"{"projectId":"p","sessionId":"s","question":"Who reviews?","options":[],"id":"aaaa0002","at":"t1"}"#)
+        #expect(rest.parts.map(\.key) == ["aaaa0002"])
+        var (w, p) = QuestionCard.carried(written, picked, from: batch, to: rest)
+        #expect(w == ["aaaa0002": "Dina"])
+        #expect(p.isEmpty)
+
+        // An edit drops "Mon" from the options: that pick goes, the typed answer stays.
+        let edited = try decode(#"{"projectId":"p","sessionId":"s","question":"Which day?","options":["Fri","Tue"],"id":"aaaa0001","at":"t1","questions":[{"id":"aaaa0001","question":"Which day?","options":["Fri","Tue"]},{"id":"aaaa0002","question":"Who reviews this?","options":[]}]}"#)
+        (w, p) = QuestionCard.carried(written, picked, from: batch, to: edited)
+        #expect(w["aaaa0002"] == "Dina")
+        #expect(p.isEmpty)
+        (w, p) = QuestionCard.carried(written, ["aaaa0001": "Fri"], from: batch, to: edited)
+        #expect(p == ["aaaa0001": "Fri"])
+
+        let next = try decode(#"{"projectId":"p","sessionId":"s","question":"Deploy now?","options":["Yes","No"],"id":"bbbb0001","at":"t2"}"#)
+        (w, p) = QuestionCard.carried(written, picked, from: batch, to: next)
+        #expect(w.isEmpty && p.isEmpty)
+
+        // An older gateway sends no ids: the question text is the key.
+        let legacy = try decode(#"{"projectId":"p","sessionId":"s","question":"Ship?","options":["Yes"],"at":"t3"}"#)
+        #expect(legacy.parts.first?.key == "Ship?")
+    }
 }
 
 @Suite struct TranscriptLineTests {
