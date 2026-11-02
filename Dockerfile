@@ -30,15 +30,18 @@ RUN set -eux; \
     php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer; \
     rm -f /tmp/composer-setup.php; \
     rm -rf /var/lib/apt/lists/*
-# Docker CLI + compose plugin ONLY (no daemon). A project session drives the
-# isolated dind sidecar via DOCKER_HOST (see compose.yaml) for its own builds and
-# compose e2e stacks — the host's Docker is never touched.
+# Docker CLI + compose + buildx plugins ONLY (no daemon). A project session drives
+# the isolated dind sidecar via DOCKER_HOST (see compose.yaml) for its own builds
+# and compose e2e stacks — the host's Docker is never touched. buildx makes
+# `docker build` use BuildKit: the classic builder's never-started intermediate
+# containers left their layers registered in dind (199 mounts, 55.6 GB, purged
+# 2026-11-02).
 RUN install -m0755 -d /etc/apt/keyrings; \
     curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc; \
     chmod a+r /etc/apt/keyrings/docker.asc; \
     echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin; \
+    apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin docker-buildx-plugin; \
     rm -rf /var/lib/apt/lists/*
 # Bun — a separate JS/TS runtime + package manager some projects use directly
 # (bun install/bun test/bun run), independent of the system Node above. Shared,
