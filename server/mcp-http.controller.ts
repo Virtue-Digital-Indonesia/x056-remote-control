@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 // one definition, two transports, so an external client and a spawned session
 // always see an identical tool surface.
 import { SERVER_INFO, TOOLS, callToolResult } from '../scripts/x056-mcp-tools.mjs';
+import { mcpViaHeaders, type AuthedRequest } from './mcp-via.js';
 
 export const MCP_HTTP_CONFIG = Symbol('x056-mcp-http-config');
 export interface McpHttpConfig {
@@ -49,7 +50,11 @@ export class McpHttpController {
     const base = this.cfg.url || `http://127.0.0.1:${req.socket.localPort}`;
     const res = await fetch(base + path, {
       ...opts,
-      headers: { Authorization: `Bearer ${this.cfg.token}`, 'Content-Type': 'application/json', ...(opts.headers ?? {}) },
+      // The via pair goes LAST so nothing a tool passes can override it: it
+      // tells the downstream route which credential the /mcp caller used
+      // (external memory approvals name it), trusted only with the per-boot
+      // secret (mcp-via.ts).
+      headers: { Authorization: `Bearer ${this.cfg.token}`, 'Content-Type': 'application/json', ...(opts.headers ?? {}), ...mcpViaHeaders((req as AuthedRequest).x056Auth) },
     });
     const body = await res.json().catch(() => null);
     // status + body ride on the error, so a tool can tell a relay checkpoint

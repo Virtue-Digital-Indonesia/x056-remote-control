@@ -1160,6 +1160,49 @@ Contract: `docs/question-tools-contract.md`.
   not load) and log `question_fallback` to events.jsonl; remove them once that
   count stays near zero. The trailing-`?` guess is gone.
 
+## External memory approvals over MCP (2026-11-02)
+
+Efran's external assistant reaches the gateway over the HTTP `/mcp` endpoint,
+which has no conversation identity, so `memory_approve` used to fail with "A
+verified caller conversation is required". Now:
+
+- **Setting `allowExternalApprovals`** (memory settings, `GET/POST
+  /api/memory/settings`), **off by default**, no panel control yet.
+- **Same trust level as the panel's `/api/memory/bulk`**, which any holder of
+  the gateway token can already call to confirm memories. This adds no new
+  power for a token holder; it gives the external client a reviewed, logged
+  path to it.
+- **Tools.** `memory_approve {id, revision, action?: 'approve' | 'reject',
+  reason}` and `memory_update {..., approve?: true, reason}`. Only a
+  PROPOSED memory at its exact revision (409 when stale). approve ->
+  `confirmed`. reject -> the memory as it was before the current run of
+  proposed revisions (every editable field and the status of the last
+  non-proposed revision); a memory that was never anything but proposed goes
+  to recoverable trash (`deleted`). `memory_update approve:true` writes TWO
+  revisions in one transaction, the edit (proposed) then the approval
+  (confirmed); a confirmed memory can be corrected this way too; it may change
+  only title, content and sources.
+- **Actor** on each revision: `mcp (operator) · approve|reject|edit · <OAuth
+  client name, or token / passkey> · <reason>` (cap 300; the client name is
+  sanitized). History keeps every step; revert with `restore-revision`. Each
+  decision appends `memory_external_approval {id, revision, action, actor,
+  status}` to `events.jsonl` (no notice, no push).
+- **How the route knows it is /mcp.** `AuthGuard` records the credential on
+  the request (`req.x056Auth`: token / oauth+clientId / passkey). The /mcp
+  handler calls REST over loopback with the gateway token, adding
+  `x-x056-mcp-via` (`token` or `oauth:<clientId>`) and a per-boot random
+  secret (`server/mcp-via.ts`); the via header is trusted only with that
+  secret, so a plain REST caller cannot claim it (it gets the old error).
+- **Agents keep their rules.** A request with caller ids (a conversation's
+  stdio bridge) takes the old autoManage + ownership path unchanged; it
+  cannot `reject` and `approve:true` is refused. Anything carrying
+  `from` / `self` / `delegate` or `X-X056-Caller` is 403 `agent_caller`; a
+  delegate's bridge (no SELF) now sends its `delegate` marker on these calls.
+  Setting off = 403 `external_approvals_off`.
+- **Pending, a separate decision:** hashed OAuth tokens at rest, passkey-only
+  OAuth consent, a client allowlist for this path, and closing
+  `/api/memory/bulk` to the plain token.
+
 ## Owner view in every conversation (`server/owner-view.ts`, 2026-10-22)
 
 Efran via Bot: "if for me or needs me then show, else hide by default".

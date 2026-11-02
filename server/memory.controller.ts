@@ -4,13 +4,19 @@ import {
   Body,
   ConflictException,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
+  HttpException,
   Inject,
+  Optional,
   Post,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
+import type { Request } from 'express';
+import { join } from 'node:path';
 import { SessionManager } from './manager.js';
 import { STATE_DIR } from './api.controller.js';
 import {
@@ -23,12 +29,19 @@ import {
 } from './memory-store.js';
 import { EXTRACTION_LIMITS } from './memory-documents.js';
 import { MemorySources, cleanMemorySource } from './memory-sources.js';
+import { trustedMcpVia, type X056Auth } from './mcp-via.js';
+import { OAUTH_STORE } from './oauth.controller.js';
+import type { OAuthStore } from './oauth.js';
+import { EventLog } from '../src/eventlog.js';
+
+type ExternalReviewBody = { reason?: unknown; from?: unknown; self?: unknown; delegate?: unknown };
 
 @Controller('api/memory')
 export class MemoryController {
   constructor(
     @Inject(SessionManager) private manager: SessionManager,
     @Inject(STATE_DIR) private state: string,
+    @Optional() @Inject(OAUTH_STORE) private oauth?: Pick<OAuthStore, 'getClient'>,
   ) {}
   private store() {
     return this.manager.memory();
@@ -37,6 +50,7 @@ export class MemoryController {
     try {
       return fn();
     } catch (e) {
+      if (e instanceof HttpException) throw e;
       if (e instanceof MemoryConflict) throw new ConflictException(e.message);
       throw new BadRequestException((e as Error).message);
     }
@@ -123,10 +137,12 @@ export class MemoryController {
     });
   }
   @Post('propose') @HttpCode(200) propose(
-    @Body() body: { entry: Partial<MemoryEntry>; id?: string; revision?: number;callerProjectId?:string;callerSessionId?:string },
+    @Body() body: { entry: Partial<MemoryEntry>; id?: string; revision?: number;callerProjectId?:string;callerSessionId?:string;approve?:boolean;reason?:string },
+    @Req() req?: Request,
   ) {
     return this.call(() => {
       if (!body?.entry) throw new Error('Memory required');
+      if (body.approve !== undefined && body.approve !== false) return this.editAndApprove(req, body);
       this.validateEntry({ ...(body.id ? this.store().get(body.id) : {}), ...body.entry });
       const q=this.callerQuery(body);
       const full = this.store().settings().autoManage && !!body.callerProjectId && !!body.callerSessionId;
@@ -203,13 +219,79 @@ export class MemoryController {
     });
   }
   @Post('approve') @HttpCode(200) approveEntry(
-    @Body() body: {id:string;revision:number;callerProjectId?:string;callerSessionId?:string},
+    @Body() body: {id:string;revision:number;action?:'approve'|'reject';reason?:string;callerProjectId?:string;callerSessionId?:string},
+    @Req() req?: Request,
   ) {
     return this.call(() => {
+      const action = body?.action ?? 'approve';
+      if (action !== 'approve' && action !== 'reject') throw new Error('action must be approve or reject');
+      // No caller conversation: the operator path over /mcp (external approvals).
+      if (body?.callerProjectId === undefined && body?.callerSessionId === undefined) return this.externalReview(req, body, action);
+      // A conversation keeps the automatic memory management rules unchanged;
+      // rejecting is not one of them (it has memory_delete).
+      if (action !== 'approve') throw new Error('A conversation cannot reject a proposal; use memory_delete with a reason');
       const {entry,q} = this.managedEntry(body);
       this.validateAutomaticEntry(entry,q);
       return this.store().update(entry.id,body.revision,{status:'confirmed'},this.agentActor(q,'approve'));
     });
+  }
+  /**
+   * External memory approvals (2026-11-02): the HTTP /mcp endpoint has no
+   * conversation identity. Its caller may approve or reject a PROPOSED memory
+   * when `allowExternalApprovals` is on: the same trust level as the panel's
+   * /api/memory/bulk, which any gateway-token holder can already call. Trusted
+   * only for a request the /mcp handler made (mcp-via.ts, per-boot secret);
+   * anything carrying an agent identity is refused.
+   */
+  private externalGate(req: Request | undefined, body: ExternalReviewBody): { via: X056Auth; reason: string } {
+    if (!req) throw new Error('A verified caller conversation is required');
+    if (['from', 'self', 'delegate'].some((k) => (body as Record<string, unknown>)[k] != null) || req.headers['x-x056-caller'] != null)
+      throw new ForbiddenException({ error: 'agent_caller', message: 'An agent cannot approve memories as the operator; a conversation uses its own memory tools under automatic memory management' });
+    const via = trustedMcpVia(req);
+    if (!via) throw new Error('A verified caller conversation is required');
+    if (!this.store().settings().allowExternalApprovals)
+      throw new ForbiddenException({ error: 'external_approvals_off', message: 'External memory approvals are off. The owner can turn on allowExternalApprovals in the memory settings.' });
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+    if (!reason || reason.length > 200) throw new Error('Provide a reason of 1–200 characters');
+    return { via, reason };
+  }
+  private externalActor(via: X056Auth, action: string, reason: string): string {
+    let who: string = via.kind;
+    if (via.kind === 'oauth') {
+      // The connector chose its own name at registration: strip control
+      // characters and the separator, and cap it.
+      const name = this.oauth?.getClient(via.clientId)?.client_name;
+      who = (typeof name === 'string' ? name : '').replace(/[\u0000-\u001f\u007f·]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60) || via.clientId;
+    }
+    return `mcp (operator) · ${action} · ${who} · ${reason}`.slice(0, 300);
+  }
+  private logExternal(entry: MemoryEntry, action: string): void {
+    try {
+      new EventLog(join(this.state, 'events.jsonl')).append({ type: 'memory_external_approval', id: entry.id, revision: entry.revision, action, actor: entry.actor, status: entry.status, at: new Date().toISOString() });
+    } catch { /* logging only */ }
+  }
+  private externalReview(req: Request | undefined, body: {id:string;revision:number;reason?:string}, action: 'approve' | 'reject'): MemoryEntry {
+    const { via, reason } = this.externalGate(req, body);
+    const entry = this.store().reviewProposal(body.id, body.revision, action, this.externalActor(via, action, reason));
+    this.logExternal(entry, action);
+    return entry;
+  }
+  /** memory_update {approve: true} from /mcp: the correction as one proposed
+   *  revision, then the approval as the next, in one transaction. */
+  private editAndApprove(req: Request | undefined, body: { entry: Partial<MemoryEntry>; id?: string; revision?: number; callerProjectId?: string; callerSessionId?: string; approve?: boolean; reason?: string }): MemoryEntry {
+    if (body.approve !== true) throw new Error('approve must be true or false');
+    if (body.callerProjectId !== undefined || body.callerSessionId !== undefined)
+      throw new Error('approve is for the operator over /mcp; a conversation’s corrections follow the automatic memory management rules');
+    if (!body.id) throw new Error('approve needs an existing memory; use memory_update');
+    const { via, reason } = this.externalGate(req, body);
+    for (const key of Object.keys(body.entry))
+      if (!['title', 'content', 'sources'].includes(key)) throw new Error('An approved correction may change only title, content and sources');
+    const current = this.store().get(body.id);
+    if (!current) throw new Error('Memory not found');
+    this.validateEntry({ ...current, ...body.entry });
+    const entry = this.store().reviewProposal(body.id, body.revision!, 'approve', this.externalActor(via, 'approve', reason), { patch: body.entry, actor: this.externalActor(via, 'edit', reason) });
+    this.logExternal(entry, 'edit+approve');
+    return entry;
   }
   @Post('bulk') @HttpCode(200) bulk(
     @Body() body: { items: { id: string; revision: number }[]; status: MemoryStatus },

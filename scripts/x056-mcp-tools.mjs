@@ -203,6 +203,13 @@ const SELF = {
  *  the gateway process and serves external clients. */
 const IS_BOT = process.env.X056_BOT === '1' && !!SELF.sessionId;
 
+/** A delegate's bridge has no SELF, so a memory call from it would look like an
+ *  external operator's; the marker lets the gateway refuse operator review. */
+function delegateMarker() {
+  const of = process.env.X056_DELEGATE_OF || '', id = process.env.X056_DELEGATE_ID || '';
+  return !SELF.sessionId && (of || id) ? { delegate: { of, id } } : {};
+}
+
 /** The tools this bridge advertises: everyone's, plus the Bot's own for the Bot. */
 export function listTools() { return IS_BOT ? [...TOOLS, ...BOT_TOOLS] : TOOLS; }
 
@@ -639,20 +646,22 @@ const MEMORY_TOOLS = [
   ],
   [
     'memory_update',
-    'Correct an existing memory using its current revision. Full automatic memory management confirms eligible owned corrections immediately; other modes keep corrections for review. Shared read access does not permit editing.',
+    'Correct an existing memory using its current revision. Full automatic memory management confirms eligible owned corrections immediately; other modes keep corrections for review. Shared read access does not permit editing. approve: true (with a reason) publishes the correction at once, ONLY for an operator client on the HTTP /mcp endpoint (no conversation identity) and only while the owner has turned on external memory approvals; a conversation running on this gateway is refused and keeps the automatic memory management rules.',
     {
       id: { type: 'string' },
       revision: { type: 'number' },
       title: { type: 'string' },
       content: { type: 'string' },
       sources:{type:'array',maxItems:20,items:{type:'object',properties:{id:{type:'string'},label:{type:'string'},versionId:{type:'string'}},required:['id','label'],additionalProperties:false}},
+      approve: { type: 'boolean' },
+      reason: { type: 'string', minLength: 1, maxLength: 200 },
     },
     ['id', 'revision', 'content'],
   ],
   [
     'memory_approve',
-    'Confirm an existing proposed memory owned by this conversation or its Project using the current revision. Includes owned global and shared proposals in full automatic memory management. Read the note and its sources first; shared read access does not permit approval.',
-    { id: { type: 'string' }, revision: { type: 'integer', minimum: 1 } },
+    'Confirm an existing proposed memory owned by this conversation or its Project using the current revision. Includes owned global and shared proposals in full automatic memory management. Read the note and its sources first; shared read access does not permit approval. An operator client on the HTTP /mcp endpoint (no conversation identity) may approve or reject any PROPOSED memory at its exact revision, with a reason, while the owner has turned on external memory approvals; reject restores the memory as it was before the proposal, or moves a never-confirmed proposal to recoverable trash. action reject is for that operator only.',
+    { id: { type: 'string' }, revision: { type: 'integer', minimum: 1 }, action: { type: 'string', enum: ['approve', 'reject'] }, reason: { type: 'string', minLength: 1, maxLength: 200 } },
     ['id', 'revision'],
   ],
   [
@@ -784,8 +793,14 @@ export async function callToolResult(api, name, args) {
     else if(name==='memory_read')path='/api/memory/entry?'+new URLSearchParams({id:args.id,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})});
     else if(name==='memory_context')path='/api/memory/context?'+new URLSearchParams({projectId:pid,sessionId:sid||'',query:args.query||'',...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})});
     else if(name==='memory_link'){path='/api/memory/link';body={from:args.from,to:args.to,kind:args.kind,...(SELF.projectId&&SELF.sessionId?{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId}:{})};}
-    else if(name==='memory_approve'||name==='memory_delete'){path='/api/memory/'+(name==='memory_approve'?'approve':'delete');body={...args};}
-    else {path='/api/memory/propose';const {id,revision,...entry}=args;body={id,revision,entry:name==='memory_update'?entry:{...entry,projectId:entry.spaceId?undefined:pid,sessionId:entry.spaceId?undefined:sid,sources:entry.sources||[{label:'Agent proposal',projectId:pid,sessionId:sid}]}};}
+    else if(name==='memory_approve'||name==='memory_delete'){
+      if(name==='memory_approve'&&args.action==='reject'&&SELF.projectId&&SELF.sessionId)throw new Error('A conversation cannot reject a proposal; use memory_delete with a reason');
+      path='/api/memory/'+(name==='memory_approve'?'approve':'delete');body={...args,...delegateMarker()};}
+    else {
+      path='/api/memory/propose';const {id,revision,approve,reason,...entry}=args;
+      // approve is the /mcp operator's; a conversation keeps the autoManage rules.
+      if(approve&&SELF.projectId&&SELF.sessionId)throw new Error('approve is only for an operator client on the HTTP /mcp endpoint; a conversation’s corrections follow the automatic memory management rules');
+      body={id,revision,entry:name==='memory_update'?entry:{...entry,projectId:entry.spaceId?undefined:pid,sessionId:entry.spaceId?undefined:sid,sources:entry.sources||[{label:'Agent proposal',projectId:pid,sessionId:sid}]},...(approve!==undefined?{approve}:{}),...(reason!==undefined?{reason}:{}),...(approve?delegateMarker():{})};}
     if(body&&['memory_propose','memory_update','memory_approve','memory_delete'].includes(name)&&SELF.projectId&&SELF.sessionId)Object.assign(body,{callerProjectId:SELF.projectId,callerSessionId:SELF.sessionId});
     if (name === 'memory_propose') {
       const query = new URLSearchParams({ query: args.title, limit: '20', ...(SELF.projectId && SELF.sessionId ? { callerProjectId: SELF.projectId, callerSessionId: SELF.sessionId } : { projectId: pid || '', sessionId: sid || '' }) });

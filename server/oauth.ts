@@ -147,6 +147,11 @@ export class OAuthStore {
     return true;
   }
 
+  /** The client a valid access token was issued to (undefined when not valid). */
+  accessTokenClient(token: string): string | undefined {
+    return this.validAccessToken(token) ? this.data.tokens[token]?.client_id : undefined;
+  }
+
   /** Connectors the user has approved, for display/revocation in the panel. */
   listClients(): OAuthClient[] { return Object.values(this.data.clients); }
 

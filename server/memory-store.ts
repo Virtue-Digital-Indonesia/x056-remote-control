@@ -97,6 +97,9 @@ export interface MemorySettings {
   autoCapture: boolean;
   autoApproveConversationNotes: boolean;
   autoManage: boolean;
+  /** An MCP caller with no conversation identity (the HTTP /mcp endpoint) may
+   *  approve or reject proposed memories. Off by default. */
+  allowExternalApprovals: boolean;
   crossProject: boolean;
   maxTokens: number;
   maxEntries: number;
@@ -127,6 +130,7 @@ const defaults: MemorySettings = {
   autoCapture: true,
   autoApproveConversationNotes: false,
   autoManage: false,
+  allowExternalApprovals: false,
   crossProject: true,
   maxTokens: 2400,
   maxEntries: 12,
@@ -437,6 +441,41 @@ export class MemoryStore {
     this.write(entry);
     return entry;
   }
+  /**
+   * An operator decision on a PROPOSED memory, as new revisions so history keeps
+   * it and restore-revision can undo it. `edit` (memory_update approve:true)
+   * writes the correction first as its own proposed revision, in the same
+   * transaction. approve -> confirmed. reject -> the memory as it was before
+   * the run of proposed revisions that ends at the current one (every editable
+   * field and the status copied from the last non-proposed revision); a memory
+   * that was proposed since it was created goes to recoverable trash.
+   */
+  reviewProposal(
+    id: string,
+    revision: number,
+    action: 'approve' | 'reject',
+    actor: string,
+    edit?: { patch: Partial<MemoryEntry>; actor: string },
+  ): MemoryEntry {
+    return this.transaction(() => {
+      let current = this.get(id);
+      if (!current) throw new Error('Memory not found');
+      if (!Number.isSafeInteger(revision) || current.revision !== revision)
+        throw new MemoryConflict('Memory changed. Reload the latest revision before saving.');
+      if (edit) {
+        if (!['proposed', 'confirmed'].includes(current.status)) throw new Error('Restore this memory before editing');
+        current = this.updateInside(id, revision, { ...edit.patch, status: 'proposed' }, edit.actor);
+      } else if (current.status !== 'proposed') throw new Error('Only a proposed memory can be approved or rejected');
+      if (action === 'approve') return this.updateInside(id, current.revision, { status: 'confirmed' }, actor);
+      const prior = this.revisions(id).find((r) => r.revision < current!.revision && r.status !== 'proposed');
+      if (!prior) return this.updateInside(id, current.revision, { status: 'deleted' }, actor);
+      const restored: Record<string, unknown> = {};
+      // Ownership is fixed (updateInside refuses a change), so it is not copied.
+      for (const key of ['title', 'content', 'summary', 'kind', 'status', 'scope', 'sessionId', 'sharedProjectIds', 'providers', 'tags', 'pinned', 'expiresAt', 'sources', 'supersededBy'] as const)
+        restored[key] = prior[key];
+      return this.updateInside(id, current.revision, restored as Partial<MemoryEntry>, actor);
+    });
+  }
   bulk(items: { id: string; revision: number }[], status: MemoryStatus) {
     if (
       !Array.isArray(items) ||
@@ -460,7 +499,7 @@ export class MemoryStore {
   }
   setSettings(patch: Partial<MemorySettings>) {
     const s = { ...this.settings(), ...patch };
-    for (const k of ['enabled', 'autoCapture', 'autoApproveConversationNotes', 'autoManage', 'crossProject'] as const)
+    for (const k of ['enabled', 'autoCapture', 'autoApproveConversationNotes', 'autoManage', 'allowExternalApprovals', 'crossProject'] as const)
       if (typeof s[k] !== 'boolean') throw new Error('Invalid setting');
     if (
       !Number.isInteger(s.maxTokens) ||
