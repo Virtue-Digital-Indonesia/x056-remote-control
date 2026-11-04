@@ -114,6 +114,74 @@ export function transcriptIndex(configDirs: string[]): Map<string, string> {
 }
 
 /**
+ * transcriptIndex() plus, from the SAME walk, where each session's own
+ * directory (`<projectDir>/<sid>/`) may be: every project dir holding an entry
+ * named `<sid>` that is not a transcript, in walk order. Entries are taken by
+ * name, not by Dirent type, so a relinked (symlinked) session dir counts.
+ * `sessionSubagentDir()` then answers what subagentDir() would, without a
+ * readdir of every project dir per session.
+ */
+export interface SessionIndex { transcripts: Map<string, string>; dirs: Map<string, string[]> }
+export function sessionIndex(configDirs: string[]): SessionIndex {
+  const transcripts = new Map<string, string>();
+  const dirs = new Map<string, string[]>();
+  for (const projects of uniqueProjectsDirs(configDirs)) {
+    let names: string[];
+    try { names = readdirSync(projects); } catch { continue; }
+    for (const d of names) {
+      const projectDir = join(projects, d);
+      let entries: string[];
+      try { entries = readdirSync(projectDir); } catch { continue; }
+      for (const n of entries) {
+        if (n.endsWith('.jsonl')) {
+          const sid = n.slice(0, -'.jsonl'.length);
+          if (!transcripts.has(sid)) transcripts.set(sid, join(projectDir, n));
+        } else {
+          const list = dirs.get(n);
+          if (list) list.push(projectDir); else dirs.set(n, [projectDir]);
+        }
+      }
+    }
+  }
+  return { transcripts, dirs };
+}
+
+/** subagentDir(), answered from a sessionIndex: the first candidate (in the
+ *  same walk order) whose `subagents/` exists, with its stat. */
+export function sessionSubagentDir(index: SessionIndex, sessionId: string): { dir: string; mtimeMs: number } | null {
+  for (const projectDir of index.dirs.get(sessionId) ?? []) {
+    const dir = join(projectDir, sessionId, 'subagents');
+    const st = statSync(dir, { throwIfNoEntry: false });
+    if (st) return { dir, mtimeMs: st.mtimeMs };
+  }
+  return null;
+}
+
+/**
+ * The subagent transcript paths in a session's `subagents/` dir, by NAME only
+ * (no stat, no meta), memoized by the directory's mtime: adding or removing a
+ * file changes it. For totals that only need the files; listSubagents() is
+ * still the source for anything shown per subagent. Readdir order.
+ */
+const SUBAGENT_NAMES_MAX = 5000;
+const subagentNames = new Map<string, { mtimeMs: number; files: string[] }>();
+export function subagentTranscripts(dir: string, mtimeMs?: number): string[] {
+  if (mtimeMs === undefined) {
+    const st = statSync(dir, { throwIfNoEntry: false });
+    if (!st) { subagentNames.delete(dir); return []; }
+    mtimeMs = st.mtimeMs;
+  }
+  const hit = subagentNames.get(dir);
+  if (hit && hit.mtimeMs === mtimeMs) return hit.files;
+  let names: string[];
+  try { names = readdirSync(dir); } catch { subagentNames.delete(dir); return []; }
+  const files = names.filter((n) => /^agent-[A-Za-z0-9_-]+\.jsonl$/.test(n)).map((n) => join(dir, n));
+  if (subagentNames.size >= SUBAGENT_NAMES_MAX) subagentNames.clear();
+  subagentNames.set(dir, { mtimeMs, files });
+  return files;
+}
+
+/**
  * transcriptIndex(), memoized for a few seconds per config dir list.
  *
  * GET /api/projects builds the index on every call, and several panels poll
@@ -177,9 +245,9 @@ export function subagentBrief(file: string, maxBytes = 96 * 1024): string {
 
 /** Where a session's subagent transcripts live, across every account's tree. */
 export function subagentDir(configDirs: string[], sessionId: string): string | null {
-  for (const configDir of configDirs) {
-    const projects = join(configDir, 'projects');
-    if (!existsSync(projects)) continue;
+  // Every account's projects/ links to ONE shared tree: walking each alias
+  // repeated the same readdir + existsSync sweep once per account (9 here).
+  for (const projects of uniqueProjectsDirs(configDirs)) {
     let names: string[];
     try { names = readdirSync(projects); } catch { continue; }
     for (const name of names) {

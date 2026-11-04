@@ -55,6 +55,12 @@ function extendsScan(a: ArchivedUsage, b: ArchivedUsage): boolean {
 /** One evidence record per logical transcript. Dated observations are ordered
  * by scan/snapshot time. Undated evidence wins only when an extension is proven. */
 export class ArchivedUsageLedger {
+  /** parent_id -> rows (identity order), loaded in ONE query. GET
+   *  /api/usage/all asked once per Claude conversation (134 queries, 3.5 MB
+   *  of JSON parsed per call). Dropped on every write. Callers must not mutate
+   *  what forParent() returns: it is shared. */
+  private byParent: Map<string, ArchivedUsage[]> | null = null;
+
   constructor(private readonly stateDir: string) {
     try { this.importLegacy(); } catch { /* An unavailable archive cannot disable live usage scans. */ }
   }
@@ -72,6 +78,7 @@ export class ArchivedUsageLedger {
     }
     db.prepare('INSERT INTO archived_usage(identity,parent_id,data) VALUES(?,?,?) ON CONFLICT(identity) DO UPDATE SET data=excluded.data,parent_id=excluded.parent_id')
       .run(record.identity, record.parentId, JSON.stringify(record));
+    this.byParent = null;
   }
 
   preserve(path: string, raw: unknown, version: number, source: string, asOf: string | null): void {
@@ -80,10 +87,22 @@ export class ArchivedUsageLedger {
   }
 
   forParent(parentId: string): ArchivedUsage[] {
-    try {
-      return gatewayDb(this.stateDir).prepare('SELECT data FROM archived_usage WHERE parent_id=? ORDER BY identity').all(parentId)
-        .map(row => JSON.parse(String(row.data)) as ArchivedUsage);
-    } catch { return []; }
+    if (!this.byParent) {
+      try {
+        const all = new Map<string, ArchivedUsage[]>(), bad = new Set<string>();
+        for (const row of gatewayDb(this.stateDir).prepare('SELECT parent_id, data FROM archived_usage ORDER BY identity').all()) {
+          const id = String(row.parent_id);
+          if (bad.has(id)) continue;
+          let record: ArchivedUsage;
+          // As before, an unreadable row empties its own parent only.
+          try { record = JSON.parse(String(row.data)) as ArchivedUsage; } catch { bad.add(id); all.set(id, []); continue; }
+          const list = all.get(id);
+          if (list) list.push(record); else all.set(id, [record]);
+        }
+        this.byParent = all;
+      } catch { return []; }
+    }
+    return this.byParent.get(parentId) ?? [];
   }
 
   private importLegacy(): void {
@@ -106,5 +125,6 @@ export class ArchivedUsageLedger {
           .run(source, stat.size, stat.mtimeMs);
       });
     }
+    this.byParent = null;
   }
 }

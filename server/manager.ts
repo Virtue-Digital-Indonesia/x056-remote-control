@@ -3706,10 +3706,24 @@ export class SessionManager {
   }
 
   historyContext(projectId: string, sessionId: string): { adapter: ProviderAdapter; providerSessionId: string; configDirs: string[] } {
-    const provider = this.projects().conversationProvider(projectId, sessionId);
-    const providerSessionId = this.projects().providerSessionId(projectId, sessionId) ?? sessionId;
-    const configDirs = this.registry().list().filter((a) => a.provider === provider).map((a) => a.configDir);
-    return { adapter: getAdapter(provider), providerSessionId, configDirs };
+    return this.historyContexts()(projectId, sessionId);
+  }
+
+  /** historyContext() for many conversations at once: ONE projects.json parse
+   *  and one account lookup per provider, instead of two parses per call
+   *  (GET /api/usage/all made ~430 of them, ~1 s and 83 MB, per request).
+   *  The returned function reads a snapshot taken now. */
+  historyContexts(): (projectId: string, sessionId: string) => { adapter: ProviderAdapter; providerSessionId: string; configDirs: string[] } {
+    const reg = this.projects();
+    const accounts = this.registry().list();
+    const dirs = new Map<string, string[]>();
+    return (projectId, sessionId) => {
+      const provider = reg.conversationProvider(projectId, sessionId);
+      const providerSessionId = reg.providerSessionId(projectId, sessionId) ?? sessionId;
+      let configDirs = dirs.get(provider);
+      if (!configDirs) { configDirs = accounts.filter((a) => a.provider === provider).map((a) => a.configDir); dirs.set(provider, configDirs); }
+      return { adapter: getAdapter(provider), providerSessionId, configDirs: [...configDirs] };
+    };
   }
 
   /** Change the provider NEW conversations in a project start on. Existing

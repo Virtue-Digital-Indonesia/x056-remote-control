@@ -252,9 +252,10 @@ export class TranscriptStatsReader {
    * simply takes several calls to get there, and says so via `partial` until it
    * does.
    */
-  statsFor(path: string, budget = SCAN_BUDGET): TranscriptStats {
+  statsFor(path: string, budget = SCAN_BUDGET, opts: { real?: boolean } = {}): TranscriptStats {
     let size: number;
-    try { path = realpathSync(path); size = fstatSyncSize(path); } catch { return { usage: emptyUsage(), tasks: {}, partial: false, scanned: 0, size: 0 }; }
+    // `real`: the caller already resolved the path (a memoized realpath).
+    try { if (!opts.real) path = realpathSync(path); size = fstatSyncSize(path); } catch { return { usage: emptyUsage(), tasks: {}, partial: false, scanned: 0, size: 0 }; }
 
     let entry = this.cache.get(path);
     // A smaller file than we last saw is a different file (rotated, or the
@@ -294,6 +295,17 @@ export class TranscriptStatsReader {
       if (size < e.size) return null;
       return { ...strip(e), size, partial: e.scanned < size };
     } catch { return null; }
+  }
+
+  /**
+   * cached() for a path the caller already resolved and stat'd: no realpath,
+   * no open/fstat. Same rule: a file smaller than the cached entry is a
+   * different file, so nothing is known about it.
+   */
+  cachedReal(realPath: string, size: number): TranscriptStats | null {
+    const e = this.cache.get(realPath);
+    if (!e || size < e.size) return null;
+    return { ...strip(e), size, partial: e.scanned < size };
   }
 
   /** Read [entry.offset, size) in chunks, folding each complete line in. */

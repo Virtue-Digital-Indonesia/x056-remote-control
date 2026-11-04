@@ -13,7 +13,7 @@ import { accountHealth } from './routing-health.js';
 import { DeliveryStore, type DeliveryReceipt } from './workspace-store.js';
 import { ConversationActivity } from './conversation-activity.js';
 import { rolloutHeads } from '../src/adapters/codex.js';
-import { projectCosts, groupSpaceCosts } from './project-costs.js';
+import { usageAllReport } from './project-costs.js';
 import { AccountAnalytics } from '../src/account-analytics.js';
 import {
   BadRequestException,
@@ -1208,17 +1208,20 @@ export class ApiController {
   @Get('usage/all')
   usageAll(@Query('budgetMs') budgetMs?: string) {
     const budget = Math.min(Math.max(Number(budgetMs) || 400, 0), 5000);
-    // Several seconds of CPU per call, polled by every tab. Shared for 20 s
-    // once complete; while still partial only 2 s, because the panel re-polls
-    // every 3 s to watch it converge and each call scans further.
-    return hotCache.shared(`usage-all\0${this.stateDir}\0${budget}`, (v) => (v.pendingBytes ? 2000 : 20000), () => this.usageAllUncached(budget));
+    // Shared for 90 s once complete: the panel polls every 60 s per tab, so a
+    // 20 s TTL never hit. While still partial only 2 s, because the panel
+    // re-polls every 3 s to watch it converge and each call scans further.
+    return hotCache.shared(`usage-all\0${this.stateDir}\0${budget}`, (v) => (v.pendingBytes ? 2000 : 90_000), () => this.usageAllUncached(budget));
   }
 
   private usageAllUncached(budget: number) {
     const running = new Set(this.manager.runningSessions().map(r => `${r.projectId}/${r.sessionId}`));
-    const reg = this.manager.listProjects() as { projects: {id:string;name:string;conversations?:{sessionId:string;title?:string}[]}[] };
-    const result = projectCosts(reg.projects ?? [], (pid,sid) => this.manager.historyContext(pid,sid), running, this.stats, budget);
-    return { ...result, ...(this.manager.projectSpacesEnabled() ? { projectSpaces: groupSpaceCosts(result, this.manager.listProjects().projects,this.manager.spaces()) } : {}) };
+    // Background work grows transcripts with no turn behind it: never served
+    // from the per-conversation cache (kept apart from `running`, which the
+    // result reports).
+    const active = new Set([...running, ...this.manager.backgroundSessions().map(r => `${r.projectId}/${r.sessionId}`)]);
+    const reg = this.manager.listProjects();
+    return usageAllReport({ projects: reg.projects ?? [], context: this.manager.historyContexts(), running, active, stats: this.stats, budget, spaces: this.manager.projectSpacesEnabled() ? this.manager.spaces() : undefined });
   }
 
   /** One subagent's own history — the same rows the main chat renders. */
