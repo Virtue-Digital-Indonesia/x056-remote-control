@@ -62,7 +62,8 @@ const jobFields = {
   id: str, schedule: str, tz: str, projectId: str, sessionId: str, prompt: str,
   label: str, once: bool, enabled: bool, createdAt: num, createdBy: str,
   lastRunAt: num, lastResult: str, runCount: num,
-  choice: object({ provider: choices('claude', 'codex'), model: str, effort: str, team: bool }),
+  // title: required of new jobs since 2026-11-04; older jobs have none.
+  choice: object({ provider: choices('claude', 'codex'), model: str, effort: str, team: bool, title: str }, ['provider', 'model', 'effort', 'team']),
 };
 const jobRequired = ['id', 'schedule', 'tz', 'projectId', 'prompt', 'enabled', 'createdAt', 'runCount'];
 const targetFields = { provider: nullableProvider, projectName: str, conversationTitle: str, source: literal('gateway') };

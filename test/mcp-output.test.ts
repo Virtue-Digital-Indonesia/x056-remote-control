@@ -205,12 +205,12 @@ describe('all advertised output contracts', () => {
     // A new conversation each run must name its choices (owner, 2026-10-28).
     const refused = await tool('schedule_task', { projectId: 'p', schedule: '0 9 * * *', tz: 'UTC', prompt: 'fixture' });
     expect(refused.isError).toBe(true);
-    expect(refused.content[0].text).toContain('New conversation needs explicit choices: missing provider, model, effort, team.');
-    const recurring = await tool('schedule_task', { projectId: 'p', schedule: '0 9 * * *', tz: 'UTC', prompt: 'fixture', provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', team: false });
-    expect(recurring.data.job.choice).toEqual({ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', team: false });
+    expect(refused.content[0].text).toContain('New conversation needs explicit choices: missing provider, model, effort, team, title.');
+    const recurring = await tool('schedule_task', { projectId: 'p', schedule: '0 9 * * *', tz: 'UTC', prompt: 'fixture', provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', team: false, title: 'Fixture job' });
+    expect(recurring.data.job.choice).toEqual({ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', team: false, title: 'Fixture job' });
     const deliver = vi.spyOn(manager, 'deliverMcpMessage').mockReturnValue({ sessionId: 's', queued: true, hopsUntilCheck: 3, hopsLeft: 3, messageId: 'fixture-message' });
     cron.tick(new Date('2030-01-01T09:00:00Z'));
-    expect(deliver.mock.calls[0][3]).toMatchObject({ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', helpers: { team: false } });
+    expect(deliver.mock.calls[0][3]).toMatchObject({ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', helpers: { team: false }, title: 'Fixture job' });
     expect((await tool('list_scheduled')).data.jobs[0]).toMatchObject({ runCount: 1, lastResult: 'queued', sessionId: 's' });
     await tool('cancel_scheduled', { id: recurring.data.job.id });
     expect((await tool('pause_scheduled', { id: 'missing', paused: true })).isError).toBe(true);
@@ -444,7 +444,7 @@ describe('all advertised output contracts', () => {
   it('a refusal only the gateway can make (Codex catalog) reaches the AI over the real transport, with the choices', async () => {
     // The bridge passes it (it leaves Codex membership to the gateway); this
     // fixture has no Codex catalog cached, so the gateway's shape check refuses.
-    const r = (await api('/mcp', { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'send_message', arguments: { projectId: 'p', message: 'fixture', provider: 'codex', model: 'mystery-model', effort: 'high', helpers: { team: false } } } }) })).result;
+    const r = (await api('/mcp', { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'send_message', arguments: { projectId: 'p', message: 'fixture', provider: 'codex', model: 'mystery-model', effort: 'high', helpers: { team: false }, title: 'Fixture' } } }) })).result;
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain('invalid model "mystery-model" for codex');
     expect(r.content[0].text).toContain('no catalog cached yet');
@@ -486,7 +486,7 @@ describe('send polling variants with disposable responses and controlled time', 
         ...(status === 'failed' ? { error: 'fixture send failure' } : {}), resultSessionId: 's', queued: status === 'queued' };
       return { found: status === 'reply', messages: status === 'reply' ? [{ role: 'assistant', text: 'fixture reply' }] : [], truncated: false };
     });
-    const pending = callToolResult(api, 'send_message', { projectId: 'p', message: 'fixture', provider: 'claude', model: 'sonnet', effort: 'medium', helpers: { team: false }, waitSeconds: ['reply', 'reply_timeout'].includes(status) ? 3 : 0 });
+    const pending = callToolResult(api, 'send_message', { projectId: 'p', message: 'fixture', provider: 'claude', model: 'sonnet', effort: 'medium', helpers: { team: false }, title: 'Fixture', waitSeconds: ['reply', 'reply_timeout'].includes(status) ? 3 : 0 });
     await vi.runAllTimersAsync();
     const r = await pending;
     expect(validateResult('send_message', r).delivery.status).toBe(status);
@@ -529,7 +529,7 @@ describe('send polling variants with disposable responses and controlled time', 
       if (++reads === 1) throw new Error('transient fixture read failure');
       return { found: status === 'reply', messages: status === 'reply' ? [{ role: 'assistant', text: 'fixture reply' }] : [], truncated: false };
     });
-    const p = callToolResult(api, 'send_message', { projectId: 'p', message: 'fixture', provider: 'claude', model: 'sonnet', effort: 'medium', helpers: { team: false }, waitSeconds: ['reply', 'reply_timeout'].includes(status) ? 6 : 0 });
+    const p = callToolResult(api, 'send_message', { projectId: 'p', message: 'fixture', provider: 'claude', model: 'sonnet', effort: 'medium', helpers: { team: false }, title: 'Fixture', waitSeconds: ['reply', 'reply_timeout'].includes(status) ? 6 : 0 });
     await vi.runAllTimersAsync();
     const r = await p;
     expect(validateResult('send_message', r).delivery).toMatchObject({ status, hopsLeft: 1, messageId: 'fixture-message' });

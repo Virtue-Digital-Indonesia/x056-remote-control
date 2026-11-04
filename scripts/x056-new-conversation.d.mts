@@ -4,14 +4,15 @@ export declare const PROVIDERS: string[];
 export declare const CLAUDE_MODELS: string[];
 export declare const CLAUDE_EFFORTS: string[];
 export declare const CODEX_FALLBACK_EFFORTS: string[];
+export declare const TITLE_MAX: number;
 
-export interface NewConversationChoiceInput { provider?: unknown; model?: unknown; effort?: unknown; team?: unknown }
-export interface NewConversationChoice { provider: 'claude' | 'codex'; model: string; effort: string; team: boolean }
+export interface NewConversationChoiceInput { provider?: unknown; model?: unknown; effort?: unknown; team?: unknown; title?: unknown }
+export interface NewConversationChoice { provider: 'claude' | 'codex'; model: string; effort: string; team: boolean; title: string }
 export interface CodexCatalogEntry { slug: string; efforts?: string[] }
 
 export declare function checkNewConversationChoice(
   input: NewConversationChoiceInput | undefined,
-  opts?: { codexModels?: CodexCatalogEntry[]; mapCodex?: (model: string, effort: string) => { model: string; effort: string }; teamField?: string; codexList?: CodexCatalogEntry[] },
+  opts?: { codexModels?: CodexCatalogEntry[]; mapCodex?: (model: string, effort: string) => { model: string; effort: string }; teamField?: string; titleField?: string; codexList?: CodexCatalogEntry[] },
 ): { ok: true; choice: NewConversationChoice } | { ok: false; problems: string[]; message: string };
 
-export declare function newConversationMessage(what: string, provider: string | undefined, codexModels: CodexCatalogEntry[] | undefined, teamField?: string): string;
+export declare function newConversationMessage(what: string, provider: string | undefined, codexModels: CodexCatalogEntry[] | undefined, teamField?: string, titleField?: string): string;

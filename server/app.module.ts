@@ -204,7 +204,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
     // (provider, model, effort, team); a legacy job has none and keeps the
     // project defaults.
     deliver: (projectId, sessionId, prompt, choice) => manager.deliverMcpMessage(projectId, sessionId, prompt, { sender: { kind: 'automation' },
-      ...(choice ? { provider: choice.provider, model: choice.model, effort: choice.effort, helpers: { team: choice.team } } : {}) }),
+      ...(choice ? { provider: choice.provider, model: choice.model, effort: choice.effort, helpers: { team: choice.team }, ...(choice.title ? { title: choice.title } : {}) } : {}) }),
     onFailure: (job, reason) => manager.reportCronFailure(job, reason),
   });
   manager.setProjectAutomationPauser((targets, reason, operationId) => {

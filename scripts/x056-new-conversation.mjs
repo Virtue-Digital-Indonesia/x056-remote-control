@@ -2,7 +2,7 @@
 // gateway (server/new-conversation-guard.ts imports it). The owner's rule
 // (2026-10-28): when MCP creates a new conversation the caller must choose the
 // provider, model, effort and whether the agent team is on, explicitly, so it
-// actually thinks about it. The gateway is the enforcement; the bridge runs the
+// actually thinks about it. Since 2026-11-04 (Efran) also its title. The gateway is the enforcement; the bridge runs the
 // same check first so the AI gets the same message without a round trip.
 
 export const PROVIDERS = ['claude', 'codex'];
@@ -16,6 +16,9 @@ export const CODEX_FALLBACK_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 
 const CLAUDE_ALIAS = new RegExp(`^(${CLAUDE_MODELS.join('|')})(\\[1m\\])?$`, 'i');
 const CLAUDE_FULL_ID = /^claude-[a-z0-9][a-z0-9.-]*(\[1m\])?$/i;
 const CODEX_SHAPE = /^(gpt-|codex-)/i;
+/** The longest title a new conversation may be given here. */
+export const TITLE_MAX = 120;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
 const absent = (v) => v === undefined || v === null || v === '';
 const isAuto = (v) => typeof v === 'string' && v.trim().toLowerCase() === 'auto';
@@ -30,6 +33,7 @@ const isAuto = (v) => typeof v === 'string' && v.trim().toLowerCase() === 'auto'
  * `opts.mapCodex(model, effort)`: maps a legacy Codex id forward before the
  * catalog lookup (the gateway passes `currentCodexPrefs`).
  * `opts.teamField`: how the caller names the team flag, for the message.
+ * `opts.titleField`: how the caller names the title (create_chat: `name`).
  * `opts.codexList`: a catalog used only to LIST Codex choices in the message
  * (the bridge has the panel's list but not the legacy-id mapping, so it does
  * not judge membership with it).
@@ -37,8 +41,9 @@ const isAuto = (v) => typeof v === 'string' && v.trim().toLowerCase() === 'auto'
  * Returns `{ ok: true, choice }` or `{ ok: false, problems, message }`.
  */
 export function checkNewConversationChoice(input, opts = {}) {
-  const { provider, model, effort, team } = input ?? {};
+  const { provider, model, effort, team, title } = input ?? {};
   const teamField = opts.teamField ?? 'team';
+  const titleField = opts.titleField ?? 'title';
   const missing = [];
   const invalid = [];
   if (absent(provider)) missing.push('provider');
@@ -51,6 +56,11 @@ export function checkNewConversationChoice(input, opts = {}) {
   else if (isAuto(effort)) invalid.push('effort "auto" (pick a concrete level)');
   if (team === undefined || team === null) missing.push(teamField);
   else if (typeof team !== 'boolean') invalid.push(`${teamField} (must be true or false)`);
+  if (absent(title)) missing.push(titleField);
+  else if (typeof title !== 'string') invalid.push(`${titleField} (must be a string)`);
+  else if (!title.trim()) invalid.push(`${titleField} (empty after trimming)`);
+  else if (CONTROL_CHARS.test(title)) invalid.push(`${titleField} (one line, no control characters)`);
+  else if (title.trim().length > TITLE_MAX) invalid.push(`${titleField} (at most ${TITLE_MAX} characters)`);
 
   const providerOk = PROVIDERS.includes(provider);
   const modelOk = typeof model === 'string' && !absent(model) && !isAuto(model);
@@ -74,17 +84,17 @@ export function checkNewConversationChoice(input, opts = {}) {
     }
   }
 
-  if (!missing.length && !invalid.length) return { ok: true, choice: { provider, model, effort, team } };
+  if (!missing.length && !invalid.length) return { ok: true, choice: { provider, model, effort, team, title: title.trim() } };
   const parts = [];
   if (missing.length) parts.push(`missing ${missing.join(', ')}`);
   if (invalid.length) parts.push(`invalid ${invalid.join('; ')}`);
-  return { ok: false, problems: [...missing.map((m) => `missing ${m}`), ...invalid.map((i) => `invalid ${i}`)], message: newConversationMessage(parts.join('; '), providerOk ? provider : undefined, catalog ?? opts.codexList, teamField) };
+  return { ok: false, problems: [...missing.map((m) => `missing ${m}`), ...invalid.map((i) => `invalid ${i}`)], message: newConversationMessage(parts.join('; '), providerOk ? provider : undefined, catalog ?? opts.codexList, teamField, titleField) };
 }
 
 /** The text an AI reads: what is wrong, then every valid choice for the
  *  provider it picked (both providers when it picked none), so it can correct
  *  itself in one retry. */
-export function newConversationMessage(what, provider, codexModels, teamField = 'team') {
+export function newConversationMessage(what, provider, codexModels, teamField = 'team', titleField = 'title') {
   const lines = [`New conversation needs explicit choices: ${what}.`, 'provider: claude|codex.'];
   if (provider !== 'codex') {
     lines.push(`Claude models: ${CLAUDE_MODELS.join(', ')} (or a full claude-* id).`);
@@ -96,5 +106,6 @@ export function newConversationMessage(what, provider, codexModels, teamField = 
     else lines.push('Codex models and efforts: the live catalog (GET /api/models); the gateway checks them.');
   }
   lines.push(`${teamField}: true|false (agent team).`);
+  lines.push(`${titleField}: the conversation's title, 1-${TITLE_MAX} characters on one line (kept; never auto-retitled).`);
   return lines.join(' ');
 }

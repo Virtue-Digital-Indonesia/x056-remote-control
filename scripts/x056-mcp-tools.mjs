@@ -56,7 +56,7 @@ export const TOOLS = [
     name: 'send_message',
     description:
       'Send a message to a conversation (it resumes with full context and runs a turn), or omit sessionId to start a NEW conversation in the project. ' +
-      'A NEW conversation (no sessionId) REQUIRES all four of: provider (claude or codex), model (a concrete model for that provider, not empty or "auto"), effort (a concrete level that model supports, not empty or "auto") and helpers.team (true or false: whether the agent team is on). The call is refused without them, with the valid choices listed, so choose deliberately. A send to an existing conversation needs none of them. ' +
+      'A NEW conversation (no sessionId) REQUIRES all five of: title (its name, 1-120 characters on one line; kept as given, never auto-retitled), provider (claude or codex), model (a concrete model for that provider, not empty or "auto"), effort (a concrete level that model supports, not empty or "auto") and helpers.team (true or false: whether the agent team is on). The call is refused without them, with the valid choices listed, so choose deliberately. A send to an existing conversation needs none of them, and a title sent with one is ignored (never a rename). ' +
       'The operator chooses the delivery mode in the panel: in APPROVAL mode (the default) this call pauses until they approve or deny it — it is not sent until approved, and may be denied; in AUTOMATIC mode it is delivered immediately. You cannot choose the mode. '
       + 'If that conversation is mid-turn the message is QUEUED and delivered when its current turn ends, ahead of any autopilot continuation. ' +
       'Set waitSeconds > 0 to additionally wait for and return the reply once sent; otherwise returns as soon as it is sent. Use read_reply with the returned messageId for the exact reply later, including queued messages. Reply text may still be streaming; it does not prove task completion. The receiving AI may take minutes on hard tasks — prefer a short wait plus polling over a long block. '
@@ -67,6 +67,7 @@ export const TOOLS = [
         projectId: { type: 'string' },
         sessionId: { type: 'string', description: 'omit to start a new conversation' },
         message: { type: 'string' },
+        title: { type: 'string', description: 'REQUIRED for a new conversation (no sessionId): its title, 1-120 characters on one line, kept as a manual title (automatic titling never replaces it). Ignored for an existing conversation (never a rename).' },
         provider: { type: 'string', enum: ['claude', 'codex'], description: 'REQUIRED for a new conversation (no sessionId): the provider it runs on for life. Ignored for an existing conversation.' },
         model: { type: 'string', description: 'Model id for the conversation\'s provider. REQUIRED for a new conversation: a concrete model (Claude: fable, opus, sonnet, haiku; Codex: an id from the live catalog), never empty or "auto". For an existing conversation, omit to reuse its last selected model; empty string selects the provider default there. The choice is retained through approval and queueing.' },
         effort: { type: 'string', description: 'Reasoning effort. REQUIRED for a new conversation: a concrete level (Claude: low, medium, high, xhigh, max, ultracode; Codex: what the model supports), never empty or "auto". For an existing conversation, omit to reuse its last selection; empty string selects the provider default there.' },
@@ -128,7 +129,7 @@ const CRON_TOOLS = [
       + 'Omit sessionId to target your own conversation. Schedule is 5-field cron (minute hour day-of-month month day-of-week). '
       + 'Times are interpreted in the operator\'s timezone unless you pass tz, NOT in UTC — "0 9 * * *" means 9am where they are. '
       + 'For anything meant to happen only once, PASS once: true — a bare "0 3 * * *" is a job that fires every night forever, and the surprise lands a day after everyone stopped thinking about it. '
-      + 'A job with projectId and NO sessionId starts a NEW conversation on its first run (later runs go to that conversation), so it REQUIRES provider, model, effort and team, all explicit (no empty or "auto"); it is refused without them, with the valid choices listed. A job into an existing conversation, or your own, needs none of them.',
+      + 'A job with projectId and NO sessionId starts a NEW conversation on its first run (later runs go to that conversation), so it REQUIRES title, provider, model, effort and team, all explicit (no empty or "auto"); it is refused without them, with the valid choices listed. A job into an existing conversation, or your own, needs none of them (a title is ignored there).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -139,6 +140,7 @@ const CRON_TOOLS = [
         tz: { type: 'string', description: 'IANA timezone, e.g. Asia/Jakarta. Defaults to the operator\'s.' },
         label: { type: 'string', description: 'short note on what this job is for' },
         once: { type: 'boolean', description: 'run at the next matching time, then delete the job' },
+        title: { type: 'string', description: 'REQUIRED when the job starts a new conversation (projectId, no sessionId): its title, 1-120 characters on one line, kept as a manual title. Ignored for an existing conversation.' },
         provider: { type: 'string', enum: ['claude', 'codex'], description: 'REQUIRED when the job starts a new conversation (projectId, no sessionId)' },
         model: { type: 'string', description: 'REQUIRED for a new-conversation job: a concrete model for that provider (not "auto")' },
         effort: { type: 'string', description: 'REQUIRED for a new-conversation job: a concrete effort level (not "auto")' },
@@ -741,8 +743,8 @@ export const RELAY_CHECKPOINT_PREFIX = 'Not sent yet (relay checkpoint):';
  * legacy id maps forward there. A Chat's send continues its one conversation,
  * so it is not a new one.
  */
-export async function guardNewConversation(api, input, { projectId, teamField = 'team' } = {}) {
-  if (checkNewConversationChoice(input, { teamField }).ok) return;
+export async function guardNewConversation(api, input, { projectId, teamField = 'team', titleField = 'title' } = {}) {
+  if (checkNewConversationChoice(input, { teamField, titleField }).ok) return;
   if (projectId) {
     const reg = await api('/api/projects').catch(() => null);
     const list = Array.isArray(reg?.projects) ? reg.projects : Array.isArray(reg) ? reg : [];
@@ -750,7 +752,7 @@ export async function guardNewConversation(api, input, { projectId, teamField = 
   }
   const models = await api('/api/models').catch(() => null);
   const codexList = Array.isArray(models?.codex) ? models.codex.filter((m) => m && typeof m.slug === 'string').map((m) => ({ slug: m.slug, efforts: m.efforts })) : undefined;
-  throw new Error(checkNewConversationChoice(input, { teamField, codexList }).message);
+  throw new Error(checkNewConversationChoice(input, { teamField, titleField, codexList }).message);
 }
 const relayFields = (r) => ({ ...(typeof r.hopsUntilCheck === 'number' ? { hopsUntilCheck: r.hopsUntilCheck } : {}),
   ...(typeof (r.hopsUntilCheck ?? r.hopsLeft) === 'number' ? { hopsLeft: r.hopsUntilCheck ?? r.hopsLeft } : {}), ...(r.confirmedCheckpoint ? { confirmedCheckpoint: true } : {}) });
@@ -780,7 +782,7 @@ export async function callToolResult(api, name, args) {
   if (!validate) throw new Error(`unknown tool: ${name}`);
   // Before the schema check, so a missing choice gets the guard's message
   // (with the valid choices) rather than Ajv's "must have required property".
-  if (name === 'create_chat') await guardNewConversation(api, { provider: args?.provider, model: args?.model, effort: args?.effort, team: args?.team });
+  if (name === 'create_chat') await guardNewConversation(api, { provider: args?.provider, model: args?.model, effort: args?.effort, team: args?.team, title: args?.name }, { titleField: 'name' });
   if (!validate(args)) throw new Error('Invalid tool arguments: ' + inputValidator.errorsText(validate.errors));
   if (WORKSPACE_TOOLS.some(tool => tool.name === name)) return callWorkspaceTool(api, name, args);
   if (CHAT_TOOLS.some(tool => tool.name === name)) return callChatTool(api, name, args, SELF, callToolResult);
@@ -833,7 +835,7 @@ export async function callToolResult(api, name, args) {
       const projectId = args.projectId ?? SELF.projectId;
       if (!projectId) throw new Error('projectId is required (this client has no project of its own)');
       const sessionId = args.sessionId ?? (args.projectId ? undefined : SELF.sessionId || undefined);
-      const choice = { provider: args.provider, model: args.model, effort: args.effort, team: args.team };
+      const choice = { provider: args.provider, model: args.model, effort: args.effort, team: args.team, title: args.title };
       if (!sessionId) await guardNewConversation(api, choice, { projectId });
       const job = await api('/api/cron', {
         method: 'POST',
@@ -1020,7 +1022,7 @@ export async function callToolResult(api, name, args) {
     return result(head + fmtHistory(rows), { messages: messages(rows), ...(state ? { helpers: state.helpers, ...(state.speed ? { speed: state.speed } : {}), ...(state.effectiveRouter !== undefined ? { effectiveRouter: state.effectiveRouter } : {}), delegates: team } : {}) });
   }
   if (name === 'send_message') {
-    if (!args.sessionId) await guardNewConversation(api, { provider: args.provider, model: args.model, effort: args.effort, team: args.helpers?.team }, { projectId: args.projectId, teamField: 'helpers.team' });
+    if (!args.sessionId) await guardNewConversation(api, { provider: args.provider, model: args.model, effort: args.effort, team: args.helpers?.team, title: args.title }, { projectId: args.projectId, teamField: 'helpers.team' });
     let requested;
     try { requested = await api('/api/conversations/send', {
       method: 'POST',
@@ -1028,7 +1030,7 @@ export async function callToolResult(api, name, args) {
       // model chose: it is what lets the gateway count this exchange's hops.
       // A delegate has no identity of its own; its sends count against its
       // orchestrator's chain (X056_RELAY_FROM) rather than starting a new one.
-      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, ...(args.provider !== undefined && !args.sessionId ? { provider: args.provider } : {}), model: args.model, effort: args.effort, ...(args.speed !== undefined ? { speed: args.speed } : {}), from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}), ...(args.steer ? { steer: true } : {}), ...(args.confirm_relay ? { confirmRelay: true } : {}) }),
+      body: JSON.stringify({ projectId: args.projectId, sessionId: args.sessionId, prompt: args.message, ...(args.provider !== undefined && !args.sessionId ? { provider: args.provider } : {}), ...(args.title !== undefined && !args.sessionId ? { title: args.title } : {}), model: args.model, effort: args.effort, ...(args.speed !== undefined ? { speed: args.speed } : {}), from: SELF.sessionId || process.env.X056_RELAY_FROM || undefined, ...(args.helpers ? { helpers: args.helpers } : {}), ...(args.steer ? { steer: true } : {}), ...(args.confirm_relay ? { confirmRelay: true } : {}) }),
     }); } catch (err) {
       // A relay checkpoint is a question for the model, not a failure: plain
       // text it answers by stopping or by calling again with confirm_relay.

@@ -7,7 +7,8 @@ export type { NewConversationChoice } from '../scripts/x056-new-conversation.mjs
 
 /**
  * The owner's rule (2026-10-28): a conversation created through MCP must name
- * its provider, model, effort and whether the agent team is on, explicitly.
+ * its provider, model, effort and whether the agent team is on, explicitly,
+ * and (Efran, 2026-11-04) its title, which is kept as a manual title.
  * Enforced at the routes MCP uses to create one (`/api/conversations/send`
  * without a sessionId, `/api/chats` with the MCP marker, `/api/cron` for a
  * new-conversation job), never in the shared delivery path, so approvals
@@ -30,8 +31,8 @@ export function codexCatalog(configDirs: string[], now = Date.now()): CodexCatal
 }
 
 /** Throws a 400 listing what is missing or invalid and every valid choice. */
-export function requireNewConversationChoice(input: NewConversationChoiceInput, codexModels: CodexCatalogEntry[], teamField = 'team'): NewConversationChoice {
-  const out = checkNewConversationChoice(input, { codexModels, mapCodex: currentCodexPrefs, teamField });
+export function requireNewConversationChoice(input: NewConversationChoiceInput, codexModels: CodexCatalogEntry[], teamField = 'team', titleField = 'title'): NewConversationChoice {
+  const out = checkNewConversationChoice(input, { codexModels, mapCodex: currentCodexPrefs, teamField, titleField });
   if (!out.ok) throw new BadRequestException(out.message);
   return out.choice;
 }

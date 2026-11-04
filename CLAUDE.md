@@ -1719,6 +1719,11 @@ returns the same message:
   catalog (the `/api/models` list, re-read at most every 5 s; legacy ids map
   forward first), at that model's efforts. A 400 names what is missing or
   wrong and lists every valid choice for the chosen provider.
+- **Title (2026-11-04, Efran).** The title is required too: `title` on
+  `send_message` and `schedule_task`, `name` on `create_chat`, 1-120
+  characters on one line. It is kept as a manual title, so automatic titling
+  never replaces it, and it is ignored for an existing conversation (never a
+  rename). Cron jobs stored before this have no title and keep working.
 - **Provider is plumbed through.** `TurnRunOptions.provider` /
   `McpApproval.provider` reach `start()` -> `prepareProjectWork` /
   `addConversation`, and `conversationRunPrefs` uses it before its fit filter.

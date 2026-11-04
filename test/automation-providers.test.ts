@@ -54,7 +54,7 @@ describe('Automations across providers', () => {
       expect(result).toContain('ONCE'); expect(result).toContain(sessionId);
     }
     // A new conversation each run names its own choice; the list shows it.
-    await api('/api/cron', { method: 'POST', body: JSON.stringify({ projectId: 'p2', schedule: '0 12 1 1 *', prompt: 'New chat each run', provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', team: false }) });
+    await api('/api/cron', { method: 'POST', body: JSON.stringify({ projectId: 'p2', schedule: '0 12 1 1 *', prompt: 'New chat each run', provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', team: false, title: 'New chat each run' }) });
     const { jobs } = await api('/api/cron');
     expect(jobs.find((j: any) => j.sessionId === 'cx')).toMatchObject({ provider: 'codex', projectName: 'Mixed project', conversationTitle: 'Codex follow-up', source: 'gateway', once: true });
     expect(jobs.find((j: any) => j.sessionId === 'cl').provider).toBe('claude');

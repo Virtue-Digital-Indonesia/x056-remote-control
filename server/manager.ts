@@ -169,6 +169,10 @@ export interface TurnRunOptions {
   /** Provider of a NEW conversation (no sessionId); ignored for an existing
    *  one, which is bound to its provider for life. Absent = the project default. */
   provider?: ProviderId;
+  /** Title of a NEW conversation (MCP must name one, 2026-11-04), saved as a
+   *  manual title so automatic titling never replaces it. Ignored for an
+   *  existing conversation and for a Chat (which continues its one conversation). */
+  title?: string;
   account?: string;
   useReserve?: boolean;
   /** Internal: sent by the usage-limit scheduler (a resend of a parked
@@ -232,6 +236,9 @@ export interface McpApproval {
   speed?: string;
   /** Provider chosen for a NEW conversation (absent for an existing target). */
   provider?: ProviderId;
+  /** Title chosen for a NEW conversation (absent for an existing target, and
+   *  on approvals from before 2026-11-04, which keep a prompt-derived title). */
+  title?: string;
   /** Helper changes the sender asked for, applied only if this is approved. */
   helpers?: HelperPatch;
   /** Whether the ASK-protocol convention should be appended at dispatch time
@@ -2411,10 +2418,10 @@ export class SessionManager {
   /** The new-conversation guard (server/new-conversation-guard.ts) against this
    *  gateway's live Codex catalog. Throws a 400 naming what is missing or wrong
    *  and every valid choice. */
-  requireNewConversationChoice(input: { provider?: unknown; model?: unknown; effort?: unknown; team?: unknown }, teamField = 'team'): NewConversationChoice {
+  requireNewConversationChoice(input: { provider?: unknown; model?: unknown; effort?: unknown; team?: unknown; title?: unknown }, teamField = 'team', titleField = 'title'): NewConversationChoice {
     let dirs: string[] = [];
     try { dirs = this.registry().list().filter((a) => a.provider === 'codex').map((a) => a.configDir); } catch { /* no accounts file: empty catalog */ }
-    return requireNewConversationChoice(input, codexCatalog(dirs), teamField);
+    return requireNewConversationChoice(input, codexCatalog(dirs), teamField, titleField);
   }
 
   setConversationRunPrefs(projectId: string, sessionId: string, prefs: Pick<TurnRunOptions, 'model' | 'effort' | 'speed'>): void {
@@ -3935,6 +3942,10 @@ export class SessionManager {
   }
 
   start(prompt: string, cwd?: string, opts?: TurnRunOptions, projectId?: string): string {
+    // The title names the conversation created here and nothing else: it is
+    // not passed on into the turn.
+    const title = opts?.title?.trim() || undefined;
+    if (opts && 'title' in opts) { const { title: _title, ...rest } = opts; opts = rest; }
     const pid = projectId ?? this.projects().currentId();
     if (!pid) throw new Error('no project selected');
     // A brand-new conversation always gets a fresh sessionId, so it can start
@@ -3947,14 +3958,16 @@ export class SessionManager {
     const dir = this.resolveCwd(cwd ?? proj.cwd, pid);
     if (this.projectSpacesEnabled()) {
       if (dir !== proj.cwd) throw new Error('Work uses its configured Project workspace');
-      const input = Object.fromEntries(Object.entries({ requestId: randomUUID(), name: titleFromPrompt(prompt), provider: opts?.provider, model: opts?.model, effort: opts?.effort, account: opts?.account }).filter(([, value]) => value !== undefined)) as Parameters<SessionManager['prepareProjectWork']>[1];
+      const input = Object.fromEntries(Object.entries({ requestId: randomUUID(), name: title ?? titleFromPrompt(prompt), provider: opts?.provider, model: opts?.model, effort: opts?.effort, account: opts?.account }).filter(([, value]) => value !== undefined)) as Parameters<SessionManager['prepareProjectWork']>[1];
       const target = this.prepareProjectWork(pid, input);
       return this.continueSession(pid, target.sessionId, prompt, opts);
     }
     const sessionId = randomUUID();
     // Register the new session as its own conversation (prompt-derived title),
     // grouped under the project, and make it current.
-    this.projects().addConversation(pid, sessionId, titleFromPrompt(prompt), opts?.provider, 'temporary');
+    // An explicit title (MCP, 2026-11-04) is manual: automatic titling only
+    // ever replaces a 'temporary' one.
+    this.projects().addConversation(pid, sessionId, title ?? titleFromPrompt(prompt), opts?.provider, title ? 'manual' : 'temporary');
     this.emitConversations(pid);
     this.launch(pid, sessionId, prompt, dir, false, opts);
     return sessionId;
@@ -4035,6 +4048,7 @@ export class SessionManager {
       effort: prefs.effort,
       ...(prefs.speed ? { speed: prefs.speed } : {}),
       ...(!sessionId && opts?.provider ? { provider: opts.provider } : {}),
+      ...(!sessionId && opts?.title ? { title: opts.title } : {}),
       ...(opts?.helpers ? { helpers: opts.helpers } : {}),
       interactive: opts?.interactive !== false,
       ...(opts?.steer && sessionId ? { steer: true } : {}),
@@ -4110,6 +4124,7 @@ export class SessionManager {
       const out = this.deliverMcpMessage(a.projectId, a.sessionId, a.message, {
         model: a.model, effort: a.effort, speed: a.speed, interactive: a.interactive, sender: a.sender, helpers: a.helpers,
         ...(!a.sessionId && a.provider ? { provider: a.provider } : {}),
+        ...(!a.sessionId && a.title ? { title: a.title } : {}),
         ...(a.closeQuestion ? { closeQuestion: a.closeQuestion } : {}),
       });
       a.resultSessionId = out.sessionId;
@@ -4194,7 +4209,7 @@ export class SessionManager {
       return { sessionId: sid, queued, ...this.relayReceipt(hop), messageId: run.sender.messageId, ...(card ?? {}) };
     };
     if (opts.helpers) this.checkHelperPatch(opts.helpers);
-    if (!sessionId) return land(this.start(prompt, undefined, { ...run, helpers: opts.helpers, ...(opts.provider ? { provider: opts.provider } : {}) }, projectId), false);
+    if (!sessionId) return land(this.start(prompt, undefined, { ...run, helpers: opts.helpers, ...(opts.provider ? { provider: opts.provider } : {}), ...(opts.title ? { title: opts.title } : {}) }, projectId), false);
     // An existing conversation takes the change now: its next turn -- this
     // message, queued or not -- is the first to run with it.
     if (opts.helpers) this.patchHelpers(projectId, sessionId, opts.helpers);

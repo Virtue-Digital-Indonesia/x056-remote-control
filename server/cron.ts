@@ -59,7 +59,8 @@ export interface CronJob {
   contextReview?: { operationId: string; reason: string };
 }
 
-export interface CronChoice { provider: 'claude' | 'codex'; model: string; effort: string; team: boolean }
+/** `title` is required of new jobs since 2026-11-04; jobs stored before then have none. */
+export interface CronChoice { provider: 'claude' | 'codex'; model: string; effort: string; team: boolean; title?: string }
 
 export interface CronDeps {
   stateDir: string;

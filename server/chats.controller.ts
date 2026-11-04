@@ -14,15 +14,16 @@ export class ChatsController {
   /** Shared by the panel and the MCP `create_chat` tool. The bridge marks its
    *  calls `mcp: true` (plus `from` when it knows the caller), and only those
    *  must name provider, model, effort and team explicitly (owner,
-   *  2026-10-28); the panel's dialog is unchanged. */
+   *  2026-10-28), and the Chat's `name`, which is its conversation's title
+   *  (Efran, 2026-11-04); the panel's dialog is unchanged. */
   @Post()
   create(@Body() body: Parameters<SessionManager['createChat']>[0] & { mcp?: boolean; from?: string; team?: boolean }) {
     if (!this.manager.chatsEnabled()) throw new NotFoundException('Chat is disabled');
     const { mcp, from: _from, team, ...input } = body ?? ({} as typeof body);
     if (mcp === true) {
-      const choice = this.manager.requireNewConversationChoice({ provider: input.provider, model: input.model, effort: input.effort, team });
+      const choice = this.manager.requireNewConversationChoice({ provider: input.provider, model: input.model, effort: input.effort, team, title: input.name }, 'team', 'name');
       try {
-        const chat = this.manager.createChat({ ...input, provider: choice.provider });
+        const chat = this.manager.createChat({ ...input, name: choice.title, provider: choice.provider });
         // Applied on a retry with the same requestId too: the same answer.
         if (chat.lastSessionId) this.manager.patchHelpers(chat.id, chat.lastSessionId, { team: choice.team });
         return this.manager.chat(chat.id);
