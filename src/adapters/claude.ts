@@ -5,6 +5,7 @@ import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, 
 import { join } from 'node:path';
 import { classifyEvent } from '../detector.js';
 import { fetchUsage } from '../quota.js';
+import { parseFileByStat } from '../file-memo.js';
 import { stripAsk, stripAskInstructions } from '../question.js';
 import { startTurn } from '../turn.js';
 import { DEFAULT_CONTINUE_PROMPT } from '../provider.js';
@@ -125,10 +126,11 @@ function assistantText(e: RawEvent): string[] {
 /** The human-facing identity a `claude` login stores in <configDir>/.claude.json. */
 function readIdentity(configDir: string): AccountIdentity {
   try {
-    const o = (JSON.parse(readFileSync(join(configDir, '.claude.json'), 'utf8')) as {
-      oauthAccount?: { displayName?: string; emailAddress?: string };
-    }).oauthAccount;
-    return { displayName: o?.displayName, email: o?.emailAddress };
+    // Parsed once per version of the file (it changes only at a login).
+    return { ...parseFileByStat(join(configDir, '.claude.json'), (text) => {
+      const o = (JSON.parse(text) as { oauthAccount?: { displayName?: string; emailAddress?: string } }).oauthAccount;
+      return { displayName: o?.displayName, email: o?.emailAddress } as AccountIdentity;
+    }) };
   } catch {
     return {};
   }

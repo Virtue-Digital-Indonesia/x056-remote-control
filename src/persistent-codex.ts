@@ -3,6 +3,7 @@ import type { TurnOptions } from './turn.js';
 import { hashText, type Ingested, type Transport, type TransportState } from './persistent-transport.js';
 import { SPEED_TIER } from './codex-model-policy.js';
 import { codexAppServerArgs } from './codex-marketplace-args.js';
+import { noteCodexOutput, noteCodexRateLimits } from './codex-live-usage.js';
 
 /**
  * Codex over `codex app-server`: JSON-RPC on stdio, one long-lived process per
@@ -241,6 +242,7 @@ export class CodexTransport implements Transport {
     const x = ext(st);
     let m: Record<string, unknown>;
     try { m = JSON.parse(line) as Record<string, unknown>; } catch { return { events: [], turnEnded: false }; }
+    noteCodexOutput(x.lastOptions?.configDir);
     const id = typeof m.id === 'number' ? m.id : undefined;
     const res = m.result as Record<string, unknown> | undefined;
     const err = m.error as Record<string, unknown> | undefined;
@@ -365,8 +367,12 @@ export class CodexTransport implements Transport {
         const steps = Array.isArray(p.plan) ? (p.plan as { step?: string; status?: string }[]) : [];
         return { events: [{ type: 'item.completed', item: { type: 'todo_list', items: steps.map((x) => ({ text: String(x.step ?? ''), completed: x.status === 'completed' })), ...(typeof p.explanation === 'string' ? { explanation: p.explanation } : {}) } }], turnEnded: false };
       }
-      case 'thread/status/changed':
       case 'account/rateLimits/updated':
+        // The account's usage, pushed: GET /api/accounts reads it from here
+        // instead of spawning a probe app-server (src/codex-live-usage.ts).
+        try { noteCodexRateLimits(x.lastOptions?.configDir, p); } catch { /* never break the stream */ }
+        return { events: [{ type: method.replace(/\//g, '.'), ...p }], turnEnded: false };
+      case 'thread/status/changed':
       case 'thread/tokenUsage/updated':
         // Pass through under their own names: harmless to classify(), and the
         // rate-limit one is exactly what its near-limit check looks for.

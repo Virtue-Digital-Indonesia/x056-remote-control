@@ -126,9 +126,15 @@ describe('gateway e2e', () => {
   it('accounts endpoint returns registry state with quota errors handled gracefully', async () => {
     const res = await fetch(`${base}/api/accounts`, { headers: auth });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { name: string; state: unknown; quota: unknown; quotaError?: string; active?: boolean }[];
+    let body = (await res.json()) as { name: string; state: unknown; quota: unknown; quotaError?: string; active?: boolean }[];
     expect(body.map((a) => a.name)).toEqual(['a', 'b']);
-    expect(body[0].quotaError).toBeTruthy(); // fake cfg dirs have no credentials
+    // Usage is refreshed in the background, never awaited by the request: the
+    // failure (fake cfg dirs have no credentials) shows on a later call.
+    for (let i = 0; i < 40 && !body[0].quotaError; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      body = (await (await fetch(`${base}/api/accounts`, { headers: auth })).json()) as typeof body;
+    }
+    expect(body[0].quotaError).toBeTruthy();
     // Exactly one account is flagged active (the account-selection capability probe).
     expect(body.filter((a) => a.active === true).map((a) => a.name)).toEqual(['a']);
   });

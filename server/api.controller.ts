@@ -33,8 +33,9 @@ import {
 import type { Request, Response } from 'express';
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { AccountRegistry, ROUTING_STRATEGIES, type RoutingStrategy } from '../src/accounts.js';
-import { UsageRateLimitedError } from '../src/quota.js';
+import { AccountRegistry, ROUTING_STRATEGIES, type Account, type RoutingStrategy } from '../src/accounts.js';
+import { TokenExpiredError, UsageRateLimitedError } from '../src/quota.js';
+import { codexProcessLive, liveCodexUsage } from '../src/codex-live-usage.js';
 import { CODEGRAPH, CodegraphClient } from './codegraph.js';
 import { cleanMemorySource } from './memory-sources.js';
 import { MEMORY_WRITER, MemoryWriter } from './memories.js';
@@ -187,6 +188,31 @@ const HISTORY_MESSAGES_MAX_PAGES = 20;
 const HISTORY_MESSAGES_MAX_ROWS = 5000;
 const isMessageRow = (r: HistoryEntry): boolean => r.role === 'user' || r.role === 'assistant';
 const QUOTA_TTL_MS = 90_000;
+/** A Codex reading is a spawned app-server (a fork on the main thread), so it
+ *  is refreshed at most this often -- and not at all while a live process of
+ *  the account pushes its limits. */
+const CODEX_QUOTA_TTL_MS = 5 * 60_000;
+/** A live Codex process that has pushed no limits for this long is probed anyway. */
+const CODEX_LIVE_SILENT_MS = 30 * 60_000;
+/** An expired or revoked token does not fix itself within a minute; retrying
+ *  every poll only burns an HTTPS call or a spawn per account per minute. */
+export const QUOTA_AUTH_BACKOFF_MS = 20 * 60_000;
+const quotaTtl = (provider: string): number => (provider === 'codex' ? CODEX_QUOTA_TTL_MS : QUOTA_TTL_MS);
+const USAGE_AUTH_RE = /\b401\b|unauthor|unauthenticated|token (has )?expired|not logged in|please (run )?.*login|sign in|no OAuth token|credentials unreadable|invalid api key|refresh token/i;
+/** A usage failure that only a re-login cures (backed off 20 minutes). A
+ *  timeout or a crashed probe is not one, whatever its stderr said. */
+export function isUsageAuthError(err: unknown): boolean {
+  if (err instanceof TokenExpiredError) return true;
+  const message = (err as Error)?.message ?? '';
+  if (/^codex app-server (timed out|exited before answering)/.test(message)) return false;
+  return USAGE_AUTH_RE.test(message);
+}
+/** Changes when an account signs in again (its credentials file is rewritten). */
+function credentialsStamp(configDir: string): string {
+  return ['.credentials.json', 'auth.json'].map((f) => {
+    try { const st = statSync(join(configDir, f)); return `${st.mtimeMs}:${st.size}`; } catch { return '-'; }
+  }).join('|');
+}
 
 /** How quiet a subagent's transcript may go and still count as running. */
 const LIVE_SUBAGENT_MS = 10 * 60_000;
@@ -210,6 +236,10 @@ export class ApiController {
   // While this holds a future timestamp for an account, upstream is not called
   // at all — repeated polling during a rate-limit window would only extend it.
   private readonly quotaBackoffUntil = new Map<string, number>();
+  // One background usage refresh per account at a time, shared by every caller.
+  private readonly quotaRefreshing = new Map<string, Promise<void>>();
+  // Why the last refresh failed; `credStamp` lets a re-login end an auth backoff.
+  private readonly quotaFailure = new Map<string, { message: string; auth: boolean; credStamp?: string }>();
 
   private deliveries: DeliveryStore;
   private readonly sessionTimerReader = new SessionTimerReader();
@@ -1701,6 +1731,19 @@ export class ApiController {
 
   @Get('accounts')
   async accounts(): Promise<unknown[]> {
+    // Synchronous and shared: identical calls within 2 s (every panel tab
+    // answering one SSE `accounts` event) get one computation. accounts.json's
+    // stamp is in the key, so a pause, label, add or remove is seen at once;
+    // emitAccounts() and a finished usage refresh invalidate the prefix.
+    let stamp = '';
+    try { const st = statSync(join(this.stateDir, 'accounts.json')); stamp = `${st.mtimeMs}\0${st.size}`; } catch { /* no registry yet */ }
+    return hotCache.shared(`accounts\0${this.stateDir}\0${stamp}`, 2000, () => this.accountsUncached());
+  }
+
+  /** Usage is OFF the request path: rows carry the cached reading (`quotaAt`,
+   *  `quotaStale` once older than its TTL) and a due account gets ONE shared
+   *  background refresh (`refreshQuota`), never awaited here. */
+  private accountsUncached(): unknown[] {
     let registry: AccountRegistry;
     try {
       registry = AccountRegistry.load(join(this.stateDir, 'accounts.json'));
@@ -1710,67 +1753,120 @@ export class ApiController {
     // "Next up" and "active" are PER PROVIDER now — a Claude session and a Codex
     // session each have their own next account — so compute them per provider
     // and match each account against its own provider's pointer.
-    const nowSec = Math.floor(Date.now() / 1000);
-    const providers = [...new Set(registry.list().map((a) => a.provider))];
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+    const accounts = registry.list();
+    this.foldLiveCodexUsage(accounts);
+    const providers = [...new Set(accounts.map((a) => a.provider))];
     const activeByProvider = new Map(providers.map((p) => [p, registry.activeName(p)]));
-    const rows = await Promise.all(
-      registry.list().map(async (acct) => {
-        const adapter = getAdapter(acct.provider);
-        const id = adapter.readIdentity(acct.configDir);
-        // registry.list() returns the raw persisted verdict, which only gets
-        // re-evaluated the next time a turn actually tries this account — so a
-        // 'limited' mark can sit stale (badge says "limited" long after the
-        // cooldown passed). pickActive() already treats an expired `until` as
-        // usable; make the badge agree with that instead of the raw record.
-        // A signed-out account is otherwise only noticed when a turn tries it,
-        // so one left alone for days keeps a long-expired 'limited' badge and
-        // never offers the re-login it actually needs. Disk knows better.
-        const signedOut = adapter.hasCredentials?.(acct.configDir) === false;
-        const state = signedOut
-          ? ({ kind: 'unauthenticated' } as const)
-          : acct.state.kind === 'limited' && acct.state.until <= nowSec
-            ? ({ kind: 'ok' } as const)
-            : acct.state;
-        const base = { ...acct, providerLabel: adapter.label, state, displayName: acct.label || id.displayName || id.email || (acct.provider === 'codex' ? 'ChatGPT account' : 'Claude account'), email: id.email, active: acct.name === activeByProvider.get(acct.provider) };
-        // A provider with no pollable usage endpoint (e.g. Codex on a ChatGPT
-        // plan) simply shows no usage bars — never an error.
-        if (!adapter.fetchUsage) return { ...base, quota: null };
-        const cached = this.quotaCache.get(acct.name);
-        if (cached && Date.now() - cached.at < QUOTA_TTL_MS) {
-          return { ...base, quota: cached.quota, quotaAt: cached.at };
-        }
-        const backoffUntil = this.quotaBackoffUntil.get(acct.name) ?? 0;
-        if (Date.now() < backoffUntil) {
-          // Cached data never goes dark just because upstream is (still) rate-limited —
-          // keep showing the last real reading, marked stale, with its age so the panel
-          // can say how old it is instead of a blanket "refreshing" that may not be
-          // imminent (upstream retry-after here can run up to an hour).
-          if (cached) return { ...base, quota: cached.quota, quotaStale: true, quotaAt: cached.at, quotaRetryAt: backoffUntil };
-          return { ...base, quota: null, quotaError: `rate-limited upstream; retrying after ${new Date(backoffUntil).toISOString()}` };
-        }
-        try {
-          const quota = await adapter.fetchUsage(acct.configDir);
-          const at = Date.now();
-          this.quotaCache.set(acct.name, { at, quota });
-          this.saveQuotaCache();
-          this.quotaBackoffUntil.delete(acct.name);
-          return { ...base, quota, quotaAt: at };
-        } catch (err) {
-          const backoffMs = err instanceof UsageRateLimitedError ? err.retryAfterMs : 60_000;
-          const retryAt = Date.now() + backoffMs;
-          this.quotaBackoffUntil.set(acct.name, retryAt);
-          if (cached) return { ...base, quota: cached.quota, quotaStale: true, quotaAt: cached.at, quotaRetryAt: retryAt };
-          return { ...base, quota: null, quotaError: (err as Error).message };
-        }
-      }),
-    );
-    // Usage has now been refreshed and persisted. Derive badges and the next
-    // account from the same quota-aware routing decision, including cache hits.
-    const next = new Map(providers.map(p => [p, registry.peekActive(nowSec, p, this.manager.accountLoads())?.name]));
+    const rows = accounts.map((acct) => {
+      const adapter = getAdapter(acct.provider);
+      const id = adapter.readIdentity(acct.configDir);
+      // registry.list() returns the raw persisted verdict, which only gets
+      // re-evaluated the next time a turn actually tries this account — so a
+      // 'limited' mark can sit stale (badge says "limited" long after the
+      // cooldown passed). pickActive() already treats an expired `until` as
+      // usable; make the badge agree with that instead of the raw record.
+      // A signed-out account is otherwise only noticed when a turn tries it,
+      // so one left alone for days keeps a long-expired 'limited' badge and
+      // never offers the re-login it actually needs. Disk knows better.
+      const signedOut = adapter.hasCredentials?.(acct.configDir) === false;
+      const state = signedOut
+        ? ({ kind: 'unauthenticated' } as const)
+        : acct.state.kind === 'limited' && acct.state.until <= nowSec
+          ? ({ kind: 'ok' } as const)
+          : acct.state;
+      const base = { ...acct, providerLabel: adapter.label, state, displayName: acct.label || id.displayName || id.email || (acct.provider === 'codex' ? 'ChatGPT account' : 'Claude account'), email: id.email, active: acct.name === activeByProvider.get(acct.provider) };
+      // A provider with no pollable usage endpoint (e.g. Codex on a ChatGPT
+      // plan) simply shows no usage bars — never an error.
+      if (!adapter.fetchUsage) return { ...base, quota: null };
+      // A signed-out account has no token to ask with: never call upstream.
+      if (!signedOut) this.refreshQuota(acct, nowMs);
+      const cached = this.quotaCache.get(acct.name);
+      const backoffUntil = this.quotaBackoffUntil.get(acct.name) ?? 0;
+      const retry = nowMs < backoffUntil ? { quotaRetryAt: backoffUntil } : {};
+      // Cached data never goes dark just because upstream is failing: keep the
+      // last real reading with its age, marked stale, so the panel can say how
+      // old it is.
+      if (cached) {
+        const stale = nowMs - cached.at >= quotaTtl(acct.provider) || nowMs < backoffUntil;
+        return { ...base, quota: cached.quota, quotaAt: cached.at, ...(stale ? { quotaStale: true } : {}), ...retry };
+      }
+      const failure = this.quotaFailure.get(acct.name);
+      if (failure) return { ...base, quota: null, quotaError: failure.message, ...retry };
+      return { ...base, quota: null };
+    });
+    // Badges and the next account from the same quota-aware routing decision,
+    // over the in-memory readings (what quota-cache.json holds): no file read.
+    const quotaReadings = Object.fromEntries(this.quotaCache);
+    const next = new Map(providers.map(p => [p, registry.peekActive(nowSec, p, this.manager.accountLoads(), { quotaReadings })?.name]));
     return rows.map(row => ({ ...row,
-      state: row.state.kind === 'unauthenticated' ? row.state : registry.effectiveState(row.name, nowSec),
+      state: row.state.kind === 'unauthenticated' ? row.state : registry.effectiveState(row.name, nowSec, quotaReadings),
       nextUp: row.state.kind !== 'unauthenticated' && row.name === next.get(row.provider),
     }));
+  }
+
+  /** Start ONE background usage refresh for this account when it is due.
+   *  Concurrent callers share it through `quotaRefreshing`; nobody awaits it. */
+  private refreshQuota(acct: Account, nowMs: number): void {
+    const adapter = getAdapter(acct.provider);
+    if (!adapter.fetchUsage || this.quotaRefreshing.has(acct.name)) return;
+    if (nowMs < (this.quotaBackoffUntil.get(acct.name) ?? 0)) {
+      // An auth backoff ends early when the credentials file changes: a
+      // re-login must not show "usage unavailable" for 20 minutes.
+      const failure = this.quotaFailure.get(acct.name);
+      if (!failure?.auth || failure.credStamp === credentialsStamp(acct.configDir)) return;
+      this.quotaBackoffUntil.delete(acct.name);
+    }
+    const cached = this.quotaCache.get(acct.name);
+    if (cached && nowMs - cached.at < quotaTtl(acct.provider)) return;
+    // A live app-server of this account pushes its limits (foldLiveCodexUsage);
+    // probing beside it only costs a fork. Safety net: one that has gone
+    // silent on limits for 30 minutes is probed anyway.
+    if (acct.provider === 'codex' && cached && codexProcessLive(acct.configDir, nowMs) && nowMs - cached.at < CODEX_LIVE_SILENT_MS) return;
+    const name = acct.name;
+    const run = new Promise<void>((resolve) => setImmediate(resolve)) // after this response is written
+      .then(() => adapter.fetchUsage!(acct.configDir))
+      .then((quota) => {
+        this.quotaCache.set(name, { at: Date.now(), quota });
+        this.saveQuotaCache();
+        this.quotaBackoffUntil.delete(name);
+        this.quotaFailure.delete(name);
+      }, (err: unknown) => {
+        const auth = isUsageAuthError(err);
+        const backoffMs = err instanceof UsageRateLimitedError ? err.retryAfterMs : auth ? QUOTA_AUTH_BACKOFF_MS : 60_000;
+        const retryAt = Date.now() + backoffMs;
+        this.quotaBackoffUntil.set(name, retryAt);
+        const message = err instanceof UsageRateLimitedError
+          ? `rate-limited upstream; retrying after ${new Date(retryAt).toISOString()}`
+          : (err as Error)?.message || String(err);
+        this.quotaFailure.set(name, { message, auth, ...(auth ? { credStamp: credentialsStamp(acct.configDir) } : {}) });
+      })
+      .catch(() => { /* a fire-and-forget refresh must never reject unhandled */ })
+      .finally(() => {
+        this.quotaRefreshing.delete(name);
+        hotCache.invalidate(`accounts\0${this.stateDir}`);
+      });
+    this.quotaRefreshing.set(name, run);
+  }
+
+  /** Readings pushed by live Codex app-servers (`account/rateLimits/updated`)
+   *  replace older cached ones, so an account in use is never probed. */
+  private foldLiveCodexUsage(accounts: Account[]): void {
+    let changed = false;
+    for (const acct of accounts) {
+      if (acct.provider !== 'codex') continue;
+      const live = liveCodexUsage(acct.configDir);
+      const cached = this.quotaCache.get(acct.name);
+      if (!live || (cached && cached.at >= live.at)) continue;
+      const prevCredits = (cached?.quota as { credits?: unknown } | undefined)?.credits;
+      const quota = !live.usage.credits && prevCredits ? { ...live.usage, credits: prevCredits } : live.usage;
+      this.quotaCache.set(acct.name, { at: live.at, quota });
+      this.quotaBackoffUntil.delete(acct.name);
+      this.quotaFailure.delete(acct.name);
+      changed = true;
+    }
+    if (changed) this.saveQuotaCache();
   }
 
   @Get('accounts/analytics')

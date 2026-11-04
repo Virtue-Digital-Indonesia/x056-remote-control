@@ -14,6 +14,8 @@ import type { SubagentOutcome } from '../provider.js';
 import { DEFAULT_CONTINUE_PROMPT } from '../provider.js';
 import { stripAsk, stripAskInstructions } from '../question.js';
 import { codexAppServerArgs } from '../codex-marketplace-args.js';
+import { parseFileByStat } from '../file-memo.js';
+import { codexUsageFromRateLimits } from '../codex-live-usage.js';
 import { spawnJsonlTurn } from '../turn.js';
 import type { TurnHandle, TurnOptions } from '../turn.js';
 import type { AccountIdentity, ActivityEvent, HistoryEntry, ProviderAdapter, ProviderModel } from '../provider.js';
@@ -258,25 +260,33 @@ export function failureText(e: RawEvent): string | undefined {
  *  fields. Best-effort — returns {} on any miss, never throws. */
 function readIdentity(configDir: string): AccountIdentity {
   try {
-    const auth = JSON.parse(readFileSync(join(configDir, 'auth.json'), 'utf8')) as {
-      tokens?: { id_token?: string; account_id?: string };
-      email?: string;
-    };
-    if (auth.email) return { email: auth.email };
-    const idToken = auth.tokens?.id_token;
-    if (idToken) {
-      const payload = idToken.split('.')[1];
-      if (payload) {
+    // Parsed (and the JWT decoded) once per version of auth.json.
+    return { ...parseFileByStat(join(configDir, 'auth.json'), identityOfAuth) };
+  } catch {
+    // no/garbled auth.json — no identity to show
+  }
+  return {};
+}
+
+function identityOfAuth(text: string): AccountIdentity {
+  const auth = JSON.parse(text) as {
+    tokens?: { id_token?: string; account_id?: string };
+    email?: string;
+  };
+  if (auth.email) return { email: auth.email };
+  const idToken = auth.tokens?.id_token;
+  if (idToken) {
+    const payload = idToken.split('.')[1];
+    if (payload) {
+      try {
         const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
           email?: string; name?: string;
           'https://api.openai.com/profile'?: { email?: string };
         };
         const email = claims.email ?? claims['https://api.openai.com/profile']?.email;
         if (email) return { email, displayName: claims.name };
-      }
+      } catch { /* garbled token: no identity */ }
     }
-  } catch {
-    // no/garbled auth.json — no identity to show
   }
   return {};
 }
@@ -607,8 +617,11 @@ function listModels(configDirs: string[]): ProviderModel[] {
  * exposes `account/rateLimits/read` — confirmed live against a real team-plan
  * login: `{rateLimits:{primary:{usedPercent:62, windowDurationMins:10080,
  * resetsAt:<unix-secs>}, secondary:null, planType:"team", …}}`. Spawn it under
- * the account's CODEX_HOME, initialize, read, kill. Costs ~1-2s, which the
- * controller's existing 90s quota cache absorbs (same policy as Claude's poll).
+ * the account's CODEX_HOME, initialize, read, kill. Costs ~1-2s plus a fork
+ * that blocks the gateway's main thread, so the controller probes a Codex
+ * account at most every 5 minutes, in the background, and not at all while a
+ * live app-server of that account reports `account/rateLimits/updated`
+ * (src/codex-live-usage.ts). The parsing is shared with that feed.
  */
 function fetchUsage(configDir: string): Promise<Usage> {
   // An app-server started in a home that is still indexing either waits on the
@@ -640,14 +653,6 @@ function fetchUsage(configDir: string): Promise<Usage> {
     const deadline = setTimeout(() => finish(new Error('codex app-server timed out' + why())), 15_000);
     child.on('error', (e) => finish(e));
     child.on('exit', () => finish(new Error('codex app-server exited before answering' + why())));
-    const windowLabel = (mins: unknown): string => {
-      const m = typeof mins === 'number' ? mins : 0;
-      if (m === 300) return '5-hour';
-      if (m === 10080) return '7-day';
-      if (m > 0 && m % 1440 === 0) return `${m / 1440}-day`;
-      if (m > 0) return `${Math.round(m / 60)}-hour`;
-      return 'usage';
-    };
     const rl = createInterface({ input: child.stdout });
     rl.on('line', (line) => {
       if (!line.trim().startsWith('{')) return;
@@ -655,28 +660,9 @@ function fetchUsage(configDir: string): Promise<Usage> {
       try { msg = JSON.parse(line); } catch { return; }
       if (msg.id !== 2) return;
       if (msg.error) return finish(new Error(msg.error.message || 'rateLimits read failed'));
-      const rl2 = asObj(asObj(msg.result).rateLimits);
-      const windows: NonNullable<Usage['windows']> = [];
-      for (const key of ['primary', 'secondary']) {
-        const w = asObj(rl2[key]);
-        if (typeof w.usedPercent !== 'number') continue;
-        windows.push({
-          label: windowLabel(w.windowDurationMins),
-          utilization: w.usedPercent / 100,
-          resetsAt: typeof w.resetsAt === 'number' ? new Date(w.resetsAt * 1000).toISOString() : undefined,
-        });
-      }
-      if (!windows.length) return finish(new Error('no rate-limit windows in app-server response'));
-      // `credits` sits beside the windows: {hasCredits, unlimited, balance}. With
-      // credits the backend keeps serving after the window is used up, so the
-      // gateway must know whether that is on offer before it calls the account
-      // exhausted. `spendControlReached` means an admin cap stops it regardless.
-      const c = asObj(rl2.credits);
-      const credits = 'hasCredits' in c
-        ? { available: c.hasCredits === true && rl2.spendControlReached !== true, unlimited: c.unlimited === true, balance: typeof c.balance === 'number' ? c.balance : null }
-        : undefined;
-      const limitReachedType = typeof rl2.rateLimitReachedType === 'string' ? rl2.rateLimitReachedType : null;
-      finish(null, { windows, ...(credits ? { credits } : {}), limitReachedType });
+      const usage = codexUsageFromRateLimits(msg.result);
+      if (!usage) return finish(new Error('no rate-limit windows in app-server response'));
+      finish(null, usage);
     });
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'x056', title: 'x056', version: '1.0' } } }) + '\n');
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: {} }) + '\n');

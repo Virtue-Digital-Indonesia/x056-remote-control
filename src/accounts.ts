@@ -36,7 +36,12 @@ export interface Account {
 
 export const ROUTING_STRATEGIES = ['sticky', 'priority', 'round-robin', 'least-busy', 'wait'] as const;
 export type RoutingStrategy = typeof ROUTING_STRATEGIES[number];
-export interface AccountRouteContext { lockedAccount?: string; preferredAccount?: string; useReserve?: boolean; model?: string; capabilityBlocks?: Record<string, string[]> }
+export interface AccountRouteContext {
+  lockedAccount?: string; preferredAccount?: string; useReserve?: boolean; model?: string; capabilityBlocks?: Record<string, string[]>;
+  /** quota-cache.json already parsed by the caller (one read per request);
+   *  absent = explain() reads it once itself. */
+  quotaReadings?: Record<string, QuotaReading>;
+}
 export interface RouteCandidate { name: string; eligible: boolean; reasons: string[]; load: number; maxConcurrent: number; reservePercent: number; quotaAt?: number; usedPercent?: number; onCredits?: boolean }
 /** `allowCredits` is off until a person turns it on: with it off, a used-up plan
  *  window blocks the account even when the provider would sell more. */
@@ -160,19 +165,28 @@ export class AccountRegistry {
     return structuredClone(removed);
   }
 
-  private quotaState(a: Account, now: number): AccountState | null {
+  /** quota-cache.json, parsed. ONE read per explain() or request: callers
+   *  pass the result down (it used to be re-read and re-parsed for every
+   *  account, about 30 times per GET /api/accounts). {} when absent or broken. */
+  readQuotaReadings(): Record<string, QuotaReading> {
     try {
-      const cache = JSON.parse(readFileSync(join(dirname(this.file), 'quota-cache.json'), 'utf8')) as Record<string, QuotaReading>;
-      const reading = cache[a.name];
+      const parsed = JSON.parse(readFileSync(join(dirname(this.file), 'quota-cache.json'), 'utf8')) as unknown;
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, QuotaReading>) : {};
+    } catch { return {}; }
+  }
+
+  private quotaState(a: Account, now: number, readings: Record<string, QuotaReading> = this.readQuotaReadings()): AccountState | null {
+    try {
+      const reading = readings[a.name];
       if (reading && a.quotaOverrideAt && reading.at <= a.quotaOverrideAt) return null;
       return quotaLimit(a.provider, reading, now, this.routingPolicy(a.provider).allowCredits);
     } catch { return null; }
   }
 
-  effectiveState(name: string, now: number): AccountState {
+  effectiveState(name: string, now: number, readings?: Record<string, QuotaReading>): AccountState {
     const a = this.find(name);
     if (a.state.kind === 'unauthenticated') return a.state;
-    const quota = this.quotaState(a, now);
+    const quota = this.quotaState(a, now, readings);
     if (quota?.kind === 'limited' && (a.state.kind !== 'limited' || quota.until > a.state.until)) return quota;
     return a.state.kind === 'limited' && a.state.until <= now ? { kind: 'ok' } : a.state;
   }
@@ -241,13 +255,10 @@ export class AccountRegistry {
       this.data.manualNext?.[provider] ||
       (policy.strategy === 'sticky' ? this.data.activeByProvider[provider] : undefined);
     if (preferred && names.includes(preferred)) names = [preferred, ...names.filter((n) => n !== preferred)];
-    let readings: Record<string, QuotaReading> = {};
-    try {
-      readings = JSON.parse(readFileSync(join(dirname(this.file), 'quota-cache.json'), 'utf8'));
-    } catch {}
+    const readings = context.quotaReadings ?? this.readQuotaReadings();
     const candidates: RouteCandidate[] = names.map((name) => {
       const a = this.find(name),
-        state = this.effectiveState(name, now),
+        state = this.effectiveState(name, now, readings),
         reasons: string[] = [],
         reading = readings[name];
       if (fixed && name !== fixed) reasons.push('Conversation/account policy excludes this account');

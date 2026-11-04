@@ -60,6 +60,7 @@ import { answeredQuestionIndexes, hasForOwner, hasResolved, parseQuestion, strip
 import { closeAllGatewayDbs, closeGatewayDb, gatewayDb } from './gateway-db.js';
 import { BOT_CHAT_NAME, BOT_DENIED_TOOLS, BOT_REQUEST_ID, botAttention, botSystemNote, BotService, type BotAttention, type BotOptions, type BotStatus } from './bot.js';
 import type { ReadView } from './read-state.js';
+import { hotCache } from './hot-cache.js';
 
 export interface GatewayEvent {
   seq: number;
@@ -2065,7 +2066,9 @@ export class SessionManager {
     this.pendingCodexLogins.delete(loginId);
   }
 
-  private emitAccounts(): void { this.emit('accounts', {}); }
+  // GET /api/accounts is shared for 2 s (hot-cache); any account change --
+  // sign-in/out, pause, add/remove, a turn moving the active pointer -- drops it.
+  private emitAccounts(): void { hotCache.invalidate('accounts'); this.emit('accounts', {}); }
 
   /** Spawn `claude auth login` on a PTY against `configDir` and resolve once it
    *  prints the OAuth URL. Shared by onboarding (fresh pending dir) and re-login

@@ -4408,7 +4408,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       if (mineConvo) { active = false; renderBusy(); }
       if (data.status === 'stopped') clearConvNotif(pid, sid);
       if (!data.notificationSuppressed && ['completed','failed','parked'].includes(data.status) && !data.completionPending && (!mineConvo || (controlRoom && !controlRoom.isOpen()))) setConvNotif(pid, sid, data.status === 'completed' ? 'done' : 'failed');
-      pollAccounts(); renderStrip();
+      pollAccountsSoon(); renderStrip();
     }
     else if (kind === 'message_rejected') { appendNode(pid, sid, nodeSys('Message not sent: ' + data.message, 'banner err')); }
     else if (kind === 'session_error') {
@@ -4488,7 +4488,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
       if (data.modelEffort) modelEffortDefaults = data.modelEffort;
       if (data.mcpSendMode) { mcpSendMode = data.mcpSendMode; renderMcpSendMode(); }
     }
-    else if (kind === 'accounts') { pollAccounts(); } // an account was added/removed (this or another tab)
+    else if (kind === 'accounts') { pollAccountsSoon(); } // an account changed (this or another tab); debounced, visible tabs only
     else if (kind === 'mcp_approval') {
       // Global, not conversation-scoped: the requesting AND target conversation
       // may be anywhere, so this must show regardless of what's on screen.
@@ -5835,7 +5835,7 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     if (effort === undefined) effort = effortEl.value;
     acctPlan.textContent = [model, effortLabel(effort), plan].filter(Boolean).join(' · ');
   }
-  function pollAccounts() {
+  function pollAccounts(opts) {
     // Every call site here is exactly "the account set (or an account's own
     // state) may have changed" — a Codex account finishing device-auth login,
     // one being added by path, an SSE 'accounts' event from another tab, the
@@ -5845,8 +5845,20 @@ if (!(window.ComposerFormat && window.ComposerFormat.highlightLines)) {
     // of the session even after the account showed up everywhere else. Refresh
     // it alongside accounts so the composer catches up the same moment the
     // accounts popover does.
-    loadProviderModels();
+    if (!opts || opts.models !== false) loadProviderModels();
     return api('/api/accounts').then(function (r) { return r.json(); }).then(renderAccounts).catch(function () {});
+  }
+  // Event-driven refresh (the SSE `accounts` event, a turn ending): those fire
+  // on every turn start and end, in every tab, hidden ones too. Collapse them
+  // into one poll per 3 s, only while this tab is visible, and leave the model
+  // catalog to the 60 s interval and the explicit refreshes above.
+  var accountsSoonTimer = null;
+  function pollAccountsSoon() {
+    if (accountsSoonTimer) return;
+    accountsSoonTimer = setTimeout(function () {
+      accountsSoonTimer = null;
+      whenVisible('accounts-event', function () { pollAccounts({ models: false }); })();
+    }, 3000);
   }
   // Re-render the (open) account popover from the cached list so the per-account
   // "Switch this turn here" / "Use for next message" buttons flip the instant the
