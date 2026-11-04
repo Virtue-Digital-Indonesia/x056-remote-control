@@ -260,13 +260,20 @@ trap 'exit 143' TERM
       echo "note: .deploy/force present — swapping even if workflows are live or turns are running"
       break
     fi
-    wf=$(live_workflows)
-    if [ -n "$wf" ]; then
-      reason="workflow runs still live: $wf (touch .deploy/force to override)"
-    elif busy; then
+    # The cheap busy check first: the workflow scan walks every run journal,
+    # and polling it every 5 s while turns ran (34 h on 2026-11-02..04) was
+    # load the gateway could not spare. An unreachable gateway still blocks:
+    # busy() calls that busy in idle-only mode, and the workflow check below
+    # reports a failed query as live.
+    if busy; then
       reason="provider activity remains or cannot be checked"
     else
-      break
+      wf=$(live_workflows)
+      if [ -n "$wf" ]; then
+        reason="workflow runs still live: $wf (touch .deploy/force to override)"
+      else
+        break
+      fi
     fi
     if [ "$waited" -ge "$POLL_WINDOW" ]; then
       echo "built OK; $reason — release stays pending (checked every ${POLL_EVERY}s for ${waited}s, pending ${age}s)"
