@@ -4191,7 +4191,9 @@ export class SessionManager {
    *  carries the same ASK convention a delivered one would. */
   /** A message from ANOTHER conversation also clears the self-message brake. */
   private messageSender(from?: string): MessageSender {
-    if (from) for (const project of this.listProjects().projects) {
+    // The registry alone: listProjects() also resolves every conversation's
+    // Space and running state, none of which a sender label uses.
+    if (from) for (const project of this.projects().list()) {
       const conversation = project.conversations?.find(c => c.sessionId === from);
       if (conversation) return { kind: 'conversation', projectId: project.id, sessionId: from, projectName: project.name, conversationTitle: conversation.title };
     }
@@ -4913,6 +4915,11 @@ export class SessionManager {
       const codexMeter = adapter.id === 'codex' ? new CodexTurnMeter() : undefined;
       const runWith: typeof runFn = router
         ? (async (o: Parameters<typeof runFn>[0]) => {
+            // decideModelEffort reads history, the decision log, turn results
+            // and the Codex model catalog synchronously before its first await
+            // (40-300 ms). A macrotask yield lets the send's HTTP response go
+            // out first; a microtask would still run before it.
+            await new Promise<void>(resolve => setImmediate(resolve));
             const d = await this.decideModelEffort(router, pid, sessionId, adapter.id as 'claude' | 'codex', cleanMemorySource(prompt), model, effort, sender, !!team);
             emit('jev_decision', d as unknown as Record<string, unknown>);
             // On Auto a failed pick still runs on the Auto baseline it started from.

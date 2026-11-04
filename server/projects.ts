@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import type { ProviderId } from '../src/provider.js';
@@ -172,6 +172,30 @@ interface ProjectsFile {
   projects: Project[];
 }
 
+/** A file's identity for the parse cache: a rename-replace changes the inode,
+ *  an in-place write the size or mtime (nanoseconds, so two writes in one
+ *  millisecond still differ). Undefined when the file cannot be stat'd. */
+export function fileIdentity(file: string): string | undefined {
+  try { const s = statSync(file, { bigint: true }); return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}`; } catch { return undefined; }
+}
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const v of Object.values(value)) deepFreeze(v);
+  }
+  return value;
+}
+/** Parsed projects.json per path. The manager loads the registry dozens of
+ *  times per send (38 for a message to an existing conversation), and each
+ *  load re-read and re-parsed ~200 KB on the gateway's one thread. The cached
+ *  tree is frozen and shared; a registry copies it before its first change. */
+const parsed = new Map<string, { identity: string; data?: ProjectsFile; text?: string }>();
+function validated(data: ProjectsFile): ProjectsFile {
+  if (!Array.isArray(data.projects)) throw new Error('Invalid project records');
+  if ((data.spacesVersion ?? 0) > 1) throw new Error('Project registry requires a newer gateway');
+  return data;
+}
+
 /**
  * Persistent list of projects (state/projects.json). The manager keeps the
  * single-turn run path unchanged and uses this only to remember, per project,
@@ -179,30 +203,47 @@ interface ProjectsFile {
  * the active session pointer.
  */
 export class ProjectRegistry {
-  private constructor(private readonly file: string, private data: ProjectsFile) {}
+  /** `shared` = `state` is the frozen cache entry; `data` copies it first. */
+  private constructor(private readonly file: string, private state: ProjectsFile, private shared = false) {}
+  /** For a change: this registry's own copy. Every method uses this unless it
+   *  is listed as read-only below, so a new mutator is safe by default. */
+  private get data(): ProjectsFile {
+    if (this.shared) { this.state = structuredClone(this.state); this.shared = false; }
+    return this.state;
+  }
+  /** For read-only methods that hand out copies: no copy of the whole tree. */
+  private get view(): ProjectsFile { return this.state; }
 
   static load(file: string): ProjectRegistry {
-    if (!existsSync(file)) return new ProjectRegistry(file, { current: null, projects: [] });
+    const identity = fileIdentity(file);
+    const hit = identity === undefined ? undefined : parsed.get(file);
+    if (identity === undefined && !existsSync(file)) return new ProjectRegistry(file, { current: null, projects: [] });
     try {
-      const data = JSON.parse(readFileSync(file, 'utf8')) as ProjectsFile;
-      if (!Array.isArray(data.projects)) throw new Error('Invalid project records');
-      if ((data.spacesVersion ?? 0) > 1) throw new Error('Project registry requires a newer gateway');
-      return new ProjectRegistry(file, data);
+      if (hit && hit.identity === identity) {
+        // A save's own text is parsed on the first load after it, not at save.
+        hit.data ??= deepFreeze(validated(JSON.parse(hit.text!) as ProjectsFile));
+        hit.text = undefined;
+        return new ProjectRegistry(file, hit.data, true);
+      }
+      const data = validated(JSON.parse(readFileSync(file, 'utf8')) as ProjectsFile);
+      if (identity === undefined) return new ProjectRegistry(file, data);
+      parsed.set(file, { identity, data: deepFreeze(data) });
+      return new ProjectRegistry(file, data, true);
     } catch (error) {
       throw new Error('Cannot read project registry; restore or repair it before writing: ' + (error as Error).message);
     }
   }
 
   list(): Project[] {
-    return structuredClone(this.data.projects);
+    return structuredClone(this.view.projects) as Project[];
   }
 
   currentId(): string | null {
-    return this.data.current;
+    return this.view.current;
   }
 
   get(id: string): Project | undefined {
-    const p = this.data.projects.find((x) => x.id === id);
+    const p = this.view.projects.find((x) => x.id === id);
     return p ? structuredClone(p) : undefined;
   }
 
@@ -328,7 +369,7 @@ export class ProjectRegistry {
    *  conversation doesn't exist yet (not yet started) does the project's
    *  current default apply — there's genuinely nothing else to go on. */
   conversationProvider(projectId: string, sessionId: string): ProviderId {
-    const p = this.data.projects.find((x) => x.id === projectId);
+    const p = this.view.projects.find((x) => x.id === projectId);
     const c = p?.conversations?.find((x) => x.sessionId === sessionId);
     if (c) return c.provider ?? 'claude';
     return p?.provider ?? 'claude';
@@ -353,7 +394,7 @@ export class ProjectRegistry {
   /** The CLI session id to resume this conversation with (Codex thread id, or
    *  the Claude session id which is just the sessionId itself). */
   providerSessionId(projectId: string, sessionId: string): string | undefined {
-    const p = this.data.projects.find((x) => x.id === projectId);
+    const p = this.view.projects.find((x) => x.id === projectId);
     return p?.conversations?.find((c) => c.sessionId === sessionId)?.providerSessionId;
   }
 
@@ -503,10 +544,16 @@ export class ProjectRegistry {
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
     const fd = openSync(tmp, 'w', 0o600);
-    try { writeFileSync(fd, JSON.stringify(this.data, null, 2)); fsyncSync(fd); } finally { closeSync(fd); }
+    const text = JSON.stringify(this.state, null, 2);
+    try { writeFileSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(tmp, this.file);
     const dir = openSync(dirname(this.file), 'r');
     try { fsyncSync(dir); } finally { closeSync(dir); }
+    // Write-through: the next load parses the text just written instead of
+    // reading the file back. This registry keeps its own (unfrozen) tree.
+    const identity = fileIdentity(this.file);
+    if (identity === undefined) parsed.delete(this.file);
+    else parsed.set(this.file, { identity, text });
   }
 
   parent(id: string, allowArchived = false): Project {
@@ -560,7 +607,7 @@ export class ProjectRegistry {
     (this.data.membershipOperations ??= []).push(op);
     this.save(); return structuredClone(op);
   }
-  pendingMembershipOperations(): MembershipOperation[] { return structuredClone((this.data.membershipOperations ?? []).filter(o => o.state === 'pending')); }
+  pendingMembershipOperations(): MembershipOperation[] { return structuredClone((this.view.membershipOperations ?? []).filter(o => o.state === 'pending')); }
   completeMembershipOperation(id: string): void {
     const op = this.data.membershipOperations?.find(o => o.id === id);
     if (op && op.state !== 'complete') { op.state = 'complete'; this.save(); }
@@ -590,7 +637,7 @@ export class ProjectRegistry {
     const op:ArchiveOperation={id:operationId,projectId:id,expectedRevision,archived,executionIds:[id],state:'pending'};
     (this.data.archiveOperations??=[]).push(op);this.save();return structuredClone(op);
   }
-  pendingArchiveOperations(): ArchiveOperation[] { return structuredClone((this.data.archiveOperations ?? []).filter(o => o.state === 'pending')); }
+  pendingArchiveOperations(): ArchiveOperation[] { return structuredClone((this.view.archiveOperations ?? []).filter(o => o.state === 'pending')); }
   completeArchiveOperation(id: string): void {
     const op = this.data.archiveOperations?.find(o => o.id === id);
     if (op && op.state !== 'complete') { op.state = 'complete'; this.save(); }

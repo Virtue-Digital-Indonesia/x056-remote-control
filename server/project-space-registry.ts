@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ProjectConflict, validateModeDefaults, type Project } from './projects.js';
+import { ProjectConflict, fileIdentity, validateModeDefaults, type Project } from './projects.js';
 import { writeState } from './workspace-store.js';
 
 export interface ExecutionRef { projectId: string; sessionId: string }
@@ -50,15 +50,23 @@ export function validateRequirements(value: Project['requiredTools']) {
   if (value !== undefined && (!Array.isArray(value) || value.length > 40 || value.some(r => !r || typeof r.key !== 'string' || !/^(skill|plugin|mcp):.{1,240}$/.test(r.key) || (r.fingerprint !== undefined && (typeof r.fingerprint !== 'string' || r.fingerprint.length > 200))))) throw new Error('Invalid required tools');
 }
 
+/** Text of project-spaces.json per path, kept once it passed validation. A send
+ *  read the registry 9-15 times, each re-reading and fully re-validating
+ *  ~220 KB. A hit only parses (so every caller still gets its own copy); a
+ *  save drops the entry, so what the registry wrote is validated on read. */
+const validatedText = new Map<string, { identity: string; text: string }>();
+
 /** Organization is separate from execution. Every mutation reloads the latest
  * state and writes synchronously; asynchronous effects are durable receipts. */
 export class ProjectSpaceRegistry {
   private file: string;
   constructor(stateDir: string, private projects: () => Project[]) { this.file = join(stateDir, 'project-spaces.json'); }
   private read(): SpaceState {
+    const identity = fileIdentity(this.file), hit = identity === undefined ? undefined : validatedText.get(this.file);
+    if (hit && hit.identity === identity) return JSON.parse(hit.text) as SpaceState;
     if (!existsSync(this.file)) return empty();
     try {
-      const data = JSON.parse(readFileSync(this.file, 'utf8')) as SpaceState;
+      const text = readFileSync(this.file, 'utf8'), data = JSON.parse(text) as SpaceState;
       if (data.schemaVersion !== 1 || !Number.isSafeInteger(data.revision) || data.revision < 0 || !Array.isArray(data.spaces) || !Array.isArray(data.references) || !Array.isArray(data.operations)) throw new Error('Unsupported Space registry');
       for (const key of ['bindings', 'epochs', 'requests', 'aliases', 'ownerOverrides'] as const) if (!data[key] || typeof data[key] !== 'object' || Array.isArray(data[key])) throw new Error('Invalid Space registry');
       for (const key of ['memory', 'source', 'file'] as const) if (!data.ownerOverrides[key] || typeof data.ownerOverrides[key] !== 'object' || Array.isArray(data.ownerOverrides[key])) throw new Error('Invalid owner mapping');
@@ -79,10 +87,11 @@ export class ProjectSpaceRegistry {
       for (const op of data.operations) if (!op || !['membership','archive','migration'].includes(op.kind) || !['pending','complete'].includes(op.state) || !Array.isArray(op.affected) || op.affected.some(r => !r || typeof r.projectId !== 'string' || typeof r.sessionId !== 'string')) throw new Error('Invalid operation receipt');
       for (const group of [data.ownerOverrides.memory, data.ownerOverrides.source]) for (const owner of Object.values(group)) if (!owner || !['space','execution'].includes(owner.kind) || typeof owner.id !== 'string' || (owner.kind === 'space' && !ids.has(owner.id))) throw new Error('Invalid memory owner mapping');
       for (const owner of Object.values(data.ownerOverrides.file)) if (!ids.has(owner)) throw new Error('Invalid file owner mapping');
+      if (identity !== undefined) validatedText.set(this.file, { identity, text });
       return data;
     } catch (error) { throw new Error('Cannot read Project spaces; restore or repair before writing: ' + (error as Error).message); }
   }
-  private save(data: SpaceState) { writeState(this.file, data); }
+  private save(data: SpaceState) { validatedText.delete(this.file); writeState(this.file, data); }
   snapshot() { return this.read(); }
   list() { return this.read().spaces; }
   get(id: string, allowArchived = false): ProjectSpace {

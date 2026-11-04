@@ -285,7 +285,24 @@ function readIdentity(configDir: string): AccountIdentity {
  *  rollout-<timestamp>-<thread_id>.jsonl (confirmed via a real authed run: see
  *  the adapter header). The thread id is the FILENAME's suffix, not embedded
  *  content to grep for, so match on that. */
+const rolloutPaths = new Map<string, string>();
 export function findRollout(configDirs: string[], providerSessionId: string): string | null {
+  // Listing the whole store (1,440 files live) costs ~30 ms per call, and a
+  // send asks several times. A thread's rollout never moves, so its path is
+  // kept while the file exists; a miss is never cached (the thread may not
+  // have written its rollout yet).
+  const key = configDirs.join('\0') + '\0' + providerSessionId;
+  const hit = rolloutPaths.get(key);
+  if (hit !== undefined && existsSync(hit)) return hit;
+  rolloutPaths.delete(key);
+  const found = scanRollout(configDirs, providerSessionId);
+  if (found) {
+    if (rolloutPaths.size >= 1000) rolloutPaths.delete(rolloutPaths.keys().next().value as string);
+    rolloutPaths.set(key, found);
+  }
+  return found;
+}
+function scanRollout(configDirs: string[], providerSessionId: string): string | null {
   const suffix = `-${providerSessionId}.jsonl`;
   const directories = new Set<string>();
   for (const configDir of configDirs) {

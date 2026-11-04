@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import type { ProjectContext, ProjectContextResolver } from './project-context.js';
 import { MemoryDocuments, type MemoryPassage, type SourceCitation } from './memory-documents.js';
-import { MemoryAccessStore, MemoryConflict, MemoryReferenceConflict, type MemoryOwner, type MemorySubject, type MemorySelection, type MemoryGrant } from './memory-access.js';
+import { MemoryAccessStore, MemoryConflict, MemoryReferenceConflict, type MemoryOwner, type MemorySubject, type MemorySelection, type MemoryGrant, type MemoryReferenceSet } from './memory-access.js';
 export { MemoryConflict, MemoryReferenceConflict } from './memory-access.js';
 
 // Three kinds a person chooses between, plus `context`, which only the Project brief
@@ -172,11 +172,32 @@ const fts = (value: string) =>
     .join(' OR ');
 export const estimateMemoryTokens = (value: string) => Math.ceil(Buffer.byteLength(value, 'utf8') / 3);
 
+/** Reads that context() would otherwise repeat once per row (2,342 owner
+ *  lookups, ~1,000 each of get / grant / reference, 538 settings reads per
+ *  send on the live store). Lives for ONE synchronous context() call: it holds
+ *  no writes, and is dropped in `finally`, so nothing can see it go stale. */
+interface ContextMemo {
+  settings?: MemorySettings;
+  prefs: Map<string, ContextPreferences>;
+  recipients: Map<string, MemoryOwner[]>;
+  resolved: Map<string, ProjectContext>;
+  entries: Map<string, MemoryEntry | undefined>;
+  owners: Map<string, { owner_kind: string; owner_id: string }>;
+  granted: Set<string>;
+  references: Map<string, MemoryReferenceSet | undefined>;
+}
+
 /** Canonical gateway memory. Account directories are import sources, never replicas. */
 export class MemoryStore {
   private db: SQLiteDatabase;
   readonly access: MemoryAccessStore;
   readonly documents:MemoryDocuments;
+  private memo?: ContextMemo;
+  /** Inserts since the last trim of memory_contexts; the first insert after
+   *  boot trims, then every CONTEXT_TRIM_EVERY-th. */
+  private contextInserts = 0;
+  static readonly CONTEXT_KEEP = 3000;
+  static readonly CONTEXT_TRIM_EVERY = 50;
   constructor(stateDir: string, private readonly resolver?: ProjectContextResolver) {
     mkdirSync(stateDir, { recursive: true });
     this.db = new DatabaseSync(join(stateDir, 'memory.sqlite'));
@@ -193,6 +214,7 @@ export class MemoryStore {
       CREATE TABLE IF NOT EXISTS memory_links(id TEXT PRIMARY KEY,from_id TEXT NOT NULL REFERENCES memory_entries(id),to_id TEXT NOT NULL REFERENCES memory_entries(id),kind TEXT NOT NULL,at INTEGER NOT NULL,UNIQUE(from_id,to_id,kind));
       CREATE TABLE IF NOT EXISTS memory_settings(key TEXT PRIMARY KEY,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_contexts(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,session_id TEXT NOT NULL,at INTEGER NOT NULL,data TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS memory_contexts_at ON memory_contexts(at);
       CREATE TABLE IF NOT EXISTS memory_owners(subject_kind TEXT NOT NULL,subject_id TEXT NOT NULL,owner_kind TEXT NOT NULL,owner_id TEXT NOT NULL,PRIMARY KEY(subject_kind,subject_id));`);
     if (version < 4) this.migrateKinds();
     this.db.exec('PRAGMA user_version=4');
@@ -234,14 +256,39 @@ export class MemoryStore {
   }
   private projectEntry(entry: MemoryEntry | undefined): MemoryEntry | undefined {
     if (!entry) return;
-    const mapped=this.db.prepare("SELECT owner_kind,owner_id FROM memory_owners WHERE subject_kind='entry' AND subject_id=?").get(entry.id);
+    const mapped=this.owner('entry',entry.id);
     if (mapped?.owner_kind==='space') return {...entry,spaceId:String(mapped.owner_id),projectId:undefined,sessionId:undefined,scope:entry.scope==='shared'?'shared':'space'};
     if (mapped?.owner_kind==='execution') return {...entry,spaceId:undefined,projectId:String(mapped.owner_id),scope:entry.scope==='space'?'project':entry.scope};
     return entry;
   }
+  private owner(kind:'entry'|'source',id:string):{owner_kind:unknown;owner_id:unknown}|undefined {
+    if(this.memo)return this.memo.owners.get(kind+'\0'+id);
+    return this.db.prepare('SELECT owner_kind,owner_id FROM memory_owners WHERE subject_kind=? AND subject_id=?').get(kind,id) as {owner_kind:unknown;owner_id:unknown}|undefined;
+  }
+  /** access.eligible() re-reads the subject and its grants per row; a subject
+   *  with no grant row at all is never eligible, so skip it from the memo. */
+  private eligible(selection:MemorySubject,pid:string,sid:string):MemoryGrant|undefined {
+    if(this.memo&&!this.memo.granted.has(selection.kind+'\0'+selection.id))return;
+    return this.access.eligible(selection,pid,sid);
+  }
+  private resolve(pid:string,sid?:string):ProjectContext|undefined {
+    if(!this.resolver)return;
+    if(!this.memo)return this.resolver.resolve(pid,sid);
+    const key=pid+'\0'+(sid||''),hit=this.memo.resolved.get(key);if(hit)return hit;
+    const scope=this.resolver.resolve(pid,sid);this.memo.resolved.set(key,scope);return scope;
+  }
+  private withMemo<T>(work:()=>T):T {
+    if(this.memo)return work();
+    const owners=new Map<string,{owner_kind:string;owner_id:string}>();
+    for(const r of this.db.prepare('SELECT subject_kind,subject_id,owner_kind,owner_id FROM memory_owners').all() as {subject_kind:string;subject_id:string;owner_kind:string;owner_id:string}[])
+      owners.set(r.subject_kind+'\0'+r.subject_id,{owner_kind:r.owner_kind,owner_id:r.owner_id});
+    const granted=new Set((this.db.prepare('SELECT DISTINCT subject_kind,subject_id FROM memory_grants').all() as {subject_kind:string;subject_id:string}[]).map(r=>r.subject_kind+'\0'+r.subject_id));
+    this.memo={prefs:new Map(),recipients:new Map(),resolved:new Map(),entries:new Map(),owners,granted,references:new Map()};
+    try{return work();}finally{this.memo=undefined;}
+  }
   private projectSource(source: KnowledgeSource | undefined): KnowledgeSource | undefined {
     if (!source) return;
-    const mapped=this.db.prepare("SELECT owner_kind,owner_id FROM memory_owners WHERE subject_kind='source' AND subject_id=?").get(source.id);
+    const mapped=this.owner('source',source.id);
     return mapped?.owner_kind==='space'?{...source,spaceId:String(mapped.owner_id),projectId:'',sessionId:undefined}:mapped?.owner_kind==='execution'?{...source,spaceId:undefined,projectId:String(mapped.owner_id)}:source;
   }
   applyOwnershipMappings(): void {
@@ -259,7 +306,11 @@ export class MemoryStore {
   }
   validateOwner(owner:MemoryOwner):void {if(!owner||!['space','execution'].includes(owner.kind)||typeof owner.id!=='string'||!owner.id)throw new Error('Choose a typed memory owner');this.resolver?.validateMemoryOwner(owner);}
   ownerOf(item: Pick<MemoryEntry,'projectId'|'spaceId'>): MemoryOwner { return item.spaceId?{kind:'space',id:item.spaceId}:{kind:'execution',id:item.projectId||''}; }
-  get(id: string): MemoryEntry | undefined { return this.projectEntry(this.decode(this.db.prepare('SELECT data FROM memory_entries WHERE id=?').get(id))); }
+  get(id: string): MemoryEntry | undefined {
+    if(this.memo){if(this.memo.entries.has(id))return this.memo.entries.get(id);const e=this.read(id);this.memo.entries.set(id,e);return e;}
+    return this.read(id);
+  }
+  private read(id: string): MemoryEntry | undefined { return this.projectEntry(this.decode(this.db.prepare('SELECT data FROM memory_entries WHERE id=?').get(id))); }
   revisions(id: string): MemoryEntry[] { return this.db.prepare('SELECT data FROM memory_revisions WHERE id=? ORDER BY revision DESC').all(id).map(x=>this.projectEntry(this.decode<MemoryEntry>(x))!); }
   private subjectInfo(subject:MemorySubject,version?:string) {
     if(subject.kind==='entry') {
@@ -490,6 +541,10 @@ export class MemoryStore {
     );
   }
   settings(): MemorySettings {
+    if(this.memo)return this.memo.settings??=this.readSettings();
+    return this.readSettings();
+  }
+  private readSettings(): MemorySettings {
     return {
       ...defaults,
       ...this.decode<Partial<MemorySettings>>(
@@ -523,6 +578,10 @@ export class MemoryStore {
       .run(key, JSON.stringify(data));
   }
   preferences(pid: string, sid: string): ContextPreferences {
+    if(this.memo){const key=pid+'\0'+sid;let p=this.memo.prefs.get(key);if(!p){p=this.readPreferences(pid,sid);this.memo.prefs.set(key,p);}return p;}
+    return this.readPreferences(pid,sid);
+  }
+  private readPreferences(pid: string, sid: string): ContextPreferences {
     return (
       this.decode<ContextPreferences>(
         this.db.prepare('SELECT data FROM memory_settings WHERE key=?').get('context:' + pid + ':' + sid),
@@ -539,10 +598,24 @@ export class MemoryStore {
     return p;
   }
   private recipients(q:MemoryQuery):MemoryOwner[] {
+    if(this.memo&&q.projectId){const key=q.projectId+'\0'+(q.sessionId||'');let r=this.memo.recipients.get(key);if(!r){r=this.readRecipients(q);this.memo.recipients.set(key,r);}return r;}
+    return this.readRecipients(q);
+  }
+  private readRecipients(q:MemoryQuery):MemoryOwner[] {
     return q.projectId?(this.resolver?.recipients(q.projectId,q.sessionId||undefined)||[{kind:'execution',id:q.projectId}]):q.spaceId?[{kind:'space',id:q.spaceId}]:[];
   }
   private local(owner:MemoryOwner,q:MemoryQuery):boolean { return this.recipients(q).some(r=>r.kind===owner.kind&&r.id===owner.id); }
-  private selected(subject:MemorySelection,q:MemoryQuery) { return q.projectId&&q.sessionId?this.access.reference(subject,q.projectId,q.sessionId,q.requestId):undefined; }
+  private selected(subject:MemorySelection,q:MemoryQuery) {
+    if(!q.projectId||!q.sessionId)return undefined;
+    if(this.memo){
+      // access.reference() answers undefined when the turn did not select this
+      // exact version; only a selected one needs its full (throwing) check.
+      const key=q.projectId+'\0'+q.sessionId+'\0'+(q.requestId??'');
+      if(!this.memo.references.has(key))this.memo.references.set(key,this.access.references(q.projectId,q.sessionId,q.requestId));
+      if(!this.memo.references.get(key)?.selections.some(s=>s.kind===subject.kind&&s.id===subject.id&&s.version===subject.version))return undefined;
+    }
+    return this.access.reference(subject,q.projectId,q.sessionId,q.requestId);
+  }
   visible(e:MemoryEntry,q:MemoryQuery):boolean {
     if(q.provider&&!e.providers.includes(q.provider))return false;
     if(q.access!=='context'&&!q.projectId&&!q.spaceId)return true;
@@ -553,7 +626,7 @@ export class MemoryStore {
     if(e.scope!=='conversation'&&this.local(owner,q))return true;
     const legacyRecipients=this.recipients(q).filter(r=>r.kind==='execution').map(r=>r.id);
     if(e.scope==='shared'&&e.sharedProjectIds.some(id=>legacyRecipients.includes(id)))return true;
-    if(q.projectId&&this.access.eligible({kind:'entry',id:e.id},q.projectId,q.sessionId||''))return true;
+    if(q.projectId&&this.eligible({kind:'entry',id:e.id},q.projectId,q.sessionId||''))return true;
     if(q.spaceId&&this.access.grants({kind:'entry',id:e.id}).some(g=>g.active&&g.recipient.kind==='space'&&g.recipient.id===q.spaceId&&g.owner.kind===owner.kind&&g.owner.id===owner.id))return true;
     return !!this.selected({kind:'entry',id:e.id,version:String(e.revision)},q);
   }
@@ -585,7 +658,7 @@ export class MemoryStore {
     if(e.status!=='confirmed')return 'Not confirmed';
     if(prefs.excludedIds?.includes(e.id)||e.sources.some(s=>s.id&&prefs.excludedIds?.includes(s.id)))return 'Excluded from this conversation';
     if(e.expiresAt&&e.expiresAt<=Date.now())return 'Expired';
-    const scope=q.projectId?this.resolver?.resolve(q.projectId,q.sessionId||undefined):undefined;
+    const scope=q.projectId?this.resolve(q.projectId,q.sessionId||undefined):undefined;
     if(scope?.spaceArchived)return 'Primary Project archived';
     if((q.projectId&&settings.excludedProjects.includes(q.projectId))||(e.projectId&&settings.excludedProjects.includes(e.projectId))||e.sources.some(s=>s.projectId&&settings.excludedProjects.includes(s.projectId)))return 'Project excluded';
     if((e.spaceId&&settings.excludedSpaces.includes(e.spaceId))||(scope?.spaceId&&settings.excludedSpaces.includes(scope.spaceId)))return 'Project space excluded';
@@ -600,7 +673,19 @@ export class MemoryStore {
   private searchInside(q: MemoryQuery = {}) {
     const limit = Math.max(1, Math.min(200, Number(q.limit) || 50)),
       offset = Math.max(0, Number(q.offset) || 0),
-      term = fts(q.query || ''),
+      rows = this.rankInside(q, e => this.visible(e, q) && (!q.eligibleOnly || !this.contextProblem(e, q)));
+    return {
+      items: rows.slice(offset, offset + limit),
+      total: rows.length,
+      limit,
+      offset,
+      truncated: false,
+    };
+  }
+  /** Every row the query matches that `keep` accepts, scored and sorted, before
+   *  any pagination. The sort is stable, so filtering after it keeps order. */
+  private rankInside(q: MemoryQuery, keep: (e: MemoryEntry) => boolean) {
+    const term = fts(q.query || ''),
       filters: string[] = [],
       args: (string | number)[] = [];
     if (q.status) {
@@ -634,12 +719,11 @@ export class MemoryStore {
         .prepare(sql)
         .all(...(term ? [term, ...args] : args))
         .map(row=>({row,e:this.projectEntry(this.decode<MemoryEntry>(row))!}))
-        .filter(({e})=>(!q.scope||e.scope===q.scope)&&this.visible(e,q)&&(!q.eligibleOnly||!this.contextProblem(e,q)))
+        .filter(({e})=>(!q.scope||e.scope===q.scope)&&keep(e))
         .map(({row,e}) => {
           const
-            matches = terms.filter((t) =>
-              normalize(e.title + ' ' + e.content + ' ' + e.tags.join(' ')).includes(t),
-            ).length;
+            haystack = terms.length ? normalize(e.title + ' ' + e.content + ' ' + e.tags.join(' ')) : '',
+            matches = terms.filter((t) => haystack.includes(t)).length;
           return {
             ...e,
             staleReason: this.sourceProblem(e),
@@ -654,13 +738,7 @@ export class MemoryStore {
           };
         });
     rows.sort((a, b) => b.score - a.score || b.updatedAt - a.updatedAt);
-    return {
-      items: rows.slice(offset, offset + limit),
-      total: rows.length,
-      limit,
-      offset,
-      truncated: false,
-    };
+    return rows;
   }
   related(id: string) {
     return this.db
@@ -811,7 +889,7 @@ export class MemoryStore {
       if(q.spaceId&&s.sessionId&&this.resolver?.memberOf(s.projectId,s.sessionId,q.spaceId))return true;
       if(q.projectId&&!q.sessionId&&this.resolver?.sourceProjects(q.projectId).includes(s.projectId))return true;
     }
-    if(q.projectId&&this.access.eligible({kind:'source',id:s.id},q.projectId,q.sessionId||''))return true;
+    if(q.projectId&&this.eligible({kind:'source',id:s.id},q.projectId,q.sessionId||''))return true;
     if(q.spaceId&&this.access.grants({kind:'source',id:s.id}).some(g=>g.active&&g.recipient.kind==='space'&&g.recipient.id===q.spaceId&&g.owner.kind===owner.kind&&g.owner.id===owner.id))return true;
     return !!this.selected({kind:'source',id:s.id,version:s.versionId||s.hash},q);
   }
@@ -822,7 +900,7 @@ export class MemoryStore {
     if(prefs.excludedIds?.includes(s.id))return 'Source excluded from this conversation';
     if(!this.sourceVisible(s,{...q,access:'context'}))return 'Source evidence is outside this conversation’s context scope';
     if(!settings.enabled||prefs.enabled===false||(q.provider&&!settings.providers.includes(q.provider)))return 'Memory disabled';
-    const scope=q.projectId?this.resolver?.resolve(q.projectId,q.sessionId||undefined):undefined;
+    const scope=q.projectId?this.resolve(q.projectId,q.sessionId||undefined):undefined;
     if(scope?.spaceArchived)return 'Primary Project archived';
     if((q.projectId&&settings.excludedProjects.includes(q.projectId))||(s.projectId&&settings.excludedProjects.includes(s.projectId)))return 'Project excluded';
     if((s.spaceId&&settings.excludedSpaces.includes(s.spaceId))||(scope?.spaceId&&settings.excludedSpaces.includes(scope.spaceId)))return 'Project space excluded';
@@ -875,7 +953,7 @@ export class MemoryStore {
     );
     return { entry, existed: false };
   }
-  context(pid:string,sid:string,provider:MemoryProvider,query:string,requestId?:string):MemoryContext{return this.withScope(()=>this.contextInside(pid,sid,provider,query,requestId));}
+  context(pid:string,sid:string,provider:MemoryProvider,query:string,requestId?:string):MemoryContext{return this.withScope(()=>this.withMemo(()=>this.contextInside(pid,sid,provider,query,requestId)));}
   private contextInside(pid: string, sid: string, provider: MemoryProvider, query: string, requestId?:string): MemoryContext {
     const scope = this.resolver?.resolve(pid, sid || undefined);
     const references=this.access.references(pid,sid,requestId);
@@ -910,7 +988,12 @@ export class MemoryStore {
         access: 'context',
         limit: 200,
       },
-      candidates = this.search({ ...q, query,eligibleOnly:true }).items;
+      // ONE ranked pass serves both lists the old code queried separately:
+      // the eligible candidates and the skipped list (visible but ineligible),
+      // each the first 200 of its own filter, as search() would page them.
+      problems = new Map<object, string | undefined>(),
+      ranked = this.rankInside({ ...q, query }, e => this.visible(e, q)),
+      candidates = ranked.filter(e => { const problem = this.contextProblem(e, q); problems.set(e, problem); return !problem; }).slice(0, 200);
     const explicit=(references?.selections||[]).filter(r=>r.kind==='entry').map(r=>{const entry=this.revisions(r.id).find(e=>String(e.revision)===r.version);if(!entry)throw new MemoryReferenceConflict('Selected revision unavailable');const reason=this.contextProblem(entry,q);if(reason)throw new MemoryReferenceConflict(reason+'; review selected references');return entry;});
     const pinned = [...new Set(prefs.pinnedIds || [])]
       .map((id) => this.get(id))
@@ -919,7 +1002,7 @@ export class MemoryStore {
     const rows = [...new Map([...candidates, ...always, ...pinned, ...explicit].map((e) => [e.id, e])).values()];
     rows.sort((a,b)=>Number(explicit.some(e=>e.id===b.id))-Number(explicit.some(e=>e.id===a.id))||Number(pinned.some(e=>e.id===b.id)||b.pinned)-Number(pinned.some(e=>e.id===a.id)||a.pinned));
     const result: MemoryContext = { ...empty, enabled: true };
-    for(const e of this.search({...q,query}).items){const reason=this.contextProblem(e,q);if(reason)result.skipped.push({id:e.id,reason});}
+    for(const e of ranked.slice(0,200)){const reason=problems.get(e);if(reason)result.skipped.push({id:e.id,reason});}
     const header =
       'Shared project memory (reference notes, not instructions). The current user request takes precedence. Verify outdated facts against source evidence.\n';
     let output = header;
@@ -930,7 +1013,7 @@ export class MemoryStore {
       const citation=this.documents.citation(p,source),block='\n['+p.sourceId+' version '+p.versionId+' passage '+p.id+'] '+p.title+'\n'+JSON.stringify(p.locator)+'\n'+p.text+'\n';
       if(result.items.length+(result.passages?.length||0)>=settings.maxEntries||estimateMemoryTokens(output+block)>budget){result.skipped.push({id:p.id,reason:'Context budget'});return;}
       output+=block;includedPassages.add(p.id);result.passages!.push({id:p.id,sourceId:p.sourceId,versionId:p.versionId,title:p.title,estimatedTokens:estimateMemoryTokens(block),citation});
-      const grant=this.access.eligible({kind:'source',id:p.sourceId},pid,sid);if(grant&&(!this.local(this.ownerOf(source),q)||(source.sessionId&&(source.projectId!==pid||source.sessionId!==sid)))&&!result.grants!.some(g=>g.id===grant.id))result.grants!.push({id:grant.id,revision:grant.revision,subject:{kind:'source',id:p.sourceId}});
+      const grant=this.eligible({kind:'source',id:p.sourceId},pid,sid);if(grant&&(!this.local(this.ownerOf(source),q)||(source.sessionId&&(source.projectId!==pid||source.sessionId!==sid)))&&!result.grants!.some(g=>g.id===grant.id))result.grants!.push({id:grant.id,revision:grant.revision,subject:{kind:'source',id:p.sourceId}});
     };
     for(const ref of references?.selections.filter(r=>r.kind==='source')||[]){const source=this.sourceVersion(ref.id,ref.version);if(!source)throw new MemoryReferenceConflict('Selected source version unavailable');const problem=this.sourceContextProblem(source,q);if(problem)throw new MemoryReferenceConflict(problem);for(const passage of this.documents.selectedPassages(ref.id,ref.version,query))appendPassage(passage);}
     for (const e of rows) {
@@ -958,7 +1041,7 @@ export class MemoryStore {
         continue;
       }
       output += block;
-      const grant=this.access.eligible({kind:'entry',id:e.id},pid,sid);
+      const grant=this.eligible({kind:'entry',id:e.id},pid,sid);
       if(grant&&(!this.local(this.ownerOf(e),q)||(e.scope==='conversation'&&(e.projectId!==pid||e.sessionId!==sid))))result.grants!.push({id:grant.id,revision:grant.revision,subject:{kind:'entry',id:e.id}});
       result.items.push({
         id: e.id,
@@ -1004,9 +1087,13 @@ export class MemoryStore {
       this.db
         .prepare('INSERT INTO memory_contexts VALUES(?,?,?,?,?)')
         .run(row.id, pid, sid, row.at, JSON.stringify(row));
-      this.db.exec(
-        'DELETE FROM memory_contexts WHERE id IN (SELECT id FROM memory_contexts ORDER BY at DESC LIMIT -1 OFFSET 3000)',
-      );
+      // Trimming sorts the whole table, so it runs on the first insert after
+      // boot and then every 50th: the log holds at most KEEP + 49 rows, and
+      // the newest KEEP are kept exactly as before.
+      if (this.contextInserts++ % MemoryStore.CONTEXT_TRIM_EVERY === 0)
+        this.db.exec(
+          'DELETE FROM memory_contexts WHERE id IN (SELECT id FROM memory_contexts ORDER BY at DESC LIMIT -1 OFFSET ' + MemoryStore.CONTEXT_KEEP + ')',
+        );
     });
     return row;
   }
