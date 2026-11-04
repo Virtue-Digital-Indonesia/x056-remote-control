@@ -5,12 +5,25 @@ import { join, basename, resolve } from 'node:path';
 import { SessionManager } from './manager.js';
 import { STATE_DIR } from './api.controller.js';
 import { ArtifactStore, artifactFailureReason, readState, writeState } from './workspace-store.js';
+interface PendingImage {
+  firstSeen: number;
+  attempts: number;
+  lastAttempt: number;
+}
+/** Bounds for retrying a referenced image whose file does not exist yet. */
+export const IMAGE_RETRY = { attempts: 5, spacingMs: 1_000, windowMs: 10 * 60_000, rejectedMs: 30 * 60_000 };
 @Controller('api/workspace')
 export class WorkspaceController {
   private artifacts: ArtifactStore;
   private metaFile: string;
   private unsubscribe: () => void;
-  private imageReferences = new Map<string, Set<string>>();
+  /** Image paths a tool call named, waiting for the file to exist. */
+  private imageReferences = new Map<string, Map<string, PendingImage>>();
+  /** Paths add() refused for a reason that will not change soon (location,
+   *  name, type, size), keyed `projectId::sessionId\0path` -> refused at. A
+   *  screenshot loop names the same refused file again and again; 4 Nov 2026
+   *  a worker set named 142 such files. Each re-mention would cost an add(). */
+  private rejectedImages = new Map<string, number>();
   private plannerTimer: ReturnType<typeof setInterval>;
   constructor(
     @Inject(SessionManager) private manager: SessionManager,
@@ -27,10 +40,11 @@ export class WorkspaceController {
         sid = String(e.data.sessionId || ''),
         key = pid + '::' + sid;
       if (pid && sid && e.kind === 'artifact_reference' && Array.isArray(e.data.paths)) {
-        const paths = this.imageReferences.get(key) || new Set<string>();
+        const paths = this.imageReferences.get(key) || new Map<string, PendingImage>();
         for (const path of e.data.paths)
-          if (typeof path === 'string' && paths.size < 100) paths.add(path);
-        this.imageReferences.set(key, paths);
+          if (typeof path === 'string' && !paths.has(path) && paths.size < 100 && !this.recentlyRejected(key, path))
+            paths.set(path, { firstSeen: Date.now(), attempts: 0, lastAttempt: 0 });
+        if (paths.size) this.imageReferences.set(key, paths);
       }
       if (
         pid &&
@@ -39,19 +53,10 @@ export class WorkspaceController {
           e.kind === 'session_error' ||
           (e.kind === 'activity' && e.data.status !== 'start'))
       ) {
-        for (const path of this.imageReferences.get(key) || [])
-          try {
-            this.artifacts.add({
-              projectId: pid,
-              sessionId: sid,
-              title: basename(path),
-              kind: 'image',
-              path,
-              source: 'response',
-            });
-            this.imageReferences.get(key)?.delete(path);
-          } catch {}
-        if (e.kind !== 'activity') this.imageReferences.delete(key);
+        const final = e.kind !== 'activity';
+        const paths = this.imageReferences.get(key);
+        if (paths?.size) this.captureImages(pid, sid, paths, final);
+        if (final || !paths?.size) this.imageReferences.delete(key);
       }
 
       if (
@@ -66,6 +71,51 @@ export class WorkspaceController {
         this.artifacts.collect(pid, sid, e.data.text, cwd);
       }
     });
+  }
+  /** Try each queued image once. Added -> done. Not there yet (ENOENT, the
+   *  usual case: the tool_use names the screenshot before the command writes
+   *  it) -> retry with a doubling gap from IMAGE_RETRY.spacingMs (events in
+   *  between are skipped, not counted: they come in bursts), at most
+   *  IMAGE_RETRY.attempts times or IMAGE_RETRY.windowMs after first seen.
+   *  Anything else (location, name, type, size, permissions) can never
+   *  succeed: drop it now. Every
+   *  activity event lands here, subagents' included, so a path that is never
+   *  dropped is re-checked on every tool completion until the turn ends.
+   *  `final` (the turn ended) ignores the spacing; the caller then clears. */
+  private captureImages(pid: string, sid: string, paths: Map<string, PendingImage>, final: boolean) {
+    const now = Date.now();
+    for (const [path, p] of [...paths]) {
+      if (!final && p.attempts > 0 && now - p.lastAttempt < IMAGE_RETRY.spacingMs * 2 ** (p.attempts - 1)) continue;
+      p.attempts++;
+      p.lastAttempt = now;
+      try {
+        this.artifacts.add({
+          projectId: pid,
+          sessionId: sid,
+          title: basename(path),
+          kind: 'image',
+          path,
+          source: 'response',
+        });
+        paths.delete(path);
+      } catch (error) {
+        const missing = (error as NodeJS.ErrnoException)?.code === 'ENOENT';
+        if (!missing) this.rememberRejected(pid + '::' + sid, path, now);
+        if (!missing || p.attempts >= IMAGE_RETRY.attempts || now - p.firstSeen >= IMAGE_RETRY.windowMs)
+          paths.delete(path);
+      }
+    }
+  }
+  private recentlyRejected(key: string, path: string): boolean {
+    const at = this.rejectedImages.get(key + '\0' + path);
+    if (at === undefined) return false;
+    if (Date.now() - at < IMAGE_RETRY.rejectedMs) return true;
+    this.rejectedImages.delete(key + '\0' + path);
+    return false;
+  }
+  private rememberRejected(key: string, path: string, now: number) {
+    if (this.rejectedImages.size >= 5000) this.rejectedImages.clear();
+    this.rejectedImages.set(key + '\0' + path, now);
   }
   onModuleDestroy() {
     clearInterval(this.plannerTimer);

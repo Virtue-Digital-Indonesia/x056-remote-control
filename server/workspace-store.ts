@@ -32,6 +32,14 @@ export interface Artifact {
   status?: string;
   summary?: string;
   removed?: boolean;
+  /** Source mtime when copied (absent on rows from before 2026-11-04). With
+   *  `original` and `size` it lets add() reuse the row without re-hashing. */
+  mtimeMs?: number;
+}
+/** add() refused the file for good (location, hidden or credential-like name,
+ *  type, size): retrying it cannot succeed. ENOENT stays the fs error. */
+export class ArtifactRejectedError extends Error {
+  readonly code = 'rejected' as const;
 }
 const TYPES: Record<string, string> = {
   '.png': 'image/png',
@@ -116,12 +124,11 @@ export class ArtifactStore {
     return item;
   }
   add(input: Omit<Artifact, 'id' | 'at'> & { path?: string }): Artifact {
-    const all = this.scoped(input.projectId, input.sessionId),
-      item: Artifact = {
-        ...input,
-        id: randomUUID(),
-        at: new Date().toISOString(),
-      };
+    const item: Artifact = {
+      ...input,
+      id: randomUUID(),
+      at: new Date().toISOString(),
+    };
     delete (item as Artifact & { path?: string }).path;
     if (input.path) {
       let path: string;
@@ -130,7 +137,7 @@ export class ArtifactStore {
       } catch (error) {
         // A temporary source may be gone after we preserved its bytes. Reuse
         // the retained artifact instead of claiming that its screenshot is lost.
-        const retained = all.find(
+        const retained = this.scoped(input.projectId, input.sessionId).find(
           (x) =>
             x.projectId === input.projectId &&
             x.sessionId === input.sessionId &&
@@ -145,7 +152,9 @@ export class ArtifactStore {
         }
         throw error;
       }
-      const roots = [...this.roots(), join(this.state, 'uploads'), '/tmp'];
+      // roots() re-reads the project registries: once per call, not twice.
+      const projectRoots = this.roots();
+      const roots = [...projectRoots, join(this.state, 'uploads'), '/tmp'];
       const visiblePart = (part: string) =>
         !part.startsWith('.') || /^\.review(?:[-_].+)?$/i.test(part);
       const matches = (root: string) => {
@@ -162,9 +171,11 @@ export class ArtifactStore {
           .some((p) => !visiblePart(p));
       let allowedRoot = roots.find(visible);
       if (!allowedRoot)
-        for (const root of this.roots()) {
+        for (const root of projectRoots) {
           let cached = this.worktrees.get(root);
-          if (!cached || Date.now() - cached.at > 30000) {
+          // One `git worktree list` per project root (121 in prod, 1-1.6 s of
+          // synchronous spawns in total), so refresh at most every 2 minutes.
+          if (!cached || Date.now() - cached.at > 120_000) {
             let paths: string[] = [];
             try {
               paths = execFileSync('git', ['-C', root, 'worktree', 'list', '--porcelain', '-z'], {
@@ -190,11 +201,25 @@ export class ArtifactStore {
           .some((p) => !visiblePart(p)) ||
         /(?:credential|secret|token|password|auth\.json)/i.test(basename(path))
       )
-        throw new Error('This file cannot be added to the library.');
+        throw new ArtifactRejectedError('This file cannot be added to the library.');
       const mime = TYPES[extname(path).toLowerCase()],
         info = statSync(path);
       if (!mime || !info.isFile() || info.size > 50 * 1024 * 1024)
-        throw new Error('Use a supported document or image under 50 MB.');
+        throw new ArtifactRejectedError('Use a supported document or image under 50 MB.');
+      const all = this.scoped(input.projectId, input.sessionId);
+      // Unchanged since it was copied (same path, size and mtime): reuse the
+      // row without reading and hashing the file again. Rows without mtimeMs
+      // fall through to the hash.
+      const same = all.find(
+        (x) =>
+          x.projectId === input.projectId &&
+          x.sessionId === input.sessionId &&
+          x.file &&
+          x.original === path &&
+          x.size === info.size &&
+          x.mtimeMs === info.mtimeMs,
+      );
+      if (same) return this.reuse(same, input.source);
       const digest = createHash('sha256').update(readFileSync(path)).digest('hex');
       const previous = all.find(
         (x) =>
@@ -202,11 +227,20 @@ export class ArtifactStore {
           x.sessionId === input.sessionId &&
           x.file?.startsWith(digest),
       );
-      if (previous) return this.reuse(previous, input.source);
+      if (previous) {
+        // Backfill an older row of this same file, so the next mention takes
+        // the fast path above. Never for a different file with equal bytes.
+        if (previous.original === path && previous.size === info.size && previous.mtimeMs === undefined) {
+          previous.mtimeMs = info.mtimeMs;
+          this.save(previous);
+        }
+        return this.reuse(previous, input.source);
+      }
       item.file = digest + extname(path).toLowerCase();
       item.original = path;
       item.mime = mime;
       item.size = info.size;
+      item.mtimeMs = info.mtimeMs;
       item.kind = mime.startsWith('image/') ? 'image' : 'file';
       mkdirSync(join(this.state, 'artifacts'), { recursive: true });
       copyFileSync(path, join(this.state, 'artifacts', item.file));
@@ -215,12 +249,12 @@ export class ArtifactStore {
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
         throw new Error('Use an HTTP or HTTPS preview URL.');
       item.url = url.href;
-      const previous = all.find(
+      const previous = this.scoped(input.projectId, input.sessionId).find(
         (x) => x.projectId === input.projectId && x.sessionId === input.sessionId && x.url === item.url,
       );
       if (previous) return this.reuse(previous, input.source);
     } else if (input.kind === 'test') {
-      const previous = all.find(
+      const previous = this.scoped(input.projectId, input.sessionId).find(
         (x) =>
           x.projectId === input.projectId &&
           x.sessionId === input.sessionId &&

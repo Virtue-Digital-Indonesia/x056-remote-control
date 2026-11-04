@@ -1,6 +1,7 @@
 import { messageImages, uploadImage } from './message-images.js';
 import { ConversationJournal } from './conversation-journal.js';
-import { findMessageReply } from './message-reply.js';
+import { lookupMessageReply } from './message-reply.js';
+import { hotCache } from './hot-cache.js';
 import type { FileReference } from './file-store.js';
 import { RoutingState, type ConversationRoute } from './routing-state.js';
 import { SessionTimerReader } from './session-timers.js';
@@ -426,6 +427,17 @@ export class ApiController {
 
   @Get('projects')
   projects(): unknown {
+    // Shared for 1 s between tabs and phones polling at once. The registry
+    // files are re-read on every list, so their identity is in the key: any
+    // write (rename, create, delete, a new conversation, a Space change) is a
+    // miss on the very next GET. Live state (running, background) is at most
+    // 1 s stale.
+    const ident = (name: string) => { try { const st = statSync(join(this.stateDir, name)); return `${st.ino}:${st.mtimeMs}:${st.size}`; } catch { return '-'; } };
+    const key = `projects\0${this.stateDir}\0${ident('projects.json')}\0${ident('project-spaces.json')}\0${ident('accounts.json')}`;
+    return hotCache.shared(key, 1000, () => this.projectsUncached());
+  }
+
+  private projectsUncached(): unknown {
     const data = this.manager.listProjects();
     let accounts;
     try { accounts = AccountRegistry.load(join(this.stateDir, 'accounts.json')).list(); } catch { return data; }
@@ -801,7 +813,10 @@ export class ApiController {
       throw new BadRequestException('unknown conversation for that project');
     const { adapter, providerSessionId, configDirs } = this.manager.historyContext(projectId, sessionId);
     if (!adapter.readHistoryPage) throw new BadRequestException('Provider does not support reply lookup');
-    try { return findMessageReply(before => adapter.readHistoryPage!(configDirs, providerSessionId, 500, before), messageId); }
+    // Incremental per transcript + messageId (message-reply.ts): a repeat poll
+    // reads one window from the end. Not in the hot cache: a read failure must
+    // surface even right after a success (test/mcp-output.test.ts).
+    try { return lookupMessageReply(adapter, configDirs, providerSessionId, messageId); }
     catch { throw new BadRequestException('Conversation reply history unavailable'); }
   }
 
@@ -1051,6 +1066,12 @@ export class ApiController {
   @Get('conversations/subagents')
   conversationSubagents(@Query('projectId') projectId?: string, @Query('sessionId') sessionId?: string) {
     if (!projectId || !sessionId) throw new BadRequestException('projectId and sessionId required');
+    // Polled every 5 s per open panel. Shared for 2 s; an empty answer (which
+    // is also what a read error returns) is not kept.
+    return hotCache.shared(`subagents\0${this.stateDir}\0${projectId}\0${sessionId}`, (v) => (v.subagents.length || v.self ? 2000 : 0), () => this.subagentsUncached(projectId, sessionId));
+  }
+
+  private subagentsUncached(projectId: string, sessionId: string) {
     const empty = { subagents: [], self: null };
     if (!projectId || !sessionId) return empty;
     try {
@@ -1184,6 +1205,13 @@ export class ApiController {
   @Get('usage/all')
   usageAll(@Query('budgetMs') budgetMs?: string) {
     const budget = Math.min(Math.max(Number(budgetMs) || 400, 0), 5000);
+    // Several seconds of CPU per call, polled by every tab. Shared for 20 s
+    // once complete; while still partial only 2 s, because the panel re-polls
+    // every 3 s to watch it converge and each call scans further.
+    return hotCache.shared(`usage-all\0${this.stateDir}\0${budget}`, (v) => (v.pendingBytes ? 2000 : 20000), () => this.usageAllUncached(budget));
+  }
+
+  private usageAllUncached(budget: number) {
     const running = new Set(this.manager.runningSessions().map(r => `${r.projectId}/${r.sessionId}`));
     const reg = this.manager.listProjects() as { projects: {id:string;name:string;conversations?:{sessionId:string;title?:string}[]}[] };
     const result = projectCosts(reg.projects ?? [], (pid,sid) => this.manager.historyContext(pid,sid), running, this.stats, budget);
@@ -1230,8 +1258,11 @@ export class ApiController {
   @Get('workflows/live')
   liveWorkflows(): { live: number; runs: unknown[] } {
     try {
-      const runs = liveWorkflowRuns(this.manager.claudeConfigDirs());
-      return { live: runs.length, runs };
+      // Shared for 2 s. A read error throws below and is never kept.
+      return hotCache.shared(`workflows-live\0${this.stateDir}`, 2000, () => {
+        const runs = liveWorkflowRuns(this.manager.claudeConfigDirs());
+        return { live: runs.length, runs };
+      });
     } catch {
       // Never let a filesystem hiccup here read as "nothing is running" -- that
       // would green-light a swap. The caller treats an error as "cannot tell".

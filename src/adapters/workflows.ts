@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { readFilePage, type HistoryPage } from './claude.js';
 import { cachedBrief, type SubagentMeta } from './subagents.js';
@@ -70,12 +70,49 @@ export interface WorkflowRun {
   startedAt?: number;
 }
 
-/** Every workflow run directory for a session, across the account config dirs. */
-export function workflowDirs(configDirs: string[], sessionId: string): string[] {
+/**
+ * The `projects/` dir of each config dir, once per REAL directory.
+ *
+ * Every account's `projects/` is a symlink to one shared tree, so walking each
+ * config dir read every journal once per account (9x on the live gateway:
+ * ~0.9 s and 88 MB per `workflows/live` call). The first config dir that
+ * reaches a tree is the one walked, under its own (non-canonical) path, so the
+ * `dir` a run reports is byte-identical to what the undeduped walk kept -- the
+ * runId dedupe below kept the first view on a tie. Not cached: nine realpaths
+ * are cheap, and a retargeted symlink must be seen.
+ */
+function projectRoots(configDirs: string[]): string[] {
+  const seen = new Set<string>();
   const out: string[] = [];
   for (const configDir of configDirs) {
     const projects = join(configDir, 'projects');
     if (!existsSync(projects)) continue;
+    let real: string;
+    try { real = realpathSync(projects); } catch { real = projects; }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    out.push(projects);
+  }
+  return out;
+}
+
+/** Bounded LRU over a Map: a hit moves to the end, the oldest key goes first. */
+const CACHE_MAX = 512;
+function lruGet<V>(m: Map<string, V>, k: string): V | undefined {
+  const v = m.get(k);
+  if (v !== undefined) { m.delete(k); m.set(k, v); }
+  return v;
+}
+function lruSet<V>(m: Map<string, V>, k: string, v: V): void {
+  m.delete(k);
+  m.set(k, v);
+  while (m.size > CACHE_MAX) m.delete(m.keys().next().value as string);
+}
+
+/** Every workflow run directory for a session, across the account config dirs. */
+export function workflowDirs(configDirs: string[], sessionId: string): string[] {
+  const out: string[] = [];
+  for (const projects of projectRoots(configDirs)) {
     let names: string[];
     try { names = readdirSync(projects); } catch { continue; }
     for (const name of names) {
@@ -130,16 +167,44 @@ export function workflowScript(runDir: string, runId: string): string | null {
   } catch { return null; }
 }
 
+type WorkflowMeta = { name?: string; description?: string; phases: WorkflowPhase[] };
+
+/** Parsed script meta by path, valid while the file's size and mtime hold. */
+const metaCache = new Map<string, { size: number; mtimeMs: number; meta: WorkflowMeta }>();
+
+function readWorkflowMeta(script: string): WorkflowMeta {
+  let st;
+  try { st = statSync(script); } catch { return { phases: [] }; }
+  const hit = lruGet(metaCache, script);
+  // A copy: the run spreads these fields into what the routes hand out.
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return { ...hit.meta, phases: hit.meta.phases.slice() };
+  let meta: WorkflowMeta = { phases: [] };
+  try { meta = parseWorkflowMeta(readFileSync(script, 'utf8')); } catch { return meta; /* label only */ }
+  lruSet(metaCache, script, { size: st.size, mtimeMs: st.mtimeMs, meta });
+  return meta;
+}
+
 /** `finished` = returned OR failed; `failed` = a `failed` line and no result. */
 interface Journal { started: Set<string>; finished: Set<string>; failed: Set<string> }
 
+/**
+ * Parsed journals by path, valid while the file's size and mtime hold. A
+ * journal is append-only and reaches megabytes, and the deploy actuator and the
+ * agent tree poll every few seconds, so an unchanged one is never re-read.
+ * Callers only read the returned sets.
+ */
+const journalCache = new Map<string, { size: number; mtimeMs: number; journal: Journal }>();
+
 function readJournal(runDir: string): Journal {
+  const path = join(runDir, 'journal.jsonl');
+  let st;
+  try { st = statSync(path); } catch { return { started: new Set(), finished: new Set(), failed: new Set() }; }
+  const hit = lruGet(journalCache, path);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.journal;
   const started = new Set<string>();
   const finished = new Set<string>();
   const results = new Set<string>();
   const failed = new Set<string>();
-  const path = join(runDir, 'journal.jsonl');
-  if (!existsSync(path)) return { started, finished, failed };
   let raw: string;
   // A journal holds every agent's full return value, so it reaches megabytes on
   // a large run. Only the type and agentId are needed, and both sit at the head
@@ -157,7 +222,9 @@ function readJournal(runDir: string): Journal {
     else if (/"type"\s*:\s*"failed"/.test(head)) { failed.add(id); finished.add(id); }
   }
   for (const id of results) failed.delete(id);
-  return { started, finished, failed };
+  const journal = { started, finished, failed };
+  lruSet(journalCache, path, { size: st.size, mtimeMs: st.mtimeMs, journal });
+  return journal;
 }
 
 /** Every workflow run of a session, newest first. */
@@ -166,11 +233,8 @@ export function listWorkflowRuns(configDirs: string[], sessionId: string): Workf
   for (const dir of workflowDirs(configDirs, sessionId)) {
     const runId = dir.slice(dir.lastIndexOf('/') + 1);
     const { started, finished, failed } = readJournal(dir);
-    let meta: { name?: string; description?: string; phases: WorkflowPhase[] } = { phases: [] };
     const script = workflowScript(dir, runId);
-    if (script) {
-      try { meta = parseWorkflowMeta(readFileSync(script, 'utf8')); } catch { /* label only */ }
-    }
+    const meta: WorkflowMeta = script ? readWorkflowMeta(script) : { phases: [] };
     let updatedAt: number | undefined;
     let startedAt: number | undefined;
     try {
@@ -294,9 +358,7 @@ export function isWorkflowLive(r: Pick<WorkflowRun, 'started' | 'finished' | 'up
  */
 export function sessionsWithWorkflows(configDirs: string[]): string[] {
   const out = new Set<string>();
-  for (const configDir of configDirs) {
-    const projects = join(configDir, 'projects');
-    if (!existsSync(projects)) continue;
+  for (const projects of projectRoots(configDirs)) {
     let names: string[];
     try { names = readdirSync(projects); } catch { continue; }
     for (const name of names) {
