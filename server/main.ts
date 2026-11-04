@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { buildModule, type GatewayConfig } from './app.module.js';
 import { sweepScheduleEnabled } from './storage-sweeper.js';
 import { appleAppSiteAssociation } from './apple-app-site.js';
+import { installLoopWatchdog } from './loop-watchdog.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +37,10 @@ export async function createApp(cfg: GatewayConfig): Promise<INestApplication> {
     bodyParser: true,
     rawBody: false,
   });
+  // Slow-request + event-loop stall log (server/loop-watchdog.ts). First, so a
+  // request's time includes body parsing; X056_WATCHDOG=off disables it.
+  const watchdog = installLoopWatchdog(app.getHttpAdapter().getInstance(), cfg.stateDir);
+  if (watchdog) app.getHttpServer().once('close', () => watchdog.stop());
   // api.controller.ts caps each individual attachment at 50MB (MAX_UPLOAD_BYTES)
   // but base64 adds ~33% overhead and a message can carry more than one
   // attachment — 12mb rejected two ordinary photos outright (each already

@@ -38,6 +38,7 @@ import { McpOAuthController, MCP_OAUTH } from './mcp-oauth.controller.js';
 import { WebAuthnService, SessionStore } from './webauthn.js';
 import { STORAGE_SWEEPER, StorageApprovers, StorageSweeper, type StorageSweeperOptions } from './storage-sweeper.js';
 import { StorageController, STORAGE_APPROVERS } from './storage.controller.js';
+import { DiagnosticsController, DIAGNOSTICS_STATE_DIR } from './loop-watchdog.js';
 import { liveWorkflowRuns } from '../src/adapters/workflows.js';
 import type { TurnOptions } from '../src/turn.js';
 
@@ -250,7 +251,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
   );
 
   @Module({
-    controllers: [ProjectSpacesController, FilesController, ChatsController, MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController, McpOAuthController, StorageController],
+    controllers: [ProjectSpacesController, FilesController, ChatsController, MemoryController, TitlesController, ApiController, WorkspaceController, McpHttpController, OAuthController, McpOAuthController, StorageController, DiagnosticsController],
     providers: [
       { provide: SessionManager, useValue: manager },
       { provide: PUSH_SERVICE, useValue: push },
@@ -280,6 +281,7 @@ export function buildModule(cfg: GatewayConfig): unknown {
       { provide: OAUTH_STORE, useValue: oauth },
       { provide: OAUTH_DEPS, useValue: { sessions, token: cfg.token } },
       { provide: STATE_DIR, useValue: cfg.stateDir },
+      { provide: DIAGNOSTICS_STATE_DIR, useValue: cfg.stateDir },
       { provide: APP_GUARD, useFactory: (reflector: Reflector) => new AuthGuard(cfg.token, sessions, reflector, oauth), inject: [Reflector] },
     ],
   })
